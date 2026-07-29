@@ -37,7 +37,10 @@ pub(super) async fn handle_list(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    match operations::acl::list_acl(
+    // `list_entries`, not `list_acl`: the canonical `acl/list/0.1` response is
+    // the `{entries, truncated, cursor, redactedFields}` wrapper over the
+    // shared `AclEntry`, not the legacy bare array of flat rows (#857).
+    match operations::acl::list_entries(
         &state.acl_ks,
         auth,
         req.scope.as_deref(),
@@ -93,7 +96,11 @@ pub(super) async fn handle_get(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    match operations::acl::get_acl(&state.acl_ks, auth, &req.subject, TRANSPORT_TRUST_TASK).await {
+    // `show_by_subject`, not `get_acl`: canonical `acl/show/0.1` responds with
+    // the `{entry, redactedFields}` wrapper, not the legacy flat row (#857).
+    match operations::acl::show_by_subject(&state.acl_ks, auth, &req.subject, TRANSPORT_TRUST_TASK)
+        .await
+    {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
     }
@@ -172,7 +179,14 @@ pub(super) async fn handle_change_role(
     )
     .await
     {
-        Ok(body) => success_response(&doc, body),
+        // Canonical `acl/change-role/0.1` responds with the realized entry
+        // under `entry`, like the rest of the family (#857).
+        Ok(body) => success_response(
+            &doc,
+            vta_sdk::protocols::acl_management::create::CreateAclResponseBody {
+                entry: vta_sdk::protocols::acl_management::entry::AclEntry::from_result(&body),
+            },
+        ),
         Err(e) => app_error_to_reject(&doc, e),
     }
 }
@@ -311,7 +325,17 @@ pub(super) async fn handle_swap_key(
                     },
                 );
             }
-            success_response(&doc, result)
+            // Canonical `acl/swap-key/0.1` responds with the realized entry
+            // plus the swapped-out `previousSubject` (#857).
+            success_response(
+                &doc,
+                vta_sdk::protocols::acl_management::swap::SwapKeyResultBody {
+                    entry: vta_sdk::protocols::acl_management::entry::AclEntry::from_result(
+                        &result,
+                    ),
+                    previous_subject: req.current_subject.clone(),
+                },
+            )
         }
         Err(e) => app_error_to_reject(&doc, e),
     }

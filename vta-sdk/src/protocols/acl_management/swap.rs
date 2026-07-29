@@ -59,6 +59,20 @@ pub type SwapAclResultBody = CreateAclResultBody;
 /// Alias for the canonical Trust Task response — same shape as the legacy result.
 pub type SwapKeyResponseBody = CreateAclResultBody;
 
+/// Response body for the canonical `acl/swap-key/0.1` Trust Task — the
+/// realized entry under `entry` (like grant/show/update) plus the canonical
+/// `previousSubject`, so an auditor reading the response alone can see which
+/// VID lost the grant. The legacy DIDComm `swap-acl` result keeps the flat
+/// [`SwapAclResultBody`]; this wrapper is the published spec's shape (#857).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SwapKeyResultBody {
+    pub entry: super::entry::AclEntry,
+    /// The VID whose entry was moved — the swapped-out subject.
+    pub previous_subject: String,
+}
+
 /// Build the compact Ed25519 VP-JWT (`presentation` / `link_proof`) that
 /// proves control of `holder_did` for an `acl/swap-key` request.
 ///

@@ -85,14 +85,25 @@ pub struct RotateDidWebvhKeysBody {
 }
 
 /// Result of a successful update or rotate-keys call.
+///
+/// Emitted camelCase — the canonical `vta/webvh/dids/update/1.0` response is
+/// `additionalProperties: false` with camelCase members, so the previous
+/// snake_case emission failed its schema (#857). Snake_case aliases keep
+/// accepting the legacy form on intake.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateDidWebvhResultBody {
     pub did: String,
+    #[serde(alias = "new_version_id")]
     pub new_version_id: String,
+    #[serde(alias = "new_scid")]
     pub new_scid: String,
+    #[serde(alias = "new_log_entry")]
     pub new_log_entry: String,
+    #[serde(alias = "update_keys_count")]
     pub update_keys_count: u32,
+    #[serde(alias = "pre_rotation_key_count")]
     pub pre_rotation_key_count: u32,
     /// True when the DID is self-hosted (the VTA's stored
     /// `server_id` is `"serverless"`). The new log entry is

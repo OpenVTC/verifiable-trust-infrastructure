@@ -387,17 +387,34 @@ const NONCE_MAX_LEN: usize = 512;
 #[serde(rename_all = "camelCase")]
 struct VaultProxyLoginResponseBody {
     sealed_session_blob: SealedEnvelopeWire,
+    /// The cleartext session hints, under the framework's vendor-namespaced
+    /// `ext` — the canonical response object is closed
+    /// (`additionalProperties: false`), so these ride in the extension
+    /// point rather than at the root (#857).
+    ext: VaultProxyLoginExt,
+}
+
+/// `ext` wrapper for [`VaultProxyLoginResponseBody`] — one reverse-DNS
+/// namespace per SPEC §4.5.1, following the `org.openvtc.*` convention the
+/// step-up slice already uses.
+#[derive(Debug, Serialize)]
+struct VaultProxyLoginExt {
+    #[serde(rename = "org.openvtc.vault-session")]
+    session: VaultSessionExt,
+}
+
+/// Cleartext session hints the wallet can log / display without unsealing.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultSessionExt {
     /// Maintainer-assigned session id — opaque to the wallet, used by
-    /// future `vault/session/{revoke, refresh}/0.1` calls. Same value
-    /// as the `sessionId` inside the cleartext SessionBlob; exposed at
-    /// the response root so the wallet can log / index it without
-    /// having to unseal the envelope first (audit trail before
-    /// decryption).
+    /// future `vault/session/{revoke, refresh}/0.1` calls. Same value as
+    /// the `sessionId` inside the cleartext SessionBlob; exposed here so
+    /// the wallet can index it without unsealing first (audit trail
+    /// before decryption).
     session_id: String,
-    /// Mirrors the cleartext SessionBlob's `expiresAt`. Exposed in the
-    /// clear so the wallet's UI can show "session expires in N minutes"
-    /// without unsealing. Discarding the wrapper at this time is the
-    /// wallet's obligation.
+    /// Mirrors the cleartext SessionBlob's `expiresAt`, so the wallet's
+    /// UI can show "session expires in N minutes" without unsealing.
     expires_at: String,
 }
 
@@ -1639,8 +1656,12 @@ pub(super) async fn handle_proxy_login(
             &doc,
             VaultProxyLoginResponseBody {
                 sealed_session_blob: SealedEnvelopeWire::DidcommAuthcrypt { jwe: out.jwe },
-                session_id: out.session_id,
-                expires_at: out.expires_at,
+                ext: VaultProxyLoginExt {
+                    session: VaultSessionExt {
+                        session_id: out.session_id,
+                        expires_at: out.expires_at,
+                    },
+                },
             },
         ),
         Err(ProxyLoginError::NoAudience { entry_targets }) => reject_with(

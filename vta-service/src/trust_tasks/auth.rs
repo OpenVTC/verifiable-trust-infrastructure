@@ -110,8 +110,9 @@ pub(super) async fn handle_revoke_session(
         "session revoked via trust-task"
     );
 
-    // 6. Build the success response document.
-    success_response(&doc, RevokeSessionResponse::default())
+    // 6. Build the success response document. Canonical `revokedCount` is 1:
+    // this handler revokes exactly the one named session.
+    success_response(&doc, RevokeSessionResponse { revoked_count: 1 })
 }
 
 /// Handler for `spec/auth/whoami/0.1`.

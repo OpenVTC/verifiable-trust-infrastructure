@@ -3350,9 +3350,9 @@ async fn update_did_webvh_metadata_only_succeeds() {
         .await;
     assert_eq!(status, StatusCode::OK, "update: {status} {body}");
     assert_eq!(body["did"], did);
-    assert_eq!(body["pre_rotation_key_count"], 0);
-    assert!(body["new_version_id"].as_str().unwrap().starts_with("2-"));
-    assert!(!body["new_log_entry"].as_str().unwrap().is_empty());
+    assert_eq!(body["preRotationKeyCount"], 0);
+    assert!(body["newVersionId"].as_str().unwrap().starts_with("2-"));
+    assert!(!body["newLogEntry"].as_str().unwrap().is_empty());
 }
 
 #[cfg(feature = "webvh")]
@@ -3392,10 +3392,10 @@ async fn update_did_webvh_with_new_document_rotates_keys() {
         .await;
     assert_eq!(status, StatusCode::OK, "update with doc: {status} {body}");
     assert_eq!(
-        body["update_keys_count"], 1,
+        body["updateKeysCount"], 1,
         "auth keys rotated to 1 fresh key"
     );
-    assert!(body["new_version_id"].as_str().unwrap().starts_with("2-"));
+    assert!(body["newVersionId"].as_str().unwrap().starts_with("2-"));
 }
 
 #[cfg(feature = "webvh")]
@@ -3412,8 +3412,8 @@ async fn rotate_did_webvh_keys_advances_fragment_ids() {
         ))
         .await;
     assert_eq!(status, StatusCode::OK, "rotate-keys: {status} {body}");
-    assert!(body["new_version_id"].as_str().unwrap().starts_with("2-"));
-    assert_eq!(body["update_keys_count"], 1);
+    assert!(body["newVersionId"].as_str().unwrap().starts_with("2-"));
+    assert_eq!(body["updateKeysCount"], 1);
 }
 
 #[cfg(feature = "webvh")]

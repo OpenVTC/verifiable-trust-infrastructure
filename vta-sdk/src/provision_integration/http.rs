@@ -44,14 +44,15 @@ pub struct ProvisionIntegrationRequest {
     pub assertion: Option<AssertionMode>,
     /// Optional override for the VC's validity window (seconds).
     ///
-    /// Emitted snake_case (0.1 wire form); the `vcValiditySeconds` alias
-    /// accepts the `provision/integration/0.2` camelCase wire form on intake.
-    /// Dual-accept keeps a spec-0.2 producer working without a breaking
-    /// emission change (issue #517).
+    /// Emitted camelCase — the canonical `provision/integration/0.2` wire
+    /// form, which is the only URI the dispatcher still binds (#857). The
+    /// snake_case alias keeps accepting the legacy 0.1 spelling on intake
+    /// (dual-accept per #517, direction reversed).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        alias = "vcValiditySeconds"
+        rename = "vcValiditySeconds",
+        alias = "vc_validity_seconds"
     )]
     pub vc_validity_seconds: Option<i64>,
     /// Create the target context as part of provisioning if it
@@ -60,9 +61,14 @@ pub struct ProvisionIntegrationRequest {
     /// context. Idempotent when the context already exists.
     /// Defaults to `false` for compatibility with older clients.
     ///
-    /// Emitted snake_case; the `createContext` alias accepts the
-    /// `provision/integration/0.2` camelCase form on intake (issue #517).
-    #[serde(default, skip_serializing_if = "is_false", alias = "createContext")]
+    /// Emitted camelCase (the canonical 0.2 wire form, #857); the
+    /// snake_case alias accepts the legacy 0.1 spelling on intake (#517).
+    #[serde(
+        default,
+        skip_serializing_if = "is_false",
+        rename = "createContext",
+        alias = "create_context"
+    )]
     pub create_context: bool,
 }
 
@@ -73,19 +79,20 @@ fn is_false(b: &bool) -> bool {
 /// Producer assertion mode on the returned sealed bundle. Mirrors the
 /// server's `AssertionMode`.
 ///
-/// Serialises kebab-case (`did-signed` / `pinned-only`, the 0.1 wire
-/// form). The camelCase aliases accept the `provision/integration/0.2`
-/// wire form (`didSigned` / `pinnedOnly`) on the way in. This field is
-/// outside the signed VP, so an alias is sufficient — no as-received
-/// verification needed.
+/// Serialises camelCase (`didSigned` / `pinnedOnly`) — the canonical
+/// `provision/integration/0.2` enum vocabulary, which is the only URI the
+/// dispatcher still binds (#857). The kebab-case aliases keep accepting the
+/// legacy 0.1 wire form (`did-signed` / `pinned-only`) on the way in. This
+/// field is outside the signed VP, so an alias is sufficient — no
+/// as-received verification needed.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum AssertionMode {
     #[default]
-    #[serde(alias = "didSigned")]
+    #[serde(alias = "did-signed")]
     DidSigned,
-    #[serde(alias = "pinnedOnly")]
+    #[serde(alias = "pinned-only")]
     PinnedOnly,
 }
 
@@ -103,28 +110,29 @@ pub struct ProvisionIntegrationResponse {
     pub summary: ProvisionSummary,
 }
 
-/// Emitted snake_case (0.1 wire form). Each field also carries a camelCase
-/// `alias` so a `provision/integration/0.2` (lowerCamelCase) producer's
-/// summary deserializes too — backwards-compatible dual-accept; emission is
-/// unchanged so existing snake_case consumers are unaffected (issue #517).
+/// Emitted lowerCamelCase — the canonical `provision/integration/0.2` wire
+/// form (`additionalProperties: false`, so the schema rejects any other
+/// spelling; #857). Each field carries a snake_case `alias` so a legacy 0.1
+/// producer's summary still deserializes (dual-accept per #517, direction
+/// reversed now that 0.2 is the only URI the dispatcher binds).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ProvisionSummary {
     /// Ephemeral DID that signed the VP and opens the sealed bundle.
-    #[serde(alias = "clientDid")]
+    #[serde(alias = "client_did")]
     pub client_did: String,
     /// Long-term admin DID — equals `client_did` when no rollover, or
     /// the VTA-minted DID when the request carried an `adminTemplate`
     /// (or used `AdminRotation`). Older VTAs that pre-date admin
     /// rollover omit this field on the wire; we default it to
     /// `client_did` for backward compat.
-    #[serde(default, alias = "adminDid")]
+    #[serde(default, alias = "admin_did")]
     pub admin_did: String,
     /// True when the VTA minted a fresh long-term admin DID for this
     /// provisioning. Defaults to `false` for backward compatibility
     /// with VTAs that pre-date admin rollover.
-    #[serde(default, alias = "adminRolledOver")]
+    #[serde(default, alias = "admin_rolled_over")]
     pub admin_rolled_over: bool,
     /// Integration DID rendered from the integration template. `None`
     /// for the `AdminRotation` ask — that flow only mints an admin
@@ -132,7 +140,7 @@ pub struct ProvisionSummary {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        alias = "integrationDid"
+        alias = "integration_did"
     )]
     pub integration_did: Option<String>,
     /// Name of the integration template that was rendered. `None` for
@@ -140,7 +148,7 @@ pub struct ProvisionSummary {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        alias = "templateName"
+        alias = "template_name"
     )]
     pub template_name: Option<String>,
     /// `kind` field of the integration template. `None` for the
@@ -148,26 +156,26 @@ pub struct ProvisionSummary {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        alias = "templateKind"
+        alias = "template_kind"
     )]
     pub template_kind: Option<String>,
     /// Name of the admin template, when one was used (i.e. the
     /// request used `adminTemplate` rollover *or* the `AdminRotation`
     /// ask).
-    #[serde(default, alias = "adminTemplateName")]
+    #[serde(default, alias = "admin_template_name")]
     pub admin_template_name: Option<String>,
-    #[serde(alias = "bundleIdHex")]
+    #[serde(alias = "bundle_id_hex")]
     pub bundle_id_hex: String,
-    #[serde(alias = "secretCount")]
+    #[serde(alias = "secret_count")]
     pub secret_count: usize,
-    #[serde(alias = "outputCount")]
+    #[serde(alias = "output_count")]
     pub output_count: usize,
     /// Resolved id of the registered webvh hosting server the VTA
     /// published the integration's `did.jsonl` to. `None` (default)
     /// means self-hosted at the URL — i.e. no `WEBVH_SERVER` template
     /// var was set, or it was explicitly null. Older VTAs that
     /// pre-date this field omit it on the wire; deserialize as `None`.
-    #[serde(default, alias = "webvhServerId")]
+    #[serde(default, alias = "webvh_server_id")]
     pub webvh_server_id: Option<String>,
     /// `true` when the target context didn't exist before this call
     /// and was created inline because the caller passed
@@ -175,7 +183,7 @@ pub struct ProvisionSummary {
     /// existed (or `create_context` was `false`). Lets operators
     /// see whether `--create-context` actually did something.
     /// Defaults to `false` on the wire for backward compatibility.
-    #[serde(default, alias = "contextCreated")]
+    #[serde(default, alias = "context_created")]
     pub context_created: bool,
 }
 
@@ -226,14 +234,26 @@ mod tests {
         assert_eq!(req.vc_validity_seconds, Some(60));
         assert!(!req.create_context);
 
-        // Emission stays snake_case (conservative).
+        // Emission is the canonical 0.2 camelCase wire form (#857).
         let out = serde_json::to_value(&req).unwrap();
-        assert!(out.get("vc_validity_seconds").is_some());
-        assert!(out.get("vcValiditySeconds").is_none());
+        assert!(out.get("vcValiditySeconds").is_some());
+        assert!(out.get("vc_validity_seconds").is_none());
+
+        // A `false` create_context is omitted; re-serialize the camel parse
+        // (create_context: true) to check the member name.
+        let camel_again = serde_json::json!({
+            "request": request_json,
+            "createContext": true,
+        });
+        let req: ProvisionIntegrationRequest =
+            serde_json::from_value(camel_again).expect("camelCase");
+        let out = serde_json::to_value(&req).unwrap();
+        assert!(out.get("createContext").is_some());
+        assert!(out.get("create_context").is_none());
     }
 
-    /// The summary deserializes from a camelCase (0.2) producer too, while
-    /// still emitting snake_case for existing consumers.
+    /// The summary deserializes from a legacy snake_case (0.1) producer too,
+    /// while emitting the canonical camelCase (0.2) wire form.
     #[test]
     fn summary_accepts_camel_case() {
         let camel = r#"{
@@ -258,7 +278,18 @@ mod tests {
         assert!(s.context_created);
 
         let out = serde_json::to_value(&s).unwrap();
-        assert!(out.get("client_did").is_some());
-        assert!(out.get("clientDid").is_none());
+        assert!(out.get("clientDid").is_some());
+        assert!(out.get("client_did").is_none());
+
+        // Legacy snake_case (0.1) still parses via the aliases.
+        let snake = r#"{
+            "client_did": "did:key:zClient",
+            "bundle_id_hex": "deadbeef",
+            "secret_count": 2,
+            "output_count": 1
+        }"#;
+        let s: ProvisionSummary = serde_json::from_str(snake).expect("snake_case summary");
+        assert_eq!(s.client_did, "did:key:zClient");
+        assert_eq!(s.bundle_id_hex, "deadbeef");
     }
 }

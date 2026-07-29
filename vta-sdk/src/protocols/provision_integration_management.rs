@@ -113,84 +113,83 @@ impl ProvisionSpecVersion {
     }
 }
 
-fn is_v0_2(request_uri: &str) -> bool {
-    request_uri == CANONICAL_PROVISION_INTEGRATION_0_2
+fn is_v0_1(request_uri: &str) -> bool {
+    request_uri != CANONICAL_PROVISION_INTEGRATION_0_2
 }
 
-/// `foo_bar_baz` → `fooBarBaz`. A single-word key is returned unchanged.
-fn snake_to_lower_camel(key: &str) -> String {
-    delimited_to_lower_camel(key, '_')
+/// `fooBarBaz` → `foo_bar_baz`. A single-word key is returned unchanged.
+fn lower_camel_to_snake(key: &str) -> String {
+    lower_camel_to_delimited(key, '_')
 }
 
-/// `did-signed` → `didSigned`. A single-word value is returned unchanged.
-fn kebab_to_lower_camel(value: &str) -> String {
-    delimited_to_lower_camel(value, '-')
+/// `didSigned` → `did-signed`. A single-word value is returned unchanged.
+fn lower_camel_to_kebab(value: &str) -> String {
+    lower_camel_to_delimited(value, '-')
 }
 
-fn delimited_to_lower_camel(s: &str, delim: char) -> String {
-    let mut parts = s.split(delim);
-    let mut out = String::with_capacity(s.len());
-    if let Some(first) = parts.next() {
-        out.push_str(first);
-    }
-    for p in parts {
-        let mut chars = p.chars();
-        if let Some(f) = chars.next() {
-            out.extend(f.to_uppercase());
-            out.push_str(chars.as_str());
+fn lower_camel_to_delimited(s: &str, delim: char) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        if c.is_ascii_uppercase() {
+            out.push(delim);
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
         }
     }
     out
 }
 
-/// Rewrite the keys of an object in place via `snake_to_lower_camel`, leaving
+/// Rewrite the keys of an object in place via `lower_camel_to_snake`, leaving
 /// the values untouched. Shallow on purpose: the caller decides which subtrees
 /// (e.g. the signed VP) must stay byte-identical.
 fn recase_object_keys_shallow(map: &mut serde_json::Map<String, Value>) {
     let renamed: Vec<(String, Value)> = std::mem::take(map)
         .into_iter()
-        .map(|(k, v)| (snake_to_lower_camel(&k), v))
+        .map(|(k, v)| (lower_camel_to_snake(&k), v))
         .collect();
     map.extend(renamed);
 }
 
 /// Serialise a provision-integration **request** body in the casing
-/// `request_uri` implies. For 0.2 the optional fields are camelCased
-/// (`vc_validity_seconds` → `vcValiditySeconds`, `create_context` →
-/// `createContext`) and the `assertion` value is camelCased (`did-signed` →
-/// `didSigned`).
+/// `request_uri` implies. The types now serialise the canonical 0.2
+/// lowerCamelCase directly (#857), so 0.2 is the identity; for a **0.1**
+/// destination the optional fields are down-cased (`vcValiditySeconds` →
+/// `vc_validity_seconds`, `createContext` → `create_context`) and the
+/// `assertion` value kebab-cased (`didSigned` → `did-signed`).
 ///
 /// The signed `request` VP subtree is **never** touched — it carries the
-/// holder's `DataIntegrityProof` over its exact bytes, and a 0.2 holder already
-/// signs camelCase casing inside it (see [`crate::provision_integration::request`]).
+/// holder's `DataIntegrityProof` over its exact bytes, and the holder signs
+/// whatever casing it chose inside it (see [`crate::provision_integration::request`]).
 pub fn request_body_for_version(
     req: &ProvisionIntegrationRequest,
     request_uri: &str,
 ) -> Result<Value, serde_json::Error> {
     let mut v = serde_json::to_value(req)?;
-    if is_v0_2(request_uri)
+    if is_v0_1(request_uri)
         && let Value::Object(map) = &mut v
     {
-        // `request` (the signed VP) has no underscore, so the shallow rename
-        // leaves both its key and value intact.
+        // `request` (the signed VP) is a single-word key, so the shallow
+        // rename leaves both its key and value intact.
         recase_object_keys_shallow(map);
         if let Some(Value::String(a)) = map.get_mut("assertion") {
-            *a = kebab_to_lower_camel(a);
+            *a = lower_camel_to_kebab(a);
         }
     }
     Ok(v)
 }
 
 /// Serialise a provision-integration **response** body in the casing
-/// `request_uri` implies. For 0.2 the `summary` object's keys are camelCased
-/// (`client_did` → `clientDid`, `bundle_id_hex` → `bundleIdHex`, …). The
+/// `request_uri` implies. 0.2 is the canonical serialization (identity); for
+/// a **0.1** requester the `summary` object's keys are down-cased
+/// (`clientDid` → `client_did`, `bundleIdHex` → `bundle_id_hex`, …). The
 /// top-level `bundle`/`digest` are opaque single-word fields and unchanged.
 pub fn response_body_for_version(
     resp: &ProvisionIntegrationResponse,
     request_uri: &str,
 ) -> Result<Value, serde_json::Error> {
     let mut v = serde_json::to_value(resp)?;
-    if is_v0_2(request_uri)
+    if is_v0_1(request_uri)
         && let Some(Value::Object(summary)) = v.get_mut("summary")
     {
         recase_object_keys_shallow(summary);

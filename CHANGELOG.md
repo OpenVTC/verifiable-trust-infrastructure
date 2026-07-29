@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.20 / vta-service 0.13.12 — schema-conformance sweep, and every published task made canonical
+
+Closes #856 and #857. A conformance sweep now asserts, for **every** task the
+VTA dispatcher binds to a published canonical URI (63 today, derived from the
+dispatch table ∩ `trust_tasks_rs::schema_index` — never hand-listed), that a
+representative request round-trips through the generated `specs::…::Payload`
+and the response through `…::Response`, and that each check has teeth (an
+injected unknown member must be rejected). The sweep's first run found eight
+non-conformances beyond the known `acl/update` one; all are fixed in this
+change, so the sweep ships with an **empty** drift allowlist:
+
+- **`acl/update` request** (#856): `UpdateAclBody` now speaks the canonical
+  wire (`did`→`subject`, `allowed_contexts`→`scopes`, nested
+  `stepUp`/`approve` reusing the shared #842 components) and carries the
+  spec's `expiresAt` + `reason`. The published URI's schema validation at the
+  dispatch spine had been rejecting every conforming document since #842.
+- **`acl/list` / `acl/show` responses**: the trust-task handlers now return
+  the canonical `{entries, truncated, …}` / `{entry, redactedFields}`
+  wrappers (`list_entries` / `show_by_subject`) instead of legacy flat rows.
+- **`acl/change-role` / `acl/swap-key` responses**: wrapped in the canonical
+  `{entry}` / `{entry, previousSubject}` shapes (new `SwapKeyResultBody`).
+- **`auth/revoke-session` response**: carries the required `revokedCount`
+  (was an empty object — which vta-mobile-core already expected the count).
+- **`device/wipe` response**: canonical `{deviceId, scope, completedAt}`
+  (dropped `wipedAt`/`disabledAt`/`reason`, which the closed schema forbids).
+- **`vault/proxy-login` response**: the cleartext `sessionId`/`expiresAt`
+  hints move under the vendor-namespaced `ext` (`org.openvtc.vault-session`)
+  — the canonical response object is closed.
+- **`provision/integration` wire types**: emission flips to the canonical
+  0.2 lowerCamelCase (`ProvisionSummary`, `AssertionMode`,
+  `vcValiditySeconds`, `createContext`), with snake/kebab aliases still
+  accepted on intake (reverses the #517 direction now that 0.2 is the only
+  bound URI).
+- **`vta/webvh/dids/update` response**: `UpdateDidWebvhResultBody` emits
+  camelCase (`newVersionId`, …) per its published schema, snake aliases kept.
+
 ### vta-sdk 0.20.19 / vta-service 0.13.11 — push/* emitters cut over to 0.2
 
 The vti-push-gateway's clean cutover to `push/*` 0.2

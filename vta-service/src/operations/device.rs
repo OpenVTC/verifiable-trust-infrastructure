@@ -301,7 +301,6 @@ pub async fn wipe_device(
         binding.disabled_at = Some(now.clone());
     }
     let wiped_at = binding.wiped_at.clone().expect("wiped_at set above");
-    let disabled_at = binding.disabled_at.clone().expect("disabled_at set above");
     // Wiping changes authorization-relevant state — bump the version so a
     // concurrent ACL edit guarded by If-Match conflicts rather than racing.
     entry.version = entry.version.saturating_add(1);
@@ -320,12 +319,15 @@ pub async fn wipe_device(
     )
     .await;
 
+    // Canonical `device/wipe/0.1` response: `{deviceId, scope, completedAt}`
+    // (additionalProperties: false — the previous `wipedAt`/`disabledAt`/
+    // `reason` members are not in the schema; #857). The wipe both marks and
+    // disables in the same instant, so `completedAt` is that timestamp; the
+    // caller already knows `reason`, it sent it.
     Ok(json!({
         "deviceId": device_id,
-        "wipedAt": wiped_at,
-        "disabledAt": disabled_at,
         "scope": scope,
-        "reason": reason,
+        "completedAt": wiped_at,
     }))
 }
 
@@ -876,11 +878,17 @@ mod tests {
         let w = wipe_device(&acl_ks, &audit_ks, &admin_auth(), &id, "stolen", "full")
             .await
             .unwrap();
+        // Canonical `device/wipe/0.1` response shape (#857): exactly
+        // `{deviceId, scope, completedAt}` — the schema is closed, so the
+        // pre-fix `wipedAt`/`disabledAt`/`reason` members must be gone.
         assert_eq!(w["deviceId"], id.as_str());
-        assert!(w["wipedAt"].is_string());
-        assert!(w["disabledAt"].is_string(), "wipe must also disable");
+        assert!(w["completedAt"].is_string());
         assert_eq!(w["scope"], "full");
-        assert_eq!(w["reason"], "stolen");
+        for legacy in ["wipedAt", "disabledAt", "reason"] {
+            assert!(w.get(legacy).is_none(), "{legacy} is not in the schema");
+        }
+        // The disable side-effect is still asserted below: the wiped device
+        // only reappears with includeDisabled + includeWiped.
 
         // Default list hides the wiped device; it returns only with both
         // includeWiped + includeDisabled (a wiped device is also disabled).
