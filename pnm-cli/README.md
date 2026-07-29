@@ -254,7 +254,7 @@ has unrestricted access across all contexts.
 | `backup export [--include-audit] [--output FILE]` | Export encrypted backup of all VTA state       |
 | `backup import <file> [--preview]`                | Import backup (preview or apply + restart VTA) |
 
-Backups are encrypted with Argon2id + AES-256-GCM using a user-provided password (minimum 12 characters). The `.vtabak` file contains the seed, keys, ACL, contexts, WebVH records, and config.
+Backups are encrypted with Argon2id + AES-256-GCM using a user-provided password (minimum 15 characters). The `.vtabak` file contains the seed, keys, ACL, contexts, WebVH records, and config.
 
 ### VTA Management
 

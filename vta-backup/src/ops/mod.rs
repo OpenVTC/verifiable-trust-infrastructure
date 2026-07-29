@@ -96,11 +96,8 @@ pub async fn export_backup(
     let webvh_ks = ks.webvh;
     auth.require_super_admin()?;
 
-    if password.len() < 15 {
-        return Err(AppError::Validation(
-            "backup password must be at least 15 characters".into(),
-        ));
-    }
+    vta_sdk::protocols::backup_management::validate_backup_password(password)
+        .map_err(AppError::Validation)?;
 
     // 1. Collect the active seed
     let seed_bytes = seed_store

@@ -38,7 +38,6 @@ const ARGON2_T_COST: u32 = 3;
 const ARGON2_P_COST: u32 = 4;
 const SALT_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
-const MIN_PASSWORD_LEN: usize = 15;
 
 // Import-side Argon2 bounds — clamp untrusted envelopes so a malicious
 // `m_cost` can't drive a memory bomb on decrypt.
@@ -155,11 +154,8 @@ pub async fn export_backup(
     password: &str,
     include_audit: bool,
 ) -> Result<BackupEnvelope, AppError> {
-    if password.len() < MIN_PASSWORD_LEN {
-        return Err(AppError::Validation(format!(
-            "backup password must be at least {MIN_PASSWORD_LEN} characters"
-        )));
-    }
+    vta_sdk::protocols::backup_management::validate_backup_password(password)
+        .map_err(AppError::Validation)?;
 
     // Signing key bundle (hex of the raw stored bytes — backend-agnostic
     // round-trip).

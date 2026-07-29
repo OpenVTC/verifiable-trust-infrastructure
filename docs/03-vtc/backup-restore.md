@@ -31,7 +31,7 @@ AES-256-GCM encryption of:
 > **The backup contains the signing key.** Treat the exported file like a
 > secret: it is encrypted with your password (Argon2id + AES-256-GCM), but
 > anyone who learns the password can sign as this community. Store it
-> accordingly and use a strong password (minimum 12 characters).
+> accordingly and use a strong password (minimum 15 characters).
 
 **Not** in a backup (re-established after a restore, not carried): live
 `sessions`, browser `passkey` credentials, one-shot `install` tokens, the
@@ -41,7 +41,7 @@ keyspace overlay (its meaningful values ride in the identity snapshot above).
 ## Export
 
 ```sh
-# Prompts for the encryption password (min 12 chars), writes
+# Prompts for the encryption password (min 15 chars), writes
 # vtc-backup-<slug>-<timestamp>.vtcbak.
 cnm backup export [--include-audit] [--output FILE]
 ```

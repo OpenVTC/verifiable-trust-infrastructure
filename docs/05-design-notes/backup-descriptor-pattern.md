@@ -126,7 +126,8 @@ pub struct BundleDescriptor {
 ```rust
 pub struct InitiateExportBody {
     /// Password to derive the AES-256-GCM key (Argon2id KDF).
-    /// Minimum 12 chars enforced at the op layer.
+    /// Minimum length is `MIN_BACKUP_PASSWORD_LEN`, enforced at the op
+    /// layer via `validate_backup_password`.
     pub password: String,
 
     /// Include audit logs in the backup. Default: false.

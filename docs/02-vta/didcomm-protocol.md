@@ -583,7 +583,7 @@ Request body:
 
 ```json
 {
-  "password": "minimum-12-characters",
+  "password": "at-least-fifteen-characters",
   "include_audit": false
 }
 ```

@@ -15,7 +15,10 @@ use vtc_service::keys::seed_store::{PlaintextSecretStore, SecretStore};
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
-const PW: &str = "twelve-char-pw!!";
+/// Must clear `MIN_BACKUP_PASSWORD_LEN` — every test below exports through
+/// the real guard, so a short value here fails the whole file rather than the
+/// one case under test. (The old name said "twelve"; the minimum is 15.)
+const PW: &str = "backup-test-password";
 const VTC_DID: &str = "did:key:z6MkBackupRoundTrip";
 
 /// `cfg.save()` (run by import's config restore) writes `config_path` —
