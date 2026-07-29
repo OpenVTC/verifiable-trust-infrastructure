@@ -401,14 +401,12 @@ mod tests {
                 all: false,
                 scopes: vec!["ctx-a".into()],
             }),
-            // `allowedKeys` (#818) is deliberately left absent: the member is
-            // not in the *published* `acl/update/0.1` schema yet (the registry
-            // side of #818 is still in flight), and the canonical Payload is
-            // `deny_unknown_fields`. Populating it here would assert a wire
-            // form the published spec rejects. It joins this sample — and the
-            // conformance sweep — at the `trust-tasks-rs` bump that publishes
-            // `acl/_shared/0.1/acl-entry#allowedKeys`.
-            allowed_keys: None,
+            // `allowedKeys` (#818) is published in `acl/update/0.1` as of
+            // `trust-tasks-rs` 0.2.51, so the fully-populated sample carries
+            // it. `Some(Some(..))` is the arm that emits an array; the
+            // clear (`Some(None)` → explicit `null`) and leave-unchanged
+            // (`None` → omitted) arms are pinned in `update.rs`'s own tests.
+            allowed_keys: Some(Some(vec!["tenant-key-a".into()])),
         }
     }
 

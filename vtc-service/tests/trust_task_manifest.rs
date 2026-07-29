@@ -410,16 +410,6 @@ fn no_new_bindings_on_the_retired_authority() {
 /// (#821) is what produced this list. **None of it was previously checked by
 /// anything.**
 const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
-    // Authored upstream in trust-tasks-tf alongside this change (#853,
-    // trust-tasks-tf#160): `vtc/join-requests/decide/0.1` supersedes the
-    // retired approve/reject pair. Ships in trust-tasks-rs 0.2.47; the
-    // workspace pins 0.2.43. Drop this entry when the trust-tasks-rs
-    // dependency bumps to >= 0.2.47.
-    (
-        "https://trusttasks.org/spec/vtc/join-requests/decide/",
-        1,
-        "vtc/join-requests/decide/0.1 — authored upstream with #853 (trust-tasks-tf#160), ships in trust-tasks-rs 0.2.47; remove on dependency bump",
-    ),
     // Not a dispatchable task: the framework's error envelope is a *response*
     // type, deliberately absent from the task index, so `schema_for` will never
     // resolve it. This entry is permanent — the others are debt.
@@ -447,17 +437,14 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        50,
+        44,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
          canonical acl/{grant,show,list,update,revoke} family, and audit/list-logs onto \
          audit/list/0.1. Phase A complete at 46; phase B folded \
          webvh/dids/get-log into webvh/dids/get, and webvh/servers/{add,update} \
-         into webvh/servers/register. The last +6 are publish-lag, not debt: the \
-         vta/did-templates/*/2.0 family (#851, trust-tasks-tf#162) is published in \
-         trust-tasks-rs 0.2.49 while the workspace still pins 0.2.43, so this returns \
-         to 44 on the dependency bump without anything being authored",
+         into webvh/servers/register",
     ),
 ];
 

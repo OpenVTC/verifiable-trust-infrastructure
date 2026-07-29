@@ -45,10 +45,16 @@
 //! directions matter — a witness for a URI nothing dispatches any more is as
 //! much drift as a dispatched URI with no witness, and only the first tells
 //! you a fold landed.
+//!
+//! And then the other direction fired for the same family: the
+//! `trust-tasks-rs` 0.2.43 → 0.2.51 bump indexed the six 2.0 specs, the
+//! derived census picked them straight back up, and the missing-witness
+//! assertion asked for all six. Neither half was hand-listed — a fold
+//! upstream and a dependency bump each moved the census on their own.
 
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use trust_tasks_rs::specs;
 use vta_sdk::trust_tasks as uris;
@@ -167,11 +173,13 @@ fn acl_entry() -> AclEntry {
             all: false,
             scopes: vec!["ctx-a".into()],
         }),
-        // Absent on purpose — `allowedKeys` (#818) is not in the published
-        // `acl/_shared/0.1/acl-entry` component yet and every response type
-        // that embeds this entry is `deny_unknown_fields`. It joins the
-        // witness at the `trust-tasks-rs` bump that publishes the member.
-        allowed_keys: None,
+        // `allowedKeys` (#818) reached the published
+        // `acl/_shared/0.1/acl-entry` component in `trust-tasks-rs` 0.2.51,
+        // so the entry every ACL response embeds now carries it. Populated
+        // rather than `None` deliberately: `None` and `Some(∅)` are opposite
+        // grants and only a present value proves the member survives the
+        // wire under its canonical `allowedKeys` spelling.
+        allowed_keys: Some(vec!["tenant-key-a".into()]),
     }
 }
 
@@ -523,11 +531,13 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         all: false,
                         scopes: vec!["ctx-a".into()],
                     }),
-                    // Absent on purpose — `allowedKeys` (#818) is not in the
-                    // published `acl/update/0.1` schema yet, and the Payload
-                    // is `deny_unknown_fields`. It enters this sample at the
-                    // `trust-tasks-rs` bump that publishes the member.
-                    allowed_keys: None,
+                    // `allowedKeys` (#818) is in the published
+                    // `acl/update/0.1` schema as of `trust-tasks-rs` 0.2.51.
+                    // `Some(Some(..))` is the narrowing replacement — the
+                    // arm that actually emits an array; `Some(None)` emits
+                    // an explicit `null` (clear) and `None` emits nothing,
+                    // and `update.rs`'s own tests pin all three.
+                    allowed_keys: Some(Some(vec!["tenant-key-a".into()])),
                 }),
                 to_v(CreateAclResponseBody { entry: acl_entry() })
             ),
@@ -975,18 +985,232 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 })
             ),
         ),
-        // ─── vta/did-templates ───────────────────────────────────
-        //
-        // No witnesses, and that is correct right now. #864 folded the twelve
-        // `vta/{contexts/,}did-templates/*/1.0` URIs onto the merged six-task
-        // `vta/did-templates/*/2.0` family, and the 2.0 specs are published
-        // upstream but not yet in the pinned `trust-tasks-rs` (the publish-lag
-        // `vtc-service/tests/trust_task_manifest.rs` also records). So
-        // `schema_for` resolves none of them and the derived census excludes
-        // them. The next `trust-tasks-rs` bump puts all six back in scope and
-        // the coverage assertion will ask for their witnesses — which is the
-        // sweep working, not breaking.
     ];
+
+    // ─── vta/did-templates ────────────────────────────────────────
+    //
+    // The merged 2.0 family (#851, bound by #864, published into the pinned
+    // `trust-tasks-rs` by this bump). Its whole point is that scope moved out
+    // of the slug hierarchy and into ONE optional `contextId` member: absent
+    // = the global scope, present = that context's. A witness can only carry
+    // one of the two, so each witness carries the context form (the richer)
+    // and the global form is asserted alongside — otherwise "optional" would
+    // be the one thing about this family the sweep never checks.
+    {
+        use vta_sdk::did_templates::{DidTemplate, DidTemplateRecord, Scope};
+        use vta_sdk::protocols::did_template_management as tpl;
+
+        const TPL_NAME: &str = "didcomm-mediator";
+        const CTX: &str = "ctx-a";
+        // UTC unix-epoch seconds, the record's own time unit (not `TS`).
+        const EPOCH: u64 = 1_785_369_600;
+
+        /// The authored template body `create`/`update` carry and every
+        /// record embeds.
+        fn template() -> DidTemplate {
+            DidTemplate {
+                schema_version: 1,
+                name: TPL_NAME.into(),
+                kind: "mediator".into(),
+                description: Some("DIDComm mediator".into()),
+                methods: vec!["webvh".into()],
+                required_vars: vec!["SERVICE_ENDPOINT".into()],
+                optional_vars: [("LABEL".to_string(), json!("mediator"))]
+                    .into_iter()
+                    .collect(),
+                defaults: [("preRotationCount".to_string(), json!(2))]
+                    .into_iter()
+                    .collect(),
+                document: json!({
+                    "id": "{DID}",
+                    "service": [{
+                        "id": "{DID}#didcomm",
+                        "type": "DIDCommMessaging",
+                        "serviceEndpoint": "{SERVICE_ENDPOINT}",
+                    }],
+                }),
+            }
+        }
+
+        /// The persisted record `create`/`get`/`update` return — the
+        /// authored template flattened under the resolved scope and
+        /// provenance metadata.
+        fn record() -> DidTemplateRecord {
+            DidTemplateRecord {
+                template: template(),
+                scope: Scope::Context {
+                    context_id: CTX.into(),
+                },
+                created_at: EPOCH,
+                updated_at: EPOCH,
+                created_by: "did:key:z6MkAdmin".into(),
+            }
+        }
+
+        fn rendered() -> Value {
+            json!({
+                "id": "did:webvh:scid:vta.example",
+                "service": [{
+                    "id": "did:webvh:scid:vta.example#didcomm",
+                    "type": "DIDCommMessaging",
+                    "serviceEndpoint": "https://mediator.example",
+                }],
+            })
+        }
+
+        // The global form of each request — same bodies with `contextId`
+        // dropped — must parse too. `contextId` is the family's only scope
+        // selector; if the published schema ever made it required, the
+        // global half of all six ops would break with no other signal.
+        for (what, parse, global) in [
+            (
+                "list",
+                parses::<specs::vta::did_templates::list::v2_0::Payload> as ParseFn,
+                to_v(tpl::list::ListDidTemplatesBody { context_id: None }),
+            ),
+            (
+                "create",
+                parses::<specs::vta::did_templates::create::v2_0::Payload> as ParseFn,
+                to_v(tpl::create::CreateDidTemplateBody {
+                    context_id: None,
+                    template: template(),
+                }),
+            ),
+            (
+                "get",
+                parses::<specs::vta::did_templates::get::v2_0::Payload> as ParseFn,
+                to_v(tpl::get::GetDidTemplateBody {
+                    context_id: None,
+                    name: TPL_NAME.into(),
+                }),
+            ),
+            (
+                "update",
+                parses::<specs::vta::did_templates::update::v2_0::Payload> as ParseFn,
+                to_v(tpl::update::UpdateDidTemplateBody {
+                    context_id: None,
+                    name: TPL_NAME.into(),
+                    template: template(),
+                }),
+            ),
+            (
+                "delete",
+                parses::<specs::vta::did_templates::delete::v2_0::Payload> as ParseFn,
+                to_v(tpl::delete::DeleteDidTemplateBody {
+                    context_id: None,
+                    name: TPL_NAME.into(),
+                }),
+            ),
+            (
+                "render",
+                parses::<specs::vta::did_templates::render::v2_0::Payload> as ParseFn,
+                to_v(tpl::render::RenderDidTemplateBody {
+                    context_id: None,
+                    name: TPL_NAME.into(),
+                    vars: HashMap::new(),
+                }),
+            ),
+        ] {
+            assert!(
+                global.get("contextId").is_none(),
+                "did-templates/{what}: the global fixture must omit contextId"
+            );
+            parse(global.clone()).unwrap_or_else(|e| {
+                panic!(
+                    "did-templates/{what}: global-scope request is not canonical: {e}\n{global:#}"
+                )
+            });
+        }
+
+        t.extend([
+            (
+                uris::TASK_DID_TEMPLATES_LIST_2_0,
+                checked!(
+                    specs::vta::did_templates::list::v2_0::Payload,
+                    specs::vta::did_templates::list::v2_0::Response,
+                    to_v(tpl::list::ListDidTemplatesBody {
+                        context_id: Some(CTX.into()),
+                    }),
+                    to_v(tpl::list::ListDidTemplatesResultBody {
+                        templates: vec![record()],
+                    })
+                ),
+            ),
+            (
+                uris::TASK_DID_TEMPLATES_CREATE_2_0,
+                checked!(
+                    specs::vta::did_templates::create::v2_0::Payload,
+                    specs::vta::did_templates::create::v2_0::Response,
+                    to_v(tpl::create::CreateDidTemplateBody {
+                        context_id: Some(CTX.into()),
+                        template: template(),
+                    }),
+                    // `handle_create` returns the persisted record itself.
+                    to_v(record())
+                ),
+            ),
+            (
+                uris::TASK_DID_TEMPLATES_GET_2_0,
+                checked!(
+                    specs::vta::did_templates::get::v2_0::Payload,
+                    specs::vta::did_templates::get::v2_0::Response,
+                    to_v(tpl::get::GetDidTemplateBody {
+                        context_id: Some(CTX.into()),
+                        name: TPL_NAME.into(),
+                    }),
+                    to_v(record())
+                ),
+            ),
+            (
+                uris::TASK_DID_TEMPLATES_UPDATE_2_0,
+                checked!(
+                    specs::vta::did_templates::update::v2_0::Payload,
+                    specs::vta::did_templates::update::v2_0::Response,
+                    to_v(tpl::update::UpdateDidTemplateBody {
+                        context_id: Some(CTX.into()),
+                        name: TPL_NAME.into(),
+                        template: template(),
+                    }),
+                    to_v(record())
+                ),
+            ),
+            (
+                uris::TASK_DID_TEMPLATES_DELETE_2_0,
+                checked!(
+                    specs::vta::did_templates::delete::v2_0::Payload,
+                    specs::vta::did_templates::delete::v2_0::Response,
+                    to_v(tpl::delete::DeleteDidTemplateBody {
+                        context_id: Some(CTX.into()),
+                        name: TPL_NAME.into(),
+                    }),
+                    to_v(tpl::delete::DeleteDidTemplateResultBody {
+                        name: TPL_NAME.into(),
+                        deleted: true,
+                    })
+                ),
+            ),
+            (
+                uris::TASK_DID_TEMPLATES_RENDER_2_0,
+                checked!(
+                    specs::vta::did_templates::render::v2_0::Payload,
+                    specs::vta::did_templates::render::v2_0::Response,
+                    to_v(tpl::render::RenderDidTemplateBody {
+                        context_id: Some(CTX.into()),
+                        name: TPL_NAME.into(),
+                        vars: [(
+                            "SERVICE_ENDPOINT".to_string(),
+                            json!("https://mediator.example")
+                        )]
+                        .into_iter()
+                        .collect(),
+                    }),
+                    to_v(tpl::render::RenderDidTemplateResultBody {
+                        document: rendered(),
+                    })
+                ),
+            ),
+        ]);
+    }
 
     // ─── passkey-vms (feature-gated like their dispatch arms) ─────
     #[cfg(all(feature = "webvh", feature = "didcomm"))]

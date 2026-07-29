@@ -42,7 +42,7 @@ use affinidi_tdk::messaging::ATM;
 use affinidi_tdk::messaging::profiles::ATMProfile;
 use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
-use trust_tasks_rs::specs::messaging::acl;
+use trust_tasks_rs::specs::messaging::account;
 
 /// Set a client's own ACL on the mediator to accept all messages.
 ///
@@ -128,13 +128,25 @@ async fn set_client_acl_internal(
     let atm_profile_arc = Arc::new(atm_profile);
 
     // Apply the ACL to the client's own DID via the mediator's trust-tasks
-    // protocol. `acl_set` waits for a response, which on an `ExplicitAllow`
-    // mediator cannot arrive until this very ACL grants `receive_forwarded` —
-    // so an `Err` here (typically a timeout) does NOT mean the request was
-    // dropped; the mediator still applies it. Hence debug, not warn, on error.
+    // protocol. The messaging family's rationalization (affinidi-tdk-rs#667/#668)
+    // retired the single-purpose `acl/set` task in favour of `account/update`,
+    // which carries `acl` as one optional member alongside `accountType` and
+    // `queueLimits` — passing `None` for those two leaves them untouched, so this
+    // is an ACL-only partial update exactly as `acl_set` was.
+    //
+    // `account_update` waits for a response, which on an `ExplicitAllow` mediator
+    // cannot arrive until this very ACL grants `receive_forwarded` — so an `Err`
+    // here (typically a timeout) does NOT mean the request was dropped; the
+    // mediator still applies it. Hence debug, not warn, on error.
     match atm
         .trust_tasks()
-        .acl_set(&atm_profile_arc, client_did_hash, acl)
+        .account_update(
+            &atm_profile_arc,
+            Some(client_did_hash),
+            None,
+            Some(acl),
+            None,
+        )
         .await
     {
         Ok(_) => {
@@ -161,12 +173,13 @@ async fn set_client_acl_internal(
 
 /// Build a wire-format ACL that allows all message types.
 ///
-/// This creates a `MediatorAcl` wire format (compatible with the trust-tasks
-/// `acl/set/0.1` endpoint) that permits sending, receiving, forwarding, and
-/// anonymous messages. The access-list mode is set to ExplicitDeny (denylist
-/// semantics), allowing all except explicitly denied entries.
-fn build_allow_all_acl() -> acl::set::v0_1::MediatorAcl {
-    acl::set::v0_1::MediatorAcl {
+/// This creates a `MediatorAcl` wire format (the `acl` member of the trust-tasks
+/// `messaging/account/update/0.1` task, which superseded `acl/set/0.1`) that
+/// permits sending, receiving, forwarding, and anonymous messages. The
+/// access-list mode is set to ExplicitDeny (denylist semantics), allowing all
+/// except explicitly denied entries.
+fn build_allow_all_acl() -> account::update::v0_1::MediatorAcl {
+    account::update::v0_1::MediatorAcl {
         blocked: Some(false),
         local: Some(true),
         send_messages: Some(true),
@@ -175,7 +188,7 @@ fn build_allow_all_acl() -> acl::set::v0_1::MediatorAcl {
         receive_forwarded: Some(true),
         create_invites: Some(true),
         anon_receive: Some(true),
-        access_list_mode: Some(acl::set::v0_1::MediatorAclAccessListMode::ExplicitDeny),
+        access_list_mode: Some(account::update::v0_1::MediatorAclAccessListMode::ExplicitDeny),
         // Don't set self-manage flags — let the mediator's defaults apply
         ..Default::default()
     }
