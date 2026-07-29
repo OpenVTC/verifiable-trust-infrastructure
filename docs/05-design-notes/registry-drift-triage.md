@@ -18,10 +18,12 @@ are *fold* and *delete*, not *alias*.
   is also outside the harness's scope.)
 - #851 — the did-templates global+context merge — shipped as
   `vta/did-templates/*/2.0` (specced upstream in
-  trustoverip/dtgwg-trust-tasks-tf#162). The six 2.0 URIs sit in
-  `UNSPECCED_DISPATCHED_URIS` as **publish-lag entries only** until the pinned
-  `trust-tasks-rs` is bumped to ≥0.2.49; the staleness check then forces their
-  removal. Not missing-spec debt — do not fold into this triage.
+  trustoverip/dtgwg-trust-tasks-tf#162). The six 2.0 URIs sat in
+  `UNSPECCED_DISPATCHED_URIS` as **publish-lag entries only**; the
+  0.2.43 → 0.2.51 bump indexed them and the staleness check forced their
+  removal, as designed. Never missing-spec debt — not part of this triage.
+  The same bump put the six URIs back inside the conformance sweep's
+  derived census (#866), which then required a witness for each.
 - #856 — `acl/update`'s non-canonical body — is being fixed by another stream.
 - #857 — the payload-conformance sweep (the *third* parity direction: served
   URIs whose published schema the handler's actual payload type does not
@@ -48,6 +50,30 @@ are *fold* and *delete*, not *alias*.
    literals in four trees and counts per *family*; the new check is per *URI*,
    scoped to what the VTA dispatcher actually serves, and lives next to the
    forward harness so the two directions cannot drift apart.
+
+   **Publish-lag entries are debt with an expiry date.** Both exception lists
+   (`UNSPECCED_DISPATCHED_URIS` here, `UNPUBLISHED_CANONICAL_OK` in the census)
+   sometimes carry a URI whose spec is *already authored upstream* but not yet
+   in the pinned `trust-tasks-rs`. Those entries are not dispositions — they are
+   waiting on a dependency bump, and the shrink-only assertions turn the bump
+   into a hard failure until they are removed. So **every `trust-tasks-rs` bump
+   is also an exception-list sweep**: run
+   `cargo test -p vta-service --lib` and
+   `cargo test -p vtc-service --test trust_task_manifest`, and delete whatever
+   they flag. The 0.2.43 → 0.2.51 bump flushed seven such entries — the six
+   `vta/did-templates/*/2.0` URIs (#851) and `vtc/join-requests/decide/0.1`
+   (#853) — leaving the list back at its 56. Those 56 are unaffected by the
+   bump: they are genuine unspecced surface, not lag.
+
+   **Publish lag also shows up in prose, where nothing asserts.** The same
+   bump had a third kind of lag to flush, and it had no failing test behind
+   it: #866's conformance witnesses left `allowedKeys` (#818) absent with a
+   comment saying the member was not in the published
+   `acl/_shared/0.1/acl-entry` / `acl/update/0.1` schemas — true at 0.2.43,
+   and 0.2.51 is where it stopped being true (0.2.50 does **not** carry it;
+   registry PR #164 landed one release later). A comment cannot fail, so
+   sweeping the two exception lists is not enough — grep the pinned crate for
+   the member a comment claims is missing. Both witnesses now carry it.
 
 2. **The `_1_0` constant rename pass** (previously "pending" in
    `vta-sdk/src/trust_tasks.rs`). Ten constants whose greppable name lied about

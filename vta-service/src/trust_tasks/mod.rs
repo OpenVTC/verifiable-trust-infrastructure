@@ -218,18 +218,6 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
 /// Tracking issue: OpenVTC/verifiable-trust-infrastructure#854.
 #[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
 const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
-    // ─ vta/did-templates/*/2.0 — spec AUTHORED upstream
-    //   (trustoverip/dtgwg-trust-tasks-tf#162, lands in trust-tasks-rs
-    //   0.2.49); these entries are publish-lag only, not missing-spec
-    //   debt. The staleness check below forces their removal the moment
-    //   the pinned trust-tasks-rs is bumped to a version that indexes
-    //   the 2.0 family. (#851 — merged global+context family.)
-    "https://trusttasks.org/spec/vta/did-templates/list/2.0",
-    "https://trusttasks.org/spec/vta/did-templates/create/2.0",
-    "https://trusttasks.org/spec/vta/did-templates/get/2.0",
-    "https://trusttasks.org/spec/vta/did-templates/update/2.0",
-    "https://trusttasks.org/spec/vta/did-templates/delete/2.0",
-    "https://trusttasks.org/spec/vta/did-templates/render/2.0",
     // ─ vta/contexts/* — keep-and-spec under `vta/` (reduction plan §E).
     "https://trusttasks.org/spec/vta/contexts/list/1.0",
     "https://trusttasks.org/spec/vta/contexts/create/1.0",

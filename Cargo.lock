@@ -342,9 +342,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator"
-version = "0.17.10"
+version = "0.17.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5888cf7493766b85257206459a0ae691570ca134a6926cf5fb8bbdd8ebb3dec"
+checksum = "3c3a4dbf5d8151ba18bd96ff4b684252ac57dc4569c0b7725d97b51297a6ffa5"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-common",
@@ -407,9 +407,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator-common"
-version = "0.15.30"
+version = "0.15.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80f271a25216dfff7ec10e30c9d73b78f705f6319d1bd1544dc221a9dee331cc"
+checksum = "e8740756329af4040d2c488f2d2e5c27a62b91c4cdde04e9f8d3876cb583ce9a"
 dependencies = [
  "aes-gcm",
  "ahash 0.8.12",
@@ -457,9 +457,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-sdk"
-version = "0.18.62"
+version = "0.18.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f14872999e626152a24f87dcfc611f78a41f1f53c1f38895ad400e2165b62d0"
+checksum = "3b4901696220a28519f77af11ec6c38ebfde678ce7c59f6748f0a65d7166d688"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-authentication",
@@ -495,9 +495,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-test-mediator"
-version = "0.2.40"
+version = "0.2.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "288c2bda86e2c0e3689d03af8a1ea40cb8100974a71d49446fdf75e0bb148e1f"
+checksum = "d86ac1886e4569e190523d5b549fd0f89733ca3fa9729933c750ad74b55ff0f6"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-didcomm",
@@ -9585,9 +9585,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.2.43"
+version = "0.2.51"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "647c5ff5d054287bd42c34eaf8bc5ba8f3c3c063dcdc744acd45c9c6cf9bded3"
+checksum = "2e0b56c949946c8b79072036414e3d18fc0b87f5edd309311282d17e9a780510"
 dependencies = [
  "async-trait",
  "chrono",
@@ -10269,7 +10269,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.20.24"
+version = "0.20.25"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -10331,7 +10331,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.13.15"
+version = "0.13.16"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10564,7 +10564,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.11.43"
+version = "0.11.44"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",

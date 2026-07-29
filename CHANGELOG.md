@@ -2,6 +2,106 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.25 / vta-service 0.13.16 / vtc-service 0.11.44 — trust-tasks-rs 0.2.51, messaging SDK 0.18.65, `acl_set` → `account_update`
+
+Picks up the consolidation programme's published registry output and sweeps the
+consumer breaks it forces. The four bumps are one chain, not four choices
+(#854):
+
+- **`trust-tasks-rs` 0.2.43 → 0.2.51** (workspace `Cargo.toml`) — every spec
+  change from this programme, including `vtc/join-requests/decide/0.1`, the
+  merged `vta/did-templates/*/2.0` family, the rationalized `messaging/*`
+  family, and (at 0.2.51 specifically) `allowedKeys` on
+  `acl/_shared/0.1/acl-entry` + `acl/update/0.1`. **0.2.50 was the intended
+  target and is not sufficient** — registry PR #164 published `allowedKeys`
+  one release later, and 0.2.50 → 0.2.51 changes nothing else in the
+  workspace's view: identical URI index, identical module set, three
+  `allowed_keys: None` additions in the crate's own fixtures.
+- **`affinidi-messaging-sdk` 0.18.62 → 0.18.65** — forced, not optional.
+  0.18.62 does **not** compile against 0.2.50: it builds
+  `messaging::account::list::v0_1::Payload` and
+  `messaging::access_list::list::v0_1::Payload` with struct-literal syntax, and
+  both payloads gained optional filter members. Additive to the JSON Schema and
+  wire-compatible, but **source-breaking for struct literals** — a generated
+  `struct` with no `#[non_exhaustive]` and no builder makes every new optional
+  field a compile error in any crate that constructs it positionally. Worth
+  knowing when judging what a "patch" bump of the generated bindings can do:
+  schema-additive is not source-additive for downstream literal constructors
+  (`..Default::default()` at the construction site is the cheap immunisation).
+- **`vta-sdk/src/acl_setup.rs` migrated off `acl_set`** — the messaging family's
+  clean cutover (affinidi/affinidi-tdk-rs#668) removed
+  `TrustTasksOps::acl_set` outright. The replacement is
+  `account_update(profile, did_hash, account_type, acl, queue_limits)` on
+  `messaging/account/update/0.1`, which carries `acl` as one optional member
+  beside `accountType`/`queueLimits`; passing `None` for the other two makes it
+  the same ACL-only partial update. `build_allow_all_acl` now returns
+  `account::update::v0_1::MediatorAcl` (identical field set). Behaviour,
+  fire-and-forget semantics and the deliberate debug-not-warn on timeout are
+  unchanged. No other retired-URI call site exists in the workspace.
+- **`affinidi-messaging-mediator` 0.17.10 → 0.17.13 and
+  `affinidi-messaging-test-mediator` 0.2.40 → 0.2.43** — the fourth link, and
+  the one that is easy to miss because it is a *dev*-dependency. The messaging
+  cutover is clean on **both** ends: 0.17.10 serves `messaging/acl/set` and
+  answers `messaging/account/update/0.1` with `501 Not Implemented`
+  (`unsupported Trust Task type`), so the moment the SDK moves the client side,
+  the embedded test mediator can no longer provision an ACL at all — the client
+  never gets `receive_forwarded` and every forwarded round-trip is refused. The
+  server half of the cutover ships in mediator 0.17.13. Worth stating plainly
+  for deployments: **a mediator older than 0.17.13 cannot serve a VTA built on
+  messaging SDK 0.18.65.** There is no dual-accept window on either side.
+
+Publish-lag debt flushed by the bump — the shrink-only exception assertions
+fail until it is, which is the harness working as designed:
+
+- `vta-service/src/trust_tasks/mod.rs`: the six `vta/did-templates/*/2.0`
+  entries leave `UNSPECCED_DISPATCHED_URIS` (#851 authored them upstream as
+  trust-tasks-tf#162; 0.2.49 indexed them), putting the list back at 56.
+- `vtc-service/tests/trust_task_manifest.rs`: the `vtc/join-requests/decide/`
+  entry leaves `UNPUBLISHED_CANONICAL_OK` (the spec it was waiting on ships in
+  0.2.47). The `spec/vta/` count of 44 and the remaining 56 unspecced URIs are
+  unaffected — the bump publishes nothing else that would shrink them, so those
+  remain genuine unspecced surface rather than lag.
+- `docs/05-design-notes/registry-drift-triage.md` gains the rule that produced
+  this sweep: a publish-lag entry is debt with an expiry date, so every
+  `trust-tasks-rs` bump is also an exception-list sweep.
+
+**Reconciliation with the conformance sweep (#866).** Indexing the six
+`vta/did-templates/*/2.0` URIs puts them back inside the sweep's *derived*
+census, and its coverage assertion then demands a witness for each — exactly
+the hand-off #866 left in a comment where the twelve 1.0 witnesses used to be.
+All six are now `checked!` entries built from the slice's real wire types
+(`vta_sdk::protocols::did_template_management`), and all six conform on the
+first run — no `KnownDrift` was needed:
+
+- `list` / `create` / `get` / `update` / `delete` / `render`, each carrying the
+  **context** form of the request (the richer of the two scopes) and the
+  response the handler actually emits — `DidTemplateRecord` for `create`,
+  `get` and `update`, `{templates}` / `{name, deleted}` / `{document}` for the
+  rest.
+- The family's whole point is that scope moved out of the slug hierarchy into
+  one **optional** `contextId` (#851), and a witness can only carry one of the
+  two scopes. So the global form of all six requests is asserted alongside the
+  table: `contextId` omitted must still parse as the published `Payload`.
+  Otherwise "optional" would be the one thing about this family the sweep
+  never checks.
+
+**`allowedKeys` (#818) enters the witnesses.** #866 left it absent in three
+places — `conformance::acl_entry()`, the `acl/update` conformance sample, and
+`trust_tasks::acl::tests::update_body()` — each with a comment saying the
+member was not in the published schema and would join "at the `trust-tasks-rs`
+bump that publishes it". This is that bump, so all three now carry
+`Some(["tenant-key-a"])` / `Some(Some(["tenant-key-a"]))` and the comments are
+gone. Populated rather than left `None` deliberately: `None` and `Some(∅)` are
+opposite grants on this member, and only a *present* value proves it survives
+the wire under its canonical `allowedKeys` spelling.
+
+That third item is worth separating from the other two: unlike the exception
+lists, **nothing asserted it**. A comment claiming a member is unpublished
+cannot fail when it stops being true, and this one was stale by one patch
+release. `registry-drift-triage.md` records the resulting rule — a bump's
+exception-list sweep must also grep the pinned crate for the members that
+comments claim are missing.
+
 ### vta-sdk 0.20.24 / vta-service 0.13.15 — schema-conformance sweep, and every published task made canonical
 
 Closes #856 and #857. A conformance sweep now asserts, for **every** task the
