@@ -59,10 +59,13 @@ pub enum VtaEvent {
         protocol: Protocol,
         /// REST URL advertised in the VTA DID doc, retained for the
         /// integration's runtime credential so it has a URL fallback
-        /// at startup. Always `None` when the VTA is DIDComm-only.
+        /// at startup. Always `None` when the VTA advertises no
+        /// `#vta-rest` service.
         rest_url: Option<String>,
-        /// DIDComm mediator DID from the VTA DID doc. Always `Some`
-        /// when `protocol == DidComm`.
+        /// Mediator DID from the VTA DID doc that carried the round-trip:
+        /// the `#DIDCommMessaging` mediator when `protocol == DidComm`,
+        /// the `#tsp` mediator when `protocol == Tsp`. Always `Some` for
+        /// both; `None` on the REST path.
         mediator_did: Option<String>,
         /// Unified reply — see [`VtaReply`] for the variants.
         reply: VtaReply,
@@ -91,10 +94,11 @@ pub struct AttemptResult {
     pub at: Instant,
 }
 
-/// Per-transport history of attempts on this run. Both fields are
+/// Per-transport history of attempts on this run. Every field is
 /// `None` until the corresponding transport runs at least once.
 #[derive(Clone, Debug, Default)]
 pub struct AttemptLog {
+    pub tsp: Option<AttemptResult>,
     pub didcomm: Option<AttemptResult>,
     pub rest: Option<AttemptResult>,
 }

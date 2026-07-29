@@ -38,8 +38,9 @@ use super::{ProvisionAsk, run_provision};
 /// can pick a fixed exit code without re-parsing the error string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeadlessFailureKind {
-    /// VTA advertises neither DIDComm nor REST, OR every advertised
-    /// transport's auth attempt failed pre-auth.
+    /// VTA advertises no usable transport (no `#tsp`, no DIDComm mediator,
+    /// no REST endpoint), OR every advertised transport's auth attempt
+    /// failed pre-auth.
     NoTransport,
     /// VTA accepted the auth handshake but rejected the request body
     /// afterwards (template render error, validation, etc.). A
@@ -52,6 +53,10 @@ pub enum HeadlessFailureKind {
 /// `Display` is stable and grep-friendly for CI logs.
 #[derive(Debug)]
 pub struct HeadlessVtaError {
+    /// Failure reported by the TSP leg, if it ran. Populated when the VTA
+    /// advertises a `#tsp` service — including the "built without the
+    /// `tsp` feature" case, which is a TSP-leg pre-auth failure.
+    pub tsp: Option<String>,
     pub didcomm: Option<String>,
     pub rest: Option<String>,
     pub kind: HeadlessFailureKind,
@@ -60,13 +65,16 @@ pub struct HeadlessVtaError {
 impl fmt::Display for HeadlessVtaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Headless VTA setup failed.")?;
+        if let Some(reason) = &self.tsp {
+            writeln!(f, "  TSP: {reason}")?;
+        }
         if let Some(reason) = &self.didcomm {
             writeln!(f, "  DIDComm: {reason}")?;
         }
         if let Some(reason) = &self.rest {
             writeln!(f, "  REST: {reason}")?;
         }
-        if self.didcomm.is_none() && self.rest.is_none() {
+        if self.tsp.is_none() && self.didcomm.is_none() && self.rest.is_none() {
             writeln!(f, "  No transport advertised by the VTA's DID document.")?;
         }
         writeln!(f)?;
@@ -172,6 +180,7 @@ pub async fn run_phase2_connect(
     force_transport: Option<Protocol>,
 ) -> Result<(), HeadlessVtaError> {
     let key = EphemeralSetupKey::load_from(key_path).map_err(|e| HeadlessVtaError {
+        tsp: None,
         didcomm: Some(format!("could not load setup key: {e}")),
         rest: None,
         kind: HeadlessFailureKind::NoTransport,
@@ -206,6 +215,7 @@ pub async fn run_phase2_connect(
 
     let mut connected = false;
     let mut last_failure: Option<String> = None;
+    let mut tsp_failure: Option<String> = None;
     let mut didcomm_failure: Option<String> = None;
     let mut rest_failure: Option<String> = None;
     let mut last_attempt: Option<(Protocol, AttemptResultKind)> = None;
@@ -236,6 +246,7 @@ pub async fn run_phase2_connect(
                 | AttemptResultKind::PostAuthFailure(reason) = &outcome
                 {
                     match protocol {
+                        Protocol::Tsp => tsp_failure = Some(reason.clone()),
                         Protocol::DidComm => didcomm_failure = Some(reason.clone()),
                         Protocol::Rest => rest_failure = Some(reason.clone()),
                     }
@@ -258,11 +269,13 @@ pub async fn run_phase2_connect(
         _ => HeadlessFailureKind::NoTransport,
     };
 
-    if didcomm_failure.is_none()
+    if tsp_failure.is_none()
+        && didcomm_failure.is_none()
         && rest_failure.is_none()
         && let Some(reason) = last_failure
     {
         return Err(HeadlessVtaError {
+            tsp: None,
             didcomm: Some(reason),
             rest: None,
             kind,
@@ -270,6 +283,7 @@ pub async fn run_phase2_connect(
     }
 
     Err(HeadlessVtaError {
+        tsp: tsp_failure,
         didcomm: didcomm_failure,
         rest: rest_failure,
         kind,
@@ -292,27 +306,47 @@ mod tests {
     use crate::provision_client::messages::MediatorMessages;
 
     #[test]
-    fn headless_error_display_names_both_protocols() {
+    fn headless_error_display_names_every_protocol() {
         let err = HeadlessVtaError {
+            tsp: Some("TSP mediator unreachable".into()),
             didcomm: Some("ACL not found".into()),
             rest: Some("REST 401".into()),
             kind: HeadlessFailureKind::NoTransport,
         };
         let s = err.to_string();
+        assert!(s.contains("TSP: TSP mediator unreachable"));
         assert!(s.contains("DIDComm: ACL not found"));
         assert!(s.contains("REST: REST 401"));
         assert!(s.contains("sealed-handoff"));
     }
 
+    /// A TSP-only VTA whose TSP leg failed reports the TSP reason — not the
+    /// "no transport advertised" line, which is reserved for a document that
+    /// really advertised nothing (#869).
+    #[test]
+    fn headless_error_with_only_a_tsp_failure_does_not_claim_nothing_was_advertised() {
+        let s = HeadlessVtaError {
+            tsp: Some("built without the `tsp` feature".into()),
+            didcomm: None,
+            rest: None,
+            kind: HeadlessFailureKind::NoTransport,
+        }
+        .to_string();
+        assert!(s.contains("TSP: built without the `tsp` feature"));
+        assert!(!s.contains("No transport advertised"));
+    }
+
     #[test]
     fn headless_error_display_no_transport_message_differs_from_post_auth() {
         let no_transport = HeadlessVtaError {
+            tsp: None,
             didcomm: Some("network".into()),
             rest: None,
             kind: HeadlessFailureKind::NoTransport,
         }
         .to_string();
         let post_auth = HeadlessVtaError {
+            tsp: None,
             didcomm: Some("template error".into()),
             rest: None,
             kind: HeadlessFailureKind::PostAuthFailed,
