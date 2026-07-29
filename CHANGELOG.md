@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.19 / vta-service 0.13.11 — push/* emitters cut over to 0.2
+
+The vti-push-gateway's clean cutover to `push/*` 0.2
+(OpenVTC/vti-push-gateway#21) rejects 0.1 documents, so the VTA-side emitters
+move with it: `device/set-wake` provisioning now sends
+`push/provision/0.2` (vta-service `device.rs`) and the step-up wake trigger
+sends `push/wake/0.2` (vta-service `step_up.rs`). Request payloads are
+field-identical across 0.1→0.2; the only wire-visible change is the wake
+response status enum `token-unregistered` → `tokenUnregistered`, which the
+wake trigger now parses (via the generated `push::wake::v0_2` types) and logs
+— a `tokenUnregistered` reply means the platform token is dead and the handle
+was dropped, so the mediator-queue fallback applies. The vta-sdk
+`agent_session` inbound-wake test fixture moves to the 0.2 URI.
+`vta-mobile-core` was already on `push/register/0.2` and parses no wake
+status — unchanged. Clean cutover, no dual-emit; must merge before the
+gateway cutover deploys against these services.
+
 ### vta-sdk 0.20.18 — every client method with a Trust-Task twin now rides the Trust-Task bridge (#829)
 
 `VtaClient::sign()` was the odd one out among the three signing entry points:
