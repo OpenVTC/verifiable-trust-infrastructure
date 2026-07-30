@@ -10089,7 +10089,7 @@ dependencies = [
 
 [[package]]
 name = "vta-backup"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -10143,7 +10143,7 @@ dependencies = [
 
 [[package]]
 name = "vta-config"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_ignored",
@@ -10171,7 +10171,7 @@ dependencies = [
 
 [[package]]
 name = "vta-keys"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -10253,7 +10253,7 @@ dependencies = [
 
 [[package]]
 name = "vta-policy"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hex",
  "regorus",
@@ -10333,7 +10333,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.13.18"
+version = "0.13.19"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10434,7 +10434,7 @@ dependencies = [
 
 [[package]]
 name = "vta-support"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "chrono",
  "ed25519-dalek",
@@ -10470,7 +10470,7 @@ dependencies = [
 
 [[package]]
 name = "vta-tee"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",

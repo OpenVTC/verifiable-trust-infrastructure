@@ -36,8 +36,6 @@ use tracing::{debug, error, info, warn};
 // `affinidi-messaging-didcomm-service` framework. `MessagingService` (built in
 // `messaging::service`) drives inbound + outbound over a `DidCommTransport`.
 #[cfg(feature = "didcomm")]
-use affinidi_messaging_delivery::MessagingService;
-#[cfg(feature = "didcomm")]
 use tokio_util::sync::CancellationToken;
 // Only the DIDComm listener wires the client ACL on connect.
 #[cfg(feature = "didcomm")]
@@ -888,174 +886,69 @@ pub async fn run(
         // per DID — a second would be evicted as `duplicate-channel`), so TSP
         // receive is always on when compiled with `tsp`; `config.services.tsp`
         // governs advertisement only.
+        //
+        // Self-readiness gate + persistent reconnect, both owned by the spawned
+        // `MessagingConnect` supervisor.
+        //
+        // The supervisor first runs the self-readiness gate: it waits until the
+        // VTA's own DID resolves over the network — the same operation the
+        // mediator performs to fetch our sender key — so the mediator can
+        // authenticate us instead of 403-storming on a cold start. It then
+        // connects, and keeps reconnecting: the classic initial failure is the
+        // mediator's *own* resolver still negative-caching the VTA host, which
+        // clears itself on its own timer, so the VTA self-heals with no operator
+        // restart. It also re-connects if an established session's inbound loop
+        // ends, rather than going silently deaf for the rest of the process.
+        //
+        // Everything — gate included — runs in the spawned task, never on the
+        // startup path. `run()` must reach the shutdown/restart select below for
+        // a SIGTERM to be honoured, so awaiting a gate here (up to
+        // `max_wait_secs`, default 300s) would hold the process open with no
+        // listener after the REST thread had already exited.
+        //
+        // The live `MessagingService` handle is published into
+        // `app_state.didcomm_bridge` on each successful connect; the
+        // drain-teardown consumer + status read it there.
+        //
+        // `on_timeout = "fail"` has to fail the *process*, and the gate no longer
+        // runs on this path, so it can't do that by returning `Err` from here.
+        // The supervisor sets this flag and signals shutdown; `run` converts it
+        // back into an `Err` after the threads are joined, so the exit status
+        // still says "failed" for a systemd `Restart=on-failure` or anything else
+        // that reads it.
         #[cfg(feature = "didcomm")]
-        let messaging_service: Option<Arc<MessagingService>> = if config.services.didcomm {
+        let readiness_fatal = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(feature = "didcomm")]
+        if config.services.didcomm {
             match (
                 &app_state.secrets_resolver,
                 &config.vta_did,
                 &config.messaging,
             ) {
-                (Some(sr), Some(vta_did), Some(messaging_config)) => {
-                    // Collect secrets using the VM IDs from init_auth (correct for both
-                    // did:key and did:webvh — avoids hardcoding #key-0/#key-1 fragments).
-                    let mut secrets = Vec::new();
-                    if let Some(ref signing_id) = app_state.signing_vm_id
-                        && let Some(s) = sr.get_secret(signing_id).await
-                    {
-                        secrets.push(s);
-                    }
-                    if let Some(ref ka_id) = app_state.ka_vm_id
-                        && let Some(s) = sr.get_secret(ka_id).await
-                    {
-                        secrets.push(s);
-                    }
-
-                    // Recovery: optionally clear this DID's mediator inbox over
-                    // REST *before* enabling live delivery, so a poison /
-                    // undeliverable backlog can't stall the pickup handshake and
-                    // wedge the (shared DIDComm+TSP) socket. Best-effort, and off
-                    // unless `messaging.drain_inbox_on_start` is set.
-                    if messaging_config.drain_inbox_on_start || flush_queues {
-                        match app_state.atm.as_ref() {
-                            Some(atm) => {
-                                let cleared = drain_mediator_inbox(
-                                    atm,
-                                    &messaging_config.mediator_did,
-                                    vta_did,
-                                )
-                                .await;
-                                info!(
-                                    count = cleared,
-                                    mediator = %messaging_config.mediator_did,
-                                    "cleared queued mediator inbox before going live"
-                                );
-                            }
-                            None => {
-                                warn!("inbox drain requested but no ATM is available; skipping")
-                            }
-                        }
-                    }
-
-                    // `--flush-queues` additionally clears the OUTBOUND (sender)
-                    // queue — messages this DID sent that are still queued at the
-                    // mediator awaiting delivery. A message loop can fill that
-                    // queue (`limits.queue.sender`), after which the mediator
-                    // rejects every new send until it drains. The inbox drain
-                    // above cannot touch it; this does.
-                    if flush_queues {
-                        match app_state.atm.as_ref() {
-                            Some(atm) => {
-                                let cleared = flush_mediator_outbox(
-                                    atm,
-                                    &messaging_config.mediator_did,
-                                    vta_did,
-                                )
-                                .await;
-                                info!(
-                                    count = cleared,
-                                    mediator = %messaging_config.mediator_did,
-                                    "flush_queues: cleared outbound sender queue before going live"
-                                );
-                            }
-                            None => warn!(
-                                "--flush-queues set but no ATM is available; skipping outbox flush"
-                            ),
-                        }
-                    }
-
+                (Some(_), Some(vta_did), Some(messaging_config)) => {
+                    // Compute the outbox keyspace here (it needs `?`), then hand
+                    // the whole gate + connect + reconnect loop to the background
+                    // supervisor.
                     let outbox_ks = apply_encryption(store.keyspace(crate::keyspaces::OUTBOX)?);
-                    match crate::messaging::service::build_messaging(
-                        secrets,
-                        vta_did,
-                        &messaging_config.mediator_did,
+                    let supervisor = MessagingConnect {
+                        app_state: app_state.clone(),
+                        vta_did: vta_did.clone(),
+                        messaging_config: messaging_config.clone(),
+                        readiness: config.mediator_readiness.clone(),
+                        resolver_url: config.resolver_url.clone(),
                         outbox_ks,
-                        app_state.did_resolver.as_ref(),
-                        config.resolver_url.as_deref(),
-                    )
-                    .await
-                    {
-                        Ok(messaging) => {
-                            let service = messaging.service.clone();
-                            // Publish the outbound wiring so every REST/DIDComm
-                            // component can send to a peer over this one
-                            // connection (`DIDCommBridge` → `MessagingService`).
-                            app_state.didcomm_bridge.set_messaging(
-                                service.clone(),
-                                (*messaging.atm).clone(),
-                                vta_did.clone(),
-                            );
-
-                            // Register the config-loaded mediator in the listener
-                            // registry so the delegated step-up push (which buffers
-                            // outbound through the registry) can reach approvers on
-                            // this mediator. The runtime `services didcomm enable`
-                            // path calls `record_activate`; a mediator loaded from
-                            // config at boot did not, so `buffer_outbound` failed
-                            // with `NotRegistered` and the delegated push never
-                            // reached the device.
-                            #[cfg(feature = "webvh")]
-                            app_state
-                                .mediator_registry
-                                .record_activate(crate::messaging::registry::MediatorBinding {
-                                    mediator_did: messaging_config.mediator_did.clone(),
-                                    endpoint: messaging_config.mediator_url.clone(),
-                                })
-                                .await;
-
-                            // Set the VTA's own ACL on the mediator to accept all messages.
-                            // The ACL is keyed on the VTA's DID, so it authorises the account
-                            // for both DIDComm *and* TSP, which share this one mediator socket.
-                            // Only runs when `setup_acl = true` in the messaging config
-                            // (set during VTA setup for mediators using ExplicitAllow mode).
-                            if messaging_config.setup_acl {
-                                if let Some(atm) = app_state.atm.as_ref() {
-                                    acl_setup::set_client_acl_on_connection(
-                                        atm,
-                                        vta_did,
-                                        messaging_config.mediator_did.as_str(),
-                                        "vta-main",
-                                        "vta",
-                                    )
-                                    .await;
-                                } else {
-                                    warn!(
-                                        "setup_acl = true but no ATM available; \
-                                         skipping mediator ACL provisioning"
-                                    );
-                                }
-                            }
-
-                            // Spawn the protocol-routed inbound loop. It runs until
-                            // `didcomm_shutdown` is cancelled (Ctrl-C or soft
-                            // restart), dispatching DIDComm frames to the handler
-                            // set and TSP frames to the trust-task spine.
-                            tokio::spawn(crate::messaging::service::run_inbound_loop(
-                                Arc::new(messaging),
-                                app_state.clone(),
-                                vta_did.clone(),
-                                messaging_config.mediator_did.clone(),
-                                didcomm_shutdown.clone(),
-                            ));
-
-                            info!("DIDComm messaging started");
-                            Some(service)
-                        }
-                        Err(e) => {
-                            warn!("failed to start DIDComm messaging: {e}");
-                            None
-                        }
-                    }
+                        flush_queues,
+                        shutdown: didcomm_shutdown.clone(),
+                        fatal_shutdown: shutdown_tx.clone(),
+                        fatal_flag: readiness_fatal.clone(),
+                    };
+                    tokio::spawn(supervisor.run());
                 }
                 _ => {
                     info!("DIDComm not configured — service not started");
-                    None
                 }
             }
-        } else {
-            None
-        };
-        #[cfg(not(feature = "didcomm"))]
-        let messaging_service: Option<()> = None;
+        }
 
         // TSP inbound is no longer a standalone websocket. The delivery-layer
         // `DidCommTransport` built above multiplexes TSP frames off its single
@@ -1074,7 +967,13 @@ pub async fn run(
         // keyspace level by the sweeper.
         #[cfg(all(feature = "webvh", feature = "didcomm"))]
         let _teardown_handle = {
-            let messaging_service_ref = messaging_service.clone();
+            // Source the live `MessagingService` from the bridge at recv time
+            // rather than a captured handle: the connect now happens in the
+            // background `MessagingConnect` supervisor, so the service may not be
+            // published yet when this consumer is spawned (and it self-heals /
+            // (re)connects later). `messaging_handle()` returns the current
+            // handle once the supervisor's first successful connect sets it.
+            let teardown_app_state = app_state.clone();
             let mut teardown_rx = teardown_rx;
             let mut shutdown_rx_for_teardown = shutdown_rx.clone();
             tokio::spawn(async move {
@@ -1095,7 +994,9 @@ pub async fn run(
                                     // via the merged dispatcher) after promote; its
                                     // fjall drain-entry TTL has now expired, so drop
                                     // it from the delivery-layer service.
-                                    if let Some(ref svc) = messaging_service_ref {
+                                    if let Some(svc) =
+                                        teardown_app_state.didcomm_bridge.messaging_handle()
+                                    {
                                         svc.remove_transport(&mediator_did);
                                         info!(
                                             mediator = %mediator_did,
@@ -1104,7 +1005,7 @@ pub async fn run(
                                     } else {
                                         debug!(
                                             mediator = %mediator_did,
-                                            "drain teardown: DIDComm not running, skipping remove_transport"
+                                            "drain teardown: DIDComm not connected, skipping remove_transport"
                                         );
                                     }
                                 }
@@ -1179,18 +1080,16 @@ pub async fn run(
             }
         }
 
-        // Stop DIDComm messaging: cancel the inbound loop's shutdown token.
-        // The delivery-layer background tasks (dispatcher, transport forwarder,
-        // outbox drain loops) are detached — as in the VTC pilot — and wind down
-        // as their `Arc<MessagingService>`/transport handles drop.
+        // Stop DIDComm messaging: cancel the inbound loop's shutdown token
+        // (also stops the `MessagingConnect` reconnect supervisor between
+        // attempts). The delivery-layer background tasks (dispatcher, transport
+        // forwarder, outbox drain loops) are detached — as in the VTC pilot —
+        // and wind down as their `Arc<MessagingService>`/transport handles drop.
         #[cfg(feature = "didcomm")]
         {
             didcomm_shutdown.cancel();
-            let _ = &messaging_service;
             info!("DIDComm messaging stopped");
         }
-        #[cfg(not(feature = "didcomm"))]
-        let _ = messaging_service;
 
         if any_panic {
             let _ = shutdown_tx.send(true);
@@ -1207,6 +1106,15 @@ pub async fn run(
 
         if any_panic {
             return Err(AppError::Internal("one or more threads panicked".into()));
+        }
+
+        // Surface a `fail`-policy readiness timeout as a non-zero exit, now that
+        // the threads are joined and the store is flushed.
+        #[cfg(feature = "didcomm")]
+        if readiness_fatal.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(AppError::Internal(
+                "mediator self-readiness gate timed out with on_timeout = \"fail\"".into(),
+            ));
         }
 
         if !is_restart {
@@ -1930,6 +1838,316 @@ fn decode_jwt_key(b64: &str) -> Result<JwtKeys, AppError> {
     let keys = JwtKeys::from_ed25519_bytes(&key_bytes, "VTA")?;
     debug!("JWT signing key decoded successfully");
     Ok(keys)
+}
+
+/// Mediator-connect supervisor: readiness gate, connect, and reconnect.
+///
+/// Owns the whole mediator lifecycle that used to run inline once during
+/// startup:
+///
+/// 1. **Self-readiness gate** — wait until the VTA's own DID resolves over the
+///    network, so the mediator (which authenticates us by resolving that DID)
+///    can actually fetch our sender key instead of 403-ing the handshake.
+/// 2. **Connect**, with capped exponential backoff + full jitter. The classic
+///    initial failure is the mediator's *own* resolver still negative-caching
+///    the VTA host: it clears on its own timer, so retrying self-heals with no
+///    operator restart where the previous one-shot connect needed one.
+/// 3. **Supervise the session** — the inbound loop is awaited here rather than
+///    detached, so when it ends the supervisor tears the session down and
+///    reconnects instead of leaving the VTA silently deaf for the rest of the
+///    process.
+///
+/// All of it runs in a spawned task: nothing here may block `server::run`, which
+/// has to reach its shutdown/restart select for a signal to be honoured.
+#[cfg(feature = "didcomm")]
+struct MessagingConnect {
+    app_state: AppState,
+    vta_did: String,
+    messaging_config: crate::config::MessagingConfig,
+    readiness: crate::config::MediatorReadinessConfig,
+    resolver_url: Option<String>,
+    outbox_ks: KeyspaceHandle,
+    flush_queues: bool,
+    shutdown: CancellationToken,
+    /// Brings the whole process down when the readiness gate's `fail` policy
+    /// trips. The gate runs off the startup path (so a SIGTERM mid-gate is
+    /// honoured), which means it can no longer surface a fatal by returning
+    /// `Err` from `run` — it signals here instead.
+    fatal_shutdown: watch::Sender<bool>,
+    /// Set alongside `fatal_shutdown` so `run` can turn the same condition into
+    /// a non-zero exit status once the threads are joined.
+    fatal_flag: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(feature = "didcomm")]
+impl MessagingConnect {
+    /// Gate, then run the connect/supervise/reconnect loop until shutdown, the
+    /// configured horizon, or a `reconnect = false` single-shot failure.
+    async fn run(self) {
+        match crate::messaging::readiness::run_gate(
+            &self.vta_did,
+            &self.readiness,
+            self.resolver_url.as_deref(),
+            &self.shutdown,
+        )
+        .await
+        {
+            Ok(crate::messaging::readiness::GateDecision::Proceed) => {}
+            Ok(crate::messaging::readiness::GateDecision::Skip) => {
+                info!(
+                    "DIDComm messaging not started this boot \
+                     (mediator self-readiness gate: skip)"
+                );
+                return;
+            }
+            Err(e) => {
+                error!("mediator self-readiness gate failed, shutting down: {e}");
+                self.fatal_flag
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                let _ = self.fatal_shutdown.send(true);
+                return;
+            }
+        }
+
+        // One-shot, *before* the first connect attempt and never repeated. Both
+        // of these delete queued messages at the mediator, so re-running them on
+        // every retry would keep destroying traffic that arrived between
+        // attempts.
+        self.run_startup_recovery().await;
+
+        self.supervise().await;
+    }
+
+    /// The connect → supervise-session → reconnect loop.
+    async fn supervise(&self) {
+        // The give-up / how-long-to-wait arithmetic lives in `ReconnectPolicy`
+        // so it is unit-testable without a mediator; this loop owns the effects.
+        let policy = crate::messaging::readiness::ReconnectPolicy::from_config(&self.readiness);
+        // `failing_for` is measured from the start of the current run of
+        // failures, not from process start — a VTA that ran healthily for a week
+        // and then dropped gets the full horizon to reconnect, rather than
+        // blowing a 1-hour budget it exhausted six days ago.
+        let mut window_started = tokio::time::Instant::now();
+        let mut attempt: u32 = 0;
+
+        loop {
+            if self.shutdown.is_cancelled() {
+                return;
+            }
+
+            // Never touch the mediator unless the VTA can resolve its own DID
+            // over the network (the same path the mediator takes). A cold VTA
+            // that can't resolve itself would only storm the mediator with
+            // unresolvable-sender auth attempts.
+            if crate::messaging::readiness::self_did_network_resolvable(
+                &self.vta_did,
+                self.resolver_url.as_deref(),
+            )
+            .await
+            {
+                match self.connect_once().await {
+                    Ok(messaging) => {
+                        info!("DIDComm messaging started");
+                        let session_started = tokio::time::Instant::now();
+
+                        // Await the inbound loop rather than detaching it: its
+                        // return is the only signal that this session is over.
+                        crate::messaging::service::run_inbound_loop(
+                            messaging.clone(),
+                            self.app_state.clone(),
+                            self.vta_did.clone(),
+                            self.messaging_config.mediator_did.clone(),
+                            self.shutdown.clone(),
+                        )
+                        .await;
+
+                        // Session over. Unpublish before tearing down so no
+                        // caller packs onto a socket we're about to stop, then
+                        // stop it — the mediator allows one socket per DID, so a
+                        // reconnect while the old socket still auto-reconnects
+                        // would have the two duel over the slot.
+                        self.app_state.didcomm_bridge.clear_messaging();
+                        messaging.atm.graceful_shutdown().await;
+
+                        if self.shutdown.is_cancelled() {
+                            return;
+                        }
+
+                        let lasted = session_started.elapsed();
+                        warn!(
+                            session_secs = lasted.as_secs(),
+                            "mediator session ended unexpectedly; reconnecting"
+                        );
+                        if policy.session_was_healthy(lasted) {
+                            attempt = 0;
+                            window_started = tokio::time::Instant::now();
+                        }
+                    }
+                    Err(e) => warn!("failed to start DIDComm messaging: {e}"),
+                }
+            } else {
+                warn!(
+                    vta_did = %self.vta_did,
+                    "VTA not yet self-resolvable over the network; deferring mediator connect"
+                );
+            }
+
+            // `None` = stop: either reconnect is disabled (legacy single-shot:
+            // give up until the next restart) or the horizon is exhausted.
+            let Some(sleep_for) = policy.next_backoff(attempt, window_started.elapsed()) else {
+                if self.readiness.reconnect {
+                    warn!(
+                        waited_secs = window_started.elapsed().as_secs(),
+                        "mediator reconnect gave up after the configured horizon; \
+                         a later restart will retry"
+                    );
+                }
+                return;
+            };
+            debug!(
+                attempt = attempt + 1,
+                ceiling_secs = policy.ceiling_for(attempt).as_secs_f64(),
+                sleep_secs = sleep_for.as_secs_f64(),
+                "mediator connection not established; backing off before retry \
+                 (exponential backoff + full jitter)"
+            );
+            tokio::select! {
+                _ = self.shutdown.cancelled() => {
+                    info!("shutdown during mediator reconnect backoff; stopping supervisor");
+                    return;
+                }
+                _ = tokio::time::sleep(sleep_for) => {}
+            }
+            attempt = attempt.saturating_add(1);
+        }
+    }
+
+    /// Best-effort, destructive queue recovery that runs **once** per process,
+    /// before the first connect attempt.
+    ///
+    /// Clearing this DID's mediator inbox stops a poison / undeliverable backlog
+    /// stalling the pickup handshake and wedging the (shared DIDComm+TSP)
+    /// socket. `--flush-queues` additionally clears the OUTBOUND (sender) queue:
+    /// a message loop can fill it, after which the mediator rejects every new
+    /// send until it drains, and the inbox drain cannot touch it.
+    async fn run_startup_recovery(&self) {
+        let messaging_config = &self.messaging_config;
+        let vta_did = self.vta_did.as_str();
+
+        if messaging_config.drain_inbox_on_start || self.flush_queues {
+            match self.app_state.atm.as_ref() {
+                Some(atm) => {
+                    let cleared =
+                        drain_mediator_inbox(atm, &messaging_config.mediator_did, vta_did).await;
+                    info!(
+                        count = cleared,
+                        mediator = %messaging_config.mediator_did,
+                        "cleared queued mediator inbox before going live"
+                    );
+                }
+                None => warn!("inbox drain requested but no ATM is available; skipping"),
+            }
+        }
+
+        if self.flush_queues {
+            match self.app_state.atm.as_ref() {
+                Some(atm) => {
+                    let cleared =
+                        flush_mediator_outbox(atm, &messaging_config.mediator_did, vta_did).await;
+                    info!(
+                        count = cleared,
+                        mediator = %messaging_config.mediator_did,
+                        "flush_queues: cleared outbound sender queue before going live"
+                    );
+                }
+                None => {
+                    warn!("--flush-queues set but no ATM is available; skipping outbox flush")
+                }
+            }
+        }
+    }
+
+    /// One connect attempt: build the messaging service and, on success, wire
+    /// the bridge/registry/ACL and hand the live session back to the caller,
+    /// which owns its inbound loop. Returns `Err` (to be retried) if the connect
+    /// fails; `build_messaging` tears its own socket down on every error path.
+    async fn connect_once(&self) -> Result<Arc<crate::messaging::service::VtaMessaging>, String> {
+        let app_state = &self.app_state;
+        let messaging_config = &self.messaging_config;
+        let vta_did = self.vta_did.as_str();
+
+        let sr = app_state
+            .secrets_resolver
+            .as_ref()
+            .ok_or_else(|| "no secrets resolver available".to_string())?;
+
+        // Collect secrets using the VM IDs from init_auth (correct for both
+        // did:key and did:webvh — avoids hardcoding #key-0/#key-1 fragments).
+        let mut secrets = Vec::new();
+        if let Some(ref signing_id) = app_state.signing_vm_id
+            && let Some(s) = sr.get_secret(signing_id).await
+        {
+            secrets.push(s);
+        }
+        if let Some(ref ka_id) = app_state.ka_vm_id
+            && let Some(s) = sr.get_secret(ka_id).await
+        {
+            secrets.push(s);
+        }
+
+        let messaging = Arc::new(
+            crate::messaging::service::build_messaging(
+                secrets,
+                vta_did,
+                &messaging_config.mediator_did,
+                self.outbox_ks.clone(),
+                app_state.did_resolver.as_ref(),
+                self.resolver_url.as_deref(),
+            )
+            .await?,
+        );
+
+        // Publish the outbound wiring so every REST/DIDComm component can send to
+        // a peer over this one connection (`DIDCommBridge` → `MessagingService`).
+        // Replaces any previous session's wiring on a reconnect.
+        app_state.didcomm_bridge.set_messaging(
+            messaging.service.clone(),
+            (*messaging.atm).clone(),
+            vta_did.to_string(),
+        );
+
+        // Register the config-loaded mediator in the listener registry so the
+        // delegated step-up push (buffered through the registry) can reach
+        // approvers on this mediator.
+        #[cfg(feature = "webvh")]
+        app_state
+            .mediator_registry
+            .record_activate(crate::messaging::registry::MediatorBinding {
+                mediator_did: messaging_config.mediator_did.clone(),
+                endpoint: messaging_config.mediator_url.clone(),
+            })
+            .await;
+
+        // Set the VTA's own allow-all ACL on the mediator (keyed on the VTA DID,
+        // so it authorises both DIDComm and TSP on the shared socket). Only when
+        // `setup_acl` is set (mediators in ExplicitAllow mode).
+        if messaging_config.setup_acl {
+            if let Some(atm) = app_state.atm.as_ref() {
+                acl_setup::set_client_acl_on_connection(
+                    atm,
+                    vta_did,
+                    messaging_config.mediator_did.as_str(),
+                    "vta-main",
+                    "vta",
+                )
+                .await;
+            } else {
+                warn!("setup_acl = true but no ATM available; skipping mediator ACL provisioning");
+            }
+        }
+
+        Ok(messaging)
+    }
 }
 
 /// Best-effort REST drain of this DID's mediator inbox, run at startup when

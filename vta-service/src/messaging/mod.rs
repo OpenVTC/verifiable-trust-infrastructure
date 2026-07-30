@@ -7,6 +7,9 @@ pub mod handlers_protocol;
 pub mod handshake;
 #[cfg(feature = "didcomm")]
 pub mod live_prover;
+/// Startup self-readiness gate for the mediator DIDComm connection.
+#[cfg(feature = "didcomm")]
+pub mod readiness;
 pub mod registry;
 pub mod router;
 /// Delivery-layer construction + protocol-routed inbound loop (D2 P2a).
