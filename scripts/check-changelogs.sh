@@ -12,8 +12,16 @@
 # pin these crates loosely, so a behavioural change is breaking for them even
 # when no signature changes, and CHANGELOG.md is where they find out.
 #
-# The rule: if a publishable crate's VERSION changed in this PR, the root
-# CHANGELOG.md must MENTION THE NEW VERSION.
+# The rule: if a publishable crate's VERSION changed in this PR, a changelog
+# entry must MENTION THE NEW VERSION — in the root CHANGELOG.md, or in a
+# fragment under changelog.d/.
+#
+# Fragments exist because a shared CHANGELOG.md conflicted on every pair of
+# concurrent PRs: each one inserts a section at the same anchor (the top of
+# `## Unreleased`), which git cannot order. One file per PR never conflicts.
+# `scripts/collate-changelog.sh` folds them in at release time. See
+# changelog.d/README.md. Both locations are accepted here so the rule is about
+# the record existing, not about which file it currently lives in.
 #
 # Deliberately not the weaker "the changelog was touched": a PR that edits the
 # changelog for one reason and bumps a version for another would satisfy that
@@ -48,6 +56,7 @@ if ! git rev-parse --verify --quiet "$BASE" >/dev/null; then
 fi
 
 CHANGELOG="CHANGELOG.md"
+FRAGMENT_DIR="changelog.d"
 
 echo "=== Changelog guard (base: $BASE) ==="
 echo
@@ -63,6 +72,49 @@ if [ ! -f "$CHANGELOG" ]; then
   exit 2
 fi
 
+# Every place an entry may live. Fragments are searched alongside CHANGELOG.md so
+# a PR satisfies the rule by writing a fragment, and a release that has already
+# collated its fragments still satisfies it from CHANGELOG.md.
+#
+# Built as an array rather than a glob expanded at grep time: with `nullglob`
+# unset an empty changelog.d/ would pass the literal string `changelog.d/*.md` to
+# grep, which then reads *stdin* and hangs the CI job.
+set -- "$CHANGELOG"
+if [ -d "$FRAGMENT_DIR" ]; then
+  for frag in "$FRAGMENT_DIR"/*.md; do
+    [ -f "$frag" ] || continue
+    case "$(basename "$frag")" in
+      README.md) continue ;;
+    esac
+    set -- "$@" "$frag"
+  done
+fi
+ENTRY_FILES="$*"
+
+# Fragment filenames carry the PR number, which is what makes them collision-free.
+# A fragment named otherwise still *works* here (it is just a file to grep), but it
+# defeats the convention, so reject it while the author is still looking.
+bad_names=0
+if [ -d "$FRAGMENT_DIR" ]; then
+  for frag in "$FRAGMENT_DIR"/*.md; do
+    [ -f "$frag" ] || continue
+    base_name="$(basename "$frag")"
+    case "$base_name" in
+      README.md) continue ;;
+    esac
+    if ! printf '%s' "$base_name" | grep -qE '^[0-9]+-[a-z0-9][a-z0-9-]*\.md$'; then
+      echo "  ${RED}BAD NAME${NC} $FRAGMENT_DIR/$base_name — expected <PR-number>-<slug>.md"
+      bad_names=1
+    fi
+  done
+fi
+if [ "$bad_names" -ne 0 ]; then
+  echo
+  echo "${RED}Fragment filenames must be <PR-number>-<slug>.md${NC} (lowercase slug)."
+  echo "The PR number is what guarantees two concurrent PRs cannot collide."
+  exit 1
+fi
+
 # Publishable crates as  name<TAB>relative-crate-dir. Non-publishable crates are
 # irrelevant: nothing reaches a consumer, so there is no contract to record.
 crates=$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
@@ -76,10 +128,15 @@ crates=$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
 # this script reports "nothing to check" and exits 0 — passing vacuously on a PR it
 # should have failed. That is the worst outcome available to a release guard, so it
 # fails loudly instead of silently.
-if printf '%s\n' "$crates" | cut -f3 | grep -q '^/'; then
+# `cut -f2` — the crate dir. This read `-f3` and so inspected a field that does
+# not exist in this script's two-column data (check-version-bumps.sh emits three).
+# Every line was empty, nothing ever matched `^/`, and the check that exists to
+# stop a vacuous pass could not fire. It is the one check that must not be
+# decorative.
+if printf '%s\n' "$crates" | cut -f2 | grep -q '^/'; then
   echo "${RED}error:${NC} crate paths did not resolve relative to $ROOT." >&2
   echo "Cannot attribute changed files; refusing to pass without checking." >&2
-  printf '%s\n' "$crates" | cut -f3 | grep '^/' | head -3 | sed 's/^/  /' >&2
+  printf '%s\n' "$crates" | cut -f2 | grep '^/' | head -3 | sed 's/^/  /' >&2
   exit 2
 fi
 
@@ -122,10 +179,14 @@ while IFS="$(printf '\t')" read -r name dir; do
   # satisfy a bump to `0.1.3`.
   escaped=$(printf '%s' "$new_version" | sed 's/\./\\./g')
   escaped_name=$(printf '%s' "$name" | sed 's/[.[\*^$]/\\&/g')
-  if grep -qE "(^|[^A-Za-z0-9_-])\`?$escaped_name\`?[[:space:]]+$escaped([^0-9.]|\$)" "$CHANGELOG"; then
+  # $ENTRY_FILES is intentionally unquoted: it is a whitespace-joined file list,
+  # and every path in this repo is space-free (enforced by the fragment filename
+  # check above and by CHANGELOG.md being a fixed name).
+  # shellcheck disable=SC2086
+  if grep -qE "(^|[^A-Za-z0-9_-])\`?$escaped_name\`?[[:space:]]+$escaped([^0-9.]|\$)" $ENTRY_FILES; then
     echo "  ${GREEN}ok${NC}   $name: ${old_version:-<new>} -> $new_version (documented)"
   else
-    echo "  ${RED}MISSING${NC} $name: ${old_version:-<new>} -> $new_version, but no \"$name $new_version\" entry appears in $CHANGELOG"
+    echo "  ${RED}MISSING${NC} $name: ${old_version:-<new>} -> $new_version, but no \"$name $new_version\" entry appears in $CHANGELOG or $FRAGMENT_DIR/"
     fail=1
   fi
 done <<EOF
@@ -141,8 +202,16 @@ fi
 if [ "$fail" -ne 0 ]; then
   echo "${RED}A crate is being published with no record of what changed.${NC}"
   echo "Sibling repos pin these crates loosely, so a behavioural change is breaking"
-  echo "for them even when no signature changes — ${CYAN}$CHANGELOG${NC} is where they find out."
-  echo "Add an entry naming the new version, e.g. '### $name <version> — <summary>'."
+  echo "for them even when no signature changes — the changelog is where they find out."
+  echo
+  echo "Add a fragment (${CYAN}not${NC} an edit to $CHANGELOG — that conflicts with every"
+  echo "other open PR). Create ${CYAN}$FRAGMENT_DIR/<PR-number>-<slug>.md${NC} containing:"
+  echo
+  echo "  ### $name <version> — <summary> (#<PR-number>)"
+  echo
+  echo "  <what changed and why>"
+  echo
+  echo "See ${CYAN}$FRAGMENT_DIR/README.md${NC}."
   exit 1
 fi
 

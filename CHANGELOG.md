@@ -2,53 +2,53 @@
 
 ## Unreleased
 
-### vta-sdk 0.20.28 / vtc-service 0.11.46 — a community can advertise the registry authoritative for it
+### vta-service 0.13.19 / vta-config 0.3.0 / vta-backup 0.1.4 / vta-support 0.2.2 / vta-keys 0.1.4 / vta-policy 0.1.2 / vta-tee 0.1.4 — mediator readiness gate + connection supervisor (#876)
 
-TRQP v2.0 recommends a trust registry be machine-discoverable *"via the
-`authority_id`"* — from the DID document of the authority whose records it
-holds. A VTC **is** the `authority_id` in every tuple evaluated under it, so
-the pointer belongs in the community's own document. Nothing emitted one:
-`trql-client` gained `registry_referral` to *follow* a referral
-(affinidi/affinidi-trust-registry-rs#118) and returns `None` for every document
-in the wild because no producer existed. This is the producer.
+Fixes a cold-start race where a freshly deployed VTA could fail to establish its
+mediator connection and stay disconnected until an operator restarted it. The
+mediator authenticates a VTA by resolving that VTA's DID itself; on a cold start
+the DID document often isn't published yet, so the handshake is rejected — and
+the mediator's resolver negative-caches the failure, so the VTA's short retry
+burst fails too. It then gave up permanently.
 
-- **`vta-sdk`**: `vtc-host` gains an optional `#trust-registry` service entry
-  whose `serviceEndpoint` is `{uri: <registry DID>, profile: <TRQP profile
-  URI>}`. New `did_templates::referral_service` builds it, and owns
-  `TRUST_REGISTRY_SERVICE_TYPE` + `TRQP_PROFILE_URI` — the **single source of
-  truth** for both wire constants, matching `trust-registry`'s own values. The
-  entry rides as the `SERVICE_TRUST_REGISTRY` var through the template's
-  null-pruning slot, so a community with no registry renders byte-identically
-  to before. Built in Rust rather than written into the template JSON because
-  the format's only conditional is whole-array-element pruning, which requires
-  the caller to supply the whole element — the template cannot own a constant
-  it can also omit.
-- **`vtc-service`**: `vtc setup` prompts for the registry DID; `setup --from`
-  takes `registry_did`. Both refuse a non-DID before the first VTA round-trip
-  — a referral is distinguished from a registry advertising its own endpoint
-  by the `uri` carrying a `did:` prefix, so an https URL here would be read as
-  this community serving TRQP itself. Blank reads as "no registry", since
-  templated deploys emit empty strings for unset values.
-- **Docs**: `docs/02-vta/did-templates.md`, `docs/05-design-notes/vtc-mvp.md`
-  §4.4, and the shipped `vtc-setup.example.toml`.
-
-A consuming repo can then configure **one** DID — the community — and resolve
-one hop to its registry, instead of being handed both.
-
-Publishing a referral asserts nothing about authority: anyone may name any
-registry in their own document. Authority flows registry → subject, and
-closing that loop is the client's job (`TrqlClient::referred_by`,
-affinidi/affinidi-trust-registry-rs#122, which lands first for that reason).
-Emitting the entry establishes where to ask and nothing more.
-
-**Fixed at mint time.** A VTC serves a write-once `did.jsonl` and holds no
-update authority over its own log, so changing the referral later needs a
-VTA-side `pnm did-mgmt dids edit` plus redelivering the log by hand — a
-serverless DID's updated log is persisted only in the VTA's store and nothing
-pushes it. Existing communities therefore cannot gain a referral without
-re-provisioning. Automating that redelivery (a VTC-side pull against the VTA's
-public `GET /did/{did}/log`, plus a staleness check in `vtc status`) is the
-natural follow-up and is not included here.
+- **`vta-service`**: new `messaging::readiness` gate. Before connecting, the VTA
+  waits until its own DID **fully resolves over the network**, through the
+  configured resolver — the same operation the mediator performs, so a pass means
+  the mediator can authenticate us. Only `did:webvh` / `did:web` are gated;
+  `did:key` resolves without a network fetch and skips the wait.
+- **`vta-service`**: a `MessagingConnect` supervisor owns the mediator lifecycle
+  — gate, connect, and reconnect — with capped exponential backoff and full
+  jitter, re-confirming self-resolution before each attempt. It recovers both a
+  failed initial connect (once the mediator's negative cache expires) and an
+  established session whose inbound loop ended, where the VTA previously went
+  silently deaf for the rest of the process. Sessions shorter than 60s don't
+  reset the backoff, so a flapping mediator escalates rather than being retried
+  at full rate.
+- **`vta-service`**: the whole gate + reconnect runs in a background task.
+  Nothing blocks the startup path, so `/health` is live throughout and a
+  `SIGTERM` mid-gate is honoured immediately.
+- **`vta-service`**: `build_messaging` now tears the ATM down
+  (`graceful_shutdown`) on every error path after the profile is registered.
+  There is no `Drop` impl on `ATM`, so an abandoned socket keeps auto-reconnecting
+  while holding the mediator's one-socket-per-DID slot — without this a retrying
+  connect loop would leak one duelling socket per attempt. The 30s websocket
+  timeout is the sharp edge: it drops the future mid-flight, so the SDK's own
+  cleanup never runs.
+- **`vta-service`**: `DIDCommBridge` wiring is republishable rather than
+  set-once, so a reconnect actually re-points outbound sends at the new session
+  instead of silently leaving them on the dead one.
+- **`vta-config`** (breaking): `AppConfig` gains a `mediator_readiness` field,
+  and `MediatorReadinessConfig` / `ReadinessTimeoutPolicy` are new — `enabled`,
+  `retry_secs`, `backoff_cap_secs`, `max_wait_secs`, `on_timeout`, `reconnect`,
+  `reconnect_backoff_cap_secs`, `reconnect_max_elapsed_secs`. All default; the
+  defaults suit a normal LB/Kubernetes deployment. Minor bump because
+  `AppConfig` is not `#[non_exhaustive]`, so the new field breaks struct-literal
+  construction.
+- **`vta-backup`** / **`vta-support`** / **`vta-keys`** / **`vta-policy`** /
+  **`vta-tee`**: `vta-config` requirement moved to `0.3`; `vta-backup`'s
+  test-support constructor updated for the new field.
+- **Docs**: new `docs/02-vta/mediator-connection.md` (operator guide to the gate,
+  the supervisor, and every `[mediator_readiness]` setting).
 
 ### vta-backup 0.1.3 / vtc-service 0.11.45 / pnm-cli 0.11.16 / cnm-cli 0.11.13 / vta-sdk 0.20.27 — raise backup password minimum to 15 characters
 

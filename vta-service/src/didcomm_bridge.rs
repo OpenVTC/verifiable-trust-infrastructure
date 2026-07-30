@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use affinidi_messaging_delivery::{Delivery, MessagingService, MessagingStatus};
 use affinidi_tdk::didcomm::Message;
 use affinidi_tdk::messaging::ATM;
-use tokio::sync::OnceCell;
+use tracing::debug;
 
 use crate::error::{AppError, bad_gateway_error};
 use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, extract_problem_report};
@@ -46,8 +46,8 @@ fn problem_report_to_app_error(code: &str, comment: &str) -> AppError {
     }
 }
 
-/// The live delivery-layer wiring the bridge sends through, published once the
-/// [`MessagingService`] is built in `server::run`.
+/// The live delivery-layer wiring the bridge sends through, published each time
+/// `server::MessagingConnect` establishes a mediator session.
 struct BridgeInner {
     /// The one delivery-layer service over the VTA's mediator websocket(s).
     /// Outbound `send`/`request` route through its current **primary**;
@@ -76,9 +76,23 @@ struct BridgeInner {
 /// The public method surface is unchanged so the ~25 WebVH / provision / CLI /
 /// test call-sites that thread `Arc<DIDCommBridge>` compile untouched;
 /// [`placeholder`](Self::placeholder) stays free (offline CLI + tests never
-/// send). The live wiring is published once via [`set_messaging`](Self::set_messaging).
+/// send). The live wiring is published via [`set_messaging`](Self::set_messaging)
+/// on every (re)connect and dropped via
+/// [`clear_messaging`](Self::clear_messaging) when a session ends.
 pub struct DIDCommBridge {
-    inner: OnceCell<BridgeInner>,
+    /// The current wiring, or `None` before the first successful mediator
+    /// connect.
+    ///
+    /// **Republishable, not set-once.** `server::MessagingConnect` reconnects
+    /// after a dropped session, and each reconnect builds a *new*
+    /// `MessagingService`/ATM over a new socket. A set-once cell silently
+    /// discarded the republish, leaving every outbound send pointed at the
+    /// previous session's dead socket — so the bridge has to be able to swap.
+    ///
+    /// Accessors clone the `Arc` out and drop the guard before any `.await`
+    /// (R1.3: never hold a lock across an await), which is also why this is a
+    /// `std` lock rather than a `tokio` one.
+    inner: RwLock<Option<Arc<BridgeInner>>>,
     /// The primary transport id (e.g. `"vta-main"`). Retained for parity with
     /// the old listener id; outbound always routes through the service's
     /// current primary regardless.
@@ -91,7 +105,7 @@ impl DIDCommBridge {
     /// the delivery-layer `MessagingService` starts to enable outbound sends.
     pub fn new(listener_id: impl Into<String>) -> Self {
         Self {
-            inner: OnceCell::new(),
+            inner: RwLock::new(None),
             listener_id: listener_id.into(),
         }
     }
@@ -102,14 +116,36 @@ impl DIDCommBridge {
         Self::new("")
     }
 
-    /// Publish the live delivery-layer wiring. Called once from `server::run`
-    /// after the `MessagingService` is built over the mediator websocket.
+    /// Publish the live delivery-layer wiring, replacing any previous session's.
+    /// Called from `server::MessagingConnect` after each successful mediator
+    /// connect.
     pub fn set_messaging(&self, service: Arc<MessagingService>, atm: ATM, vta_did: String) {
-        let _ = self.inner.set(BridgeInner {
-            service,
-            atm,
-            vta_did,
-        });
+        let replacing = {
+            let mut guard = self.write_inner();
+            guard
+                .replace(Arc::new(BridgeInner {
+                    service,
+                    atm,
+                    vta_did,
+                }))
+                .is_some()
+        };
+        if replacing {
+            debug!("DIDComm bridge wiring replaced (mediator reconnect)");
+        }
+    }
+
+    /// Drop the published wiring — outbound sends fail with "not initialized"
+    /// until the next [`set_messaging`](Self::set_messaging).
+    ///
+    /// Called by the reconnect supervisor once a session's inbound loop has
+    /// ended: the old `MessagingService` is finished at that point, and leaving
+    /// it published would have callers queue sends onto a dead socket that can
+    /// only fail. Failing fast is the honest signal.
+    pub fn clear_messaging(&self) {
+        if self.write_inner().take().is_some() {
+            debug!("DIDComm bridge wiring cleared (mediator session ended)");
+        }
     }
 
     /// The live [`MessagingService`] handle, or `None` before
@@ -117,18 +153,18 @@ impl DIDCommBridge {
     /// handshake prover, which drives `add_transport`/`request_via`/`promote`
     /// against it.
     pub fn messaging_handle(&self) -> Option<Arc<MessagingService>> {
-        self.inner.get().map(|i| i.service.clone())
+        self.snapshot().map(|i| i.service.clone())
     }
 
     /// The ATM (for building a candidate transport's profile + packing during
     /// the mediator handshake), or `None` before the service is published.
     pub fn atm(&self) -> Option<ATM> {
-        self.inner.get().map(|i| i.atm.clone())
+        self.snapshot().map(|i| i.atm.clone())
     }
 
     /// The VTA's own DID, or `None` before the service is published.
     pub fn vta_did(&self) -> Option<String> {
-        self.inner.get().map(|i| i.vta_did.clone())
+        self.snapshot().map(|i| i.vta_did.clone())
     }
 
     /// The live, **non-latched** messaging status (R6.2), or `None` before the
@@ -136,7 +172,7 @@ impl DIDCommBridge {
     /// which reflects each transport's live connection signal and can go false
     /// again after boot.
     pub fn messaging_status_str(&self) -> Option<String> {
-        self.inner.get().map(|i| {
+        self.snapshot().map(|i| {
             match i.service.status() {
                 MessagingStatus::Connected => "connected",
                 MessagingStatus::Degraded => "degraded",
@@ -148,9 +184,26 @@ impl DIDCommBridge {
         })
     }
 
-    fn inner(&self) -> Result<&BridgeInner, AppError> {
+    /// Clone the current wiring out from under the read lock. Every accessor
+    /// goes through this so no guard is ever alive across an `.await`.
+    fn snapshot(&self) -> Option<Arc<BridgeInner>> {
+        match self.inner.read() {
+            Ok(guard) => guard.clone(),
+            // A poisoned lock means a writer panicked mid-swap. The wiring is
+            // just three cloneable handles, so recover rather than propagate a
+            // panic into every send path.
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    fn write_inner(&self) -> std::sync::RwLockWriteGuard<'_, Option<Arc<BridgeInner>>> {
         self.inner
-            .get()
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn inner(&self) -> Result<Arc<BridgeInner>, AppError> {
+        self.snapshot()
             .ok_or_else(|| AppError::Internal("DIDComm messaging not initialized".into()))
     }
 
@@ -216,7 +269,7 @@ impl DIDCommBridge {
         // request's own `expiresAt` — a shorter message expiry could make the
         // mediator drop it before an offline device reconnects. (This preserves
         // the prior `send_oneway` behaviour, which set no expiry.)
-        let (_msg_id, packed) = Self::pack(inner, recipient_did, msg_type, body, None).await?;
+        let (_msg_id, packed) = Self::pack(&inner, recipient_did, msg_type, body, None).await?;
         inner
             .service
             .send(
@@ -247,7 +300,7 @@ impl DIDCommBridge {
     ) -> Result<Message, AppError> {
         let inner = self.inner()?;
         let (msg_id, packed) =
-            Self::pack(inner, server_did, msg_type, body, Some(timeout_secs)).await?;
+            Self::pack(&inner, server_did, msg_type, body, Some(timeout_secs)).await?;
         // The outbound message id IS the correlation thread id: the reply
         // threads to it (`thid == request.id`), and the delivery dispatcher
         // demuxes the reply to this waiter by that thread id.
@@ -281,7 +334,7 @@ impl DIDCommBridge {
     ) -> Result<Message, AppError> {
         let inner = self.inner()?;
         let (msg_id, packed) =
-            Self::pack(inner, recipient_did, msg_type, body, Some(timeout_secs)).await?;
+            Self::pack(&inner, recipient_did, msg_type, body, Some(timeout_secs)).await?;
         let received = inner
             .service
             .request_via(
