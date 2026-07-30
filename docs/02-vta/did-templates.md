@@ -188,6 +188,18 @@ template without explicit scope is **context → global → builtin**:
     `runtime-service-management.md`). Requires `URL`; optional
     `STATUS_LIST_PATH` (default `/v1/status-lists`). `URL` must not have a
     trailing slash.
+    Optionally advertises a `TrustRegistry` **referral** naming the registry
+    authoritative for this community by DID, so a client holding only the
+    community's DID resolves one hop to its registry rather than being
+    configured with both. Supply the whole entry as `SERVICE_TRUST_REGISTRY`,
+    built by `vta_sdk::did_templates::referral_service(registry_did)` — the
+    SDK owns the `TrustRegistry` type and the TRQP profile URI so the wire
+    constants have one source. Omit it and the element is pruned; a community
+    with no registry is unchanged. `vtc setup` surfaces this as a prompt and
+    as `registry_did` in the `--from` TOML.
+    Note the entry is fixed at mint time: a VTC serves a write-once
+    `did.jsonl` and cannot re-sign its own log, so changing the referral later
+    means a VTA-side `pnm did-mgmt dids edit` plus redelivering the log.
     The `did-host-*` names describe the DID-document shape the template
     mints — `http` = a `WebVHHosting` (HTTP resolution) endpoint,
     `didcomm` = a `DIDCommMessaging` endpoint, `tsp` = a `TSPTransport`

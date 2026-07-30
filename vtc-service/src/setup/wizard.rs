@@ -39,6 +39,7 @@ use serde_json::Value as JsonValue;
 use tokio::sync::mpsc;
 use tracing::warn;
 use vta_sdk::client::VtaClient;
+use vta_sdk::did_templates::{TRUST_REGISTRY_SERVICE_VAR, referral_service};
 use vta_sdk::provision_client::{
     EphemeralSetupKey, OperatorMessages, ProvisionAsk, ProvisionResult, ResolvedVta, VtaEvent,
     VtaIntent, VtaReply, resolve_vta, run_connection_test, run_provision_flight,
@@ -346,6 +347,16 @@ pub(crate) struct WizardInputs {
     pub(crate) base_url: String,
     pub(crate) vta_did: String,
     pub(crate) context: String,
+    /// DID of the trust registry authoritative for this community, when it
+    /// has one. Renders a `TrustRegistry` referral into the VTC's DID
+    /// document so a client holding only the community's DID can resolve one
+    /// hop to its registry instead of being configured with both.
+    ///
+    /// Optional: a community with no registry omits it and the service entry
+    /// is pruned. It is fixed at mint time — the VTC serves a write-once
+    /// `did.jsonl` and cannot re-sign its own log, so changing it later means
+    /// a VTA-side `dids edit` plus redelivering the log by hand.
+    pub(crate) registry_did: Option<String>,
 }
 
 /// A fully-resolved setup plan: every operator decision gathered, no
@@ -476,6 +487,24 @@ fn prompt_inputs() -> Result<WizardInputs, AppError> {
         .interact_text()
         .map_err(prompt_err)?;
 
+    println!();
+    println!("If this community has a trust registry, naming it here publishes a");
+    println!("TrustRegistry referral in the VTC's DID document, so a client that");
+    println!("holds only this community's DID can resolve one hop to the registry");
+    println!("rather than being configured with both DIDs.");
+    println!();
+    println!("This is fixed at mint time: the VTC serves a write-once did.jsonl and");
+    println!("cannot re-sign its own log, so changing it later needs a VTA-side");
+    println!("`pnm did-mgmt dids edit` and redelivering the log by hand. Leave blank");
+    println!("if the community has no registry, or if you don't know it yet.");
+    println!();
+    let registry_did: String = Input::new()
+        .with_prompt("Trust registry DID (blank for none)")
+        .allow_empty(true)
+        .interact_text()
+        .map_err(prompt_err)?;
+    let registry_did = normalize_registry_did(&registry_did)?;
+
     // The VTC DID's hosting target (did-hosting server, domain, path) is
     // collected later, in `select_webvh_target`, after the ACL grant — at
     // that point the ephemeral key can authenticate to the VTA and
@@ -486,7 +515,29 @@ fn prompt_inputs() -> Result<WizardInputs, AppError> {
         base_url,
         vta_did,
         context,
+        registry_did,
     })
+}
+
+/// Trim an operator-supplied registry DID, mapping blank to "no registry".
+///
+/// Rejects a non-DID early, at the prompt or at TOML-parse time, rather than
+/// letting it surface as a template-render failure several VTA round-trips
+/// later. A referral's `uri` is tested for a `did:` prefix by consumers, so an
+/// https URL here would render an entry that reads as this community serving
+/// TRQP itself.
+pub(crate) fn normalize_registry_did(raw: &str) -> Result<Option<String>, AppError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if !trimmed.starts_with("did:") {
+        return Err(AppError::Config(format!(
+            "trust registry must be named by DID, got '{trimmed}'. The referral published in \
+             the VTC's DID document names the registry by DID, not by URL."
+        )));
+    }
+    Ok(Some(trimmed.to_string()))
 }
 
 /// Ask the operator which mediator the VTC should route DIDComm traffic
@@ -1140,6 +1191,20 @@ async fn run_provision_quietly(
         vars.insert(
             "WEBVH_PATH".to_string(),
             JsonValue::String(path.to_string()),
+        );
+    }
+    // The whole `TrustRegistry` service entry rides as one var. The template
+    // declares it in `optionalVars` with a `null` default and places it as a
+    // bare array member, so leaving it out prunes the element — that
+    // null-pruning slot is the only conditional the template format has, and
+    // it is why `referral_service` builds the entry here rather than the
+    // template spelling it out. Building it in the SDK keeps one owner for
+    // the `TrustRegistry` type and the TRQP profile URI.
+    if let Some(registry_did) = inputs.registry_did.as_deref() {
+        vars.insert(
+            TRUST_REGISTRY_SERVICE_VAR.to_string(),
+            referral_service(registry_did)
+                .map_err(|e| AppError::Config(format!("trust-registry referral: {e}")))?,
         );
     }
     let ask = ProvisionAsk::for_template("vtc-host", vars, inputs.context.clone())

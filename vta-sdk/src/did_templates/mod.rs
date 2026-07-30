@@ -40,6 +40,7 @@
 
 mod builtin;
 mod render;
+mod trust_registry;
 mod validate;
 
 #[cfg(test)]
@@ -53,6 +54,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub use builtin::{BUILTIN_NAMES, load_embedded};
+pub use trust_registry::{
+    TRQP_PROFILE_URI, TRUST_REGISTRY_SERVICE_TYPE, TRUST_REGISTRY_SERVICE_VAR, referral_service,
+};
 
 /// Minimum supported template `schemaVersion`.
 pub const SCHEMA_VERSION_MIN: u32 = 1;
