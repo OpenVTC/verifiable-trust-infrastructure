@@ -830,6 +830,33 @@ unwrap (drops RUSTSEC-2023-0071 exposure); don't reintroduce `rsa`.
 - Don't bypass hooks (`--no-verify`), don't skip signatures, don't amend
   published commits.
 
+## Changelog: write a fragment, never edit `CHANGELOG.md`
+
+**A feature PR must not touch `CHANGELOG.md`.** Add
+`changelog.d/<PR-number>-<slug>.md` containing the `###` block you would
+otherwise have pasted in. Every PR used to insert at the same anchor (the first
+line under `## Unreleased`), so any two concurrent PRs conflicted — structurally,
+every time, with the same mechanical "keep both" resolution. Two PRs adding two
+different files never conflict.
+
+- **Heading**: `### <crate> <version> [/ <crate> <version> …] — <summary> (#PR)`.
+  Name every crate you bumped, with its **new** version — `check-changelogs.sh`
+  matches `<crate> <version>` as whole tokens and fails a bump with no entry.
+- **At release**: `scripts/collate-changelog.sh` folds the fragments into
+  `## Unreleased` (newest PR first, verbatim) and deletes them. One commit, one
+  author, nothing to conflict with. `--check` for a dry run.
+- **Full convention**: `changelog.d/README.md`.
+
+Editing `CHANGELOG.md` directly still *passes* the guard — the collated file is a
+legitimate place for an entry to live — so nothing stops you mechanically. Don't:
+it recreates the conflict for every other open PR.
+
+Note this does **not** solve version-number collisions. Two open PRs both bumping
+the same crate still conflict in `Cargo.toml`, and whichever merges second ships a
+version whose changelog claims both changes. Versions are still claimed at
+authoring time, so when a queue builds up, give the next number to whichever PR is
+closest to merge and rebase the others.
+
 ## General
 
 Before creating new crates or clients, search the workspace and crates.io to
