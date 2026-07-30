@@ -145,6 +145,14 @@ enum Commands {
         /// Human-readable label for the key record and ACL entry
         #[arg(long)]
         label: Option<String>,
+        /// Import an EXTERNAL Ed25519 private key (64 hex chars = 32 bytes)
+        /// instead of deriving a fresh key from the VTA seed. The resulting
+        /// did:key is deterministic in the supplied key material, so re-runs
+        /// (fresh volume, redeploy) reproduce the SAME did:key. Used to bind a
+        /// vault signing entry to an app-root persona DID whose key is derived
+        /// off-box from a sealed mnemonic (see deploy/vta-provision-vault.sh).
+        #[arg(long, value_name = "HEX")]
+        private_key_hex: Option<String>,
     },
     /// Create a did:webvh DID for a context (interactive wizard, no server required).
     ///
@@ -1569,6 +1577,7 @@ async fn main() {
             context,
             admin,
             label,
+            private_key_hex,
         }) => {
             // SEALED CHECK: creates keys and optionally admin ACL entries
             check_seal(&cli.config).await;
@@ -1577,6 +1586,7 @@ async fn main() {
                 context,
                 admin,
                 label,
+                private_key_hex,
             };
             if let Err(e) = did_key::run_create_did_key(args).await {
                 eprintln!("Error: {e}");
