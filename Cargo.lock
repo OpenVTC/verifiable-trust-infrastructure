@@ -10333,7 +10333,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.13.19"
+version = "0.13.20"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10532,7 +10532,7 @@ dependencies = [
 
 [[package]]
 name = "vta-webvh"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "affinidi-tdk",
  "chrono",
@@ -10566,7 +10566,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.11.46"
+version = "0.11.47"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
