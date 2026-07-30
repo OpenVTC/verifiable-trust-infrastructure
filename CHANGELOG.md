@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### vta-service 0.13.6 — `contexts/create` is an idempotent no-op when the context already exists
+
+`create_context` checked `require_super_admin()` for a top-level context
+*before* the existence check, so a context-admin caller re-running a
+provisioning flow against an already-existing top-level context was rejected
+with `super admin required`. This broke fresh-instance domain wake: the console
+pre-creates the placeholder context offline with a super-admin credential, then
+at wake the operator (context-admin only) re-issues `contexts/create`, which
+must fold onto the existing context rather than demand elevation.
+
+The existence short-circuit now runs *before* the authz gate and returns
+idempotent **success** (the existing context's result body) for a caller that
+administers it (`require_context`). Previously an existing context returned
+`Conflict`; but the trust-task framework has no standard `conflict` reject code,
+so over DIDComm that surfaced as an opaque `taskFailed` the SDK could not fold
+back into `VtaError::Conflict` — meaning the online provisioner's
+already-exists-is-success handling never fired. Returning success makes
+idempotent re-provisioning behave identically across REST and DIDComm. The
+super-admin gate is unchanged for actually creating a *new* top-level context;
+sub-context creation still requires admin-of-parent. Folding onto an existing
+context now needs only the right to use it, and no longer leaks a context's
+existence to non-admins.
+
 ### vti-common 0.11.29 / vta-sdk 0.20.13 / vta-service 0.13.5 / vta-cli-common 0.10.19 / pnm-cli 0.11.13 — `vta/audit/list-logs` folds onto canonical `audit/list/0.1`
 
 The last item of #840 phase A, and the only one that was never a rename. The

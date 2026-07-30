@@ -65,12 +65,45 @@ pub async fn create_context(
     // The leaf id is always a single slug segment.
     crate::contexts::validate_slug(id)?;
 
-    let (full_id, parent_field, base_prefix, counter_key) = match &parent {
+    // Resolve the full path first so we can short-circuit on an already-existing
+    // context BEFORE any role gate. Creating a context that already exists is a
+    // no-op, so it returns idempotent success for a caller that administers it,
+    // regardless of the create-time super-admin gate below. Otherwise a
+    // context-admin re-running a provisioning flow against a pre-created
+    // top-level context (the console's `ensure_context` during domain wake)
+    // would be rejected with "super admin required" and the wake would fail.
+    // `child_path` is a pure segment/depth validation, safe to compute early.
+    let full_id = match &parent {
+        None => id.to_string(),
+        Some(parent_id) => vti_common::context_path::child_path(parent_id, id)?,
+    };
+
+    if let Some(existing) = get_context(contexts_ks, &full_id).await? {
+        // Idempotent no-op: creating a context that already exists succeeds for
+        // a caller that administers it. Online provisioners rely on this — they
+        // pre-create the top-level context offline with a super-admin credential,
+        // then re-issue `contexts/create` at runtime holding only context-admin
+        // (e.g. cierge's `OnlineVtaProvisioner::ensure_context` during domain
+        // wake). Returning success here — rather than the previous `Conflict`,
+        // for which the trust-task framework has no standard reject code and so
+        // surfaces as an opaque `taskFailed` over DIDComm that the SDK cannot
+        // fold back into `VtaError::Conflict` — makes idempotent re-provisioning
+        // behave identically across REST and DIDComm. We gate on
+        // `require_context(full_id)` (the right to *use* the context) instead of
+        // the create-time super-admin gate: minting a new top-level context and
+        // folding onto an existing one are deliberately different privileges,
+        // and this also stops leaking a context's existence to non-admins.
+        auth.require_context(&full_id)?;
+        return Ok(to_result_body(&existing));
+    }
+
+    // The context does not exist yet: enforce creation authz and resolve the
+    // parent-derived allocation parameters.
+    let (parent_field, base_prefix, counter_key) = match &parent {
         None => {
             // Top-level context creation stays super-admin only.
             auth.require_super_admin()?;
             (
-                id.to_string(),
                 None,
                 crate::contexts::CONTEXT_KEY_BASE.to_string(),
                 "ctx_counter".to_string(),
@@ -84,22 +117,13 @@ pub async fn create_context(
                 AppError::NotFound(format!("parent context not found: {parent_id}"))
             })?;
             auth.require_context(parent_id)?;
-            // Full path = `<parent>/<id>`; validates segment + total depth.
-            let full = vti_common::context_path::child_path(parent_id, id)?;
             (
-                full,
                 Some(parent_id.clone()),
                 parent_ctx.base_path.clone(),
                 format!("ctx_counter:{parent_id}"),
             )
         }
     };
-
-    if get_context(contexts_ks, &full_id).await?.is_some() {
-        return Err(AppError::Conflict(format!(
-            "context already exists: {full_id}"
-        )));
-    }
 
     let (index, base_path) =
         allocate_context_index(contexts_ks, &base_prefix, &counter_key).await?;
