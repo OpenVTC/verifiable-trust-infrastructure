@@ -103,9 +103,10 @@ pub struct AppConfig {
     #[serde(default = "default_store_config")]
     pub store: StoreConfig,
     pub messaging: Option<MessagingConfig>,
-    /// Startup readiness gate for the mediator DIDComm connection:
-    /// wait until the VTA's own public DID document is externally reachable
-    /// before initiating the outbound mediator handshake.
+    /// Startup readiness gate + reconnect policy for the mediator DIDComm
+    /// connection: wait until the VTA's own DID resolves over the network before
+    /// initiating the outbound mediator handshake, then keep the connection up.
+    /// See `docs/02-vta/mediator-connection.md`.
     #[serde(default)]
     pub mediator_readiness: MediatorReadinessConfig,
     #[serde(default)]
@@ -167,23 +168,26 @@ pub enum ReadinessTimeoutPolicy {
     /// the target healthy; a later restart reconnects. Default.
     #[default]
     Skip,
-    /// Connect to the mediator anyway (best-effort), accepting the initial
-    /// 503→403 risk.
+    /// Connect to the mediator anyway (best-effort), accepting that the
+    /// handshake may be rejected because the mediator can't resolve us yet.
     Proceed,
-    /// Treat an un-ready endpoint as a fatal startup error.
+    /// Treat a DID that won't resolve as fatal and shut the process down.
     Fail,
 }
 
 /// Startup readiness gate for the mediator DIDComm connection.
 ///
 /// On cold start a VTA can initiate its outbound mediator handshake before its
-/// own public DID document is externally reachable (the LB target isn't
-/// healthy yet). The mediator then can't fetch the VTA's `did.jsonl` to decrypt
-/// the authcrypt handshake, yielding a 503→403 retry storm and an LB 5XX
-/// burst. This gate makes the VTA poll its own public DID endpoint until it
-/// returns 200 before connecting. Only network-resolved DID methods
-/// (`did:webvh`) are gated; a `did:key` VTA has no external endpoint and skips
-/// the wait.
+/// own DID document is resolvable — the DID host hasn't published it, or the
+/// load-balancer target fronting it isn't healthy yet. The mediator
+/// authenticates the VTA by resolving that DID itself, so it can't get the key
+/// to decrypt the authcrypt handshake and rejects it, producing a burst of 403s.
+///
+/// This gate makes the VTA wait until its own DID **fully resolves over the
+/// network** — through the configured resolver, so it exercises the same path
+/// the mediator takes — before connecting. Only network-resolved methods
+/// (`did:webvh`, `did:web`) are gated; a `did:key` VTA resolves from its own
+/// identifier with no network fetch and skips the wait.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MediatorReadinessConfig {
     /// Enable the gate. Default `true`.
@@ -191,9 +195,8 @@ pub struct MediatorReadinessConfig {
     pub enabled: bool,
     /// Base (initial) seconds between probe attempts. The actual wait uses
     /// capped exponential backoff with full jitter — attempt `n` sleeps a
-    /// random duration in `[0, min(backoff_cap_secs, retry_secs * 2^n)]` — so
-    /// the VTA doesn't hammer its own (still-unhealthy) LB target while it
-    /// waits, keeping self-probe 5XX volume down. Default 5.
+    /// random duration in `[0, min(backoff_cap_secs, retry_secs * 2^n)]` — so a
+    /// fleet of VTAs coming up together doesn't probe in lock-step. Default 5.
     #[serde(default = "default_readiness_retry_secs")]
     pub retry_secs: u64,
     /// Upper bound on the per-attempt backoff interval (the "cap" in the
@@ -201,35 +204,48 @@ pub struct MediatorReadinessConfig {
     /// this. Default 30.
     #[serde(default = "default_readiness_backoff_cap_secs")]
     pub backoff_cap_secs: u64,
-    /// Maximum seconds to wait before applying `on_timeout`. Default 300.
+    /// Maximum seconds the gate waits before applying `on_timeout`. The wait is
+    /// cancellable: a shutdown signal abandons it immediately rather than
+    /// holding the process open for the remainder. Default 300.
     #[serde(default = "default_readiness_max_wait_secs")]
     pub max_wait_secs: u64,
     /// What to do when the gate times out. Default `skip`.
     #[serde(default)]
     pub on_timeout: ReadinessTimeoutPolicy,
-    /// Persistent reconnect supervisor. After the self-readiness
-    /// gate passes, the initial mediator connect can still fail — most commonly
-    /// because the mediator's *own* DNS resolver holds a negative-cache entry
-    /// for the VTA host and can't fetch our `did.jsonl` to complete the
-    /// authcrypt handshake (a `NetworkError{status_code:None}` → 403). That
-    /// clears itself once the mediator's negative cache expires, so rather than
-    /// give up until the next restart, keep retrying the connect with capped
-    /// exponential backoff + full jitter. Each attempt first re-confirms the
-    /// VTA can resolve its own DID over the network, so the mediator is never
-    /// touched while the VTA is unresolvable. Default `true`.
+    /// Persistent reconnect supervisor. After the self-readiness gate passes,
+    /// the mediator connect can still fail — most commonly because the
+    /// mediator's *own* resolver holds a negative-cache entry for the VTA host
+    /// and can't fetch our DID document to complete the authcrypt handshake
+    /// (a `NetworkError{status_code:None}` → 403). That clears itself once the
+    /// mediator's negative cache expires, so rather than give up until the next
+    /// restart, keep retrying with capped exponential backoff + full jitter.
+    /// Each attempt first re-confirms the VTA can resolve its own DID, so the
+    /// mediator is never touched while the VTA is unresolvable.
+    ///
+    /// This also covers an *established* session whose inbound loop ends: the
+    /// supervisor tears the session down and reconnects, instead of leaving the
+    /// VTA silently deaf until an operator restarts it. Setting this `false`
+    /// restores the legacy single-shot behaviour (one attempt, then nothing
+    /// until the next restart). Default `true`.
     #[serde(default = "default_true")]
     pub reconnect: bool,
     /// Upper bound on the reconnect backoff interval (seconds) — the "cap" for
     /// the persistent-reconnect scheme. The jittered retry wait never exceeds
-    /// this. Larger than `backoff_cap_secs` (the self-probe cap) because the
-    /// reconnect horizon must comfortably outlast a DNS negative-cache TTL,
+    /// this. Larger than `backoff_cap_secs` (the gate's cap) because the
+    /// reconnect horizon must comfortably outlast a resolver negative-cache TTL,
     /// which can be many minutes. Default 60.
     #[serde(default = "default_reconnect_backoff_cap_secs")]
     pub reconnect_backoff_cap_secs: u64,
-    /// Give up reconnecting after this many seconds. `0` = never give up (retry
-    /// forever at the capped, jittered interval). A bounded retry rate is safe
-    /// to run indefinitely and lets the VTA self-heal once the mediator's
-    /// negative cache expires without any operator restart. Default 0.
+    /// Give up reconnecting after this many seconds of *continuous* failure.
+    /// `0` = never give up (retry forever at the capped, jittered interval).
+    /// A bounded retry rate is safe to run indefinitely and lets the VTA
+    /// self-heal without any operator restart.
+    ///
+    /// The clock is measured from the start of the current run of failures, not
+    /// from process start, and resets after any session that stayed up long
+    /// enough to count as healthy — so a VTA that ran for a week and then
+    /// dropped gets the full budget rather than one it exhausted days ago.
+    /// Default 0.
     #[serde(default)]
     pub reconnect_max_elapsed_secs: u64,
 }

@@ -98,7 +98,7 @@ vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
 vta-audit = { path = "../vta-audit", version = "0.1" }
 # VTA configuration types (AppConfig + sub-configs), extracted and re-exported
 # as `crate::config`. The `tee` feature enables `vta-config/tee`.
-vta-config = { path = "../vta-config", version = "0.2" }
+vta-config = { path = "../vta-config", version = "0.3" }
 # Shared mid-layer services (contexts, seal, sealed_nonce_store), re-exported
 # as crate::{contexts,seal,sealed_nonce_store}.
 vta-support = { path = "../vta-support", version = "0.2" }

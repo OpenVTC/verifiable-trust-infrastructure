@@ -2,7 +2,7 @@
 name = "vta-policy"
 description = "VTA policy subsystem — the regorus (Rego) engine, the default policy bundle, consent model, and decision evaluators"
 readme = "README.md"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -12,7 +12,7 @@ repository.workspace = true
 
 [dependencies]
 vti-common = { path = "../vti-common", version = "0.11" }
-vta-config = { path = "../vta-config", version = "0.2" }
+vta-config = { path = "../vta-config", version = "0.3" }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
 regorus = { workspace = true }
 serde = { workspace = true }

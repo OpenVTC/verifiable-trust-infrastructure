@@ -349,6 +349,36 @@ new flow, update both this section and the relevant `docs/*.md`.
   backend (OS keyring by default; AWS/GCP/Azure via feature flags).
 - **Docs**: `docs/02-vta/cold-start.md`, `docs/02-vta/non-interactive-setup.md`.
 
+### Mediator connection (readiness gate + reconnect)
+- **What**: How the VTA establishes and *keeps* its outbound mediator DIDComm
+  connection. One background supervisor (`MessagingConnect`) owns the whole
+  lifecycle: gate → connect-with-retry → supervise session → reconnect.
+- **Gate**: waits until the VTA's own DID **fully resolves over the network**
+  before the first connect, because the mediator authenticates us by resolving
+  that DID itself. Resolution through the configured resolver is the whole check
+  — do **not** re-add an HTTP probe of the `did.jsonl` URL: a 200 doesn't imply
+  resolvability, and it tests the VTA's own egress to the DID host, which is the
+  wrong path (and unreachable) when egress is restricted to a resolver sidecar.
+  Only `did:webvh` / `did:web` are gated; `did:key` skips.
+- **Reconnect**: capped exponential backoff + full jitter, re-confirming
+  self-resolution before every attempt. Covers both a failed initial connect
+  (the mediator's own resolver negative-caching us, which clears on its own
+  timer) and an established session whose inbound loop ended.
+- **Invariants to preserve**: (1) nothing here may run on the startup path —
+  `server::run` must reach its shutdown select for a signal to be honoured;
+  (2) every `build_messaging` error path after `profile_add` must
+  `graceful_shutdown` the ATM — there is no `Drop` impl, and an abandoned socket
+  keeps auto-reconnecting while holding the mediator's one-socket-per-DID slot,
+  so a retry loop without teardown leaks one duelling socket per attempt;
+  (3) a session must last `MIN_HEALTHY_SESSION` before it resets the backoff,
+  else a flapping mediator gets retried at full rate.
+- **Code**: `vta-service/src/messaging/readiness.rs`,
+  `vta-service/src/server.rs` (`MessagingConnect`),
+  `vta-service/src/messaging/service.rs` (`build_messaging`,
+  `connect_transport`), `vta-config/src/lib.rs`
+  (`MediatorReadinessConfig`).
+- **Docs**: `docs/02-vta/mediator-connection.md`.
+
 ### VTC first-boot setup (VTA-provisioned)
 - **What**: Stands up a VTC by provisioning its DID + keys from a running
   VTA via the `vtc-host` DID template, then writing `config.toml`, the

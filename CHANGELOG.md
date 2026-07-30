@@ -2,26 +2,53 @@
 
 ## Unreleased
 
-### vta-service 0.13.19 / vta-config 0.2.1 / vta-backup 0.1.4 — mediator cold-start self-readiness gate + persistent reconnect (#876)
+### vta-service 0.13.19 / vta-config 0.3.0 / vta-backup 0.1.4 / vta-support 0.2.2 / vta-keys 0.1.4 / vta-policy 0.1.2 / vta-tee 0.1.4 — mediator readiness gate + connection supervisor (#876)
 
 Fixes a cold-start race where a freshly deployed VTA could fail to establish its
-mediator connection and stay disconnected. On startup, before the first connect
-attempt, the mediator DID and the VTA's own DID may not yet be resolvable
-(propagation / caching), so the initial DIDComm handshake is rejected and the
-service never retries.
+mediator connection and stay disconnected until an operator restarted it. The
+mediator authenticates a VTA by resolving that VTA's DID itself; on a cold start
+the DID document often isn't published yet, so the handshake is rejected — and
+the mediator's resolver negative-caches the failure, so the VTA's short retry
+burst fails too. It then gave up permanently.
 
-- **`vta-service`**: new `messaging::readiness` gate. Before connecting, the
-  service confirms its own DID resolves over the network; until it does, the
-  connect is deferred rather than attempted-and-failed. A `MessagingConnect`
-  supervisor then owns the mediator connection for the process lifetime,
-  reconnecting with capped exponential backoff and full jitter instead of
-  giving up after the first failure. Self-resolution honours the configured
-  remote resolver when one is set, matching how the rest of the service
-  resolves DIDs.
-- **`vta-config`**: `MediatorReadinessConfig` gains reconnect controls —
-  `reconnect` (enable/disable), `reconnect_backoff_cap_secs`, and
-  `reconnect_max_elapsed_secs`.
-- **`vta-backup`**: test-support constructor updated for the new config field.
+- **`vta-service`**: new `messaging::readiness` gate. Before connecting, the VTA
+  waits until its own DID **fully resolves over the network**, through the
+  configured resolver — the same operation the mediator performs, so a pass means
+  the mediator can authenticate us. Only `did:webvh` / `did:web` are gated;
+  `did:key` resolves without a network fetch and skips the wait.
+- **`vta-service`**: a `MessagingConnect` supervisor owns the mediator lifecycle
+  — gate, connect, and reconnect — with capped exponential backoff and full
+  jitter, re-confirming self-resolution before each attempt. It recovers both a
+  failed initial connect (once the mediator's negative cache expires) and an
+  established session whose inbound loop ended, where the VTA previously went
+  silently deaf for the rest of the process. Sessions shorter than 60s don't
+  reset the backoff, so a flapping mediator escalates rather than being retried
+  at full rate.
+- **`vta-service`**: the whole gate + reconnect runs in a background task.
+  Nothing blocks the startup path, so `/health` is live throughout and a
+  `SIGTERM` mid-gate is honoured immediately.
+- **`vta-service`**: `build_messaging` now tears the ATM down
+  (`graceful_shutdown`) on every error path after the profile is registered.
+  There is no `Drop` impl on `ATM`, so an abandoned socket keeps auto-reconnecting
+  while holding the mediator's one-socket-per-DID slot — without this a retrying
+  connect loop would leak one duelling socket per attempt. The 30s websocket
+  timeout is the sharp edge: it drops the future mid-flight, so the SDK's own
+  cleanup never runs.
+- **`vta-service`**: `DIDCommBridge` wiring is republishable rather than
+  set-once, so a reconnect actually re-points outbound sends at the new session
+  instead of silently leaving them on the dead one.
+- **`vta-config`** (breaking): `AppConfig` gains a `mediator_readiness` field,
+  and `MediatorReadinessConfig` / `ReadinessTimeoutPolicy` are new — `enabled`,
+  `retry_secs`, `backoff_cap_secs`, `max_wait_secs`, `on_timeout`, `reconnect`,
+  `reconnect_backoff_cap_secs`, `reconnect_max_elapsed_secs`. All default; the
+  defaults suit a normal LB/Kubernetes deployment. Minor bump because
+  `AppConfig` is not `#[non_exhaustive]`, so the new field breaks struct-literal
+  construction.
+- **`vta-backup`** / **`vta-support`** / **`vta-keys`** / **`vta-policy`** /
+  **`vta-tee`**: `vta-config` requirement moved to `0.3`; `vta-backup`'s
+  test-support constructor updated for the new field.
+- **Docs**: new `docs/02-vta/mediator-connection.md` (operator guide to the gate,
+  the supervisor, and every `[mediator_readiness]` setting).
 
 ### vta-backup 0.1.3 / vtc-service 0.11.45 / pnm-cli 0.11.16 / cnm-cli 0.11.13 / vta-sdk 0.20.27 — raise backup password minimum to 15 characters
 

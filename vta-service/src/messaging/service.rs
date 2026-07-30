@@ -90,14 +90,16 @@ pub async fn build_messaging(
         tdk.secrets_resolver().insert(secret).await;
     }
 
-    let atm = ATM::new(
-        ATMConfig::builder()
-            .build()
-            .map_err(|e| format!("build ATM config: {e}"))?,
-        Arc::new(tdk),
-    )
-    .await
-    .map_err(|e| format!("create ATM: {e}"))?;
+    let atm = Arc::new(
+        ATM::new(
+            ATMConfig::builder()
+                .build()
+                .map_err(|e| format!("build ATM config: {e}"))?,
+            Arc::new(tdk),
+        )
+        .await
+        .map_err(|e| format!("create ATM: {e}"))?,
+    );
 
     let profile = ATMProfile::new(
         &atm,
@@ -121,28 +123,25 @@ pub async fn build_messaging(
         .await
         .map_err(|e| format!("register ATM profile: {e}"))?;
 
-    // Bounded — a `did:webvh` mediator websocket connect can hang.
-    match tokio::time::timeout(
-        Duration::from_secs(30),
-        atm.profile_enable_websocket(&profile),
-    )
-    .await
-    {
-        Ok(res) => res.map_err(|e| format!("enable websocket: {e}"))?,
-        Err(_) => {
-            return Err(
-                "timeout enabling websocket to mediator after 30s — mediator may be unreachable"
-                    .to_string(),
-            );
+    // ── Past this point the ATM owns a registered profile and a live (or
+    // half-open) mediator websocket, so every error path MUST tear it down. ──
+    //
+    // There is no `Drop` impl on `ATM`: dropping it *abandons* the websocket
+    // task rather than ending it, and an abandoned socket keeps auto-reconnecting
+    // on its own timer while holding the mediator's one-socket-per-DID slot — so
+    // the next attempt gets evicted as `duplicate-channel` and the two reconnect
+    // loops duel. `graceful_shutdown` is what actually stops it (it iterates the
+    // profile map calling `stop_websocket`). This matters far more now that a
+    // failed connect is *retried* by `server::MessagingConnect`: without the
+    // teardown, that loop would leak one duelling socket per attempt.
+    let transport = match connect_transport(&atm, &profile).await {
+        Ok(transport) => transport,
+        Err(e) => {
+            atm.graceful_shutdown().await;
+            return Err(e);
         }
-    }
+    };
 
-    let atm = Arc::new(atm);
-    let transport: Arc<dyn MessageTransport> = Arc::new(
-        DidCommTransport::new((*atm).clone(), profile.clone())
-            .await
-            .map_err(|e| format!("bind DidComm transport: {e}"))?,
-    );
     let outbox: Arc<dyn OutboxStore> = Arc::new(VtiOutboxStore::new(outbox_ks));
     // P2a uses `new` (not `with_receipts`) — no layer-receipt *emit* yet (P2b);
     // the consume half is always active, so the VTA settles its own sends.
@@ -173,6 +172,45 @@ pub async fn build_messaging(
         atm,
         profile,
     })
+}
+
+/// Enable the mediator websocket (bounded) and bind the [`DidCommTransport`]
+/// over it.
+///
+/// Split out of [`build_messaging`] so the two fallible steps that leave a live
+/// socket behind have a *single* error chokepoint the caller can tear down from
+/// — see the comment at the call site.
+async fn connect_transport(
+    atm: &Arc<ATM>,
+    profile: &Arc<ATMProfile>,
+) -> Result<Arc<dyn MessageTransport>, String> {
+    // Bounded — a `did:webvh` mediator websocket connect can hang.
+    //
+    // NB: when this timeout fires, the `profile_enable_websocket` future is
+    // dropped mid-flight, so the SDK's own `cleanup_failed_websocket` (which its
+    // internal error path relies on) never runs. The caller's
+    // `graceful_shutdown` is what compensates — do not "simplify" this to a bare
+    // `?` that skips it.
+    match tokio::time::timeout(
+        Duration::from_secs(30),
+        atm.profile_enable_websocket(profile),
+    )
+    .await
+    {
+        Ok(res) => res.map_err(|e| format!("enable websocket: {e}"))?,
+        Err(_) => {
+            return Err(
+                "timeout enabling websocket to mediator after 30s — mediator may be unreachable"
+                    .to_string(),
+            );
+        }
+    }
+
+    Ok(Arc::new(
+        DidCommTransport::new((**atm).clone(), profile.clone())
+            .await
+            .map_err(|e| format!("bind DidComm transport: {e}"))?,
+    ))
 }
 
 /// Drive inbound dispatch off [`MessagingService::subscribe`] until shutdown.
