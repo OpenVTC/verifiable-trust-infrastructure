@@ -2,7 +2,7 @@
 name = "vta-webvh"
 description = "WebVH hosting infrastructure for the VTA — the DID-record store, the HTTP client to a did:webvh hosting server, and its DID-auth handshake"
 readme = "README.md"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true

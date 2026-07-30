@@ -618,23 +618,30 @@ impl WebvhClient {
         Ok(())
     }
 
-    /// POST /api/agent-names/{op} — bind (`set`), release (`remove`), park
-    /// (`disable`) or resume (`enable`) an agent name via a signed new DID
-    /// version.
+    /// POST /api/agent-names/{op} — set an agent name's binding state
+    /// (`update`, with `state: active | parked`) or release it (`remove`), via
+    /// a signed new DID version.
     ///
     /// `did_log` is the full new signed `did.jsonl` whose `alsoKnownAs` claims
-    /// (`set`/`enable`) or no longer claims (`remove`/`disable`) the name; the
-    /// host verifies that direction matches the verb, republishes the log as a
-    /// new version, and applies the registry change in one commit.
+    /// (`state: active`) or no longer claims (`remove` / `state: parked`) the
+    /// name; the host verifies that direction matches the request, republishes
+    /// the log as a new version, and applies the registry change in one commit.
     ///
-    /// One generic call rather than four wrappers: the request body is
-    /// identical for every verb, so the only thing a wrapper would add is a
-    /// place for the endpoint and the document direction to disagree.
+    /// `state` is `None` for `remove`, which carries no state, and omitted from
+    /// the body in that case — `remove`'s handler rejects unknown fields'
+    /// siblings, and a `null` state on a task that has none is a wire lie.
+    ///
+    /// One generic call rather than a wrapper per verb: the body differs only
+    /// by `state`, so the only thing wrappers would add is a place for the
+    /// endpoint and the document direction to disagree. `/api/agent-names/`
+    /// `{set,enable,disable}` no longer exist on the host — they were folded
+    /// into `update` in did-hosting 0.8.3 and now 404.
     pub async fn agent_name_op(
         &self,
         op: &str,
         mnemonic: &str,
         name: &str,
+        state: Option<&str>,
         did_log: &str,
         domain: Option<&str>,
     ) -> Result<(), AppError> {
@@ -653,6 +660,12 @@ impl WebvhClient {
             "didLog".to_string(),
             serde_json::Value::String(did_log.to_string()),
         );
+        if let Some(s) = state {
+            body.insert(
+                "state".to_string(),
+                serde_json::Value::String(s.to_string()),
+            );
+        }
         if let Some(d) = domain {
             body.insert(
                 "domain".to_string(),
@@ -1432,12 +1445,23 @@ mod tests {
         );
     }
 
+    /// Parking a name posts `update` with `state: parked` — NOT the retired
+    /// `/api/agent-names/disable`, which 404s on any host from did-hosting
+    /// 0.8.3 onward. The mock only answers `update`, so a regression back to
+    /// the old endpoint fails here rather than in the field.
     #[tokio::test]
-    async fn agent_name_disable_posts_bearer_authed_body() {
+    async fn agent_name_park_posts_update_with_parked_state() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/agent-names/disable"))
+            .and(path("/api/agent-names/update"))
             .and(header("Authorization", "Bearer tok-1"))
+            .and(body_json(json!({
+                "mnemonic": "alice",
+                "name": "alice",
+                "didLog": "<jsonl>",
+                "state": "parked",
+                "domain": "example.com",
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "record": {} })))
             .expect(1)
             .mount(&server)
@@ -1446,16 +1470,23 @@ mod tests {
         let mut client = WebvhClient::new(&server.uri(), "did:web:daemon-mock.example").unwrap();
         client.set_access_token("tok-1".to_string());
         client
-            .agent_name_op("disable", "alice", "alice", "<jsonl>", Some("example.com"))
+            .agent_name_op(
+                "update",
+                "alice",
+                "alice",
+                Some("parked"),
+                "<jsonl>",
+                Some("example.com"),
+            )
             .await
-            .expect("disable should POST and succeed");
+            .expect("park should POST update and succeed");
     }
 
     #[tokio::test]
-    async fn agent_name_enable_maps_403_to_forbidden() {
+    async fn agent_name_update_maps_403_to_forbidden() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/agent-names/enable"))
+            .and(path("/api/agent-names/update"))
             .respond_with(ResponseTemplate::new(403).set_body_string("not the owner"))
             .expect(1)
             .mount(&server)
@@ -1464,7 +1495,7 @@ mod tests {
         let mut client = WebvhClient::new(&server.uri(), "did:web:daemon-mock.example").unwrap();
         client.set_access_token("tok-1".to_string());
         let err = client
-            .agent_name_op("enable", "alice", "alice", "<jsonl>", None)
+            .agent_name_op("update", "alice", "alice", Some("active"), "<jsonl>", None)
             .await
             .unwrap_err();
         assert!(
@@ -1473,22 +1504,35 @@ mod tests {
         );
     }
 
-    /// Every verb hits its own endpoint and carries the same body. The name
-    /// is what the caller passes, not a fixed `alice` — a wrapper that
-    /// transposed arguments would still pass a same-value test.
+    /// Each host task hits its own endpoint and carries the state it was
+    /// given. The name is what the caller passes, not a fixed `alice` — a
+    /// wrapper that transposed arguments would still pass a same-value test.
+    ///
+    /// `remove` carries no `state` **key at all**: the field is absent, not
+    /// `null`. The host's remove body has no such field, and asserting the
+    /// exact body is what pins that — `body_json` is an equality check, so a
+    /// stray `"state": null` fails this.
     #[tokio::test]
-    async fn agent_name_op_routes_each_verb_to_its_endpoint() {
-        for verb in ["set", "remove", "enable", "disable"] {
+    async fn agent_name_op_routes_each_host_task_with_its_state() {
+        for (op, state) in [
+            ("update", Some("active")),
+            ("update", Some("parked")),
+            ("remove", None),
+        ] {
             let server = MockServer::start().await;
+            let mut expected = json!({
+                "mnemonic": "slot-one",
+                "name": "bob",
+                "didLog": "<jsonl>",
+                "domain": "example.com",
+            });
+            if let Some(s) = state {
+                expected["state"] = json!(s);
+            }
             Mock::given(method("POST"))
-                .and(path(format!("/api/agent-names/{verb}")))
+                .and(path(format!("/api/agent-names/{op}")))
                 .and(header("Authorization", "Bearer tok-1"))
-                .and(body_json(json!({
-                    "mnemonic": "slot-one",
-                    "name": "bob",
-                    "didLog": "<jsonl>",
-                    "domain": "example.com",
-                })))
+                .and(body_json(expected))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "record": {} })))
                 .expect(1)
                 .mount(&server)
@@ -1498,9 +1542,9 @@ mod tests {
                 WebvhClient::new(&server.uri(), "did:web:daemon-mock.example").unwrap();
             client.set_access_token("tok-1".to_string());
             client
-                .agent_name_op(verb, "slot-one", "bob", "<jsonl>", Some("example.com"))
+                .agent_name_op(op, "slot-one", "bob", state, "<jsonl>", Some("example.com"))
                 .await
-                .unwrap_or_else(|e| panic!("{verb} should POST and succeed: {e:?}"));
+                .unwrap_or_else(|e| panic!("{op}/{state:?} should POST and succeed: {e:?}"));
         }
     }
 
@@ -1595,10 +1639,10 @@ mod tests {
     /// error, not a generic failure — the client has to render "pick another
     /// name" differently from "you don't control this DID".
     #[tokio::test]
-    async fn agent_name_set_surfaces_a_taken_name() {
+    async fn agent_name_bind_surfaces_a_taken_name() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/agent-names/set"))
+            .and(path("/api/agent-names/update"))
             .respond_with(ResponseTemplate::new(409).set_body_json(json!({
                 "code": "did-management:name_taken",
                 "message": "agent name is already taken",
@@ -1610,7 +1654,14 @@ mod tests {
         let mut client = WebvhClient::new(&server.uri(), "did:web:daemon-mock.example").unwrap();
         client.set_access_token("tok-1".to_string());
         let err = client
-            .agent_name_op("set", "slot-one", "alice", "<jsonl>", None)
+            .agent_name_op(
+                "update",
+                "slot-one",
+                "alice",
+                Some("active"),
+                "<jsonl>",
+                None,
+            )
             .await
             .unwrap_err();
         let rendered = format!("{err:?}");

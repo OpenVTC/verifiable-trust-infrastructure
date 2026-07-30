@@ -61,9 +61,14 @@ use crate::webvh_client::RequestUriResponse;
 const TASK_DID_CHECK_NAME: &str = "https://trusttasks.org/spec/did-management/did/check-name/0.1";
 const TASK_DID_CHECK_NAME_RESPONSE: &str =
     "https://trusttasks.org/spec/did-management/did/check-name/0.1#response";
-const TASK_DID_PUBLISH: &str = "https://trusttasks.org/spec/did-management/did/publish/0.1";
-const TASK_DID_PUBLISH_RESPONSE: &str =
-    "https://trusttasks.org/spec/did-management/did/publish/0.1#response";
+// `did/publish/0.1` is NOT sent. did-hosting 0.8.3 retired it — spec
+// `supersededBy: did/register` — so the host's DIDComm router has no arm for
+// it and its fallback drops the message without replying, which cost every
+// server-managed publish a 30s `send_and_wait` timeout surfaced as a 500
+// (affinidi-webvh-service#144). `publish_did` below sends `did/register/0.1`
+// instead: on the host, an owner re-registering their own slot IS a publish —
+// same content replace, version bump, `created_at` preservation and
+// agent-name reconcile, in one batch.
 const TASK_DID_REGISTER: &str = "https://trusttasks.org/spec/did-management/did/register/0.1";
 const TASK_DID_REGISTER_RESPONSE: &str =
     "https://trusttasks.org/spec/did-management/did/register/0.1#response";
@@ -79,21 +84,20 @@ const TASK_DID_PROBLEM_REPORT: &str =
 // `spec/did-management/...` family as the verbs above; the server answers
 // them from the same `did_ops` functions its REST routes use, so the two
 // transports return identical payloads.
-const TASK_AGENT_NAME_SET: &str = "https://trusttasks.org/spec/did-management/agent-name/set/0.1";
-const TASK_AGENT_NAME_SET_RESPONSE: &str =
-    "https://trusttasks.org/spec/did-management/agent-name/set/0.1#response";
+// One declarative `update` carrying `state: active | parked` replaced the
+// `set` / `enable` / `disable` trio in did-hosting 0.8.3, alongside the
+// `did/publish` retirement above and for the same reason — those three URIs
+// now hit the host's silent fallback. `remove` stays a separate destructive
+// task. The VTA's own *inbound* four-verb surface is unchanged; the collapse
+// is a property of the host wire only (see `AgentNameVerb::host_endpoint`).
+const TASK_AGENT_NAME_UPDATE: &str =
+    "https://trusttasks.org/spec/did-management/agent-name/update/0.1";
+const TASK_AGENT_NAME_UPDATE_RESPONSE: &str =
+    "https://trusttasks.org/spec/did-management/agent-name/update/0.1#response";
 const TASK_AGENT_NAME_REMOVE: &str =
     "https://trusttasks.org/spec/did-management/agent-name/remove/0.1";
 const TASK_AGENT_NAME_REMOVE_RESPONSE: &str =
     "https://trusttasks.org/spec/did-management/agent-name/remove/0.1#response";
-const TASK_AGENT_NAME_ENABLE: &str =
-    "https://trusttasks.org/spec/did-management/agent-name/enable/0.1";
-const TASK_AGENT_NAME_ENABLE_RESPONSE: &str =
-    "https://trusttasks.org/spec/did-management/agent-name/enable/0.1#response";
-const TASK_AGENT_NAME_DISABLE: &str =
-    "https://trusttasks.org/spec/did-management/agent-name/disable/0.1";
-const TASK_AGENT_NAME_DISABLE_RESPONSE: &str =
-    "https://trusttasks.org/spec/did-management/agent-name/disable/0.1#response";
 const TASK_AGENT_NAME_LIST: &str = "https://trusttasks.org/spec/did-management/agent-name/list/0.1";
 const TASK_AGENT_NAME_LIST_RESPONSE: &str =
     "https://trusttasks.org/spec/did-management/agent-name/list/0.1#response";
@@ -119,6 +123,49 @@ fn build_check_name_body(
         body.insert("path".to_string(), serde_json::Value::String(p.to_string()));
     }
     body.insert("reserve".to_string(), serde_json::Value::Bool(true));
+    if let Some(d) = domain {
+        body.insert(
+            "domain".to_string(),
+            serde_json::Value::String(d.to_string()),
+        );
+    }
+    body
+}
+
+/// Build the `did/register/0.1` body.
+///
+/// Serves both callers of the register task: the atomic claim-and-publish and
+/// — since did-hosting retired `did/publish/0.1` in favour of it — the plain
+/// "publish the log for a slot I own" path, where `path` is the reserved
+/// slot's mnemonic and `force` is false.
+///
+/// Extracted so the body is assertable without a live bridge; the publish
+/// regression this pins was a silent 30s timeout, which no unit test built on
+/// `send_and_wait` would have caught.
+fn build_register_body(
+    path: &str,
+    did_log: &str,
+    force: bool,
+    domain: Option<&str>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut body = serde_json::Map::new();
+    body.insert(
+        "path".to_string(),
+        serde_json::Value::String(path.to_string()),
+    );
+    body.insert(
+        "method".to_string(),
+        serde_json::Value::String("webvh".to_string()),
+    );
+    // v0.1 spec names this field `didData`; the legacy
+    // did-hosting-control alias map normalises legacy `did_log`
+    // → `didData` server-side, so passing the canonical name
+    // works on both old and new hosts.
+    body.insert(
+        "didData".to_string(),
+        serde_json::Value::String(did_log.to_string()),
+    );
+    body.insert("force".to_string(), serde_json::Value::Bool(force));
     if let Some(d) = domain {
         body.insert(
             "domain".to_string(),
@@ -245,37 +292,12 @@ impl<'a> WebvhDIDCommClient<'a> {
         force: bool,
         domain: Option<&str>,
     ) -> Result<RequestUriResponse, AppError> {
-        let mut body = serde_json::Map::new();
-        body.insert(
-            "path".to_string(),
-            serde_json::Value::String(path.to_string()),
-        );
-        body.insert(
-            "method".to_string(),
-            serde_json::Value::String("webvh".to_string()),
-        );
-        // v0.1 spec names this field `didData`; the legacy
-        // did-hosting-control alias map normalises legacy `did_log`
-        // → `didData` server-side, so passing the canonical name
-        // works on both old and new hosts.
-        body.insert(
-            "didData".to_string(),
-            serde_json::Value::String(did_log.to_string()),
-        );
-        body.insert("force".to_string(), serde_json::Value::Bool(force));
-        if let Some(d) = domain {
-            body.insert(
-                "domain".to_string(),
-                serde_json::Value::String(d.to_string()),
-            );
-        }
-
         let response = self
             .bridge
             .send_and_wait(
                 self.server_did,
                 TASK_DID_REGISTER,
-                serde_json::Value::Object(body),
+                serde_json::Value::Object(build_register_body(path, did_log, force, domain)),
                 TASK_DID_REGISTER_RESPONSE,
                 TASK_DID_PROBLEM_REPORT,
                 30,
@@ -309,48 +331,34 @@ impl<'a> WebvhDIDCommClient<'a> {
         Ok(RequestUriResponse { mnemonic, did_url })
     }
 
-    /// Publish a DID log to the remote (v0.1
-    /// `did-management/did/publish/0.1`). The `domain` argument is
-    /// accepted for disambiguation when the remote runs per-domain
-    /// mnemonic namespaces; consumers that haven't enabled per-domain
-    /// namespacing treat it as a no-op on the lookup.
+    /// Publish a DID log to the remote as an owner re-register (v0.1
+    /// `did-management/did/register/0.1`).
+    ///
+    /// Carries the slot's `mnemonic` as the register `path` — the host keys
+    /// the slot on that path either way, and re-registering a slot you already
+    /// own is idempotent: content is replaced in-batch (never a half-updated
+    /// slot from a resolver's view), `version_count` bumps, `created_at` is
+    /// preserved, and the agent-name registry is reconciled against the new
+    /// document. That is the retired publish verb's behaviour exactly, which is
+    /// why the spec supersedes one with the other.
+    ///
+    /// `force` is always false: this call means "publish the log for a slot I
+    /// own", and forcing is how you'd take a slot from *another* owner. A
+    /// genuine ownership conflict must surface as a conflict, not be papered
+    /// over by a publish.
+    ///
+    /// The `domain` argument is accepted for disambiguation when the remote
+    /// runs per-domain mnemonic namespaces; consumers that haven't enabled
+    /// per-domain namespacing treat it as a no-op on the lookup.
     pub async fn publish_did(
         &self,
         mnemonic: &str,
         log_content: &str,
         domain: Option<&str>,
     ) -> Result<(), AppError> {
-        let mut body = serde_json::Map::new();
-        body.insert(
-            "mnemonic".to_string(),
-            serde_json::Value::String(mnemonic.to_string()),
-        );
-        body.insert(
-            "method".to_string(),
-            serde_json::Value::String("webvh".to_string()),
-        );
-        body.insert(
-            "didData".to_string(),
-            serde_json::Value::String(log_content.to_string()),
-        );
-        if let Some(d) = domain {
-            body.insert(
-                "domain".to_string(),
-                serde_json::Value::String(d.to_string()),
-            );
-        }
-
-        self.bridge
-            .send_and_wait(
-                self.server_did,
-                TASK_DID_PUBLISH,
-                serde_json::Value::Object(body),
-                TASK_DID_PUBLISH_RESPONSE,
-                TASK_DID_PROBLEM_REPORT,
-                30,
-            )
-            .await?;
-        Ok(())
+        self.register_did_atomic(mnemonic, log_content, false, domain)
+            .await
+            .map(|_| ())
     }
 
     /// Soft-delete a DID on the remote (v0.1
@@ -383,11 +391,15 @@ impl<'a> WebvhDIDCommClient<'a> {
 
     // ── Agent names ────────────────────────────────────────────────────
     //
-    // The four mutating verbs share a body and a `{record}` response, so they
+    // Both mutating tasks share a body and a `{record}` response, so they
     // share one submit. `didLog` carries the newly signed document: the server
-    // requires `set`/`enable` to claim the name in `alsoKnownAs` and
-    // `remove`/`disable` not to, which is what makes the registry and the
-    // document agree.
+    // requires `state: active` to claim the name in `alsoKnownAs` and
+    // `remove`/`state: parked` not to, which is what makes the registry and
+    // the document agree.
+    //
+    // `didLog` — not the spec's `didData` — is deliberate: it is the canonical
+    // field name on `remove` and an accepted alias on `update`, so one
+    // spelling satisfies both tasks.
 
     async fn agent_name_verb(
         &self,
@@ -395,6 +407,7 @@ impl<'a> WebvhDIDCommClient<'a> {
         response_task: &str,
         mnemonic: &str,
         name: &str,
+        state: Option<&str>,
         did_log: &str,
         domain: Option<&str>,
     ) -> Result<(), AppError> {
@@ -402,6 +415,9 @@ impl<'a> WebvhDIDCommClient<'a> {
         body.insert("mnemonic".to_string(), serde_json::json!(mnemonic));
         body.insert("name".to_string(), serde_json::json!(name));
         body.insert("didLog".to_string(), serde_json::json!(did_log));
+        if let Some(s) = state {
+            body.insert("state".to_string(), serde_json::json!(s));
+        }
         if let Some(d) = domain {
             body.insert("domain".to_string(), serde_json::json!(d));
         }
@@ -418,19 +434,28 @@ impl<'a> WebvhDIDCommClient<'a> {
         Ok(())
     }
 
-    /// Bind or refresh `name` on `mnemonic`.
-    pub async fn set_agent_name(
+    /// Set `name`'s binding state on `mnemonic` — `active` to bind, refresh,
+    /// or resume it; `parked` to stop it resolving while keeping it reserved
+    /// to this DID.
+    ///
+    /// One call for what used to be `set`, `enable`, and `disable`: the host
+    /// takes the desired end state and the document that must agree with it,
+    /// so "bind" and "resume" are the same request and idempotent by
+    /// construction.
+    pub async fn update_agent_name(
         &self,
         mnemonic: &str,
         name: &str,
+        state: &str,
         did_log: &str,
         domain: Option<&str>,
     ) -> Result<(), AppError> {
         self.agent_name_verb(
-            TASK_AGENT_NAME_SET,
-            TASK_AGENT_NAME_SET_RESPONSE,
+            TASK_AGENT_NAME_UPDATE,
+            TASK_AGENT_NAME_UPDATE_RESPONSE,
             mnemonic,
             name,
+            Some(state),
             did_log,
             domain,
         )
@@ -450,44 +475,7 @@ impl<'a> WebvhDIDCommClient<'a> {
             TASK_AGENT_NAME_REMOVE_RESPONSE,
             mnemonic,
             name,
-            did_log,
-            domain,
-        )
-        .await
-    }
-
-    /// Resume serving a parked `name`.
-    pub async fn enable_agent_name(
-        &self,
-        mnemonic: &str,
-        name: &str,
-        did_log: &str,
-        domain: Option<&str>,
-    ) -> Result<(), AppError> {
-        self.agent_name_verb(
-            TASK_AGENT_NAME_ENABLE,
-            TASK_AGENT_NAME_ENABLE_RESPONSE,
-            mnemonic,
-            name,
-            did_log,
-            domain,
-        )
-        .await
-    }
-
-    /// Park `name` — it stops resolving but stays reserved to this DID.
-    pub async fn disable_agent_name(
-        &self,
-        mnemonic: &str,
-        name: &str,
-        did_log: &str,
-        domain: Option<&str>,
-    ) -> Result<(), AppError> {
-        self.agent_name_verb(
-            TASK_AGENT_NAME_DISABLE,
-            TASK_AGENT_NAME_DISABLE_RESPONSE,
-            mnemonic,
-            name,
+            None,
             did_log,
             domain,
         )
@@ -566,7 +554,78 @@ impl<'a> WebvhDIDCommClient<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_check_name_body, parse_check_name_response};
+    use super::{
+        TASK_AGENT_NAME_LIST, TASK_AGENT_NAME_REMOVE, TASK_AGENT_NAME_UPDATE, TASK_DID_CHECK_NAME,
+        TASK_DID_DELETE, TASK_DID_REGISTER, build_check_name_body, build_register_body,
+        parse_check_name_response,
+    };
+
+    /// None of the tasks this client sends may be one did-hosting retired in
+    /// 0.8.3 (`did/publish`, `agent-name/{set,enable,disable}`). Those URIs
+    /// have no route on the host, and its DIDComm fallback drops an unrouted
+    /// type **without replying** — so the failure mode is a 30s `send_and_wait`
+    /// timeout surfaced as a 500, not an error naming the task. That is what
+    /// broke every server-managed publish, and what made it hard to see.
+    ///
+    /// Asserted over the constants rather than per-call-site: adding a retired
+    /// URI back is the regression, and it can only enter through one of these.
+    #[test]
+    fn no_task_constant_names_a_retired_verb() {
+        const RETIRED: &[&str] = &[
+            "did/publish/",
+            "agent-name/set/",
+            "agent-name/enable/",
+            "agent-name/disable/",
+        ];
+        for task in [
+            TASK_DID_CHECK_NAME,
+            TASK_DID_REGISTER,
+            TASK_DID_DELETE,
+            TASK_AGENT_NAME_UPDATE,
+            TASK_AGENT_NAME_REMOVE,
+            TASK_AGENT_NAME_LIST,
+        ] {
+            for retired in RETIRED {
+                assert!(
+                    !task.contains(retired),
+                    "{task} names `{retired}`, retired by did-hosting 0.8.3 — \
+                     the host will drop it silently and the caller will hang 30s"
+                );
+            }
+        }
+    }
+
+    /// A publish is a register of the slot we already own: the mnemonic
+    /// travels as `path`, the log as `didData`, and `force` is false.
+    ///
+    /// `force: false` is the load-bearing part. Forcing is how a *different*
+    /// owner takes a slot, so a forced publish would convert a genuine
+    /// ownership conflict into a silent takeover — the opposite of what a
+    /// publish means.
+    #[test]
+    fn publish_registers_the_owned_slot_without_forcing() {
+        let body = build_register_body("brave-otter", "<jsonl>", false, None);
+        assert_eq!(body.get("path"), Some(&serde_json::json!("brave-otter")));
+        assert_eq!(body.get("didData"), Some(&serde_json::json!("<jsonl>")));
+        assert_eq!(body.get("force"), Some(&serde_json::json!(false)));
+        assert_eq!(body.get("method"), Some(&serde_json::json!("webvh")));
+        assert!(!body.contains_key("domain"));
+        // The retired verb's field name must not leak into the register body:
+        // the host keys the slot on `path`, and a `mnemonic` key would be
+        // silently ignored, publishing nothing while appearing to succeed.
+        assert!(!body.contains_key("mnemonic"));
+    }
+
+    /// `domain` rides along on register exactly as it does on check-name.
+    #[test]
+    fn register_body_includes_domain_when_present() {
+        let body = build_register_body("brave-otter", "<jsonl>", true, Some("acme.example.com"));
+        assert_eq!(
+            body.get("domain"),
+            Some(&serde_json::json!("acme.example.com"))
+        );
+        assert_eq!(body.get("force"), Some(&serde_json::json!(true)));
+    }
 
     /// Regression for `e.p.did.path-invalid`: auto-assign (`path == None`)
     /// must OMIT the `path` field, not send `""`. The host rejects a

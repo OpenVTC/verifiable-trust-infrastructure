@@ -120,13 +120,51 @@ pub enum AgentNameVerb {
 }
 
 impl AgentNameVerb {
-    /// The host endpoint segment — `POST /api/agent-names/{op}`.
-    pub fn endpoint(self) -> &'static str {
+    /// The verb's own name — operator-facing labels, logs, and the
+    /// `agent-name/{verb}/0.1` Trust Task the VTA *serves* to its clients.
+    ///
+    /// Deliberately not the host wire name: did-hosting collapsed
+    /// set/enable/disable into one declarative task (see [`Self::host_endpoint`]),
+    /// but the VTA's own inbound surface still has four verbs, and an operator
+    /// asking to park a name should see "disable", not "update".
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Set => "set",
             Self::Remove => "remove",
             Self::Enable => "enable",
             Self::Disable => "disable",
+        }
+    }
+
+    /// The host's endpoint segment / task verb — `POST /api/agent-names/{op}`
+    /// and `did-management/agent-name/{op}/0.1`.
+    ///
+    /// did-hosting 0.8.3 retired the `set` / `enable` / `disable` trio in
+    /// favour of one declarative `update` carrying [`Self::host_state`]
+    /// (affinidi-webvh-service#144). Three of our four verbs are therefore the
+    /// same host operation distinguished only by the desired state; `remove`
+    /// stays its own destructive task. Sending the retired names cost the
+    /// caller a silent 30s timeout on DIDComm and a 404 on REST, because the
+    /// host's DIDComm fallback drops an unrouted type without replying.
+    pub fn host_endpoint(self) -> &'static str {
+        match self {
+            Self::Set | Self::Enable | Self::Disable => "update",
+            Self::Remove => "remove",
+        }
+    }
+
+    /// The `state` field on `agent-name/update/0.1` — `None` for `remove`,
+    /// which carries no state.
+    ///
+    /// `active` and `parked` are the two values of did-hosting's
+    /// `AgentNameState`; they align with [`Self::claims_name`] by
+    /// construction, since a name is served exactly when the document claims
+    /// it.
+    pub fn host_state(self) -> Option<&'static str> {
+        match self {
+            Self::Set | Self::Enable => Some("active"),
+            Self::Disable => Some("parked"),
+            Self::Remove => None,
         }
     }
 
@@ -302,7 +340,7 @@ pub async fn agent_name_op(
 
     let opts = UpdateDidWebvhOptions {
         document: Some(document),
-        label: Some(format!("agent-name/{}", verb.endpoint())),
+        label: Some(format!("agent-name/{}", verb.as_str())),
         ..Default::default()
     };
 
@@ -1106,15 +1144,66 @@ mod agent_name_tests {
     use super::{AgentNameVerb, domain_from_webvh_did, edit_agent_name, is_agent_name};
     use serde_json::{Value, json};
 
-    /// Each verb maps to its own host endpoint. A transposition here would
-    /// send `remove` to `disable` — releasing a name the caller meant to
-    /// park, or the reverse — and nothing downstream could detect it.
+    /// Each verb keeps its own operator-facing name. These are what an
+    /// operator reads on a label and what the VTA's own inbound
+    /// `agent-name/{verb}/0.1` tasks are called — they did NOT collapse when
+    /// the host wire did.
     #[test]
-    fn verbs_map_to_distinct_endpoints() {
-        assert_eq!(AgentNameVerb::Set.endpoint(), "set");
-        assert_eq!(AgentNameVerb::Remove.endpoint(), "remove");
-        assert_eq!(AgentNameVerb::Enable.endpoint(), "enable");
-        assert_eq!(AgentNameVerb::Disable.endpoint(), "disable");
+    fn verbs_keep_distinct_operator_facing_names() {
+        assert_eq!(AgentNameVerb::Set.as_str(), "set");
+        assert_eq!(AgentNameVerb::Remove.as_str(), "remove");
+        assert_eq!(AgentNameVerb::Enable.as_str(), "enable");
+        assert_eq!(AgentNameVerb::Disable.as_str(), "disable");
+    }
+
+    /// The host wire mapping. did-hosting 0.8.3 serves only `update` (with a
+    /// declarative `state`) and `remove`; `set` / `enable` / `disable` are
+    /// retired and answer 404 on REST and *nothing at all* on DIDComm, where
+    /// an unrouted type is dropped without a reply — so a regression here
+    /// costs a 30s timeout, not an error. Pinned per-verb rather than by
+    /// counting, so re-adding a retired name fails here.
+    #[test]
+    fn verbs_map_onto_the_hosts_two_tasks() {
+        assert_eq!(AgentNameVerb::Set.host_endpoint(), "update");
+        assert_eq!(AgentNameVerb::Enable.host_endpoint(), "update");
+        assert_eq!(AgentNameVerb::Disable.host_endpoint(), "update");
+        assert_eq!(AgentNameVerb::Remove.host_endpoint(), "remove");
+
+        assert_eq!(AgentNameVerb::Set.host_state(), Some("active"));
+        assert_eq!(AgentNameVerb::Enable.host_state(), Some("active"));
+        assert_eq!(AgentNameVerb::Disable.host_state(), Some("parked"));
+        // `remove` carries no state — the field must be absent, not `null`.
+        assert_eq!(AgentNameVerb::Remove.host_state(), None);
+    }
+
+    /// The requested state and the document direction are the same fact told
+    /// twice, so they must agree: `active` iff the document claims the name.
+    /// This is the assertion that catches a transposition — mapping `Disable`
+    /// to `active` would ask the host to serve a name while handing it a
+    /// document that dropped the claim, and the host would reject it with
+    /// `also_known_as_mismatch` at runtime instead of here.
+    #[test]
+    fn host_state_agrees_with_the_claim_direction() {
+        for verb in [
+            AgentNameVerb::Set,
+            AgentNameVerb::Remove,
+            AgentNameVerb::Enable,
+            AgentNameVerb::Disable,
+        ] {
+            match verb.host_state() {
+                Some("active") => assert!(
+                    verb.claims_name(),
+                    "{} asks for `active` so its document must claim the name",
+                    verb.as_str()
+                ),
+                Some("parked") | None => assert!(
+                    !verb.claims_name(),
+                    "{} takes the name out of service so its document must not claim it",
+                    verb.as_str()
+                ),
+                other => panic!("{} has an unknown host state {other:?}", verb.as_str()),
+            }
+        }
     }
 
     /// The document direction per verb, which must match did-hosting's
@@ -1152,7 +1241,7 @@ mod agent_name_tests {
                 claimed,
                 verb.claims_name(),
                 "{} must leave the document {} the name",
-                verb.endpoint(),
+                verb.as_str(),
                 if verb.claims_name() {
                     "claiming"
                 } else {
@@ -1167,7 +1256,7 @@ mod agent_name_tests {
                 .get("alsoKnownAs")
                 .and_then(|v| v.as_array())
                 .is_some_and(|l| l.iter().any(|v| is_agent_name(v, "example.com", "alice")));
-            assert_eq!(claimed, verb.claims_name(), "{}", verb.endpoint());
+            assert_eq!(claimed, verb.claims_name(), "{}", verb.as_str());
         }
     }
 

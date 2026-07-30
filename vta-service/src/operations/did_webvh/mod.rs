@@ -1754,31 +1754,31 @@ impl<'a> WebvhTransport<'a> {
                 bridge, server_did, ..
             } => {
                 let client = WebvhDIDCommClient::new(bridge, server_did);
-                return match verb {
-                    update::AgentNameVerb::Set => {
-                        client.set_agent_name(mnemonic, name, did_log, domain).await
+                // `host_state()` is `Some` for exactly the three verbs the
+                // host serves via `update` and `None` for `remove`, so this
+                // match is the verb→task mapping — no second place for the
+                // two transports to disagree about which task a verb is.
+                return match verb.host_state() {
+                    Some(state) => {
+                        client
+                            .update_agent_name(mnemonic, name, state, did_log, domain)
+                            .await
                     }
-                    update::AgentNameVerb::Remove => {
+                    None => {
                         client
                             .remove_agent_name(mnemonic, name, did_log, domain)
-                            .await
-                    }
-                    update::AgentNameVerb::Enable => {
-                        client
-                            .enable_agent_name(mnemonic, name, did_log, domain)
-                            .await
-                    }
-                    update::AgentNameVerb::Disable => {
-                        client
-                            .disable_agent_name(mnemonic, name, did_log, domain)
                             .await
                     }
                 };
             }
             Self::Rest(c) => c,
         };
-        let op = verb.endpoint();
-        match c.agent_name_op(op, mnemonic, name, did_log, domain).await {
+        let op = verb.host_endpoint();
+        let state = verb.host_state();
+        match c
+            .agent_name_op(op, mnemonic, name, state, did_log, domain)
+            .await
+        {
             Ok(()) => Ok(()),
             Err(AppError::Unauthorized(_)) => {
                 info!(
@@ -1788,7 +1788,8 @@ impl<'a> WebvhTransport<'a> {
                 );
                 auth_cache::invalidate_cached_token(auth_ctx.webvh_ks, &server.id).await?;
                 auth_cache::ensure_fresh_access_token(auth_ctx, server, c).await?;
-                c.agent_name_op(op, mnemonic, name, did_log, domain).await
+                c.agent_name_op(op, mnemonic, name, state, did_log, domain)
+                    .await
             }
             Err(e) => Err(e),
         }

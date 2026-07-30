@@ -1299,15 +1299,88 @@ async fn drive_provision(
     ))
 }
 
-/// Wrap a terminal failure string with the actionable hint the wizard has
-/// always printed — the most common cause is a missing or expired ACL
-/// grant on the setup DID.
+/// Wrap a terminal failure string with an actionable hint.
+///
+/// The ACL hint is the right guess for most failures — a missing or expired
+/// grant on the setup DID is the common cause — but it is **wrong for a
+/// transport failure**, and confidently wrong at that: a VTA that timed out
+/// talking to its DID-hosting host reported "authorize the ephemeral DID",
+/// sending operators to re-check an ACL that was never the problem while the
+/// real fault was two hops away. A hint that names the wrong layer costs more
+/// than no hint.
+///
+/// The classification is a heuristic over the rendered message because
+/// [`VtaEvent::Failed`] carries a string, not a typed error. Threading a typed
+/// variant through the event would let this switch on the cause instead of its
+/// spelling; until then, match only unambiguous transport markers and fall
+/// through to the ACL hint, so a message we don't recognise keeps the advice
+/// that is usually right.
 fn provision_failed(msg: &str) -> AppError {
-    AppError::Internal(format!(
-        "VTA provisioning failed: {msg}. Double-check the VTA URL/DID and that the ephemeral \
-         DID was authorized via `pnm contexts create` (or `pnm acl create` if the context \
-         already exists)."
-    ))
+    const TRANSPORT_MARKERS: &[&str] = &[
+        "timed out",
+        "request timed out",
+        "bad gateway",
+        "transport error",
+        "failed to send message",
+    ];
+    let lower = msg.to_ascii_lowercase();
+    let hint = if TRANSPORT_MARKERS.iter().any(|m| lower.contains(m)) {
+        "The VTA accepted the request but could not complete it — this is a transport failure \
+         between the VTA and one of its peers (its DID-hosting server or mediator), not an \
+         authorization problem. Check the VTA's own logs for the operation that stalled, and \
+         that its DID-hosting server and mediator are reachable and version-compatible."
+    } else {
+        "Double-check the VTA URL/DID and that the ephemeral DID was authorized via \
+         `pnm contexts create` (or `pnm acl create` if the context already exists)."
+    };
+    AppError::Internal(format!("VTA provisioning failed: {msg}. {hint}"))
+}
+
+#[cfg(test)]
+mod provision_failed_tests {
+    use super::provision_failed;
+
+    /// The exact message that shipped the misleading hint: a 30s DIDComm
+    /// timeout between the VTA and its DID-hosting host. It must NOT tell the
+    /// operator to go fix an ACL.
+    #[test]
+    fn transport_timeout_does_not_blame_the_acl() {
+        let err = provision_failed(
+            "Provisioning failed. Details: provision-integration call failed: server error \
+             (500): bad gateway: failed to send message: transport error: request timed out \
+             after 30s",
+        );
+        let rendered = format!("{err:?}");
+        assert!(
+            !rendered.contains("pnm contexts create"),
+            "a transport failure must not suggest an ACL grant: {rendered}"
+        );
+        assert!(
+            rendered.contains("transport failure"),
+            "a transport failure must be named as one: {rendered}"
+        );
+    }
+
+    /// An unrecognised failure keeps the ACL hint — it is the common cause, and
+    /// dropping it would make the usual case harder to diagnose.
+    #[test]
+    fn unclassified_failure_keeps_the_acl_hint() {
+        let err = provision_failed("provisioning ended without a terminal event");
+        let rendered = format!("{err:?}");
+        assert!(
+            rendered.contains("pnm contexts create"),
+            "the default hint must survive: {rendered}"
+        );
+    }
+
+    /// A genuine permission failure keeps the ACL hint too — "forbidden" is
+    /// not a transport marker, so it must not be swallowed by the new branch.
+    #[test]
+    fn forbidden_keeps_the_acl_hint() {
+        let err = provision_failed("provision-integration call failed: forbidden");
+        let rendered = format!("{err:?}");
+        assert!(rendered.contains("pnm acl create"), "{rendered}");
+    }
 }
 
 /// `OperatorMessages` impl for the vtc-host integration kind.
