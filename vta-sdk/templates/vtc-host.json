@@ -2,11 +2,12 @@
   "schemaVersion": 1,
   "name": "vtc-host",
   "kind": "vtc-host",
-  "description": "Verifiable Trust Community (VTC) service identity. Provisions the did:webvh that a vtc-service binary operates under. The document advertises the VTC's REST endpoint and the URL where its BitstringStatusList credentials will be hosted (populated in Phase 2 of the VTC MVP — the endpoint is gracefully present in the DID document from day one so external verifiers can pre-cache the resolution). DIDComm is not advertised here by default; communities that need a mediator add it later via the runtime-service-management flow (see docs/03-integrating/runtime-service-management.md). The URL variable must not end with a trailing slash to avoid double-slash artefacts in the status-list endpoint.",
+  "description": "Verifiable Trust Community (VTC) service identity. Provisions the did:webvh that a vtc-service binary operates under. The document advertises the VTC's REST endpoint and the URL where its BitstringStatusList credentials will be hosted (populated in Phase 2 of the VTC MVP — the endpoint is gracefully present in the DID document from day one so external verifiers can pre-cache the resolution). Optionally advertises a TrustRegistry referral naming the registry authoritative for this community by DID, so a client holding only the community's DID can resolve one hop to its registry (TRQP v2 §'machine-discoverable via the authority_id'); supply SERVICE_TRUST_REGISTRY, built by vta_sdk::did_templates::referral_service, and omit it for a community with no registry. DIDComm is not advertised here by default; communities that need a mediator add it later via the runtime-service-management flow (see docs/03-integrating/runtime-service-management.md). The URL variable must not end with a trailing slash to avoid double-slash artefacts in the status-list endpoint.",
   "methods": ["webvh", "web"],
   "requiredVars": ["URL"],
   "optionalVars": {
-    "STATUS_LIST_PATH": "/v1/status-lists"
+    "STATUS_LIST_PATH": "/v1/status-lists",
+    "SERVICE_TRUST_REGISTRY": null
   },
   "defaults": {
     "preRotationCount": 2,
@@ -46,7 +47,8 @@
         "id": "{DID}#vtc-status-list",
         "type": "VTCStatusList",
         "serviceEndpoint": "{URL}{STATUS_LIST_PATH}"
-      }
+      },
+      "{SERVICE_TRUST_REGISTRY}"
     ]
   }
 }

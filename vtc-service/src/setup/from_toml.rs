@@ -37,7 +37,8 @@ use vti_common::error::AppError;
 use crate::config::{MessagingConfig, SecretsConfig};
 
 use super::wizard::{
-    SetupOutcome, WebvhTarget, WizardInputs, WizardPlan, apply, refuse_if_already_set_up,
+    SetupOutcome, WebvhTarget, WizardInputs, WizardPlan, apply, normalize_registry_did,
+    refuse_if_already_set_up,
 };
 
 /// TOML schema for `vtc setup --from <file>`.
@@ -70,6 +71,23 @@ pub(crate) struct VtcWizardInputs {
     /// to `default`.
     #[serde(default = "default_context")]
     pub context: String,
+
+    /// DID of the trust registry authoritative for this community, if it has
+    /// one (e.g. `did:webvh:abc:registry.example.com`). Publishes a
+    /// `TrustRegistry` referral in the VTC's DID document so a client holding
+    /// only the community's DID can resolve one hop to its registry rather
+    /// than being configured with both.
+    ///
+    /// Must be a DID, not a URL — a referral is distinguished from a registry
+    /// advertising its own endpoint by the `uri` carrying a `did:` prefix.
+    /// Omit (or leave blank) for a community with no registry; the service
+    /// entry is then pruned from the document.
+    ///
+    /// Fixed at mint time: the VTC serves a write-once `did.jsonl` and cannot
+    /// re-sign its own log, so changing this later needs a VTA-side
+    /// `pnm did-mgmt dids edit` plus redelivering the log by hand.
+    #[serde(default)]
+    pub registry_did: Option<String>,
 
     /// Where the VTC's `did:webvh` is published. All fields optional; an
     /// empty `[webvh]` table (or omitting it) reproduces the serverless
@@ -129,12 +147,17 @@ pub(crate) fn parse_from_toml(file_path: &Path) -> Result<WizardPlan, AppError> 
         ))
     })?;
 
+    // Already validated above; this trims and maps blank to "no registry" so
+    // both front-ends hand `apply` the same shape.
+    let registry_did = normalize_registry_did(inputs.registry_did.as_deref().unwrap_or(""))?;
+
     Ok(WizardPlan {
         config_path: inputs.config_path,
         inputs: WizardInputs {
             base_url: inputs.base_url.trim_end_matches('/').to_string(),
             vta_did: inputs.vta_did,
             context: inputs.context,
+            registry_did,
         },
         webvh: inputs.webvh,
         secrets: inputs.secrets,
@@ -176,6 +199,21 @@ fn validate(inputs: &VtcWizardInputs) -> Result<(), AppError> {
 
     if inputs.context.trim().is_empty() {
         errors.push("context must not be empty".into());
+    }
+
+    // A blank value is "no registry", same as omitting the key; a non-blank
+    // one has to be a DID. Caught here rather than at render time so the
+    // operator sees it alongside every other problem in the file, before the
+    // first VTA round-trip.
+    if let Some(registry_did) = inputs.registry_did.as_deref() {
+        let trimmed = registry_did.trim();
+        if !trimmed.is_empty() && !trimmed.starts_with("did:") {
+            errors.push(format!(
+                "registry_did must be a DID starting with `did:` (got {registry_did:?}) — the \
+                 referral names the registry by DID, not by URL. Omit it for a community with \
+                 no trust registry."
+            ));
+        }
     }
 
     if let Some(messaging) = inputs.messaging.as_ref()
@@ -410,6 +448,70 @@ keyring_service = "vtc-test"
         };
         assert!(err.contains("load setup key"), "{err}");
         assert!(err.contains("admin ACL"), "actionable hint present: {err}");
+    }
+
+    // ── trust-registry referral ─────────────────────────────────────
+
+    fn minimal_toml_with(extra: &str) -> String {
+        format!(
+            r#"
+config_path = "/srv/vtc/config.toml"
+base_url    = "https://vtc.example.com"
+vta_did     = "did:webvh:vta.example.com:abc"
+setup_key_file = "/secrets/vtc-setup-key.json"
+{extra}
+
+[secrets]
+keyring_service = "vtc"
+"#
+        )
+    }
+
+    #[test]
+    fn registry_did_parses_and_validates() {
+        let inputs: VtcWizardInputs = toml::from_str(&minimal_toml_with(
+            r#"registry_did = "did:webvh:xyz:registry""#,
+        ))
+        .expect("parse");
+        assert_eq!(
+            inputs.registry_did.as_deref(),
+            Some("did:webvh:xyz:registry")
+        );
+        validate(&inputs).expect("a DID-valued registry_did is valid");
+    }
+
+    /// Omitting the key is the no-registry case, and must stay valid — most
+    /// communities have no registry, and every setup file written before
+    /// this field existed omits it.
+    #[test]
+    fn registry_did_is_optional() {
+        let inputs: VtcWizardInputs = toml::from_str(&minimal_toml_with("")).expect("parse");
+        assert!(inputs.registry_did.is_none());
+        validate(&inputs).expect("no registry is a valid community");
+        assert!(normalize_registry_did("").unwrap().is_none());
+    }
+
+    /// A URL here would render an entry that reads as this community serving
+    /// TRQP itself rather than referring to a registry, so it is refused at
+    /// parse time rather than several VTA round-trips later.
+    #[test]
+    fn registry_did_rejects_a_url() {
+        let inputs: VtcWizardInputs = toml::from_str(&minimal_toml_with(
+            r#"registry_did = "https://registry.example.com""#,
+        ))
+        .expect("parse");
+        let err = validate(&inputs).expect_err("a URL is not a DID");
+        assert!(err.to_string().contains("registry_did"), "got: {err}");
+    }
+
+    /// A blank string reads as "no registry", the same as omitting the key —
+    /// templated deploys emit empty strings for unset values.
+    #[test]
+    fn blank_registry_did_reads_as_no_registry() {
+        let inputs: VtcWizardInputs =
+            toml::from_str(&minimal_toml_with(r#"registry_did = "   ""#)).expect("parse");
+        validate(&inputs).expect("blank is not an invalid DID, it is no registry");
+        assert!(normalize_registry_did("   ").unwrap().is_none());
     }
 
     /// The shipped example file must parse — keeps the docs honest.

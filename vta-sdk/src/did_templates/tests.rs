@@ -892,6 +892,68 @@ fn vtc_host_renders_with_minimal_vars() {
         out["service"][1]["serviceEndpoint"],
         "https://vtc.example.com/v1/status-lists",
     );
+    // Exactly two: the optional `SERVICE_TRUST_REGISTRY` slot defaults to
+    // `null` and is pruned, so a community with no registry is unchanged.
+    assert_eq!(out["service"].as_array().unwrap().len(), 2);
+}
+
+/// A community that names its registry gets a third entry: a `TrustRegistry`
+/// referral whose `uri` is the registry's DID.
+#[test]
+fn vtc_host_advertises_a_trust_registry_referral_when_given_one() {
+    let tpl = load_embedded("vtc-host").unwrap();
+    let mut vars = ambient_vars();
+    vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("URL", "https://vtc.example.com");
+    vars.insert(
+        TRUST_REGISTRY_SERVICE_VAR,
+        referral_service("did:webvh:xyz:registry.example.com").unwrap(),
+    );
+
+    let out = tpl.render(&vars).unwrap();
+
+    let services = out["service"].as_array().unwrap();
+    assert_eq!(services.len(), 3, "appended, not replacing");
+    // Appended last, so the two pinned entries keep their indices.
+    assert_eq!(services[0]["type"], "VTCRest");
+    assert_eq!(services[1]["type"], "VTCStatusList");
+
+    let referral = &services[2];
+    assert_eq!(referral["type"], TRUST_REGISTRY_SERVICE_TYPE);
+    assert_eq!(
+        referral["serviceEndpoint"]["uri"], "did:webvh:xyz:registry.example.com",
+        "a referral names the registry by DID, never by URL"
+    );
+    assert_eq!(referral["serviceEndpoint"]["profile"], TRQP_PROFILE_URI);
+
+    // Caller-supplied variable values are not re-substituted by the renderer,
+    // so `{DID}` survives here rather than resolving to the ambient `DID`.
+    // That is deliberate: on the real mint path `DID` is itself the `{DID}`
+    // sentinel and `didwebvh-rs` resolves every leaf string once the SCID is
+    // known, so the entry lands with the community's own DID either way.
+    assert_eq!(referral["id"], "{DID}#trust-registry");
+}
+
+/// The registry a community trusts is not knowable at template-authoring
+/// time and many communities have none, so the entry has to be omissible —
+/// the null-pruning slot is what makes one template serve both shapes.
+#[test]
+fn vtc_host_omits_the_referral_when_no_registry_is_named() {
+    let tpl = load_embedded("vtc-host").unwrap();
+    let mut vars = ambient_vars();
+    vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("URL", "https://vtc.example.com");
+
+    let out = tpl.render(&vars).unwrap();
+
+    let services = out["service"].as_array().unwrap();
+    assert_eq!(services.len(), 2);
+    assert!(
+        !services
+            .iter()
+            .any(|s| s["type"] == TRUST_REGISTRY_SERVICE_TYPE),
+        "no literal null and no half-built entry may survive"
+    );
 }
 
 #[test]

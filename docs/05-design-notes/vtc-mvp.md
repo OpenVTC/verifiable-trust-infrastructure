@@ -188,7 +188,8 @@ and is explicitly forbidden.
 
 Built-in template in `vta-sdk::did_templates::builtin`. Required
 var: `URL` (no trailing slash). Optional: `STATUS_LIST_PATH`
-(default `/v1/status-lists`).
+(default `/v1/status-lists`), `SERVICE_TRUST_REGISTRY` (default
+`null` — see the referral below).
 
 Mints two keys, following the workspace convention used by every
 other built-in template:
@@ -204,6 +205,41 @@ Service entries: `#vtc-rest` (`type: VTCRest`, endpoint = `{URL}`),
 `{URL}{STATUS_LIST_PATH}`). The status-list endpoint is gracefully
 present from day one so external verifiers can pre-cache resolution;
 the actual BitstringStatusList credentials are populated in Phase 2.
+
+Optionally a third: `#trust-registry` (`type: TrustRegistry`,
+endpoint = `{uri: <registry DID>, profile: <TRQP profile URI>}`) —
+the **referral** naming the registry authoritative for this
+community. TRQP v2.0 recommends a registry be discoverable "via the
+`authority_id`", and a VTC *is* the `authority_id` in every tuple
+evaluated under it, so the pointer belongs in the community's own
+document. A client given only the community's DID resolves one hop
+to the registry instead of being configured with both.
+
+The `uri` is a **DID, not a URL**. The same service type in a
+*registry's* document carries that registry's TRQP URL and means the
+opposite thing (an endpoint), so consumers disambiguate on the `did:`
+prefix — `trql_client::registry_referral` is the reference
+implementation.
+
+Publishing a referral asserts nothing about authority: anyone may
+name any registry in their own document. Authority flows registry →
+subject, so a client that follows the referral must confirm the
+registry answers *for* the community that referred it before
+believing the answer (`TrqlClient::referred_by`). Emitting the entry
+establishes where to ask and nothing more.
+
+The whole entry rides as the `SERVICE_TRUST_REGISTRY` var, built by
+`vta_sdk::did_templates::referral_service`. It is not spelled out in
+the template JSON because the template format's only conditional is
+whole-array-element `null` pruning, which requires the caller to
+supply the entire element — so the SDK owns the `TrustRegistry` type
+and profile URI to keep one source for both constants.
+
+The referral is fixed at mint time. A VTC serves a write-once
+`did.jsonl` and holds no update authority over its own log, so
+changing the referral later needs a VTA-side `pnm did-mgmt dids edit`
+followed by redelivering the log to the VTC by hand — there is no
+automated path for that today.
 
 DIDComm is not advertised by default — communities that need a
 mediator add it later via the existing runtime-service-management

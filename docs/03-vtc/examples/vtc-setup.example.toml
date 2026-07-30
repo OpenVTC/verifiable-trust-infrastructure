@@ -35,6 +35,17 @@ setup_key_file = "/srv/vtc/setup-key.json"   # persisted + ACL-granted (see abov
 # ── Optional top-level ──────────────────────────────────────────────────
 context = "default"   # the VTA context this community provisions under
 
+# The trust registry authoritative for this community, if it has one.
+# Publishes a TrustRegistry referral in the VTC's DID document, so a client
+# holding only this community's DID resolves one hop to the registry instead
+# of being configured with both DIDs. Must be a DID, not a URL — the referral
+# names the registry by DID. Omit for a community with no registry.
+#
+# Fixed at mint time: the VTC serves a write-once did.jsonl and cannot
+# re-sign its own log, so changing this later means a VTA-side
+# `pnm did-mgmt dids edit` plus redelivering the log by hand.
+# registry_did = "did:webvh:abc:registry.example.com"
+
 # ── DID hosting (optional) ──────────────────────────────────────────────
 # Omit the whole [webvh] table for the serverless default: the VTC
 # self-hosts its did.jsonl at base_url with a server-assigned path.
