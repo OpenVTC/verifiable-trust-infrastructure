@@ -2131,19 +2131,19 @@ impl MessagingConnect {
         // Set the VTA's own allow-all ACL on the mediator (keyed on the VTA DID,
         // so it authorises both DIDComm and TSP on the shared socket). Only when
         // `setup_acl` is set (mediators in ExplicitAllow mode).
+        //
+        // Use the already-connected messaging profile — creating a new ATMProfile
+        // here would open a second WebSocket for the same DID, which the mediator
+        // evicts as `duplicate-channel`, silently preventing the ACL from being set.
         if messaging_config.setup_acl {
-            if let Some(atm) = app_state.atm.as_ref() {
-                acl_setup::set_client_acl_on_connection(
-                    atm,
-                    vta_did,
-                    messaging_config.mediator_did.as_str(),
-                    "vta-main",
-                    "vta",
-                )
-                .await;
-            } else {
-                warn!("setup_acl = true but no ATM available; skipping mediator ACL provisioning");
-            }
+            acl_setup::set_client_acl_with_profile(
+                &messaging.atm,
+                messaging.profile.clone(),
+                vta_did,
+                "vta-main",
+                "vta",
+            )
+            .await;
         }
 
         Ok(messaging)

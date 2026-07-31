@@ -484,17 +484,14 @@ impl DIDCommSession {
         }
 
         // Set this client's ACL on the mediator to accept all message types.
-        // `set_client_acl_on_connection` is itself fire-and-forget (it spawns a
-        // background task and returns immediately), so no extra spawn here — the
-        // connect path is not blocked on the mediator round-trip. Only compiled-in
-        // when the `acl-setup` feature is enabled (requires `session` +
-        // `trust-tasks-rs`). PNM enables `acl-setup`; SDK consumers that omit it
-        // are unaffected.
+        // Use the already-connected profile to avoid opening a second WebSocket
+        // for the same DID (which the mediator evicts as `duplicate-channel`,
+        // causing the ACL request to silently time out). Fire-and-forget.
         #[cfg(feature = "acl-setup")]
-        crate::acl_setup::set_client_acl_on_connection(
+        crate::acl_setup::set_client_acl_with_profile(
             atm,
+            profile.clone(),
             client_did,
-            mediator_did,
             "didcomm-session",
             "pnm",
         )
