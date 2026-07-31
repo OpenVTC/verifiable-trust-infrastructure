@@ -123,6 +123,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Same reclaim as the Test job, and for the same reason: this job
+      # also links the whole workspace. It ran out of disk mid-`cargo
+      # check` on #884 — an infrastructure failure that reads exactly like
+      # a real MSRV break. Do NOT remove $AGENT_TOOLSDIRECTORY (see Test).
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 
@@ -144,9 +153,12 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-msrv-${{ steps.msrv.outputs.msrv }}-${{ hashFiles('**/Cargo.lock') }}
+          # Deliberately NO `${{ runner.os }}-cargo-` fallback. This job runs a
+          # different toolchain, so another job's `target/` is unusable to it —
+          # the shared key only ever restored gigabytes it could not link
+          # against, onto a disk that then had to hold this job's own build too.
           restore-keys: |
             ${{ runner.os }}-cargo-msrv-${{ steps.msrv.outputs.msrv }}-
-            ${{ runner.os }}-cargo-
 
       - run: cargo check --workspace --locked
 
