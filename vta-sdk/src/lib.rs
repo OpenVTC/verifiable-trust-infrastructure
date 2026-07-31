@@ -151,6 +151,10 @@ pub mod session;
 // private one (#830).
 #[cfg(feature = "session")]
 pub mod session_hub;
+/// Holder-signing for Trust Task documents — the shared `eddsa-jcs-2022`
+/// primitive both services' holder surfaces verify against.
+#[cfg(feature = "client")]
+pub mod trust_task_sign;
 /// Canonical Trust-Task URLs for VTA operations. Mirrors
 /// `did-hosting-common::did_hosting_tasks` for the webvh-service side.
 pub mod trust_tasks;
