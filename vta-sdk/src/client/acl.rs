@@ -117,7 +117,7 @@ impl VtaClient {
         // like grant and show.
         //
         // The task payload is the full canonical body. Hand-rolling three of
-        // its members here — as this did before #883 — silently dropped the
+        // its members here — as this did before #884 — silently dropped the
         // step-up, approve-authority, expiry, `allowedKeys` and `reason` the
         // caller asked for the moment the client was on DIDComm rather than
         // REST: a narrowing the operator believed they had applied.

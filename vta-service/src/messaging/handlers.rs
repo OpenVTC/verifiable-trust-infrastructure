@@ -708,7 +708,7 @@ pub async fn handle_swap_acl(
 
 // The three ACL reads below answer the canonical bodies (`{ entry }` /
 // `{ entries }`), same as REST and the Trust Task spine. They returned the
-// maintainer's flat stored shape until #883, which no client could parse —
+// maintainer's flat stored shape until #884, which no client could parse —
 // `pnm acl get` over DIDComm failed with `missing field 'entry'` while the
 // same call over REST worked. The stored-shape operations are now private to
 // `operations::acl`, so this cannot drift back.

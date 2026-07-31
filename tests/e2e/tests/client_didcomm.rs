@@ -20,7 +20,7 @@
 //! - **Legacy protocol message**: the surfaces still on `rpc` (`import_key`,
 //!   `backup_export`/`backup_import`, the webvh server/DID updates) dispatch
 //!   on the `*_management` message-type constant. The ACL reads and updates
-//!   left behind by #861 moved to Trust Tasks in #883 — they were the ones
+//!   left behind by #861 moved to Trust Tasks in #884 — they were the ones
 //!   where the maintainer had already folded and the client had not.
 
 use ed25519_dalek::SigningKey;
@@ -508,7 +508,7 @@ async fn rotate_seed_via_didcomm() {
 
 // ── ACL ─────────────────────────────────────────────────────────────
 
-/// The whole ACL slice rides Trust Tasks as of #883 — the last four methods
+/// The whole ACL slice rides Trust Tasks as of #884 — the last four methods
 /// (`list`, `show`, `update`, `change-role`) that #861 left on the legacy
 /// `acl-management/1.0/*` messages. The legacy surface is where client and
 /// maintainer drifted apart unnoticed: `get-acl` answered the flat stored row
@@ -604,7 +604,7 @@ async fn delete_acl_via_didcomm_returns_unit() {
     shutdown_all(client, responder, mediator).await;
 }
 
-/// Every member the caller set has to reach the maintainer. The pre-#883
+/// Every member the caller set has to reach the maintainer. The pre-#884
 /// DIDComm leg hand-built three of them (`subject`, `label`, `scopes`) and
 /// dropped the rest, so an operator narrowing an approver or a key filter over
 /// DIDComm silently changed nothing — the response still echoed a fine-looking

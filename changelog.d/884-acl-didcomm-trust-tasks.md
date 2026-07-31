@@ -1,4 +1,4 @@
-### vta-sdk 0.20.31 / vta-service 0.13.22 — the ACL slice speaks Trust Tasks on every transport (#883)
+### vta-sdk 0.20.31 / vta-service 0.13.22 — the ACL slice speaks Trust Tasks on every transport (#884)
 
 `pnm acl get <did>` against a DIDComm-connected VTA failed with
 

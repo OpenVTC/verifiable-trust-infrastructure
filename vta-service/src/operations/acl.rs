@@ -314,7 +314,7 @@ pub async fn create_acl(
 /// transport handler that returns it emits the pre-fold flat JSON while every
 /// other surface — and the SDK client — speaks canonical `{ entry }`. That is
 /// exactly how `acl-management/1.0/get-acl` came to answer a shape no client
-/// could parse (#883). Transports go through [`show_by_subject`].
+/// could parse (#884). Transports go through [`show_by_subject`].
 async fn get_acl(
     acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
@@ -900,7 +900,7 @@ pub async fn list_entries(
 /// Every transport reads the transition through this wrapper so the realized
 /// entry comes back under `entry`, like grant/show/update. REST and the Trust
 /// Task spine each used to wrap the stored body themselves, which left the
-/// DIDComm handler free to return it unwrapped — and it did (#883).
+/// DIDComm handler free to return it unwrapped — and it did (#884).
 #[allow(clippy::too_many_arguments)]
 pub async fn change_role_by_subject(
     acl_ks: &KeyspaceHandle,
