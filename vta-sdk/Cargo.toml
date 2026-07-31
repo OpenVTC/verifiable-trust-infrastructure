@@ -2,7 +2,7 @@
 name = "vta-sdk"
 description = "SDK for Verifiable Trust Agents operating in Verifiable Trust Communities"
 readme = "README.md"
-version = "0.20.28"
+version = "0.20.29"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -70,6 +70,13 @@ client = [
   "dep:uuid",
   "dep:affinidi-tdk",
   "dep:affinidi-messaging-didcomm",
+  # `auth_di` — the canonical REST auth transport. The VTA requires an
+  # *authenticated* sender on `/auth/*` (VTI #771), so the client signs an
+  # `auth/authenticate/0.1` Trust Task with the holder key: the DI suite
+  # signs, `Secret` carries the key, `trust-tasks-rs` is the document shape.
+  "dep:affinidi-data-integrity",
+  "dep:affinidi-secrets-resolver",
+  "dep:trust-tasks-rs",
   # didcomm 0.15 moved `PublicKeyAgreement` out of
   # `affinidi_messaging_didcomm::crypto` into `affinidi_crypto::jose`.
   # `didcomm_light::pack_anoncrypt` (gated on `client`) names that type,

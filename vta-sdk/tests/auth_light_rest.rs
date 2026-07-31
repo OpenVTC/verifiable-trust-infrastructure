@@ -2,10 +2,11 @@
 //! paths in `vta_sdk::client::VtaClient` (`from_credential`,
 //! `ensure_token_valid` refresh-on-expiry, full re-auth fallback).
 //!
-//! All tests run against a `wiremock` server. Where a real `did:key` is
-//! required for DIDComm anoncrypt packing, we derive one from a fixed
-//! seed via `ed25519_dalek` + the SDK's own multibase helpers — no
-//! private key material leaves the test process.
+//! All tests run against a `wiremock` server. The holder `did:key` +
+//! private key are derived from a fixed seed via `ed25519_dalek` + the
+//! SDK's own multibase helpers — no private key material leaves the test
+//! process. The holder must be a real key pair because the auth request
+//! is now a DI-signed Trust Task (`auth_di`), not an anoncrypt envelope.
 
 #![cfg(feature = "client")]
 
@@ -26,9 +27,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // ── Test fixtures ───────────────────────────────────────────────────
 
 /// Build a deterministic `did:key` + matching multibase private-key
-/// string from a seed byte. Both client and VTA DIDs need to be valid
-/// `did:key`s because `auth_light` calls `pack_auth_message`, which
-/// derives X25519 keys from the embedded Ed25519 multibase.
+/// string from a seed byte. The client DID must be a valid `did:key`
+/// (the server's DI-proof resolver accepts nothing else); the VTA DID is
+/// only an addressee, so tests may use any method for it.
 fn did_key_from_seed(seed_byte: u8) -> (String, String) {
     let seed = [seed_byte; 32];
     let sk = SigningKey::from_bytes(&seed);
@@ -168,17 +169,40 @@ async fn authenticate_endpoint_401_maps_to_auth() {
     assert!(matches!(err, VtaError::Auth(_)), "got {err:?}");
 }
 
+/// The VTA verifies the holder's DI proof with a `did:key`-only resolver
+/// (`vta-service/src/auth/di_proof.rs`), so a non-`did:key` holder is refused
+/// locally as `Validation` rather than after a round trip.
 #[tokio::test]
-async fn pack_failure_with_invalid_vta_did_maps_to_validation() {
-    // `pack_auth_message` resolves the VTA's keyAgreement via
-    // `resolve_vta_keyagreement`, which supports `did:key` and
-    // `did:webvh` only. A `did:web` VTA produces an "unsupported DID
-    // method" error that `auth_light` wraps into `VtaError::Validation`.
+async fn non_did_key_holder_maps_to_validation() {
     let server = MockServer::start().await;
     mount_challenge(&server).await;
-    let (client_did, client_priv) = did_key_from_seed(0x11);
+    let (_, client_priv) = did_key_from_seed(0x11);
+    let (vta_did, _) = did_key_from_seed(0x22);
     let http = reqwest::Client::new();
     let err = challenge_response_light(
+        &http,
+        &server.uri(),
+        "did:web:example.com",
+        &client_priv,
+        &vta_did,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, VtaError::Validation(_)), "got {err:?}");
+}
+
+/// The VTA's DID is only an addressee on the signed document, never resolved
+/// by the client — so a DID method the old anoncrypt packer couldn't resolve
+/// (it needed the VTA's `keyAgreement` key) now authenticates fine.
+#[tokio::test]
+async fn non_key_vta_did_still_authenticates() {
+    let server = MockServer::start().await;
+    mount_challenge(&server).await;
+    mount_authenticate(&server, 1_700_001_000).await;
+
+    let (client_did, client_priv) = did_key_from_seed(0x11);
+    let http = reqwest::Client::new();
+    let result = challenge_response_light(
         &http,
         &server.uri(),
         &client_did,
@@ -186,8 +210,88 @@ async fn pack_failure_with_invalid_vta_did_maps_to_validation() {
         "did:web:not-a-key",
     )
     .await
-    .unwrap_err();
-    assert!(matches!(err, VtaError::Validation(_)), "got {err:?}");
+    .expect("the VTA DID is not resolved on this path");
+    assert_eq!(result.access_token, "access-jwt");
+}
+
+/// The request body must be a DI-signed `auth/authenticate/0.1` Trust Task —
+/// **not** an anoncrypt DIDComm envelope, which the VTA rejects outright since
+/// it began requiring an authenticated sender (VTI #771).
+#[tokio::test]
+async fn authenticate_body_is_a_signed_trust_task() {
+    let server = MockServer::start().await;
+    mount_challenge(&server).await;
+    mount_authenticate(&server, 1_700_001_000).await;
+
+    let (client_did, client_priv) = did_key_from_seed(0x11);
+    let (vta_did, _) = did_key_from_seed(0x22);
+    let http = reqwest::Client::new();
+    challenge_response_light(&http, &server.uri(), &client_did, &client_priv, &vta_did)
+        .await
+        .unwrap();
+
+    let req = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.url.path() == "/auth/")
+        .expect("an /auth/ request was made");
+    let body: serde_json::Value = serde_json::from_slice(&req.body).expect("body is JSON");
+
+    assert_eq!(
+        body["type"], "https://trusttasks.org/spec/auth/authenticate/0.1",
+        "body must be an authenticate Trust Task"
+    );
+    assert_eq!(body["payload"]["challenge"], "c-nonce-123");
+    assert_eq!(body["payload"]["sessionId"], "sess-test");
+    assert_eq!(body["issuer"], client_did);
+    assert_eq!(body["proof"]["cryptosuite"], "eddsa-jcs-2022");
+    assert!(body.get("protected").is_none(), "must not be a JWE");
+}
+
+/// The VTA answers a Trust-Task request with a Trust-Task `#response`
+/// document; the client must unwrap it, not just handle flat JSON.
+#[tokio::test]
+async fn trust_task_wrapped_response_is_unwrapped() {
+    let server = MockServer::start().await;
+    mount_challenge(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/auth/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "urn:uuid:resp-1",
+            "type": "https://trusttasks.org/spec/auth/authenticate/0.1#response",
+            "threadId": "urn:uuid:req-1",
+            "payload": {
+                "session": {
+                    "id": "sess-test",
+                    "subject": "did:example:caller",
+                    "issuedAt": "1970-01-01T00:00:00Z",
+                    "expiresAt": "2099-12-31T23:59:59Z",
+                    "amr": ["did"],
+                    "acr": "aal1"
+                },
+                "tokens": {
+                    "accessToken": "wrapped-access",
+                    "tokenType": "Bearer",
+                    "expiresIn": 1_700_001_000_u64,
+                    "refreshToken": "wrapped-refresh",
+                    "refreshExpiresIn": 1_700_004_600_u64
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let (client_did, client_priv) = did_key_from_seed(0x11);
+    let (vta_did, _) = did_key_from_seed(0x22);
+    let http = reqwest::Client::new();
+    let result =
+        challenge_response_light(&http, &server.uri(), &client_did, &client_priv, &vta_did)
+            .await
+            .unwrap();
+    assert_eq!(result.access_token, "wrapped-access");
+    assert_eq!(result.refresh_token.as_deref(), Some("wrapped-refresh"));
 }
 
 // ── refresh_token_light ─────────────────────────────────────────────
@@ -244,21 +348,56 @@ async fn refresh_token_401_maps_to_auth() {
     assert!(matches!(err, VtaError::Auth(_)));
 }
 
+/// Refresh posts an **unsigned** `auth/refresh/0.1` Trust Task: the opaque
+/// token is the credential (RFC 6749 §10.4), so the VTA verifies the token
+/// rather than a signer — and neither DID is resolved.
 #[tokio::test]
-async fn refresh_token_pack_failure_with_invalid_did() {
+async fn refresh_body_is_an_unsigned_trust_task() {
     let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/auth/refresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "session": {
+                "id": "sess-test",
+                "subject": "did:example:caller",
+                "issuedAt": "1970-01-01T00:00:00Z",
+                "expiresAt": "2099-12-31T23:59:59Z",
+                "amr": ["did"],
+                "acr": "aal1"
+            },
+            "tokens": {
+                "accessToken": "a",
+                "tokenType": "Bearer",
+                "expiresIn": 2_000_000_000_u64
+            }
+        })))
+        .mount(&server)
+        .await;
+
     let (client_did, _) = did_key_from_seed(0x11);
     let http = reqwest::Client::new();
-    let err = refresh_token_light(
+    // A `did:web` VTA is fine here — nothing resolves it.
+    refresh_token_light(
         &http,
         &server.uri(),
         &client_did,
         "did:web:not-a-key",
-        "old",
+        "old-refresh",
     )
     .await
-    .unwrap_err();
-    assert!(matches!(err, VtaError::Validation(_)), "got {err:?}");
+    .expect("refresh needs no DID resolution");
+
+    let req = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.url.path() == "/auth/refresh")
+        .expect("a refresh request was made");
+    let body: serde_json::Value = serde_json::from_slice(&req.body).expect("body is JSON");
+    assert_eq!(body["type"], "https://trusttasks.org/spec/auth/refresh/0.1");
+    assert_eq!(body["payload"]["refreshToken"], "old-refresh");
+    assert!(body.get("proof").is_none(), "refresh must not be signed");
 }
 
 // ── authenticate_with_credential ────────────────────────────────────

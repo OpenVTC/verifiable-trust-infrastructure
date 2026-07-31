@@ -95,6 +95,8 @@ pub mod agent_session;
 #[cfg(feature = "attest-verify")]
 pub mod attestation;
 #[cfg(feature = "client")]
+pub mod auth_di;
+#[cfg(feature = "client")]
 pub mod auth_light;
 #[cfg(feature = "client")]
 pub mod client;

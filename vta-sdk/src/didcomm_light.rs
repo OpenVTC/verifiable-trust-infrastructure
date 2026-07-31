@@ -8,6 +8,15 @@
 //! only needs the recipient's X25519 public key (derived from their
 //! `did:key`).
 //!
+//! **Not usable for `/auth/*`.** Anoncrypt carries an *unauthenticated*
+//! plaintext `from`, and the VTA now requires an authenticated (authcrypt)
+//! envelope on `/auth/` and `/auth/refresh`
+//! (`vti_common::auth::bind_authcrypt_sender`, VTI #771) — an anoncrypt message
+//! is rejected with "authenticate message must be an authenticated (authcrypt)
+//! DIDComm envelope". [`crate::auth_light`] used to pack its auth messages here
+//! and moved to the DI-signed Trust Task transport ([`crate::auth_di`]) for
+//! exactly that reason. Do not route authentication back through this module.
+//!
 //! Algorithm: ECDH-ES+A256KW (key agreement) + A256CBC-HS512 (content
 //! encryption) — the algorithm pair the workspace's pinned
 //! `affinidi-messaging-didcomm-0.15` actually decrypts. An earlier
@@ -256,6 +265,11 @@ fn resolve_vm_reference(
 /// `did:webvh:` (fetches + verifies the log) VTAs; for other DID
 /// methods, errors out so the caller can fall back to the heavyweight
 /// `session::challenge_response` path.
+///
+/// **Superseded for authentication** — see the module docs. The VTA rejects
+/// anoncrypt on `/auth/*`; use [`crate::auth_light::challenge_response_light`]
+/// (DI-signed Trust Task) instead. Retained for any consumer that packs
+/// anoncrypt for a non-auth surface.
 pub async fn pack_auth_message(
     msg_type: &str,
     body: serde_json::Value,

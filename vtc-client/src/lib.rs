@@ -24,6 +24,19 @@
 //! First cut: authentication + member listing. Join / removal / policy methods
 //! are layered on next (the auth + transport plumbing here is what they build
 //! on).
+//!
+//! **[`VtcClient::connect`] does not currently authenticate against a live
+//! VTC.** The challenge-response flow is audience-agnostic in shape but not in
+//! *transport*: `challenge_response_light` posts a DI-signed
+//! `auth/authenticate/0.1` Trust Task, and the VTC's `POST /auth/` accepts only
+//! a VTA-wallet SIOP envelope or an authcrypt DIDComm envelope
+//! (`vtc-service/src/routes/auth.rs::authenticate_and_mint`) — it has no
+//! Trust-Task path on login, unlike its own `/auth/refresh` and unlike the VTA.
+//! This has been broken since the VTC began requiring an authenticated sender
+//! (VTI #771) rejected the anoncrypt envelope this used to send; the SDK's move
+//! to a signed document fixed the VTA side and changes only *which* error the
+//! VTC returns. Until the VTC grows the Trust-Task login path, obtain a token
+//! out of band and use [`VtcClient::with_token`].
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

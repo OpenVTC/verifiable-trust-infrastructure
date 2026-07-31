@@ -17,24 +17,16 @@
 //!
 //! It works against *any* VTA — REST-only or DIDComm-enabled — because the
 //! server attempts the DI path before the DIDComm-envelope path.
+//!
+//! The document building / signing / response parsing lives in
+//! [`crate::auth_di`], shared with [`crate::auth_light`] (the REST client tier,
+//! which moved onto this same transport once the VTA started requiring an
+//! authenticated sender on `/auth/*`). This module is the provision-client's
+//! entry point onto it.
 
-use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
-use affinidi_secrets_resolver::secrets::Secret;
-use chrono::Utc;
-use serde_json::{Value, json};
-use trust_tasks_rs::{Proof, TrustTask};
-
-use crate::did_key::decode_private_key_multibase;
-use crate::protocols::auth::{AuthenticateResponse, ChallengeRequest, ChallengeResponse};
+use crate::auth_di;
+use crate::protocols::auth::{ChallengeRequest, ChallengeResponse};
 use crate::session::TokenResult;
-use crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1;
-
-/// The `did:key:zXxx#zXxx` verification-method id the Data-Integrity resolver
-/// recognises for a `did:key` holder.
-fn did_key_to_vm(did: &str) -> Option<String> {
-    let mb = did.strip_prefix("did:key:")?;
-    Some(format!("{did}#{mb}"))
-}
 
 /// Authenticate over plain REST using a DI-signed `auth/authenticate/0.1`
 /// Trust Task, returning the same [`TokenResult`] as
@@ -76,59 +68,22 @@ pub async fn challenge_response_di(
         format!("unexpected challenge response from VTA at {challenge_url} (is this a VTA?): {e}")
     })?;
 
-    // Step 2 — build the `auth/authenticate/0.1` Trust Task. The payload is a
-    // `Value` matching the spec `authenticate::Payload` shape
-    // (`{ challenge, sessionId }`); the server deserializes it into the typed
-    // payload after verifying the proof.
-    let type_uri = TASK_AUTH_AUTHENTICATE_0_1
-        .parse()
-        .map_err(|e| format!("authenticate type URI parse: {e}"))?;
-    let mut doc: TrustTask<Value> = TrustTask::new(
-        format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        type_uri,
-        json!({
-            "challenge": challenge.challenge,
-            "sessionId": challenge.session_id,
-        }),
-    );
-    doc.issuer = Some(client_did.to_string());
-    doc.recipient = Some(vta_did.to_string());
-    doc.issued_at = Some(Utc::now());
+    // Step 2 — build + sign the `auth/authenticate/0.1` Trust Task with the
+    // holder key (payload `{ challenge, sessionId }`, `eddsa-jcs-2022` proof
+    // over the proof-less document).
+    let body = auth_di::sign_authenticate_doc(
+        client_did,
+        private_key_multibase,
+        vta_did,
+        &challenge.challenge,
+        &challenge.session_id,
+    )
+    .await?;
 
-    // Step 3 — attach the holder's `eddsa-jcs-2022` Data-Integrity proof. Build
-    // a `Secret` whose id is the `did:key:zXxx#zXxx` verification method, sign
-    // the proof-less document (JCS is presence-sensitive — the server verifies
-    // against the same shape with `proof` stripped), then graft the proof on.
-    let vm_id = did_key_to_vm(client_did).ok_or_else(|| {
-        format!("the DI-signed auth path requires a did:key holder; got {client_did}")
-    })?;
-    let seed = decode_private_key_multibase(private_key_multibase)?;
-    let mut signer = Secret::generate_ed25519(Some(&vm_id), Some(&seed));
-    signer.id = vm_id.clone();
-
-    let sign_options = SignOptions::new()
-        .with_proof_purpose("assertionMethod")
-        .with_created(Utc::now());
-
-    let mut signing_doc =
-        serde_json::to_value(&doc).map_err(|e| format!("serialize authenticate document: {e}"))?;
-    if let Some(obj) = signing_doc.as_object_mut() {
-        obj.remove("proof");
-    }
-    let di_proof = DataIntegrityProof::sign(&signing_doc, &signer, sign_options)
-        .await
-        .map_err(|e| format!("sign authenticate Trust Task: {e}"))?;
-    let proof_json =
-        serde_json::to_value(&di_proof).map_err(|e| format!("serialize proof: {e}"))?;
-    doc.proof =
-        Some(serde_json::from_value::<Proof>(proof_json).map_err(|e| format!("proof shape: {e}"))?);
-
-    // Step 4 — POST the signed document. A Trust Task request yields a TT
+    // Step 3 — POST the signed document. A Trust Task request yields a TT
     // `#response` document whose payload is the `{ session, tokens }`
     // `AuthenticateResponse`.
     let auth_url = format!("{base_url}/auth/");
-    let body =
-        serde_json::to_string(&doc).map_err(|e| format!("serialize signed document: {e}"))?;
     let auth_resp = http
         .post(&auth_url)
         .header("content-type", "application/json")
@@ -147,17 +102,8 @@ pub async fn challenge_response_di(
         .map_err(|e| format!("failed to read auth response from VTA: {e}"))?;
     // A Trust-Task request yields a TT `#response` document whose payload is the
     // `{ session, tokens }` body; some clients/mocks return that body flat.
-    // Accept either: try flat first, then unwrap the Trust-Task envelope.
-    let auth_data: AuthenticateResponse = match serde_json::from_str(&auth_text) {
-        Ok(flat) => flat,
-        Err(_) => {
-            let response_doc: TrustTask<Value> = serde_json::from_str(&auth_text).map_err(|e| {
-                format!("unexpected auth response from VTA at {auth_url} (is this a VTA?): {e}")
-            })?;
-            serde_json::from_value(response_doc.payload)
-                .map_err(|e| format!("auth response payload is not an AuthenticateResponse: {e}"))?
-        }
-    };
+    let auth_data =
+        auth_di::parse_auth_response(&auth_text).map_err(|e| format!("{e} (VTA at {auth_url})"))?;
     let access_expires_at = auth_data.access_expires_at_epoch().ok_or_else(|| {
         format!(
             "VTA returned unparseable session.issuedAt: '{}'",
