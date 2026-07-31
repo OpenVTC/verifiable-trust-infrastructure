@@ -35,6 +35,15 @@ tree, so it never reaches TDK consumers. Removing it means reimplementing
 SLIP-0010 ed25519 derivation — security-sensitive, and tracked separately
 rather than folded into a dependency bump.
 
+**Version-pin fan-out.** `vta-sdk`'s minor bump moves the `version = "0.20"`
+requirement every dependent carries, and a changed requirement has to publish or
+the registry keeps resolving the old one. Those crates are otherwise untouched —
+their own APIs do not change — so they take patch bumps: **cnm-cli 0.11.14**,
+**pnm-cli 0.11.17**, **vta-audit 0.1.2**, **vta-backup 0.1.5**,
+**vta-cli-common 0.10.23**, **vta-support 0.2.3**, **vta-tee 0.1.5**,
+**vta-vault 0.1.2**, **vta-webvh 0.1.3**, **vtc-client 0.3.1**,
+**vtc-service 0.11.50**, **vti-common 0.11.32**, **vti-secrets 0.1.9**.
+
 **Sequencing for consuming repos.** `curve25519-dalek` 4 does not fully leave
 this workspace on merge. The `affinidi-*` crates are the other dalek-2 source
 inside `vta-sdk`'s own tree, so the order is: affinidi-tdk-rs publishes its leaf
