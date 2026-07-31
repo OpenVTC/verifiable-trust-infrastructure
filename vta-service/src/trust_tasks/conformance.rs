@@ -60,6 +60,7 @@ use trust_tasks_rs::specs;
 use vta_sdk::trust_tasks as uris;
 
 use vta_sdk::acl::ContextDirection;
+use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 use vta_sdk::protocols::acl_management::change_role::ChangeRoleBody;
 use vta_sdk::protocols::acl_management::create::{CreateAclBody, CreateAclResponseBody};
 use vta_sdk::protocols::acl_management::delete::{DeleteAclBody, DeleteAclResultBody};
@@ -79,6 +80,21 @@ use vta_sdk::protocols::credential_exchange::{
 use vta_sdk::protocols::credentials_issuance::{
     IssueCredentialBody, IssueCredentialResponse, RevokeCredentialBody, RevokeCredentialResponse,
 };
+use vta_sdk::protocols::key_management::create::{
+    CreateKeyBody, CreateKeyResponseBody, CreateKeyResultBody,
+};
+use vta_sdk::protocols::key_management::derive_and_sign::{
+    DeriveAndSignBody, DeriveAndSignResultBody,
+};
+use vta_sdk::protocols::key_management::derive_and_sign_document::{
+    DeriveAndSignDocumentBody, DeriveAndSignDocumentResultBody,
+};
+use vta_sdk::protocols::key_management::get::{GetKeyBody, GetKeyResponseBody};
+use vta_sdk::protocols::key_management::import::ImportKeyBody;
+use vta_sdk::protocols::key_management::list::{ListKeysBody, ListKeysResultBody};
+use vta_sdk::protocols::key_management::rename::{RenameKeyBody, RenameKeyResultBody};
+use vta_sdk::protocols::key_management::revoke::{RevokeKeyBody, RevokeKeyResultBody};
+use vta_sdk::protocols::key_management::sign::{SignAlgorithm, SignRequestBody, SignResultBody};
 use vta_sdk::protocols::memory::{
     MemoryDeleteBody, MemoryDeleteResponse, MemoryItem, MemoryListBody, MemoryListResponse,
     MemoryPutBody, MemoryPutResponse,
@@ -151,6 +167,37 @@ fn dt() -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::parse_from_rfc3339(TS)
         .expect("valid ts")
         .with_timezone(&chrono::Utc)
+}
+
+/// A fully-populated canonical `KeyRecord` (the keys family's shared component).
+fn key_record() -> KeyRecord {
+    KeyRecord {
+        key_id: "app-signing-key".into(),
+        derivation_path: "m/26'/2'/0'/1'".into(),
+        key_type: KeyType::Ed25519,
+        status: KeyStatus::Active,
+        public_key: "z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".into(),
+        label: Some("app signing key".into()),
+        context_id: Some("app".into()),
+        seed_id: Some(1),
+        origin: KeyOrigin::Derived,
+        created_at: dt(),
+        updated_at: dt(),
+    }
+}
+
+/// The create/import response's record shape — a strict subset of `KeyRecord`.
+fn key_result() -> CreateKeyResultBody {
+    CreateKeyResultBody {
+        key_id: "app-signing-key".into(),
+        key_type: KeyType::Ed25519,
+        derivation_path: "m/26'/2'/0'/1'".into(),
+        public_key: "z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".into(),
+        status: KeyStatus::Active,
+        label: Some("app signing key".into()),
+        origin: KeyOrigin::Derived,
+        created_at: dt(),
+    }
 }
 
 /// A fully-populated canonical `AclEntry` (the family's shared component).
@@ -583,6 +630,153 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(SwapKeyResultBody {
                     entry: acl_entry(),
                     previous_subject: SUBJECT.into(),
+                })
+            ),
+        ),
+        // ─── keys (the signing-oracle + custody family, #167) ────
+        (
+            uris::TASK_KEYS_LIST_0_1,
+            checked!(
+                specs::keys::list::v0_1::Payload,
+                specs::keys::list::v0_1::Response,
+                to_v(ListKeysBody {
+                    offset: Some(0),
+                    limit: Some(50),
+                    status: Some(KeyStatus::Active),
+                    context_id: Some("app".into()),
+                }),
+                to_v(ListKeysResultBody {
+                    keys: vec![key_record()],
+                    total: 1,
+                    offset: 0,
+                    limit: 50,
+                })
+            ),
+        ),
+        (
+            uris::TASK_KEYS_CREATE_0_1,
+            checked!(
+                specs::keys::create::v0_1::Payload,
+                specs::keys::create::v0_1::Response,
+                to_v(CreateKeyBody {
+                    key_type: KeyType::Ed25519,
+                    derivation_path: "m/26'/2'/0'/1'".into(),
+                    mnemonic: None,
+                    label: Some("app signing key".into()),
+                    context_id: Some("app".into()),
+                }),
+                to_v(CreateKeyResponseBody { key: key_result() })
+            ),
+        ),
+        (
+            uris::TASK_KEYS_IMPORT_0_1,
+            checked!(
+                specs::keys::import::v0_1::Payload,
+                specs::keys::import::v0_1::Response,
+                to_v(ImportKeyBody {
+                    key_type: KeyType::Ed25519,
+                    private_key_sealed: Some("-----BEGIN SEALED TRANSFER-----".into()),
+                    private_key_jwe: None,
+                    private_key_multibase: None,
+                    label: Some("migrated signer".into()),
+                    context_id: Some("app".into()),
+                }),
+                to_v(CreateKeyResponseBody { key: key_result() })
+            ),
+        ),
+        (
+            uris::TASK_KEYS_SHOW_0_1,
+            checked!(
+                specs::keys::show::v0_1::Payload,
+                specs::keys::show::v0_1::Response,
+                to_v(GetKeyBody {
+                    key_id: "app-signing-key".into(),
+                }),
+                to_v(GetKeyResponseBody {
+                    key: Some(key_record()),
+                })
+            ),
+        ),
+        (
+            uris::TASK_KEYS_RENAME_0_1,
+            checked!(
+                specs::keys::rename::v0_1::Payload,
+                specs::keys::rename::v0_1::Response,
+                to_v(RenameKeyBody {
+                    key_id: "app-signing-key".into(),
+                    new_key_id: "app-signing-key-2026".into(),
+                }),
+                to_v(RenameKeyResultBody {
+                    key_id: "app-signing-key-2026".into(),
+                    updated_at: dt(),
+                })
+            ),
+        ),
+        (
+            uris::TASK_KEYS_REVOKE_0_1,
+            checked!(
+                specs::keys::revoke::v0_1::Payload,
+                specs::keys::revoke::v0_1::Response,
+                to_v(RevokeKeyBody {
+                    key_id: "app-signing-key".into(),
+                    reason: Some("superseded".into()),
+                }),
+                to_v(RevokeKeyResultBody {
+                    key_id: "app-signing-key".into(),
+                    status: KeyStatus::Revoked,
+                    updated_at: dt(),
+                })
+            ),
+        ),
+        (
+            uris::TASK_KEYS_SIGN_0_1,
+            checked!(
+                specs::keys::sign::v0_1::Payload,
+                specs::keys::sign::v0_1::Response,
+                to_v(SignRequestBody {
+                    key_id: "app-signing-key".into(),
+                    payload: "aGVsbG8".into(),
+                    algorithm: SignAlgorithm::EdDSA,
+                }),
+                to_v(SignResultBody {
+                    key_id: "app-signing-key".into(),
+                    signature: "3q2-7w".into(),
+                    algorithm: SignAlgorithm::EdDSA,
+                })
+            ),
+        ),
+        (
+            uris::TASK_KEYS_DERIVE_AND_SIGN_0_1,
+            checked!(
+                specs::keys::derive_and_sign::v0_1::Payload,
+                specs::keys::derive_and_sign::v0_1::Response,
+                to_v(DeriveAndSignBody {
+                    key_type: KeyType::Ed25519,
+                    derivation_path: "m/26'/9'/0'".into(),
+                    payload: "aGVsbG8".into(),
+                    algorithm: SignAlgorithm::EdDSA,
+                }),
+                to_v(DeriveAndSignResultBody {
+                    public_key: "z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".into(),
+                    signature: "3q2-7w".into(),
+                    algorithm: SignAlgorithm::EdDSA,
+                })
+            ),
+        ),
+        (
+            uris::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
+            checked!(
+                specs::keys::derive_and_sign_document::v0_1::Payload,
+                specs::keys::derive_and_sign_document::v0_1::Response,
+                to_v(DeriveAndSignDocumentBody {
+                    key_type: KeyType::Ed25519,
+                    derivation_path: "m/26'/9'/0'".into(),
+                    document: json!({ "id": "urn:uuid:1", "payload": { "a": 1 } }),
+                    proof_purpose: Some("assertionMethod".into()),
+                }),
+                to_v(DeriveAndSignDocumentResultBody {
+                    signer_did: "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".into(),
+                    document: json!({ "id": "urn:uuid:1", "proof": { "type": "DataIntegrityProof" } }),
                 })
             ),
         ),

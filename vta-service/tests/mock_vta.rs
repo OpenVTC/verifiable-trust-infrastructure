@@ -245,6 +245,7 @@ async fn create_did_webvh_round_trips_against_stub_host() {
 /// advanced the key counter and the DID looped forever.
 #[cfg(feature = "webvh")]
 #[tokio::test]
+#[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
 async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() {
     use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
@@ -362,6 +363,7 @@ async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() 
 /// update fails at signing and loops.
 #[cfg(feature = "webvh")]
 #[tokio::test]
+#[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
 async fn a_superseded_signing_key_is_recovered_from_the_seed() {
     use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
     use vta_sdk::protocols::did_management::create::WebvhPathMode;

@@ -1,13 +1,18 @@
 use serde::{Deserialize, Serialize};
 
 /// Signing algorithms supported by the VTA sign-request protocol.
+/// Signing algorithms, spelled as the IANA JOSE registry spells them —
+/// which is what the canonical `keys/_shared/0.1/sign-algorithm` enumeration
+/// publishes. The pre-fold lowercase forms are accepted on intake so a producer
+/// written against them keeps working while it migrates.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum SignAlgorithm {
     /// Ed25519 / EdDSA signing.
+    #[serde(rename = "EdDSA", alias = "eddsa")]
     EdDSA,
     /// ECDSA with P-256 / ES256 signing.
+    #[serde(rename = "ES256", alias = "es256")]
     ES256,
 }
 
@@ -30,6 +35,7 @@ pub struct SignRequestBody {
     /// every key in it, so a signer acting for several identities needs a
     /// context each. See `docs/02-vta/integration-guide.md` §"What authorizes a
     /// sign request".
+    #[serde(rename = "keyId", alias = "key_id")]
     pub key_id: String,
     /// Base64url-encoded payload bytes to sign.
     pub payload: String,
@@ -42,6 +48,7 @@ pub struct SignRequestBody {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SignResultBody {
     /// Key ID that was used.
+    #[serde(rename = "keyId", alias = "key_id")]
     pub key_id: String,
     /// Base64url-encoded signature bytes.
     pub signature: String,

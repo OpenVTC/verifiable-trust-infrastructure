@@ -307,41 +307,42 @@ async fn backup_export_403_maps_to_forbidden() {
 
 // ── Keys ────────────────────────────────────────────────────────────
 
+/// One record in the canonical `keys/_shared/0.1/key-record` shape — camelCase,
+/// which is what the VTA emits on every transport after the keys fold.
 fn key_record_json(id: &str) -> Value {
     json!({
-        "key_id": id,
-        "derivation_path": "m/44'/0'/0'",
-        "key_type": "ed25519",
+        "keyId": id,
+        "derivationPath": "m/44'/0'/0'",
+        "keyType": "ed25519",
         "status": "active",
-        "public_key": "z6Mkpub",
+        "publicKey": "z6Mkpub",
         "label": null,
-        "context_id": null,
-        "seed_id": 1,
+        "contextId": null,
+        "seedId": 1,
         "origin": "derived",
-        "created_at": "2026-01-01T00:00:00Z",
-        "updated_at": "2026-01-01T00:00:00Z"
+        "createdAt": "2026-01-01T00:00:00Z",
+        "updatedAt": "2026-01-01T00:00:00Z"
     })
+}
+
+/// The `{ key }` envelope canonical single-record responses carry.
+fn key_envelope(id: &str) -> Value {
+    json!({ "key": key_record_json(id) })
+}
+
+/// The same envelope for a key that arrived from outside. `origin` is the
+/// member that says a seed restore will not bring this one back, so a fixture
+/// that always said `derived` would let a broken mapping pass.
+fn imported_key_envelope(id: &str) -> Value {
+    let mut record = key_record_json(id);
+    record["origin"] = json!("imported");
+    json!({ "key": record })
 }
 
 #[tokio::test]
 async fn create_key_round_trip() {
     let server = MockServer::start().await;
-    let _g = mount_json(
-        &server,
-        "POST",
-        "/keys",
-        200,
-        json!({
-            "key_id": "k1",
-            "key_type": "ed25519",
-            "derivation_path": "m/0/0",
-            "public_key": "z6Mkpub",
-            "status": "active",
-            "label": null,
-            "created_at": "2026-01-01T00:00:00Z"
-        }),
-    )
-    .await;
+    let _g = mount_json(&server, "POST", "/keys", 200, key_envelope("k1")).await;
     let c = client(&server).await;
     let req = CreateKeyRequest::new(KeyType::Ed25519)
         .derivation_path("m/0/0")
@@ -386,7 +387,7 @@ async fn get_key_path_encodes_did_fragment() {
         "GET",
         "/keys/did:web:example.com%23key-1",
         200,
-        key_record_json("did:web:example.com#key-1"),
+        key_envelope("did:web:example.com#key-1"),
     )
     .await;
     let c = client(&server).await;
@@ -516,15 +517,7 @@ async fn import_key_posts() {
         "POST",
         "/keys/import",
         200,
-        json!({
-            "key_id": "imported",
-            "key_type": "ed25519",
-            "public_key": "z6Mkpub",
-            "status": "active",
-            "label": null,
-            "origin": "imported",
-            "created_at": "2026-01-01T00:00:00Z"
-        }),
+        imported_key_envelope("imported"),
     )
     .await;
     let c = client(&server).await;

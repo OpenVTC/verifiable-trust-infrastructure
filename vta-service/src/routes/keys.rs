@@ -4,9 +4,10 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use vta_sdk::protocols::key_management::{
-    create::CreateKeyResultBody,
+    create::CreateKeyResponseBody,
     derive_and_sign::{DeriveAndSignBody, DeriveAndSignResultBody},
     derive_and_sign_document::{DeriveAndSignDocumentBody, DeriveAndSignDocumentResultBody},
+    get::GetKeyResponseBody,
     list::ListKeysResultBody,
     rename::RenameKeyResultBody,
     revoke::RevokeKeyResultBody,
@@ -19,7 +20,6 @@ use vta_sdk::protocols::seed_management::{
 
 use crate::auth::{AdminAuth, AuthClaims};
 use crate::error::AppError;
-use crate::keys::KeyRecord;
 use crate::keys::KeyStatus;
 use crate::keys::KeyType;
 use crate::operations;
@@ -41,7 +41,7 @@ pub struct CreateKeyRequest {
     security(("bearer_jwt" = [])),
     request_body = CreateKeyRequest,
     responses(
-        (status = 201, description = "Key created", body = CreateKeyResultBody),
+        (status = 201, description = "Key created", body = CreateKeyResponseBody),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin/initiator"),
     ),
@@ -50,7 +50,7 @@ pub async fn create_key(
     auth: AdminAuth,
     State(state): State<AppState>,
     Json(req): Json<CreateKeyRequest>,
-) -> Result<(StatusCode, Json<CreateKeyResultBody>), AppError> {
+) -> Result<(StatusCode, Json<CreateKeyResponseBody>), AppError> {
     let result = operations::keys::create_key(
         &state.keys_ks,
         &state.contexts_ks,
@@ -68,7 +68,10 @@ pub async fn create_key(
         "rest",
     )
     .await?;
-    Ok((StatusCode::CREATED, Json(result)))
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateKeyResponseBody { key: result }),
+    ))
 }
 
 /// GET /keys/{key_id}/secret — retrieve private key material. Auth: Admin or Initiator.
@@ -107,7 +110,7 @@ pub async fn get_key_secret(
     security(("bearer_jwt" = [])),
     params(("key_id" = String, Path, description = "Key identifier")),
     responses(
-        (status = 200, description = "Key record", body = KeyRecord),
+        (status = 200, description = "Key record", body = GetKeyResponseBody),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 404, description = "Key not found"),
     ),
@@ -116,9 +119,9 @@ pub async fn get_key(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(key_id): Path<String>,
-) -> Result<Json<KeyRecord>, AppError> {
+) -> Result<Json<GetKeyResponseBody>, AppError> {
     let result = operations::keys::get_key(&state.keys_ks, &auth, &key_id, "rest").await?;
-    Ok(Json(result))
+    Ok(Json(GetKeyResponseBody { key: Some(result) }))
 }
 
 /// DELETE /keys/{key_id} — revoke/invalidate a key. Auth: Admin or Initiator.
@@ -481,7 +484,7 @@ pub struct ImportKeyRestRequest {
     security(("bearer_jwt" = [])),
     request_body = ImportKeyRestRequest,
     responses(
-        (status = 201, description = "Key imported", body = CreateKeyResultBody),
+        (status = 201, description = "Key imported", body = CreateKeyResponseBody),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
     ),
@@ -490,7 +493,7 @@ pub async fn import_key(
     auth: AdminAuth,
     State(state): State<AppState>,
     Json(req): Json<ImportKeyRestRequest>,
-) -> Result<(StatusCode, Json<CreateKeyResultBody>), AppError> {
+) -> Result<(StatusCode, Json<CreateKeyResponseBody>), AppError> {
     // Unwrap the private key based on transport. Sealed-transfer is
     // preferred; JWE is kept as a fallback for legacy clients. The
     // plaintext `private_key_multibase` path is intentionally not
@@ -534,5 +537,8 @@ pub async fn import_key(
         "rest",
     )
     .await?;
-    Ok((StatusCode::CREATED, Json(result)))
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateKeyResponseBody { key: result }),
+    ))
 }

@@ -123,20 +123,27 @@ async fn shutdown_all(
     mediator.join().await.expect("mediator joins");
 }
 
+/// One record in the canonical `keys/_shared/0.1/key-record` wire shape:
+/// camelCase throughout, which is what the family publishes.
 fn key_record_json(id: &str) -> Value {
     json!({
-        "key_id": id,
-        "derivation_path": "m/0/0",
-        "key_type": "ed25519",
+        "keyId": id,
+        "derivationPath": "m/0/0",
+        "keyType": "ed25519",
         "status": "active",
-        "public_key": "z6Mkpub",
+        "publicKey": "z6Mkpub",
         "label": null,
-        "context_id": null,
-        "seed_id": 1,
+        "contextId": null,
+        "seedId": 1,
         "origin": "derived",
-        "created_at": "2026-01-01T00:00:00Z",
-        "updated_at": "2026-01-01T00:00:00Z"
+        "createdAt": "2026-01-01T00:00:00Z",
+        "updatedAt": "2026-01-01T00:00:00Z"
     })
+}
+
+/// The `{ key }` envelope canonical single-record responses carry.
+fn key_envelope(id: &str) -> Value {
+    json!({ "key": key_record_json(id) })
 }
 
 fn context_json(id: &str) -> Value {
@@ -256,9 +263,9 @@ async fn get_config_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_keys_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_LIST_1_0) {
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_LIST_0_1) {
             tt_ok(
-                trust_tasks::TASK_KEYS_LIST_1_0,
+                trust_tasks::TASK_KEYS_LIST_0_1,
                 json!({"keys": [key_record_json("k1"), key_record_json("k2")], "total": 2}),
             )
         } else {
@@ -277,8 +284,9 @@ async fn list_keys_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_key_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_GET_1_0) {
-            tt_ok(trust_tasks::TASK_KEYS_GET_1_0, key_record_json("k1"))
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_SHOW_0_1) {
+            assert_eq!(body["payload"]["keyId"], "k1", "{body}");
+            tt_ok(trust_tasks::TASK_KEYS_SHOW_0_1, key_envelope("k1"))
         } else {
             no_handler()
         }
@@ -294,20 +302,9 @@ async fn get_key_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_key_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_CREATE_1_0) {
-            assert_eq!(body["payload"]["key_type"], "ed25519");
-            tt_ok(
-                trust_tasks::TASK_KEYS_CREATE_1_0,
-                json!({
-                    "key_id": "k1",
-                    "key_type": "ed25519",
-                    "derivation_path": "m/0/0",
-                    "public_key": "z6Mkpub",
-                    "status": "active",
-                    "label": null,
-                    "created_at": "2026-01-01T00:00:00Z"
-                }),
-            )
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_CREATE_0_1) {
+            assert_eq!(body["payload"]["keyType"], "ed25519", "{body}");
+            tt_ok(trust_tasks::TASK_KEYS_CREATE_0_1, key_envelope("k1"))
         } else {
             no_handler()
         }
@@ -325,12 +322,12 @@ async fn create_key_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sign_via_didcomm_round_trips_payload() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_SIGN_1_0) {
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_SIGN_0_1) {
             // Verify the SDK base64url-encoded the payload-to-sign (which
             // sits at `payload.payload` inside the trust-task document).
             assert_eq!(body["payload"]["payload"], "aGVsbG8");
             tt_ok(
-                trust_tasks::TASK_KEYS_SIGN_1_0,
+                trust_tasks::TASK_KEYS_SIGN_0_1,
                 json!({"key_id": "k1", "signature": "AQID", "algorithm": "eddsa"}),
             )
         } else {
@@ -351,9 +348,9 @@ async fn sign_via_didcomm_round_trips_payload() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn invalidate_key_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_REVOKE_1_0) {
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_REVOKE_0_1) {
             tt_ok(
-                trust_tasks::TASK_KEYS_REVOKE_1_0,
+                trust_tasks::TASK_KEYS_REVOKE_0_1,
                 json!({
                     "key_id": "k1",
                     "status": "revoked",
@@ -375,9 +372,9 @@ async fn invalidate_key_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rename_key_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_RENAME_1_0) {
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_RENAME_0_1) {
             tt_ok(
-                trust_tasks::TASK_KEYS_RENAME_1_0,
+                trust_tasks::TASK_KEYS_RENAME_0_1,
                 json!({"key_id": "new", "updated_at": "2026-01-01T00:00:00Z"}),
             )
         } else {
@@ -394,6 +391,43 @@ async fn rename_key_via_didcomm() {
 
 /// `import_key` is twinless — #861 left it on the legacy `rpc` path, so the
 /// mock still matches the `key-management/1.0` message type.
+/// A sealed carrier rides canonical `keys/import/0.1`, so it reaches TSP as
+/// well as DIDComm. The multibase test below pins the other half of the fork.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sealed_import_key_via_didcomm_uses_the_canonical_task() {
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_IMPORT_0_1) {
+            let p = &body["payload"];
+            assert_eq!(p["keyType"], "ed25519", "{body}");
+            assert!(p["privateKeySealed"].is_string(), "{body}");
+            assert!(
+                p.get("privateKeyMultibase").is_none_or(Value::is_null),
+                "the cleartext carrier must never ride the canonical task: {body}"
+            );
+            tt_ok(trust_tasks::TASK_KEYS_IMPORT_0_1, key_envelope("imported"))
+        } else {
+            no_handler()
+        }
+    })
+    .await;
+
+    let req = ImportKeyRequest {
+        key_type: KeyType::Ed25519,
+        private_key_sealed: Some("-----BEGIN SEALED TRANSFER-----".into()),
+        private_key_jwe: None,
+        private_key_multibase: None,
+        label: None,
+        context_id: None,
+    };
+    let resp = client.import_key(req).await.unwrap();
+    assert_eq!(resp.key_id, "imported");
+
+    shutdown_all(client, responder, mediator).await;
+}
+
+/// A raw multibase key stays on the legacy DIDComm message, where authcrypt
+/// has established the end-to-end confidentiality the canonical task cannot
+/// assume.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn import_key_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
