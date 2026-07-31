@@ -1202,6 +1202,52 @@ async fn delete_did_webvh_returns_unit() {
     c.delete_did_webvh("did:webvh:abc").await.unwrap();
 }
 
+/// The canonical form keys on the DID and rides `/api/trust-tasks` on REST
+/// too, so one payload shape serves all three transports. The body's members
+/// sit *beside* `did` — the maintainer reads them back with `serde(flatten)`,
+/// and a nested body would arrive as an update that changes nothing.
+#[tokio::test]
+async fn update_did_webvh_by_did_sends_the_canonical_task() {
+    let server = MockServer::start().await;
+    let _g = Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
+        .and(auth_match())
+        .and(wiremock::matchers::body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/vta/webvh/dids/update/1.0",
+            "payload": {
+                "did": "did:webvh:Qabc:host:slug",
+                "document": {"id": "did:webvh:Qabc:host:slug"},
+            },
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "urn:uuid:0000",
+            "type": "https://trusttasks.org/spec/vta/webvh/dids/update/1.0#response",
+            "payload": {
+                "did": "did:webvh:Qabc:host:slug",
+                "newVersionId": "2-z",
+                "newScid": "Qabc",
+                "newLogEntry": "{}",
+                "updateKeysCount": 1,
+                "preRotationKeyCount": 0
+            },
+        })))
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+
+    let c = client(&server).await;
+    let body = vta_sdk::protocols::did_management::update::UpdateDidWebvhBody {
+        document: Some(json!({"id": "did:webvh:Qabc:host:slug"})),
+        ..Default::default()
+    };
+    let r = c
+        .update_did_webvh_by_did("did:webvh:Qabc:host:slug", body)
+        .await
+        .unwrap();
+    assert_eq!(r.new_version_id, "2-z");
+}
+
+#[allow(deprecated)] // pins the legacy route until the method is removed
 #[tokio::test]
 async fn update_did_webvh_posts_to_context_path() {
     let server = MockServer::start().await;
@@ -1229,6 +1275,7 @@ async fn update_did_webvh_posts_to_context_path() {
     assert_eq!(r.new_version_id, "2-z");
 }
 
+#[allow(deprecated)] // pins the legacy route until the method is removed
 #[tokio::test]
 async fn rotate_did_webvh_keys_posts() {
     let server = MockServer::start().await;

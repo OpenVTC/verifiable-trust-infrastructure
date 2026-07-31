@@ -198,11 +198,11 @@ pub async fn cmd_webvh_did_edit(
         launch_editor, prompt_webvh_params,
     };
 
-    // Fetch the DID record (for context_id + scid) — this also
-    // surfaces a clean 404 if the DID isn't registered.
-    let record = client.get_did_webvh(did).await?;
-    let context_id = record.context_id.clone();
-    let scid = record.scid.clone();
+    // Confirm the DID is registered here before opening an editor on it — a
+    // clean 404 now beats a failed publish after the operator has typed a
+    // document. The record's `context_id`/`scid` are no longer needed: the
+    // canonical update task keys on the DID we already have.
+    let _ = client.get_did_webvh(did).await?;
 
     // Decide between interactive and non-interactive paths. The
     // non-interactive heuristic: any flag set → skip the editor
@@ -276,7 +276,7 @@ pub async fn cmd_webvh_did_edit(
 
     confirm_publish(&body, no_confirm)?;
 
-    let result = client.update_did_webvh(&context_id, &scid, body).await?;
+    let result = client.update_did_webvh_by_did(did, body).await?;
     println!("WebVH DID updated.");
     println!("  DID:             {}", result.did);
     println!("  New version ID:  {}", result.new_version_id);
