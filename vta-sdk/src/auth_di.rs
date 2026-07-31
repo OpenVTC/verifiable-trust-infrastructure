@@ -28,16 +28,13 @@
 //! [`crate::provision_client::auth_rest`] build their documents here so the two
 //! can't drift.
 
-use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
-use affinidi_secrets_resolver::secrets::Secret;
-use chrono::Utc;
 use serde_json::Value;
+use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::auth::authenticate::v0_1 as authenticate;
 use trust_tasks_rs::specs::auth::refresh::v0_1 as refresh;
-use trust_tasks_rs::{Proof, TrustTask};
 
-use crate::did_key::decode_private_key_multibase;
 use crate::protocols::auth::AuthenticateResponse;
+use crate::trust_task_sign::{self, TrustTaskSignError};
 use crate::trust_tasks::{TASK_AUTH_AUTHENTICATE_0_1, TASK_AUTH_REFRESH_0_1};
 
 /// Why building or reading a DI-signed auth document failed.
@@ -46,49 +43,34 @@ use crate::trust_tasks::{TASK_AUTH_AUTHENTICATE_0_1, TASK_AUTH_REFRESH_0_1};
 /// HTTP client and its error type.
 #[derive(Debug)]
 pub enum AuthDiError {
-    /// The holder DID is not a `did:key`. The server verifies the proof with a
-    /// `did:key`-only resolver, so no other method can authenticate this way.
-    NotDidKey(String),
-    /// The holder's private key could not be decoded from its multibase form.
-    BadPrivateKey(String),
     /// A payload field failed the spec type's own validation (e.g. an empty
     /// challenge or refresh token) — caught here rather than by the server.
     Payload(String),
-    /// Signing the document failed.
-    Sign(String),
-    /// The Trust Task type URI failed to parse. Unreachable in practice — the
-    /// URIs are `const`s from [`crate::trust_tasks`] — but not worth an
-    /// `unwrap` on a client's auth path.
-    TypeUri(String),
+    /// Building or signing the document failed — see
+    /// [`TrustTaskSignError`] (non-`did:key` holder, bad key, bad type URI).
+    Sign(TrustTaskSignError),
     /// The VTA's response was neither a flat `AuthenticateResponse` nor a
     /// Trust-Task `#response` document wrapping one.
     Response(String),
 }
 
+impl From<TrustTaskSignError> for AuthDiError {
+    fn from(e: TrustTaskSignError) -> Self {
+        Self::Sign(e)
+    }
+}
+
 impl std::fmt::Display for AuthDiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotDidKey(did) => write!(
-                f,
-                "DI-signed REST authentication requires a did:key holder; got {did}"
-            ),
-            Self::BadPrivateKey(e) => write!(f, "decode holder private key: {e}"),
             Self::Payload(e) => write!(f, "invalid auth payload: {e}"),
-            Self::Sign(e) => write!(f, "sign authenticate Trust Task: {e}"),
-            Self::TypeUri(e) => write!(f, "Trust Task type URI parse: {e}"),
+            Self::Sign(e) => write!(f, "{e}"),
             Self::Response(e) => write!(f, "unexpected auth response from VTA: {e}"),
         }
     }
 }
 
 impl std::error::Error for AuthDiError {}
-
-/// The `did:key:zXxx#zXxx` verification-method id the Data-Integrity resolver
-/// recognises for a `did:key` holder.
-fn did_key_to_vm(did: &str) -> Option<String> {
-    let mb = did.strip_prefix("did:key:")?;
-    Some(format!("{did}#{mb}"))
-}
 
 /// Build and sign an `auth/authenticate/0.1` Trust Task, returning the JSON
 /// body to POST to `/auth/`.
@@ -118,42 +100,14 @@ pub async fn sign_authenticate_doc(
         scope: Vec::new(),
         ext: None,
     };
-    let mut doc = new_doc(
+    Ok(trust_task_sign::build_signed(
         TASK_AUTH_AUTHENTICATE_0_1,
         serde_json::to_value(&payload).map_err(|e| AuthDiError::Payload(e.to_string()))?,
         client_did,
+        private_key_multibase,
         vta_did,
-    )?;
-
-    let vm_id =
-        did_key_to_vm(client_did).ok_or_else(|| AuthDiError::NotDidKey(client_did.into()))?;
-    let seed = decode_private_key_multibase(private_key_multibase)
-        .map_err(|e| AuthDiError::BadPrivateKey(e.to_string()))?;
-    let mut signer = Secret::generate_ed25519(Some(&vm_id), Some(&seed));
-    signer.id = vm_id;
-
-    let mut signing_doc =
-        serde_json::to_value(&doc).map_err(|e| AuthDiError::Sign(e.to_string()))?;
-    if let Some(obj) = signing_doc.as_object_mut() {
-        obj.remove("proof");
-    }
-    let di_proof = DataIntegrityProof::sign(
-        &signing_doc,
-        &signer,
-        SignOptions::new()
-            .with_proof_purpose("assertionMethod")
-            .with_created(Utc::now()),
     )
-    .await
-    .map_err(|e| AuthDiError::Sign(e.to_string()))?;
-    let proof_json =
-        serde_json::to_value(&di_proof).map_err(|e| AuthDiError::Sign(e.to_string()))?;
-    doc.proof = Some(
-        serde_json::from_value::<Proof>(proof_json)
-            .map_err(|e| AuthDiError::Sign(e.to_string()))?,
-    );
-
-    serde_json::to_string(&doc).map_err(|e| AuthDiError::Sign(e.to_string()))
+    .await?)
 }
 
 /// Build an `auth/refresh/0.1` Trust Task, returning the JSON body to POST to
@@ -178,13 +132,13 @@ pub fn build_refresh_doc(
         scope: Vec::new(),
         ext: None,
     };
-    let doc = new_doc(
+    let doc = trust_task_sign::build_unsigned(
         TASK_AUTH_REFRESH_0_1,
         serde_json::to_value(&payload).map_err(|e| AuthDiError::Payload(e.to_string()))?,
         client_did,
         vta_did,
     )?;
-    serde_json::to_string(&doc).map_err(|e| AuthDiError::Sign(e.to_string()))
+    serde_json::to_string(&doc).map_err(|e| AuthDiError::Payload(e.to_string()))
 }
 
 /// Parse an `/auth/` or `/auth/refresh` response body.
@@ -200,30 +154,6 @@ pub fn parse_auth_response(body: &str) -> Result<AuthenticateResponse, AuthDiErr
         .map_err(|e| AuthDiError::Response(format!("{e} (is this a VTA?)")))?;
     serde_json::from_value(doc.payload)
         .map_err(|e| AuthDiError::Response(format!("payload is not an AuthenticateResponse: {e}")))
-}
-
-/// A Trust Task addressed from the holder to the VTA, with a fresh id.
-///
-/// `recipient` is always set: SPEC §4.8.2 audience binding rejects a *signed*
-/// document with no in-band recipient, and it costs nothing on the unsigned
-/// refresh document.
-fn new_doc(
-    type_uri: &str,
-    payload: Value,
-    client_did: &str,
-    vta_did: &str,
-) -> Result<TrustTask<Value>, AuthDiError> {
-    let mut doc: TrustTask<Value> = TrustTask::new(
-        format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        type_uri
-            .parse()
-            .map_err(|e| AuthDiError::TypeUri(format!("{e}")))?,
-        payload,
-    );
-    doc.issuer = Some(client_did.to_string());
-    doc.recipient = Some(vta_did.to_string());
-    doc.issued_at = Some(Utc::now());
-    Ok(doc)
 }
 
 #[cfg(test)]
@@ -278,59 +208,10 @@ mod tests {
         );
     }
 
-    /// The proof verifies under the same `did:key` resolver the VTA uses
-    /// (`vti-common/src/auth/di_proof.rs`) — i.e. the document the client
-    /// emits is one the server actually accepts.
-    #[tokio::test]
-    async fn signed_doc_verifies_under_did_key_resolver() {
-        use affinidi_data_integrity::{DidKeyResolver, VerifyOptions};
-
-        let (did, pk) = did_key_from_seed(0x22);
-        let body = sign_authenticate_doc(&did, &pk, "did:key:z6MkVta", CHALLENGE, "sess-1")
-            .await
-            .expect("sign");
-        let doc: TrustTask<Value> = serde_json::from_str(&body).unwrap();
-
-        let proof: DataIntegrityProof =
-            serde_json::from_value(serde_json::to_value(doc.proof.as_ref().unwrap()).unwrap())
-                .expect("proof round-trips into a DataIntegrityProof");
-        let mut unsigned = doc.clone();
-        unsigned.proof = None;
-        proof
-            .verify(&unsigned, &DidKeyResolver, VerifyOptions::new())
-            .await
-            .expect("server-side verification must succeed");
-    }
-
-    /// Tampering with the payload after signing invalidates the proof — the
-    /// signature covers the document, not just its presence.
-    #[tokio::test]
-    async fn tampered_payload_fails_verification() {
-        use affinidi_data_integrity::{DidKeyResolver, VerifyOptions};
-
-        let (did, pk) = did_key_from_seed(0x33);
-        let body = sign_authenticate_doc(&did, &pk, "did:key:z6MkVta", CHALLENGE, "sess-1")
-            .await
-            .expect("sign");
-        let mut doc: TrustTask<Value> = serde_json::from_str(&body).unwrap();
-        doc.payload = json!({ "challenge": "attacker-nonce-0000000000", "sessionId": "sess-1" });
-
-        let proof: DataIntegrityProof =
-            serde_json::from_value(serde_json::to_value(doc.proof.as_ref().unwrap()).unwrap())
-                .unwrap();
-        let mut unsigned = doc.clone();
-        unsigned.proof = None;
-        assert!(
-            proof
-                .verify(&unsigned, &DidKeyResolver, VerifyOptions::new())
-                .await
-                .is_err(),
-            "a tampered challenge must not verify"
-        );
-    }
-
     /// A non-`did:key` holder is refused locally rather than after a round trip
-    /// the VTA's `did:key`-only verifier would reject anyway.
+    /// the VTA's `did:key`-only verifier would reject anyway. The refusal comes
+    /// from the shared signer and must survive being wrapped by this layer —
+    /// the auth entry point is where a caller actually meets it.
     #[tokio::test]
     async fn non_did_key_holder_is_refused() {
         let (_, pk) = did_key_from_seed(0x44);
@@ -343,7 +224,17 @@ mod tests {
         )
         .await
         .expect_err("did:web holder must be refused");
-        assert!(matches!(err, AuthDiError::NotDidKey(_)), "got {err:?}");
+        assert!(
+            matches!(
+                err,
+                AuthDiError::Sign(crate::trust_task_sign::TrustTaskSignError::NotDidKey(_))
+            ),
+            "got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("did:web:example.com"),
+            "the rendered error must name the offending DID: {err}"
+        );
     }
 
     /// Refresh carries the token in a camelCase payload and no proof.
