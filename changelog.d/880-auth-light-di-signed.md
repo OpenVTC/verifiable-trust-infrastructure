@@ -92,6 +92,11 @@ faults that each hid behind the others:
   from this method's signature and is driven today by `vta-cli-common` /
   `vta-mobile-core`.
 
+  Its HTTP client also had no timeouts (R1.2) — a blackholed VTC hung the caller
+  forever. It now uses `vta_sdk::http::rest_client`, which is promoted from
+  `pub(crate)` to `pub` so sibling client crates share that one chokepoint
+  instead of each reaching for `reqwest::Client::new()`.
+
 **Regression cover.** The gap that let all of this accumulate was that no test
 ever ran a client and its server together — client tests stubbed the server,
 server tests hand-wrote the request. Three suites now close that:

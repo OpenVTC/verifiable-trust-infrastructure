@@ -191,7 +191,9 @@ impl VtcClient {
         client_did: &str,
         private_key_multibase: &str,
     ) -> Result<Self, VtcError> {
-        let http = reqwest::Client::new();
+        // Finite request + connect timeouts (R1.2) — `reqwest::Client::new()`
+        // has neither, so a blackholed VTC would hang an operator forever.
+        let http = vta_sdk::http::rest_client();
         let base_url = base_url.trim_end_matches('/').to_string();
         let auth = vta_sdk::auth_light::challenge_response_light(
             &http,
@@ -213,7 +215,7 @@ impl VtcClient {
     /// minted out of band, or for testing). `base_url` includes the mount.
     pub fn with_token(base_url: &str, vtc_did: &str, token: impl Into<String>) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: vta_sdk::http::rest_client(),
             base_url: base_url.trim_end_matches('/').to_string(),
             vtc_did: vtc_did.to_string(),
             token: Some(token.into()),
