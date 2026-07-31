@@ -1191,6 +1191,11 @@ pub async fn challenge_response(
     debug!(url = %challenge_url, did = client_did, "requesting challenge");
     let challenge_resp = http
         .post(&challenge_url)
+        // Trust-Task URL header: the VTC gates every route on it (400 without);
+        // the VTA ignores it. `cnm`'s VTC backup authenticates through this
+        // function, so omitting it made that login a 400 before any handler ran.
+        // Same header the `auth_light` / `auth_rest` REST paths send.
+        .header("Trust-Task", crate::trust_tasks::TASK_AUTH_CHALLENGE_0_1)
         .json(&ChallengeRequest {
             did: client_did.to_string(),
         })
@@ -1293,6 +1298,7 @@ pub async fn challenge_response(
     let auth_resp = http
         .post(&auth_url)
         .header("content-type", "text/plain")
+        .header("Trust-Task", crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1)
         .body(packed)
         .send()
         .await

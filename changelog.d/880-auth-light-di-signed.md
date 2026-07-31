@@ -36,9 +36,12 @@ proves the sender instead of a header claiming it.
   `refresh::Payload`) rather than hand-written JSON, so wire casing can't drift
   (R3.1) and the spec's own validation runs client-side — a short challenge is
   now a clear local error instead of a 401.
-- Both paths **send the `Trust-Task` URL header**. The VTA ignores it; the VTC
-  gates every route on it and answers 400 without it, so its absence made this
-  client VTC-incompatible at the transport layer regardless of the body.
+- **All three REST auth paths now send the `Trust-Task` URL header** —
+  `auth_light`, `provision_client::auth_rest`, and `session::challenge_response`
+  (the authcrypt-DIDComm-over-REST path `cnm`'s VTC backup authenticates
+  through). The VTA ignores it; the VTC gates every route on it and answers 400
+  without it, so its absence made these clients VTC-incompatible at the
+  transport layer regardless of the body.
 - `refresh_token_light` posts an *unsigned* `auth/refresh/0.1` Trust Task: the
   opaque refresh token is the bearer credential (RFC 6749 §10.4).
 - Both accept either response shape — the Trust-Task `#response` document or
