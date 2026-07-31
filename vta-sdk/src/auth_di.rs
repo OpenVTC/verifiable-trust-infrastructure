@@ -19,7 +19,8 @@
 //! instead of a header asserting it.
 //!
 //! Server-side the proof is verified with a **`did:key` resolver**
-//! (`vta-service/src/auth/di_proof.rs`), so [`sign_authenticate_doc`] refuses
+//! (`vti-common/src/auth/di_proof.rs`, shared by the VTA and the VTC), so
+//! [`sign_authenticate_doc`] refuses
 //! any other DID method up front rather than letting the VTA reject it after a
 //! round trip.
 //!
@@ -30,7 +31,9 @@
 use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
 use affinidi_secrets_resolver::secrets::Secret;
 use chrono::Utc;
-use serde_json::{Value, json};
+use serde_json::Value;
+use trust_tasks_rs::specs::auth::authenticate::v0_1 as authenticate;
+use trust_tasks_rs::specs::auth::refresh::v0_1 as refresh;
 use trust_tasks_rs::{Proof, TrustTask};
 
 use crate::did_key::decode_private_key_multibase;
@@ -48,6 +51,9 @@ pub enum AuthDiError {
     NotDidKey(String),
     /// The holder's private key could not be decoded from its multibase form.
     BadPrivateKey(String),
+    /// A payload field failed the spec type's own validation (e.g. an empty
+    /// challenge or refresh token) — caught here rather than by the server.
+    Payload(String),
     /// Signing the document failed.
     Sign(String),
     /// The Trust Task type URI failed to parse. Unreachable in practice — the
@@ -67,6 +73,7 @@ impl std::fmt::Display for AuthDiError {
                 "DI-signed REST authentication requires a did:key holder; got {did}"
             ),
             Self::BadPrivateKey(e) => write!(f, "decode holder private key: {e}"),
+            Self::Payload(e) => write!(f, "invalid auth payload: {e}"),
             Self::Sign(e) => write!(f, "sign authenticate Trust Task: {e}"),
             Self::TypeUri(e) => write!(f, "Trust Task type URI parse: {e}"),
             Self::Response(e) => write!(f, "unexpected auth response from VTA: {e}"),
@@ -86,9 +93,12 @@ fn did_key_to_vm(did: &str) -> Option<String> {
 /// Build and sign an `auth/authenticate/0.1` Trust Task, returning the JSON
 /// body to POST to `/auth/`.
 ///
-/// `challenge` / `session_id` come from `/auth/challenge`. The payload is
-/// camelCase (`sessionId`) to match the spec `authenticate::Payload` the server
-/// deserializes *after* verifying the proof.
+/// `challenge` / `session_id` come from `/auth/challenge`. The payload is built
+/// from the **generated spec type** (`authenticate::Payload`) rather than
+/// hand-written JSON, so its wire casing (`sessionId`) is whatever the spec says
+/// and cannot drift: the server deserializes into that same type with
+/// `deny_unknown_fields`, and R3.1 casing drift is the recurring class that
+/// silently breaks these bodies. It is also the shape `vta-mobile-core` emits.
 ///
 /// The proof is attached over the **proof-less** document: `eddsa-jcs-2022`
 /// canonicalises with JCS, which is presence-sensitive, and the server verifies
@@ -100,9 +110,17 @@ pub async fn sign_authenticate_doc(
     challenge: &str,
     session_id: &str,
 ) -> Result<String, AuthDiError> {
+    let payload = authenticate::Payload {
+        challenge: authenticate::PayloadChallenge::try_from(challenge.to_string())
+            .map_err(|e| AuthDiError::Payload(format!("challenge: {e}")))?,
+        session_id: authenticate::PayloadSessionId::try_from(session_id.to_string())
+            .map_err(|e| AuthDiError::Payload(format!("sessionId: {e}")))?,
+        scope: Vec::new(),
+        ext: None,
+    };
     let mut doc = new_doc(
         TASK_AUTH_AUTHENTICATE_0_1,
-        json!({ "challenge": challenge, "sessionId": session_id }),
+        serde_json::to_value(&payload).map_err(|e| AuthDiError::Payload(e.to_string()))?,
         client_did,
         vta_did,
     )?;
@@ -146,14 +164,23 @@ pub async fn sign_authenticate_doc(
 /// refresh path passes `signer_did: None` and verifies no proof. That also
 /// means refresh works for a holder of any DID method, unlike
 /// [`sign_authenticate_doc`].
+///
+/// Payload built from the generated `refresh::Payload` for the same
+/// casing-can't-drift reason as [`sign_authenticate_doc`].
 pub fn build_refresh_doc(
     client_did: &str,
     vta_did: &str,
     refresh_token: &str,
 ) -> Result<String, AuthDiError> {
+    let payload = refresh::Payload {
+        refresh_token: refresh::PayloadRefreshToken::try_from(refresh_token.to_string())
+            .map_err(|e| AuthDiError::Payload(format!("refreshToken: {e}")))?,
+        scope: Vec::new(),
+        ext: None,
+    };
     let doc = new_doc(
         TASK_AUTH_REFRESH_0_1,
-        json!({ "refreshToken": refresh_token }),
+        serde_json::to_value(&payload).map_err(|e| AuthDiError::Payload(e.to_string()))?,
         client_did,
         vta_did,
     )?;
@@ -202,6 +229,12 @@ fn new_doc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    /// A challenge shaped like the real thing — the canonical handler issues
+    /// hex-encoded 32 random bytes, and the spec type enforces `minLength: 16`,
+    /// so a toy `"c"` is not a valid fixture.
+    const CHALLENGE: &str = "a3f1c09b7e2d4856a3f1c09b7e2d4856";
 
     /// A deterministic `did:key` + its multibase private key.
     fn did_key_from_seed(seed_byte: u8) -> (String, String) {
@@ -222,13 +255,13 @@ mod tests {
     #[tokio::test]
     async fn authenticate_doc_is_signed_and_camel_cased() {
         let (did, pk) = did_key_from_seed(0x11);
-        let body = sign_authenticate_doc(&did, &pk, "did:key:z6MkVta", "c-nonce", "sess-1")
+        let body = sign_authenticate_doc(&did, &pk, "did:key:z6MkVta", CHALLENGE, "sess-1")
             .await
             .expect("sign");
         let v: Value = serde_json::from_str(&body).unwrap();
 
         assert_eq!(v["type"], TASK_AUTH_AUTHENTICATE_0_1);
-        assert_eq!(v["payload"]["challenge"], "c-nonce");
+        assert_eq!(v["payload"]["challenge"], CHALLENGE);
         assert_eq!(v["payload"]["sessionId"], "sess-1");
         assert_eq!(v["issuer"], did);
         assert_eq!(v["recipient"], "did:key:z6MkVta");
@@ -246,14 +279,14 @@ mod tests {
     }
 
     /// The proof verifies under the same `did:key` resolver the VTA uses
-    /// (`vta-service/src/auth/di_proof.rs`) — i.e. the document the client
+    /// (`vti-common/src/auth/di_proof.rs`) — i.e. the document the client
     /// emits is one the server actually accepts.
     #[tokio::test]
     async fn signed_doc_verifies_under_did_key_resolver() {
         use affinidi_data_integrity::{DidKeyResolver, VerifyOptions};
 
         let (did, pk) = did_key_from_seed(0x22);
-        let body = sign_authenticate_doc(&did, &pk, "did:key:z6MkVta", "c", "s")
+        let body = sign_authenticate_doc(&did, &pk, "did:key:z6MkVta", CHALLENGE, "sess-1")
             .await
             .expect("sign");
         let doc: TrustTask<Value> = serde_json::from_str(&body).unwrap();
@@ -276,11 +309,11 @@ mod tests {
         use affinidi_data_integrity::{DidKeyResolver, VerifyOptions};
 
         let (did, pk) = did_key_from_seed(0x33);
-        let body = sign_authenticate_doc(&did, &pk, "did:key:z6MkVta", "c", "s")
+        let body = sign_authenticate_doc(&did, &pk, "did:key:z6MkVta", CHALLENGE, "sess-1")
             .await
             .expect("sign");
         let mut doc: TrustTask<Value> = serde_json::from_str(&body).unwrap();
-        doc.payload = json!({ "challenge": "attacker-nonce", "sessionId": "s" });
+        doc.payload = json!({ "challenge": "attacker-nonce-0000000000", "sessionId": "sess-1" });
 
         let proof: DataIntegrityProof =
             serde_json::from_value(serde_json::to_value(doc.proof.as_ref().unwrap()).unwrap())
@@ -301,9 +334,15 @@ mod tests {
     #[tokio::test]
     async fn non_did_key_holder_is_refused() {
         let (_, pk) = did_key_from_seed(0x44);
-        let err = sign_authenticate_doc("did:web:example.com", &pk, "did:key:z6MkVta", "c", "s")
-            .await
-            .expect_err("did:web holder must be refused");
+        let err = sign_authenticate_doc(
+            "did:web:example.com",
+            &pk,
+            "did:key:z6MkVta",
+            CHALLENGE,
+            "sess-1",
+        )
+        .await
+        .expect_err("did:web holder must be refused");
         assert!(matches!(err, AuthDiError::NotDidKey(_)), "got {err:?}");
     }
 

@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.11.47"
+version = "0.11.48"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -271,6 +271,13 @@ tempfile = { version = "3", optional = true }
 # Self-dep with `test-support` enabled so integration tests under
 # `tests/` can import `vtc_service::test_support` (`TestVtc`, `MockVtc`).
 vtc-service = { path = ".", features = ["test-support", "didcomm-harness"] }
+# The VTC's own client SDK, driven against `MockVtc` in
+# `tests/vtc_client_live.rs`. Testing it here (rather than in `vtc-client`,
+# which cannot see `MockVtc`) is what makes client/server drift a build
+# failure: the client was silently broken on every route because nothing ever
+# ran the pair together. Dev-only, and `vtc-client` does not depend on
+# `vtc-service`, so there is no cycle.
+vtc-client = { path = "../vtc-client" }
 tempfile = "3"
 # Integration tests under `tests/` exercise the route stack via
 # `Router::oneshot` — same pattern as `vta-service/tests/api_integration.rs`.

@@ -26,6 +26,12 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ── Test fixtures ───────────────────────────────────────────────────
 
+/// A challenge shaped like the real thing. The canonical handler issues
+/// hex-encoded 32 random bytes and the spec payload type enforces
+/// `minLength: 16`, so a short toy nonce is not a valid fixture — the typed
+/// builder in `auth_di` rejects it before it reaches the wire.
+const CHALLENGE: &str = "a3f1c09b7e2d4856a3f1c09b7e2d4856";
+
 /// Build a deterministic `did:key` + matching multibase private-key
 /// string from a seed byte. The client DID must be a valid `did:key`
 /// (the server's DI-proof resolver accepts nothing else); the VTA DID is
@@ -54,7 +60,7 @@ async fn mount_challenge(server: &MockServer) {
     Mock::given(method("POST"))
         .and(path("/auth/challenge"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "challenge": "c-nonce-123",
+            "challenge": CHALLENGE,
             "sessionId": "sess-test",
             "expiresAt": "2026-12-31T23:59:59Z"
         })))
@@ -170,7 +176,7 @@ async fn authenticate_endpoint_401_maps_to_auth() {
 }
 
 /// The VTA verifies the holder's DI proof with a `did:key`-only resolver
-/// (`vta-service/src/auth/di_proof.rs`), so a non-`did:key` holder is refused
+/// (`vti-common/src/auth/di_proof.rs`), so a non-`did:key` holder is refused
 /// locally as `Validation` rather than after a round trip.
 #[tokio::test]
 async fn non_did_key_holder_maps_to_validation() {
@@ -243,7 +249,7 @@ async fn authenticate_body_is_a_signed_trust_task() {
         body["type"], "https://trusttasks.org/spec/auth/authenticate/0.1",
         "body must be an authenticate Trust Task"
     );
-    assert_eq!(body["payload"]["challenge"], "c-nonce-123");
+    assert_eq!(body["payload"]["challenge"], CHALLENGE);
     assert_eq!(body["payload"]["sessionId"], "sess-test");
     assert_eq!(body["issuer"], client_did);
     assert_eq!(body["proof"]["cryptosuite"], "eddsa-jcs-2022");
@@ -573,7 +579,7 @@ async fn ensure_token_valid_full_reauth_when_refresh_expired() {
     Mock::given(method("POST"))
         .and(path("/auth/challenge"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "challenge": "c",
+            "challenge": CHALLENGE,
             "sessionId": "sess",
             "expiresAt": "2099-12-31T23:59:59Z"
         })))
@@ -660,7 +666,7 @@ async fn ensure_token_valid_falls_through_when_refresh_fails() {
     Mock::given(method("POST"))
         .and(path("/auth/challenge"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "challenge": "c",
+            "challenge": CHALLENGE,
             "sessionId": "sess",
             "expiresAt": "2099-12-31T23:59:59Z"
         })))

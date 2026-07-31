@@ -15,9 +15,9 @@
 //! - `body_parse_error_response` — unrouted reject for a body that is not a
 //!   Trust Task document at all.
 //! - `verify_trust_task_proof` — the holder's `eddsa-jcs-2022` DI proof
-//!   verifier for the REST path (ported from the VTA's `auth::di_proof`).
+//!   verifier for the REST path (an adapter over the shared
+//!   `vti_common::auth::di_proof`, which both services now use).
 
-use affinidi_data_integrity::{DataIntegrityProof, DidKeyResolver, VerifyOptions};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
@@ -181,44 +181,20 @@ pub(crate) fn body_parse_error_response(reason: &str) -> TrustTaskOutcome {
 
 /// Verify the holder's `eddsa-jcs-2022` Data-Integrity proof on `doc` and
 /// return the proven signer DID — the base DID (before `#`) of the proof's
-/// `verificationMethod`. Ported from `vta-service::auth::di_proof`.
+/// `verificationMethod`.
+///
+/// Thin adapter over [`vti_common::auth::di_proof::verify_trust_task_proof`],
+/// the single implementation both services share. This used to be a *port* of
+/// the VTA's copy; a proof means the same thing at both ends of the mesh, so a
+/// second implementation was only ever a chance for the two to disagree. Only
+/// the error mapping is local — the join dispatcher renders `AppError`.
 ///
 /// The signature is verified over the document with its `proof` removed
 /// (`eddsa-jcs-2022` canonicalises the proofless document via JCS). The
 /// returned DID is *proven*, not merely claimed — binding it to an expected
 /// identity is the caller's job. `did:key` resolution is local (no network).
 pub(crate) async fn verify_trust_task_proof(doc: &TrustTask<Value>) -> Result<String, AppError> {
-    let proof = doc
-        .proof
-        .as_ref()
-        .ok_or_else(|| AppError::Unauthorized("Trust Task document has no proof".into()))?;
-
-    let di: DataIntegrityProof = serde_json::to_value(proof)
-        .ok()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .ok_or_else(|| {
-            AppError::Unauthorized("Trust Task proof is not a Data Integrity proof".into())
-        })?;
-
-    let signer_did = di
-        .verification_method
-        .split('#')
-        .next()
-        .unwrap_or_default()
-        .to_string();
-    if signer_did.is_empty() {
-        return Err(AppError::Unauthorized(
-            "Trust Task proof verificationMethod carries no DID".into(),
-        ));
-    }
-
-    let mut unsigned = doc.clone();
-    unsigned.proof = None;
-    di.verify(&unsigned, &DidKeyResolver, VerifyOptions::new())
+    vti_common::auth::di_proof::verify_trust_task_proof(doc)
         .await
-        .map_err(|e| {
-            AppError::Unauthorized(format!("Trust Task proof verification failed: {e}"))
-        })?;
-
-    Ok(signer_did)
+        .map_err(|e| AppError::Unauthorized(format!("Trust Task {e}")))
 }

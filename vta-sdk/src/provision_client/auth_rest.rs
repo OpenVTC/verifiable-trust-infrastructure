@@ -27,6 +27,7 @@
 use crate::auth_di;
 use crate::protocols::auth::{ChallengeRequest, ChallengeResponse};
 use crate::session::TokenResult;
+use crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1;
 
 /// Authenticate over plain REST using a DI-signed `auth/authenticate/0.1`
 /// Trust Task, returning the same [`TokenResult`] as
@@ -53,6 +54,9 @@ pub async fn challenge_response_di(
     let challenge_url = format!("{base_url}/auth/challenge");
     let challenge_resp = http
         .post(&challenge_url)
+        // Trust-Task URL header: required by the VTC, ignored by the VTA. See
+        // `crate::auth_light::TRUST_TASK_HEADER`.
+        .header("Trust-Task", crate::trust_tasks::TASK_AUTH_CHALLENGE_0_1)
         .json(&ChallengeRequest {
             did: client_did.to_string(),
         })
@@ -87,6 +91,7 @@ pub async fn challenge_response_di(
     let auth_resp = http
         .post(&auth_url)
         .header("content-type", "application/json")
+        .header("Trust-Task", TASK_AUTH_AUTHENTICATE_0_1)
         .body(body)
         .send()
         .await

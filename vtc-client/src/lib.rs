@@ -19,27 +19,45 @@
 //! **full** API base to [`VtcClient::connect`] / [`VtcClient::with_token`] —
 //! e.g. `https://vtc.example.com/v1` — so both `/auth/*` and `/members` resolve.
 //!
-//! ## Status
+//! ## The `Trust-Task` header is mandatory
 //!
-//! First cut: authentication + member listing. Join / removal / policy methods
-//! are layered on next (the auth + transport plumbing here is what they build
-//! on).
+//! The VTC gates **every** route on a per-route `Trust-Task` URL header
+//! (`vtc-service/src/routes/mod.rs`, the `tt(...)` wrapper) and answers `400`
+//! without it — only `/health` and the browser wallet's `/wallet/auth/*`
+//! aliases are exempt. This client sent it on nothing, so every method failed
+//! at the transport layer regardless of its body. [`task`] holds the URL for
+//! each route and `VtcClient::tt` attaches it; a new method must go through
+//! that helper, not a bare `self.http.get(...)`.
 //!
-//! **[`VtcClient::connect`] does not currently authenticate against a live
-//! VTC.** The challenge-response flow is audience-agnostic in shape but not in
-//! *transport*: `challenge_response_light` posts a DI-signed
-//! `auth/authenticate/0.1` Trust Task, and the VTC's `POST /auth/` accepts only
-//! a VTA-wallet SIOP envelope or an authcrypt DIDComm envelope
-//! (`vtc-service/src/routes/auth.rs::authenticate_and_mint`) — it has no
-//! Trust-Task path on login, unlike its own `/auth/refresh` and unlike the VTA.
-//! This has been broken since the VTC began requiring an authenticated sender
-//! (VTI #771) rejected the anoncrypt envelope this used to send; the SDK's move
-//! to a signed document fixed the VTA side and changes only *which* error the
-//! VTC returns. Until the VTC grows the Trust-Task login path, obtain a token
-//! out of band and use [`VtcClient::with_token`].
+//! ## Scope
+//!
+//! Authentication, the member roster, the admin join queue, removal, and
+//! policy. Join *submission* (the applicant side) is not here — see
+//! [`VtcClient::submit_join`] for where it moved.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+/// The `Trust-Task` URL each route this client calls is gated on, as declared
+/// in `vtc-service/src/routes/mod.rs`.
+///
+/// Kept as one block so the mapping is auditable against the server's router in
+/// a single read, rather than scattered as string literals down the file. A URL
+/// that drifts from the server's is a 400 at runtime, so this list is part of
+/// the client's contract, not decoration.
+pub mod task {
+    pub const MEMBERS_LIST: &str = "https://trusttasks.org/spec/vtc/members/list/0.1";
+    pub const MEMBERS_UPDATE: &str = "https://trusttasks.org/spec/vtc/members/update/0.1";
+    pub const MEMBERS_ADMIN_REMOVE: &str =
+        "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
+    pub const JOIN_REQUESTS_LIST: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
+    pub const JOIN_REQUESTS_DECIDE: &str =
+        "https://trusttasks.org/spec/vtc/join-requests/decide/0.1";
+    pub const POLICY_LIST: &str = "https://trusttasks.org/spec/policy/list/0.2";
+    pub const POLICY_GET: &str = "https://trusttasks.org/spec/policy/get/0.1";
+    pub const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+    pub const POLICY_ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
+}
 
 /// Re-export of the published join-request protocol wire types, so a consumer
 /// driving the join ceremony depends on one crate.
@@ -64,6 +82,10 @@ pub enum VtcError {
     /// Challenge-response authentication failed.
     #[error("authentication failed: {0}")]
     Auth(#[from] vta_sdk::error::VtaError),
+    /// The operation's route no longer exists on the VTC and this client has no
+    /// replacement for it. Carries what to use instead.
+    #[error("unsupported by this client: {0}")]
+    Unsupported(&'static str),
 }
 
 /// A single member of the community, as returned by `GET /members`. Mirrors the
@@ -203,11 +225,31 @@ impl VtcClient {
         &self.vtc_did
     }
 
+    /// Start a request carrying the route's `Trust-Task` URL header and the
+    /// bearer token.
+    ///
+    /// Every authenticated call goes through here. The VTC rejects a request
+    /// with no `Trust-Task` header (400) before any handler sees it, so a
+    /// method that builds its request by hand is broken on arrival — which is
+    /// how every method in this client came to be.
+    fn tt(
+        &self,
+        method: reqwest::Method,
+        url: impl reqwest::IntoUrl,
+        task: &str,
+    ) -> Result<reqwest::RequestBuilder, VtcError> {
+        let token = self.token()?;
+        Ok(self
+            .http
+            .request(method, url)
+            .header("Trust-Task", task)
+            .bearer_auth(token))
+    }
+
     /// List every community member, optionally filtered by `role`, following the
     /// cursor to completion. Requires an admin token. This is the fleet roster
     /// when the community's members are managed VTAs.
     pub async fn list_members(&self, role: Option<&str>) -> Result<Vec<MemberRecord>, VtcError> {
-        let token = self.token.as_deref().ok_or(VtcError::NotAuthenticated)?;
         let mut out: Vec<MemberRecord> = Vec::new();
         let mut cursor: Option<String> = None;
 
@@ -223,7 +265,10 @@ impl VtcClient {
                 reqwest::Url::parse_with_params(&format!("{}/members", self.base_url), &params)
                     .map_err(|e| VtcError::Url(e.to_string()))?;
 
-            let resp = self.http.get(url).bearer_auth(token).send().await?;
+            let resp = self
+                .tt(reqwest::Method::GET, url, task::MEMBERS_LIST)?
+                .send()
+                .await?;
             if !resp.status().is_success() {
                 let status = resp.status().as_u16();
                 let body = resp.text().await.unwrap_or_default();
@@ -247,7 +292,6 @@ impl VtcClient {
         &self,
         status: Option<&str>,
     ) -> Result<Vec<JoinRequestSummary>, VtcError> {
-        let token = self.token()?;
         let mut out: Vec<JoinRequestSummary> = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
@@ -264,7 +308,10 @@ impl VtcClient {
             )
             .map_err(|e| VtcError::Url(e.to_string()))?;
 
-            let resp = self.http.get(url).bearer_auth(token).send().await?;
+            let resp = self
+                .tt(reqwest::Method::GET, url, task::JOIN_REQUESTS_LIST)?
+                .send()
+                .await?;
             if !resp.status().is_success() {
                 let status = resp.status().as_u16();
                 let body = resp.text().await.unwrap_or_default();
@@ -284,18 +331,43 @@ impl VtcClient {
     /// credential (VMC). Requires an admin token. For a fleet, this enrolls a
     /// VTA that has applied to join.
     pub async fn approve_join(&self, request_id: &str) -> Result<DecideResult, VtcError> {
-        self.decide(request_id, "approve").await
+        self.decide(request_id, "approved", None).await
     }
 
-    /// Reject a join request. Requires an admin token.
-    pub async fn reject_join(&self, request_id: &str) -> Result<DecideResult, VtcError> {
-        self.decide(request_id, "reject").await
+    /// Reject a join request, optionally recording an operator rationale in the
+    /// audit trail. Requires an admin token.
+    pub async fn reject_join(
+        &self,
+        request_id: &str,
+        reason: Option<&str>,
+    ) -> Result<DecideResult, VtcError> {
+        self.decide(request_id, "rejected", reason).await
     }
 
-    async fn decide(&self, request_id: &str, verb: &str) -> Result<DecideResult, VtcError> {
-        let token = self.token()?;
-        let url = format!("{}/join-requests/{request_id}/{verb}", self.base_url);
-        let resp = self.http.post(url).bearer_auth(token).send().await?;
+    /// `POST /join-requests/{id}/decide` with `{ decision, reason? }`.
+    ///
+    /// The VTC previously exposed a `/approve` + `/reject` mount pair; both were
+    /// retired in favour of this single endpoint carrying the decision in the
+    /// body, and the old mounts are **gone** — this client was still posting to
+    /// them, so approve and reject were 404s independent of the missing header.
+    /// `decision` is the server's `Decision` enum on the wire (`approved` /
+    /// `rejected`), not the imperative verb the old paths used.
+    async fn decide(
+        &self,
+        request_id: &str,
+        decision: &str,
+        reason: Option<&str>,
+    ) -> Result<DecideResult, VtcError> {
+        let url = format!("{}/join-requests/{request_id}/decide", self.base_url);
+        let mut body = serde_json::json!({ "decision": decision });
+        if let Some(reason) = reason {
+            body["reason"] = serde_json::json!(reason);
+        }
+        let resp = self
+            .tt(reqwest::Method::POST, url, task::JOIN_REQUESTS_DECIDE)?
+            .json(&body)
+            .send()
+            .await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
@@ -313,9 +385,8 @@ impl VtcClient {
         did: &str,
         reason: Option<&str>,
     ) -> Result<RemoveResult, VtcError> {
-        let token = self.token()?;
         let url = format!("{}/members/{did}", self.base_url);
-        let mut req = self.http.delete(url).bearer_auth(token);
+        let mut req = self.tt(reqwest::Method::DELETE, url, task::MEMBERS_ADMIN_REMOVE)?;
         if let Some(reason) = reason {
             req = req.json(&serde_json::json!({ "reason": reason }));
         }
@@ -337,11 +408,12 @@ impl VtcClient {
         did: &str,
         extensions: serde_json::Value,
     ) -> Result<(), VtcError> {
-        let token = self.token()?;
         let resp = self
-            .http
-            .patch(format!("{}/members/{did}", self.base_url))
-            .bearer_auth(token)
+            .tt(
+                reqwest::Method::PATCH,
+                format!("{}/members/{did}", self.base_url),
+                task::MEMBERS_UPDATE,
+            )?
             .json(&serde_json::json!({ "extensions": extensions }))
             .send()
             .await?;
@@ -353,31 +425,38 @@ impl VtcClient {
         Ok(())
     }
 
-    /// Submit a join request (the applicant side): POST the VP-framed
-    /// `body` to `/join-requests`. The VP's holder-binding proof authenticates
-    /// the applicant, so this does not require a bearer token. Returns the
-    /// verdict (auto-admit issues the VMC inline; otherwise it's queued).
+    /// Submit a join request (the applicant side).
+    ///
+    /// # Unimplemented against the current VTC
+    ///
+    /// This posted the VP-framed body to `POST /join-requests`. That route no
+    /// longer exists: the holder-facing join verbs (`submit`/`request`,
+    /// `manifest`, `status`) were folded into the single Trust-Task document
+    /// endpoint `POST /trust-tasks`, routed by document `type`, with the
+    /// holder's `eddsa-jcs-2022` proof as the authentication
+    /// (`vtc-service/src/routes/mod.rs`, `trust_tasks::dispatch`). The handler
+    /// this used to reach is now unrouted code.
+    ///
+    /// Submitting therefore means building and signing a
+    /// `join-requests/submit` Trust Task, which needs the applicant's holder
+    /// key — a different shape from this method's `body`-only signature, and
+    /// not something to fake by changing the URL. Rather than keep issuing a
+    /// silent 404, this returns a typed error naming the replacement. The
+    /// applicant side is driven today by the join ceremony in
+    /// `vta-cli-common` / `vta-mobile-core`, which speak that endpoint.
     pub async fn submit_join(
         &self,
-        body: &join_requests::JoinRequestSubmitBody,
+        _body: &join_requests::JoinRequestSubmitBody,
     ) -> Result<DecideResult, VtcError> {
-        let resp = self
-            .http
-            .post(format!("{}/join-requests", self.base_url))
-            .json(body)
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(VtcError::Http { status, body });
-        }
-        Ok(resp.json().await?)
+        Err(VtcError::Unsupported(
+            "join submission moved to the Trust-Task document endpoint (POST /trust-tasks, \
+             type join-requests/submit) and needs the applicant's holder key to sign the \
+             document; POST /join-requests is no longer routed",
+        ))
     }
 
     /// List the community's policies (opaque JSON descriptors). Admin token.
     pub async fn list_policies(&self) -> Result<Vec<serde_json::Value>, VtcError> {
-        let token = self.token()?;
         let mut out = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
@@ -388,7 +467,10 @@ impl VtcClient {
             let url =
                 reqwest::Url::parse_with_params(&format!("{}/policies", self.base_url), &params)
                     .map_err(|e| VtcError::Url(e.to_string()))?;
-            let resp = self.http.get(url).bearer_auth(token).send().await?;
+            let resp = self
+                .tt(reqwest::Method::GET, url, task::POLICY_LIST)?
+                .send()
+                .await?;
             if !resp.status().is_success() {
                 let status = resp.status().as_u16();
                 let body = resp.text().await.unwrap_or_default();
@@ -406,7 +488,8 @@ impl VtcClient {
 
     /// Fetch one policy by id (opaque JSON, incl. the Rego source). Admin token.
     pub async fn get_policy(&self, id: &str) -> Result<serde_json::Value, VtcError> {
-        self.get_json(&format!("policies/{id}")).await
+        self.get_json(&format!("policies/{id}"), task::POLICY_GET)
+            .await
     }
 
     /// Upload a new Rego policy bundle for `purpose` (`"join"`, `"removal"`,
@@ -419,6 +502,7 @@ impl VtcClient {
     ) -> Result<serde_json::Value, VtcError> {
         self.post_json(
             "policies",
+            task::POLICY_UPSERT,
             &serde_json::json!({ "purpose": purpose, "regoSource": rego_source }),
         )
         .await
@@ -427,17 +511,22 @@ impl VtcClient {
     /// Activate a previously-uploaded policy (make it live for decisions of its
     /// purpose). Admin token.
     pub async fn activate_policy(&self, id: &str) -> Result<serde_json::Value, VtcError> {
-        self.post_json(&format!("policies/{id}/activate"), &serde_json::json!({}))
-            .await
+        self.post_json(
+            &format!("policies/{id}/activate"),
+            task::POLICY_ACTIVATE,
+            &serde_json::json!({}),
+        )
+        .await
     }
 
-    /// Authenticated GET returning JSON.
-    async fn get_json(&self, path: &str) -> Result<serde_json::Value, VtcError> {
-        let token = self.token()?;
+    /// Authenticated GET returning JSON, carrying `task` as the Trust-Task URL.
+    async fn get_json(&self, path: &str, task: &str) -> Result<serde_json::Value, VtcError> {
         let resp = self
-            .http
-            .get(format!("{}/{path}", self.base_url))
-            .bearer_auth(token)
+            .tt(
+                reqwest::Method::GET,
+                format!("{}/{path}", self.base_url),
+                task,
+            )?
             .send()
             .await?;
         if !resp.status().is_success() {
@@ -448,17 +537,20 @@ impl VtcClient {
         Ok(resp.json().await?)
     }
 
-    /// Authenticated POST of a JSON body returning JSON.
+    /// Authenticated POST of a JSON body returning JSON, carrying `task` as the
+    /// Trust-Task URL.
     async fn post_json(
         &self,
         path: &str,
+        task: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, VtcError> {
-        let token = self.token()?;
         let resp = self
-            .http
-            .post(format!("{}/{path}", self.base_url))
-            .bearer_auth(token)
+            .tt(
+                reqwest::Method::POST,
+                format!("{}/{path}", self.base_url),
+                task,
+            )?
             .json(body)
             .send()
             .await?;

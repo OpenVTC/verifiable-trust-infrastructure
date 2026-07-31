@@ -10333,7 +10333,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.13.20"
+version = "0.13.21"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10553,7 +10553,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-client"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "reqwest 0.13.4",
@@ -10566,7 +10566,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.11.47"
+version = "0.11.48"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10636,6 +10636,7 @@ dependencies = [
  "utoipa-axum",
  "uuid",
  "vta-sdk",
+ "vtc-client",
  "vtc-service",
  "vti-common",
  "vti-secrets",
@@ -10648,7 +10649,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.30"
+version = "0.11.31"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",

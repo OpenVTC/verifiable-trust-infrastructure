@@ -29,6 +29,19 @@ use crate::error::VtaError;
 use crate::protocols::auth::{ChallengeRequest, ChallengeResponse};
 use reqwest::Client;
 
+/// The per-request Trust-Task URL header.
+///
+/// The **VTC gates every route on it** (`vtc-service/src/routes/mod.rs`, the
+/// `tt(...)` wrapper) and answers 400 without it; the VTA does not read it. So
+/// omitting it made this client VTC-incompatible at the *transport* layer,
+/// independently of the body — `vtc-client::connect` could not even reach the
+/// authenticate handler. Sending it on every call is what lets one auth client
+/// speak to both services.
+///
+/// Not sent on the VTC's `/wallet/auth/*` aliases, which are deliberately
+/// header-exempt for the browser extension; those aren't this client's paths.
+const TRUST_TASK_HEADER: &str = "Trust-Task";
+
 /// Result of a successful authentication.
 #[derive(Debug, Clone)]
 pub struct AuthResult {
@@ -56,6 +69,10 @@ pub async fn challenge_response_light(
     let challenge_url = format!("{base_url}/auth/challenge");
     let challenge_resp = http
         .post(&challenge_url)
+        .header(
+            TRUST_TASK_HEADER,
+            crate::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+        )
         .json(&ChallengeRequest {
             did: client_did.to_string(),
         })
@@ -88,6 +105,10 @@ pub async fn challenge_response_light(
     let auth_resp = http
         .post(&auth_url)
         .header("content-type", "application/json")
+        .header(
+            TRUST_TASK_HEADER,
+            crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1,
+        )
         .body(body)
         .send()
         .await?;
@@ -145,6 +166,7 @@ pub async fn refresh_token_light(
     let resp = http
         .post(&refresh_url)
         .header("content-type", "application/json")
+        .header(TRUST_TASK_HEADER, crate::trust_tasks::TASK_AUTH_REFRESH_0_1)
         .body(body)
         .send()
         .await?;
