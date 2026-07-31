@@ -10553,7 +10553,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-client"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "reqwest 0.13.4",
@@ -10561,6 +10561,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+ "trust-tasks-rs",
  "vta-sdk",
 ]
 

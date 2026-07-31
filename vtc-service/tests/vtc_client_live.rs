@@ -34,6 +34,17 @@ fn admin_entry(did: &str) -> VtcAclEntry {
     }
 }
 
+/// Seed the join ceremony the way `server::run` does at boot: the default
+/// policy set, so `join.rego` evaluates instead of the ceremony failing closed
+/// with "no active join policy". A bare `MockVtc` has no policies — the join
+/// tests that predate this file seed the same way.
+async fn seed_join_policies(mock: &MockVtc) {
+    let state = &mock.vtc.state;
+    vtc_service::policy::default::install_defaults(&state.policies_ks, &state.active_policies_ks)
+        .await
+        .expect("install default policies");
+}
+
 /// A deterministic `did:key` + its multibase private key.
 fn did_key_from_seed(seed_byte: u8) -> (String, String) {
     let seed = [seed_byte; 32];
@@ -142,25 +153,146 @@ async fn join_queue_reads_and_decide_reaches_the_handler() {
     mock.shutdown().await;
 }
 
-/// Join submission is refused with a typed error naming its replacement,
-/// instead of silently 404ing against an unrouted path.
+/// The applicant side, end to end: `submit_join` signs a
+/// `join-requests/submit/0.1` document with the applicant's holder key, posts it
+/// to the document endpoint with **no bearer token**, and gets the community's
+/// verdict back.
+///
+/// This is the method that could not work at all before — it posted to
+/// `POST /join-requests`, a route that is no longer mounted. Three separate
+/// server-side gates have to be satisfied for this to pass, and each was a way
+/// to get it wrong: the document's proof must verify under the `did:key`
+/// resolver, its `issuer` must equal the proven signer, and its `recipient` must
+/// equal *this* VTC's configured DID (the replay defence — a submit signed for
+/// one community cannot be posted to another).
 #[tokio::test]
-async fn submit_join_reports_where_it_moved() {
-    let (did, private_key_multibase) = did_key_from_seed(0x93);
-    let _ = private_key_multibase;
-    let client = VtcClient::with_token("https://vtc.invalid/v1", &did, "unused-token");
+async fn submit_join_signs_and_gets_a_verdict() {
+    let mock = MockVtc::start().await;
+    let base = format!("{}/v1", mock.base_url());
 
-    // Contents are irrelevant — the call is refused before any transport.
-    let body =
-        serde_json::from_value(serde_json::json!({ "vp": {} })).expect("minimal submit body");
+    seed_join_policies(&mock).await;
+    let (applicant_did, applicant_key) = did_key_from_seed(0x94);
 
-    match client.submit_join(&body).await {
-        Err(vtc_client::VtcError::Unsupported(msg)) => {
-            assert!(
-                msg.contains("/trust-tasks"),
-                "the error must name the endpoint that replaced it: {msg}"
-            );
-        }
-        other => panic!("expected Unsupported, got {other:?}"),
-    }
+    // No token: an applicant is by definition not yet a member. The client is
+    // built with the VTC's real DID because the document is addressed to it.
+    let client = VtcClient::anonymous(&base, vtc_service::test_support::TEST_VTC_DID);
+
+    let body = vtc_client::join_requests::JoinRequestSubmitBody {
+        vp: serde_json::json!({
+            "type": "VerifiablePresentation",
+            "holder": applicant_did,
+        }),
+        registry_consent: false,
+        extensions: serde_json::json!({}),
+    };
+
+    let verdict = client
+        .submit_join(&body, &applicant_did, &applicant_key)
+        .await
+        .expect("a signed submit must be accepted");
+
+    // The default policy refers the request to an admin rather than
+    // auto-admitting — the point here is that the ceremony *ran*.
+    assert_eq!(
+        verdict.verdict.effect,
+        vtc_client::join_requests::VerdictEffect::Refer,
+        "default policy refers to an admin; got {:?}",
+        verdict.verdict.effect
+    );
+
+    mock.shutdown().await;
+}
+
+/// The submitted request lands in the admin queue under the applicant's DID —
+/// i.e. the server took the *proof's* signer as the applicant, not anything the
+/// body claimed.
+#[tokio::test]
+async fn submitted_request_is_attributed_to_the_signing_did() {
+    let mock = MockVtc::start().await;
+    let base = format!("{}/v1", mock.base_url());
+
+    seed_join_policies(&mock).await;
+    let (applicant_did, applicant_key) = did_key_from_seed(0x95);
+    let (admin_did, admin_key) = did_key_from_seed(0x96);
+    store_acl_entry(&mock.vtc.state.acl_ks, &admin_entry(&admin_did))
+        .await
+        .expect("seed admin acl row");
+
+    let applicant = VtcClient::anonymous(&base, vtc_service::test_support::TEST_VTC_DID);
+    let body = vtc_client::join_requests::JoinRequestSubmitBody {
+        vp: serde_json::json!({
+            "type": "VerifiablePresentation",
+            "holder": applicant_did,
+        }),
+        registry_consent: false,
+        extensions: serde_json::json!({}),
+    };
+    applicant
+        .submit_join(&body, &applicant_did, &applicant_key)
+        .await
+        .expect("submit");
+
+    let admin = VtcClient::connect(
+        &base,
+        vtc_service::test_support::TEST_VTC_DID,
+        &admin_did,
+        &admin_key,
+    )
+    .await
+    .expect("admin connect");
+    let queue = admin
+        .list_join_requests(Some("pending"))
+        .await
+        .expect("list join requests");
+
+    assert_eq!(queue.len(), 1, "one pending request, got {queue:?}");
+    assert_eq!(
+        queue[0].applicant_did, applicant_did,
+        "the request must be attributed to the DID that signed the document"
+    );
+
+    mock.shutdown().await;
+}
+
+/// A signature by a key other than the claimed `issuer` is refused — the
+/// issuer↔signer cross-check, not just "some valid proof is present".
+#[tokio::test]
+async fn submit_with_mismatched_issuer_is_refused() {
+    let mock = MockVtc::start().await;
+    let base = format!("{}/v1", mock.base_url());
+
+    let (victim_did, _) = did_key_from_seed(0x97);
+    let (attacker_did, attacker_key) = did_key_from_seed(0x98);
+
+    // Sign with the attacker's key but claim the victim as issuer.
+    let payload = serde_json::json!({
+        "vp": { "type": "VerifiablePresentation", "holder": victim_did },
+        "registryConsent": false,
+        "extensions": {},
+    });
+    let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+        vtc_client::join_requests::JOIN_REQUEST_SUBMIT_TYPE,
+        payload,
+        &victim_did,
+        vtc_service::test_support::TEST_VTC_DID,
+    )
+    .expect("build");
+    vta_sdk::trust_task_sign::sign_in_place(&mut doc, &attacker_did, &attacker_key)
+        .await
+        .expect("sign with the attacker key");
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/trust-tasks"))
+        .header("content-type", "application/json")
+        .body(serde_json::to_string(&doc).unwrap())
+        .send()
+        .await
+        .expect("POST /trust-tasks");
+
+    assert!(
+        !resp.status().is_success(),
+        "a document whose issuer is not the signer must be refused"
+    );
+
+    mock.shutdown().await;
 }
