@@ -97,6 +97,24 @@ The four left behind are shape-correct over REST and DIDComm and dead over TSP.
 None of them is the defect class this PR fixes; all of them are on the TSP gap
 list.
 
+## Dependency refresh
+
+`cargo update` (69 crates) and `npm update` in `vtc-service/admin-ui` — both
+within the existing requirement ranges, so no `Cargo.toml` or `package.json`
+changed. Two open advisories close as a side effect: `rustls-webpki` 0.103.13
+(high) and `postcss` 8.5.23 plus `react-router` 7.18.2 (high + three medium).
+
+Still open afterwards, and **not** fixable by an in-range update:
+`rustls-webpki` 0.101.7, which arrives through the AWS SDK's legacy `rustls`
+0.21 and needs an `aws-config` feature change rather than a lockfile move.
+
+Twenty direct dependencies remain a major behind, including the crypto core
+(`ed25519-dalek` 3, `curve25519-dalek` 5, `x25519-dalek` 3, `hpke` 0.14,
+`aes-gcm` 0.11, `p256` 0.14, `jsonwebtoken` 11) and `kube` 4 / `rmcp` 3 /
+`uniffi` 0.32 / `azure_*` 1.0. Each needs an API migration through code this PR
+does not otherwise touch — sealed-transfer, DI proofs and auth for the crypto
+set — so they are left for their own changes.
+
 **Testing.** `tests/e2e/tests/client_didcomm.rs` pins each moved call as a Trust
 Task — including the members `update` used to drop, the canonical `scope` filter
 name that replaced `context`, and a `swap_acl` whose `currentSubject` is the
