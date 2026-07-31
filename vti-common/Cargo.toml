@@ -48,7 +48,7 @@ openapi = ["dep:utoipa", "dep:utoipa-axum"]
 # `default-features = false` skips the optional client transports
 # (didcomm, sealed-transfer, etc.); we only consume the type
 # definitions in the default feature set.
-vta-sdk = { path = "../vta-sdk", version = "0.20", default-features = false }
+vta-sdk = { path = "../vta-sdk", version = "0.21", default-features = false }
 async-trait = "0.1"
 # Durable OutboxStore backend (`outbox_store::VtiOutboxStore`) for the D1
 # delivery layer — the Guaranteed-send outbox, persisted via `store::Store`.

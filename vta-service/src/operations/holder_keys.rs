@@ -144,7 +144,11 @@ pub async fn resolve_holder_keys(
     let derived = bip32
         .derive(&path)
         .map_err(|e| AppError::Internal(format!("derive: {e}")))?;
-    let signing_key = derived.signing_key;
+    // `ed25519-dalek-bip32` is pinned to ed25519-dalek 2 upstream, so its
+    // `SigningKey` is a *different type* from the workspace's ed25519-dalek 3
+    // one. Cross the boundary as raw bytes, the same way every other
+    // derivation site here does.
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes());
 
     let signer = HolderSdJwtSigner {
         key: signing_key.clone(),

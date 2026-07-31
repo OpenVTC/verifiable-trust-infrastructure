@@ -9,12 +9,8 @@
 //! bound as AEAD AAD by the caller.
 
 use hpke::{
-    Deserializable, Kem as KemTrait, OpModeR, OpModeS, Serializable,
-    aead::ChaCha20Poly1305,
-    kdf::HkdfSha256,
-    kem::X25519HkdfSha256,
-    rand_core::{CryptoRng, RngCore},
-    single_shot_open, single_shot_seal,
+    Deserializable, Kem as KemTrait, OpModeR, OpModeS, Serializable, aead::ChaCha20Poly1305,
+    kdf::HkdfSha256, kem::X25519HkdfSha256, single_shot_open, single_shot_seal,
 };
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -25,36 +21,19 @@ use super::error::SealedTransferError;
 /// purpose cannot be replayed against another.
 const HPKE_INFO: &[u8] = b"vta-sealed-transfer/v1";
 
-/// Adapter from `getrandom` to the rand_core trait version that `hpke` 0.13
-/// re-exports. We can't use the `rand` crate directly because rand 0.10 /
-/// rand_core 0.10 are not compatible with hpke's rand_core 0.9 traits.
-///
-/// **On CSPRNG failure we panic.** `rand_core::RngCore` is infallible by
-/// design — the only alternatives on `getrandom::fill` error are (a) return
-/// zeros (catastrophic: attacker-predictable HPKE keys) or (b) silently
-/// degrade to a weaker source (worse). A panic propagates the failure to
-/// the handler, which bubbles up as a 500. In practice OS CSPRNG only
-/// fails pre-init on broken platforms; in a TEE with proper boot it
-/// cannot fail after startup.
-struct OsCsprng;
-
-impl RngCore for OsCsprng {
-    fn next_u32(&mut self) -> u32 {
-        let mut buf = [0u8; 4];
-        getrandom::fill(&mut buf).expect("OS CSPRNG failed — see OsCsprng docs");
-        u32::from_le_bytes(buf)
-    }
-    fn next_u64(&mut self) -> u64 {
-        let mut buf = [0u8; 8];
-        getrandom::fill(&mut buf).expect("OS CSPRNG failed — see OsCsprng docs");
-        u64::from_le_bytes(buf)
-    }
-    fn fill_bytes(&mut self, dest: &mut [u8]) {
-        getrandom::fill(dest).expect("OS CSPRNG failed — see OsCsprng docs");
-    }
-}
-
-impl CryptoRng for OsCsprng {}
+// Randomness note: the `single_shot_seal` / `gen_keypair` calls below are
+// `hpke`'s OS-CSPRNG variants — internally `UnwrapErr(getrandom::SysRng)`.
+//
+// **On CSPRNG failure they panic**, which is the behaviour we want and the
+// same posture the hand-rolled `OsCsprng` adapter had before hpke 0.14. The
+// only alternatives on a `getrandom` error are (a) return zeros
+// (catastrophic: attacker-predictable HPKE keys) or (b) silently degrade to
+// a weaker source (worse). A panic propagates to the handler and bubbles up
+// as a 500. In practice the OS CSPRNG only fails pre-init on broken
+// platforms; in a TEE with proper boot it cannot fail after startup.
+//
+// hpke 0.14 moved to rand_core 0.10, so the adapter that used to bridge
+// `getrandom` to hpke's rand_core 0.9 traits is no longer needed.
 
 type Aead = ChaCha20Poly1305;
 type Kdf = HkdfSha256;
@@ -79,16 +58,9 @@ pub fn seal(
 ) -> Result<HpkeSealed, SealedTransferError> {
     let pk = <Kem as KemTrait>::PublicKey::from_bytes(recipient_pubkey)
         .map_err(SealedTransferError::hpke)?;
-    let mut rng = OsCsprng;
-    let (encap, ciphertext) = single_shot_seal::<Aead, Kdf, Kem, _>(
-        &OpModeS::Base,
-        &pk,
-        HPKE_INFO,
-        plaintext,
-        aad,
-        &mut rng,
-    )
-    .map_err(SealedTransferError::hpke)?;
+    let (encap, ciphertext) =
+        single_shot_seal::<Aead, Kdf, Kem>(&OpModeS::Base, &pk, HPKE_INFO, plaintext, aad)
+            .map_err(SealedTransferError::hpke)?;
     let encap_bytes = encap.to_bytes();
     let kem_encap: [u8; 32] = encap_bytes
         .as_slice()
@@ -130,8 +102,7 @@ pub fn open(
 /// so call sites that pass `&[u8; 32]` (e.g. to [`open`] / [`crate::sealed_transfer::open_bundle`])
 /// keep working unchanged via auto-deref.
 pub fn generate_keypair() -> (Zeroizing<[u8; 32]>, [u8; 32]) {
-    let mut rng = OsCsprng;
-    let (sk, pk) = <Kem as KemTrait>::gen_keypair(&mut rng);
+    let (sk, pk) = <Kem as KemTrait>::gen_keypair();
     let sk_bytes: [u8; 32] = sk
         .to_bytes()
         .as_slice()

@@ -13,7 +13,7 @@ repository.workspace = true
 [dependencies]
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
 vti-common = { path = "../vti-common", version = "0.11" }
-vta-sdk = { path = "../vta-sdk", version = "0.20" }
+vta-sdk = { path = "../vta-sdk", version = "0.21" }
 affinidi-tdk = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

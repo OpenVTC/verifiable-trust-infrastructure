@@ -16,7 +16,7 @@ repository.workspace = true
 agent-names = ["vta-sdk/agent-names"]
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.20", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.21", features = [
   "client",
   "sealed-transfer",
   "provision-integration",

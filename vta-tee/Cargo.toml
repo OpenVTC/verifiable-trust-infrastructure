@@ -14,7 +14,7 @@ repository.workspace = true
 vti-common = { path = "../vti-common", version = "0.11", features = ["encryption", "openapi"] }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
 vta-config = { path = "../vta-config", version = "0.3", features = ["tee"] }
-vta-keys = { path = "../vta-keys", version = "0.1" }
+vta-keys = { path = "../vta-keys", version = "0.2" }
 vta-support = { path = "../vta-support", version = "0.2" }
 aes-gcm = { workspace = true }
 utoipa = { workspace = true }

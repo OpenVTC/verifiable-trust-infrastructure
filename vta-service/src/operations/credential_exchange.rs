@@ -2419,8 +2419,11 @@ mod tests {
             .unwrap()
             .derive(&"m/26'/2'/0'/0'".parse::<DerivationPath>().unwrap())
             .unwrap();
-        derived
-            .signing_key
+        // `ed25519-dalek-bip32` still pins ed25519-dalek 2, so re-make the key
+        // as a workspace (v3) `SigningKey` via raw bytes before verifying —
+        // `sig` above is a v3 `Signature` and the two versions are distinct
+        // types.
+        ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes())
             .verifying_key()
             .verify(signing_input.as_bytes(), &sig)
             .expect("key-binding proof signature verifies under the holder key");

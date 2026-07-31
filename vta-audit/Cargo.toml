@@ -12,6 +12,6 @@ repository.workspace = true
 
 [dependencies]
 vti-common = { path = "../vti-common", version = "0.11" }
-vta-sdk = { path = "../vta-sdk", version = "0.20" }
+vta-sdk = { path = "../vta-sdk", version = "0.21" }
 tracing = { workspace = true }
 uuid = { workspace = true }

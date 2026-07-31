@@ -19,9 +19,9 @@ tee = ["vta-config/tee", "dep:async-trait"]
 
 [dependencies]
 vti-common = { path = "../vti-common", version = "0.11" }
-vta-sdk = { path = "../vta-sdk", version = "0.20" }
+vta-sdk = { path = "../vta-sdk", version = "0.21" }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
-vta-keys = { path = "../vta-keys", version = "0.1" }
+vta-keys = { path = "../vta-keys", version = "0.2" }
 vta-config = { path = "../vta-config", version = "0.3" }
 vta-support = { path = "../vta-support", version = "0.2" }
 tokio = { workspace = true }

@@ -21,7 +21,7 @@ config-session = ["vta-sdk/config-session"]
 azure-secrets = ["vta-sdk/azure-secrets"]
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.20", features = ["session", "crypto-provider", "acl-setup"] }
+vta-sdk = { path = "../vta-sdk", version = "0.21", features = ["session", "crypto-provider", "acl-setup"] }
 # `agent-names` powers the global `--resolve-agent-names` flag; without it
 # the flag parses but can never resolve anything.
 vta-cli-common = { path = "../vta-cli-common", version = "0.10", features = [
