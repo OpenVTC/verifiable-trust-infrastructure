@@ -2114,6 +2114,21 @@ impl TrustPingSession {
             return Err(msg.into());
         }
 
+        // Register the client's ACL on the mediator so it can receive forwarded
+        // messages. Without this, an ExplicitAllow mediator rejects forwarded
+        // delivery for any DID that hasn't called acl/set — the trust-ping
+        // response would never arrive. We await (blocking variant) so the ACL is
+        // in place before the first ping is sent.
+        #[cfg(feature = "acl-setup")]
+        crate::acl_setup::setup_client_acl(
+            hub.atm(),
+            &identity.profile,
+            client_did,
+            "trust-ping-session",
+            "pnm",
+        )
+        .await;
+
         Ok(Self {
             identity,
             ownership,
