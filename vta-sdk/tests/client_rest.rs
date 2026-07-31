@@ -672,6 +672,78 @@ async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
         .unwrap();
 }
 
+/// Self-service key rotation is the one ACL verb whose REST route answers the
+/// maintainer's flat stored row, so the client sends the canonical Trust Task
+/// on REST too — through `/api/trust-tasks`, not `POST /acl/swap`. Parsing the
+/// legacy route's reply is what left this method failing with
+/// `missing field 'subject'` on every transport after the canonical fold.
+#[tokio::test]
+async fn swap_acl_sends_the_canonical_task_over_rest() {
+    let server = MockServer::start().await;
+    let _g = Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
+        .and(auth_match())
+        .and(wiremock::matchers::body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/acl/swap-key/0.1",
+            "payload": {
+                "currentSubject": "did:key:zOld",
+                // Read out of the presentation rather than taken on trust
+                // from the caller — the maintainer refuses the pair when the
+                // proof says something else.
+                "newSubject": "did:key:zNew",
+            },
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "urn:uuid:0000",
+            "type": "https://trusttasks.org/spec/acl/swap-key/0.1#response",
+            "payload": {
+                "entry": acl_entry_json("did:key:zNew"),
+                "previousSubject": "did:key:zOld",
+            },
+        })))
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+
+    let c = client(&server).await;
+    let entry = c
+        .swap_acl_for(
+            "did:key:zOld",
+            SwapAclRequest::new(swap_presentation("did:key:zNew")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(entry.did, "did:key:zNew");
+}
+
+/// A REST client has a token, not a DID, so it cannot infer which VID is being
+/// swapped out. Failing here — naming the method that takes it — beats sending
+/// a request the VTA can only refuse.
+#[tokio::test]
+async fn swap_acl_over_rest_says_which_method_takes_the_subject() {
+    let c = VtaClient::new("https://vta.example.com");
+    let err = c
+        .swap_acl(SwapAclRequest::new(swap_presentation("did:key:zNew")))
+        .await
+        .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("swap_acl_for"), "unhelpful error: {msg}");
+}
+
+/// A compact JWS whose payload carries `iss` — the shape `swap_acl` reads
+/// `newSubject` out of. Unsigned: nothing client-side verifies it, and the
+/// maintainer checks the real signature.
+fn swap_presentation(iss: &str) -> String {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    format!(
+        "{}.{}.{}",
+        b64.encode(br#"{"alg":"EdDSA","typ":"JWT"}"#),
+        b64.encode(serde_json::to_vec(&json!({ "iss": iss })).unwrap()),
+        b64.encode([0u8; 64]),
+    )
+}
+
 #[tokio::test]
 async fn get_acl_path_encodes_did() {
     let server = MockServer::start().await;

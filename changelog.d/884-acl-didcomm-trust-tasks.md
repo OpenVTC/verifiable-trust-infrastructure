@@ -54,6 +54,52 @@ bodies, so an already-installed `pnm` gets working `acl get` and `acl change-rol
 from a VTA upgrade alone; `acl list` needs the rebuilt client, since its old
 request is refused at the maintainer.
 
-**Testing.** `tests/e2e/tests/client_didcomm.rs` pins each of the four as a Trust
-Task, including the members `update` used to drop and the canonical `scope`
-filter name that replaced `context`.
+## `swap_acl` works again, on all three transports
+
+Self-service key rotation was broken the same way, but everywhere at once: the
+client parsed the canonical entry (`subject`/`scopes`) while REST `/acl/swap` and
+legacy DIDComm both answered the flat stored row and the Trust Task spine
+answered `{ entry, previousSubject }`. Three shapes, one parser, no working
+caller — `missing field 'subject'` on every transport.
+
+It now sends canonical `acl/swap-key/0.1` **everywhere**, over REST through the
+trust-task endpoint rather than the legacy route (which stays mounted, unchanged,
+for the non-Rust consumers reading it). `newSubject` is read from the
+presentation's own `iss` via the new `swap::peek_presentation_holder` — which
+`AclSwapPresentation::peek_holder` now delegates to, so producer and verifier
+cannot disagree about what a proof says. `currentSubject` comes from the DID the
+client sends as (new `VtaClient::caller_did`). Both are declarations the
+maintainer cross-checks against the proof and the authenticated caller.
+
+A REST client has a bearer token, not a DID, so it has nothing to infer the
+swapped-out VID from: `swap_acl` there fails before the request leaves the
+process, naming the additive `swap_acl_for(current_subject, req)` that takes it.
+
+Server-side, the bare-DIDComm `acl/swap-key/0.1` route answered the flat row too,
+so the same canonical URI had two shapes depending on which envelope carried it.
+It now answers `{ entry, previousSubject }` like the spine. The legacy
+`swap-acl` type keeps the flat row — that is its documented contract.
+
+## Sweep of the remaining legacy `rpc` surfaces
+
+`rpc`'s TSP arm is an `UnsupportedTransport` error, so **every method still on it
+is unavailable over TSP** — which is what made this worth auditing rather than
+just fixing the reported call. Findings for the eight that remained:
+
+| method | DIDComm shape | disposition |
+|---|---|---|
+| `swap_acl` | broken (above) | → canonical task, all transports |
+| `update_webvh_server` | agrees | → `webvh/servers/register/1.0`, whose payload is byte-identical to what it already sent (#850 folded add + update into it) |
+| `update_did_webvh`, `rotate_did_webvh_keys` | agree | left: their canonical twins key on `did`, while these take `(context_id, scid)` — moving them is a signature change plus a CLI lookup, not a transport swap |
+| `import_key`, `backup_export`, `backup_import`, `list_webvh_server_domains` | agree | left: no canonical twin exists, and minting task URIs is spec work (VTI #856/#857), not something to do inside a bug fix |
+
+The four left behind are shape-correct over REST and DIDComm and dead over TSP.
+None of them is the defect class this PR fixes; all of them are on the TSP gap
+list.
+
+**Testing.** `tests/e2e/tests/client_didcomm.rs` pins each moved call as a Trust
+Task — including the members `update` used to drop, the canonical `scope` filter
+name that replaced `context`, and a `swap_acl` whose `currentSubject` is the
+session's own DID and whose `newSubject` is read out of an SDK-built
+presentation. `vta-sdk/tests/client_rest.rs` pins swap's REST leg on
+`/api/trust-tasks` and the error that names `swap_acl_for`.

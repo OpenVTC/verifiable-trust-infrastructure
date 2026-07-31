@@ -682,6 +682,103 @@ async fn change_acl_role_via_didcomm() {
     shutdown_all(client, responder, mediator).await;
 }
 
+/// `swap_acl` declares `currentSubject`, and a DIDComm client already proves
+/// that DID by sending — so it fills it in rather than making the caller repeat
+/// it. `newSubject` comes from the presentation's own `iss`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn swap_acl_via_didcomm_infers_the_sending_did() {
+    // The presentation is built by the SDK's own producer, so the `iss` the
+    // client reads back is the one a real rotation would carry.
+    let new_key = SigningKey::from_bytes(&[0x22; 32]);
+    let new_did = format!(
+        "did:key:{}",
+        ed25519_multibase_pubkey(&new_key.verifying_key().to_bytes())
+    );
+    let (sender_did, _) = did_key_from_seed(0x11);
+
+    let (expect_sender, expect_new) = (sender_did.clone(), new_did.clone());
+    let (mediator, responder, client) = build_didcomm(move |msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_ACL_SWAP_KEY_0_1) {
+            let p = &body["payload"];
+            assert_eq!(p["currentSubject"], expect_sender.as_str(), "{body}");
+            assert_eq!(p["newSubject"], expect_new.as_str(), "{body}");
+            assert!(p["linkProof"].is_string(), "{body}");
+            tt_ok(
+                trust_tasks::TASK_ACL_SWAP_KEY_0_1,
+                json!({
+                    "entry": acl_entry_json(&expect_new),
+                    "previousSubject": expect_sender.as_str(),
+                }),
+            )
+        } else {
+            no_handler()
+        }
+    })
+    .await;
+
+    let presentation = vta_sdk::protocols::acl_management::swap::build_swap_presentation(
+        &new_key,
+        &new_did,
+        responder.did(),
+        1_000,
+        300,
+        None,
+    );
+    let entry = client
+        .swap_acl(SwapAclRequest::new(presentation))
+        .await
+        .unwrap();
+    assert_eq!(entry.did, new_did);
+
+    shutdown_all(client, responder, mediator).await;
+}
+
+// ── WebVH servers ───────────────────────────────────────────────────
+
+/// Relabelling a registered server rides `webvh/servers/register/1.0` — the
+/// canonical task #850 folded add + update into. A payload with no `did` is the
+/// label-only patch; the maintainer refuses to create a registration from one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_webvh_server_via_didcomm() {
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_WEBVH_SERVERS_REGISTER_1_0) {
+            let p = &body["payload"];
+            assert_eq!(p["id"], "s1", "{body}");
+            assert_eq!(p["label"], "primary", "{body}");
+            assert!(
+                p.get("did").is_none_or(Value::is_null),
+                "a label-only patch must not claim a did: {body}"
+            );
+            tt_ok(
+                trust_tasks::TASK_WEBVH_SERVERS_REGISTER_1_0,
+                json!({
+                    "id": "s1",
+                    "did": "did:web:host.example",
+                    "label": "primary",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-02T00:00:00Z",
+                }),
+            )
+        } else {
+            no_handler()
+        }
+    })
+    .await;
+
+    let record = client
+        .update_webvh_server(
+            "s1",
+            UpdateWebvhServerRequest {
+                label: Some("primary".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(record.label.as_deref(), Some("primary"));
+
+    shutdown_all(client, responder, mediator).await;
+}
+
 // ── Contexts ────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

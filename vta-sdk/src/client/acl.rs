@@ -199,14 +199,60 @@ impl VtaClient {
 
     /// Atomic self-service key rotation: move the caller's own ACL entry onto
     /// the DID proven by `req.presentation` (a VP-JWT). Returns the new entry.
+    ///
+    /// Sends canonical `acl/swap-key/0.1` on **every** transport — over REST
+    /// through the trust-task endpoint rather than the legacy `POST /acl/swap`
+    /// route, which is the one surface that still answers with the maintainer's
+    /// flat stored row. That mismatch is what left this method returning
+    /// `missing field 'subject'` for every caller on every transport after the
+    /// canonical fold (#842); the legacy route stays mounted, untouched, for
+    /// the non-Rust consumers that read it.
+    ///
+    /// `newSubject` is read from the presentation's `iss`, and `currentSubject`
+    /// from the DID this client sends as. Both are declarations the maintainer
+    /// cross-checks against the proof and the authenticated caller — a wrong
+    /// one is refused, never applied.
+    ///
+    /// **A REST client has a bearer token, not a DID**, so there is nothing to
+    /// infer the swapped-out VID from; use [`swap_acl_for`](Self::swap_acl_for)
+    /// there.
     pub async fn swap_acl(&self, req: SwapAclRequest) -> Result<AclEntryResponse, VtaError> {
-        self.rpc(
-            acl_management::SWAP_ACL,
-            serde_json::to_value(&req)?,
-            acl_management::SWAP_ACL_RESULT,
-            30,
-            |c, url| c.post(format!("{url}/acl/swap")).json(&req),
-        )
-        .await
+        let current_subject = self.caller_did().map(str::to_string).ok_or_else(|| {
+            VtaError::Validation(
+                "acl/swap-key declares the VID being swapped out, and a REST client has no DID \
+                 to infer it from — call `swap_acl_for(<did>, req)` instead"
+                    .into(),
+            )
+        })?;
+        self.swap_acl_for(&current_subject, req).await
+    }
+
+    /// [`swap_acl`](Self::swap_acl) with the swapped-out VID stated outright —
+    /// the REST-transport form, since a bearer token does not name a DID.
+    ///
+    /// The maintainer refuses a `currentSubject` that is not the authenticated
+    /// caller, so naming someone else's VID here rotates nothing.
+    pub async fn swap_acl_for(
+        &self,
+        current_subject: &str,
+        req: SwapAclRequest,
+    ) -> Result<AclEntryResponse, VtaError> {
+        let new_subject = acl_management::swap::peek_presentation_holder(&req.presentation)
+            .map_err(|e| VtaError::Validation(format!("swap presentation is unreadable: {e}")))?;
+
+        // `AclEntryEnvelope` ignores the response's `previousSubject`; the
+        // caller asked for the entry, and the VID that lost the grant is the
+        // one they just sent.
+        let payload = serde_json::json!({
+            "currentSubject": current_subject,
+            "newSubject": new_subject,
+            "linkProof": &req.presentation,
+        });
+        let response = self
+            .dispatch_trust_task(crate::trust_tasks::TASK_ACL_SWAP_KEY_0_1, payload, 30)
+            .await?;
+        let wrapped: AclEntryEnvelope = serde_json::from_value(response)
+            .map_err(|e| VtaError::Protocol(format!("acl/swap-key response decode: {e}")))?;
+        Ok(wrapped.entry)
     }
 }

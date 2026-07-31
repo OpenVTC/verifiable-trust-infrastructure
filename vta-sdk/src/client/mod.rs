@@ -1242,6 +1242,21 @@ impl VtaClient {
     /// Dispatch an RPC call via REST (using `build_rest`) or DIDComm (using
     /// `msg_type`/`body`/`result_type`), returning a deserialized response.
     #[allow(unused_variables)]
+    /// The DID this client sends as, when the transport has one.
+    ///
+    /// `None` over REST: a REST client authenticates with a bearer token, and
+    /// the token's subject is the VTA's business, not something to be inferred
+    /// here. Callers that need the DID on REST take it from the operator.
+    pub fn caller_did(&self) -> Option<&str> {
+        match &self.transport {
+            Transport::Rest { .. } => None,
+            #[cfg(feature = "session")]
+            Transport::DIDComm { session, .. } => Some(session.client_did()),
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { session, .. } => Some(session.client_did()),
+        }
+    }
+
     pub(crate) async fn rpc<T: serde::de::DeserializeOwned>(
         &self,
         msg_type: &str,
