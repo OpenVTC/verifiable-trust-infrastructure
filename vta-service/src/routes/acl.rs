@@ -276,7 +276,7 @@ pub async fn change_role(
     Path(did): Path<String>,
     Json(req): Json<ChangeRoleRequest>,
 ) -> Result<Json<CreateAclResponseBody>, AppError> {
-    let stored = operations::acl::change_role(
+    let result = operations::acl::change_role_by_subject(
         &state.acl_ks,
         &state.audit_ks,
         &auth.0,
@@ -287,9 +287,7 @@ pub async fn change_role(
         "rest",
     )
     .await?;
-    Ok(Json(CreateAclResponseBody {
-        entry: vta_sdk::protocols::acl_management::entry::AclEntry::from_result(&stored),
-    }))
+    Ok(Json(result))
 }
 
 /// DELETE /acl/{did} — remove an ACL entry. Auth: Admin or Initiator.

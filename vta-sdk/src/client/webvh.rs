@@ -72,10 +72,15 @@ impl VtaClient {
         id: &str,
         req: UpdateWebvhServerRequest,
     ) -> Result<crate::webvh::WebvhServerRecord, VtaError> {
-        self.rpc(
-            did_management::UPDATE_WEBVH_SERVER,
+        // `webvh/servers/register/1.0` is the canonical twin: #850 folded
+        // add + update into it, and a payload with no `did` is exactly the
+        // label-only patch this method performs (the maintainer refuses to
+        // create a registration from one). Same body, so the move costs
+        // nothing and buys the TSP leg, which the legacy message has no
+        // dispatcher for.
+        self.rpc_tt(
+            crate::trust_tasks::TASK_WEBVH_SERVERS_REGISTER_1_0,
             serde_json::json!({ "id": id, "label": &req.label }),
-            did_management::UPDATE_WEBVH_SERVER_RESULT,
             30,
             |c, url| {
                 c.patch(format!("{url}/webvh/servers/{}", encode_path_segment(id)))

@@ -614,7 +614,7 @@ pub async fn handle_swap_acl(
     // No require_manage(): self-service rotation of the caller's own entry.
     let auth = app_try!(auth_from_message(&message, &state.acl_ks, &state.sessions_ks).await);
 
-    let (presentation, claimed_new_subject) = if is_canonical {
+    let (presentation, claimed_new_subject, previous_subject) = if is_canonical {
         let body: vta_sdk::protocols::acl_management::swap::SwapKeyBody =
             serde_json::from_value(message.body).map_err(handler_err)?;
         // Cross-check: the DIDComm sender (authenticated) must equal the
@@ -626,11 +626,15 @@ pub async fn handle_swap_acl(
                 body.current_subject, auth.did
             )));
         }
-        (body.link_proof, Some(body.new_subject))
+        (
+            body.link_proof,
+            Some(body.new_subject),
+            Some(body.current_subject),
+        )
     } else {
         let body: vta_sdk::protocols::acl_management::swap::SwapAclBody =
             serde_json::from_value(message.body).map_err(handler_err)?;
-        (body.presentation, None)
+        (body.presentation, None, None)
     };
 
     // Honour any operator-configured step-up floor for `acl/swap-key` on the
@@ -698,20 +702,37 @@ pub async fn handle_swap_acl(
         )));
     }
 
-    let response_type = if is_canonical {
-        acl_management::ACL_SWAP_KEY_RESPONSE
-    } else {
-        acl_management::SWAP_ACL_RESULT
-    };
-    response(response_type, &result)
+    // Canonical `acl/swap-key/0.1` answers `{ entry, previousSubject }` — the
+    // shape the Trust Task spine returns for the same URI and the published
+    // spec pins (#857). This route used to answer the flat stored row under
+    // both type URIs, so the one task had two shapes depending on which
+    // envelope carried it. The legacy `swap-acl` type keeps the flat row, which
+    // is its documented contract.
+    match previous_subject {
+        Some(previous_subject) => response(
+            acl_management::ACL_SWAP_KEY_RESPONSE,
+            &vta_sdk::protocols::acl_management::swap::SwapKeyResultBody {
+                entry: vta_sdk::protocols::acl_management::entry::AclEntry::from_result(&result),
+                previous_subject,
+            },
+        ),
+        None => response(acl_management::SWAP_ACL_RESULT, &result),
+    }
 }
 
+// The three ACL reads below answer the canonical bodies (`{ entry }` /
+// `{ entries }`), same as REST and the Trust Task spine. They returned the
+// maintainer's flat stored shape until #884, which no client could parse —
+// `pnm acl get` over DIDComm failed with `missing field 'entry'` while the
+// same call over REST worked. The stored-shape operations are now private to
+// `operations::acl`, so this cannot drift back.
 didcomm_handler!(
     handle_get_acl,
     Gate::Manage,
     acl_management::GET_ACL_RESULT,
     acl_management::get::GetAclBody,
-    |s, auth, body| operations::acl::get_acl(&s.acl_ks, &auth, &body.subject, "didcomm").await
+    |s, auth, body| operations::acl::show_by_subject(&s.acl_ks, &auth, &body.subject, "didcomm")
+        .await
 );
 
 didcomm_handler!(
@@ -719,7 +740,7 @@ didcomm_handler!(
     Gate::Manage,
     acl_management::LIST_ACL_RESULT,
     acl_management::list::ListAclBody,
-    |s, auth, body| operations::acl::list_acl(
+    |s, auth, body| operations::acl::list_entries(
         &s.acl_ks,
         &auth,
         body.scope.as_deref(),
@@ -736,7 +757,7 @@ didcomm_handler!(
     Gate::Admin,
     acl_management::CHANGE_ROLE_RESULT,
     acl_management::change_role::ChangeRoleBody,
-    |s, auth, body| operations::acl::change_role(
+    |s, auth, body| operations::acl::change_role_by_subject(
         &s.acl_ks,
         &s.audit_ks,
         &auth,

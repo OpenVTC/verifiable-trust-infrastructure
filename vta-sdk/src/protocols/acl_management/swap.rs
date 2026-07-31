@@ -73,6 +73,61 @@ pub struct SwapKeyResultBody {
     pub previous_subject: String,
 }
 
+/// Read the **unverified** holder (`iss`) out of a swap presentation.
+///
+/// The canonical `acl/swap-key/0.1` request declares `newSubject` alongside the
+/// proof, and the maintainer refuses the pair when they disagree. A producer
+/// holding only the presentation therefore needs to read the DID it claims —
+/// this does that, and nothing more: no signature check, no expiry check, no
+/// audience check. The value is a *claim to be cross-checked*, never a
+/// conclusion. To conclude anything from a presentation, use
+/// [`AclSwapPresentation::verify`] (which peeks through this same function, so
+/// the two can never disagree about what the proof says).
+pub fn peek_presentation_holder(jws: &str) -> Result<String, String> {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+
+    let payload = jws
+        .split('.')
+        .nth(1)
+        .ok_or_else(|| "not a compact JWS (no payload segment)".to_string())?;
+    let bytes = B64URL
+        .decode(payload.as_bytes())
+        .map_err(|e| format!("payload b64: {e}"))?;
+    let claims: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("payload json: {e}"))?;
+    claims
+        .get("iss")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "presentation has no `iss`".to_string())
+}
+
+#[cfg(test)]
+mod peek_tests {
+    /// The producer's own presentation must be readable by the producer: this
+    /// is where `newSubject` comes from, and a request that names the wrong one
+    /// is refused by the maintainer.
+    #[cfg(feature = "client")]
+    #[test]
+    fn reads_the_holder_the_builder_signed_for() {
+        use ed25519_dalek::SigningKey;
+        let sk = SigningKey::from_bytes(&[3u8; 32]);
+        let mb = crate::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes());
+        let did = format!("did:key:{mb}");
+        let jws = super::build_swap_presentation(&sk, &did, "did:web:vta", 1_000, 300, None);
+        assert_eq!(super::peek_presentation_holder(&jws).unwrap(), did);
+    }
+
+    /// Garbage in is an error, never a silent empty subject — an empty
+    /// `newSubject` would be a request to move the entry nowhere.
+    #[test]
+    fn refuses_what_is_not_a_compact_jws() {
+        assert!(super::peek_presentation_holder("not-a-jws").is_err());
+        assert!(super::peek_presentation_holder("aaa.bbb.ccc").is_err());
+    }
+}
+
 /// Build the compact Ed25519 VP-JWT (`presentation` / `link_proof`) that
 /// proves control of `holder_did` for an `acl/swap-key` request.
 ///
@@ -195,7 +250,7 @@ mod verify_impl {
         /// needs it to resolve the DID document `verify` checks against. The
         /// returned DID is **unverified** until [`Self::verify`].
         pub fn peek_holder(&self) -> Result<String, AclSwapError> {
-            Ok(self.decode()?.1.iss)
+            super::peek_presentation_holder(&self.jws).map_err(AclSwapError::Parse)
         }
 
         fn decode(&self) -> Result<(JwsHeader, SwapClaims, Vec<u8>, Vec<u8>), AclSwapError> {
