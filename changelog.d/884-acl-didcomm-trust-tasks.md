@@ -1,4 +1,4 @@
-### vta-sdk 0.20.31 / vta-service 0.13.22 — the ACL slice speaks Trust Tasks on every transport (#884)
+### vta-sdk 0.20.31 / vta-service 0.13.22 / vtc-service 0.11.49 — the ACL slice speaks Trust Tasks on every transport (#884)
 
 `pnm acl get <did>` against a DIDComm-connected VTA failed with
 
@@ -101,7 +101,9 @@ list.
 
 `cargo update` (69 crates) and `npm update` in `vtc-service/admin-ui` — both
 within the existing requirement ranges, so no `Cargo.toml` or `package.json`
-changed. Two open advisories close as a side effect: `rustls-webpki` 0.103.13
+changed. `vtc-service` is version-bumped because the admin UI is **embedded in
+its binary**: the npm move changes what that crate publishes even though no Rust
+line differs. Two open advisories close as a side effect: `rustls-webpki` 0.103.13
 (high) and `postcss` 8.5.23 plus `react-router` 7.18.2 (high + three medium).
 
 Still open afterwards, and **not** fixable by an in-range update:
