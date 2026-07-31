@@ -621,7 +621,9 @@ async fn resolve_vta_endpoint_falls_back_to_rest_for_did_web() {
         .unwrap();
     match endpoint {
         VtaEndpoint::Rest { url } => assert_eq!(url, "https://vta.example.invalid"),
-        VtaEndpoint::DIDComm { .. } => panic!("expected Rest fallback, got DIDComm"),
+        // `VtaEndpoint` is `#[non_exhaustive]`; any non-Rest transport is a
+        // failure here, so catch the rest in one arm.
+        _ => panic!("expected Rest fallback, got a non-Rest transport"),
     }
 }
 

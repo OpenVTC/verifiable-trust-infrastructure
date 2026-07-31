@@ -2,7 +2,7 @@
 name = "vta-sdk"
 description = "SDK for Verifiable Trust Agents operating in Verifiable Trust Communities"
 readme = "README.md"
-version = "0.20.32"
+version = "0.21.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -252,7 +252,7 @@ ed25519-dalek = { workspace = true, optional = true }
 # client/didcomm-light path now goes through `affinidi-messaging-didcomm`'s
 # `PublicKeyAgreement` and doesn't take this dependency directly.
 x25519-dalek = { workspace = true, optional = true }
-curve25519-dalek = { version = "4", optional = true }
+curve25519-dalek = { version = "5", optional = true }
 sha2 = { workspace = true, optional = true }
 # Used by `client` (didcomm_light::pack_anoncrypt) to produce JWEs the
 # workspace's pinned DIDComm decrypt path will accept (ECDH-ES+A256KW +
@@ -262,7 +262,7 @@ affinidi-messaging-didcomm = { version = "0.15", optional = true }
 # `did:webvh:` VTAs without pulling in the heavyweight TDK runtime. Same
 # workspace-pinned version as `vta-service`.
 didwebvh-rs = { workspace = true, optional = true }
-hpke = { version = "0.13", optional = true }
+hpke = { version = "0.14", optional = true }
 affinidi-crypto = { workspace = true, optional = true }
 affinidi-vc = { workspace = true, optional = true }
 affinidi-data-integrity = { workspace = true, optional = true }
@@ -273,8 +273,9 @@ affinidi-secrets-resolver = { workspace = true, optional = true }
 # a dev-dependency for the always-on conformance tests below.
 trust-tasks-rs = { workspace = true, optional = true }
 ciborium = { version = "0.2", optional = true }
-# Used only by sealed-transfer to feed an OS-backed CSPRNG into hpke's
-# rand_core 0.9 trait surface (rand 0.10 + rand_core 0.10 are incompatible).
+# Direct OS-CSPRNG access for seed/nonce/bundle-id generation. (hpke 0.14
+# sources its own randomness internally, so this is no longer the bridge
+# into hpke's rand_core trait surface that it was under 0.13.)
 getrandom = { version = "0.4", optional = true }
 # Local AWS Nitro attestation decode + verify (`attest-verify`). Same crates
 # and versions the upstream `nitro_attest` verifier uses internally — we depend

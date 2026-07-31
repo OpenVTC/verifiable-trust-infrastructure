@@ -2,7 +2,7 @@
 name = "vta-webvh"
 description = "WebVH hosting infrastructure for the VTA — the DID-record store, the HTTP client to a did:webvh hosting server, and its DID-auth handshake"
 readme = "README.md"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -13,7 +13,7 @@ repository.workspace = true
 [dependencies]
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
 vti-common = { path = "../vti-common", version = "0.11" }
-vta-sdk = { path = "../vta-sdk", version = "0.20" }
+vta-sdk = { path = "../vta-sdk", version = "0.21" }
 affinidi-tdk = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

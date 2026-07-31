@@ -2,7 +2,7 @@
 name = "vta-support"
 description = "Shared mid-layer VTA services — trust-context storage, the sealed-transfer seal helper, and the sealed-bootstrap nonce store"
 readme = "README.md"
-version = "0.2.2"
+version = "0.2.3"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -21,7 +21,7 @@ vta-config = { path = "../vta-config", version = "0.3" }
 # does not exist and the tarball fails to compile. That is what broke the
 # publish run for 0.2.0.
 vti-common = { path = "../vti-common", version = "0.11", features = ["encryption"] }
-vta-sdk = { path = "../vta-sdk", version = "0.20", features = ["sealed-transfer"] }
+vta-sdk = { path = "../vta-sdk", version = "0.21", features = ["sealed-transfer"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

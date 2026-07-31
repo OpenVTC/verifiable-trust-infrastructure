@@ -51,7 +51,8 @@ use zeroize::Zeroizing;
 /// same identity can later be used for signing without regenerating.
 pub fn generate_ed25519_keypair() -> (Zeroizing<[u8; 32]>, [u8; 32]) {
     let mut seed = [0u8; 32];
-    getrandom::fill(&mut seed).expect("OS CSPRNG failed — see hpke::OsCsprng docs");
+    getrandom::fill(&mut seed)
+        .expect("OS CSPRNG failed — see the randomness note in sealed_transfer::hpke");
     let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
     let pubkey = signing.verifying_key().to_bytes();
     (Zeroizing::new(seed), pubkey)

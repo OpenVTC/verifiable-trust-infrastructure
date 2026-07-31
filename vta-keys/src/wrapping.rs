@@ -66,7 +66,7 @@ impl WrappingKeyCache {
     pub async fn generate(&self) -> (String, String) {
         let kid = Uuid::new_v4().to_string();
         // Use StaticSecret so we can store it (EphemeralSecret is consumed on DH)
-        let secret = StaticSecret::random_from_rng(aes_gcm::aead::OsRng);
+        let secret = StaticSecret::random_from_rng(&mut rand::rng());
         let public = PublicKey::from(&secret);
 
         let public_b64 = BASE64.encode(public.as_bytes());
@@ -273,7 +273,7 @@ mod tests {
     /// Client-side wrapping helper for tests.
     fn wrap_for_test(vta_pub_bytes: &[u8; 32], kid: &str, plaintext: &[u8]) -> String {
         let vta_pub = PublicKey::from(*vta_pub_bytes);
-        let client_secret = StaticSecret::random_from_rng(aes_gcm::aead::OsRng);
+        let client_secret = StaticSecret::random_from_rng(&mut rand::rng());
         let client_pub = PublicKey::from(&client_secret);
 
         let shared = client_secret.diffie_hellman(&vta_pub);
