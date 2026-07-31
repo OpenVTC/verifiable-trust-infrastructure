@@ -31,9 +31,10 @@
 //!
 //! ## Scope
 //!
-//! Authentication, the member roster, the admin join queue, removal, and
-//! policy. Join *submission* (the applicant side) is not here — see
-//! [`VtcClient::submit_join`] for where it moved.
+//! Authentication, the member roster, the admin join queue, removal, policy,
+//! and the applicant side of the join ceremony
+//! ([`VtcClient::submit_join`], which signs its own document and needs no
+//! token).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -86,6 +87,10 @@ pub enum VtcError {
     /// replacement for it. Carries what to use instead.
     #[error("unsupported by this client: {0}")]
     Unsupported(&'static str),
+    /// Building or signing a holder Trust Task failed — e.g. a non-`did:key`
+    /// applicant, or an undecodable private key.
+    #[error("could not sign the request document: {0}")]
+    Signing(String),
 }
 
 /// A single member of the community, as returned by `GET /members`. Mirrors the
@@ -219,6 +224,26 @@ impl VtcClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             vtc_did: vtc_did.to_string(),
             token: Some(token.into()),
+        }
+    }
+
+    /// Construct a client with **no** bearer token, for the applicant side of
+    /// the join ceremony.
+    ///
+    /// [`submit_join`](Self::submit_join) authenticates with the document's own
+    /// holder proof, so an applicant — who is by definition not yet a member and
+    /// has no token to get — needs exactly this. Every other method returns
+    /// [`VtcError::NotAuthenticated`], which is the honest answer rather than a
+    /// 401 from the server.
+    ///
+    /// `vtc_did` still matters: it is the audience the submitted document is
+    /// addressed to, and the VTC rejects a document addressed elsewhere.
+    pub fn anonymous(base_url: &str, vtc_did: &str) -> Self {
+        Self {
+            http: vta_sdk::http::rest_client(),
+            base_url: base_url.trim_end_matches('/').to_string(),
+            vtc_did: vtc_did.to_string(),
+            token: None,
         }
     }
 
@@ -427,34 +452,86 @@ impl VtcClient {
         Ok(())
     }
 
-    /// Submit a join request (the applicant side).
+    /// Submit a join request (the applicant side): sign a
+    /// `join-requests/submit/0.1` Trust Task with the applicant's holder key and
+    /// post it to the document endpoint. Returns the community's verdict —
+    /// auto-admit carries the issued VMC + role VEC inline, otherwise the
+    /// request is queued for an admin.
     ///
-    /// # Unimplemented against the current VTC
+    /// **No bearer token.** The document's `eddsa-jcs-2022` proof *is* the
+    /// authentication: the VTC takes the proof's `verificationMethod` DID as the
+    /// applicant and requires the document `issuer` to match it
+    /// (`vtc-service/src/trust_tasks/mod.rs::resolve_holder`). So this is the
+    /// one method that works on a client built with neither
+    /// [`connect`](Self::connect) nor [`with_token`](Self::with_token) — an
+    /// applicant is by definition not yet a member.
     ///
-    /// This posted the VP-framed body to `POST /join-requests`. That route no
-    /// longer exists: the holder-facing join verbs (`submit`/`request`,
+    /// `applicant_did` must be a `did:key` (the server's proof resolver accepts
+    /// no other method) whose seed is `private_key_multibase`. It is the DID
+    /// that becomes the member on admission, *not* whatever identity this client
+    /// may hold a token for — a fleet manager submitting on behalf of a VTA
+    /// signs with that VTA's key.
+    ///
+    /// The document is addressed to [`vtc_did`](Self::vtc_did) (SPEC §4.8.2
+    /// audience binding), so a signed submit captured from one community cannot
+    /// be replayed into another.
+    ///
+    /// ## Why the key, and not just a body
+    ///
+    /// This used to POST the VP-framed body to `POST /join-requests`, a route
+    /// that no longer exists — the holder-facing join verbs (`submit`/`request`,
     /// `manifest`, `status`) were folded into the single Trust-Task document
-    /// endpoint `POST /trust-tasks`, routed by document `type`, with the
-    /// holder's `eddsa-jcs-2022` proof as the authentication
-    /// (`vtc-service/src/routes/mod.rs`, `trust_tasks::dispatch`). The handler
-    /// this used to reach is now unrouted code.
-    ///
-    /// Submitting therefore means building and signing a
-    /// `join-requests/submit` Trust Task, which needs the applicant's holder
-    /// key — a different shape from this method's `body`-only signature, and
-    /// not something to fake by changing the URL. Rather than keep issuing a
-    /// silent 404, this returns a typed error naming the replacement. The
-    /// applicant side is driven today by the join ceremony in
-    /// `vta-cli-common` / `vta-mobile-core`, which speak that endpoint.
+    /// endpoint, routed by document `type`. That fold moved the applicant's
+    /// authentication from "a signature somewhere inside the body" to "a proof
+    /// over the whole document", which is why this signature grew the key.
     pub async fn submit_join(
         &self,
-        _body: &join_requests::JoinRequestSubmitBody,
-    ) -> Result<DecideResult, VtcError> {
-        Err(VtcError::Unsupported(
-            "join submission moved to the Trust-Task document endpoint (POST /trust-tasks, \
-             type join-requests/submit) and needs the applicant's holder key to sign the \
-             document; POST /join-requests is no longer routed",
-        ))
+        body: &join_requests::JoinRequestSubmitBody,
+        applicant_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<join_requests::VerdictResponse, VtcError> {
+        let payload = serde_json::to_value(body)
+            .map_err(|e| VtcError::Url(format!("serialise submit payload: {e}")))?;
+        let doc = vta_sdk::trust_task_sign::build_signed(
+            join_requests::JOIN_REQUEST_SUBMIT_TYPE,
+            payload,
+            applicant_did,
+            private_key_multibase,
+            &self.vtc_did,
+        )
+        .await
+        .map_err(|e| VtcError::Signing(e.to_string()))?;
+
+        // The document endpoint takes no `Trust-Task` header — the document's
+        // own `type` is the identity, which is exactly why one mount can serve
+        // every holder verb.
+        let resp = self
+            .http
+            .post(format!("{}/trust-tasks", self.base_url))
+            .header("content-type", "application/json")
+            .body(doc)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(VtcError::Http { status, body });
+        }
+
+        // A Trust-Task request is answered with a `#response` document whose
+        // payload is the verdict.
+        let text = resp.text().await?;
+        let response_doc: trust_tasks_rs::TrustTask<serde_json::Value> =
+            serde_json::from_str(&text).map_err(|e| VtcError::Http {
+                status: 200,
+                body: format!(
+                    "unexpected submit response (not a Trust Task document): {e}: {text}"
+                ),
+            })?;
+        serde_json::from_value(response_doc.payload).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("submit response payload is not a VerdictResponse: {e}"),
+        })
     }
 
     /// List the community's policies (opaque JSON descriptors). Admin token.
