@@ -1,17 +1,46 @@
 //! Lightweight challenge-response authentication for VTA REST clients.
 //!
-//! This module provides the same DIDComm challenge-response flow as
-//! `session::challenge_response()` but without requiring ATM/TDK runtime
-//! initialization. It uses the lightweight DIDComm packer from
-//! `didcomm_light` to build encrypted auth messages.
+//! Same challenge-response flow as `session::challenge_response()`, but with no
+//! ATM/TDK runtime and no mediator: the request is a DI-signed
+//! `auth/authenticate/0.1` Trust Task (see [`crate::auth_di`]), the canonical
+//! REST transport the VTA tries before its DIDComm-envelope path.
+//!
+//! **This module used to pack an anoncrypt DIDComm envelope** via
+//! `didcomm_light` and throw the caller's private key away — the sender was
+//! merely *asserted* in a plaintext `from` header. VTI #771 hardened `/auth/*`
+//! to require an authenticated (authcrypt) envelope, which rejected every
+//! anoncrypt message outright ("authenticate message must be an authenticated
+//! (authcrypt) DIDComm envelope") and broke this whole tier: the VTC setup
+//! wizard's did-hosting picker, `VtaClient`'s REST re-auth and refresh, and
+//! `vtc-client`. Signing with the holder key both fixes that and is what the
+//! server actually prefers.
+//!
+//! Consequence of the switch: the VTA verifies the proof with a `did:key`-only
+//! resolver, so [`challenge_response_light`] requires a `did:key` holder and
+//! returns [`VtaError::Validation`] for anything else. Callers holding another
+//! DID method need `session::challenge_response` (DIDComm authcrypt), which
+//! `integration::auth::try_rest` already falls back to.
 //!
 //! Feature gate: `client` (not `session`).
 
+use crate::auth_di;
 use crate::credentials::CredentialBundle;
-use crate::didcomm_light;
 use crate::error::VtaError;
-use crate::protocols::auth::{AuthenticateResponse, ChallengeRequest, ChallengeResponse};
+use crate::protocols::auth::{ChallengeRequest, ChallengeResponse};
 use reqwest::Client;
+
+/// The per-request Trust-Task URL header.
+///
+/// The **VTC gates every route on it** (`vtc-service/src/routes/mod.rs`, the
+/// `tt(...)` wrapper) and answers 400 without it; the VTA does not read it. So
+/// omitting it made this client VTC-incompatible at the *transport* layer,
+/// independently of the body — `vtc-client::connect` could not even reach the
+/// authenticate handler. Sending it on every call is what lets one auth client
+/// speak to both services.
+///
+/// Not sent on the VTC's `/wallet/auth/*` aliases, which are deliberately
+/// header-exempt for the browser extension; those aren't this client's paths.
+const TRUST_TASK_HEADER: &str = "Trust-Task";
 
 /// Result of a successful authentication.
 #[derive(Debug, Clone)]
@@ -22,10 +51,13 @@ pub struct AuthResult {
     pub refresh_expires_at: Option<u64>,
 }
 
-/// Perform DIDComm challenge-response authentication without ATM/TDK runtime.
+/// Perform challenge-response authentication without ATM/TDK runtime.
 ///
-/// This is the lightweight equivalent of `session::challenge_response()`.
-/// It uses the `didcomm_light` packer to build the encrypted message.
+/// The lightweight equivalent of `session::challenge_response()`: the
+/// challenge is answered with a DI-signed `auth/authenticate/0.1` Trust Task,
+/// so the holder key proves the sender and no mediator is involved.
+///
+/// `client_did` must be a `did:key` — see the module docs.
 pub async fn challenge_response_light(
     http: &Client,
     base_url: &str,
@@ -33,13 +65,14 @@ pub async fn challenge_response_light(
     private_key_multibase: &str,
     vta_did: &str,
 ) -> Result<AuthResult, crate::error::VtaError> {
-    let _ = private_key_multibase; // Sender identity is in the plaintext `from` field;
-    // anoncrypt doesn't use sender's private key for encryption.
-
     // Step 1: Request challenge
     let challenge_url = format!("{base_url}/auth/challenge");
     let challenge_resp = http
         .post(&challenge_url)
+        .header(
+            TRUST_TASK_HEADER,
+            crate::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+        )
         .json(&ChallengeRequest {
             did: client_did.to_string(),
         })
@@ -54,27 +87,29 @@ pub async fn challenge_response_light(
 
     let challenge: ChallengeResponse = challenge_resp.json().await?;
 
-    // Step 2: Pack encrypted authenticate message. `pack_auth_message`
-    // is async because `did:webvh` VTAs require an HTTP fetch + chain
-    // verification; for `did:key:` VTAs the future resolves without I/O.
-    let packed = didcomm_light::pack_auth_message(
-        crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1,
-        serde_json::json!({
-            "challenge": challenge.challenge,
-            "session_id": challenge.session_id,
-        }),
+    // Step 2: Build + sign the authenticate Trust Task. Signing is local
+    // (no DID resolution, no I/O): the holder's key is right here, and the
+    // VTA resolves the proof's `did:key` verification method itself.
+    let body = auth_di::sign_authenticate_doc(
         client_did,
+        private_key_multibase,
         vta_did,
+        &challenge.challenge,
+        &challenge.session_id,
     )
     .await
-    .map_err(|e| VtaError::Validation(format!("pack auth message: {e}")))?;
+    .map_err(|e| VtaError::Validation(e.to_string()))?;
 
-    // Step 3: Send packed message
+    // Step 3: Send the signed document
     let auth_url = format!("{base_url}/auth/");
     let auth_resp = http
         .post(&auth_url)
-        .header("content-type", "text/plain")
-        .body(packed)
+        .header("content-type", "application/json")
+        .header(
+            TRUST_TASK_HEADER,
+            crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1,
+        )
+        .body(body)
         .send()
         .await?;
 
@@ -84,7 +119,8 @@ pub async fn challenge_response_light(
         return Err(VtaError::from_http(status, body));
     }
 
-    let auth_data: AuthenticateResponse = auth_resp.json().await?;
+    let auth_data = auth_di::parse_auth_response(&auth_resp.text().await?)
+        .map_err(|e| VtaError::Validation(e.to_string()))?;
 
     let access_expires_at = auth_data.access_expires_at_epoch().ok_or_else(|| {
         VtaError::Validation(format!(
@@ -111,6 +147,11 @@ pub async fn challenge_response_light(
 /// token after a successful refresh fails with `Auth("refresh token not
 /// found")`. The `VtaClient` handles this automatically (see
 /// `client.rs::ensure_token_valid`).
+///
+/// Unlike [`challenge_response_light`] this carries no proof and works for a
+/// holder of any DID method: the opaque refresh token *is* the credential
+/// (RFC 6749 §10.4), so the VTA's Trust-Task refresh path verifies the token,
+/// not a signer.
 pub async fn refresh_token_light(
     http: &Client,
     base_url: &str,
@@ -118,22 +159,15 @@ pub async fn refresh_token_light(
     vta_did: &str,
     refresh_token: &str,
 ) -> Result<AuthResult, crate::error::VtaError> {
-    let packed = didcomm_light::pack_auth_message(
-        crate::trust_tasks::TASK_AUTH_REFRESH_0_1,
-        serde_json::json!({
-            "refresh_token": refresh_token,
-        }),
-        client_did,
-        vta_did,
-    )
-    .await
-    .map_err(|e| VtaError::Validation(format!("pack refresh message: {e}")))?;
+    let body = auth_di::build_refresh_doc(client_did, vta_did, refresh_token)
+        .map_err(|e| VtaError::Validation(e.to_string()))?;
 
     let refresh_url = format!("{base_url}/auth/refresh");
     let resp = http
         .post(&refresh_url)
-        .header("content-type", "text/plain")
-        .body(packed)
+        .header("content-type", "application/json")
+        .header(TRUST_TASK_HEADER, crate::trust_tasks::TASK_AUTH_REFRESH_0_1)
+        .body(body)
         .send()
         .await?;
 
@@ -143,7 +177,8 @@ pub async fn refresh_token_light(
         return Err(VtaError::from_http(status, body));
     }
 
-    let auth_data: AuthenticateResponse = resp.json().await?;
+    let auth_data = auth_di::parse_auth_response(&resp.text().await?)
+        .map_err(|e| VtaError::Validation(e.to_string()))?;
 
     let access_expires_at = auth_data.access_expires_at_epoch().ok_or_else(|| {
         VtaError::Validation(format!(

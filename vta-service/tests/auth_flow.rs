@@ -16,10 +16,13 @@
 //! - `TestAppContext` exposes the keyspaces auth tests need —
 //!   surface check so future contributors don't have to grep.
 //!
+//! - The full challenge → DI-signed Trust Task → tokens round trip over
+//!   plain REST, driven by the *SDK's own* document builder. `did:key`
+//!   resolution is local, so no network resolver is needed.
+//!
 //! What's NOT covered (intentional — needs real DID resolver):
-//! - Full sign-then-verify against the challenge in `POST /auth/`.
-//!   That round-trip lives in the e2e suite where a real signing
-//!   admin DID + DID resolver are available.
+//! - The same round trip over a DIDComm envelope, which needs a real
+//!   mediator-backed ATM. That lives in the e2e suite.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -112,6 +115,137 @@ async fn challenge_endpoint_issues_session_and_persists_it() {
     assert_eq!(
         session.challenge, challenge,
         "persisted challenge must match the one returned to the client (so `/auth/` can verify the signature against the same nonce the client signed)"
+    );
+}
+
+/// A deterministic `did:key` + its multibase private key, as the SDK's
+/// client-side helpers expect them.
+fn did_key_from_seed(seed_byte: u8) -> (String, String) {
+    let seed = [seed_byte; 32];
+    let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let did = format!(
+        "did:key:{}",
+        vta_sdk::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes())
+    );
+    // Multicodec Ed25519 private-key prefix (0x1300 → varint 0x80 0x26).
+    let mut buf = vec![0x80, 0x26];
+    buf.extend_from_slice(&seed);
+    (did, multibase::encode(multibase::Base::Base58Btc, &buf))
+}
+
+/// The canonical REST login, end to end: `/auth/challenge` → a Trust Task
+/// signed by the SDK's own builder → tokens. No mediator, no ATM.
+///
+/// This is the pin for the regression that broke every REST client: the SDK's
+/// `auth_light` tier packed an **anoncrypt** DIDComm envelope, and once
+/// `/auth/` began requiring an authenticated sender (VTI #771) the server
+/// answered "authenticate message must be an authenticated (authcrypt) DIDComm
+/// envelope" to every one of them. Driving the server with the *client's* own
+/// document — rather than a hand-rolled fixture — is what makes this test able
+/// to catch that class: a builder that drifts out of what the route accepts
+/// fails here.
+#[tokio::test]
+async fn di_signed_trust_task_authenticates_over_rest() {
+    let (router, ctx) = build_test_app().await;
+
+    let (did, private_key_multibase) = did_key_from_seed(0x5a);
+    let entry = vti_common::acl::AclEntry::new(&did, vti_common::acl::Role::Admin, "test")
+        .with_created_at(1);
+    vti_common::acl::store_acl_entry(&ctx.acl_ks, &entry)
+        .await
+        .expect("seed admin ACL");
+
+    let (status, challenge_body) =
+        request(&router, post_json("/auth/challenge", json!({"did": did}))).await;
+    assert_eq!(status, StatusCode::OK, "challenge: {challenge_body}");
+    let challenge = challenge_body["challenge"].as_str().unwrap();
+    let session_id = challenge_body["sessionId"].as_str().unwrap();
+
+    // The exact bytes `vta_sdk::auth_light::challenge_response_light` puts on
+    // the wire.
+    let doc = vta_sdk::auth_di::sign_authenticate_doc(
+        &did,
+        &private_key_multibase,
+        "did:key:z6MkTestVta",
+        challenge,
+        session_id,
+    )
+    .await
+    .expect("sign authenticate document");
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/auth/")
+        .header("content-type", "application/json")
+        .header("x-forwarded-for", "203.0.113.1")
+        .body(Body::from(doc))
+        .unwrap();
+    let (status, body) = request(&router, req).await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a DI-signed Trust Task must authenticate over plain REST; got: {body}"
+    );
+    // The response is a Trust-Task `#response` document wrapping the tokens —
+    // the shape the SDK unwraps in `auth_di::parse_auth_response`.
+    let payload = &body["payload"];
+    assert!(
+        payload["tokens"]["accessToken"]
+            .as_str()
+            .is_some_and(|t| !t.is_empty()),
+        "response must carry an access token: {body}"
+    );
+    assert_eq!(
+        payload["session"]["subject"], did,
+        "the session must be bound to the proven signer: {body}"
+    );
+}
+
+/// The proof is not decoration: the same document with a challenge the holder
+/// never signed is rejected. Guards against a future "parse the payload, skip
+/// the proof" shortcut on the REST path.
+#[tokio::test]
+async fn di_signed_trust_task_with_tampered_challenge_is_rejected() {
+    let (router, ctx) = build_test_app().await;
+
+    let (did, private_key_multibase) = did_key_from_seed(0x5b);
+    let entry = vti_common::acl::AclEntry::new(&did, vti_common::acl::Role::Admin, "test")
+        .with_created_at(1);
+    vti_common::acl::store_acl_entry(&ctx.acl_ks, &entry)
+        .await
+        .expect("seed admin ACL");
+
+    let (_, challenge_body) =
+        request(&router, post_json("/auth/challenge", json!({"did": did}))).await;
+    let session_id = challenge_body["sessionId"].as_str().unwrap();
+
+    let doc = vta_sdk::auth_di::sign_authenticate_doc(
+        &did,
+        &private_key_multibase,
+        "did:key:z6MkTestVta",
+        "the-real-challenge",
+        session_id,
+    )
+    .await
+    .expect("sign");
+    // Swap the challenge *after* signing — the proof no longer covers it.
+    let mut tampered: Value = serde_json::from_str(&doc).unwrap();
+    tampered["payload"]["challenge"] = json!(challenge_body["challenge"].as_str().unwrap());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/auth/")
+        .header("content-type", "application/json")
+        .header("x-forwarded-for", "203.0.113.1")
+        .body(Body::from(tampered.to_string()))
+        .unwrap();
+    let (status, body) = request(&router, req).await;
+
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a post-signature edit must not authenticate; got: {body}"
     );
 }
 

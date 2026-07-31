@@ -386,6 +386,12 @@ pub(crate) async fn run_rest_attempt_admin_rotated(
 
 #[cfg(test)]
 mod tests {
+    /// A challenge that satisfies the spec payload's `minLength: 16` (the
+    /// canonical handler issues hex-encoded 32 random bytes). The old
+    /// `"test-challenge"` fixture was 14 chars — accepted only while the client
+    /// hand-wrote its payload JSON instead of building the typed spec type.
+    const TEST_CHALLENGE: &str = "test-challenge-0123456789abcdef";
+
     use super::*;
     use crate::provision_client::setup_key::EphemeralSetupKey;
     use serde_json::json;
@@ -412,7 +418,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/auth/challenge"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "challenge": "test-challenge",
+                "challenge": TEST_CHALLENGE,
                 "sessionId": "test-session",
                 "expiresAt": "2026-12-31T23:59:59Z"
             })))
@@ -586,7 +592,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/auth/challenge"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "challenge": "test-challenge",
+                "challenge": TEST_CHALLENGE,
                 "sessionId": "test-session",
                 "expiresAt": "2026-12-31T23:59:59Z"
             })))

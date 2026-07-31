@@ -1,17 +1,24 @@
 //! Single `eddsa-jcs-2022` Data-Integrity proof verifier for Trust Task
 //! documents (P1.4).
 //!
-//! Two `/auth/*` paths need to verify a holder's DI proof on a Trust Task and
-//! recover the cryptographically-proven signer DID: the canonical REST
-//! authenticate path (`routes/auth.rs::verify_authenticate_proof`, signer
-//! unknown a priori) and the did-signed step-up gate
-//! (`routes/trust_tasks/step_up.rs::verify_did_signed_gate`, signer checked
-//! against the document issuer). They had drifted into two copies of the same
-//! extract → round-trip → verify-proofless-doc logic; this is the one
-//! implementation both delegate to.
+//! Every place that verifies a holder's DI proof on a Trust Task and recovers
+//! the cryptographically-proven signer DID delegates here. In the **VTA**: the
+//! canonical REST authenticate path (`routes/auth.rs::
+//! verify_authenticate_proof`, signer unknown a priori) and the did-signed
+//! step-up gate (`trust_tasks/step_up.rs::verify_did_signed_gate`, signer
+//! checked against the document issuer). In the **VTC**: the same REST
+//! authenticate path, and the join-request dispatcher's holder-binding check
+//! (`trust_tasks/helpers.rs::verify_trust_task_proof`).
+//!
+//! It started as one implementation in the VTA that had already drifted into
+//! two copies there, then a third when the VTC ported it. It lives in
+//! `vti-common` because *both services verify the same holder proof over the
+//! same wire shape* — a divergence between them is a divergence in what a
+//! signature means, which is not a thing to let happen twice.
 //!
 //! `did:key` resolution is local (no network I/O) — the mobile holder key is
-//! always a `did:key`, matching the engine's signing side.
+//! always a `did:key`, matching the engine's signing side, and it keeps proof
+//! verification off the network on an unauthenticated route.
 
 use affinidi_data_integrity::{DataIntegrityProof, DidKeyResolver, VerifyOptions};
 use serde_json::Value;

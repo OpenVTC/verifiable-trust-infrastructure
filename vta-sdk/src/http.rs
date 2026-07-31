@@ -23,7 +23,12 @@ const DEFAULT_REST_CONNECT_TIMEOUT_SECS: u64 = 10;
 /// Panics only if the TLS backend cannot initialize — the same condition under
 /// which `reqwest::Client::new()` already panics, so this is not a new failure
 /// mode.
-pub(crate) fn rest_client() -> reqwest::Client {
+///
+/// Public so sibling client crates (`vtc-client`) share this one chokepoint
+/// rather than each reaching for the untimed `reqwest::Client::new()` — R1.2
+/// allows no exceptions, and a client crate is exactly where an unbounded hang
+/// reaches an operator.
+pub fn rest_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(env_secs("VTA_REST_TIMEOUT_SECS", DEFAULT_REST_TIMEOUT_SECS))
         .connect_timeout(env_secs(

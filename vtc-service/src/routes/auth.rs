@@ -122,9 +122,7 @@ async fn authenticate_siop(
     let Ok(env) = serde_json::from_str::<SiopAuthEnvelope>(body) else {
         return Ok(None);
     };
-    if env.typ.as_str() != "https://trusttasks.org/spec/auth/authenticate/0.1"
-        || env.payload.id_token.is_empty()
-    {
+    if env.typ.as_str() != AUTHENTICATE_TASK_URI || env.payload.id_token.is_empty() {
         return Ok(None);
     }
 
@@ -231,6 +229,12 @@ async fn authenticate_and_mint(
         return Ok(resp);
     }
 
+    // Canonical REST login: a DI-signed `auth/authenticate/0.1` Trust Task,
+    // the same document the VTA accepts. Returns `None` for any other body.
+    if let Some(resp) = authenticate_trust_task(state, body).await? {
+        return Ok(resp);
+    }
+
     let atm = state
         .atm
         .as_ref()
@@ -246,7 +250,7 @@ async fn authenticate_and_mint(
 
     // Canonical Trust-Task URI only; the legacy `affinidi.com/atm/1.0`
     // alias was removed (all VTC clients emit the canonical type).
-    if msg.typ.as_str() != "https://trusttasks.org/spec/auth/authenticate/0.1" {
+    if msg.typ.as_str() != AUTHENTICATE_TASK_URI {
         return Err(AppError::Authentication(format!(
             "unexpected message type: {}",
             msg.typ
@@ -277,6 +281,78 @@ async fn authenticate_and_mint(
         },
     )
     .await
+}
+
+/// The canonical `auth/authenticate/0.1` Type URI, shared by all three request
+/// shapes — the DIDComm envelope's `msg.typ`, the SIOP envelope's `type`, and
+/// the REST Trust Task's `type`.
+const AUTHENTICATE_TASK_URI: &str = "https://trusttasks.org/spec/auth/authenticate/0.1";
+
+/// Try to authenticate from a DI-signed `auth/authenticate/0.1` Trust Task —
+/// the canonical REST login, and the VTC counterpart of the VTA's
+/// `try_authenticate_trust_task`.
+///
+/// **Why this exists.** The VTC accepted two login shapes: a VTA-wallet SIOP
+/// envelope, and an authcrypt DIDComm envelope. A REST client holding a plain
+/// `did:key` — no wallet to self-issue an `id_token`, no mediator to authcrypt
+/// through — could satisfy neither, so `vtc-client::connect` could not log in
+/// at all. `/auth/refresh` had already grown the Trust-Task path for exactly
+/// this reason; login had not, which left a client able to *rotate* a token it
+/// had no way to obtain.
+///
+/// The document is byte-identical to the one the VTA accepts (built by
+/// `vta_sdk::auth_di::sign_authenticate_doc`), so one client builder logs in to
+/// both services. The holder's `eddsa-jcs-2022` proof *is* the authentication:
+/// the proven `verificationMethod` DID is the signer, and the canonical handler
+/// binds it to the session's DID.
+///
+/// **Discrimination.** A body is claimed only when it parses as a Trust Task,
+/// carries the authenticate Type URI, *and* has a `proof`. The proof
+/// requirement is what keeps this from shadowing [`authenticate_siop`], whose
+/// envelope shares the Type URI — and it means an unsigned document falls
+/// through to the other paths rather than being claimed and rejected.
+///
+/// Returns `Ok(None)` when the body isn't such a document; `Err` when it *is*
+/// one but is invalid (bad proof, malformed payload, challenge mismatch).
+async fn authenticate_trust_task(
+    state: &AppState,
+    body: &str,
+) -> Result<Option<AuthenticateResponse>, AppError> {
+    use trust_tasks_rs::specs::auth::authenticate::v0_1 as authenticate;
+
+    let doc: TrustTask<serde_json::Value> = match serde_json::from_str(body) {
+        Ok(doc) => doc,
+        Err(_) => return Ok(None), // not a Trust Task document
+    };
+    if doc.type_uri.to_string() != AUTHENTICATE_TASK_URI || doc.proof.is_none() {
+        return Ok(None);
+    }
+
+    // From here the caller's intent is unambiguous; failures are real.
+    let signer_did = vti_common::auth::di_proof::verify_trust_task_proof(&doc)
+        .await
+        .map_err(|e| AppError::Authentication(e.to_string()))?;
+    let payload: authenticate::Payload = serde_json::from_value(doc.payload.clone())
+        .map_err(|e| AppError::Authentication(format!("invalid authenticate payload: {e}")))?;
+
+    let backend = crate::auth::VtcAuthBackend::from_state(state).await?;
+    let resp = vti_common::auth::handlers::handle_authenticate(
+        &backend,
+        vti_common::auth::AuthenticateInput {
+            session_id: payload.session_id.to_string(),
+            challenge: payload.challenge.to_string(),
+            // Proven by the DI proof, not claimed by a header.
+            signer_did,
+            // No DIDComm `created_time`; the single-use, TTL'd challenge bound
+            // to the session is the freshness/replay anchor (the canonical
+            // handler reads `None` as a no-op freshness check, same as the SIOP
+            // path above).
+            created_time: None,
+            session_pubkey_b58btc: None,
+        },
+    )
+    .await?;
+    Ok(Some(resp))
 }
 
 // ---------- POST /auth/admin-session ----------

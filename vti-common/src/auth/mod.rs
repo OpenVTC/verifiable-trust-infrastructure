@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod di_proof;
 pub mod didcomm;
 pub mod extractor;
 pub mod handlers;
@@ -13,6 +14,7 @@ pub use backend::{
     AttestationOutcome, AuthAuditEvent, AuthBackend, AuthError, AuthenticateInput, ChallengeInput,
     RefreshInput, RoleResolution, SessionStore,
 };
+pub use di_proof::{DiProofError, verify_trust_task_proof};
 pub use didcomm::{AuthcryptError, bind_authcrypt_sender};
 pub use extractor::{
     AdminAuth, AuthClaims, AuthState, ManageAuth, StepUpAuth, SuperAdminAuth, WriteAuth,
