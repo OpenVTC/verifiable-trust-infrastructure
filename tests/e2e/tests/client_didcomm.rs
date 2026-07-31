@@ -733,6 +733,89 @@ async fn swap_acl_via_didcomm_infers_the_sending_did() {
     shutdown_all(client, responder, mediator).await;
 }
 
+// ── WebVH DIDs ──────────────────────────────────────────────────────
+
+/// `webvh/dids/update/1.0` keys on the DID, which is why the `(context_id,
+/// scid)` method could never move off the legacy protocol message — and why
+/// that call had no TSP path at all. The body's members ride *beside* `did`:
+/// the maintainer reads them back with `serde(flatten)`, so a nested body
+/// deserializes into an update that changes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_did_webvh_by_did_via_didcomm() {
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0) {
+            let p = &body["payload"];
+            assert_eq!(p["did"], "did:webvh:Qabc:host:slug", "{body}");
+            assert_eq!(p["document"]["id"], "did:webvh:Qabc:host:slug", "{body}");
+            assert_eq!(p["ttl"], 3600, "body members must not nest: {body}");
+            tt_ok(
+                trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
+                json!({
+                    "did": "did:webvh:Qabc:host:slug",
+                    "newVersionId": "2-z",
+                    "newScid": "Qabc",
+                    "newLogEntry": "{}",
+                    "updateKeysCount": 1,
+                    "preRotationKeyCount": 0,
+                }),
+            )
+        } else {
+            no_handler()
+        }
+    })
+    .await;
+
+    let body = vta_sdk::protocols::did_management::update::UpdateDidWebvhBody {
+        document: Some(json!({"id": "did:webvh:Qabc:host:slug"})),
+        ttl: Some(3600),
+        ..Default::default()
+    };
+    let r = client
+        .update_did_webvh_by_did("did:webvh:Qabc:host:slug", body)
+        .await
+        .unwrap();
+    assert_eq!(r.new_version_id, "2-z");
+
+    shutdown_all(client, responder, mediator).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rotate_did_webvh_keys_by_did_via_didcomm() {
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0) {
+            let p = &body["payload"];
+            assert_eq!(p["did"], "did:webvh:Qabc:host:slug", "{body}");
+            assert_eq!(p["preRotationCount"], 2, "{body}");
+            tt_ok(
+                trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
+                json!({
+                    "did": "did:webvh:Qabc:host:slug",
+                    "newVersionId": "3-z",
+                    "newScid": "Qabc",
+                    "newLogEntry": "{}",
+                    "updateKeysCount": 1,
+                    "preRotationKeyCount": 2,
+                }),
+            )
+        } else {
+            no_handler()
+        }
+    })
+    .await;
+
+    let body = vta_sdk::protocols::did_management::update::RotateDidWebvhKeysBody {
+        pre_rotation_count: Some(2),
+        ..Default::default()
+    };
+    let r = client
+        .rotate_did_webvh_keys_by_did("did:webvh:Qabc:host:slug", body)
+        .await
+        .unwrap();
+    assert_eq!(r.pre_rotation_key_count, 2);
+
+    shutdown_all(client, responder, mediator).await;
+}
+
 // ── WebVH servers ───────────────────────────────────────────────────
 
 /// Relabelling a registered server rides `webvh/servers/register/1.0` — the

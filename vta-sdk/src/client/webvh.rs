@@ -219,12 +219,66 @@ impl VtaClient {
         .await
     }
 
+    /// Apply a generic update to an existing webvh DID, identified by the DID
+    /// itself.
+    ///
+    /// Sends canonical `webvh/dids/update/1.0` on **every** transport, so this
+    /// is the only form of the call that works over TSP: TSP carries the
+    /// Trust-Task surface and nothing else, and the legacy protocol message
+    /// [`update_did_webvh`](Self::update_did_webvh) has no dispatcher behind it
+    /// there.
+    ///
+    /// The canonical task keys on the DID, not `(context_id, scid)` — which is
+    /// what kept this call on the legacy message after #861. Callers already
+    /// hold the DID; `pnm did-mgmt dids update` was fetching the record purely
+    /// to translate it into the pair this method no longer needs.
+    pub async fn update_did_webvh_by_did(
+        &self,
+        did: &str,
+        body: crate::protocols::did_management::update::UpdateDidWebvhBody,
+    ) -> Result<crate::protocols::did_management::update::UpdateDidWebvhResultBody, VtaError> {
+        let payload = flatten_with_did(did, &body)?;
+        let response = self
+            .dispatch_trust_task(crate::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0, payload, 60)
+            .await?;
+        serde_json::from_value(response)
+            .map_err(|e| VtaError::Protocol(format!("webvh/dids/update response decode: {e}")))
+    }
+
+    /// Rotate every verificationMethod's keys on a webvh DID, identified by the
+    /// DID itself.
+    ///
+    /// The canonical `webvh/dids/rotate-keys/1.0` form of
+    /// [`rotate_did_webvh_keys`](Self::rotate_did_webvh_keys), and likewise the
+    /// only one that reaches a TSP client.
+    pub async fn rotate_did_webvh_keys_by_did(
+        &self,
+        did: &str,
+        body: crate::protocols::did_management::update::RotateDidWebvhKeysBody,
+    ) -> Result<crate::protocols::did_management::update::UpdateDidWebvhResultBody, VtaError> {
+        let payload = flatten_with_did(did, &body)?;
+        let response = self
+            .dispatch_trust_task(
+                crate::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
+                payload,
+                60,
+            )
+            .await?;
+        serde_json::from_value(response)
+            .map_err(|e| VtaError::Protocol(format!("webvh/dids/rotate-keys response decode: {e}")))
+    }
+
     /// Apply a generic update to an existing webvh DID.
     ///
     /// `ctx_id` is the context the DID lives in; `scid` is the
     /// stable component of the DID (e.g. the `Q...` segment of
     /// `did:webvh:Q...:host:slug`). REST path:
     /// `POST /contexts/{ctx_id}/dids/{scid}/update`.
+    #[deprecated(
+        since = "0.20.32",
+        note = "rides the legacy DIDComm protocol message, which has no TSP dispatcher — \
+                use `update_did_webvh_by_did`, the canonical `webvh/dids/update/1.0` form"
+    )]
     pub async fn update_did_webvh(
         &self,
         ctx_id: &str,
@@ -255,6 +309,12 @@ impl VtaClient {
     /// Rotate every verificationMethod's keys on a webvh DID. Auth
     /// keys + pre-rotation rotate as a consequence of the resulting
     /// document update.
+    #[deprecated(
+        since = "0.20.32",
+        note = "rides the legacy DIDComm protocol message, which has no TSP dispatcher — \
+                use `rotate_did_webvh_keys_by_did`, the canonical \
+                `webvh/dids/rotate-keys/1.0` form"
+    )]
     pub async fn rotate_did_webvh_keys(
         &self,
         ctx_id: &str,
@@ -420,4 +480,44 @@ impl VtaClient {
         serde_json::from_value(payload)
             .map_err(|e| VtaError::Protocol(format!("agent-name response decode: {e}")))
     }
+}
+
+/// Build a `webvh/dids/*` task payload: the body's own members at the top
+/// level, plus the `did` the task keys on.
+///
+/// The maintainer reads this back with `#[serde(flatten)]`, so `did` has to sit
+/// beside the body's members rather than nested under one. Anything that does
+/// not serialize to a JSON object — or that already carries a `did` — is a
+/// programming error here, and is refused rather than silently reshaped: a
+/// dropped member on an update body is a DID-document change the operator
+/// believes they published.
+fn flatten_with_did<T: serde::Serialize>(
+    did: &str,
+    body: &T,
+) -> Result<serde_json::Value, VtaError> {
+    let mut map = match serde_json::to_value(body)? {
+        serde_json::Value::Object(m) => m,
+        other => {
+            return Err(VtaError::Protocol(format!(
+                "webvh task body must serialize to an object, got {}",
+                match other {
+                    serde_json::Value::Null => "null",
+                    serde_json::Value::Bool(_) => "a boolean",
+                    serde_json::Value::Number(_) => "a number",
+                    serde_json::Value::String(_) => "a string",
+                    serde_json::Value::Array(_) => "an array",
+                    serde_json::Value::Object(_) => unreachable!(),
+                }
+            )));
+        }
+    };
+    if map.contains_key("did") {
+        return Err(VtaError::Protocol(
+            "webvh task body already carries a `did` member; refusing to overwrite it with the \
+             target DID"
+                .into(),
+        ));
+    }
+    map.insert("did".into(), serde_json::Value::String(did.to_string()));
+    Ok(serde_json::Value::Object(map))
 }
