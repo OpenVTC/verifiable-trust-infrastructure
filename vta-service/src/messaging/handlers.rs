@@ -706,12 +706,19 @@ pub async fn handle_swap_acl(
     response(response_type, &result)
 }
 
+// The three ACL reads below answer the canonical bodies (`{ entry }` /
+// `{ entries }`), same as REST and the Trust Task spine. They returned the
+// maintainer's flat stored shape until #883, which no client could parse —
+// `pnm acl get` over DIDComm failed with `missing field 'entry'` while the
+// same call over REST worked. The stored-shape operations are now private to
+// `operations::acl`, so this cannot drift back.
 didcomm_handler!(
     handle_get_acl,
     Gate::Manage,
     acl_management::GET_ACL_RESULT,
     acl_management::get::GetAclBody,
-    |s, auth, body| operations::acl::get_acl(&s.acl_ks, &auth, &body.subject, "didcomm").await
+    |s, auth, body| operations::acl::show_by_subject(&s.acl_ks, &auth, &body.subject, "didcomm")
+        .await
 );
 
 didcomm_handler!(
@@ -719,7 +726,7 @@ didcomm_handler!(
     Gate::Manage,
     acl_management::LIST_ACL_RESULT,
     acl_management::list::ListAclBody,
-    |s, auth, body| operations::acl::list_acl(
+    |s, auth, body| operations::acl::list_entries(
         &s.acl_ks,
         &auth,
         body.scope.as_deref(),
@@ -736,7 +743,7 @@ didcomm_handler!(
     Gate::Admin,
     acl_management::CHANGE_ROLE_RESULT,
     acl_management::change_role::ChangeRoleBody,
-    |s, auth, body| operations::acl::change_role(
+    |s, auth, body| operations::acl::change_role_by_subject(
         &s.acl_ks,
         &s.audit_ks,
         &auth,

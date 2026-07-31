@@ -47,10 +47,16 @@ impl VtaClient {
         // already does.
         let direction_field = (direction != ContextDirection::default())
             .then(|| serde_json::Value::String(direction.to_string()));
-        self.rpc(
-            acl_management::LIST_ACL,
-            serde_json::json!({ "context": context, "direction": direction_field }),
-            acl_management::LIST_ACL_RESULT,
+        let mut payload = serde_json::Map::new();
+        if let Some(ctx) = context {
+            payload.insert("scope".into(), serde_json::Value::String(ctx.to_string()));
+        }
+        if let Some(d) = direction_field {
+            payload.insert("direction".into(), d);
+        }
+        self.rpc_tt(
+            crate::trust_tasks::TASK_ACL_LIST_0_1,
+            serde_json::Value::Object(payload),
             30,
             |c, url| {
                 // Both parameters are appended independently — a direction
@@ -76,10 +82,9 @@ impl VtaClient {
         // Canonical `acl/show/0.1` wraps the entry (alongside `redactedFields`);
         // unwrap so callers keep working with the entry itself.
         let wrapped: AclEntryEnvelope = self
-            .rpc(
-                acl_management::GET_ACL,
+            .rpc_tt(
+                crate::trust_tasks::TASK_ACL_SHOW_0_1,
                 serde_json::json!({ "subject": did }),
-                acl_management::GET_ACL_RESULT,
                 30,
                 |c, url| c.get(format!("{url}/acl/{}", encode_path_segment(did))),
             )
@@ -109,17 +114,35 @@ impl VtaClient {
         req: UpdateAclRequest,
     ) -> Result<AclEntryResponse, VtaError> {
         // Canonical `acl/update/0.1` returns the realized entry under `entry`,
-        // like grant and show. The DIDComm body is the canonical wire shape
-        // (`subject`/`scopes` — #856), same as the Trust Task transport.
+        // like grant and show.
+        //
+        // The task payload is the full canonical body. Hand-rolling three of
+        // its members here — as this did before #883 — silently dropped the
+        // step-up, approve-authority, expiry, `allowedKeys` and `reason` the
+        // caller asked for the moment the client was on DIDComm rather than
+        // REST: a narrowing the operator believed they had applied.
+        let body = acl_management::update::UpdateAclBody {
+            did: did.to_string(),
+            label: req.label.clone(),
+            allowed_contexts: req.allowed_contexts.clone(),
+            expires_at: None,
+            reason: None,
+            step_up: (req.step_up_approver.is_some() || req.step_up_require.is_some()).then(|| {
+                acl_management::entry::StepUp {
+                    approver: req.step_up_approver.clone(),
+                    require: req.step_up_require.clone(),
+                }
+            }),
+            approve: req
+                .approve_scope
+                .as_ref()
+                .map(acl_management::entry::Approve::from_scope),
+            allowed_keys: req.allowed_keys.clone(),
+        };
         let wrapped: AclEntryEnvelope = self
-            .rpc(
-                acl_management::UPDATE_ACL,
-                serde_json::json!({
-                    "subject": did,
-                    "label": &req.label,
-                    "scopes": &req.allowed_contexts,
-                }),
-                acl_management::UPDATE_ACL_RESULT,
+            .rpc_tt(
+                crate::trust_tasks::TASK_ACL_UPDATE_0_1,
+                serde_json::to_value(&body)?,
                 30,
                 |c, url| {
                     c.patch(format!("{url}/acl/{}", encode_path_segment(did)))
@@ -143,15 +166,14 @@ impl VtaClient {
         req: ChangeAclRoleRequest,
     ) -> Result<AclEntryResponse, VtaError> {
         let wrapped: AclEntryEnvelope = self
-            .rpc(
-                acl_management::CHANGE_ROLE,
+            .rpc_tt(
+                crate::trust_tasks::TASK_ACL_CHANGE_ROLE_0_1,
                 serde_json::json!({
                     "subject": did,
                     "fromRole": &req.from_role,
                     "toRole": &req.to_role,
                     "reason": &req.reason,
                 }),
-                acl_management::CHANGE_ROLE_RESULT,
                 30,
                 |c, url| {
                     c.post(format!(

@@ -308,7 +308,14 @@ pub async fn create_acl(
     Ok(to_result_body(&entry))
 }
 
-pub async fn get_acl(
+/// Read one entry in the maintainer's **stored** shape.
+///
+/// Deliberately not `pub`: [`CreateAclResultBody`] is the internal view, and a
+/// transport handler that returns it emits the pre-fold flat JSON while every
+/// other surface — and the SDK client — speaks canonical `{ entry }`. That is
+/// exactly how `acl-management/1.0/get-acl` came to answer a shape no client
+/// could parse (#883). Transports go through [`show_by_subject`].
+async fn get_acl(
     acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     did: &str,
@@ -337,7 +344,10 @@ pub async fn get_acl(
 /// it is inert without a context, and supplying one there is an error rather
 /// than a silent no-op — a caller that asked for a subtree sweep and got the
 /// unfiltered ACL back would believe it had swept.
-pub async fn list_acl(
+///
+/// Stored shape, so not `pub` — see [`get_acl`]. Transports go through
+/// [`list_entries`].
+async fn list_acl(
     acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     context_filter: Option<&str>,
@@ -384,7 +394,9 @@ pub async fn list_acl(
     Ok(entries)
 }
 
-pub async fn update_acl(
+/// Stored shape, so not `pub` — see [`get_acl`]. Transports go through
+/// [`update_from_params`].
+async fn update_acl(
     acl_ks: &KeyspaceHandle,
     audit_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
@@ -547,8 +559,11 @@ pub async fn update_acl(
 ///   *nowhere* while its role is non-admin, but flipping that same entry to
 ///   `admin` makes it **unrestricted** — a super-admin. Only a caller who is
 ///   already unrestricted may do that.
+///
+/// Stored shape, so not `pub` — see [`get_acl`]. Transports go through
+/// [`change_role_by_subject`].
 #[allow(clippy::too_many_arguments)]
-pub async fn change_role(
+async fn change_role(
     acl_ks: &KeyspaceHandle,
     audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,
@@ -877,6 +892,32 @@ pub async fn list_entries(
         truncated: false,
         cursor: None,
         redacted_fields: Vec::new(),
+    })
+}
+
+/// `acl/change-role/0.1` → [`change_role`].
+///
+/// Every transport reads the transition through this wrapper so the realized
+/// entry comes back under `entry`, like grant/show/update. REST and the Trust
+/// Task spine each used to wrap the stored body themselves, which left the
+/// DIDComm handler free to return it unwrapped — and it did (#883).
+#[allow(clippy::too_many_arguments)]
+pub async fn change_role_by_subject(
+    acl_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    subject: &str,
+    from_role: &str,
+    to_role: &str,
+    reason: Option<&str>,
+    channel: &str,
+) -> Result<CreateAclResponseBody, AppError> {
+    let stored = change_role(
+        acl_ks, audit_ks, auth, subject, from_role, to_role, reason, channel,
+    )
+    .await?;
+    Ok(CreateAclResponseBody {
+        entry: WireAclEntry::from_result(&stored),
     })
 }
 

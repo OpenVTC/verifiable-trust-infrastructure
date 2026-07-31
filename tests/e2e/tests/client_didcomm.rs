@@ -17,10 +17,11 @@
 //!   `{ id, type, payload }`, so the responder must dispatch on the *inner*
 //!   `type` URI (a `vta_sdk::trust_tasks::TASK_*` constant) — see [`is_tt`]
 //!   / [`tt_ok`].
-//! - **Legacy protocol message**: the surfaces #861 deliberately left on
-//!   `rpc` (`import_key`, the flat-response ACL reads/updates,
-//!   `backup_export`, …) still dispatch on the `*_management` message-type
-//!   constant.
+//! - **Legacy protocol message**: the surfaces still on `rpc` (`import_key`,
+//!   `backup_export`/`backup_import`, the webvh server/DID updates) dispatch
+//!   on the `*_management` message-type constant. The ACL reads and updates
+//!   left behind by #861 moved to Trust Tasks in #883 — they were the ones
+//!   where the maintainer had already folded and the client had not.
 
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
@@ -29,7 +30,7 @@ use vta_sdk::did_key::ed25519_multibase_pubkey;
 use vta_sdk::error::VtaError;
 use vta_sdk::keys::{KeyOrigin, KeyStatus, KeyType};
 use vta_sdk::protocols::key_management::sign::SignAlgorithm;
-use vta_sdk::protocols::{acl_management, backup_management, key_management};
+use vta_sdk::protocols::{backup_management, key_management};
 use vta_sdk::trust_tasks;
 
 mod common;
@@ -507,14 +508,28 @@ async fn rotate_seed_via_didcomm() {
 
 // ── ACL ─────────────────────────────────────────────────────────────
 
-/// `list_acl` stayed on the legacy message (#861 left the ACL reads behind:
-/// their twins answer with the flat stored form, not `{ entries }`).
+/// The whole ACL slice rides Trust Tasks as of #883 — the last four methods
+/// (`list`, `show`, `update`, `change-role`) that #861 left on the legacy
+/// `acl-management/1.0/*` messages. The legacy surface is where client and
+/// maintainer drifted apart unnoticed: `get-acl` answered the flat stored row
+/// while the client parsed `{ entry }`, so `pnm acl get` over DIDComm failed
+/// with `missing field 'entry'` against a VTA whose REST route was correct.
+///
+/// The canonical filter member is `scope`, not `context`. Sending the old
+/// name is not a soft mismatch: `ListAclBody` is `deny_unknown_fields`, so the
+/// maintainer refuses the whole request.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_acl_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == acl_management::LIST_ACL {
-            ResponderReply::ok(
-                acl_management::LIST_ACL_RESULT,
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_ACL_LIST_0_1) {
+            let payload = &body["payload"];
+            assert_eq!(payload["scope"], "ctx-a", "canonical filter member: {body}");
+            assert!(
+                payload.get("context").is_none(),
+                "pre-fold `context` must not be sent: {body}"
+            );
+            tt_ok(
+                trust_tasks::TASK_ACL_LIST_0_1,
                 json!({"entries": [acl_entry_json("did:key:zAdmin")], "truncated": false}),
             )
         } else {
@@ -523,8 +538,29 @@ async fn list_acl_via_didcomm() {
     })
     .await;
 
-    let r = client.list_acl(None).await.unwrap();
+    let r = client.list_acl(Some("ctx-a")).await.unwrap();
     assert_eq!(r.entries.len(), 1);
+
+    shutdown_all(client, responder, mediator).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_acl_via_didcomm() {
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_ACL_SHOW_0_1) {
+            assert_eq!(body["payload"]["subject"], "did:key:zAdmin", "{body}");
+            tt_ok(
+                trust_tasks::TASK_ACL_SHOW_0_1,
+                acl_entry_envelope("did:key:zAdmin"),
+            )
+        } else {
+            no_handler()
+        }
+    })
+    .await;
+
+    let entry = client.get_acl("did:key:zAdmin").await.unwrap();
+    assert_eq!(entry.did, "did:key:zAdmin");
 
     shutdown_all(client, responder, mediator).await;
 }
@@ -568,14 +604,24 @@ async fn delete_acl_via_didcomm_returns_unit() {
     shutdown_all(client, responder, mediator).await;
 }
 
-/// `update_acl` stayed on the legacy message: its request is non-canonical
-/// and the dispatch spine's schema check rejects it (#861).
+/// Every member the caller set has to reach the maintainer. The pre-#883
+/// DIDComm leg hand-built three of them (`subject`, `label`, `scopes`) and
+/// dropped the rest, so an operator narrowing an approver or a key filter over
+/// DIDComm silently changed nothing — the response still echoed a fine-looking
+/// entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn update_acl_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == acl_management::UPDATE_ACL {
-            ResponderReply::ok(
-                acl_management::UPDATE_ACL_RESULT,
+async fn update_acl_via_didcomm_carries_every_member() {
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_ACL_UPDATE_0_1) {
+            let p = &body["payload"];
+            assert_eq!(p["subject"], "did:key:zAdmin", "{body}");
+            assert_eq!(p["scopes"], json!(["ctx-a"]), "{body}");
+            assert_eq!(p["stepUp"]["approver"], "did:key:zApprover", "{body}");
+            assert_eq!(p["stepUp"]["require"], "delegated", "{body}");
+            assert_eq!(p["approve"]["scopes"], json!(["ctx-b"]), "{body}");
+            assert_eq!(p["allowedKeys"], json!(["tenant-key-a"]), "{body}");
+            tt_ok(
+                trust_tasks::TASK_ACL_UPDATE_0_1,
                 acl_entry_envelope("did:key:zAdmin"),
             )
         } else {
@@ -586,11 +632,11 @@ async fn update_acl_via_didcomm() {
 
     let req = UpdateAclRequest {
         label: None,
-        allowed_contexts: None,
-        step_up_approver: None,
-        step_up_require: None,
-        approve_scope: None,
-        allowed_keys: None,
+        allowed_contexts: Some(vec!["ctx-a".into()]),
+        step_up_approver: Some("did:key:zApprover".into()),
+        step_up_require: Some("delegated".into()),
+        approve_scope: Some(vta_sdk::acl::ApproveScope::Contexts(vec!["ctx-b".into()])),
+        allowed_keys: Some(Some(vec!["tenant-key-a".into()])),
     };
     client.update_acl("did:key:zAdmin", req).await.unwrap();
 
@@ -605,13 +651,14 @@ async fn update_acl_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn change_acl_role_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if msg_type == acl_management::CHANGE_ROLE {
+        if is_tt(msg_type, body, trust_tasks::TASK_ACL_CHANGE_ROLE_0_1) {
             // The compare-and-swap has to reach the maintainer, or the
             // check it exists for cannot run.
-            assert_eq!(body["fromRole"], "reader", "fromRole must be sent: {body}");
-            assert_eq!(body["toRole"], "application", "toRole must be sent: {body}");
-            ResponderReply::ok(
-                acl_management::CHANGE_ROLE_RESULT,
+            let p = &body["payload"];
+            assert_eq!(p["fromRole"], "reader", "fromRole must be sent: {body}");
+            assert_eq!(p["toRole"], "application", "toRole must be sent: {body}");
+            tt_ok(
+                trust_tasks::TASK_ACL_CHANGE_ROLE_0_1,
                 acl_entry_envelope("did:key:zAdmin"),
             )
         } else {

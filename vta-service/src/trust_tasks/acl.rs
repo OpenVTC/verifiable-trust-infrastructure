@@ -171,7 +171,7 @@ pub(super) async fn handle_change_role(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    match operations::acl::change_role(
+    match operations::acl::change_role_by_subject(
         &state.acl_ks,
         &state.audit_ks,
         auth,
@@ -185,12 +185,7 @@ pub(super) async fn handle_change_role(
     {
         // Canonical `acl/change-role/0.1` responds with the realized entry
         // under `entry`, like the rest of the family (#857).
-        Ok(body) => success_response(
-            &doc,
-            vta_sdk::protocols::acl_management::create::CreateAclResponseBody {
-                entry: vta_sdk::protocols::acl_management::entry::AclEntry::from_result(&body),
-            },
-        ),
+        Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
     }
 }
