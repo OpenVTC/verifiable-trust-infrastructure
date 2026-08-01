@@ -23,12 +23,12 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use clap::{Parser, Subcommand};
 use config::AppConfig;
 use ed25519_dalek::SigningKey;
-use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use keys::seed_store::create_seed_store;
 use keys::seeds::load_seed_bytes;
 use multibase::Base;
 use std::path::PathBuf;
 use std::sync::Arc;
+use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 
 // There must be a valid mix of transports for the VTA Service
 // The following checks if a valid set of features is enabled at compile time and produces a

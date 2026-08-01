@@ -16,10 +16,19 @@ by both `vta-service` (VTA) and `vtc-service` (VTC).
 - **Error types** — `AppError` enum used across all services
 - **Config types** — `AuthConfig`, `LogConfig`, `StoreConfig`,
   `MessagingConfig`, `AuditConfig` (shared config shapes)
+- **Cryptographic primitives with no service-specific policy** — the HMAC
+  pagination tokens, the audit-checkpoint signatures, and `slip10` (SLIP-0010
+  Ed25519 derivation). See the note below on where the line falls.
 
 ## What does NOT belong here
 
-- VTA-specific business logic (key derivation, DID operations, credentials)
+- VTA-specific business logic (the key *hierarchy* — path allocation, context
+  base paths, seed storage and rotation — plus DID operations and credentials).
+  Note the distinction from `slip10`: the **algorithm** (seed + path → key) is a
+  spec-frozen primitive and lives here; **which path means what**, who allocates
+  it, and where the seed is stored are VTA policy and live in `vta-keys`. If you
+  are adding something that needs to know what `m/26'/2'/…` *means*, it does not
+  belong here.
 - VTC-specific logic (community management)
 - CLI commands
 - TEE bootstrap code (KMS, mnemonic guard)

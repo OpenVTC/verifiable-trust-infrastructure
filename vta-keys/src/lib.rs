@@ -8,8 +8,8 @@ pub mod wrapping;
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 use chrono::Utc;
 use ed25519_dalek::SigningKey;
-use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use multibase::Base;
+use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 
 use vti_common::store::KeyspaceHandle;
 

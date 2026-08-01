@@ -2,10 +2,10 @@ use crate::PreRotationKeyData;
 use crate::paths::allocate_path;
 use crate::seed_store::SeedStore;
 use affinidi_tdk::secrets_resolver::secrets::Secret;
-use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use rand::Rng;
 use tracing::{debug, info};
 use vti_common::error::{AppError, key_derivation_error};
+use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 use vti_common::store::KeyspaceHandle;
 
 /// Derive `count` BIP-32 pre-rotation keys under `base`, returning their

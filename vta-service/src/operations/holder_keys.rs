@@ -18,9 +18,9 @@ use affinidi_secrets_resolver::secrets::Secret;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::{Signature, Signer, SigningKey};
-use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use serde_json::Value;
 use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
+use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 use zeroize::Zeroize;
 
 use crate::auth::AuthClaims;

@@ -11,7 +11,7 @@
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 use chrono::Utc;
 use didwebvh_rs::multibase_type::Multibase;
-use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
+use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 
 use super::errors::UpdateDidWebvhError;
 use super::legacy::{legacy_lookup_by_public_key, legacy_lookup_pre_rotation_by_hash};

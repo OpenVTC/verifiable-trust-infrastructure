@@ -7,7 +7,7 @@ use affinidi_tdk::common::config::TDKConfig;
 use affinidi_tdk::messaging::ATM;
 use affinidi_tdk::messaging::config::ATMConfig;
 use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
-use ed25519_dalek_bip32::ExtendedSigningKey;
+use vti_common::slip10::ExtendedSigningKey;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
@@ -1477,7 +1477,7 @@ async fn init_auth(
         // did:key uses fragment IDs like {did}#{ed_pub_mb} and {did}#{x_pub_mb},
         // and the X25519 key is derived FROM the Ed25519 key (not independently).
         // Use the SDK helper which handles both correctly.
-        let dp: ed25519_dalek_bip32::DerivationPath = match signing_path.parse() {
+        let dp: vti_common::slip10::DerivationPath = match signing_path.parse() {
             Ok(p) => p,
             Err(e) => {
                 warn!("invalid signing derivation path: {e}");

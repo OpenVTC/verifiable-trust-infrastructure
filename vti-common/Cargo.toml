@@ -2,7 +2,7 @@
 name = "vti-common"
 description = "Shared server-side infrastructure for VTA and VTC services"
 readme = "README.md"
-version = "0.11.32"
+version = "0.11.33"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -12,7 +12,7 @@ repository.workspace = true
 
 [features]
 default = []
-encryption = ["dep:aes-gcm", "dep:zeroize"]
+encryption = ["dep:aes-gcm"]
 vsock-store = ["dep:tokio-vsock", "dep:libc"]
 # Exposes `AuthClaims::unsafe_local_cli_super_admin` — a synthesizer that
 # produces a super-admin claim without any wire-level verification. Only
@@ -90,7 +90,9 @@ multibase = { workspace = true }
 # Encryption (feature-gated; `rand` is non-optional and lives in the main
 # dep block since audit_key rotation also needs OS randomness).
 aes-gcm = { workspace = true, optional = true }
-zeroize = { version = "1", features = ["derive"], optional = true }
+# Non-optional: `slip10` wipes every intermediate HMAC block, and that must not
+# depend on whether a consumer happens to enable `encryption`.
+zeroize = { version = "1", features = ["derive"] }
 
 # Vsock storage proxy client (feature-gated, Linux only)
 tokio-vsock = { workspace = true, optional = true }
