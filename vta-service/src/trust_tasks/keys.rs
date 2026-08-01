@@ -12,6 +12,7 @@ use vta_sdk::protocols::key_management::create::CreateKeyBody;
 use vta_sdk::protocols::key_management::derive_and_sign::DeriveAndSignBody;
 use vta_sdk::protocols::key_management::derive_and_sign_document::DeriveAndSignDocumentBody;
 use vta_sdk::protocols::key_management::get::GetKeyBody;
+use vta_sdk::protocols::key_management::import::{ImportKeyBody, ImportKeyResponseBody};
 use vta_sdk::protocols::key_management::list::ListKeysBody;
 use vta_sdk::protocols::key_management::rename::RenameKeyBody;
 use vta_sdk::protocols::key_management::revoke::RevokeKeyBody;
@@ -25,7 +26,7 @@ use super::helpers::{
     TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, reject_with, success_response,
 };
 
-/// Handler for `spec/vta/keys/list/1.0`.
+/// Handler for `keys/list/0.1`.
 pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
@@ -53,7 +54,7 @@ pub(super) async fn handle_list(
     }
 }
 
-/// Handler for `spec/vta/keys/create/1.0`. Admin only.
+/// Handler for `keys/create/0.1`. Admin only.
 pub(super) async fn handle_create(
     state: &AppState,
     auth: &AuthClaims,
@@ -87,12 +88,18 @@ pub(super) async fn handle_create(
     )
     .await
     {
-        Ok(body) => success_response(&doc, body),
+        // Canonical `keys/create/0.1` answers the realized record under `key`,
+        // like `keys/show` and `keys/import` — one record shape across the
+        // family, so a consumer cannot end up holding two spellings of it.
+        Ok(body) => success_response(
+            &doc,
+            vta_sdk::protocols::key_management::create::CreateKeyResponseBody { key: body },
+        ),
         Err(e) => app_error_to_reject(&doc, e),
     }
 }
 
-/// Handler for `spec/vta/keys/get/1.0`.
+/// Handler for `keys/show/0.1`.
 pub(super) async fn handle_get(
     state: &AppState,
     auth: &AuthClaims,
@@ -103,12 +110,15 @@ pub(super) async fn handle_get(
         Err(resp) => return resp,
     };
     match operations::keys::get_key(&state.keys_ks, auth, &req.key_id, TRANSPORT_TRUST_TASK).await {
-        Ok(record) => success_response(&doc, record),
+        Ok(record) => success_response(
+            &doc,
+            vta_sdk::protocols::key_management::get::GetKeyResponseBody { key: Some(record) },
+        ),
         Err(e) => app_error_to_reject(&doc, e),
     }
 }
 
-/// Handler for `spec/vta/keys/rename/1.0`. Admin only.
+/// Handler for `keys/rename/0.1`. Admin only.
 pub(super) async fn handle_rename(
     state: &AppState,
     auth: &AuthClaims,
@@ -136,7 +146,7 @@ pub(super) async fn handle_rename(
     }
 }
 
-/// Handler for `spec/vta/keys/revoke/1.0`. Admin only.
+/// Handler for `keys/revoke/0.1`. Admin only.
 pub(super) async fn handle_revoke(
     state: &AppState,
     auth: &AuthClaims,
@@ -165,7 +175,7 @@ pub(super) async fn handle_revoke(
     }
 }
 
-/// Handler for `spec/vta/keys/sign/1.0`. Application-or-higher (write).
+/// Handler for `keys/sign/0.1`. Application-or-higher (write).
 ///
 /// Decodes the base64url payload before invoking the signing oracle —
 /// matches the legacy REST handler's behaviour. The signature in the
@@ -215,7 +225,7 @@ pub(super) async fn handle_sign(
     }
 }
 
-/// Handler for `spec/vta/keys/derive-and-sign/1.0`. Admin only.
+/// Handler for `keys/derive-and-sign/0.1`. Admin only.
 ///
 /// Ephemeral: derives at the requested BIP-32 path, signs, and returns the
 /// signature + derived public key without persisting a key record.
@@ -262,7 +272,7 @@ pub(super) async fn handle_derive_and_sign(
     }
 }
 
-/// Handler for `spec/vta/keys/derive-and-sign-document/1.0`. Admin only.
+/// Handler for `keys/derive-and-sign-document/0.1`. Admin only.
 ///
 /// Attaches an `eddsa-jcs-2022` Data-Integrity proof to the document, signed as
 /// the key derived at the requested path — without persisting a key record.
@@ -291,6 +301,93 @@ pub(super) async fn handle_derive_and_sign_document(
     .await
     {
         Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for `keys/import/0.1`. Admin only.
+///
+/// **The cleartext `privateKeyMultibase` carrier is refused here, always.** The
+/// specification admits it only where the transport is end-to-end confidential,
+/// and one dispatcher serves this task over REST, DIDComm and TSP — so a handler
+/// at this layer cannot tell which carried the request. Refusing is the reading
+/// that cannot leak a key; the legacy `key-management/1.0/import-key` DIDComm
+/// message still accepts multibase, where authcrypt has already established the
+/// guarantee.
+pub(super) async fn handle_import(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(e) = auth.require_admin() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: ImportKeyBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    if req.private_key_multibase.is_some() {
+        return reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: "keys/import: the cleartext `privateKeyMultibase` carrier is not                          accepted on the trust-task surface, which is served over REST as well                          as DIDComm and TSP and cannot establish that this request travelled                          end to end. Seal the key to this VTA and send `privateKeySealed`."
+                    .to_string(),
+            },
+        );
+    }
+
+    let private_key_bytes = if let Some(sealed) = req.private_key_sealed.as_deref() {
+        match state.wrapping_cache.unwrap_sealed(sealed).await {
+            Ok((sealed_type, bytes)) => {
+                if sealed_type != req.key_type.to_string() {
+                    return reject_with(
+                        &doc,
+                        RejectReason::MalformedRequest {
+                            reason: format!(
+                                "sealed keyType `{sealed_type}` does not match the request's                                  `{}`",
+                                req.key_type
+                            ),
+                        },
+                    );
+                }
+                bytes
+            }
+            Err(e) => return app_error_to_reject(&doc, e),
+        }
+    } else if let Some(jwe) = req.private_key_jwe.as_deref() {
+        tracing::warn!("key import via legacy JWE carrier — prefer privateKeySealed");
+        match state.wrapping_cache.unwrap_jwe(jwe).await {
+            Ok(bytes) => bytes,
+            Err(e) => return app_error_to_reject(&doc, e),
+        }
+    } else {
+        return reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: "keys/import: one of `privateKeySealed` or `privateKeyJwe` is required"
+                    .to_string(),
+            },
+        );
+    };
+
+    match operations::keys::import_key(
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.seed_store,
+        &state.audit_ks,
+        auth,
+        operations::keys::ImportKeyParams {
+            key_type: req.key_type,
+            private_key_bytes,
+            label: req.label,
+            context_id: req.context_id,
+        },
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(body) => success_response(&doc, ImportKeyResponseBody { key: body }),
         Err(e) => app_error_to_reject(&doc, e),
     }
 }

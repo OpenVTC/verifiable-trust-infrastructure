@@ -27,19 +27,83 @@ impl VtaClient {
     /// takes effect on the REST leg — exactly as it did on the legacy
     /// DIDComm message, which never carried `key_id` either.
     pub async fn create_key(&self, req: CreateKeyRequest) -> Result<CreateKeyResponse, VtaError> {
-        self.rpc_tt(
-            trust_tasks::TASK_KEYS_CREATE_1_0,
-            serde_json::json!({
-                "key_type": serde_json::to_value(&req.key_type)?,
-                "derivation_path": req.derivation_path.as_deref().unwrap_or_default(),
-                "mnemonic": req.mnemonic.as_deref(),
-                "label": req.label.as_deref(),
-                "context_id": req.context_id.as_deref(),
-            }),
-            30,
-            |c, url| c.post(format!("{url}/keys")).json(&req),
-        )
-        .await
+        // Built from the canonical body rather than a hand-rolled map: the map
+        // spelled its members snake_case and carried `mnemonic` before the
+        // registry had a member for it, so it was one rename away from
+        // silently dropping the create-from-a-phrase path (see #884's
+        // `update_acl`, the same failure with different members).
+        let body = crate::protocols::key_management::create::CreateKeyBody {
+            key_type: req.key_type.clone(),
+            derivation_path: req.derivation_path.clone().unwrap_or_default(),
+            mnemonic: req.mnemonic.clone(),
+            label: req.label.clone(),
+            context_id: req.context_id.clone(),
+        };
+        let wrapped: crate::protocols::key_management::create::CreateKeyResponseBody = self
+            .rpc_tt(
+                trust_tasks::TASK_KEYS_CREATE_0_1,
+                serde_json::to_value(&body)?,
+                30,
+                |c, url| c.post(format!("{url}/keys")).json(&req),
+            )
+            .await?;
+        let key = wrapped.key;
+        Ok(CreateKeyResponse {
+            key_id: key.key_id,
+            key_type: key.key_type,
+            derivation_path: key.derivation_path,
+            public_key: key.public_key,
+            status: key.status,
+            label: key.label,
+            created_at: key.created_at,
+        })
+    }
+
+    /// Import an externally-created private key.
+    ///
+    /// A **sealed** or **JWE** carrier rides canonical `keys/import/0.1`, so it
+    /// works over REST, DIDComm and TSP alike. A raw `private_key_multibase`
+    /// stays on the legacy DIDComm message: the canonical task refuses
+    /// cleartext, because one dispatcher serves all three transports and cannot
+    /// establish that a given request travelled end to end — authcrypt can, and
+    /// that is exactly what the legacy path has.
+    pub async fn import_key(&self, req: ImportKeyRequest) -> Result<ImportKeyResponse, VtaError> {
+        if req.private_key_multibase.is_some() {
+            return self
+                .rpc(
+                    key_management::IMPORT_KEY,
+                    serde_json::to_value(&req)?,
+                    key_management::IMPORT_KEY_RESULT,
+                    30,
+                    |c, url| c.post(format!("{url}/keys/import")).json(&req),
+                )
+                .await;
+        }
+        let body = crate::protocols::key_management::import::ImportKeyBody {
+            key_type: req.key_type.clone(),
+            private_key_sealed: req.private_key_sealed.clone(),
+            private_key_jwe: req.private_key_jwe.clone(),
+            private_key_multibase: None,
+            label: req.label.clone(),
+            context_id: req.context_id.clone(),
+        };
+        let wrapped: crate::protocols::key_management::create::CreateKeyResponseBody = self
+            .rpc_tt(
+                trust_tasks::TASK_KEYS_IMPORT_0_1,
+                serde_json::to_value(&body)?,
+                30,
+                |c, url| c.post(format!("{url}/keys/import")).json(&req),
+            )
+            .await?;
+        Ok(ImportKeyResponse {
+            key_id: wrapped.key.key_id,
+            key_type: wrapped.key.key_type,
+            public_key: wrapped.key.public_key,
+            status: wrapped.key.status,
+            label: wrapped.key.label,
+            origin: wrapped.key.origin,
+            created_at: wrapped.key.created_at,
+        })
     }
 
     pub async fn list_keys(
@@ -50,13 +114,15 @@ impl VtaClient {
         context_id: Option<&str>,
     ) -> Result<ListKeysResponse, VtaError> {
         self.rpc_tt(
-            trust_tasks::TASK_KEYS_LIST_1_0,
-            serde_json::json!({
-                "offset": offset,
-                "limit": limit,
-                "status": status,
-                "context_id": context_id,
-            }),
+            trust_tasks::TASK_KEYS_LIST_0_1,
+            serde_json::to_value(crate::protocols::key_management::list::ListKeysBody {
+                offset: Some(offset),
+                limit: Some(limit),
+                status: status
+                    .map(str::to_string)
+                    .and_then(|s| serde_json::from_value(serde_json::Value::String(s)).ok()),
+                context_id: context_id.map(str::to_string),
+            })?,
             30,
             |c, url| {
                 let mut u = format!("{url}/keys?offset={offset}&limit={limit}");
@@ -73,13 +139,21 @@ impl VtaClient {
     }
 
     pub async fn get_key(&self, key_id: &str) -> Result<KeyRecord, VtaError> {
-        self.rpc_tt(
-            trust_tasks::TASK_KEYS_GET_1_0,
-            serde_json::json!({ "key_id": key_id }),
-            30,
-            |c, url| c.get(format!("{url}/keys/{}", encode_path_segment(key_id))),
-        )
-        .await
+        // Canonical `keys/show/0.1` answers `{ key }`, with `key: null` for a
+        // key the maintainer does not hold — a successful answer, not an error.
+        // This method promises a record, so absence becomes `NotFound` here
+        // rather than a decode failure the caller cannot interpret.
+        let wrapped: crate::protocols::key_management::get::GetKeyResponseBody = self
+            .rpc_tt(
+                trust_tasks::TASK_KEYS_SHOW_0_1,
+                serde_json::json!({ "keyId": key_id }),
+                30,
+                |c, url| c.get(format!("{url}/keys/{}", encode_path_segment(key_id))),
+            )
+            .await?;
+        wrapped
+            .key
+            .ok_or_else(|| VtaError::NotFound(format!("no key record for `{key_id}`")))
     }
 
     /// Export a key's secret material. The trust-task twin lives in the
@@ -109,9 +183,9 @@ impl VtaClient {
         use base64::Engine;
         let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
         self.rpc_tt(
-            trust_tasks::TASK_KEYS_SIGN_1_0,
+            trust_tasks::TASK_KEYS_SIGN_0_1,
             serde_json::json!({
-                "key_id": key_id,
+                "keyId": key_id,
                 "payload": payload_b64,
                 "algorithm": algorithm,
             }),
@@ -146,13 +220,13 @@ impl VtaClient {
         use base64::Engine;
         let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
         let body = serde_json::json!({
-            "key_type": serde_json::to_value(&key_type)?,
-            "derivation_path": derivation_path,
+            "keyType": serde_json::to_value(&key_type)?,
+            "derivationPath": derivation_path,
             "payload": payload_b64,
             "algorithm": algorithm,
         });
         self.rpc_tt(
-            trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_1_0,
+            trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1,
             body.clone(),
             30,
             move |c, url| c.post(format!("{url}/keys/derive-and-sign")).json(&body),
@@ -173,13 +247,13 @@ impl VtaClient {
         proof_purpose: Option<&str>,
     ) -> Result<DeriveAndSignDocumentResultBody, VtaError> {
         let body = serde_json::json!({
-            "key_type": serde_json::to_value(&key_type)?,
-            "derivation_path": derivation_path,
+            "keyType": serde_json::to_value(&key_type)?,
+            "derivationPath": derivation_path,
             "document": document,
-            "proof_purpose": proof_purpose,
+            "proofPurpose": proof_purpose,
         });
         self.rpc_tt(
-            trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_1_0,
+            trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
             body.clone(),
             30,
             move |c, url| {
@@ -192,8 +266,8 @@ impl VtaClient {
 
     pub async fn invalidate_key(&self, key_id: &str) -> Result<InvalidateKeyResponse, VtaError> {
         self.rpc_tt(
-            trust_tasks::TASK_KEYS_REVOKE_1_0,
-            serde_json::json!({ "key_id": key_id }),
+            trust_tasks::TASK_KEYS_REVOKE_0_1,
+            serde_json::json!({ "keyId": key_id }),
             30,
             |c, url| c.delete(format!("{url}/keys/{}", encode_path_segment(key_id))),
         )
@@ -206,8 +280,8 @@ impl VtaClient {
         new_key_id: &str,
     ) -> Result<RenameKeyResponse, VtaError> {
         self.rpc_tt(
-            trust_tasks::TASK_KEYS_RENAME_1_0,
-            serde_json::json!({ "key_id": key_id, "new_key_id": new_key_id }),
+            trust_tasks::TASK_KEYS_RENAME_0_1,
+            serde_json::json!({ "keyId": key_id, "newKeyId": new_key_id }),
             30,
             |c, url| {
                 c.patch(format!("{url}/keys/{}", encode_path_segment(key_id)))
@@ -244,18 +318,6 @@ impl VtaClient {
                 "wrapping key not needed for TSP transport".into(),
             )),
         }
-    }
-
-    /// Import an externally-created private key into the VTA.
-    pub async fn import_key(&self, req: ImportKeyRequest) -> Result<ImportKeyResponse, VtaError> {
-        self.rpc(
-            key_management::IMPORT_KEY,
-            serde_json::to_value(&req)?,
-            key_management::IMPORT_KEY_RESULT,
-            30,
-            |c, url| c.post(format!("{url}/keys/import")).json(&req),
-        )
-        .await
     }
 
     // ── Seed methods ────────────────────────────────────────────────

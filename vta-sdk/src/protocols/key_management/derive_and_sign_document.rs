@@ -16,26 +16,31 @@ use crate::keys::KeyType;
 /// so it's correct by construction. Admin-gated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct DeriveAndSignDocumentBody {
     /// Key type to derive (currently only `Ed25519`).
+    #[serde(alias = "key_type")]
     pub key_type: KeyType,
     /// BIP-32 derivation path, e.g. `m/26'/9'/0'`.
+    #[serde(alias = "derivation_path")]
     pub derivation_path: String,
     /// The proof-less JSON document to sign (any `proof` is stripped first).
     #[cfg_attr(feature = "openapi", schema(value_type = Object))]
     pub document: Value,
     /// Proof purpose (default `assertionMethod`, matching the DI-signed REST
     /// auth flow).
-    #[serde(default)]
+    #[serde(default, alias = "proof_purpose")]
     pub proof_purpose: Option<String>,
 }
 
 /// Result of a derive-and-sign-document request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct DeriveAndSignDocumentResultBody {
     /// The derived signer's `did:key` (the super-admin identity the document was
     /// signed as).
+    #[serde(alias = "signer_did")]
     pub signer_did: String,
     /// The signed document, with the Data-Integrity `proof` grafted on.
     #[cfg_attr(feature = "openapi", schema(value_type = Object))]

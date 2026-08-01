@@ -1065,8 +1065,10 @@ async fn key_create_and_list() {
         ))
         .await;
     assert!(status.is_success(), "create key: {body}");
-    assert!(body["key_id"].is_string());
-    assert_eq!(body["key_type"], "ed25519");
+    // Canonical `keys/create/0.1` answers the realized record under `key`, in
+    // the camelCase the whole family speaks.
+    assert!(body["key"]["keyId"].is_string(), "{body}");
+    assert_eq!(body["key"]["keyType"], "ed25519", "{body}");
 
     // List keys
     let (status, body) = app.request(get_auth("/keys", &token)).await;
@@ -1338,7 +1340,9 @@ async fn scoped_admin_can_only_access_own_context_keys() {
         ))
         .await;
     assert!(status.is_success());
-    let key_id = key_body["key_id"].as_str().unwrap();
+    let key_id = key_body["key"]["keyId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("create answers {{ key }}: {key_body}"));
 
     // Scoped admin for ctx-b cannot get the key in ctx-a (returns 403 or 404 — both are valid)
     let encoded_id = urlencoding::encode(key_id);
@@ -1361,7 +1365,7 @@ async fn scoped_admin_can_only_access_own_context_keys() {
         .request(get_auth(&format!("/keys/{encoded_id}"), &scoped_a_token))
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["key_id"], key_id);
+    assert_eq!(body["key"]["keyId"], key_id, "{body}");
 }
 
 // ── Key lifecycle ──────────────────────────────────────────────────
@@ -1385,8 +1389,10 @@ async fn key_create_revoke_list_lifecycle() {
             json!({"key_type": "ed25519", "context_id": "lc"}),
         ))
         .await;
-    let key_id = key_body["key_id"].as_str().unwrap();
-    assert_eq!(key_body["status"], "active");
+    let key_id = key_body["key"]["keyId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("create answers {{ key }}: {key_body}"));
+    assert_eq!(key_body["key"]["status"], "active", "{key_body}");
 
     // Revoke the key (key_id may contain slashes from derivation path, URL-encode it)
     let encoded_id = urlencoding::encode(key_id);
@@ -1400,7 +1406,7 @@ async fn key_create_revoke_list_lifecycle() {
         .request(get_auth(&format!("/keys/{encoded_id}"), &token))
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["status"], "revoked");
+    assert_eq!(body["key"]["status"], "revoked", "{body}");
 }
 
 #[tokio::test]
@@ -1421,7 +1427,9 @@ async fn key_rename() {
             json!({"key_type": "ed25519", "context_id": "rn", "label": "original"}),
         ))
         .await;
-    let key_id = key_body["key_id"].as_str().unwrap();
+    let key_id = key_body["key"]["keyId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("create answers {{ key }}: {key_body}"));
 
     // Rename the key (PATCH expects new key_id in body)
     let encoded_id = urlencoding::encode(key_id);
@@ -1433,7 +1441,7 @@ async fn key_rename() {
         ))
         .await;
     assert!(status.is_success(), "rename: {status} {body}");
-    assert_eq!(body["key_id"], "renamed-key");
+    assert_eq!(body["keyId"], "renamed-key", "{body}");
 }
 
 // ── Seed management ────────────────────────────────────────────────
@@ -1720,8 +1728,8 @@ async fn create_p256_key() {
         ))
         .await;
     assert!(status.is_success(), "create p256: {status} {body}");
-    assert_eq!(body["key_type"], "p256");
-    assert!(body["public_key"].is_string());
+    assert_eq!(body["key"]["keyType"], "p256", "{body}");
+    assert!(body["key"]["publicKey"].is_string(), "{body}");
 }
 
 // ── Context DID update (context admin) ────────────────────────────
@@ -2258,7 +2266,10 @@ async fn import_key_via_sealed_transfer(
         status.is_success(),
         "import {key_type_str} via sealed-transfer: {status} {body}",
     );
-    body["key_id"].as_str().unwrap().to_string()
+    body["key"]["keyId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("import answers {{ key }}: {body}"))
+        .to_string()
 }
 
 /// Helper: import an Ed25519 key via the sealed-transfer wrapping

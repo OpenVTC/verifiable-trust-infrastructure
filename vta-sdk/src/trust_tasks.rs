@@ -298,32 +298,45 @@ pub const TASK_CONTEXTS_DELETE_1_0: &str = "https://trusttasks.org/spec/vta/cont
 
 /// `spec/vta/keys/list/1.0` — list key records (paginated, filterable).
 /// Payload: [`crate::protocols::key_management::list::ListKeysBody`].
-pub const TASK_KEYS_LIST_1_0: &str = "https://trusttasks.org/spec/vta/keys/list/1.0";
+pub const TASK_KEYS_LIST_0_1: &str = "https://trusttasks.org/spec/keys/list/0.1";
 
 /// `spec/vta/keys/create/1.0` — derive a new key from the active seed.
 /// Payload: [`crate::protocols::key_management::create::CreateKeyBody`].
 /// Auth: Admin.
-pub const TASK_KEYS_CREATE_1_0: &str = "https://trusttasks.org/spec/vta/keys/create/1.0";
+pub const TASK_KEYS_CREATE_0_1: &str = "https://trusttasks.org/spec/keys/create/0.1";
 
 /// `spec/vta/keys/get/1.0` — retrieve a single key record.
 /// Payload: [`crate::protocols::key_management::get::GetKeyBody`].
-pub const TASK_KEYS_GET_1_0: &str = "https://trusttasks.org/spec/vta/keys/get/1.0";
+pub const TASK_KEYS_SHOW_0_1: &str = "https://trusttasks.org/spec/keys/show/0.1";
+
+/// `keys/import/0.1` — hand an externally-created private key to the VTA,
+/// which stores it and thereafter exercises it like any key it derived.
+/// Payload: [`crate::protocols::key_management::import::ImportKeyBody`].
+/// Auth: Admin.
+///
+/// **The cleartext `privateKeyMultibase` carrier is refused on this task.**
+/// One dispatcher serves the trust-task surface over REST, DIDComm and TSP, so
+/// a handler here cannot tell whether the transport that carried the request
+/// was end-to-end confidential — and the spec's rule is that cleartext is
+/// admissible only where it was. Refusing unconditionally is the reading that
+/// cannot leak a key; sealed and JWE carriers work on every transport.
+pub const TASK_KEYS_IMPORT_0_1: &str = "https://trusttasks.org/spec/keys/import/0.1";
 
 /// `spec/vta/keys/rename/1.0` — rename a key's identifier.
 /// Payload: [`crate::protocols::key_management::rename::RenameKeyBody`].
 /// Auth: Admin.
-pub const TASK_KEYS_RENAME_1_0: &str = "https://trusttasks.org/spec/vta/keys/rename/1.0";
+pub const TASK_KEYS_RENAME_0_1: &str = "https://trusttasks.org/spec/keys/rename/0.1";
 
 /// `spec/vta/keys/revoke/1.0` — invalidate a key.
 /// Payload: [`crate::protocols::key_management::revoke::RevokeKeyBody`].
 /// Auth: Admin.
-pub const TASK_KEYS_REVOKE_1_0: &str = "https://trusttasks.org/spec/vta/keys/revoke/1.0";
+pub const TASK_KEYS_REVOKE_0_1: &str = "https://trusttasks.org/spec/keys/revoke/0.1";
 
 /// `spec/vta/keys/sign/1.0` — sign a base64url-encoded payload with a
 /// stored key (raw-bytes signing oracle).
 /// Payload: [`crate::protocols::key_management::sign::SignRequestBody`].
 /// Auth: write (Application or higher).
-pub const TASK_KEYS_SIGN_1_0: &str = "https://trusttasks.org/spec/vta/keys/sign/1.0";
+pub const TASK_KEYS_SIGN_0_1: &str = "https://trusttasks.org/spec/keys/sign/0.1";
 
 /// `spec/vta/keys/derive-and-sign/1.0` — derive a key at a BIP-32 path from the
 /// seed, sign a base64url payload, and return `{ public_key, signature }`
@@ -331,8 +344,8 @@ pub const TASK_KEYS_SIGN_1_0: &str = "https://trusttasks.org/spec/vta/keys/sign/
 /// derivation tree).
 /// Payload: [`crate::protocols::key_management::derive_and_sign::DeriveAndSignBody`].
 /// Auth: admin.
-pub const TASK_KEYS_DERIVE_AND_SIGN_1_0: &str =
-    "https://trusttasks.org/spec/vta/keys/derive-and-sign/1.0";
+pub const TASK_KEYS_DERIVE_AND_SIGN_0_1: &str =
+    "https://trusttasks.org/spec/keys/derive-and-sign/0.1";
 
 /// `spec/vta/keys/derive-and-sign-document/1.0` — derive a key at a BIP-32 path
 /// from the seed and attach an `eddsa-jcs-2022` Data-Integrity proof to a
@@ -340,8 +353,8 @@ pub const TASK_KEYS_DERIVE_AND_SIGN_1_0: &str =
 /// DI-signing counterpart of derive-and-sign.
 /// Payload: [`crate::protocols::key_management::derive_and_sign_document::DeriveAndSignDocumentBody`].
 /// Auth: admin.
-pub const TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_1_0: &str =
-    "https://trusttasks.org/spec/vta/keys/derive-and-sign-document/1.0";
+pub const TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1: &str =
+    "https://trusttasks.org/spec/keys/derive-and-sign-document/0.1";
 
 // ─── Seeds slice (spec/vta/seeds/*) ──────────────────────────────────────
 
@@ -1308,14 +1321,15 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONTEXTS_PREVIEW_DELETE_1_0,
     TASK_CONTEXTS_DELETE_1_0,
     // Keys slice
-    TASK_KEYS_LIST_1_0,
-    TASK_KEYS_CREATE_1_0,
-    TASK_KEYS_GET_1_0,
-    TASK_KEYS_RENAME_1_0,
-    TASK_KEYS_REVOKE_1_0,
-    TASK_KEYS_SIGN_1_0,
-    TASK_KEYS_DERIVE_AND_SIGN_1_0,
-    TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_1_0,
+    TASK_KEYS_LIST_0_1,
+    TASK_KEYS_CREATE_0_1,
+    TASK_KEYS_IMPORT_0_1,
+    TASK_KEYS_SHOW_0_1,
+    TASK_KEYS_RENAME_0_1,
+    TASK_KEYS_REVOKE_0_1,
+    TASK_KEYS_SIGN_0_1,
+    TASK_KEYS_DERIVE_AND_SIGN_0_1,
+    TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
     // Seeds slice
     TASK_SEEDS_LIST_1_0,
     TASK_SEEDS_ROTATE_1_0,
@@ -1557,6 +1571,12 @@ mod tests {
             // `vta/audit/list-logs` folded onto it in #840 phase A, trading
             // offset pages for the canonical opaque cursor.
             "https://trusttasks.org/spec/audit/",
+            // Canonical key custody + signing oracle — the nine-task `keys/*`
+            // family authored upstream in dtgwg-trust-tasks-tf#167. The VTA's
+            // `vta/keys/*` folded onto it in #840 phase D; holding keys for
+            // someone and signing without exporting them is generic to any
+            // agent, so the family is top-level rather than VTA-private.
+            "https://trusttasks.org/spec/keys/",
         ];
         for uri in ALL_URIS {
             assert!(

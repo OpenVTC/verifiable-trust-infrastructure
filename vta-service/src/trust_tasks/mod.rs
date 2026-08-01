@@ -226,15 +226,6 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     "https://trusttasks.org/spec/vta/contexts/update-did/1.0",
     "https://trusttasks.org/spec/vta/contexts/preview-delete/1.0",
     "https://trusttasks.org/spec/vta/contexts/delete/1.0",
-    // ─ vta/keys/* — author top-level `keys/*` (reduction plan §D).
-    "https://trusttasks.org/spec/vta/keys/list/1.0",
-    "https://trusttasks.org/spec/vta/keys/create/1.0",
-    "https://trusttasks.org/spec/vta/keys/get/1.0",
-    "https://trusttasks.org/spec/vta/keys/rename/1.0",
-    "https://trusttasks.org/spec/vta/keys/revoke/1.0",
-    "https://trusttasks.org/spec/vta/keys/sign/1.0",
-    "https://trusttasks.org/spec/vta/keys/derive-and-sign/1.0",
-    "https://trusttasks.org/spec/vta/keys/derive-and-sign-document/1.0",
     // ─ vta/seeds/* — keep-and-spec under `vta/` (reduction plan §E).
     "https://trusttasks.org/spec/vta/seeds/list/1.0",
     "https://trusttasks.org/spec/vta/seeds/rotate/1.0",
@@ -813,21 +804,23 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_0 => contexts::handle_delete
         [ Destructive None false ],
     // ─── Keys slice ──────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_KEYS_LIST_1_0 => keys::handle_list
+    vta_sdk::trust_tasks::TASK_KEYS_LIST_0_1 => keys::handle_list
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_KEYS_CREATE_1_0 => keys::handle_create
+    vta_sdk::trust_tasks::TASK_KEYS_CREATE_0_1 => keys::handle_create
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_KEYS_GET_1_0 => keys::handle_get
+    vta_sdk::trust_tasks::TASK_KEYS_IMPORT_0_1 => keys::handle_import
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_KEYS_SHOW_0_1 => keys::handle_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_KEYS_RENAME_1_0 => keys::handle_rename
+    vta_sdk::trust_tasks::TASK_KEYS_RENAME_0_1 => keys::handle_rename
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_KEYS_REVOKE_1_0 => keys::handle_revoke
+    vta_sdk::trust_tasks::TASK_KEYS_REVOKE_0_1 => keys::handle_revoke
         [ Destructive None false ],
-    vta_sdk::trust_tasks::TASK_KEYS_SIGN_1_0 => keys::handle_sign
+    vta_sdk::trust_tasks::TASK_KEYS_SIGN_0_1 => keys::handle_sign
         [ None None true ],
-    vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_1_0 => keys::handle_derive_and_sign
+    vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1 => keys::handle_derive_and_sign
         [ Mutating None true ],
-    vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_1_0 => keys::handle_derive_and_sign_document
+    vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1 => keys::handle_derive_and_sign_document
         [ Mutating None true ],
     // ─── Seeds slice ─────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_SEEDS_LIST_1_0 => seeds::handle_list

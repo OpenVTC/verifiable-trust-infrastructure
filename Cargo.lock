@@ -352,9 +352,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator"
-version = "0.18.0"
+version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cdd9b715dda0d25b9fa5afce0ea96540e5e5fc4067503357c08126ab40d3f59"
+checksum = "f332431a1186288f0f121974e37a96dc7130adf2b5c141f36267f681dbab56a0"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-common",
@@ -412,7 +412,7 @@ dependencies = [
  "trust-tasks-rs",
  "url",
  "uuid",
- "vta-sdk 0.20.32",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -2530,7 +2530,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.21.0",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -3339,7 +3339,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.21.0",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -6896,7 +6896,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.21.0",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -9758,9 +9758,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.2.51"
+version = "0.2.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e0b56c949946c8b79072036414e3d18fc0b87f5edd309311282d17e9a780510"
+checksum = "ac070d1bc7b9d1c570b3975abac38eb8411d8b7b4898cebaf3d162d0654c94d1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -10277,7 +10277,7 @@ version = "0.1.2"
 dependencies = [
  "tracing",
  "uuid",
- "vta-sdk 0.21.0",
+ "vta-sdk",
  "vti-common",
 ]
 
@@ -10303,7 +10303,7 @@ dependencies = [
  "vta-config",
  "vta-keys",
  "vta-keyspaces",
- "vta-sdk 0.21.0",
+ "vta-sdk",
  "vta-support",
  "vta-webvh",
  "vti-common",
@@ -10330,7 +10330,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.19",
  "tokio",
- "vta-sdk 0.21.0",
+ "vta-sdk",
  "vti-common",
  "x25519-dalek 3.0.0",
 ]
@@ -10390,7 +10390,7 @@ dependencies = [
  "uuid",
  "vta-config",
  "vta-keyspaces",
- "vta-sdk 0.21.0",
+ "vta-sdk",
  "vti-common",
  "vti-secrets",
  "x25519-dalek 3.0.0",
@@ -10417,7 +10417,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.21.0",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -10442,7 +10442,7 @@ dependencies = [
  "trust-tasks-proof",
  "trust-tasks-rs",
  "uniffi",
- "vta-sdk 0.21.0",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -10465,43 +10465,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.20.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "948774795d04846e6e4d70e18069dfb12294c2213e7195ad0938e685c837866a"
-dependencies = [
- "affinidi-crypto",
- "affinidi-data-integrity",
- "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-core",
- "affinidi-messaging-delivery",
- "affinidi-messaging-didcomm",
- "affinidi-openid4vci",
- "affinidi-openid4vp",
- "affinidi-secrets-resolver",
- "affinidi-tdk",
- "base64 0.22.1",
- "chrono",
- "curve25519-dalek 4.1.3",
- "didwebvh-rs",
- "ed25519-dalek 2.2.0",
- "futures-util",
- "getrandom 0.4.3",
- "multibase",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "trust-tasks-rs",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "vta-sdk"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -10563,7 +10527,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10645,7 +10609,7 @@ dependencies = [
  "vta-keys",
  "vta-keyspaces",
  "vta-policy",
- "vta-sdk 0.21.0",
+ "vta-sdk",
  "vta-service",
  "vta-support",
  "vta-sweepers",
@@ -10678,7 +10642,7 @@ dependencies = [
  "tracing",
  "vta-config",
  "vta-keyspaces",
- "vta-sdk 0.21.0",
+ "vta-sdk",
  "vti-common",
 ]
 
@@ -10756,7 +10720,7 @@ dependencies = [
  "tracing",
  "uuid",
  "vta-keyspaces",
- "vta-sdk 0.21.0",
+ "vta-sdk",
  "vti-common",
 ]
 
@@ -10775,7 +10739,7 @@ dependencies = [
  "tracing",
  "url",
  "vta-keyspaces",
- "vta-sdk 0.21.0",
+ "vta-sdk",
  "vti-common",
  "wiremock",
  "zeroize",
@@ -10792,7 +10756,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "trust-tasks-rs",
- "vta-sdk 0.21.0",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -10866,7 +10830,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.21.0",
+ "vta-sdk",
  "vtc-client",
  "vtc-service",
  "vti-common",
@@ -10919,7 +10883,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.21.0",
+ "vta-sdk",
  "webauthn-rs",
  "zeroize",
 ]
@@ -10946,7 +10910,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.21.0",
+ "vta-sdk",
  "vta-service",
  "vti-common",
 ]
@@ -10976,7 +10940,7 @@ dependencies = [
  "toml 1.1.4+spec-1.1.0",
  "tracing",
  "vaultrs",
- "vta-sdk 0.21.0",
+ "vta-sdk",
  "vti-common",
 ]
 

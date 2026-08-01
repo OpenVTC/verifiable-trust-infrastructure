@@ -14,10 +14,13 @@ use crate::keys::KeyType;
 /// `m/26'/9'/<idx>'` — without leaving a `KeyRecord` per action. Admin-gated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct DeriveAndSignBody {
     /// Key type to derive (currently only `Ed25519` is supported).
+    #[serde(alias = "key_type")]
     pub key_type: KeyType,
     /// BIP-32 derivation path, e.g. `m/26'/9'/0'`.
+    #[serde(alias = "derivation_path")]
     pub derivation_path: String,
     /// Base64url-encoded payload bytes to sign.
     pub payload: String,
@@ -28,9 +31,11 @@ pub struct DeriveAndSignBody {
 /// Body of a derive-and-sign result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct DeriveAndSignResultBody {
     /// The derived public key (multibase, multicodec-prefixed) — so the caller
     /// learns the `did:key` it just signed as.
+    #[serde(alias = "public_key")]
     pub public_key: String,
     /// Base64url-encoded signature bytes.
     pub signature: String,
