@@ -834,6 +834,15 @@ pub struct MyDomainEntry {
     pub status: String,
     #[serde(default)]
     pub label: Option<String>,
+    /// Unix seconds at which the host created the domain.
+    ///
+    /// Parsed rather than discarded because the canonical `DomainEntry` the
+    /// VTA relays into requires it: dropping it here turned "the VTA did not
+    /// tell me" into "the host does not know", which a caller cannot tell
+    /// apart. `Option` because a host predating the canonical shape may omit
+    /// it — absent stays absent rather than becoming a fabricated timestamp.
+    #[serde(default)]
+    pub created_at: Option<u64>,
 }
 
 #[cfg(test)]

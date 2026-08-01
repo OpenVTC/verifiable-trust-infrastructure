@@ -309,6 +309,14 @@ pub const TASK_KEYS_CREATE_0_1: &str = "https://trusttasks.org/spec/keys/create/
 /// Payload: [`crate::protocols::key_management::get::GetKeyBody`].
 pub const TASK_KEYS_SHOW_0_1: &str = "https://trusttasks.org/spec/keys/show/0.1";
 
+/// `vta/webvh/servers/domains/0.1` — ask the VTA which hosting domains it may
+/// use on one of the servers it has registered. The VTA authenticates to that
+/// server and relays its caller-scoped view; the response items are the
+/// canonical `did-management` `DomainEntry`, unfiltered.
+/// Payload: [`crate::protocols::did_management::servers::ListWebvhServerDomainsBody`].
+pub const TASK_WEBVH_SERVERS_DOMAINS_0_1: &str =
+    "https://trusttasks.org/spec/vta/webvh/servers/domains/0.1";
+
 /// `keys/import/0.1` — hand an externally-created private key to the VTA,
 /// which stores it and thereafter exercises it like any key it derived.
 /// Payload: [`crate::protocols::key_management::import::ImportKeyBody`].
@@ -1400,6 +1408,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_SERVERS_LIST_1_0,
     TASK_WEBVH_SERVERS_REGISTER_1_0,
     TASK_WEBVH_SERVERS_REMOVE_1_0,
+    TASK_WEBVH_SERVERS_DOMAINS_0_1,
     TASK_WEBVH_DIDS_LIST_1_0,
     TASK_WEBVH_DIDS_CREATE_1_0,
     TASK_WEBVH_DIDS_GET_1_0,

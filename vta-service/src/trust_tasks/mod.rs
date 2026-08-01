@@ -979,6 +979,9 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0 => webvh::handle_servers_remove
         [ Mutating None false ],
     #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_DOMAINS_0_1 => webvh::handle_servers_domains
+        [ None Metadata false ],
+    #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0 => webvh::handle_dids_list
         [ None Metadata false ],
     #[cfg(feature = "webvh")]

@@ -172,6 +172,14 @@ pub async fn list_webvh_server_domains(
                         default_domain: d.default_domain,
                         status: d.status,
                         label: d.label,
+                        // The host speaks Unix seconds; the canonical
+                        // DomainEntry speaks RFC 3339. An unrepresentable
+                        // timestamp becomes absent rather than epoch-zero,
+                        // which would read as "created in 1970".
+                        created_at: d.created_at.and_then(|secs| {
+                            chrono::DateTime::from_timestamp(secs as i64, 0)
+                                .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+                        }),
                     })
                     .collect(),
                 default: resp.default,

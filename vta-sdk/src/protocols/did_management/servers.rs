@@ -53,6 +53,7 @@ pub struct ListWebvhServersResultBody {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ListWebvhServerDomainsBody {
+    #[serde(rename = "serverId", alias = "server_id")]
     pub server_id: String,
 }
 
@@ -78,6 +79,16 @@ pub struct WebvhServerDomainEntry {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// RFC 3339 timestamp at which the host created the domain, as the host
+    /// reported it.
+    ///
+    /// Canonical `did-management/_shared/0.1/domain-entry#DomainEntry`
+    /// **requires** this, and the VTA relays into that shape — so a response
+    /// missing it is not merely thinner, it fails its own schema. `Option`
+    /// only for hosts that predate the canonical shape and genuinely do not
+    /// send one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
