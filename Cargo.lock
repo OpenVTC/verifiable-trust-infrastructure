@@ -112,16 +112,16 @@ dependencies = [
 
 [[package]]
 name = "affinidi-crypto"
-version = "0.2.5"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39e7ea1c5a572bab1a8af43b517e4a7674d57c061dd75e61799ec9fc9f356b4e"
+checksum = "d458e697967ae207856e57127daab373952890cd8d85edfed2999a1ed916e35a"
 dependencies = [
  "aes 0.8.4",
  "affinidi-encoding",
  "base58",
  "base64 0.22.1",
  "cbc 0.1.2",
- "ed25519-dalek 2.2.0",
+ "ed25519-dalek 3.0.0",
  "getrandom 0.2.17",
  "hmac 0.12.1",
  "k256",
@@ -129,21 +129,22 @@ dependencies = [
  "p256",
  "p384",
  "p521",
+ "rand 0.10.2",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "subtle",
  "thiserror 2.0.19",
- "x25519-dalek 2.0.1",
+ "x25519-dalek",
  "zeroize",
 ]
 
 [[package]]
 name = "affinidi-data-integrity"
-version = "0.7.8"
+version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf2bf693c0bb26ea6c0a0d04ea1391500d694cda95d98c7918354e29292e566d"
+checksum = "c058cd5f79752762622da56aa06c6c673b658d267aa29ce4cfd1c7028d7dece5"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -153,7 +154,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "ciborium",
- "ed25519-dalek 2.2.0",
+ "ed25519-dalek 3.0.0",
  "hmac 0.12.1",
  "multibase",
  "serde",
@@ -190,9 +191,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-common"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c185bf5127185198ea6c6f5d005fef7e2bc1e03af41866eb9fb2bbff749c2bff"
+checksum = "27925d715c71293b31bb3a7aefcd78bc6652a50ff69bfbf208fa440b246f9260"
 dependencies = [
  "affinidi-crypto",
  "affinidi-encoding",
@@ -201,7 +202,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "url",
- "x25519-dalek 2.0.1",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -332,15 +333,16 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-didcomm"
-version = "0.15.5"
+version = "0.15.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ace13f99837427a4854d476a58ef51f695c5f8abbc1e15937725cdc1b3cc444"
+checksum = "93889ea5df8140074fa9a3ed5f0def3e785f21ff2708d9f37459ef2b2efbfb3f"
 dependencies = [
  "affinidi-crypto",
  "base64ct",
- "ed25519-dalek 2.2.0",
+ "ed25519-dalek 3.0.0",
  "k256",
  "p256",
+ "rand 0.10.2",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
@@ -532,14 +534,14 @@ dependencies = [
 
 [[package]]
 name = "affinidi-oid4vc-core"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "419d638be45a2b839e503aa89fd870c2f470f1e83f1b05d5e941bd94c95c56a6"
+checksum = "fc66cb297f338fbaf058fff9b27273b871e0eccf60d0aaf867fcf6d7303b597e"
 dependencies = [
  "base64 0.22.1",
- "ed25519-dalek 2.2.0",
+ "ed25519-dalek 3.0.0",
  "p256",
- "rand_core 0.6.4",
+ "rand 0.10.2",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -629,9 +631,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-secrets-resolver"
-version = "0.5.8"
+version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95d3b1ec380684ba83d96869f5fd6c86c76c6c96704cac6578f22f1cab8abd00"
+checksum = "25be139fd212ca8fa338332ef5c0e6b4027d96d7eb6102cb37cd228c5a128ac6"
 dependencies = [
  "affinidi-crypto",
  "affinidi-encoding",
@@ -648,7 +650,7 @@ dependencies = [
  "tokio",
  "tracing",
  "unsigned-varint 0.8.0",
- "x25519-dalek 2.0.1",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -738,9 +740,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-tsp"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a9499c93bcd77125a532d4e881d5daff9844660ae0de03a5a085a71e97b7143"
+checksum = "6e905b7f05d5af040cdabc6afef3bf28c14abd59a3ae05cfc31bc2f662b6c8c6"
 dependencies = [
  "affinidi-cesr",
  "affinidi-did-common",
@@ -748,9 +750,10 @@ dependencies = [
  "affinidi-encoding",
  "blake2",
  "chacha20poly1305 0.10.1",
- "ed25519-dalek 2.2.0",
+ "ed25519-dalek 3.0.0",
  "hex",
  "hkdf 0.12.4",
+ "rand 0.10.2",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
@@ -758,7 +761,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "url",
- "x25519-dalek 2.0.1",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -2917,6 +2920,7 @@ dependencies = [
  "curve25519-dalek-derive",
  "digest 0.11.3",
  "fiat-crypto 0.3.0",
+ "rand_core 0.10.1",
  "rustc_version",
  "subtle",
  "zeroize",
@@ -3039,7 +3043,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.119",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -3527,7 +3531,9 @@ checksum = "6ebaa1a2bf1290ab3bfe5a7b771d050ebffab2711c19a81691c683a5144a25de"
 dependencies = [
  "curve25519-dalek 5.0.0",
  "ed25519 3.0.0",
+ "rand_core 0.10.1",
  "sha2 0.11.0",
+ "signature 3.0.0",
  "subtle",
  "zeroize",
 ]
@@ -4629,7 +4635,7 @@ dependencies = [
  "subtle",
  "turboshake",
  "x-wing",
- "x25519-dalek 3.0.0",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -8523,6 +8529,9 @@ name = "signature"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
+dependencies = [
+ "rand_core 0.10.1",
+]
 
 [[package]]
 name = "simd-adler32"
@@ -10332,7 +10341,7 @@ dependencies = [
  "tokio",
  "vta-sdk",
  "vti-common",
- "x25519-dalek 3.0.0",
+ "x25519-dalek",
 ]
 
 [[package]]
@@ -10393,7 +10402,7 @@ dependencies = [
  "vta-sdk",
  "vti-common",
  "vti-secrets",
- "x25519-dalek 3.0.0",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -10520,7 +10529,7 @@ dependencies = [
  "uuid",
  "windows-native-keyring-store",
  "wiremock",
- "x25519-dalek 3.0.0",
+ "x25519-dalek",
  "x509-parser 0.18.1",
  "zeroize",
 ]
@@ -10622,7 +10631,7 @@ dependencies = [
  "webauthn-rs",
  "webauthn-rs-proto",
  "wiremock",
- "x25519-dalek 3.0.0",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -10838,7 +10847,7 @@ dependencies = [
  "webauthn-rs",
  "webauthn-rs-proto",
  "wiremock",
- "x25519-dalek 3.0.0",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -11612,19 +11621,7 @@ dependencies = [
  "ml-kem",
  "sha3 0.12.0",
  "shake",
- "x25519-dalek 3.0.0",
-]
-
-[[package]]
-name = "x25519-dalek"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
-dependencies = [
- "curve25519-dalek 4.1.3",
- "rand_core 0.6.4",
- "serde",
- "zeroize",
+ "x25519-dalek",
 ]
 
 [[package]]
