@@ -52,10 +52,11 @@ impl VtaClient {
         server_id: &str,
     ) -> Result<crate::protocols::did_management::servers::ListWebvhServerDomainsResultBody, VtaError>
     {
-        self.rpc(
-            did_management::LIST_WEBVH_SERVER_DOMAINS,
-            serde_json::json!({ "server_id": server_id }),
-            did_management::LIST_WEBVH_SERVER_DOMAINS_RESULT,
+        // `vta/webvh/servers/domains/0.1` (dtgwg-trust-tasks-tf#171) — the last
+        // webvh read that had no published task, and so no TSP path.
+        self.rpc_tt(
+            crate::trust_tasks::TASK_WEBVH_SERVERS_DOMAINS_0_1,
+            serde_json::json!({ "serverId": server_id }),
             30,
             |c, url| {
                 c.get(format!(

@@ -1028,6 +1028,61 @@ async fn list_webvh_servers_returns_array() {
     assert_eq!(r.servers.len(), 1);
 }
 
+/// The relay had no test at all before it moved onto a Trust Task. `createdAt`
+/// is asserted because the VTA used to drop it: canonical `DomainEntry`
+/// requires it, so a response missing it fails its own schema — and a caller
+/// cannot tell a relay that withheld a member from a host that never sent one.
+#[tokio::test]
+async fn list_webvh_server_domains_relays_the_hosts_view() {
+    let server = MockServer::start().await;
+    let _g = mount_json(
+        &server,
+        "GET",
+        "/webvh/servers/primary-host/domains",
+        200,
+        json!({
+            "domains": [{
+                "name": "did.example.com",
+                "label": "Production",
+                "status": "active",
+                "defaultDomain": true,
+                "createdAt": "2026-03-01T00:00:00Z"
+            }],
+            "default": "did.example.com"
+        }),
+    )
+    .await;
+    let c = client(&server).await;
+    let r = c.list_webvh_server_domains("primary-host").await.unwrap();
+    assert_eq!(r.domains.len(), 1);
+    assert_eq!(r.domains[0].name, "did.example.com");
+    assert_eq!(
+        r.domains[0].created_at.as_deref(),
+        Some("2026-03-01T00:00:00Z"),
+        "the relay must preserve createdAt"
+    );
+    assert_eq!(r.default.as_deref(), Some("did.example.com"));
+}
+
+/// A server the VTA can reach but holds no grant on answers with an empty list,
+/// which is a true answer — not an error, and not "no domains exist".
+#[tokio::test]
+async fn list_webvh_server_domains_empty_is_a_successful_answer() {
+    let server = MockServer::start().await;
+    let _g = mount_json(
+        &server,
+        "GET",
+        "/webvh/servers/bare-host/domains",
+        200,
+        json!({ "domains": [] }),
+    )
+    .await;
+    let c = client(&server).await;
+    let r = c.list_webvh_server_domains("bare-host").await.unwrap();
+    assert!(r.domains.is_empty());
+    assert!(r.default.is_none());
+}
+
 #[tokio::test]
 async fn update_webvh_server_patches() {
     let server = MockServer::start().await;

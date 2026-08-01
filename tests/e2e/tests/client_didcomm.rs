@@ -852,6 +852,44 @@ async fn rotate_did_webvh_keys_by_did_via_didcomm() {
 
 // ── WebVH servers ───────────────────────────────────────────────────
 
+/// The domain relay is the last webvh read to reach TSP — it had no published
+/// task until dtgwg-trust-tasks-tf#171, and `rpc`'s TSP arm is an error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_webvh_server_domains_via_didcomm() {
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_WEBVH_SERVERS_DOMAINS_0_1) {
+            assert_eq!(body["payload"]["serverId"], "primary-host", "{body}");
+            tt_ok(
+                trust_tasks::TASK_WEBVH_SERVERS_DOMAINS_0_1,
+                json!({
+                    "domains": [{
+                        "name": "did.example.com",
+                        "status": "active",
+                        "defaultDomain": true,
+                        "createdAt": "2026-03-01T00:00:00Z"
+                    }],
+                    "default": "did.example.com"
+                }),
+            )
+        } else {
+            no_handler()
+        }
+    })
+    .await;
+
+    let r = client
+        .list_webvh_server_domains("primary-host")
+        .await
+        .unwrap();
+    assert_eq!(r.domains.len(), 1);
+    assert_eq!(
+        r.domains[0].created_at.as_deref(),
+        Some("2026-03-01T00:00:00Z")
+    );
+
+    shutdown_all(client, responder, mediator).await;
+}
+
 /// Relabelling a registered server rides `webvh/servers/register/1.0` — the
 /// canonical task #850 folded add + update into. A payload with no `did` is the
 /// label-only patch; the maintainer refuses to create a registration from one.

@@ -80,6 +80,9 @@ use vta_sdk::protocols::credential_exchange::{
 use vta_sdk::protocols::credentials_issuance::{
     IssueCredentialBody, IssueCredentialResponse, RevokeCredentialBody, RevokeCredentialResponse,
 };
+use vta_sdk::protocols::did_management::servers::{
+    ListWebvhServerDomainsBody, ListWebvhServerDomainsResultBody, WebvhServerDomainEntry,
+};
 use vta_sdk::protocols::key_management::create::{
     CreateKeyBody, CreateKeyResponseBody, CreateKeyResultBody,
 };
@@ -630,6 +633,30 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(SwapKeyResultBody {
                     entry: acl_entry(),
                     previous_subject: SUBJECT.into(),
+                })
+            ),
+        ),
+        // ─── webvh servers/domains (the relay, #171) ─────────────
+        (
+            uris::TASK_WEBVH_SERVERS_DOMAINS_0_1,
+            checked!(
+                specs::vta::webvh::servers::domains::v0_1::Payload,
+                specs::vta::webvh::servers::domains::v0_1::Response,
+                to_v(ListWebvhServerDomainsBody {
+                    server_id: "primary-host".into(),
+                }),
+                to_v(ListWebvhServerDomainsResultBody {
+                    domains: vec![WebvhServerDomainEntry {
+                        name: "did.example.com".into(),
+                        default_domain: true,
+                        status: "active".into(),
+                        label: Some("Production".into()),
+                        // Required by the canonical DomainEntry the response
+                        // items reference — a witness without it would pass
+                        // while the real relay emitted a non-conformant entry.
+                        created_at: Some("2026-03-01T00:00:00Z".into()),
+                    }],
+                    default: Some("did.example.com".into()),
                 })
             ),
         ),

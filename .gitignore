@@ -27,3 +27,7 @@ Thumbs.db
 # Secrets and credentials
 .env
 .env.*
+
+# Downloaded CI job logs. One of these was committed by accident in #888 —
+# a `curl -o` in the repo root plus a `git add -A` is all it takes.
+*.log
