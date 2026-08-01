@@ -1504,7 +1504,7 @@ pub(crate) async fn create_vta_did_key(
     seed_store: &dyn SeedStore,
 ) -> Result<String, Box<dyn std::error::Error>> {
     use affinidi_tdk::secrets_resolver::secrets::Secret;
-    use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
+    use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 
     use crate::keys;
     use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};

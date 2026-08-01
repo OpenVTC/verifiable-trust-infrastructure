@@ -112,7 +112,7 @@ pub async fn create_key(
     let seed = load_seed_bytes(keys_ks, &**seed_store, Some(active_id))
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
-    let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
+    let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed)
         .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
 
     let public_key = match params.key_type {
@@ -634,7 +634,7 @@ pub async fn get_key_secret(
             let seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
                 .await
                 .map_err(|e| AppError::Internal(format!("{e}")))?;
-            let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed).map_err(|e| {
+            let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed).map_err(|e| {
                 key_derivation_error(format!("failed to create BIP-32 root key: {e}"))
             })?;
 
@@ -747,7 +747,7 @@ pub async fn get_key_secret_internal(
             let seed = load_seed_bytes(keys_ks, seed_store, record.seed_id)
                 .await
                 .map_err(|e| AppError::Internal(format!("{e}")))?;
-            let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed).map_err(|e| {
+            let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed).map_err(|e| {
                 key_derivation_error(format!("failed to create BIP-32 root key: {e}"))
             })?;
 
@@ -966,13 +966,13 @@ pub async fn sign_payload(
             let seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
                 .await
                 .map_err(|e| AppError::Internal(format!("{e}")))?;
-            let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed).map_err(|e| {
+            let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed).map_err(|e| {
                 key_derivation_error(format!("failed to create BIP-32 root key: {e}"))
             })?;
 
             match (algorithm, &record.key_type) {
                 (SignAlgorithm::EdDSA, KeyType::Ed25519) => {
-                    let derivation_path: ed25519_dalek_bip32::DerivationPath =
+                    let derivation_path: vti_common::slip10::DerivationPath =
                         record.derivation_path.parse().map_err(|e| {
                             key_derivation_error(format!("invalid derivation path: {e}"))
                         })?;
@@ -1045,9 +1045,9 @@ pub async fn derive_and_sign(
     let seed = load_seed_bytes(keys_ks, &**seed_store, None)
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
-    let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
+    let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed)
         .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
-    let path: ed25519_dalek_bip32::DerivationPath = derivation_path
+    let path: vti_common::slip10::DerivationPath = derivation_path
         .parse()
         .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
     let derived = bip32
@@ -1109,9 +1109,9 @@ pub async fn derive_and_sign_document(
     let seed = load_seed_bytes(keys_ks, &**seed_store, None)
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
-    let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
+    let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed)
         .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
-    let path: ed25519_dalek_bip32::DerivationPath = derivation_path
+    let path: vti_common::slip10::DerivationPath = derivation_path
         .parse()
         .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
     let derived = bip32

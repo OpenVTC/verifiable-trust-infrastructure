@@ -10,7 +10,7 @@ use affinidi_tdk::messaging::config::ATMConfig;
 use affinidi_tdk::messaging::profiles::ATMProfile;
 use affinidi_tdk::messaging::protocols::trust_ping::TrustPing;
 use affinidi_tdk::secrets_resolver::SecretsResolver;
-use ed25519_dalek_bip32::ExtendedSigningKey;
+use vti_common::slip10::ExtendedSigningKey;
 
 use crate::acl::{self, Role};
 use crate::auth::session::{self, SessionState};
@@ -358,7 +358,7 @@ async fn send_trust_ping(
     if vta_did.starts_with("did:key:") {
         // did:key: X25519 is curve-converted from Ed25519, and verification method
         // IDs use multibase-encoded public key fragments, not #key-0/#key-1.
-        let dp: ed25519_dalek_bip32::DerivationPath = signing.derivation_path.parse()?;
+        let dp: vti_common::slip10::DerivationPath = signing.derivation_path.parse()?;
         let derived = root.derive(&dp)?;
         let seed_bytes: &[u8; 32] = derived.signing_key.as_bytes();
         let secrets = vta_sdk::did_key::secrets_from_did_key(vta_did, seed_bytes)?;

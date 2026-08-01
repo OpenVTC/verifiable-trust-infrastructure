@@ -2012,8 +2012,8 @@ mod tests {
     #[tokio::test]
     async fn present_query_runs_the_full_holder_present_path() {
         use crate::acl::Role;
-        use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
         use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
+        use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 
         let dir = tempfile::tempdir().unwrap();
         let store = vti_common::store::Store::open(&vti_common::config::StoreConfig {
@@ -2266,8 +2266,8 @@ mod tests {
         Arc<dyn SeedStore>,
         String,
     ) {
-        use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
         use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
+        use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 
         let dir = tempfile::tempdir().unwrap();
         let store = vti_common::store::Store::open(&vti_common::config::StoreConfig {
@@ -2349,7 +2349,7 @@ mod tests {
         use base64::Engine;
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use ed25519_dalek::Verifier;
-        use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
+        use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 
         let (_dir, _vault, keys_ks, seed_store, subject_did) = holder_fixture().await;
         let auth = AuthClaims {

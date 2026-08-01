@@ -20,6 +20,7 @@ pub mod secure_file;
 pub mod seed_store;
 #[cfg(feature = "setup")]
 pub mod setup;
+pub mod slip10;
 pub mod store;
 pub mod telemetry;
 pub mod trust_task;

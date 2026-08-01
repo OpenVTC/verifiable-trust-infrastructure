@@ -109,7 +109,7 @@ pub async fn run_keys_secrets(
             .ok_or_else(|| format!("key not found: {key_id}"))?;
 
         let seed = load_seed_bytes(&keys_ks, &*seed_store, record.seed_id).await?;
-        let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
+        let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed)
             .map_err(|e| format!("failed to create BIP-32 root key: {e}"))?;
 
         let (public, private) = match record.key_type {

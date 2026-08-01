@@ -75,7 +75,7 @@ use crate::webvh_store;
 use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 use zeroize::Zeroize;
 
-use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
+use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 
 /// Shared dependency bundle for the WebVH DID-management operations
 /// (`delete_did_webvh`, `rotate_did_webvh_keys`, `register_did_with_server`,

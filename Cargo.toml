@@ -158,7 +158,6 @@ fjall = "3"
 serde_json = "1"
 
 # Key derivation (BIP32)
-ed25519-dalek-bip32 = "0.3"
 
 # Identifiers
 uuid = { version = "1", features = ["v4", "serde"] }

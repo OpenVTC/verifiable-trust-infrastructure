@@ -26,9 +26,9 @@ use affinidi_tdk::messaging::protocols::trust_ping::TrustPing;
 use affinidi_tdk::messaging::transports::websockets::WebSocketResponses;
 use affinidi_tdk::secrets_resolver::SecretsResolver;
 use clap::Parser;
-use ed25519_dalek_bip32::ExtendedSigningKey;
 use tracing::{error, info, warn};
 use vta_sdk::did_key::{ed25519_multibase_pubkey, secrets_from_did_key};
+use vti_common::slip10::ExtendedSigningKey;
 
 #[derive(Parser)]
 #[command(name = "didcomm-test", about = "DIDComm connectivity test")]
@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = ExtendedSigningKey::from_seed(&seed)?;
 
     // Signing key (Ed25519)
-    let signing_dp: ed25519_dalek_bip32::DerivationPath = args.signing_path.parse()?;
+    let signing_dp: vti_common::slip10::DerivationPath = args.signing_path.parse()?;
     let signing_derived = root.derive(&signing_dp)?;
     let signing_pub_bytes: [u8; 32] =
         ed25519_dalek::SigningKey::from_bytes(signing_derived.signing_key.as_bytes())
@@ -139,7 +139,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // to verify both derivation paths produce the same X25519 key
     {
         use affinidi_tdk::secrets_resolver::secrets::Secret;
-        let ka_dp: ed25519_dalek_bip32::DerivationPath = args.ka_path.parse()?;
+        let ka_dp: vti_common::slip10::DerivationPath = args.ka_path.parse()?;
         let ka_derived = root.derive(&ka_dp)?;
         let ka_ed = Secret::generate_ed25519(None, Some(ka_derived.signing_key.as_bytes()));
         let ka_x = ka_ed.to_x25519().map_err(|e| format!("{e}"))?;

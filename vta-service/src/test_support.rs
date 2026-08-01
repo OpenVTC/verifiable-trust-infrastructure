@@ -24,9 +24,9 @@ use std::sync::Arc;
 
 use chrono::Duration;
 use ed25519_dalek::SigningKey;
-use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use serde_json::Value;
 use tokio::sync::RwLock;
+use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 
