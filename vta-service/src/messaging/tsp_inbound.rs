@@ -58,7 +58,16 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     app_state.tsp_reach.record(sender_vid);
     tracing::debug!(sender = %sender_vid, "recorded TSP reachability (learn-from-inbound)");
     let outcome = match auth_from_did(sender_vid, &app_state.acl_ks, &app_state.sessions_ks).await {
-        Ok(auth) => crate::trust_tasks::dispatch_trust_task_core(app_state, &auth, payload).await,
+        // TSP seals to the recipient VID, same guarantee as authcrypt.
+        Ok(auth) => {
+            crate::trust_tasks::dispatch_trust_task_core(
+                app_state,
+                &auth,
+                payload,
+                crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+            )
+            .await
+        }
         Err(e) => crate::trust_tasks::reject_trust_task(
             payload,
             trust_tasks_rs::RejectReason::PermissionDenied {

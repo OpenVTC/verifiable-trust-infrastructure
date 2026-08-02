@@ -17,8 +17,8 @@
 //!   `{ id, type, payload }`, so the responder must dispatch on the *inner*
 //!   `type` URI (a `vta_sdk::trust_tasks::TASK_*` constant) — see [`is_tt`]
 //!   / [`tt_ok`].
-//! - **Legacy protocol message**: the surfaces still on `rpc` (`import_key`,
-//!   `backup_export`/`backup_import`, the webvh server/DID updates) dispatch
+//! - **Legacy protocol message**: what remains on `rpc` — the deprecated
+//!   `backup_export`/`backup_import` and webvh server/DID updates — dispatch
 //!   on the `*_management` message-type constant. The ACL reads and updates
 //!   left behind by #861 moved to Trust Tasks in #884 — they were the ones
 //!   where the maintainer had already folded and the client had not.
@@ -29,8 +29,8 @@ use vta_sdk::client::*;
 use vta_sdk::did_key::ed25519_multibase_pubkey;
 use vta_sdk::error::VtaError;
 use vta_sdk::keys::{KeyOrigin, KeyStatus, KeyType};
+use vta_sdk::protocols::backup_management;
 use vta_sdk::protocols::key_management::sign::SignAlgorithm;
-use vta_sdk::protocols::{backup_management, key_management};
 use vta_sdk::trust_tasks;
 
 mod common;
@@ -144,6 +144,15 @@ fn key_record_json(id: &str) -> Value {
 /// The `{ key }` envelope canonical single-record responses carry.
 fn key_envelope(id: &str) -> Value {
     json!({ "key": key_record_json(id) })
+}
+
+/// The same envelope for a key that arrived from outside. `origin` is what
+/// tells an operator a seed restore will not bring this one back, so a fixture
+/// that always said `derived` would let a broken mapping pass.
+fn imported_key_envelope(id: &str) -> Value {
+    let mut record = key_record_json(id);
+    record["origin"] = json!("imported");
+    json!({ "key": record })
 }
 
 fn context_json(id: &str) -> Value {
@@ -425,24 +434,23 @@ async fn sealed_import_key_via_didcomm_uses_the_canonical_task() {
     shutdown_all(client, responder, mediator).await;
 }
 
-/// A raw multibase key stays on the legacy DIDComm message, where authcrypt
-/// has established the end-to-end confidentiality the canonical task cannot
-/// assume.
+/// The cleartext multibase carrier now rides the **canonical** task over
+/// DIDComm, where authcrypt has sealed the envelope to the VTA's own key.
+///
+/// It used to fork onto `key-management/1.0/import-key`, which the VTA has
+/// never routed — so this path failed with `unsupported message type` and the
+/// capability existed only on paper.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn import_key_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == key_management::IMPORT_KEY {
-            ResponderReply::ok(
-                key_management::IMPORT_KEY_RESULT,
-                json!({
-                    "key_id": "imported",
-                    "key_type": "ed25519",
-                    "public_key": "z6Mkpub",
-                    "status": "active",
-                    "label": null,
-                    "origin": "imported",
-                    "created_at": "2026-01-01T00:00:00Z"
-                }),
+async fn multibase_import_key_via_didcomm_uses_the_canonical_task() {
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_IMPORT_0_1) {
+            assert_eq!(
+                body["payload"]["privateKeyMultibase"], "zSeed",
+                "the cleartext carrier must reach the canonical task: {body}"
+            );
+            tt_ok(
+                trust_tasks::TASK_KEYS_IMPORT_0_1,
+                imported_key_envelope("imported"),
             )
         } else {
             no_handler()

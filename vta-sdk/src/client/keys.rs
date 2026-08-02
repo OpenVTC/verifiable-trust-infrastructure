@@ -14,9 +14,6 @@ use crate::protocols::key_management::sign::SignAlgorithm;
 use crate::trust_tasks;
 
 #[cfg(feature = "client")]
-use crate::protocols::key_management;
-
-#[cfg(feature = "client")]
 impl VtaClient {
     // ── Key methods ─────────────────────────────────────────────────
 
@@ -61,29 +58,24 @@ impl VtaClient {
 
     /// Import an externally-created private key.
     ///
-    /// A **sealed** or **JWE** carrier rides canonical `keys/import/0.1`, so it
-    /// works over REST, DIDComm and TSP alike. A raw `private_key_multibase`
-    /// stays on the legacy DIDComm message: the canonical task refuses
-    /// cleartext, because one dispatcher serves all three transports and cannot
-    /// establish that a given request travelled end to end — authcrypt can, and
-    /// that is exactly what the legacy path has.
+    /// Canonical `keys/import/0.1` on **every** transport. The carrier is a
+    /// confidentiality decision the VTA enforces rather than a formatting one:
+    /// `private_key_sealed` and `private_key_jwe` encrypt to the VTA and are
+    /// accepted anywhere, while the cleartext `private_key_multibase` is
+    /// accepted only where the transport is confidential end-to-end — DIDComm
+    /// and TSP — and refused over REST, whose TLS terminates wherever the
+    /// operator terminates it.
+    ///
+    /// The multibase carrier used to fork onto the legacy
+    /// `key-management/1.0/import-key` message here. That was dead: the VTA has
+    /// never routed that type, so the call failed with `unsupported message
+    /// type` on DIDComm and was refused outright on REST. It works now.
     pub async fn import_key(&self, req: ImportKeyRequest) -> Result<ImportKeyResponse, VtaError> {
-        if req.private_key_multibase.is_some() {
-            return self
-                .rpc(
-                    key_management::IMPORT_KEY,
-                    serde_json::to_value(&req)?,
-                    key_management::IMPORT_KEY_RESULT,
-                    30,
-                    |c, url| c.post(format!("{url}/keys/import")).json(&req),
-                )
-                .await;
-        }
         let body = crate::protocols::key_management::import::ImportKeyBody {
             key_type: req.key_type.clone(),
             private_key_sealed: req.private_key_sealed.clone(),
             private_key_jwe: req.private_key_jwe.clone(),
-            private_key_multibase: None,
+            private_key_multibase: req.private_key_multibase.clone(),
             label: req.label.clone(),
             context_id: req.context_id.clone(),
         };

@@ -282,17 +282,26 @@ pub async fn handle_trust_task(
     // failure (e.g. the peer has no ACL entry) reply with a Trust-Task
     // `permission_denied` *envelope*, not a DIDComm problem-report — a
     // conformant Trust-Task client only understands binding envelopes.
-    let response = match auth_from_message(&message, &app_state.acl_ks, &app_state.sessions_ks)
-        .await
-    {
-        Ok(auth) => crate::trust_tasks::dispatch_trust_task_core(&app_state, &auth, &body).await,
-        Err(e) => crate::trust_tasks::reject_trust_task(
-            &body,
-            trust_tasks_rs::RejectReason::PermissionDenied {
-                reason: e.to_string(),
-            },
-        ),
-    };
+    let response =
+        match auth_from_message(&message, &app_state.acl_ks, &app_state.sessions_ks).await {
+            // Authcrypt sealed this envelope to the VTA's own key, so no
+            // intermediary — mediator included — held the plaintext.
+            Ok(auth) => {
+                crate::trust_tasks::dispatch_trust_task_core(
+                    &app_state,
+                    &auth,
+                    &body,
+                    crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+                )
+                .await
+            }
+            Err(e) => crate::trust_tasks::reject_trust_task(
+                &body,
+                trust_tasks_rs::RejectReason::PermissionDenied {
+                    reason: e.to_string(),
+                },
+            ),
+        };
 
     // The dispatch core returns a typed `TrustTaskOutcome`; its `body` is
     // already the serialised framework trust-task document, so we parse it
