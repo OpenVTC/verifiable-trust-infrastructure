@@ -445,6 +445,39 @@ enum PublishTarget {
     AgentName { name: String, verb: AgentNameVerb },
 }
 
+/// Is a caller whose `expectedVersionId` differs from our local head merely
+/// reading a host we failed to publish to — rather than being stale?
+///
+/// See the commentary at step 4a in [`run_update`]. Extracted so the rule can
+/// be pinned exhaustively: it decides whether an optimistic-concurrency
+/// refusal is real, and getting it wrong in either direction is costly. Too
+/// strict wedges a DID forever (the reconciler that heals the divergence sits
+/// *below* the check that refuses); too loose silently drops the lost-update
+/// protection.
+///
+/// - `hosted` — false for serverless DIDs, where the local head is the only
+///   truth and any mismatch really is a stale caller.
+/// - `caller_read_a_real_version` — `expected` names an entry in our own
+///   chain, so the caller read a genuine past state rather than inventing one.
+/// - `confirmed` — the last version we know reached the host. `None` counts as
+///   "nothing published beyond": this marker is written only on a successful
+///   publish, so a genuine concurrent update would have set it, and its
+///   absence alongside a moved head means a publish that never landed.
+fn caller_is_merely_ahead_of_an_unpublished_head(
+    hosted: bool,
+    caller_read_a_real_version: bool,
+    confirmed: Option<&str>,
+    expected: &str,
+) -> bool {
+    if !hosted || !caller_read_a_real_version {
+        return false;
+    }
+    match confirmed {
+        None => true,
+        Some(c) => c == expected,
+    }
+}
+
 async fn run_update(
     deps: &super::super::WebvhDeps<'_>,
     auth: &AuthClaims,
@@ -586,30 +619,59 @@ async fn run_update(
     //         is reading the host perfectly correctly and *we* are the one out
     //         of step.
     //
-    //     `get_published_version` tells them apart. Treating the second case
-    //     as a conflict is what wedges a DID permanently: step 4b — the
-    //     reconciler written to heal exactly this divergence — sits *below*
-    //     this check, so refusing here means it never runs, and every retry
-    //     dies in the same place. That is the unrecoverable loop 4b's own
-    //     comment warns about, reached from the other side. It bites hardest
-    //     through the consent flow, where the failure is raised by the Plan
-    //     dry-run: 4b is Execute-only by design, so a plan cannot self-heal
-    //     and the task never gets far enough to try.
+    //     Treating the second case as a conflict is what wedges a DID
+    //     permanently: step 4b — the reconciler written to heal exactly this
+    //     divergence — sits *below* this check, so refusing here means it
+    //     never runs, and every retry dies in the same place. That is the
+    //     unrecoverable loop 4b's own comment warns about, reached from the
+    //     other side. It bites hardest through the consent flow, where the
+    //     failure is raised by the Plan dry-run: 4b is Execute-only by design,
+    //     so a plan cannot self-heal and the task never gets far enough to try.
+    //
+    //     Two conditions separate "we failed to publish" from "the caller is
+    //     stale", and BOTH are required:
+    //
+    //       1. `expected` names a real entry in our own chain. The caller read
+    //          a genuine past state of this DID rather than sending a value we
+    //          have never issued.
+    //       2. Nothing after `expected` ever reached the host — the confirmed
+    //          marker is `expected` itself, or absent.
+    //
+    //     An absent marker has to count. It is only ever written by *this*
+    //     function, so a DID created before its first successful update has
+    //     none at all, and requiring `Some(expected)` would leave exactly those
+    //     DIDs wedged with no route out. It is also safe: a genuine concurrent
+    //     update would have completed and written the marker, so the only way
+    //     to reach a moved local head with no marker is an update that stored
+    //     its log and never confirmed a publish — the wedge itself.
+    //
+    //     Hosted DIDs only. A serverless DID has no host, so the local head is
+    //     the sole truth, its marker is legitimately always absent, and a
+    //     mismatch there really is a stale caller.
     if let Some(expected) = opts.expected_version_id.as_deref() {
         let latest = last_state.get_version_id();
         if latest != expected {
-            let confirmed = webvh_store::get_published_version(webvh_ks, &record.did)
-                .await
-                .map_err(|e| {
-                    UpdateDidWebvhError::Persistence(format!("get_published_version: {e}"))
-                })?;
-            // Only when the caller is in step with the last version we
-            // *confirmed* on the host. `None` (never confirmed) keeps the
-            // conflict: we cannot show the caller was reading anything real.
-            // Serverless DIDs never set the marker, so they stay strict — with
-            // no host, the local head is the only truth and a mismatch really
-            // is a stale caller.
-            if confirmed.as_deref() != Some(expected) {
+            let hosted = record.server_id != "serverless";
+            let caller_read_a_real_version = state
+                .log_entries()
+                .iter()
+                .any(|e| e.get_version_id() == expected);
+            let confirmed = if hosted {
+                webvh_store::get_published_version(webvh_ks, &record.did)
+                    .await
+                    .map_err(|e| {
+                        UpdateDidWebvhError::Persistence(format!("get_published_version: {e}"))
+                    })?
+            } else {
+                None
+            };
+
+            if !caller_is_merely_ahead_of_an_unpublished_head(
+                hosted,
+                caller_read_a_real_version,
+                confirmed.as_deref(),
+                expected,
+            ) {
                 return Err(UpdateDidWebvhError::Conflict(format!(
                     "DID {} has been updated since you read it (expected versionId `{expected}`, \
                      current is `{latest}`). Re-fetch the document and re-apply your edits.",
@@ -625,7 +687,7 @@ async fn run_update(
                 did = %record.did,
                 caller_expected = %expected,
                 local_head = %latest,
-                "caller is in step with the last confirmed publish but our local head is \
+                "caller is in step with what the host last confirmed but our local head is \
                  ahead — an earlier publish never landed; continuing so the reconcile can heal it"
             );
         }
@@ -1413,6 +1475,59 @@ mod agent_name_tests {
 /// ever stops satisfying that parser, nothing errors anywhere — the claim is
 /// simply never indexed and the name silently 404s. So these tests use the
 /// host's own parser rather than re-asserting our format against itself.
+#[cfg(test)]
+mod concurrency_precondition {
+    use super::caller_is_merely_ahead_of_an_unpublished_head as merely_ahead;
+
+    const V1: &str = "1-QmUCAL";
+    const V2: &str = "2-QmXAXx";
+
+    /// The production wedge: the host confirmed v1, our local head is v2
+    /// because a publish never landed, and the caller is pinned to v1 — which
+    /// is exactly what the host told it. Refusing this is what made the DID
+    /// permanently uneditable.
+    #[test]
+    fn a_caller_in_step_with_the_confirmed_publish_is_not_stale() {
+        assert!(merely_ahead(true, true, Some(V1), V1));
+    }
+
+    /// The case that survived the first fix. This marker is written only by a
+    /// successful publish, so a DID created before its first update has none —
+    /// and requiring `Some(expected)` left exactly those DIDs wedged with no
+    /// route out. Absent must count as "nothing published beyond".
+    #[test]
+    fn an_absent_marker_counts_as_nothing_published_beyond() {
+        assert!(merely_ahead(true, true, None, V1));
+    }
+
+    /// The protection this check exists for. The host really has moved past
+    /// the caller, so the caller is genuinely stale and must be refused —
+    /// otherwise the relaxation above would have quietly deleted the
+    /// lost-update guarantee rather than narrowed it.
+    #[test]
+    fn a_caller_behind_the_confirmed_publish_is_still_stale() {
+        assert!(!merely_ahead(true, true, Some(V2), V1));
+    }
+
+    /// A version we never issued is not a past state the caller could have
+    /// read. Without this, any unrecognised string would slip through
+    /// alongside an absent marker.
+    #[test]
+    fn a_version_absent_from_our_chain_is_never_excused() {
+        assert!(!merely_ahead(true, false, None, "9-QmInvented"));
+        assert!(!merely_ahead(true, false, Some(V1), "9-QmInvented"));
+    }
+
+    /// Serverless DIDs have no host, so the local head is the only truth and
+    /// the marker is legitimately always absent. Excusing a mismatch there
+    /// would drop the precondition entirely for every serverless DID.
+    #[test]
+    fn a_serverless_did_is_never_excused() {
+        assert!(!merely_ahead(false, true, None, V1));
+        assert!(!merely_ahead(false, true, Some(V1), V1));
+    }
+}
+
 #[cfg(test)]
 mod agent_name_host_contract {
     use super::edit_agent_name;
