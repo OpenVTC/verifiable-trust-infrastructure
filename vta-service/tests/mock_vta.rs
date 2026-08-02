@@ -354,6 +354,235 @@ async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() 
     mock.shutdown().await;
 }
 
+/// The same self-recovery, but for a caller that sends `expectedVersionId`.
+///
+/// The test above passes `None`, which is why the wedge it is meant to prevent
+/// survived anyway. A real client — the webvh admin UI — reads the DID from the
+/// **host** and pins that version as its optimistic-concurrency precondition. A
+/// failed publish leaves the local head ahead, so the caller's expectation no
+/// longer matches the local head even though it matches the host exactly.
+///
+/// Comparing the two naively makes the caller wrong for reading the only thing
+/// it can see, and refuses before step 4b can reconcile — so the DID wedges
+/// permanently, every retry failing identically. Worse through the consent
+/// flow: the refusal comes from the Plan dry-run, and 4b is Execute-only, so
+/// the task can never reach the code that would heal it.
+///
+/// The precondition still has to work. `a_stale_caller_still_conflicts` below
+/// pins the other side.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+#[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
+async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
+    use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
+    use vta_sdk::protocols::did_management::create::WebvhPathMode;
+    use vta_sdk::protocols::did_management::update::UpdateDidWebvhBody;
+
+    let mock = MockVta::start_with_webvh_host().await;
+    let token = mock
+        .ctx
+        .mint_token("did:key:z6MkWebvhAdmin", "admin", vec![])
+        .await;
+    let client = VtaClient::new(mock.base_url());
+    client.set_token_async(token).await;
+
+    let create = client
+        .create_did_webvh(CreateDidWebvhRequest {
+            context_id: "ctx1".into(),
+            server_id: Some(MockVta::WEBVH_SERVER_ID.into()),
+            url: None,
+            path: None,
+            path_mode: Some(WebvhPathMode::AutoAssign),
+            domain: None,
+            label: None,
+            portable: false,
+            add_mediator_service: false,
+            additional_services: None,
+            pre_rotation_count: 0,
+            did_document: None,
+            did_log: None,
+            set_primary: false,
+            signing_key_id: None,
+            ka_key_id: None,
+            template: None,
+            template_context: None,
+            template_vars: Default::default(),
+        })
+        .await
+        .expect("create server-managed DID against the stub host");
+    let did = create.did;
+    let scid = create.scid;
+
+    let confirmed = |did: &str| {
+        let did = did.to_string();
+        let ks = mock.ctx.webvh_ks.clone();
+        async move {
+            vta_service::webvh_store::get_published_version(&ks, &did)
+                .await
+                .unwrap()
+        }
+    };
+    let update = |label: &str, expected: Option<String>| {
+        let scid = scid.clone();
+        let did = did.clone();
+        let client = &client;
+        let body = UpdateDidWebvhBody {
+            document: Some(serde_json::json!({
+                "@context": ["https://www.w3.org/ns/did/v1"],
+                "id": did,
+                "verificationMethod": [{
+                    "id": format!("{did}#key-0"),
+                    "type": "Multikey",
+                    "controller": did,
+                    "publicKeyMultibase": "z6MkExternalPubForTest",
+                }],
+            })),
+            label: Some(label.into()),
+            expected_version_id: expected,
+            ..Default::default()
+        };
+        async move { client.update_did_webvh("ctx1", &scid, body).await }
+    };
+
+    update("u1", None).await.expect("first update succeeds");
+    let host_version = confirmed(&did).await.expect("a landed update confirms");
+
+    // The publish fails: local head advances, the host stays on `host_version`.
+    mock.fail_next_publishes(1);
+    assert!(
+        update("u2-fails", Some(host_version.clone()))
+            .await
+            .is_err(),
+        "a publish failure surfaces as an error"
+    );
+    assert_eq!(
+        confirmed(&did).await.as_deref(),
+        Some(host_version.as_str()),
+        "a failed publish must not advance the confirmed-published marker"
+    );
+
+    // What the admin UI does next: re-read the host (still `host_version`,
+    // since the failed publish never landed) and submit pinned to it. This is
+    // the call that used to fail forever with `concurrent update`.
+    update("u3-recovers", Some(host_version.clone()))
+        .await
+        .expect("a caller in step with the host must not be refused as stale");
+    assert_ne!(
+        confirmed(&did).await.as_deref(),
+        Some(host_version.as_str()),
+        "recovery re-publishes the pending log and advances the host past the failure"
+    );
+
+    mock.shutdown().await;
+}
+
+/// The precondition still refuses a genuinely stale caller.
+///
+/// The relaxation above keys on the caller matching the last *confirmed*
+/// publish. A caller pinned to a version the host has already moved past
+/// matches neither the local head nor the confirmed marker, so it is still a
+/// lost update and must still be refused — otherwise the fix for the wedge
+/// would have quietly deleted the optimistic-concurrency guarantee.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+#[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
+async fn a_stale_caller_still_conflicts() {
+    use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
+    use vta_sdk::protocols::did_management::create::WebvhPathMode;
+    use vta_sdk::protocols::did_management::update::UpdateDidWebvhBody;
+
+    let mock = MockVta::start_with_webvh_host().await;
+    let token = mock
+        .ctx
+        .mint_token("did:key:z6MkWebvhAdmin", "admin", vec![])
+        .await;
+    let client = VtaClient::new(mock.base_url());
+    client.set_token_async(token).await;
+
+    let create = client
+        .create_did_webvh(CreateDidWebvhRequest {
+            context_id: "ctx1".into(),
+            server_id: Some(MockVta::WEBVH_SERVER_ID.into()),
+            url: None,
+            path: None,
+            path_mode: Some(WebvhPathMode::AutoAssign),
+            domain: None,
+            label: None,
+            portable: false,
+            add_mediator_service: false,
+            additional_services: None,
+            pre_rotation_count: 0,
+            did_document: None,
+            did_log: None,
+            set_primary: false,
+            signing_key_id: None,
+            ka_key_id: None,
+            template: None,
+            template_context: None,
+            template_vars: Default::default(),
+        })
+        .await
+        .expect("create server-managed DID against the stub host");
+    let did = create.did;
+    let scid = create.scid;
+
+    let confirmed = |did: &str| {
+        let did = did.to_string();
+        let ks = mock.ctx.webvh_ks.clone();
+        async move {
+            vta_service::webvh_store::get_published_version(&ks, &did)
+                .await
+                .unwrap()
+        }
+    };
+    let update = |label: &str, expected: Option<String>| {
+        let scid = scid.clone();
+        let did = did.clone();
+        let client = &client;
+        let body = UpdateDidWebvhBody {
+            document: Some(serde_json::json!({
+                "@context": ["https://www.w3.org/ns/did/v1"],
+                "id": did,
+                "verificationMethod": [{
+                    "id": format!("{did}#key-0"),
+                    "type": "Multikey",
+                    "controller": did,
+                    "publicKeyMultibase": "z6MkExternalPubForTest",
+                }],
+            })),
+            label: Some(label.into()),
+            expected_version_id: expected,
+            ..Default::default()
+        };
+        async move { client.update_did_webvh("ctx1", &scid, body).await }
+    };
+
+    update("u1", None).await.expect("first update succeeds");
+    let stale = confirmed(&did).await.expect("a landed update confirms");
+
+    // Somebody else updates the DID; both the host and the local head move on,
+    // so `stale` is now genuinely behind rather than merely unpublished.
+    update("u2-by-someone-else", None)
+        .await
+        .expect("second update succeeds");
+    assert_ne!(
+        confirmed(&did).await.as_deref(),
+        Some(stale.as_str()),
+        "the host really did move past the version our caller is pinned to"
+    );
+
+    let err = update("u3-stale", Some(stale.clone()))
+        .await
+        .expect_err("a caller pinned behind the host must still conflict");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains(&stale),
+        "the refusal should name the stale version the caller sent: {msg}"
+    );
+
+    mock.shutdown().await;
+}
+
 /// Backward-recovery: a DID whose signing-key handle was superseded out of the
 /// active prefix (the state a pre-#730 failed-publish loop left) still updates,
 /// because the resolver re-derives the committed key from the seed.

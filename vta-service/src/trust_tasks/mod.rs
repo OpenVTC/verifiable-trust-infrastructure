@@ -87,7 +87,7 @@ pub(crate) use step_up::{
 };
 mod vault;
 #[cfg(feature = "webvh")]
-mod webvh;
+pub(crate) mod webvh;
 pub(crate) mod wire_v0_2;
 
 /// The transport-neutral dispatch result — see [`helpers::TrustTaskOutcome`].
