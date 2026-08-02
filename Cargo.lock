@@ -6815,7 +6815,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pnm-cli"
-version = "0.11.17"
+version = "0.11.18"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -10408,7 +10408,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",

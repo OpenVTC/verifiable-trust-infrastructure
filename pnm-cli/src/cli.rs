@@ -609,13 +609,16 @@ pub(crate) enum BackupCommands {
         /// Output file path (default: `vta-backup-<timestamp>.vtabak`)
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
-        /// Use the new descriptor-pattern trust-task flow instead of
-        /// the legacy inline `/backup/export` REST route. Off by
-        /// default during the transition window; will flip to on by
-        /// default in a future release. See
-        /// `docs/05-design-notes/backup-descriptor-pattern.md`.
+        /// Fall back to the legacy inline `/backup/export` REST route
+        /// instead of the descriptor-pattern trust-task flow.
+        ///
+        /// The trust-task flow is the default as of rollout step 5
+        /// (`docs/05-design-notes/backup-descriptor-pattern.md`). This
+        /// escape hatch exists for an emergency where the descriptor
+        /// flow cannot complete — it is removed at step 6, along with
+        /// the legacy route itself.
         #[arg(long)]
-        use_trust_task: bool,
+        use_rest_legacy: bool,
     },
     /// Import VTA state from an encrypted backup file
     Import {
@@ -624,11 +627,11 @@ pub(crate) enum BackupCommands {
         /// Preview only — show what would be imported without applying
         #[arg(long)]
         preview: bool,
-        /// Use the new descriptor-pattern trust-task flow instead of
-        /// the legacy inline `/backup/import` REST route. Off by
-        /// default during the transition window.
+        /// Fall back to the legacy inline `/backup/import` REST route
+        /// instead of the descriptor-pattern trust-task flow. See
+        /// `Export::use_rest_legacy`; removed at rollout step 6.
         #[arg(long)]
-        use_trust_task: bool,
+        use_rest_legacy: bool,
     },
 }
 

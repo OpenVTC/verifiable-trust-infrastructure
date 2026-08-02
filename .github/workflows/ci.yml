@@ -30,7 +30,16 @@ jobs:
           key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-check-
-            ${{ runner.os }}-cargo-
+          # Deliberately NO `${{ runner.os }}-cargo-` fallback on any job.
+          # It let a job restore a DIFFERENT job's cache, whose `target/` was
+          # built with other feature sets — so almost none of it is reusable
+          # (fingerprints differ) while all of it costs disk and download time.
+          # #891's Test failure logged the proof: `Cache restored from key:
+          # Linux-cargo-features-…`, ~3 GB of the Feature-combos tree unpacked
+          # before Test built its own, on a runner that then ran out of disk.
+          # The same shared key is what let one fat Enclave cache evict the
+          # repo's whole 10 GB allowance. Each job keeps its OWN prefix
+          # fallback, which is what actually warms a branch build from main.
 
       - run: cargo check --workspace
 
@@ -71,7 +80,13 @@ jobs:
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-test-
-            ${{ runner.os }}-cargo-
+
+      # The failure this guards against reports as `No space left on device`
+      # from the runner's own log writer — no failing step, no job log, just a
+      # red job that reads like a code failure. Printing the free space after
+      # the cache restore means the next occurrence says so in one line.
+      - name: Disk after cache restore
+        run: df -h /
 
       - run: cargo test --workspace
 
@@ -97,7 +112,6 @@ jobs:
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-clippy-
-            ${{ runner.os }}-cargo-
 
       - run: cargo clippy --workspace -- -D warnings
 
@@ -245,7 +259,6 @@ jobs:
           key: ${{ runner.os }}-cargo-features-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-features-
-            ${{ runner.os }}-cargo-
 
       - name: vta-service tee + webvh
         run: cargo check -p vta-service --no-default-features --features tee,rest,didcomm
@@ -308,7 +321,6 @@ jobs:
           key: ${{ runner.os }}-cargo-enclave-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-enclave-
-            ${{ runner.os }}-cargo-
 
       - run: cargo check -p vta-enclave --no-default-features --features rest,didcomm,vsock-store
 
@@ -343,7 +355,6 @@ jobs:
           key: ${{ runner.os }}-cargo-mobile-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-mobile-
-            ${{ runner.os }}-cargo-
 
       - name: Cross-compile (iOS + Android) and generate bindings
         run: |

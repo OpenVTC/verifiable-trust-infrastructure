@@ -462,6 +462,12 @@ once we add an `auto-relay` algorithm.
 4. Add the `pnm backup save/restore --use-trust-task` flag.
 5. After bake-in (one release cycle), flip the CLI default to
    trust-task; legacy `--use-rest-legacy` remains for emergency.
+   **Done (#892).** `--use-trust-task` is gone; the descriptor flow is
+   what `pnm backup export|import` does. The SDK's inline
+   `backup_export` / `backup_import` are deprecated — they ride a legacy
+   protocol message and so have no TSP dispatcher, which is the concrete
+   reason the descriptor flow is the default rather than merely the
+   newer option.
 6. Next release: remove the `--use-*` flags, remove the legacy
    REST routes.
 

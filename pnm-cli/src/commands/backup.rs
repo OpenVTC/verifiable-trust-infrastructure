@@ -19,28 +19,29 @@ pub(crate) async fn run(
         BackupCommands::Export {
             include_audit,
             output,
-            use_trust_task,
+            use_rest_legacy,
         } => {
-            if use_trust_task {
-                cmd_backup_export_descriptor(client, include_audit, output).await
-            } else {
+            if use_rest_legacy {
                 cmd_backup_export(client, include_audit, output).await
+            } else {
+                cmd_backup_export_descriptor(client, include_audit, output).await
             }
         }
         BackupCommands::Import {
             file,
             preview,
-            use_trust_task,
+            use_rest_legacy,
         } => {
-            if use_trust_task {
-                cmd_backup_import_descriptor(client, file, preview).await
-            } else {
+            if use_rest_legacy {
                 cmd_backup_import(client, file, preview).await
+            } else {
+                cmd_backup_import_descriptor(client, file, preview).await
             }
         }
     }
 }
 
+#[allow(deprecated)] // the `--use-rest-legacy` escape hatch; removed at rollout step 6
 async fn cmd_backup_export(
     client: &VtaClient,
     include_audit: bool,
@@ -82,6 +83,7 @@ async fn cmd_backup_export(
     Ok(())
 }
 
+#[allow(deprecated)] // the `--use-rest-legacy` escape hatch; removed at rollout step 6
 async fn cmd_backup_import(
     client: &VtaClient,
     file: std::path::PathBuf,
