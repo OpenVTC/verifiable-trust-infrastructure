@@ -307,13 +307,16 @@ pub(super) async fn handle_derive_and_sign_document(
 
 /// Handler for `keys/import/0.1`. Admin only.
 ///
-/// **The cleartext `privateKeyMultibase` carrier is refused here, always.** The
-/// specification admits it only where the transport is end-to-end confidential,
-/// and one dispatcher serves this task over REST, DIDComm and TSP — so a handler
-/// at this layer cannot tell which carried the request. Refusing is the reading
-/// that cannot leak a key; the legacy `key-management/1.0/import-key` DIDComm
-/// message still accepts multibase, where authcrypt has already established the
-/// guarantee.
+/// **The cleartext `privateKeyMultibase` carrier is admitted only where the
+/// transport established confidentiality end-to-end** — DIDComm authcrypt and
+/// TSP, which seal to this VTA's own key. Over REST it is refused: TLS
+/// terminates wherever the operator terminates it, and the plaintext exists
+/// there.
+///
+/// This is the specification's own rule ("only where the transport is
+/// end-to-end confidential") rather than the blanket refusal that stood in for
+/// it while the spine discarded the transport before handlers ran. See
+/// [`crate::trust_tasks::transport`].
 pub(super) async fn handle_import(
     state: &AppState,
     auth: &AuthClaims,
@@ -327,11 +330,18 @@ pub(super) async fn handle_import(
         Err(resp) => return resp,
     };
 
-    if req.private_key_multibase.is_some() {
+    if req.private_key_multibase.is_some()
+        && crate::trust_tasks::transport::current()
+            != crate::trust_tasks::transport::TransportConfidentiality::EndToEnd
+    {
         return reject_with(
             &doc,
             RejectReason::MalformedRequest {
-                reason: "keys/import: the cleartext `privateKeyMultibase` carrier is not                          accepted on the trust-task surface, which is served over REST as well                          as DIDComm and TSP and cannot establish that this request travelled                          end to end. Seal the key to this VTA and send `privateKeySealed`."
+                reason: "keys/import: the cleartext `privateKeyMultibase` carrier needs a \
+                         transport that is confidential end to end, and this request did not \
+                         arrive on one — TLS terminates wherever the operator terminates it, so \
+                         the key would exist in plaintext there. Seal the key to this VTA and \
+                         send `privateKeySealed`, or send it over DIDComm or TSP."
                     .to_string(),
             },
         );
@@ -361,11 +371,42 @@ pub(super) async fn handle_import(
             Ok(bytes) => bytes,
             Err(e) => return app_error_to_reject(&doc, e),
         }
+    } else if let Some(mb) = req.private_key_multibase.as_deref() {
+        // Only reachable on an end-to-end-confidential transport — the gate
+        // above refused it otherwise. The key arrives multicodec-prefixed
+        // (ed25519-priv `0x8026`); strip the prefix so the operation receives
+        // the raw private key, exactly as the sealed and JWE carriers deliver.
+        match multibase::decode(mb) {
+            Ok((_, decoded)) => match decoded.len() {
+                34 => decoded[2..].to_vec(),
+                32 => decoded,
+                other => {
+                    return reject_with(
+                        &doc,
+                        RejectReason::MalformedRequest {
+                            reason: format!(
+                                "keys/import: `privateKeyMultibase` decoded to {other} bytes; \
+                                 expected 32 raw or 34 multicodec-prefixed"
+                            ),
+                        },
+                    );
+                }
+            },
+            Err(e) => {
+                return reject_with(
+                    &doc,
+                    RejectReason::MalformedRequest {
+                        reason: format!("keys/import: `privateKeyMultibase` is not multibase: {e}"),
+                    },
+                );
+            }
+        }
     } else {
         return reject_with(
             &doc,
             RejectReason::MalformedRequest {
-                reason: "keys/import: one of `privateKeySealed` or `privateKeyJwe` is required"
+                reason: "keys/import: one of `privateKeySealed`, `privateKeyJwe` or \
+                         `privateKeyMultibase` is required"
                     .to_string(),
             },
         );

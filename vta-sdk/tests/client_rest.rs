@@ -275,6 +275,7 @@ async fn update_config_reports_identity_as_rejected() {
 
 // ── Backup ──────────────────────────────────────────────────────────
 
+#[allow(deprecated)] // pins the inline path until rollout step 6 removes it
 #[tokio::test]
 async fn backup_export_returns_envelope() {
     let server = MockServer::start().await;
@@ -295,6 +296,7 @@ async fn backup_export_returns_envelope() {
     assert!(!env.includes_audit);
 }
 
+#[allow(deprecated)] // pins the inline path until rollout step 6 removes it
 #[tokio::test]
 async fn backup_export_403_maps_to_forbidden() {
     let server = MockServer::start().await;

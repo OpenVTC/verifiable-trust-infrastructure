@@ -2153,6 +2153,47 @@ async fn create_did_webvh_set_primary_true() {
 /// channel). `#[serde(deny_unknown_fields)]` is the load-bearing
 /// mechanism — operators get a specific "unknown field" error
 /// pointing them at the sealed-transfer migration path.
+/// REST is hop-by-hop — TLS terminates wherever the operator terminates it —
+/// so the canonical task must refuse the cleartext carrier here even though it
+/// accepts it over DIDComm and TSP.
+///
+/// This is the whole security property of making the dispatcher
+/// transport-aware. If the spine ever stops establishing the transport scope,
+/// `transport::current()` falls back to hop-by-hop and this test still passes;
+/// if it were to fall back the other way, this test is what fails.
+#[tokio::test]
+async fn keys_import_trust_task_refuses_cleartext_over_rest() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx
+        .auth_token("did:key:z6MkSuperAdmin", "admin", vec![])
+        .await;
+
+    let (status, body) = app
+        .request(post_auth(
+            "/api/trust-tasks",
+            &token,
+            json!({
+                "id": "urn:uuid:6f1b2c3d-4e5f-4061-8293-a4b5c6d7e8f9",
+                "type": "https://trusttasks.org/spec/keys/import/0.1",
+                "payload": {
+                    "keyType": "ed25519",
+                    "privateKeyMultibase": "z6MkDeadbeefDeadbeefDeadbeef",
+                },
+            }),
+        ))
+        .await;
+
+    let rendered = body.to_string();
+    assert!(
+        !status.is_success(),
+        "cleartext key over REST must be refused, got {status} {rendered}"
+    );
+    assert!(
+        rendered.contains("confidential end to end"),
+        "the refusal must say why, so an operator can act on it: {rendered}"
+    );
+}
+
 #[tokio::test]
 async fn keys_import_rejects_private_key_multibase_over_rest() {
     let (app, ctx) = TestApp::new().await;

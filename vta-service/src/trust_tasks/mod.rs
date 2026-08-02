@@ -74,6 +74,7 @@ mod provision_integration;
 mod replay;
 mod seeds;
 mod task_consent;
+pub(crate) mod transport;
 // `pub(crate)` so the REST routes (`routes::acl`, `routes::contexts`) can
 // reach the `RequireStepUp` extractor + op markers. The step-up *engine* lives
 // in `operations::step_up` (P2.4); this module holds only the transport
@@ -387,9 +388,16 @@ pub async fn dispatch_trust_task(
     State(state): State<AppState>,
     body: axum::body::Bytes,
 ) -> Result<Response, AppError> {
-    Ok(dispatch_trust_task_core(&state, &auth, &body)
-        .await
-        .into_response())
+    // REST is hop-by-hop by construction: TLS terminates at whatever the
+    // operator put in front of this process, and the plaintext exists there.
+    Ok(dispatch_trust_task_core(
+        &state,
+        &auth,
+        &body,
+        transport::TransportConfidentiality::HopByHop,
+    )
+    .await
+    .into_response())
 }
 
 /// Transport-agnostic trust-task dispatch core.
@@ -457,6 +465,22 @@ async fn validate_payload(
 }
 
 pub(crate) async fn dispatch_trust_task_core(
+    state: &AppState,
+    auth: &AuthClaims,
+    body: &[u8],
+    confidentiality: transport::TransportConfidentiality,
+) -> TrustTaskOutcome {
+    transport::with_confidentiality(confidentiality, async move {
+        dispatch_trust_task_inner(state, auth, body).await
+    })
+    .await
+}
+
+/// The dispatch spine proper. Split from [`dispatch_trust_task_core`] only so
+/// the transport scope wraps every path out of it, including the early
+/// rejections — a handler that reads the transport must never see a scope that
+/// was skipped because the envelope failed validation first.
+async fn dispatch_trust_task_inner(
     state: &AppState,
     auth: &AuthClaims,
     body: &[u8],
