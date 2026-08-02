@@ -34,25 +34,29 @@ pub struct UpdateDidWebvhBody {
     /// New DID document. `None` = keep existing. When `Some`, the VTA
     /// rotates `update_keys` + pre-rotation commitments as a parallel
     /// consequence.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub document: Option<Value>,
     /// Override pre-rotation count. `None` = keep current; `Some(0)`
     /// disables pre-rotation; `Some(n)` uses `n` new commitments.
-    #[serde(default, alias = "pre_rotation_count")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "pre_rotation_count"
+    )]
     pub pre_rotation_count: Option<u32>,
     /// New witness configuration as raw JSON (matches the library's
     /// `Witnesses` enum on the wire). The vta-service handler
     /// deserializes into the typed shape.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witnesses: Option<Value>,
     /// New watcher URLs. `None` = keep current; `Some(vec![])` disables.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watchers: Option<Vec<String>>,
     /// New TTL in seconds. `None` = keep current.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl: Option<u32>,
     /// Operator-facing audit label.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Optimistic-concurrency precondition. When `Some`, the VTA refuses
     /// the update if the DID's latest log entry no longer matches this
@@ -64,7 +68,11 @@ pub struct UpdateDidWebvhBody {
     ///
     /// `None` (default) preserves prior behaviour for scripted callers
     /// that don't care about concurrent edits.
-    #[serde(default, alias = "expected_version_id")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "expected_version_id"
+    )]
     pub expected_version_id: Option<String>,
 }
 
@@ -77,10 +85,14 @@ pub struct UpdateDidWebvhBody {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RotateDidWebvhKeysBody {
     /// Override pre-rotation count for the new commitment set.
-    #[serde(default, alias = "pre_rotation_count")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "pre_rotation_count"
+    )]
     pub pre_rotation_count: Option<u32>,
     /// Operator-facing audit label.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
 
@@ -231,6 +243,89 @@ mod casing_tests {
     /// to prevent happened anyway, and every signature in the resulting chain
     /// still verified.
     ///
+    /// An unset field must be **absent**, never `null`.
+    ///
+    /// The published `vta/webvh/dids/update/1.0` schema types each optional
+    /// member by what it holds — object, string, integer, array — and none of
+    /// them accept null. Serialising `None` as `null` therefore fails schema
+    /// validation on arrival, and it fails once per unset field:
+    ///
+    /// ```text
+    /// payload failed schema validation: null is not of type "object";
+    /// null is not of type "string"; null is not of type "integer";
+    /// null is not of type "integer"; null is not of type "array"
+    /// ```
+    ///
+    /// Every other body in `did_management` already skips its `None`s; this
+    /// one did not, which made *every partial update* unusable over the
+    /// trust-task transport — `pnm did-mgmt dids edit --label x` could not
+    /// run at all. Supplying more flags did not help: each one only removed
+    /// a single null and left the rest.
+    #[test]
+    fn an_unset_field_is_absent_from_the_wire_not_null() {
+        // The exact shape the CLI sends for `--label resync`.
+        let partial = UpdateDidWebvhBody {
+            label: Some("resync".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&partial).expect("serialises");
+
+        assert_eq!(
+            json,
+            serde_json::json!({"label": "resync"}),
+            "a partial update must carry only the fields that were set"
+        );
+
+        // Stated independently of the equality above: the schema rejects null
+        // per member, so no member may serialise to one.
+        let obj = json.as_object().expect("object");
+        assert!(
+            obj.values().all(|v| !v.is_null()),
+            "no member may serialise as null: {json}"
+        );
+
+        // An empty body is the degenerate case — `{}`, not seven nulls.
+        assert_eq!(
+            serde_json::to_value(UpdateDidWebvhBody::default()).expect("serialises"),
+            serde_json::json!({}),
+        );
+
+        // The sibling request body has the same contract.
+        assert_eq!(
+            serde_json::to_value(RotateDidWebvhKeysBody {
+                label: Some("resync".into()),
+                ..Default::default()
+            })
+            .expect("serialises"),
+            serde_json::json!({"label": "resync"}),
+        );
+    }
+
+    /// Skipping `None` must not make a set field vanish — including the
+    /// falsy-looking ones a naive `skip_serializing_if` would drop.
+    #[test]
+    fn a_set_field_still_reaches_the_wire() {
+        let body = UpdateDidWebvhBody {
+            // `Some(0)` is meaningful: it *disables* pre-rotation, which is
+            // the opposite of "leave it alone". It must survive.
+            pre_rotation_count: Some(0),
+            // `Some(vec![])` likewise disables watchers rather than keeping
+            // the current set.
+            watchers: Some(vec![]),
+            expected_version_id: Some("1-QmPrior".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&body).expect("serialises");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "preRotationCount": 0,
+                "watchers": [],
+                "expectedVersionId": "1-QmPrior",
+            }),
+        );
+    }
+
     /// A silently-ignored safety precondition is worse than an absent one: it
     /// reads, in the caller's source, as though the danger were handled.
     #[test]
