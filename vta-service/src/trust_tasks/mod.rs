@@ -1420,6 +1420,76 @@ mod payload_validation_tests {
         );
     }
 
+    /// The payload the CLI actually sends for a partial edit must validate.
+    ///
+    /// Built by **serialising the real wire type**, not by hand-writing the
+    /// JSON. A literal here would only ever encode what the author believed
+    /// the type emits, and the defect this pins was precisely a gap between
+    /// those two: `UpdateDidWebvhBody` serialised every unset `Option` as an
+    /// explicit `null`, and the schema types each member by what it holds —
+    /// object, string, integer, array — with none of them nullable. So
+    /// `pnm did-mgmt dids edit --label resync` was refused with one complaint
+    /// per unset field, and no combination of flags helped: each one removed a
+    /// single null and left the others.
+    ///
+    /// Every sibling body in `did_management` already skipped its `None`s.
+    /// This one did not, which made the whole documented CLI edit path
+    /// unusable over the trust-task transport.
+    #[tokio::test]
+    async fn a_partial_edit_from_the_cli_validates() {
+        use vta_sdk::protocols::did_management::update::UpdateDidWebvhBody;
+
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+
+        // `--label resync --no-confirm`, exactly as the CLI builds it.
+        let body = UpdateDidWebvhBody {
+            label: Some("resync".into()),
+            ..Default::default()
+        };
+        let mut payload = serde_json::to_value(&body).expect("serialises");
+        // `UpdateDidWithDid` flattens the body alongside `did`.
+        payload
+            .as_object_mut()
+            .expect("object")
+            .insert("did".into(), json!("did:webvh:QmScid:example.com:acme"));
+
+        assert!(
+            !payload.to_string().contains("null"),
+            "the CLI's own payload must carry no nulls: {payload}"
+        );
+
+        let reject = super::validate_payload(&state, WEBVH_UPDATE, &doc(payload.clone())).await;
+        assert!(
+            reject.is_none(),
+            "a label-only edit must validate, got: {:?}",
+            reject.map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        );
+    }
+
+    /// The same payload with the nulls put back is refused — so the test above
+    /// pins the serialisation rather than passing incidentally.
+    #[tokio::test]
+    async fn the_null_form_that_broke_the_cli_is_still_refused() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let d = doc(json!({
+            "did": "did:webvh:QmScid:example.com:acme",
+            "document": Value::Null,
+            "preRotationCount": Value::Null,
+            "witnesses": Value::Null,
+            "watchers": Value::Null,
+            "ttl": Value::Null,
+            "label": "resync",
+            "expectedVersionId": Value::Null,
+        }));
+        assert!(
+            super::validate_payload(&state, WEBVH_UPDATE, &d)
+                .await
+                .is_some(),
+            "an explicit null is not a valid member value — if this passes, the \
+             schema stopped typing its members and the fix above proves nothing"
+        );
+    }
+
     #[tokio::test]
     async fn an_invented_member_is_refused() {
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
