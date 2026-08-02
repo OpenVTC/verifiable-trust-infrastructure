@@ -635,7 +635,17 @@ fn map_register_err(e: RegisterDidWithServerError) -> AppError {
 
 // ─── Helpers internal to this slice ─────────────────────────────────────
 
-pub(super) fn update_body_to_options(
+/// Convert the camelCase wire body into the op-layer options shape.
+///
+/// `pub(crate)` so the REST route shares this one conversion rather than
+/// deserialising the caller's JSON straight into [`UpdateDidWebvhOptions`].
+/// That shortcut silently dropped `expectedVersionId`: the wire body is
+/// `rename_all = "camelCase"`, the op-layer struct is snake_case with no
+/// aliases and no `deny_unknown_fields`, so the field matched nothing and
+/// defaulted to `None` — the optimistic-concurrency precondition never
+/// applied on that path. Two conversions are two chances to drift; there is
+/// deliberately only one.
+pub(crate) fn update_body_to_options(
     body: UpdateDidWebvhBody,
 ) -> Result<UpdateDidWebvhOptions, RejectReason> {
     let witnesses = match body.witnesses {

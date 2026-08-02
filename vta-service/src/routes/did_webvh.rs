@@ -11,6 +11,7 @@ use vta_sdk::protocols::did_management::{
         ListWebvhServersResultBody, RegisterDidWithServerBody, RegisterDidWithServerResultBody,
         RegisterWebvhServerResultBody,
     },
+    update::UpdateDidWebvhBody,
 };
 
 use crate::auth::{AdminAuth, AuthClaims, SuperAdminAuth};
@@ -18,7 +19,7 @@ use crate::error::AppError;
 use crate::operations;
 use crate::operations::did_webvh::{
     RegisterDidWithServerError, RegisterDidWithServerParams, RotateDidWebvhKeysOptions,
-    UpdateDidWebvhOptions, UpdateDidWebvhResult, register_did_with_server,
+    UpdateDidWebvhResult, register_did_with_server,
 };
 use crate::server::AppState;
 
@@ -394,20 +395,32 @@ pub async fn delete_did_handler(
         ("ctx_id" = String, Path, description = "Context identifier"),
         ("scid" = String, Path, description = "DID SCID"),
     ),
-    request_body = UpdateDidWebvhOptions,
+    request_body = UpdateDidWebvhBody,
     responses(
         (status = 200, description = "DID updated", body = UpdateDidWebvhResult),
+        (status = 400, description = "Malformed request body"),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
         (status = 404, description = "DID not found"),
     ),
 )]
+/// Takes the **wire** body, not the op-layer options.
+///
+/// Deserialising straight into `UpdateDidWebvhOptions` silently dropped
+/// `expectedVersionId` — the wire body is camelCase, that struct is snake_case
+/// with no aliases — so the optimistic-concurrency precondition never applied
+/// to REST callers. A precondition that is accepted and ignored is worse than
+/// one that is absent: it reads in the caller's source as though the lost
+/// update were handled. Conversion goes through the same
+/// `update_body_to_options` the trust-task dispatcher uses.
 pub async fn update_did_handler(
     auth: AdminAuth,
     State(state): State<AppState>,
     Path((_ctx_id, scid)): Path<(String, String)>,
-    Json(body): Json<UpdateDidWebvhOptions>,
+    Json(body): Json<UpdateDidWebvhBody>,
 ) -> Result<Json<UpdateDidWebvhResult>, AppError> {
+    let options = crate::trust_tasks::webvh::update_body_to_options(body)
+        .map_err(|e| AppError::Validation(format!("invalid update body: {e:?}")))?;
     let did_resolver = state
         .did_resolver
         .as_ref()
@@ -418,7 +431,7 @@ pub async fn update_did_handler(
         &deps,
         &auth.0,
         &scid,
-        body,
+        options,
         vta_did.as_deref(),
         "rest",
     )

@@ -575,14 +575,59 @@ async fn run_update(
     //     `log_entry_count` check at the end does NOT — that one only
     //     covers two server calls racing each other; this one covers
     //     a client call that was authored against a stale view.
+    //
+    //     `expected` and `latest` are NOT the same source of truth, and the
+    //     difference decides whether a mismatch is the caller's fault. The
+    //     caller read `expected` from the **host**; `latest` is **our local**
+    //     head. They diverge in two opposite situations:
+    //
+    //       - the host moved on under the caller — a genuine lost update; or
+    //       - we hold a local head we never managed to publish, so the caller
+    //         is reading the host perfectly correctly and *we* are the one out
+    //         of step.
+    //
+    //     `get_published_version` tells them apart. Treating the second case
+    //     as a conflict is what wedges a DID permanently: step 4b — the
+    //     reconciler written to heal exactly this divergence — sits *below*
+    //     this check, so refusing here means it never runs, and every retry
+    //     dies in the same place. That is the unrecoverable loop 4b's own
+    //     comment warns about, reached from the other side. It bites hardest
+    //     through the consent flow, where the failure is raised by the Plan
+    //     dry-run: 4b is Execute-only by design, so a plan cannot self-heal
+    //     and the task never gets far enough to try.
     if let Some(expected) = opts.expected_version_id.as_deref() {
         let latest = last_state.get_version_id();
         if latest != expected {
-            return Err(UpdateDidWebvhError::Conflict(format!(
-                "DID {} has been updated since you read it (expected versionId `{expected}`, \
-                 current is `{latest}`). Re-fetch the document and re-apply your edits.",
-                record.did
-            )));
+            let confirmed = webvh_store::get_published_version(webvh_ks, &record.did)
+                .await
+                .map_err(|e| {
+                    UpdateDidWebvhError::Persistence(format!("get_published_version: {e}"))
+                })?;
+            // Only when the caller is in step with the last version we
+            // *confirmed* on the host. `None` (never confirmed) keeps the
+            // conflict: we cannot show the caller was reading anything real.
+            // Serverless DIDs never set the marker, so they stay strict — with
+            // no host, the local head is the only truth and a mismatch really
+            // is a stale caller.
+            if confirmed.as_deref() != Some(expected) {
+                return Err(UpdateDidWebvhError::Conflict(format!(
+                    "DID {} has been updated since you read it (expected versionId `{expected}`, \
+                     current is `{latest}`). Re-fetch the document and re-apply your edits.",
+                    record.did
+                )));
+            }
+            // Proceed against the local head. In Execute mode 4b republishes it
+            // and the host catches up; the new version is then built on top. No
+            // new authority is granted by that — the unpublished head was signed
+            // under a prior authorization — so this resumes an interrupted
+            // publish rather than smuggling in an unapproved change.
+            tracing::warn!(
+                did = %record.did,
+                caller_expected = %expected,
+                local_head = %latest,
+                "caller is in step with the last confirmed publish but our local head is \
+                 ahead — an earlier publish never landed; continuing so the reconcile can heal it"
+            );
         }
     }
 
