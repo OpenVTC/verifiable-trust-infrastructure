@@ -1315,6 +1315,16 @@ pub async fn create_did_webvh(
         };
         webvh_store::store_did(webvh_ks, &did_record).await?;
         webvh_store::store_did_log(webvh_ks, &final_did, &log_content).await?;
+        // The host has the genesis log — `publish_did` above returned Ok — so
+        // record it as confirmed. The update orchestrator is otherwise the only
+        // writer of this marker, so without this it stays absent until the
+        // DID's first successful update, and "absent" then conflates *never
+        // published* with *hosted since creation*. The concurrency check reads
+        // it to tell a stale caller from a local head we failed to publish;
+        // leaving it empty makes a freshly-created DID indistinguishable from
+        // one whose publishes have never landed. Serverless creation
+        // deliberately does not set it — there is no host to confirm against.
+        webvh_store::set_published_version(webvh_ks, &final_did, &genesis_version_id).await?;
         refresh_resolver_doc_from_log(did_resolver, &final_did, &log_content, channel).await;
 
         info!(

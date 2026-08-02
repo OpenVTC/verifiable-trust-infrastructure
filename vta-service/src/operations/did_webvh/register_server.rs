@@ -230,6 +230,37 @@ pub async fn register_did_with_server(
     let log_entry_count = record.log_entry_count;
     webvh_store::store_did(deps.webvh_ks, &record).await?;
 
+    // The atomic claim-and-publish above put this exact log on the host, so
+    // record its head as confirmed. The DID is only now becoming hosted — it
+    // had no marker as a serverless DID and legitimately needed none — and
+    // without this it would carry an absent marker into its hosted life. The
+    // update path reads the marker to tell a stale caller from a local head it
+    // failed to publish; seeding it here means the very first hosted update
+    // starts from a known-published version rather than an unknown one.
+    // Best-effort: the DID is already registered and the record already
+    // flipped, so failing the whole operation over a bookkeeping write would
+    // undo nothing and report failure for work that succeeded. An absent
+    // marker is a state the update path already handles.
+    match super::update::state_from_jsonl_pub(&did_log) {
+        Ok(state) => match state.log_entries().last() {
+            Some(head) => {
+                if let Err(e) = webvh_store::set_published_version(
+                    deps.webvh_ks,
+                    &record.did,
+                    head.get_version_id(),
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, did = %record.did,
+                        "could not record the published version after register-with-server");
+                }
+            }
+            None => tracing::warn!(did = %record.did, "registered log has no entries"),
+        },
+        Err(e) => tracing::warn!(error = %e, did = %record.did,
+            "could not parse the registered log to record its published version"),
+    }
+
     // 6. Audit. Best-effort; log+swallow on error.
     let resource = format!("did:webvh:{}", record.scid);
     if let Err(e) = audit::record(
