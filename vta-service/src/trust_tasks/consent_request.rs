@@ -166,18 +166,31 @@ async fn push_one(
     approver: &str,
     #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))] request: &Value,
 ) {
-    let mediator_did = {
+    // Captured before the route decision so the log can say *why* it went the
+    // way it did. Diagnosing "the approver was never told" from the outside
+    // meant guessing between "no route" and "delivered, device asleep", and the
+    // two have opposite fixes.
+    let configured_mediator = {
         let cfg = state.config.read().await;
-        super::step_up::approver_mediator(
-            approver,
-            cfg.messaging.as_ref().map(|m| m.mediator_did.as_str()),
-        )
+        cfg.messaging.as_ref().map(|m| m.mediator_did.clone())
     };
+    let mediator_did = super::step_up::approver_mediator(approver, configured_mediator.as_deref());
+
     #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))]
     let Some(mediator_did) = mediator_did else {
-        tracing::debug!(
+        // `warn`, not `debug`. This is the VTA deciding not to notify anybody
+        // about a consent request it is now holding — the approver will never
+        // learn of it unless the requester relays, and a CLI requester cannot.
+        // At debug it is invisible on a normal deployment, so the symptom
+        // ("nothing pops up") is indistinguishable from a sleeping device, and
+        // the operator has no way to tell which. That is not routine.
+        tracing::warn!(
             approver = %approver,
-            "no mediator route for consent approver; the relay fallback applies"
+            configured_mediator = ?configured_mediator,
+            "no mediator route for consent approver — NOT notifying; the approver \
+             learns of this request only if the requester relays it (a CLI cannot). \
+             A did:key approver routes via the VTA's own [messaging] mediator_did: \
+             unset config, or a non-did:key approver, produces this."
         );
         return;
     };
@@ -186,10 +199,24 @@ async fn push_one(
     // (learn-from-inbound); otherwise fall through to DIDComm below.
     #[cfg(feature = "tsp")]
     if super::step_up::try_push_over_tsp(state, approver, &mediator_did, request).await {
+        tracing::info!(
+            approver = %approver, mediator = %mediator_did, transport = "tsp",
+            "consent request pushed to approver"
+        );
         #[cfg(feature = "didcomm")]
         super::step_up::trigger_gateway_wake(state, approver, &mediator_did).await;
         return;
     }
+
+    // Said before the send rather than after: the enqueue is the last thing we
+    // control. Beyond it the message is the mediator's to hold and the device's
+    // to collect, and silence there is not ours to report — but "we tried, to
+    // this DID, via this mediator" must be on the record either way, so a
+    // missing prompt can be attributed to a side rather than argued about.
+    tracing::info!(
+        approver = %approver, mediator = %mediator_did, transport = "didcomm",
+        "pushing consent request to approver"
+    );
 
     #[cfg(feature = "didcomm")]
     {
