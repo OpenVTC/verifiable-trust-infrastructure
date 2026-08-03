@@ -276,7 +276,34 @@ pub async fn cmd_webvh_did_edit(
 
     confirm_publish(&body, no_confirm)?;
 
-    let result = client.update_did_webvh_by_did(did, body).await?;
+    // Cloned per attempt rather than moved: a consent grant is bound to a
+    // digest of the payload, so every retry must send the identical bytes or
+    // it raises a second, unanswerable question instead of consuming the
+    // approval already in flight.
+    let result = match crate::consent::with_consent(|| {
+        let body = body.clone();
+        async move { client.update_did_webvh_by_did(did, body).await }
+    })
+    .await?
+    {
+        Ok(result) => result,
+        Err(outcome) => {
+            match outcome {
+                crate::consent::ConsentOutcome::Resolved => {
+                    eprintln!(
+                        "Not approved — the request was denied or expired. Nothing was published."
+                    );
+                }
+                crate::consent::ConsentOutcome::TimedOut => {
+                    eprintln!(
+                        "Gave up waiting. The request is still pending, so approving on your \
+                         device and re-running this command will publish it."
+                    );
+                }
+            }
+            return Ok(());
+        }
+    };
     println!("WebVH DID updated.");
     println!("  DID:             {}", result.did);
     println!("  New version ID:  {}", result.new_version_id);

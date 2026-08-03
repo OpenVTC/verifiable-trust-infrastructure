@@ -570,6 +570,14 @@ async fn consent_gate(
                 "challenge": pending.challenge,
                 "approverSet": require.approver_set,
                 "minApprovals": min_approvals,
+                // Whether the requesting device is barred from the threshold.
+                // Told to the caller so a CLI can say "waiting for your device"
+                // versus "approve here" instead of blind-attempting a
+                // self-approval and reading `denied:requester_excluded` back.
+                // This reveals policy shape to a caller that has already
+                // authenticated and just triggered the rule — it grants
+                // nothing; the gate still decides every approval.
+                "excludeRequester": require.exclude_requester,
                 // The signed requests to relay. Each is VTA-authored, so the
                 // approver renders effects it can attribute to the executor
                 // rather than to whoever handed it the document.

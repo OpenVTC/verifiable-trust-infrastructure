@@ -1553,6 +1553,41 @@ impl VtaClient {
     fn trust_task_error(payload: &serde_json::Value) -> Option<VtaError> {
         let code = payload.get("code")?.as_str()?;
         let message = payload.get("message")?.as_str()?;
+
+        // A consent refusal is not a dead end — it is a question the caller can
+        // answer — so it gets a variant carrying what answering requires. The
+        // gate puts the machine-readable reason in `details.reason` precisely
+        // so a consumer keys on a stable field rather than the top-level `code`
+        // (`taskFailed` for every gated task) or the free-text message.
+        if let Some(details) = payload.get("details")
+            && details.get("reason").and_then(|r| r.as_str()) == Some("auth:consent_required")
+        {
+            let s = |k: &str| {
+                details
+                    .get(k)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            return Some(VtaError::ConsentRequired {
+                payload_digest: s("payloadDigest"),
+                challenge: s("challenge"),
+                approver_set: s("approverSet"),
+                min_approvals: details
+                    .get("minApprovals")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(1) as u32,
+                // Absent on a server older than the field. `true` is the
+                // conservative read: it tells the caller to wait for another
+                // device rather than to offer a self-approval that the gate
+                // would refuse with `denied:requester_excluded`.
+                exclude_requester: details
+                    .get("excludeRequester")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true),
+            });
+        }
+
         Some(VtaError::Protocol(format!(
             "trust task failed [{code}]: {message}"
         )))
@@ -1855,6 +1890,86 @@ impl VtaClient {
 mod tests {
     use super::*;
     use crate::keys::KeyType;
+
+    // ── consent refusals ────────────────────────────────────────────
+
+    /// A `requireConsent` refusal must arrive as something a caller can act
+    /// on, not a flat string.
+    ///
+    /// The fixture is the gate's real shape: `code` is `taskFailed` for every
+    /// gated task and the message is free text, so the machine-readable answer
+    /// lives in `details.reason` — keying on anything else would match the
+    /// wrong rejections or none. Folded into `Protocol(String)`, the digest and
+    /// challenge were discarded, and a CLI could only print the refusal and
+    /// exit; that is why a consent-gated task was unreachable from `pnm`.
+    #[test]
+    fn a_consent_refusal_carries_what_answering_it_needs() {
+        let payload = serde_json::json!({
+            "code": "taskFailed",
+            "message": "task failed: auth:consent_required",
+            "details": {
+                "reason": "auth:consent_required",
+                "payloadDigest": "A1B2C3",
+                "challenge": "chal-xyz",
+                "approverSet": "webvh-approvers",
+                "minApprovals": 1,
+                "excludeRequester": true,
+                "consentRequests": [],
+            }
+        });
+
+        match VtaClient::trust_task_error(&payload) {
+            Some(VtaError::ConsentRequired {
+                payload_digest,
+                challenge,
+                approver_set,
+                min_approvals,
+                exclude_requester,
+            }) => {
+                assert_eq!(payload_digest, "A1B2C3");
+                assert_eq!(challenge, "chal-xyz");
+                assert_eq!(approver_set, "webvh-approvers");
+                assert_eq!(min_approvals, 1);
+                assert!(exclude_requester, "the two-device posture must be reported");
+            }
+            other => panic!("expected ConsentRequired, got {other:?}"),
+        }
+    }
+
+    /// Against a server that predates `excludeRequester`, assume the
+    /// restrictive answer. Guessing `false` would have the CLI offer a
+    /// self-approval the gate then refuses with `denied:requester_excluded`;
+    /// guessing `true` only tells the operator to use another device, which is
+    /// correct whenever a second device exists.
+    #[test]
+    fn an_absent_exclude_requester_defaults_to_the_restrictive_reading() {
+        let payload = serde_json::json!({
+            "code": "taskFailed",
+            "message": "task failed: auth:consent_required",
+            "details": { "reason": "auth:consent_required", "challenge": "c" }
+        });
+        match VtaClient::trust_task_error(&payload) {
+            Some(VtaError::ConsentRequired {
+                exclude_requester, ..
+            }) => assert!(exclude_requester),
+            other => panic!("expected ConsentRequired, got {other:?}"),
+        }
+    }
+
+    /// Every other failure keeps its existing shape — the new variant must not
+    /// swallow unrelated rejections that merely carry a `details` object.
+    #[test]
+    fn a_non_consent_failure_is_still_a_protocol_error() {
+        let payload = serde_json::json!({
+            "code": "malformedRequest",
+            "message": "payload does not conform",
+            "details": { "reason": "schema:invalid" }
+        });
+        assert!(matches!(
+            VtaClient::trust_task_error(&payload),
+            Some(VtaError::Protocol(_))
+        ));
+    }
 
     // ── extract_trust_task_payload ──────────────────────────────────
 
