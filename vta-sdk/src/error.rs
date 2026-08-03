@@ -75,6 +75,42 @@ pub enum VtaError {
     #[error("protocol error: {0}")]
     Protocol(String),
 
+    /// The task needs a human approval that has not been given yet.
+    ///
+    /// Structured rather than folded into [`Self::Protocol`] because a caller
+    /// has to *act* on it: show the operator `payload_digest` so they can
+    /// compare it against the code on the approving device, then re-submit the
+    /// byte-identical request once approved. A flat string cannot carry that,
+    /// and the CLI's only option was to print the refusal and exit — which is
+    /// why a consent-gated task was unreachable from `pnm` entirely.
+    ///
+    /// The re-submit is safe to repeat *while the request is pending*: the
+    /// server returns the same `challenge` and deliberately does not re-notify
+    /// (the push follows the question, not the submit). It is NOT safe to
+    /// repeat blindly after a decision — a denial deletes the pending request,
+    /// so the next submit raises a new one and pushes again. Callers must stop
+    /// when `challenge` changes; see `vta_cli_common::consent`.
+    #[error(
+        "consent required: {min_approvals} approval(s) from `{approver_set}` — \
+         approve code {payload_digest} on an approving device"
+    )]
+    ConsentRequired {
+        /// The salted digest the approver signs and both screens compare.
+        payload_digest: String,
+        /// Nonce binding the decision to this request. Changes when the
+        /// request is resolved and a new one is raised.
+        challenge: String,
+        /// Named approver set the policy requires.
+        approver_set: String,
+        /// Distinct approvals needed.
+        min_approvals: u32,
+        /// Whether the requesting device is barred from counting toward the
+        /// threshold. `true` means this caller cannot self-approve however it
+        /// is enrolled, and must wait for another device; `false` means it may
+        /// approve its own request if it is a member of the set.
+        exclude_requester: bool,
+    },
+
     /// Serialization/deserialization error.
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
@@ -406,6 +442,11 @@ impl VtaError {
             // No generic hint for these — the message itself is the
             // hint, or the failure is a protocol/programmer error
             // surface that an automated suggestion would only confuse.
+            // The hint depends on policy the message already reports — whether
+            // another device must approve, or this one may. A static string
+            // would have to guess, and guessing wrong sends the operator to the
+            // wrong screen. The CLI's consent loop says it precisely instead.
+            Self::ConsentRequired { .. } => None,
             Self::NotFound(_)
             | Self::DidcommRemote { .. }
             | Self::Protocol(_)
