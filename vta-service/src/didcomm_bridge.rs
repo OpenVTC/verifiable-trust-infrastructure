@@ -269,7 +269,19 @@ impl DIDCommBridge {
         // request's own `expiresAt` — a shorter message expiry could make the
         // mediator drop it before an offline device reconnects. (This preserves
         // the prior `send_oneway` behaviour, which set no expiry.)
-        let (_msg_id, packed) = Self::pack(&inner, recipient_did, msg_type, body, None).await?;
+        let (msg_id, packed) = Self::pack(&inner, recipient_did, msg_type, body, None).await?;
+        // The message id was discarded here, which left nothing to correlate a
+        // send against — not the outbox entry, not the mediator's record, not
+        // the recipient's. Logged before the enqueue so an enqueue that fails
+        // still names what was being sent and to whom.
+        tracing::info!(
+            msg_id = %msg_id,
+            recipient = %recipient_did,
+            msg_type = %msg_type,
+            deliver_by_secs = deliver_by.as_secs(),
+            idempotency_key = ?idempotency_key,
+            "enqueueing guaranteed push"
+        );
         inner
             .service
             .send(

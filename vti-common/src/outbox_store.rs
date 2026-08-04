@@ -67,6 +67,50 @@ impl VtiOutboxStore {
 #[async_trait]
 impl OutboxStore for VtiOutboxStore {
     async fn put(&self, entry: OutboxEntry) -> Result<(), OutboxError> {
+        // Every state transition the delivery layer makes lands here — this is
+        // the one place that sees `Queued → Sent → Delivered | Unconfirmed |
+        // Failed` for a durable send. Nothing else logged it, so a Guaranteed
+        // send that was accepted for enqueue and then never reached its
+        // mediator looked, from the outside, exactly like one that arrived: the
+        // caller's `send_guaranteed` returns as soon as the entry is written,
+        // and the loops that move it afterwards are silent.
+        //
+        // Diagnosing "the approver was never notified" without this meant
+        // comparing the sender's logs against the mediator's by hand and
+        // matching hashed DIDs. `dest_hash` is emitted for exactly that reason:
+        // the mediator records recipients as `sha256(did)`, so this is what
+        // makes a VTA log line greppable against a mediator one.
+        //
+        // Terminal states are `warn` when they mean loss, `info` otherwise —
+        // an operator scanning for trouble should not have to know the state
+        // machine to spot a message that never arrived.
+        let dest_hash = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(entry.dest_did.as_bytes());
+            hex::encode(h.finalize())
+        };
+        match entry.state {
+            OutboxState::Unconfirmed | OutboxState::Failed => tracing::warn!(
+                key = %entry.idempotency_key,
+                dest = %entry.dest_did,
+                dest_hash = %dest_hash,
+                state = ?entry.state,
+                attempts = entry.attempts,
+                deliver_by_ms = entry.deliver_by_ms,
+                "outbox: durable send settled without confirmed delivery"
+            ),
+            _ => tracing::info!(
+                key = %entry.idempotency_key,
+                dest = %entry.dest_did,
+                dest_hash = %dest_hash,
+                state = ?entry.state,
+                attempts = entry.attempts,
+                next_attempt_at_ms = entry.next_attempt_at_ms,
+                deliver_by_ms = entry.deliver_by_ms,
+                "outbox: durable send state"
+            ),
+        }
         self.ks
             .insert(outbox_key(&entry.idempotency_key), &entry)
             .await
