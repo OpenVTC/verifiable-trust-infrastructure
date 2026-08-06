@@ -125,12 +125,14 @@ mod tests {
 
     /// Unpack metadata with the given authcrypt flags + sender key id.
     fn meta(encrypted: bool, authenticated: bool, kid: Option<&str>) -> UnpackMetadata {
-        UnpackMetadata {
-            encrypted,
-            authenticated,
-            encrypted_from_kid: kid.map(str::to_string),
-            ..Default::default()
-        }
+        // `UnpackMetadata` is `#[non_exhaustive]` as of affinidi-messaging-sdk
+        // 0.19, so it can't be built with a struct literal from here — start
+        // from `Default` and assign the fields under test.
+        let mut m = UnpackMetadata::default();
+        m.encrypted = encrypted;
+        m.authenticated = authenticated;
+        m.encrypted_from_kid = kid.map(str::to_string);
+        m
     }
 
     /// Happy path: authcrypt with a `from` matching the authenticated key's DID
