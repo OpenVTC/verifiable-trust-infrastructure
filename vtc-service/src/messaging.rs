@@ -353,6 +353,31 @@ pub async fn run_didcomm_service(
                         );
                         continue;
                     }
+                    // DIDComm v1 (Aries RFC 0019) shares no wire format,
+                    // algorithms or identifier scheme with v2.1, so it must
+                    // `continue` rather than fall through — the branch below
+                    // would try to parse it as a v2.1 plaintext and drop it
+                    // silently, which is the exact failure the note above
+                    // describes for TSP.
+                    Protocol::DIDCommV1 => {
+                        warn!(
+                            "received an inbound DIDComm v1 frame; this VTC speaks v2.1 only — \
+                             dropping"
+                        );
+                        continue;
+                    }
+                    // `Protocol` is `#[non_exhaustive]` upstream. Drop rather
+                    // than fall through, for the reason above, and never panic:
+                    // this runs on every inbound frame, so an unknown protocol
+                    // must not be a remotely triggerable crash.
+                    other => {
+                        warn!(
+                            protocol = ?other,
+                            "received an inbound frame in a protocol this VTC does not implement \
+                             — dropping"
+                        );
+                        continue;
+                    }
                 }
 
                 let reply_to = inbound.message.sender.clone().or_else(|| {
