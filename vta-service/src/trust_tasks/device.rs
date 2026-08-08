@@ -198,8 +198,7 @@ fn provision_gateway(
     vta_did: &Option<String>,
     body: &Value,
 ) {
-    /// DIDComm message type that carries a Trust Task envelope in its body.
-    const TRUST_TASK_ENVELOPE_TYPE: &str = "https://trusttasks.org/binding/didcomm/0.1/envelope";
+    use crate::messaging::handlers::TRUST_TASK_ENVELOPE_TYPE;
 
     let Some((gateway, handle)) = wake.clone() else {
         return;

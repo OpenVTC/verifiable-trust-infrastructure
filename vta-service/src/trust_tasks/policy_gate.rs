@@ -1086,9 +1086,19 @@ mod tests {
         );
         let pushed = state.mediator_registry.take_outbound(MEDIATOR).await;
         assert_eq!(pushed.len(), 1, "the approver is asked exactly once");
+        // The DIDComm message carries the *envelope* type; the task type lives
+        // in the body's `TrustTask`. This assertion previously demanded the task
+        // type on the wire — pinning the very defect that made a delivered
+        // consent request unreadable to a conformant peer, which rejects a
+        // non-envelope silently.
         assert_eq!(
             pushed[0].message_type,
-            super::super::consent_request::TASK_CONSENT_REQUEST_0_1
+            crate::messaging::handlers::TRUST_TASK_ENVELOPE_TYPE
+        );
+        assert_eq!(
+            pushed[0].body.get("type").and_then(|t| t.as_str()),
+            Some(super::super::consent_request::TASK_CONSENT_REQUEST_0_1),
+            "the task type belongs in the enveloped document, not on the envelope"
         );
         assert_eq!(pushed[0].recipient_did, APPROVER);
         assert!(

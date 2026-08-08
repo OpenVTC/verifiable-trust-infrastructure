@@ -30,6 +30,7 @@ use vti_common::error::AppError;
 #[cfg(feature = "didcomm")]
 const CONSENT_PUSH_DELIVER_BY_SECS: u64 = 300;
 
+use crate::messaging::handlers::TRUST_TASK_ENVELOPE_TYPE;
 use crate::policy::consent::PendingTaskConsent;
 use crate::policy::effects::Effect;
 use crate::policy::types::TaskClass;
@@ -227,7 +228,17 @@ async fn push_one(
         {
             let pending = crate::messaging::registry::PendingResponse {
                 recipient_did: approver.to_string(),
-                message_type: TASK_CONSENT_REQUEST_0_1.to_string(),
+                // The DIDComm binding's envelope type, NOT the task type. A
+                // conformant peer unwraps `ENVELOPE_TYPE` and reads the
+                // `TrustTask` from the body; anything else it rejects — and
+                // rejects *silently*, because "not an envelope" is
+                // indistinguishable from "not addressed to me". That is what
+                // sent this request into a void: delivered, acked, discarded.
+                //
+                // TSP is deliberately untouched above: it carries the document
+                // bytes directly with no envelope, so the wrapper is a property
+                // of the DIDComm binding, not of the task.
+                message_type: TRUST_TASK_ENVELOPE_TYPE.to_string(),
                 body: request.clone(),
                 thread_id: request
                     .get("id")
@@ -256,7 +267,8 @@ async fn push_one(
             .send_guaranteed(
                 "vta-main",
                 approver,
-                TASK_CONSENT_REQUEST_0_1,
+                // Envelope type, per the DIDComm binding — see the buffer above.
+                TRUST_TASK_ENVELOPE_TYPE,
                 request.clone(),
                 request
                     .get("id")
