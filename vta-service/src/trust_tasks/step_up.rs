@@ -39,6 +39,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_1 as approve_response;
+// Only the DIDComm sends name the envelope; TSP carries the document bytes
+// directly, so this is unused when the binding is compiled out. Imported from the
+// binding crate rather than copied — one source, no local literals (#900).
+#[cfg(feature = "didcomm")]
+use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
 #[cfg(feature = "didcomm")]
 use trust_tasks_rs::specs::push::wake::v0_2 as push_wake;
 use trust_tasks_rs::{RejectReason, TrustTask};
@@ -611,7 +616,7 @@ async fn mint_pending_step_up(
 
     let mut doc = json!({
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
-        "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.2",
+        "type": STEP_UP_APPROVE_REQUEST_TYPE,
         "issuer": vta_did,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": {
@@ -740,11 +745,16 @@ fn step_up_denied_response() -> Response {
         .into_response()
 }
 
-/// Trust Task `type` of a step-up approve-request (also the DIDComm message
-/// `type` used when pushing one to an approver). 0.2 — matches the minted
-/// document; both fielded approver stacks (vta-mobile-core #871, the browser
-/// plugin) accept 0.1 and 0.2 request URIs.
-#[cfg(feature = "didcomm")]
+/// Trust Task `type` of a step-up approve-request. 0.2 — both fielded approver
+/// stacks (vta-mobile-core #871, the browser plugin) accept 0.1 and 0.2 request
+/// URIs.
+///
+/// This is the **document's** type, and only that. It is no longer the DIDComm
+/// message type: that is `trust_tasks_didcomm::ENVELOPE_TYPE`, and naming this
+/// one there is precisely the defect fixed in this change. `mint_pending_step_up`
+/// now reads the constant instead of repeating the literal, so the document and
+/// this name cannot drift apart — which is why the gate came off, the mint site
+/// not being DIDComm-specific.
 const STEP_UP_APPROVE_REQUEST_TYPE: &str =
     "https://trusttasks.org/spec/auth/step-up/approve-request/0.2";
 
@@ -864,7 +874,22 @@ async fn maybe_push_step_up(
         {
             let pending = crate::messaging::registry::PendingResponse {
                 recipient_did: recipient.to_string(),
-                message_type: STEP_UP_APPROVE_REQUEST_TYPE.to_string(),
+                // The DIDComm binding's envelope type, NOT the task type. A
+                // conformant approver unwraps `ENVELOPE_TYPE` and reads the
+                // `TrustTask` from the body; anything else it rejects, and
+                // rejects *silently* — "not an envelope" is indistinguishable
+                // from "not addressed to me". This path had the same defect as
+                // the consent request (#900) and nobody noticed, because the
+                // relay fallback below hides it: the reject still carries the
+                // approveRequest, so the flow completes via the slow path and
+                // only the proactive push is dead.
+                //
+                // `STEP_UP_APPROVE_REQUEST_TYPE` remains the document's own
+                // `type` — it moved into the envelope, it did not disappear.
+                // TSP is untouched above: it carries the document bytes
+                // directly, so the wrapper belongs to the DIDComm binding, not
+                // to the task.
+                message_type: TRUST_TASK_ENVELOPE_TYPE.to_string(),
                 body: approve_request.clone(),
                 thread_id: approve_request
                     .get("id")
@@ -897,7 +922,8 @@ async fn maybe_push_step_up(
             .send_guaranteed(
                 "vta-main",
                 recipient,
-                STEP_UP_APPROVE_REQUEST_TYPE,
+                // Envelope type, per the DIDComm binding — see the buffer above.
+                TRUST_TASK_ENVELOPE_TYPE,
                 approve_request.clone(),
                 approve_request
                     .get("id")
@@ -933,11 +959,6 @@ pub(super) async fn trigger_gateway_wake(
     recipient: &str,
     approver_mediator: &str,
 ) {
-    // Only the DIDComm sends below name the envelope; TSP carries the document
-    // bytes directly, so this is unused when the DIDComm binding is compiled out.
-    #[cfg(feature = "didcomm")]
-    use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
-
     let wake = match get_acl_entry(&state.acl_ks, recipient).await {
         Ok(Some(entry)) => entry.device.and_then(|d| d.wake),
         _ => None,
@@ -1636,5 +1657,95 @@ mod tests {
             verify_did_signed_gate(&doc, &did).await,
             Err(GateError::ProofInvalid(_))
         ));
+    }
+}
+
+#[cfg(all(test, feature = "didcomm", feature = "webvh"))]
+mod envelope_push_tests {
+    use crate::messaging::registry::MediatorBinding;
+    use serde_json::json;
+
+    const MEDIATOR: &str = "did:example:mediator";
+    const APPROVER: &str = "did:key:zStepUpApprover";
+    const CALLER: &str = "did:key:zCaller";
+
+    /// The delegated step-up push goes out under the **envelope** type, with the
+    /// task type inside the document.
+    ///
+    /// This one mattered most and showed least. Step-up approvals to a device
+    /// were broken on this path the whole time, and nothing surfaced it: the
+    /// reject still carries the `approveRequest` as a relay fallback, so the
+    /// ceremony completes by the slow route while the proactive push lands in a
+    /// void — delivered, acked, unreadable.
+    #[tokio::test]
+    async fn delegated_step_up_push_is_an_envelope() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+
+        state
+            .mediator_registry
+            .record_activate(MediatorBinding {
+                mediator_did: MEDIATOR.into(),
+                endpoint: "https://mediator.test".into(),
+            })
+            .await;
+        {
+            let mut cfg = state.config.write().await;
+            cfg.messaging = Some(vti_common::config::MessagingConfig {
+                mediator_url: String::new(),
+                mediator_did: MEDIATOR.into(),
+                mediator_host: None,
+                setup_acl: false,
+                drain_inbox_on_start: false,
+            });
+        }
+
+        // The shape `mint_pending_step_up` produces: a Trust Task document whose
+        // own `type` is the approve-request URI.
+        let approve_request = json!({
+            "id": "urn:uuid:11111111-1111-1111-1111-111111111111",
+            "type": super::STEP_UP_APPROVE_REQUEST_TYPE,
+            "issuer": "did:key:zVta",
+            "payload": { "subject": CALLER, "challenge": "c" },
+        });
+
+        super::maybe_push_step_up(&state, APPROVER, CALLER, &approve_request).await;
+
+        let pushed = state.mediator_registry.take_outbound(MEDIATOR).await;
+        assert_eq!(pushed.len(), 1, "the approver is pushed exactly once");
+        assert_eq!(
+            pushed[0].message_type,
+            trust_tasks_didcomm::ENVELOPE_TYPE,
+            "the DIDComm message must carry the binding's envelope type"
+        );
+        assert_eq!(
+            pushed[0].body.get("type").and_then(|t| t.as_str()),
+            Some(super::STEP_UP_APPROVE_REQUEST_TYPE),
+            "the task type belongs in the enveloped document, not on the envelope"
+        );
+        assert_eq!(pushed[0].recipient_did, APPROVER);
+    }
+
+    /// Self-approval is not a delegation, so nothing is pushed at all.
+    #[tokio::test]
+    async fn self_approval_pushes_nothing() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        state
+            .mediator_registry
+            .record_activate(MediatorBinding {
+                mediator_did: MEDIATOR.into(),
+                endpoint: "https://mediator.test".into(),
+            })
+            .await;
+
+        super::maybe_push_step_up(&state, CALLER, CALLER, &json!({})).await;
+
+        assert!(
+            state
+                .mediator_registry
+                .take_outbound(MEDIATOR)
+                .await
+                .is_empty(),
+            "a caller satisfying its own step-up must not ring its own phone"
+        );
     }
 }

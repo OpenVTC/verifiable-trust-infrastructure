@@ -15,6 +15,11 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+// Carries the same gate as `CONSENT_APPROVE_REQUEST_TYPE` below: its only use is
+// the mediator-registry buffer, which needs the `webvh`-gated
+// `AppState::mediator_registry`. From the binding crate, never copied (#900).
+#[cfg(all(feature = "didcomm", feature = "webvh"))]
+use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
 use trust_tasks_rs::TrustTask;
 use uuid::Uuid;
 
@@ -377,7 +382,18 @@ async fn maybe_wake_consent_approver(
         });
         let pending = crate::messaging::registry::PendingResponse {
             recipient_did: approver.to_string(),
-            message_type: CONSENT_APPROVE_REQUEST_TYPE.to_string(),
+            // Envelope type, not the task type. `approve_request` above is a
+            // Trust Task document (`id`/`type`/`payload`) and the DIDComm
+            // binding requires it in the body of an `ENVELOPE_TYPE` message; a
+            // conformant approver silently rejects anything else. Same defect,
+            // same fix as the task-consent request (#900) and the step-up push.
+            //
+            // `CONSENT_APPROVE_REQUEST_TYPE` is still the document's own `type`
+            // — it belongs to the `spec/consent/*` family (the conversation
+            // consent protocol: request / decision / revoke / list), not to the
+            // `spec/task-consent/*` family that `consent_request.rs` serves.
+            // Neither family puts its task type on the DIDComm envelope.
+            message_type: TRUST_TASK_ENVELOPE_TYPE.to_string(),
             body: approve_request.clone(),
             thread_id: approve_request
                 .get("id")
@@ -742,5 +758,79 @@ mod tests {
         assert!(v.get("routeHint").is_none());
         let list = serde_json::to_value(ApproverListResponse { approvers: vec![] }).unwrap();
         assert_eq!(list["approvers"], serde_json::json!([]));
+    }
+}
+
+#[cfg(all(test, feature = "didcomm", feature = "webvh"))]
+mod envelope_push_tests {
+    use crate::messaging::registry::MediatorBinding;
+    use serde_json::json;
+    use vti_common::consent::ConsentScope;
+
+    const MEDIATOR: &str = "did:example:mediator";
+    const APPROVER: &str = "did:key:zConsentApprover";
+
+    /// The Track-B wake prompt goes out under the **envelope** type, with the
+    /// task type inside the document.
+    ///
+    /// Same defect as the task-consent request (#900) and the step-up push, in a
+    /// different protocol family: this one is `spec/consent/*` (conversation
+    /// consent), not `spec/task-consent/*`. Neither family puts its task type on
+    /// the DIDComm envelope — the envelope belongs to the binding, not the task.
+    #[tokio::test]
+    async fn consent_approve_request_is_pushed_as_an_envelope() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+
+        state
+            .mediator_registry
+            .record_activate(MediatorBinding {
+                mediator_did: MEDIATOR.into(),
+                endpoint: "https://mediator.test".into(),
+            })
+            .await;
+        {
+            let mut cfg = state.config.write().await;
+            cfg.messaging = Some(vti_common::config::MessagingConfig {
+                mediator_url: String::new(),
+                mediator_did: MEDIATOR.into(),
+                mediator_host: None,
+                setup_acl: false,
+                drain_inbox_on_start: false,
+            });
+        }
+
+        let subject = json!({
+            "platform": "signal",
+            "conversationRef": "conv-1",
+            "kind": "dm",
+            "agent": "did:key:zAgent",
+        });
+        super::maybe_wake_consent_approver(
+            &state,
+            APPROVER,
+            subject,
+            ConsentScope::Converse,
+            "challenge-xyz",
+        )
+        .await;
+
+        let pushed = state.mediator_registry.take_outbound(MEDIATOR).await;
+        assert_eq!(pushed.len(), 1, "the approver is roused exactly once");
+        assert_eq!(
+            pushed[0].message_type,
+            trust_tasks_didcomm::ENVELOPE_TYPE,
+            "the DIDComm message must carry the binding's envelope type"
+        );
+        assert_eq!(
+            pushed[0].body.get("type").and_then(|t| t.as_str()),
+            Some(super::CONSENT_APPROVE_REQUEST_TYPE),
+            "the task type belongs in the enveloped document, not on the envelope"
+        );
+        assert_eq!(pushed[0].recipient_did, APPROVER);
+        assert_eq!(
+            pushed[0].body["payload"]["challenge"].as_str(),
+            Some("challenge-xyz"),
+            "the challenge the approver signs against must survive the re-wrap"
+        );
     }
 }

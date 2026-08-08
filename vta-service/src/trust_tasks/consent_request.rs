@@ -362,8 +362,12 @@ pub(super) async fn push_granted(
         #[cfg(feature = "webvh")]
         {
             let pending = crate::messaging::registry::PendingResponse {
+                // Envelope type, not the task type — same binding rule as the
+                // request push above. `body` is already a full `TrustTask`
+                // document (it has to be: the binding deserialises the body as
+                // `TrustTask<P>`), so the only thing wrong here was the wrapper.
+                message_type: TRUST_TASK_ENVELOPE_TYPE.to_string(),
                 recipient_did: requester.to_string(),
-                message_type: TASK_CONSENT_GRANTED_0_1.to_string(),
                 body: body.clone(),
                 thread_id: Some(wire_digest.to_string()),
             };
@@ -384,7 +388,8 @@ pub(super) async fn push_granted(
             .send_guaranteed(
                 "vta-main",
                 requester,
-                TASK_CONSENT_GRANTED_0_1,
+                // Envelope type, per the DIDComm binding — see the buffer above.
+                TRUST_TASK_ENVELOPE_TYPE,
                 body,
                 Some(format!("granted:{wire_digest}")),
                 Duration::from_secs(CONSENT_PUSH_DELIVER_BY_SECS),
@@ -398,5 +403,70 @@ pub(super) async fn push_granted(
         }
 
         super::step_up::trigger_gateway_wake(state, requester, &mediator_did).await;
+    }
+}
+
+#[cfg(all(test, feature = "didcomm", feature = "webvh"))]
+mod tests {
+    use crate::messaging::registry::MediatorBinding;
+
+    const MEDIATOR: &str = "did:example:mediator";
+    const REQUESTER: &str = "did:key:zRequester";
+
+    /// The granted notice goes out under the **envelope** type, with the task
+    /// type inside the document.
+    ///
+    /// It had the same defect as the request push (#900) and was invisible for
+    /// the same reason: a conformant peer that cannot read the envelope drops it
+    /// silently, and the requester's fallback is to re-submit anyway — so the
+    /// only symptom was a poll cycle nobody was measuring.
+    #[tokio::test]
+    async fn granted_notice_is_pushed_as_an_envelope() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+
+        state
+            .mediator_registry
+            .record_activate(MediatorBinding {
+                mediator_did: MEDIATOR.into(),
+                endpoint: "https://mediator.test".into(),
+            })
+            .await;
+        {
+            let mut cfg = state.config.write().await;
+            cfg.messaging = Some(vti_common::config::MessagingConfig {
+                mediator_url: String::new(),
+                mediator_did: MEDIATOR.into(),
+                mediator_host: None,
+                setup_acl: false,
+                drain_inbox_on_start: false,
+            });
+        }
+
+        super::push_granted(
+            &state,
+            REQUESTER,
+            "digest-abc",
+            "https://example.org/task/1.0",
+        )
+        .await;
+
+        let pushed = state.mediator_registry.take_outbound(MEDIATOR).await;
+        assert_eq!(pushed.len(), 1, "the requester is notified exactly once");
+        assert_eq!(
+            pushed[0].message_type,
+            trust_tasks_didcomm::ENVELOPE_TYPE,
+            "the DIDComm message must carry the binding's envelope type"
+        );
+        assert_eq!(
+            pushed[0].body.get("type").and_then(|t| t.as_str()),
+            Some(super::TASK_CONSENT_GRANTED_0_1),
+            "the task type belongs in the enveloped document, not on the envelope"
+        );
+        assert_eq!(pushed[0].recipient_did, REQUESTER);
+        // The payload the requester acts on must survive the re-wrap.
+        assert_eq!(
+            pushed[0].body["payload"]["payloadDigest"].as_str(),
+            Some("digest-abc")
+        );
     }
 }
