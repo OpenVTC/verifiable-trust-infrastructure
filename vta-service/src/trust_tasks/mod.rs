@@ -48,6 +48,11 @@ mod acl;
 mod audit;
 mod auth;
 mod backup;
+/// The ceremony-task predicate + the zero-authority claim an unenrolled
+/// approver is dispatched under. Shared by the PDP gate and every
+/// intrinsic-sender transport, so the two gates in front of a handler cannot
+/// disagree about what a ceremony task is.
+pub(crate) mod ceremony;
 mod config;
 #[cfg(test)]
 mod conformance;
