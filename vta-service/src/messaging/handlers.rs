@@ -300,10 +300,7 @@ pub async fn handle_trust_task(
     // overwrites the plaintext `from` with it (or `None`) before routing, so a
     // missing sender means the envelope was never authenticated.
     let authenticated = match message.from.as_deref() {
-        Some(sender) => {
-            auth_for_trust_task_envelope(sender, &body, &app_state.acl_ks, &app_state.sessions_ks)
-                .await
-        }
+        Some(sender) => auth_for_trust_task_envelope(&app_state, sender, &body).await,
         None => Err(AppError::Authentication(
             "message has no sender (from)".into(),
         )),

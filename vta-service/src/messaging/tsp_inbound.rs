@@ -63,14 +63,7 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     // a zero-authority claim rather than refused. Kept identical to the DIDComm
     // bridge — an approver must not be able to reach the VTA over one transport
     // and not the other.
-    let outcome = match auth_for_trust_task_envelope(
-        sender_vid,
-        payload,
-        &app_state.acl_ks,
-        &app_state.sessions_ks,
-    )
-    .await
-    {
+    let outcome = match auth_for_trust_task_envelope(app_state, sender_vid, payload).await {
         // TSP seals to the recipient VID, same guarantee as authcrypt.
         Ok(auth) => {
             crate::trust_tasks::dispatch_trust_task_core(

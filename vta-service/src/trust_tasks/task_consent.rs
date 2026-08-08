@@ -502,14 +502,9 @@ mod tests {
 
         // The transport gate, for real. Previously this returned
         // `Forbidden("DID not in ACL: …")` and the decision died here.
-        let auth = crate::messaging::auth::auth_for_trust_task_envelope(
-            &approver,
-            &body,
-            &state.acl_ks,
-            &state.sessions_ks,
-        )
-        .await
-        .expect("an unenrolled approver must get past the transport gate");
+        let auth = crate::messaging::auth::auth_for_trust_task_envelope(&state, &approver, &body)
+            .await
+            .expect("an unenrolled approver must get past the transport gate");
         assert_eq!(auth.role, Role::Monitor, "…on a claim that confers nothing");
 
         let outcome = crate::trust_tasks::dispatch_trust_task_core(

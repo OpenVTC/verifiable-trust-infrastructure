@@ -64,16 +64,21 @@ pub async fn auth_from_message(
 /// re-reads it and refuses the expired entry there — at the point where it
 /// actually confers something.
 ///
+/// The carve-out is additionally floored by
+/// [`may_attempt_ceremony`](crate::trust_tasks::ceremony::may_attempt_ceremony),
+/// so a consent decision only reaches the dispatcher from a DID the operator
+/// actually named as an approver. That keeps the durable write a rejected
+/// decision produces out of reach of anyone who merely found the mediator.
+///
 /// [`ceremony_claims`]: crate::trust_tasks::ceremony::ceremony_claims
 pub async fn auth_for_trust_task_envelope(
+    state: &crate::server::AppState,
     sender_did: &str,
     body: &[u8],
-    acl_ks: &KeyspaceHandle,
-    sessions_ks: &KeyspaceHandle,
 ) -> Result<AuthClaims, AppError> {
     use crate::trust_tasks::ceremony;
 
-    let denial = match auth_from_did(sender_did, acl_ks, sessions_ks).await {
+    let denial = match auth_from_did(sender_did, &state.acl_ks, &state.sessions_ks).await {
         Ok(auth) => return Ok(auth),
         // Only an authorization denial is eligible. A store or session failure
         // is an infrastructure fault, and quietly downgrading it to a
@@ -85,7 +90,10 @@ pub async fn auth_for_trust_task_envelope(
 
     let type_uri = ceremony::peek_type_uri(body);
     match type_uri.as_deref() {
-        Some(uri) if ceremony::is_ceremony_task(uri) => {
+        Some(uri)
+            if ceremony::is_ceremony_task(uri)
+                && ceremony::may_attempt_ceremony(state, uri, sender_did).await =>
+        {
             tracing::info!(
                 sender = %sender_did,
                 type_uri = %uri,
@@ -100,12 +108,28 @@ pub async fn auth_for_trust_task_envelope(
         // peer may not surface, and the VTA logs nothing at all — which is how a
         // consent ceremony that was answered by a human looked, from both ends,
         // exactly like one that was never delivered.
+        //
+        // A ceremony task landing here means the sender is in neither the ACL
+        // nor any approver set — most often an approver the operator added to
+        // one and not the other. Say so, because from the wallet's side the two
+        // are indistinguishable.
         other => {
-            tracing::warn!(
-                sender = %sender_did,
-                type_uri = other.unwrap_or("<unparseable>"),
-                "refusing trust task: {denial}"
-            );
+            let uri = other.unwrap_or("<unparseable>");
+            if ceremony::is_ceremony_task(uri) {
+                tracing::warn!(
+                    sender = %sender_did,
+                    type_uri = %uri,
+                    "refusing a ceremony task: this sender is in no configured approver set \
+                     and has no ACL entry ({denial}). If this is an approver device, add it to \
+                     the approver set the policy names"
+                );
+            } else {
+                tracing::warn!(
+                    sender = %sender_did,
+                    type_uri = %uri,
+                    "refusing trust task: {denial}"
+                );
+            }
             Err(AppError::Forbidden(denial))
         }
     }
@@ -337,13 +361,15 @@ mod tests {
     // a human gave, the wallet sent, and the VTA silently discarded.
 
     const DECISION: &str = vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1;
+    const STEP_UP: &str = vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2;
     const ORDINARY: &str = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0";
+    const APPROVER: &str = "did:key:zApproverNotInAcl";
 
     fn envelope(type_uri: &str) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "id": "urn:uuid:00000000-0000-0000-0000-000000000001",
             "type": type_uri,
-            "issuer": "did:key:zApproverDevice",
+            "issuer": APPROVER,
             "recipient": "did:example:vta",
             "issuedAt": "2026-08-08T21:56:00Z",
             "payload": { "challenge": "n", "payloadDigest": "d", "decision": "approve" },
@@ -351,41 +377,77 @@ mod tests {
         .unwrap()
     }
 
+    /// State whose `webvh-approvers` set names `APPROVER` — the operator has
+    /// declared it an approver, and has (correctly) given it no ACL entry.
+    async fn state_with_named_approver() -> (crate::server::AppState, tempfile::TempDir) {
+        let (state, dir) = crate::test_support::build_signing_test_app_state().await;
+        state
+            .config
+            .write()
+            .await
+            .policy
+            .approver_sets
+            .insert("webvh-approvers".into(), vec![APPROVER.into()]);
+        (state, dir)
+    }
+
     /// The case from the field: an approver in the VTA's `approver_set` but not
     /// in its ACL. Its decision must reach the dispatcher.
     #[tokio::test]
     async fn a_ceremony_task_from_an_unenrolled_approver_is_dispatched() {
-        let (_store, acl_ks, sessions_ks, _dir) = fresh_acl_ks().await;
-        let approver = "did:key:zApproverNotInAcl";
+        let (state, _dir) = state_with_named_approver().await;
 
-        let claims =
-            auth_for_trust_task_envelope(approver, &envelope(DECISION), &acl_ks, &sessions_ks)
-                .await
-                .expect("an unenrolled approver must be able to deliver its decision");
+        let claims = auth_for_trust_task_envelope(&state, APPROVER, &envelope(DECISION))
+            .await
+            .expect("an unenrolled approver must be able to deliver its decision");
 
         // The proven DID rides through — replay dedup, the audit trail and
         // `handle_approve_response`'s issuer check all key on it.
-        assert_eq!(claims.did, approver);
+        assert_eq!(claims.did, APPROVER);
         // …carrying no authority whatsoever.
         assert_eq!(claims.role, Role::Monitor);
         assert!(claims.allowed_contexts.is_empty());
         assert!(!claims.is_super_admin());
     }
 
-    /// The carve-out is for ceremony tasks and nothing else. The same
-    /// unenrolled DID submitting the operation the ceremony *authorizes* is
-    /// refused exactly as before — otherwise this would be a hole, not a gate.
+    /// The floor on the carve-out. A DID in no approver set is refused before it
+    /// can reach `handle_decision` — whose `denied:no_pending` audit row is a
+    /// durable write, and audit retention is time-based, not size-capped. Only
+    /// DIDs the operator actually named get to spend that write.
     #[tokio::test]
-    async fn the_same_unenrolled_sender_cannot_submit_an_ordinary_task() {
-        let (_store, acl_ks, sessions_ks, _dir) = fresh_acl_ks().await;
-        let err = auth_for_trust_task_envelope(
-            "did:key:zApproverNotInAcl",
-            &envelope(ORDINARY),
-            &acl_ks,
-            &sessions_ks,
-        )
-        .await
-        .expect_err("a webvh update from an unenrolled DID must still be refused");
+    async fn a_stranger_cannot_use_a_consent_decision_to_reach_the_handler() {
+        let (state, _dir) = state_with_named_approver().await;
+        let err = auth_for_trust_task_envelope(&state, "did:key:zPasserby", &envelope(DECISION))
+            .await
+            .expect_err("a DID in no approver set must not reach the consent handler");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+    }
+
+    /// Step-up is deliberately unfiltered: its authorized signer is
+    /// `pending.approver`, recorded at mint and not required to hold an ACL
+    /// entry — the delegated phone-as-authorizer — and no cheap membership test
+    /// covers it. It needs no floor either: `handle_approve_response` writes no
+    /// audit row on an unknown challenge, so there is no durable write to spend.
+    #[tokio::test]
+    async fn a_step_up_approve_response_needs_no_approver_set_membership() {
+        let (state, _dir) = state_with_named_approver().await;
+        let claims =
+            auth_for_trust_task_envelope(&state, "did:key:zHoldersPhone", &envelope(STEP_UP))
+                .await
+                .expect("a delegated step-up approver holds neither ACL entry nor set membership");
+        assert_eq!(claims.role, Role::Monitor);
+        assert!(claims.allowed_contexts.is_empty());
+    }
+
+    /// The carve-out is for ceremony tasks and nothing else. The same
+    /// named approver submitting the operation the ceremony *authorizes* is
+    /// refused — otherwise this would be a hole, not a gate.
+    #[tokio::test]
+    async fn a_named_approver_still_cannot_submit_an_ordinary_task() {
+        let (state, _dir) = state_with_named_approver().await;
+        let err = auth_for_trust_task_envelope(&state, APPROVER, &envelope(ORDINARY))
+            .await
+            .expect_err("a webvh update from an unenrolled DID must still be refused");
         assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
     }
 
@@ -393,12 +455,11 @@ mod tests {
     /// past the ACL by being unparseable.
     #[tokio::test]
     async fn an_unreadable_envelope_from_an_unenrolled_sender_is_refused() {
-        let (_store, acl_ks, sessions_ks, _dir) = fresh_acl_ks().await;
+        let (state, _dir) = state_with_named_approver().await;
         for body in [b"not json".as_slice(), b"{}".as_slice(), b"".as_slice()] {
-            let err =
-                auth_for_trust_task_envelope("did:key:zStranger", body, &acl_ks, &sessions_ks)
-                    .await
-                    .expect_err("an unparseable body must not reach the carve-out");
+            let err = auth_for_trust_task_envelope(&state, APPROVER, body)
+                .await
+                .expect_err("an unparseable body must not reach the carve-out");
             assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
         }
     }
@@ -408,16 +469,16 @@ mod tests {
     /// which is also an admin must not be silently downgraded.
     #[tokio::test]
     async fn an_enrolled_sender_keeps_its_real_claims_on_a_ceremony_task() {
-        let (_store, acl_ks, sessions_ks, _dir) = fresh_acl_ks().await;
+        let (state, _dir) = state_with_named_approver().await;
         let did = "did:key:zEnrolledApprover";
         store_acl_entry(
-            &acl_ks,
+            &state.acl_ks,
             &AclEntry::new(did, Role::Admin, "test").with_contexts(vec!["ctx-a".into()]),
         )
         .await
         .unwrap();
 
-        let claims = auth_for_trust_task_envelope(did, &envelope(DECISION), &acl_ks, &sessions_ks)
+        let claims = auth_for_trust_task_envelope(&state, did, &envelope(DECISION))
             .await
             .unwrap();
         assert_eq!(claims.role, Role::Admin);
@@ -431,11 +492,10 @@ mod tests {
     /// confer something.
     #[tokio::test]
     async fn an_expired_grant_still_lets_a_ceremony_task_through_with_nothing() {
-        let (_store, acl_ks, sessions_ks, _dir) = fresh_acl_ks().await;
-        let did = "did:key:zLapsedApprover";
+        let (state, _dir) = state_with_named_approver().await;
         store_acl_entry(
-            &acl_ks,
-            &AclEntry::new(did, Role::Admin, "test")
+            &state.acl_ks,
+            &AclEntry::new(APPROVER, Role::Admin, "test")
                 .with_contexts(vec!["ctx-a".into()])
                 .with_created_at(now_epoch().saturating_sub(7200))
                 .with_expires_at(Some(now_epoch().saturating_sub(60))),
@@ -443,7 +503,7 @@ mod tests {
         .await
         .unwrap();
 
-        let claims = auth_for_trust_task_envelope(did, &envelope(DECISION), &acl_ks, &sessions_ks)
+        let claims = auth_for_trust_task_envelope(&state, APPROVER, &envelope(DECISION))
             .await
             .expect("a lapsed grant must not strand an approval");
         assert_eq!(
@@ -459,15 +519,17 @@ mod tests {
     #[tokio::test]
     async fn the_carve_out_does_not_mint_a_session_for_an_unenrolled_did() {
         use crate::auth::session::get_session;
-        let (_store, acl_ks, sessions_ks, _dir) = fresh_acl_ks().await;
-        let approver = "did:key:zNoSessionPlease";
+        let (state, _dir) = state_with_named_approver().await;
 
-        auth_for_trust_task_envelope(approver, &envelope(DECISION), &acl_ks, &sessions_ks)
+        auth_for_trust_task_envelope(&state, APPROVER, &envelope(DECISION))
             .await
             .unwrap();
 
         assert!(
-            get_session(&sessions_ks, approver).await.unwrap().is_none(),
+            get_session(&state.sessions_ks, APPROVER)
+                .await
+                .unwrap()
+                .is_none(),
             "a ceremony dispatch must not create session state for an unenrolled DID"
         );
     }

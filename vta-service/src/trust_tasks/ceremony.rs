@@ -52,6 +52,55 @@ pub(crate) fn is_ceremony_task(type_uri: &str) -> bool {
         || type_uri == t::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2
 }
 
+/// Could `sender_did` conceivably be an approver for a ceremony of this type?
+///
+/// A cheap pre-filter, run *before* the carve-out lets an unenrolled sender past
+/// the ACL. It answers only "is this sender in the population this ceremony is
+/// for", never "is this decision valid" — the handlers still decide that, and
+/// nothing here grants anything.
+///
+/// ## Why it exists
+///
+/// The carve-out costs the VTA a durable write. A `task-consent/decision` that
+/// verifies but cites a digest with no live pending records
+/// `consent.decision / denied:no_pending`, and audit retention is time-based,
+/// not size-capped — so without a filter a remote party who can reach the
+/// mediator could flood the audit log with rows that persist for the retention
+/// window. That is not privilege escalation, but it is a new capability, and it
+/// is cheap to remove.
+///
+/// For a consent decision the answer is an in-memory config read: membership of
+/// *some* configured approver set. That is the entire population the carve-out
+/// serves, so the filter costs nothing in function while shrinking the reachable
+/// set from "any DID" to "the DIDs the operator named". The handler still checks
+/// the specific set the pending named — this is a floor, not the decision.
+///
+/// Step-up `approve-response` is unfiltered, deliberately. Its authorized signer
+/// is `pending.approver`, recorded when the step-up was minted and **not**
+/// required to hold an ACL entry — that is the delegated phone-as-authorizer,
+/// and no cheap membership test covers it. It needs no filter either:
+/// `handle_approve_response` writes no audit row on `challenge_unknown`,
+/// `subject_mismatch` or `approver_unauthorized`, so an unknown sender leaves no
+/// durable trace to flood.
+#[cfg(feature = "didcomm")]
+pub(crate) async fn may_attempt_ceremony(
+    state: &crate::server::AppState,
+    type_uri: &str,
+    sender_did: &str,
+) -> bool {
+    if type_uri != vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1 {
+        return true;
+    }
+    state
+        .config
+        .read()
+        .await
+        .policy
+        .approver_sets
+        .values()
+        .any(|members| members.iter().any(|m| m == sender_did))
+}
+
 /// Read just the `type` member out of a Trust-Task envelope.
 ///
 /// Deliberately not a full `TrustTask<Value>` parse: this runs *before*
