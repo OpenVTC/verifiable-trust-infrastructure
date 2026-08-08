@@ -1,7 +1,7 @@
 [package]
 name = "vta-service"
 description = "Service for Verifiable Trust Agents operating in Verifiable Trust Communities"
-version = "0.14.11"
+version = "0.14.12"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -18,6 +18,16 @@ didcomm = []
 # gated; DIDComm stays in `default`). Enables the SDK's `tsp` capability; later
 # PRs add the TSP listener + `services tsp` surface behind this flag.
 tsp = [
+    # In *this* crate TSP is not a standalone transport: its inbound dispatcher
+    # and reachability map (`messaging::{tsp_inbound,tsp_reach}`) live inside
+    # the `didcomm`-gated `messaging` module, because TSP receive arrives on the
+    # DIDComm pickup socket rather than opening a second one (ADR 0005 — one
+    # websocket per DID). Without this, `--features tsp` alone names
+    # `crate::messaging`, which is configured out.
+    #
+    # `vta-sdk/tsp` is deliberately NOT given the same edge: its `TspPingSession`
+    # is a genuinely TSP-only client that owns its own socket.
+    "didcomm",
     "vta-sdk/tsp",
     "dep:affinidi-messaging-sdk",
     "affinidi-messaging-sdk/tsp",
@@ -195,7 +205,7 @@ futures-util = "0.3"
 # crate's `tsp` feature and are NOT reachable via `affinidi-tdk/tsp`. The crate
 # is already present transitively via `affinidi-tdk` at the same 0.18.x; this
 # entry adds no new code when `tsp` is off (optional + default-features off).
-affinidi-messaging-sdk = { version = "0.18", optional = true, default-features = false }
+affinidi-messaging-sdk = { version = "0.19", optional = true, default-features = false }
 async-trait = "0.1"
 affinidi-tdk-common = "0.6"
 affinidi-did-resolver-cache-sdk = { workspace = true }

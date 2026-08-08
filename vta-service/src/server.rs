@@ -800,24 +800,32 @@ pub async fn run(
         #[cfg(any(feature = "rest", feature = "didcomm"))]
         app_state.wrapping_cache.clone().spawn_reaper();
 
-        // Boot-install the migration-safe default PDP baseline if the operator
-        // has no policy yet. Idempotent; never clobbers an operator upload.
-        crate::policy::install_default_policy(
-            &app_state.policy_ks,
-            &chrono::Utc::now().to_rfc3339(),
-        )
-        .await?;
+        // Policy bootstrap reads `app_state.policy_ks`, and `app_state` itself
+        // only exists when a serving surface does — `build_app_state` is what
+        // constructs the policy keyspace. Carry the same gate as the binding
+        // above, or a `--no-default-features` build names a value that was
+        // configured out.
+        #[cfg(any(feature = "rest", feature = "didcomm"))]
+        {
+            // Boot-install the migration-safe default PDP baseline if the operator
+            // has no policy yet. Idempotent; never clobbers an operator upload.
+            crate::policy::install_default_policy(
+                &app_state.policy_ks,
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .await?;
 
-        // Reconcile config-declared consent rules on top of the baseline. Unlike
-        // the baseline install, this runs every boot and config is authoritative —
-        // so requiring consent for a task is a config edit and a restart, not a
-        // source edit and a rebuild.
-        crate::policy::reconcile_config_consent_policy(
-            &app_state.policy_ks,
-            &app_state.config.read().await.policy.require_consent,
-            &chrono::Utc::now().to_rfc3339(),
-        )
-        .await?;
+            // Reconcile config-declared consent rules on top of the baseline. Unlike
+            // the baseline install, this runs every boot and config is authoritative —
+            // so requiring consent for a task is a config edit and a restart, not a
+            // source edit and a rebuild.
+            crate::policy::reconcile_config_consent_policy(
+                &app_state.policy_ks,
+                &app_state.config.read().await.policy.require_consent,
+                &chrono::Utc::now().to_rfc3339(),
+            )
+            .await?;
+        }
 
         // Fail-closed on missing identity (P0.9b). `init_auth` (inside
         // build_app_state) yields `jwt_keys: Some` only when the VTA has a
