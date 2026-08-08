@@ -35,8 +35,16 @@ async fn plaintext_sealed_secret_is_rejected() {
         .expect_err("a plaintext (non-authcrypt) sealed secret must be rejected");
 
     match err {
+        // Two layers can legitimately reject a plaintext envelope, and which one
+        // fires is the messaging library's call, not ours. `bind_authcrypt_sender`
+        // is ours ("must be an authenticated (authcrypt) …");
+        // affinidi-messaging-didcomm 0.15.8 also refuses a Plaintext envelope
+        // during `unpack`, before ours is reached. That is the rejection moving
+        // *earlier*, which is strictly better, so accept either wording — the
+        // arms below still pin that it never got as far as the sender checks or
+        // body deserialisation, which is what this test exists to prove.
         UnsealError::UnpackFailed(msg) => assert!(
-            msg.contains("authcrypt"),
+            msg.contains("authcrypt") || msg.contains("Plaintext is not in the accepted set"),
             "rejection must come from the authcrypt guard, got: {msg}"
         ),
         UnsealError::MissingSender => {
