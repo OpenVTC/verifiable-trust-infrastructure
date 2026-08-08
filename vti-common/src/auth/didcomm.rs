@@ -124,13 +124,18 @@ mod tests {
     }
 
     /// Unpack metadata with the given authcrypt flags + sender key id.
+    ///
+    /// Built by mutating a `Default` rather than with a struct expression:
+    /// `UnpackMetadata` is `#[non_exhaustive]` as of affinidi-messaging-didcomm
+    /// 0.15.8, which bars the literal form from outside its own crate — `..`
+    /// does not exempt it. Field-at-a-time is also the shape that survives the
+    /// upstream adding another field, which is the point of the attribute.
     fn meta(encrypted: bool, authenticated: bool, kid: Option<&str>) -> UnpackMetadata {
-        UnpackMetadata {
-            encrypted,
-            authenticated,
-            encrypted_from_kid: kid.map(str::to_string),
-            ..Default::default()
-        }
+        let mut meta = UnpackMetadata::default();
+        meta.encrypted = encrypted;
+        meta.authenticated = authenticated;
+        meta.encrypted_from_kid = kid.map(str::to_string);
+        meta
     }
 
     /// Happy path: authcrypt with a `from` matching the authenticated key's DID
