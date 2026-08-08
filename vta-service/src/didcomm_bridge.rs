@@ -34,7 +34,13 @@ use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, extract_problem_report};
 /// is the VTA's own DID that lacks rights on the host. A 401 would make the
 /// CLI print a misleading "token may be expired" hint (see the
 /// `e.p.msg.forbidden` note in the workspace CLAUDE.md).
-fn problem_report_to_app_error(code: &str, comment: &str) -> AppError {
+/// `pub(crate)` so the envelope-binding client in `webvh_didcomm` maps the
+/// *inner* document's problem report through the same table. On the envelope
+/// binding the DIDComm `type` is always `ENVELOPE_TYPE`, so error detection
+/// necessarily moves inside the body — but the code→status mapping must not
+/// fork, or the same host rejection would surface as a different HTTP status
+/// depending on which framing carried it.
+pub(crate) fn problem_report_to_app_error(code: &str, comment: &str) -> AppError {
     let detail = format!("remote peer rejected the request: {comment} [{code}]");
     match code.rsplit('.').next().unwrap_or_default() {
         "unauthorized" | "forbidden" => AppError::Forbidden(detail),
