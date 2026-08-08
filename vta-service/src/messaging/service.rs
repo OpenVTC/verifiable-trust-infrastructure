@@ -321,6 +321,27 @@ async fn handle_inbound(
             let _ = mediator_did;
             warn!("received an inbound TSP frame but the `tsp` feature is disabled — dropping");
         }
+        // DIDComm v1 (Aries RFC 0019) is a different protocol wearing a similar
+        // name: it shares no wire format, no algorithms and no identifier scheme
+        // with v2.1, so it must NOT fall through to `handle_didcomm`. The VTA
+        // speaks v2.1 only, so this is a drop, and a deliberate one.
+        Protocol::DIDCommV1 => {
+            warn!("received an inbound DIDComm v1 frame; this VTA speaks v2.1 only — dropping");
+        }
+        // `Protocol` is `#[non_exhaustive]` upstream, so a new variant is a minor
+        // release away and must not break the build — nor take the process down.
+        //
+        // Emphatically not `todo!()` (which is what rustc suggests): this runs on
+        // every inbound frame from the mediator, so a panic here is a remotely
+        // triggerable crash — any peer that sends a protocol we don't know yet
+        // would kill the listener. Unknown protocol, unknown frame, drop it and
+        // say so.
+        other => {
+            warn!(
+                protocol = ?other,
+                "received an inbound frame in a protocol this VTA does not implement — dropping"
+            );
+        }
     }
 }
 
