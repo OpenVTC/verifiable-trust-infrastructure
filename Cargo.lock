@@ -9665,6 +9665,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "trust-tasks-didcomm"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f8248839a7309223eee068da7f322dc2d2114f797e5b946e5a0d8526251a439"
+dependencies = [
+ "affinidi-messaging-didcomm",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "trust-tasks-rs",
+ "uuid",
+]
+
+[[package]]
 name = "trust-tasks-https"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10470,7 +10484,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.14.10"
+version = "0.14.11"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10536,6 +10550,7 @@ dependencies = [
  "tower_governor",
  "tracing",
  "tracing-subscriber",
+ "trust-tasks-didcomm",
  "trust-tasks-https",
  "trust-tasks-proof",
  "trust-tasks-rs",

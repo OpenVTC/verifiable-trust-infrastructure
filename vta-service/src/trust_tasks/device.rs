@@ -198,8 +198,10 @@ fn provision_gateway(
     vta_did: &Option<String>,
     body: &Value,
 ) {
-    /// DIDComm message type that carries a Trust Task envelope in its body.
-    const TRUST_TASK_ENVELOPE_TYPE: &str = "https://trusttasks.org/binding/didcomm/0.1/envelope";
+    // Only the DIDComm sends below name the envelope; TSP carries the document
+    // bytes directly, so this is unused when the DIDComm binding is compiled out.
+    #[cfg(feature = "didcomm")]
+    use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
 
     let Some((gateway, handle)) = wake.clone() else {
         return;

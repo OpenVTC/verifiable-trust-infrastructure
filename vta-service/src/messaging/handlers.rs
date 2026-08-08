@@ -250,10 +250,16 @@ macro_rules! didcomm_handler {
 /// `https://trusttasks.org/binding/didcomm/0.1`: a single reserved type
 /// whose `body` carries the full `TrustTask<P>` JSON. Conformant
 /// consumers reject any other type. Mirrors
-/// `trust_tasks_didcomm::ENVELOPE_TYPE`; defined locally to avoid taking
-/// a dependency on the binding crate for one constant.
-pub(crate) const TRUST_TASK_ENVELOPE_TYPE: &str =
-    "https://trusttasks.org/binding/didcomm/0.1/envelope";
+/// The DIDComm binding's envelope `type`, re-exported so the rest of the crate
+/// has one name for it.
+///
+/// This was a hand-written copy of the URI, as were three others across the
+/// workspace. That duplication is what let the consent push send its message
+/// with the *task* type instead of the envelope type — which a conformant peer
+/// rejects silently, because "not an envelope" is indistinguishable from "not
+/// addressed to me". Sourced from the crate that defines it so a copy cannot
+/// drift again.
+use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
 
 /// Generic DIDComm handler for the Trust-Tasks surface.
 ///
