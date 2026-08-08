@@ -1091,10 +1091,7 @@ mod tests {
         // type on the wire — pinning the very defect that made a delivered
         // consent request unreadable to a conformant peer, which rejects a
         // non-envelope silently.
-        assert_eq!(
-            pushed[0].message_type,
-            crate::messaging::handlers::TRUST_TASK_ENVELOPE_TYPE
-        );
+        assert_eq!(pushed[0].message_type, trust_tasks_didcomm::ENVELOPE_TYPE);
         assert_eq!(
             pushed[0].body.get("type").and_then(|t| t.as_str()),
             Some(super::super::consent_request::TASK_CONSENT_REQUEST_0_1),
