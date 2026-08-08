@@ -933,7 +933,10 @@ pub(super) async fn trigger_gateway_wake(
     recipient: &str,
     approver_mediator: &str,
 ) {
-    use crate::messaging::handlers::TRUST_TASK_ENVELOPE_TYPE;
+    // Only the DIDComm sends below name the envelope; TSP carries the document
+    // bytes directly, so this is unused when the DIDComm binding is compiled out.
+    #[cfg(feature = "didcomm")]
+    use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
 
     let wake = match get_acl_entry(&state.acl_ks, recipient).await {
         Ok(Some(entry)) => entry.device.and_then(|d| d.wake),

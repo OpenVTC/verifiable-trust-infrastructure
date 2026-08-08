@@ -30,11 +30,14 @@ use vti_common::error::AppError;
 #[cfg(feature = "didcomm")]
 const CONSENT_PUSH_DELIVER_BY_SECS: u64 = 300;
 
-use crate::messaging::handlers::TRUST_TASK_ENVELOPE_TYPE;
+// Only the DIDComm sends below name the envelope; TSP carries the document
+// bytes directly, so this is unused when the DIDComm binding is compiled out.
 use crate::policy::consent::PendingTaskConsent;
 use crate::policy::effects::Effect;
 use crate::policy::types::TaskClass;
 use crate::server::AppState;
+#[cfg(feature = "didcomm")]
+use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
 
 pub(super) const TASK_CONSENT_REQUEST_0_1: &str =
     "https://trusttasks.org/spec/task-consent/request/0.1";

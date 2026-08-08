@@ -259,7 +259,7 @@ macro_rules! didcomm_handler {
 /// rejects silently, because "not an envelope" is indistinguishable from "not
 /// addressed to me". Sourced from the crate that defines it so a copy cannot
 /// drift again.
-pub(crate) use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
+use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
 
 /// Generic DIDComm handler for the Trust-Tasks surface.
 ///

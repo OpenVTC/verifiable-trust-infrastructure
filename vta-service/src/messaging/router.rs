@@ -290,7 +290,7 @@ pub async fn dispatch(
     }
 
     // ── Trust-Tasks envelope (AppState) ──────────────────────────────
-    if t == handlers::TRUST_TASK_ENVELOPE_TYPE {
+    if t == trust_tasks_didcomm::ENVELOPE_TYPE {
         return finish(handlers::handle_trust_task(ctx, msg, Extension(app_state)).await);
     }
 
