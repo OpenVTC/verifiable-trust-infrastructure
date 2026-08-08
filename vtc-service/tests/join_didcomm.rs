@@ -16,8 +16,42 @@
 //!
 //! This is the template a downstream consumer (OpenVTC) copies to test its join
 //! + activation path against a real VTC.
+//!
+//! ## Debugging a credential-delivery failure
+//!
+//! Run with `RUST_LOG=vtc_service=debug cargo test -p vtc-service --test
+//! join_didcomm -- --nocapture`.
+//!
+//! Without a subscriber installed, the service's `warn!` lines go nowhere — and
+//! the one that matters here, *"membership-credential delivery failed on
+//! approve"*, is the only place a failed push is reported at all. Its caller
+//! deliberately swallows the error (the credentials are already issued and
+//! returned inline, so a delivery failure must not unwind the decision), which
+//! means a silent send failure and a lost frame look identical from the
+//! assertion. [`init_tracing`] installs the subscriber so they don't.
 
 use std::time::Duration;
+
+/// Install a `RUST_LOG`-driven subscriber once per test binary.
+///
+/// `try_init` rather than `init`: several tests in this binary may call it, and
+/// a second `init` panics.
+///
+/// The default filter silences `lsm_tree`, whose temp-dir teardown emits a
+/// screenful of "Failed to cleanup deleted table … No such file or directory"
+/// warnings on every run. Those are harmless and they are *only* printed when a
+/// test fails — which is precisely when they would bury the delivery warning
+/// this subscriber exists to surface. Override the whole thing with `RUST_LOG`
+/// when you want it back.
+fn init_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,lsm_tree=off")),
+        )
+        .with_test_writer()
+        .try_init();
+}
 
 /// How long to wait for one admission credential to arrive over DIDComm.
 ///
@@ -159,6 +193,7 @@ async fn rest_post(
 
 #[tokio::test]
 async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_delivery() {
+    init_tracing();
     let mock = MockVtcDidcomm::start().await;
     let admin_token = seed_join_ceremony(&mock).await;
     let vtc_did = mock.vtc_did().to_string();
@@ -279,13 +314,37 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
     //    assertion on unrelated PRs — including one whose entire diff was a
     //    `pub use` line — so the bound, not the code, was what broke. Still
     //    bounded (never a hang), just past where runner slowness lives.
+    //    When this *does* fail, the message has to say which credential went
+    //    missing. `deliver_credentials` is a sequential loop with `?`, so a
+    //    failure on the first push sends **zero** and a failure on the second
+    //    sends **one** — two different bugs that a bare "not delivered" cannot
+    //    tell apart, and this assertion has fired on CI several times without
+    //    ever distinguishing them. The index is the whole diagnostic.
     let mut delivered = Vec::new();
-    for _ in 0..2 {
+    for i in 0..2 {
         let (typ, issue_body) = mock
             .client
             .next_pushed(CREDENTIAL_PUSH_TIMEOUT)
             .await
-            .expect("admission credential delivered over DIDComm");
+            .unwrap_or_else(|| {
+                panic!(
+                    "admission credential {}/2 not delivered over DIDComm within {:?} \
+                     ({} already received). {}",
+                    i + 1,
+                    CREDENTIAL_PUSH_TIMEOUT,
+                    delivered.len(),
+                    if i == 0 {
+                        "Zero arrived, so the VTC most likely never sent: \
+                         `deliver_credentials` returns on the first `?`, and its caller only \
+                         `warn!`s — which is invisible here unless a tracing subscriber is \
+                         installed (see RUST_LOG note at the top of this test)."
+                    } else {
+                        "The first arrived and the second did not, so the VTC either failed on \
+                         the second `push_to_holder` (again warn-only) or the frame was lost \
+                         between the mediator and this client."
+                    }
+                )
+            });
         assert_eq!(typ, CREDENTIAL_ISSUE_TYPE);
         let issue: IssueBody = serde_json::from_value(issue_body).expect("issue body");
         delivered.push(
