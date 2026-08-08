@@ -938,12 +938,24 @@ mod didcomm_harness {
                 return Some(found);
             }
             let start = tokio::time::Instant::now();
+            // Pickup errors were discarded here. At a 300ms poll against a 60s
+            // bound that is up to ~200 silent failures behind a single "not
+            // delivered" — so a broken socket and an unsent message looked
+            // identical. Counted and reported on timeout instead; still not
+            // fatal, because a transient pickup error is expected and the retry
+            // is the point.
+            let mut poll_errors = 0usize;
+            let mut last_error = String::new();
             while start.elapsed() < timeout {
                 let next = self
                     .atm
                     .message_pickup()
                     .live_stream_next(&self.profile, Some(POLL), true)
                     .await;
+                if let Err(e) = &next {
+                    poll_errors += 1;
+                    last_error = e.to_string();
+                }
                 if let Ok(Some((msg, _meta))) = next {
                     if is_error_reply(&msg.typ)
                         && self.panic_on_problem_report.load(Ordering::SeqCst)
@@ -963,6 +975,15 @@ mod didcomm_harness {
                     }
                     self.inbox.lock().await.push_back(r);
                 }
+            }
+            if poll_errors > 0 {
+                tracing::warn!(
+                    poll_errors,
+                    last_error = %last_error,
+                    ?timeout,
+                    "message pickup errored while waiting; the awaited message may have been \
+                     lost to the transport rather than never sent"
+                );
             }
             None
         }
