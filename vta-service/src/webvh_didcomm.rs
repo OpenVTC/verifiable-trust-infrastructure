@@ -34,8 +34,11 @@
 //! envelope-layer guarantees.
 
 use crate::didcomm_bridge::DIDCommBridge;
-use crate::error::AppError;
+use crate::error::{AppError, bad_gateway_error};
 use crate::webvh_client::RequestUriResponse;
+// The one DIDComm message type this module names, taken from the binding crate
+// rather than copied (#900). Every task URI below travels *inside* the envelope.
+use trust_tasks_didcomm::ENVELOPE_TYPE as TRUST_TASK_ENVELOPE_TYPE;
 
 // did-management Trust-Task URIs (v0.1, hosted-DID category).
 //
@@ -238,9 +241,180 @@ pub struct WebvhDIDCommClient<'a> {
     server_did: &'a str,
 }
 
+/// The `trust-task-error/0.x` family the framework emits for transport-level
+/// refusals (malformed body, proof required, wrong recipient). Matched by prefix
+/// because the version floats — did-hosting emits `0.1` for a body-parse failure
+/// and `0.2` from the typed §7.2 pipeline, in the same conversation.
+const TRUST_TASK_ERROR_PREFIX: &str = "https://trusttasks.org/spec/trust-task-error/";
+
+/// Build the complete outbound pair: the DIDComm **message type** and the
+/// `TrustTask` document that rides in its body.
+///
+/// The message type is returned from here rather than written at the send site
+/// on purpose. It is the value this entire change exists to get right, and a
+/// wrong one fails *silently* — so it must come from somewhere a test can look
+/// at. `send_task` destructures this and passes both through verbatim; putting
+/// the literal back at the send site means bypassing this function, which is a
+/// visible edit rather than a one-word slip.
+fn build_outbound(
+    task: &str,
+    recipient: &str,
+    issuer: Option<String>,
+    payload: serde_json::Value,
+) -> (&'static str, serde_json::Value) {
+    (
+        TRUST_TASK_ENVELOPE_TYPE,
+        build_envelope_document(task, recipient, issuer, payload),
+    )
+}
+
+/// Build the `TrustTask` document that rides inside the envelope.
+///
+/// Extracted so the outbound shape is assertable without a live bridge — the
+/// same reason `build_register_body` exists, and for the same class of bug: the
+/// failure this whole change addresses is a *silent* one, so nothing downstream
+/// would have caught a malformed document either.
+fn build_envelope_document(
+    task: &str,
+    recipient: &str,
+    issuer: Option<String>,
+    payload: serde_json::Value,
+) -> serde_json::Value {
+    let mut doc = serde_json::json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        // The task type lives HERE, on the document — never on the DIDComm
+        // message, which is always the envelope type.
+        "type": task,
+        // Addressed to the host, per SPEC §4.8. did-hosting does not enforce
+        // `recipient` on the DID-management bridge (it authorizes the authcrypt
+        // sender), but an unaddressed document is one a stricter peer is
+        // entitled to refuse.
+        "recipient": recipient,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "payload": payload,
+    });
+    // `issuer` only when we actually know it. SPEC §4.8.1 requires an in-band
+    // issuer to match the transport-authenticated sender, so a guess would be
+    // worse than the omission the spec permits.
+    if let Some(vta_did) = issuer {
+        doc["issuer"] = serde_json::Value::String(vta_did);
+    }
+    doc
+}
+
+/// Unwrap a reply document from a trust-task envelope into its `payload`.
+///
+/// On the envelope binding every reply arrives with the *same* DIDComm `type`
+/// (`ENVELOPE_TYPE`), so `send_and_wait`'s type check can no longer tell success
+/// from rejection — that decision moves in here, onto the document's own `type`.
+/// Three outcomes, and the caller must not be able to confuse them:
+///
+/// - the expected `<task>#response` → its `payload`,
+/// - `did/problem-report/0.1` → the typed [`AppError`] the REST path produces,
+///   via the *same* mapping table `didcomm_bridge` uses for the bare framing,
+/// - `trust-task-error/0.x` → a 502; the framework refused the envelope itself
+///   rather than the task, so it is not an outcome the caller can act on.
+///
+/// Anything else is a 502 naming both types, because a reply that threads to our
+/// request but answers a different task is a contract break, not a task failure.
+fn unwrap_envelope_reply(
+    doc: serde_json::Value,
+    expected: &str,
+) -> Result<serde_json::Value, AppError> {
+    let doc_type = doc.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+
+    if doc_type == TASK_DID_PROBLEM_REPORT {
+        let payload = doc.get("payload").unwrap_or(&serde_json::Value::Null);
+        let code = payload
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("e.p.did.unknown");
+        let comment = payload
+            .get("comment")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        return Err(crate::didcomm_bridge::problem_report_to_app_error(
+            code, comment,
+        ));
+    }
+
+    if doc_type.starts_with(TRUST_TASK_ERROR_PREFIX) {
+        let payload = doc.get("payload").unwrap_or(&serde_json::Value::Null);
+        let code = payload
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let message = payload
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        return Err(bad_gateway_error(format!(
+            "hosting peer refused the trust-task envelope: {message} [{code}]"
+        )));
+    }
+
+    if doc_type != expected {
+        return Err(bad_gateway_error(format!(
+            "unexpected response document type: expected {expected}, got {doc_type}"
+        )));
+    }
+
+    Ok(doc
+        .get("payload")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null))
+}
+
 impl<'a> WebvhDIDCommClient<'a> {
     pub fn new(bridge: &'a DIDCommBridge, server_did: &'a str) -> Self {
         Self { bridge, server_did }
+    }
+
+    /// Send one DID-management task over the **DIDComm envelope binding** and
+    /// return the response document's `payload`.
+    ///
+    /// The single place this client names a DIDComm message type, and it names
+    /// `ENVELOPE_TYPE` both ways. Every verb below passes only its task URI, so
+    /// no call site can put a task type on the wire — which is the mistake this
+    /// whole change exists to make unrepresentable (#900, #903).
+    ///
+    /// The task type moves *into* the document, where the binding requires it.
+    /// did-hosting reads it back out via `bridge_did_management` and dispatches
+    /// through the same `dispatch_did_op` table the bare `MSG_*` framing hits, so
+    /// the operation, its authorization and its responses are unchanged — only
+    /// the framing differs.
+    async fn send_task(
+        &self,
+        task: &str,
+        response_task: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, AppError> {
+        // Both halves come from `build_outbound` — see its note on why the
+        // message type is not written here.
+        let (message_type, doc) =
+            build_outbound(task, self.server_did, self.bridge.vta_did(), payload);
+
+        let reply = self
+            .bridge
+            .send_and_wait(
+                self.server_did,
+                message_type,
+                doc,
+                // Expected *outer* type: the binding replies in the same
+                // envelope, so the reply's type is the one we sent. The real
+                // discrimination happens on the inner document, in
+                // `unwrap_envelope_reply`.
+                message_type,
+                // A DIDComm-level problem report is still possible ahead of the
+                // envelope (an unroutable message never reaches the dispatcher),
+                // so keep mapping it; task-level rejections now arrive *inside*
+                // the envelope instead.
+                TASK_DID_PROBLEM_REPORT,
+                30,
+            )
+            .await?;
+
+        unwrap_envelope_reply(reply.body, response_task)
     }
 
     /// Reserve a path on the remote DID-hosting server (v0.1
@@ -265,19 +439,15 @@ impl<'a> WebvhDIDCommClient<'a> {
     ) -> Result<RequestUriResponse, AppError> {
         let body = build_check_name_body(path, domain);
 
-        let response = self
-            .bridge
-            .send_and_wait(
-                self.server_did,
+        let payload = self
+            .send_task(
                 TASK_DID_CHECK_NAME,
-                serde_json::Value::Object(body),
                 TASK_DID_CHECK_NAME_RESPONSE,
-                TASK_DID_PROBLEM_REPORT,
-                30,
+                serde_json::Value::Object(body),
             )
             .await?;
 
-        parse_check_name_response(response.body)
+        parse_check_name_response(payload)
     }
 
     /// Atomic claim-and-publish (v0.1 `did-management/did/register/0.1`).
@@ -292,29 +462,24 @@ impl<'a> WebvhDIDCommClient<'a> {
         force: bool,
         domain: Option<&str>,
     ) -> Result<RequestUriResponse, AppError> {
-        let response = self
-            .bridge
-            .send_and_wait(
-                self.server_did,
+        let payload = self
+            .send_task(
                 TASK_DID_REGISTER,
-                serde_json::Value::Object(build_register_body(path, did_log, force, domain)),
                 TASK_DID_REGISTER_RESPONSE,
-                TASK_DID_PROBLEM_REPORT,
-                30,
+                serde_json::Value::Object(build_register_body(path, did_log, force, domain)),
             )
             .await?;
 
         // v0.1 response carries `{ record: DidRecord }`; we project
         // the mnemonic + didUrl out of it for the local response shape.
-        let record = response
-            .body
+        let record = payload
             .get("record")
             .cloned()
             .or_else(|| {
                 // Legacy did-hosting-control responses (still emitted
                 // by pre-v0.7 hosts) flatten the fields at the top
                 // level. Fall back to that shape transparently.
-                Some(response.body.clone())
+                Some(payload.clone())
             })
             .unwrap_or(serde_json::Value::Null);
         let mnemonic = record
@@ -376,16 +541,12 @@ impl<'a> WebvhDIDCommClient<'a> {
             );
         }
 
-        self.bridge
-            .send_and_wait(
-                self.server_did,
-                TASK_DID_DELETE,
-                serde_json::Value::Object(body),
-                TASK_DID_DELETE_RESPONSE,
-                TASK_DID_PROBLEM_REPORT,
-                30,
-            )
-            .await?;
+        self.send_task(
+            TASK_DID_DELETE,
+            TASK_DID_DELETE_RESPONSE,
+            serde_json::Value::Object(body),
+        )
+        .await?;
         Ok(())
     }
 
@@ -421,15 +582,7 @@ impl<'a> WebvhDIDCommClient<'a> {
         if let Some(d) = domain {
             body.insert("domain".to_string(), serde_json::json!(d));
         }
-        self.bridge
-            .send_and_wait(
-                self.server_did,
-                task,
-                serde_json::Value::Object(body),
-                response_task,
-                TASK_DID_PROBLEM_REPORT,
-                30,
-            )
+        self.send_task(task, response_task, serde_json::Value::Object(body))
             .await?;
         Ok(())
     }
@@ -498,15 +651,11 @@ impl<'a> WebvhDIDCommClient<'a> {
         if let Some(d) = domain {
             body.insert("domain".to_string(), serde_json::json!(d));
         }
-        let resp = self
-            .bridge
-            .send_and_wait(
-                self.server_did,
+        let payload = self
+            .send_task(
                 TASK_AGENT_NAME_LIST,
-                serde_json::Value::Object(body),
                 TASK_AGENT_NAME_LIST_RESPONSE,
-                TASK_DID_PROBLEM_REPORT,
-                30,
+                serde_json::Value::Object(body),
             )
             .await?;
         // A host predating the registry omits the field entirely. That is an
@@ -515,7 +664,7 @@ impl<'a> WebvhDIDCommClient<'a> {
         // (`webvh_client::list_agent_names`); erroring on one transport and
         // succeeding on the other made the same DID appear to have names or
         // not depending on how the VTA happened to reach its host.
-        let Some(names) = resp.body.get("agentNames") else {
+        let Some(names) = payload.get("agentNames") else {
             return Ok(Vec::new());
         };
         serde_json::from_value(names.clone())
@@ -536,18 +685,14 @@ impl<'a> WebvhDIDCommClient<'a> {
         if let Some(d) = domain {
             body.insert("domain".to_string(), serde_json::json!(d));
         }
-        let resp = self
-            .bridge
-            .send_and_wait(
-                self.server_did,
+        let payload = self
+            .send_task(
                 TASK_AGENT_NAME_CHECK,
-                serde_json::Value::Object(body),
                 TASK_AGENT_NAME_CHECK_RESPONSE,
-                TASK_DID_PROBLEM_REPORT,
-                30,
+                serde_json::Value::Object(body),
             )
             .await?;
-        serde_json::from_value(resp.body)
+        serde_json::from_value(payload)
             .map_err(|e| AppError::Internal(format!("agent-name check response parse error: {e}")))
     }
 }
@@ -758,5 +903,150 @@ mod tests {
         });
         let err = parse_check_name_response(body).expect_err("must error");
         assert!(err.to_string().contains("didUrl"), "got: {err}");
+    }
+}
+
+#[cfg(test)]
+mod envelope_binding_tests {
+    use super::{
+        TASK_DID_CHECK_NAME, TASK_DID_CHECK_NAME_RESPONSE, TASK_DID_PROBLEM_REPORT, build_outbound,
+        unwrap_envelope_reply,
+    };
+    use crate::error::AppError;
+    use serde_json::json;
+
+    const SERVER: &str = "did:webvh:example.com:control";
+    const VTA: &str = "did:webvh:example.com:vta";
+
+    /// The whole point, in one assertion pair: the **envelope** type goes on the
+    /// DIDComm message, the **task** type goes in the document.
+    ///
+    /// Both halves come from `build_outbound`, which is what makes this
+    /// meaningful rather than circular — `send_task` destructures that function's
+    /// return and passes both through, so putting a task type back on the wire
+    /// means bypassing it, not editing one argument.
+    #[test]
+    fn the_envelope_is_on_the_message_and_the_task_is_in_the_document() {
+        let (message_type, doc) = build_outbound(
+            TASK_DID_CHECK_NAME,
+            SERVER,
+            Some(VTA.to_string()),
+            json!({ "path": "bob", "reserve": true }),
+        );
+
+        assert_eq!(
+            message_type,
+            trust_tasks_didcomm::ENVELOPE_TYPE,
+            "the DIDComm message must carry the binding's envelope type — a task \
+             type here is rejected silently by a conformant host"
+        );
+        assert_ne!(
+            message_type, TASK_DID_CHECK_NAME,
+            "the task type must never be the message type"
+        );
+        assert_eq!(doc["type"], TASK_DID_CHECK_NAME);
+        assert_eq!(doc["recipient"], SERVER);
+        assert_eq!(doc["issuer"], VTA);
+        // The body the host dispatches on must survive the wrap untouched — the
+        // envelope adds framing, it does not reshape the request.
+        assert_eq!(doc["payload"]["path"], "bob");
+        assert_eq!(doc["payload"]["reserve"], true);
+        assert!(
+            doc["id"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("urn:uuid:"),
+            "the document id is the thread anchor and must be a urn:uuid"
+        );
+    }
+
+    /// No `issuer` rather than a wrong one. SPEC §4.8.1 makes an in-band issuer
+    /// that disagrees with the transport sender a rejection, so omitting it when
+    /// the bridge has no DID yet is the safe half of the choice.
+    #[test]
+    fn an_unknown_issuer_is_omitted_not_guessed() {
+        let (_, doc) = build_outbound(TASK_DID_CHECK_NAME, SERVER, None, json!({}));
+        assert!(
+            doc.get("issuer").is_none(),
+            "an unknown issuer must be absent, not empty or invented: {doc}"
+        );
+    }
+
+    /// The happy path yields the response document's `payload`, which is what
+    /// every verb's parser consumes.
+    #[test]
+    fn a_response_document_yields_its_payload() {
+        let reply = json!({
+            "id": "urn:uuid:2",
+            "type": TASK_DID_CHECK_NAME_RESPONSE,
+            "payload": { "available": true, "reserved": true, "record": { "mnemonic": "bob" } },
+        });
+        let payload = unwrap_envelope_reply(reply, TASK_DID_CHECK_NAME_RESPONSE)
+            .expect("a matching response document unwraps");
+        assert_eq!(payload["available"], true);
+        assert_eq!(payload["record"]["mnemonic"], "bob");
+    }
+
+    /// A problem report inside the envelope maps through the *same* table the
+    /// bare framing uses, so the operator-facing status does not depend on which
+    /// framing carried the rejection.
+    ///
+    /// `path-unavailable` → 409 is the case that matters: it is a clean client
+    /// conflict, and collapsing it to 502 was the bug the mapping table was
+    /// introduced to fix.
+    #[test]
+    fn an_enveloped_problem_report_keeps_its_typed_meaning() {
+        let reply = json!({
+            "id": "urn:uuid:3",
+            "type": TASK_DID_PROBLEM_REPORT,
+            "payload": { "code": "e.p.did.path-unavailable", "comment": "taken" },
+        });
+        let err = unwrap_envelope_reply(reply, TASK_DID_CHECK_NAME_RESPONSE)
+            .expect_err("a problem report is an error, not a payload");
+        assert!(
+            matches!(err, AppError::Conflict(_)),
+            "path-unavailable must stay a 409, got: {err:?}"
+        );
+    }
+
+    /// A framework-level refusal is not a task outcome, so it surfaces as a 502
+    /// rather than being mistaken for a rejection the caller could act on. The
+    /// version floats (0.1 from a body-parse failure, 0.2 from the typed
+    /// pipeline), so the match is by prefix.
+    #[test]
+    fn a_trust_task_error_is_a_bad_gateway_at_either_version() {
+        for version in ["0.1", "0.2"] {
+            let reply = json!({
+                "id": "urn:uuid:4",
+                "type": format!("https://trusttasks.org/spec/trust-task-error/{version}"),
+                "payload": { "code": "malformedRequest", "message": "nope" },
+            });
+            let err = unwrap_envelope_reply(reply, TASK_DID_CHECK_NAME_RESPONSE)
+                .expect_err("a framework error is not a payload");
+            let msg = format!("{err:?}");
+            assert!(
+                msg.contains("refused the trust-task envelope"),
+                "trust-task-error/{version} must surface as an envelope refusal, got: {msg}"
+            );
+        }
+    }
+
+    /// A reply that threads to our request but answers a different task is a
+    /// contract break, not a task failure — it must never be handed to a parser
+    /// as though it were the expected payload.
+    #[test]
+    fn a_mismatched_response_type_is_refused() {
+        let reply = json!({
+            "id": "urn:uuid:5",
+            "type": "https://trusttasks.org/spec/did-management/did/delete/0.1#response",
+            "payload": { "deleted": true },
+        });
+        let err = unwrap_envelope_reply(reply, TASK_DID_CHECK_NAME_RESPONSE)
+            .expect_err("an off-task response must not be accepted");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("unexpected response document type"),
+            "got: {msg}"
+        );
     }
 }
