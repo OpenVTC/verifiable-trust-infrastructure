@@ -1,7 +1,7 @@
-### vta-sdk 0.21.7 / vta-service 0.14.12 — the workspace builds again, and keeps building under reduced feature sets (#902)
+### vta-sdk 0.21.7 / vta-service 0.14.12 / vti-common 0.11.35 — the workspace builds again, and keeps building under reduced feature sets (#902)
 
-Three independent build breaks, all of the same shape: a feature combination
-nobody compiles routinely, so nothing caught the drift.
+Four independent build breaks, all of the same shape: a feature combination or a
+dependency edge nobody compiles routinely, so nothing caught the drift.
 
 ## `--features tsp` stopped resolving `TspWebSocket` and `atm.tsp()`
 
@@ -49,9 +49,34 @@ a second one (ADR 0005 — one websocket per DID). `tsp` therefore requires
 `vta-sdk/tsp` is deliberately left standalone: its `TspPingSession` is a real
 TSP-only client that owns its own socket, and it builds on its own.
 
+## `UnpackMetadata` went `#[non_exhaustive]`
+
+Carried in by the `affinidi-messaging-didcomm` 0.15.8 bump above, and only
+visible when *test* targets compile: a `vti-common` test helper built
+`UnpackMetadata` with a struct expression. `#[non_exhaustive]` bars that form
+outside the defining crate, and a `..Default::default()` tail does not exempt it.
+The helper now mutates a `Default` field by field — which is also the shape that
+survives the upstream adding another field, the point of the attribute.
+
+## Plaintext-envelope rejection moved one layer earlier
+
+Also carried in by 0.15.8, and a strengthening rather than a regression: `unpack`
+now refuses a `Plaintext` envelope outright ("not in the accepted set
+[AuthcryptPlaintext, …]") before `bind_authcrypt_sender` is reached. The forged-
+plaintext tests in `vta-service` and `vtc-service` asserted the 401 was
+attributable to *our* guard by matching its message, so they failed on the new
+wording while the behaviour they exist to protect — 401, no token issued — was
+unchanged throughout.
+
+They now accept either attribution, and gained an explicit assertion that the
+401 did **not** come from the `ATM not configured` short-circuit — which was the
+real intent of the original message match, and was previously only implied.
+Our guard is unchanged and still covers the envelopes the library does accept.
+
 ## Verified
 
 `vta-service` compiles at `--no-default-features` and with each of `didcomm`,
 `rest`, `tsp`, `didcomm,tsp`, and `rest,didcomm,tsp,webvh`; `vta-sdk` at
 `--no-default-features`, `--features tsp`, and `--all-features`; the workspace at
-`--all-features`.
+`--all-features`, and every workspace **test** target compiles — which is where
+the `UnpackMetadata` break hid.

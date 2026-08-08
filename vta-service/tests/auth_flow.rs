@@ -313,12 +313,27 @@ async fn plaintext_didcomm_with_forged_sender_is_rejected() {
         StatusCode::UNAUTHORIZED,
         "a plaintext DIDComm message with a forged sender must be rejected, not issued an admin JWT; got body: {body}"
     );
-    // The 401 must come from the authcrypt guard, not the ATM-not-configured
-    // short-circuit — otherwise the test would pass without exercising the fix.
+    // The 401 must come from an envelope/authcrypt check, not the
+    // ATM-not-configured short-circuit — otherwise the test would pass without
+    // exercising the fix.
+    //
+    // Two layers can legitimately produce it, and which one fires depends on the
+    // messaging library rather than on us. `bind_authcrypt_sender` is ours;
+    // affinidi-messaging-didcomm 0.15.8 also refuses a Plaintext envelope during
+    // `unpack`, before ours is reached. That is the rejection moving *earlier*,
+    // which is strictly better — our guard stays as defence in depth for
+    // envelopes the library does accept (anoncrypt) — so accept either
+    // attribution and keep excluding the short-circuit.
     let err = body["error"].as_str().unwrap_or_default();
     assert!(
-        err.contains("authenticated (authcrypt) DIDComm envelope"),
+        err.contains("authenticated (authcrypt) DIDComm envelope")
+            || err.contains("envelope wrapping Plaintext is not in the accepted set"),
         "401 must be attributable to the plaintext/authcrypt guard, got: {body}"
+    );
+    assert!(
+        !err.contains("ATM not configured"),
+        "401 came from the ATM-not-configured short-circuit, so the guard was never \
+         exercised: {body}"
     );
     assert!(
         body.get("tokens").is_none() && body.get("access_token").is_none(),
@@ -421,10 +436,18 @@ async fn plaintext_didcomm_refresh_is_rejected() {
         StatusCode::UNAUTHORIZED,
         "a plaintext DIDComm refresh must be rejected by the authcrypt guard; got: {body}"
     );
+    // Either layer may reject it — see the note in
+    // `plaintext_didcomm_with_forged_sender_is_rejected`.
     let err = body["error"].as_str().unwrap_or_default();
     assert!(
-        err.contains("authenticated (authcrypt) DIDComm envelope"),
+        err.contains("authenticated (authcrypt) DIDComm envelope")
+            || err.contains("envelope wrapping Plaintext is not in the accepted set"),
         "401 must be attributable to the refresh authcrypt guard, got: {body}"
+    );
+    assert!(
+        !err.contains("ATM not configured"),
+        "401 came from the ATM-not-configured short-circuit, so the guard was never \
+         exercised: {body}"
     );
     assert!(
         body.get("tokens").is_none(),
