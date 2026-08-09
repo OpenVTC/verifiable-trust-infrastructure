@@ -168,6 +168,14 @@ macro_rules! checked {
 // ─── Shared fixture builders ─────────────────────────────────────────────
 
 const SUBJECT: &str = "did:key:z6MkSubject";
+
+/// A real `digestMultibase` — base58btc over the sha2-256 multihash
+/// (`0x12 0x20` || digest), the form `vta_policy::consent` now emits.
+///
+/// The witness used to carry the placeholder `"b64u-digest"`, which the 0.4
+/// registry rejects (`minLength` 16) — a placeholder that satisfied the old
+/// schema by accident and tested nothing about the encoding.
+const DIGEST_MULTIBASE: &str = "zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ";
 const TS: &str = "2026-07-29T00:00:00Z";
 
 fn dt() -> chrono::DateTime<chrono::Utc> {
@@ -542,13 +550,13 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::task_consent::decision::v0_1::Response,
                 json!({
                     "challenge": "chal-0123456789abcdef",
-                    "payloadDigest": "b64u-digest",
+                    "payloadDigest": DIGEST_MULTIBASE,
                     "decision": "approve",
                     "reason": "looks right",
                 }),
                 json!({
                     "status": "pending",
-                    "payloadDigest": "b64u-digest",
+                    "payloadDigest": DIGEST_MULTIBASE,
                     "approvals": 1,
                     "needed": 2,
                 })

@@ -1,6 +1,6 @@
 [package]
 name = "vta-mobile-core"
-version = "0.6.17"
+version = "0.6.18"
 description = "UniFFI engine for the VTA mobile agent (Android/iOS): DIDComm, Trust Tasks, AAL step-up."
 edition.workspace = true
 # Not a crates.io library — the published artifacts are the Android AAR
@@ -41,6 +41,9 @@ chrono = { workspace = true }
 affinidi-data-integrity = { workspace = true }
 # Multibase (base58btc) encoding of the signature into `proofValue`.
 multibase = { workspace = true }
+# The match code is hex over the decoded digest bytes, not over the multibase
+# string — see `consent::match_code_from_digest`.
+hex = { workspace = true }
 # `CachedDidResolver` — the VerificationMethodResolver that resolves a request
 # proof's verificationMethod through the crate's shared DID resolver cache, so
 # the device can verify a VTA-signed request no matter the issuer's DID method.
@@ -88,6 +91,9 @@ tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 # Test-only Ed25519 signing for the did-signed verify round-trip (stands in for
 # the native enclave Signer).
 ed25519-dalek = { workspace = true }
+# Test-only: builds real sha2-256 digests to prove the match code discriminates
+# between payloads once the constant multihash prefix is stripped.
+sha2 = { workspace = true }
 # Test-only `Secret::generate_ed25519` — mints the executor keys the request
 # verification tests sign with (the same sign path the VTA uses in production).
 affinidi-secrets-resolver = { workspace = true }

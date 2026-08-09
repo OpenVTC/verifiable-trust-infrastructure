@@ -44,10 +44,56 @@ use crate::proof::attach_did_signed_proof;
 /// Type URI of the request document this approver renders.
 const TASK_CONSENT_REQUEST_TYPE: &str = "https://trusttasks.org/spec/task-consent/request/0.1";
 
-/// Length of the human-checkable match code — the first hex chars of the
-/// `payloadDigest`, compared across the two screens. UI-only (there is no wire
-/// field); mirrors the browser approver's digest prefix.
+/// Length of the human-checkable match code compared across the two screens.
+/// UI-only (there is no wire field); mirrors the browser approver's code.
 const MATCH_CODE_LEN: usize = 6;
+
+/// Multihash prefix for SHA-256 with a 32-byte digest, as carried inside a
+/// `digestMultibase`. Stripped before deriving the match code because it is
+/// constant — see [`match_code_from_digest`].
+const MULTIHASH_SHA2_256_32: [u8; 2] = [0x12, 0x20];
+
+/// The operator's comparison code: the first [`MATCH_CODE_LEN`] hex characters
+/// of the **digest bytes**, not of their multibase encoding.
+///
+/// This distinction is the whole point. `payloadDigest` is a multibase-encoded
+/// multihash, so its first three characters are always `zQm` — that is the
+/// base58btc marker plus the sha2-256 multihash prefix, and it is identical for
+/// every digest ever produced:
+///
+/// ```text
+/// zQmcdLJ…   zQmRTnb…   zQmb7oR…   zQmbu6r…      ← four different payloads
+/// ```
+///
+/// Slicing the encoded string would therefore spend half a six-character code on
+/// a constant, leaving ~17.6 bits where the operator believes they are comparing
+/// ~35 — and it would still *look* like six random characters, which is what
+/// makes it dangerous rather than merely wasteful. An attacker searching offline
+/// for a payload that renders the same code to the operator would face ~195k
+/// candidates instead of ~60 billion.
+///
+/// Decoding first restores the full entropy and, because the digest is still
+/// SHA-256, reproduces **exactly** the code this surface showed when the wire
+/// carried bare hex: `hex(digest)[..6]` either way. The encoding migration is
+/// therefore invisible on this screen.
+fn match_code_from_digest(payload_digest: &str) -> Result<String, FfiError> {
+    let (_base, bytes) = multibase::decode(payload_digest).map_err(|e| FfiError::Decode {
+        reason: format!("payloadDigest is not multibase: {e}"),
+    })?;
+    let digest = bytes
+        .strip_prefix(&MULTIHASH_SHA2_256_32)
+        .ok_or_else(|| FfiError::Decode {
+            reason: "payloadDigest is not a sha2-256 multihash".to_string(),
+        })?;
+    // Two hex characters per byte.
+    let need = MATCH_CODE_LEN.div_ceil(2);
+    if digest.len() < need {
+        return Err(FfiError::Decode {
+            reason: format!("payloadDigest carries {} bytes, need {need}", digest.len()),
+        });
+    }
+    Ok(hex::encode(&digest[..need])[..MATCH_CODE_LEN].to_string())
+}
 
 /// One consequence of executing the task, authored by the VTA by dry-running the
 /// handler it is about to invoke. The `kind` set is OPEN — a surface MUST render
@@ -154,7 +200,7 @@ pub async fn parse_task_consent_request(
     let payload_digest = req_str("payloadDigest")?;
     let task_type = req_str("taskType")?;
 
-    let match_code: String = payload_digest.chars().take(MATCH_CODE_LEN).collect();
+    let match_code = match_code_from_digest(&payload_digest)?;
 
     let exposure = p.get("exposure");
     let discloses = exposure
@@ -273,7 +319,13 @@ fn assemble_decision(
     let payload = decision::Payload {
         challenge: decision::PayloadChallenge::try_from(draft.challenge.clone()).map_err(conv)?,
         decision: d,
-        payload_digest: draft.payload_digest.clone(),
+        // `payloadDigest` moved to the shared `DigestMultibase` type — a
+        // multibase-encoded multihash, not the bare hex it used to be. Parse
+        // rather than assume: a draft carrying a stale hex digest must fail
+        // here, at the device that would otherwise sign a decision the VTA
+        // could never match.
+        payload_digest: decision::DigestMultibase::try_from(draft.payload_digest.clone())
+            .map_err(conv)?,
         reason,
         ext: None,
     };
@@ -318,7 +370,7 @@ mod tests {
       "payload": {
         "challenge": "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ",
         "taskType": "https://trusttasks.org/spec/vta/webvh/dids/update/1.0",
-        "payloadDigest": "3b0c7f1d9e2a5648c1f30b7ae4d2986153ca0f7b8d41e6295af03c8bd71e4a62",
+        "payloadDigest": "zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ",
         "sideEffects": "destructive",
         "exposure": { "discloses": "none", "actsAsSubject": false },
         "effects": [
@@ -465,6 +517,53 @@ mod tests {
         }
     }
 
+    /// The code must come from the digest *bytes*. Deriving it from the encoded
+    /// string would spend three of six characters on the constant `zQm`.
+    #[test]
+    fn match_code_is_derived_from_the_digest_bytes_not_the_encoding() {
+        // Decodes to 3b0c7f1d9e2a…, so the code is the same six characters this
+        // surface showed when the wire carried bare hex. The migration is
+        // invisible here — that is the property worth pinning.
+        let code =
+            match_code_from_digest("zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ").unwrap();
+        assert_eq!(code, "3b0c7f");
+        assert_eq!(code.len(), MATCH_CODE_LEN);
+        assert!(
+            !code.starts_with("zQm"),
+            "derived from the encoding, not the bytes: {code}"
+        );
+    }
+
+    /// The regression the decode guards against: distinct payloads must yield
+    /// distinct codes. Slicing the multibase string gave every digest the same
+    /// three leading characters.
+    #[test]
+    fn match_codes_differ_across_payloads() {
+        use sha2::{Digest, Sha256};
+        let codes: std::collections::BTreeSet<String> = (0..16)
+            .map(|i| {
+                let d = Sha256::digest(format!("payload-{i}").as_bytes());
+                let mut buf = MULTIHASH_SHA2_256_32.to_vec();
+                buf.extend_from_slice(&d);
+                let mb = multibase::encode(multibase::Base::Base58Btc, &buf);
+                // Every encoded form shares the constant prefix …
+                assert!(mb.starts_with("zQm"), "{mb}");
+                // … but the derived codes must not.
+                match_code_from_digest(&mb).unwrap()
+            })
+            .collect();
+        assert_eq!(codes.len(), 16, "codes collided: {codes:?}");
+    }
+
+    #[test]
+    fn a_non_multibase_digest_is_refused() {
+        // Bare hex — what the wire carried before the migration.
+        let err = match_code_from_digest(
+            "3b0c7f1d9e2a5648c1f30b7ae4d2986153ca0f7b8d41e6295af03c8bd71e4a62",
+        );
+        assert!(err.is_err(), "stale hex must not silently produce a code");
+    }
+
     fn draft() -> TaskConsentDecisionDraft {
         TaskConsentDecisionDraft {
             id: "urn:uuid:22222222-2222-2222-2222-222222222222".to_string(),
@@ -472,8 +571,12 @@ mod tests {
             recipient_did: "did:webvh:scid:vta.example:vta".to_string(),
             issued_at: "2026-07-18T10:05:00Z".to_string(),
             challenge: "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ".to_string(),
-            payload_digest: "3b0c7f1d9e2a5648c1f30b7ae4d2986153ca0f7b8d41e6295af03c8bd71e4a62"
-                .to_string(),
+            // `digestMultibase`: base58btc over the sha2-256 multihash
+            // (`0x12 0x20` || digest). The bare hex this used to be is
+            // non-conforming under the shared `DigestMultibase` type, and the
+            // draft-parsing guard rejects it — which is how this fixture was
+            // caught.
+            payload_digest: "zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ".to_string(),
         }
     }
 
@@ -490,9 +593,11 @@ mod tests {
         );
         assert_eq!(v["payload"]["decision"], "approve");
         assert_eq!(v["payload"]["challenge"], "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ");
+        // Echoed verbatim: the decision is bound to the digest the executor
+        // will re-derive, so any re-encoding here would break the match.
         assert_eq!(
             v["payload"]["payloadDigest"],
-            "3b0c7f1d9e2a5648c1f30b7ae4d2986153ca0f7b8d41e6295af03c8bd71e4a62"
+            "zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ"
         );
         assert_eq!(v["issuer"], draft().issuer_did);
         assert_eq!(v["recipient"], "did:webvh:scid:vta.example:vta");
