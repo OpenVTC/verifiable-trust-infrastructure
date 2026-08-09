@@ -49,6 +49,7 @@ pub use orchestrator::{
 };
 pub use plan::UpdatePlan;
 pub use rotate::rotate_did_webvh_keys;
+pub use state::resolve_webvh_did;
 
 /// Cross-module accessor for `state_from_jsonl`. `passkey_vms` uses
 /// it to read the current DID document before appending a passkey
