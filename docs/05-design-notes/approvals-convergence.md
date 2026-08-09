@@ -1,7 +1,8 @@
 # Approvals convergence — one model instead of three
 
-**Status:** partially landed. Slices 1–2 shipped (#909, #910); the trigger
-collapse (#3) is designed but not implemented.
+**Status:** partially landed. The model and its runtime surface shipped in #909.
+The REST gate and the trigger collapse are designed below and not implemented —
+**a `requireConsent` rule is not enforced for REST callers until step 1 lands.**
 
 ## What prompted it
 
@@ -94,11 +95,12 @@ perfectly legal to write and failed closed at the first request it blocked.
 
 ## Landed
 
-- **#909** — `vta_sdk::approvals` (rules, validation, deterministic Rego
-  synthesis); the canonical `policy/{list,get,upsert,delete}` family, served for
-  the first time (the VTA had *no* runtime policy surface); `pnm policy`.
-- **#910** — `pnm approvals {list,require,remove,approvers,explain}`; seed-once
-  config; the consent gate resolving approver sets from the row.
+**#909** (merged as `742340a9`) — `vta_sdk::approvals` (rules, write-time
+validation, deterministic Rego synthesis); the canonical
+`policy/{list,get,upsert,delete}` family, served for the first time (the VTA had
+*no* runtime policy surface); `pnm approvals {list,require,remove,approvers,
+explain}` and `pnm policy`; seed-once config; the consent gate resolving
+approver sets from the declarative row.
 
 ## Not yet landed
 
@@ -109,20 +111,62 @@ security downgrade), delete `StepUpMode::{Delegated,DelegatedAny}`,
 `resolve_step_up`, and arm (1) of `policy_gate`, leaving the PDP as the only
 trigger. Add the offline `vta approvals` break-glass.
 
-**This must land together with the REST-gate unification**, and that coupling is
-the main thing to know before picking it up. The PDP gate runs *only* in the
-trust-task dispatcher: `routes/acl.rs::create_acl` and
-`routes/did_webvh.rs::update_did_handler` call their operations directly, so a
-`requireConsent` rule is **not enforced for a REST caller** today. The only thing
-gating those routes is the `RequireStepUp` extractor, which is built on
-`resolve_step_up`. Delete the one without the other and there is a release where
-REST is un-gated entirely.
+### The live gap, and the order to close it
 
-The fix is a shared gate helper both the dispatcher and the REST handlers call,
-in-handler rather than as an axum extractor — the consent digest needs the
-parsed payload, which an extractor does not have. Roughly thirteen handlers.
-Pair each with a test asserting REST and the trust-task path reach the *same*
-decision; the absence of such a test is why the bypass went unnoticed.
+The PDP gate runs *only* in the trust-task dispatcher. `routes/acl.rs::create_acl`
+and `routes/did_webvh.rs::update_did_handler` call their operations directly, so
+a `requireConsent` rule is **not enforced for a REST caller** today. The only
+thing gating those routes is the `RequireStepUp` extractor, which is built on
+`resolve_step_up` — the function the retirement above deletes.
+
+An earlier draft of this note concluded the two must therefore land as one
+atomic change. That was wrong, and the split below is strictly better because it
+ships the security fix first:
+
+**Step 1 — add the shared gate (purely additive).** Introduce
+`approvals::gate()` and call it in the ~13 gated REST handlers while *leaving*
+`RequireStepUp` in place. REST is then gated by both the old floors and the PDP;
+nothing is removed, so there is no un-gated window, and the consent bypass is
+closed on its own merits.
+
+**Step 2 — delete (pure removal).** Everything listed above. REST keeps its
+gating from step 1, so nothing has to be sequenced inside this step.
+
+### Shape of the shared gate
+
+The gate must run **in-handler, after body parse** — the consent digest and the
+planner both need the payload, which an axum extractor does not have.
+
+`policy_gate` today both *decides* and *shapes a trust-task reject*, because it
+threads `&TrustTask<Value>` all the way down to nine `app_error_to_reject(doc, e)`
+sites and a handful of `reject_with(doc, …)` sites. Separate the two:
+
+```rust
+pub(crate) enum GateReject {
+    Reason(RejectReason),  // already-shaped framework reason
+    Error(AppError),       // map at the boundary
+}
+```
+
+`consent_gate`, `require_step_up`, and `initiate_self_step_up` take `&Value`
+(the payload) instead of `&TrustTask` and return `RejectReason`; the document is
+then only touched at the two call sites that shape a response. Mechanical, and
+it leaves the decision logic — the part worth not disturbing — untouched.
+
+REST needs to carry the actionable payload, and today it cannot:
+`AppError::StepUpRequired(String)` renders `{error, message, requiredAcr}` with
+**no `approveRequest`**, and there is no consent variant at all. Add
+
+```rust
+AppError::ApprovalRequired { code: &'static str, details: Value }
+```
+
+rendering 403 with `details` merged into the body. That is also what the typed
+SDK error below consumes, so the two land on one shape rather than two.
+
+Pair each handler with a test asserting REST and the trust-task path reach the
+*same* decision. The absence of exactly that test is why the bypass went
+unnoticed.
 
 **The typed error.** `VtaError::ApprovalRequired` carrying the challenge and
 `approveRequest`, recognised in `client/mod.rs::trust_task_error` — today only
