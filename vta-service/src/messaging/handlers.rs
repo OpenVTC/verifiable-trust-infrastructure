@@ -19,7 +19,7 @@ use tracing::{info, warn};
 
 use crate::acl::Role;
 use crate::error::AppError;
-use crate::messaging::auth::auth_from_message;
+use crate::messaging::auth::{auth_for_trust_task_envelope, auth_from_message};
 use crate::operations;
 use crate::server::AppState;
 
@@ -288,26 +288,43 @@ pub async fn handle_trust_task(
     // failure (e.g. the peer has no ACL entry) reply with a Trust-Task
     // `permission_denied` *envelope*, not a DIDComm problem-report — a
     // conformant Trust-Task client only understands binding envelopes.
-    let response =
-        match auth_from_message(&message, &app_state.acl_ks, &app_state.sessions_ks).await {
-            // Authcrypt sealed this envelope to the VTA's own key, so no
-            // intermediary — mediator included — held the plaintext.
-            Ok(auth) => {
-                crate::trust_tasks::dispatch_trust_task_core(
-                    &app_state,
-                    &auth,
-                    &body,
-                    crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
-                )
-                .await
-            }
-            Err(e) => crate::trust_tasks::reject_trust_task(
+    //
+    // Routed through `auth_for_trust_task_envelope` rather than
+    // `auth_from_message` so a ceremony task (a `task-consent/decision`, a
+    // step-up `approve-response`) from an approver with no ACL standing is
+    // dispatched on a zero-authority claim instead of being refused at the
+    // door — the document's own proof is the authority there. See that
+    // function.
+    //
+    // `message.from` here is the *proven* authcrypt sender — `handle_didcomm`
+    // overwrites the plaintext `from` with it (or `None`) before routing, so a
+    // missing sender means the envelope was never authenticated.
+    let authenticated = match message.from.as_deref() {
+        Some(sender) => auth_for_trust_task_envelope(&app_state, sender, &body).await,
+        None => Err(AppError::Authentication(
+            "message has no sender (from)".into(),
+        )),
+    };
+
+    let response = match authenticated {
+        // Authcrypt sealed this envelope to the VTA's own key, so no
+        // intermediary — mediator included — held the plaintext.
+        Ok(auth) => {
+            crate::trust_tasks::dispatch_trust_task_core(
+                &app_state,
+                &auth,
                 &body,
-                trust_tasks_rs::RejectReason::PermissionDenied {
-                    reason: e.to_string(),
-                },
-            ),
-        };
+                crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+            )
+            .await
+        }
+        Err(e) => crate::trust_tasks::reject_trust_task(
+            &body,
+            trust_tasks_rs::RejectReason::PermissionDenied {
+                reason: e.to_string(),
+            },
+        ),
+    };
 
     // The dispatch core returns a typed `TrustTaskOutcome`; its `body` is
     // already the serialised framework trust-task document, so we parse it

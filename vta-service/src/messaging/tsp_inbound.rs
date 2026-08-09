@@ -29,7 +29,7 @@
 
 use tracing::info;
 
-use crate::messaging::auth::auth_from_did;
+use crate::messaging::auth::auth_for_trust_task_envelope;
 use crate::server::AppState;
 
 /// Per-message bridge: turn one unpacked TSP message into a dispatched Trust
@@ -57,7 +57,13 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     // transport fact, and only DIDs we later push to are ever queried.
     app_state.tsp_reach.record(sender_vid);
     tracing::debug!(sender = %sender_vid, "recorded TSP reachability (learn-from-inbound)");
-    let outcome = match auth_from_did(sender_vid, &app_state.acl_ks, &app_state.sessions_ks).await {
+    // `auth_for_trust_task_envelope`, not the bare ACL lookup: a ceremony task
+    // (`task-consent/decision`, step-up `approve-response`) is authorized by the
+    // document's own proof, so an approver with no ACL standing is dispatched on
+    // a zero-authority claim rather than refused. Kept identical to the DIDComm
+    // bridge — an approver must not be able to reach the VTA over one transport
+    // and not the other.
+    let outcome = match auth_for_trust_task_envelope(app_state, sender_vid, payload).await {
         // TSP seals to the recipient VID, same guarantee as authcrypt.
         Ok(auth) => {
             crate::trust_tasks::dispatch_trust_task_core(

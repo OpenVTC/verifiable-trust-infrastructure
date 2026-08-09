@@ -398,6 +398,144 @@ mod tests {
     use crate::acl::Role;
     use crate::test_support::{build_signing_test_app_state, seed_acl_entry};
 
+    /// The reported failure, end to end.
+    ///
+    /// An approver enrolled in the VTA's `approver_set` but **not** in its ACL —
+    /// which is the whole point of a least-privilege approver: it may confer a
+    /// context and act in none, so it has no reason to hold an ACL entry — signs
+    /// a decision and submits it on an intrinsic-sender transport. Before the
+    /// ceremony carve-out the transport gate refused it before dispatch, so the
+    /// grant never appeared: the human approved, the wallet sent, the VTA
+    /// discarded it, the requester re-submitted into a pending that could never
+    /// be granted, and nothing in the log said so.
+    ///
+    /// Runs the real transport gate, not a hand-made claim, so a regression in
+    /// either half — the gate refusing again, or the spine rejecting the
+    /// zero-authority claim — fails here. The assertion that matters is the last
+    /// one: a consumable grant exists.
+    #[cfg(feature = "didcomm")]
+    #[tokio::test]
+    async fn an_unenrolled_approvers_decision_mints_the_grant() {
+        use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+        use affinidi_secrets_resolver::secrets::Secret;
+
+        let (state, _dir) = build_signing_test_app_state().await;
+
+        // The approver: a locally-minted `did:key`, exactly as the browser
+        // plugin's approver identity is. No ACL entry, deliberately.
+        let mut secret = Secret::generate_ed25519(None, Some(&[0xA7; 32]));
+        let pub_mb = secret.get_public_keymultibase().expect("approver pubkey");
+        let approver = format!("did:key:{pub_mb}");
+        secret.id = format!("{approver}#{pub_mb}");
+        assert!(
+            crate::acl::get_acl_entry(&state.acl_ks, &approver)
+                .await
+                .unwrap()
+                .is_none(),
+            "the point of this test is that the approver holds no ACL entry"
+        );
+
+        // …but it IS a member of the set the policy names.
+        state
+            .config
+            .write()
+            .await
+            .policy
+            .approver_sets
+            .insert("webvh-approvers".into(), vec![approver.clone()]);
+
+        // An outstanding pending, as the gate would have minted it for a
+        // requester that can authorize the task itself (so no delegation is in
+        // play — the approver's ACL standing is not consulted by any of the
+        // consent logic, only by the transport gate this test exercises).
+        const REQUESTER: &str = "did:key:zRequestingAgent";
+        const TYPE_URI: &str = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0";
+        let task_payload = json!({ "did": "did:webvh:zScid:example.com:thing" });
+        let digest = consent::payload_digest(TYPE_URI, &task_payload).unwrap();
+        let challenge = "0123456789abcdef0123456789abcdef";
+        let wire_digest = consent::wire_digest(TYPE_URI, &task_payload, challenge).unwrap();
+        let now = now_secs();
+        consent::store_pending(
+            &state.task_consent_ks,
+            &consent::PendingTaskConsent {
+                digest: digest.clone(),
+                wire_digest: wire_digest.clone(),
+                type_uri: TYPE_URI.into(),
+                requester_did: REQUESTER.into(),
+                approver_set: "webvh-approvers".into(),
+                min_approvals: 1,
+                exclude_requester: true,
+                challenge: challenge.into(),
+                approvals: vec![],
+                state_pin: None,
+                guards: Default::default(),
+                subject_context: None,
+                requester_authorized: true,
+                created_at: now,
+                expires_at: now + 900,
+            },
+        )
+        .await
+        .unwrap();
+
+        // The decision the wallet signs and sends.
+        let vta_did = state.config.read().await.vta_did.clone().unwrap();
+        let mut doc = json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1,
+            "issuer": approver,
+            "recipient": vta_did,
+            "issuedAt": "2026-08-08T21:56:00Z",
+            "payload": {
+                "challenge": challenge,
+                "payloadDigest": wire_digest,
+                "decision": "approve",
+            },
+        });
+        let proof = DataIntegrityProof::sign(&doc, &secret, SignOptions::new())
+            .await
+            .expect("sign the decision");
+        doc.as_object_mut()
+            .unwrap()
+            .insert("proof".into(), serde_json::to_value(proof).unwrap());
+        let body = serde_json::to_vec(&doc).unwrap();
+
+        // The transport gate, for real. Previously this returned
+        // `Forbidden("DID not in ACL: …")` and the decision died here.
+        let auth = crate::messaging::auth::auth_for_trust_task_envelope(&state, &approver, &body)
+            .await
+            .expect("an unenrolled approver must get past the transport gate");
+        assert_eq!(auth.role, Role::Monitor, "…on a claim that confers nothing");
+
+        let outcome = crate::trust_tasks::dispatch_trust_task_core(
+            &state,
+            &auth,
+            &body,
+            crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+        )
+        .await;
+        let reply: Value = serde_json::from_slice(&outcome.body).unwrap();
+        assert_eq!(
+            reply.pointer("/payload/status").and_then(Value::as_str),
+            Some("granted"),
+            "the decision must be recorded and cross the threshold: {reply}"
+        );
+
+        // …and the requester's re-submit finds a grant waiting for it. This is
+        // the line that was never reached in the field.
+        let grant = consent::consume_grant(
+            &state.task_consent_ks,
+            REQUESTER,
+            TYPE_URI,
+            &digest,
+            now_secs(),
+        )
+        .await
+        .unwrap()
+        .expect("a consumable grant must exist for the requester");
+        assert_eq!(grant.approvers, vec![approver]);
+    }
+
     const OPENVTC: &str = "openvtc";
     const ADMIN_A: &str = "did:key:zAdminOpenvtc";
     const ADMIN_OTHER: &str = "did:key:zAdminElsewhere";

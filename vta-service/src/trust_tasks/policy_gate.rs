@@ -49,16 +49,11 @@ fn gate_now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Ceremony tasks carry their own authority (an approver's proof, a step-up
-/// approve-response) and must NOT themselves be gated — else approving a task
-/// could itself require consent/step-up, ad infinitum.
-#[allow(deprecated)]
-fn is_ceremony_task(type_uri: &str) -> bool {
-    use vta_sdk::trust_tasks as t;
-    type_uri == t::TASK_TASK_CONSENT_DECISION_0_1
-        || type_uri == t::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1
-        || type_uri == t::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2
-}
+// The ceremony-task predicate now lives in [`super::ceremony`], shared with the
+// transport-level ACL gate. It was private here, which meant only one of the two
+// gates in front of a handler knew that a `task-consent/decision` carries its
+// own authority — and the other one refused it. See that module's header.
+use super::ceremony::is_ceremony_task;
 
 /// The ACR a satisfied step-up reaches. Mirrors `step_up::STEP_UP_TARGET_ACR`.
 const STEP_UP_TARGET_ACR: &str = "aal2";
