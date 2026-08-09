@@ -177,6 +177,13 @@ pub(crate) enum Commands {
         command: AclCommands,
     },
 
+    /// Hand-authored Rego policy modules (power-user surface; for approval
+    /// requirements use `pnm approvals`)
+    Policy {
+        #[command(subcommand)]
+        command: PolicyModuleCommands,
+    },
+
     /// AAL2 step-up policy management (when/how operations require elevation)
     StepUp {
         #[command(subcommand)]
@@ -1898,6 +1905,67 @@ pub(crate) enum AclCommands {
     Delete {
         /// DID of the entry to delete
         did: String,
+    },
+}
+
+/// `pnm policy …` — hand-authored Rego policy management (the power-user
+/// surface). For "this task needs approval", reach for `pnm approvals` instead:
+/// it writes one reserved row through this same family, with the rules
+/// validated and the Rego generated for you.
+#[derive(Subcommand)]
+pub(crate) enum PolicyModuleCommands {
+    /// List stored policy modules.
+    List {
+        /// Only policies applying in this context (an unscoped policy applies
+        /// everywhere, so it always matches).
+        #[arg(long)]
+        context: Option<String>,
+        /// Skip disabled policies.
+        #[arg(long)]
+        enabled_only: bool,
+    },
+    /// Show one policy module, including its Rego source.
+    Show {
+        /// Policy id.
+        id: String,
+    },
+    /// Create or revise a policy from a Rego file.
+    Upsert {
+        /// Policy id. Omit to let the VTA allocate one.
+        #[arg(long)]
+        id: Option<String>,
+        /// Human-readable name (required by the canonical shape).
+        #[arg(long)]
+        name: String,
+        /// Path to the Rego source (or `-` for stdin).
+        #[arg(long)]
+        module: String,
+        #[arg(long)]
+        description: Option<String>,
+        /// Contexts this policy applies in. Omit for all contexts.
+        #[arg(long, value_delimiter = ',')]
+        context: Vec<String>,
+        /// Higher runs first; the first policy to return a decision wins.
+        #[arg(long)]
+        priority: Option<i32>,
+        /// Store the policy without enabling it.
+        #[arg(long)]
+        disabled: bool,
+        /// Optimistic concurrency: fail unless the stored row is at this
+        /// version. Read it with `policy show`.
+        #[arg(long)]
+        expected_version: Option<u64>,
+    },
+    /// Delete a policy module.
+    Delete {
+        /// Policy id.
+        id: String,
+        /// Fail unless the stored row is at this version.
+        #[arg(long)]
+        expected_version: Option<u64>,
+        /// Operator rationale, recorded in the audit log.
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 

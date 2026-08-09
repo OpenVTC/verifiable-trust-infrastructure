@@ -22,6 +22,9 @@ pub mod members;
 pub mod memory;
 /// Passkey-based login flow (`vta/auth/passkey-login-{start,finish}/1.0`).
 pub mod passkey_login;
+/// Runtime Policy Decision Point management (`policy/*`) — where the
+/// declarative approvals model is read and written.
+pub mod policy_management;
 pub mod protocol_management;
 #[cfg(feature = "provision-integration")]
 pub mod provision_integration_management;

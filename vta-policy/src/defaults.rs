@@ -48,6 +48,7 @@ pub async fn install_default_policy(
         version: 1,
         created_at: now_rfc3339.to_string(),
         updated_at: now_rfc3339.to_string(),
+        ext: serde_json::Value::Null,
     };
     storage::store_policy(policy_ks, &baseline).await?;
     tracing::info!(
@@ -110,6 +111,7 @@ pub async fn reconcile_config_consent_policy(
         version: 1,
         created_at: now_rfc3339.to_string(),
         updated_at: now_rfc3339.to_string(),
+        ext: serde_json::Value::Null,
     };
     storage::store_policy(policy_ks, &module).await?;
     tracing::info!(
@@ -220,6 +222,7 @@ mod tests {
             version: 1,
             created_at: "x".into(),
             updated_at: "x".into(),
+            ext: serde_json::Value::Null,
         };
         storage::store_policy(&ks, &op).await.unwrap();
         install_default_policy(&ks, "2026-01-01T00:00:00Z")
@@ -373,6 +376,7 @@ mod tests {
             version: 1,
             created_at: "2026-07-15T00:00:00Z".into(),
             updated_at: "2026-07-15T00:00:00Z".into(),
+            ext: serde_json::Value::Null,
         };
         storage::store_policy(&ks, &op).await.unwrap();
 

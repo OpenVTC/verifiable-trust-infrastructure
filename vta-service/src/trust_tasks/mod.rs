@@ -73,6 +73,7 @@ mod messaging;
 #[cfg(all(feature = "webvh", feature = "didcomm"))]
 mod passkey_vms;
 pub(crate) mod planner;
+mod policy;
 mod policy_gate;
 #[cfg(feature = "webvh")]
 mod provision_integration;
@@ -768,6 +769,20 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_POLICY_0_2 => step_up_policy::handle_set_step_up_policy
         [ Mutating None false ],
+    // ─── Policy slice (runtime PDP management) ────────────────────
+    // Deliberately NOT exempt from the gate: an operator who wants two-person
+    // control over changes to the gate itself writes a consent rule for
+    // `policy/upsert`. The lockout that risks is answered by the offline
+    // break-glass, not by making this surface ungateable.
+    vta_sdk::trust_tasks::TASK_POLICY_LIST_0_2 => policy::handle_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_POLICY_GET_0_1 => policy::handle_get
+        [ None Metadata false ],
+    // Destructive: rewriting policy can remove every gate on this VTA.
+    vta_sdk::trust_tasks::TASK_POLICY_UPSERT_0_2 => policy::handle_upsert
+        [ Destructive None false ],
+    vta_sdk::trust_tasks::TASK_POLICY_DELETE_0_1 => policy::handle_delete
+        [ Destructive None false ],
     // ─── Consent slice ────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONSENT_REQUEST_1_0 => consent::handle_request
         [ None None false ],

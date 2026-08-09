@@ -281,6 +281,7 @@ async fn main() {
         Commands::Services { command } => commands::services::run(&client, command).await,
         Commands::Contexts { command } => commands::contexts::run(&client, command).await,
         Commands::Acl { command } => commands::acl::run(&client, command).await,
+        Commands::Policy { command } => commands::policy::run(&client, command).await,
         Commands::StepUp { command } => commands::step_up::run(&client, command).await,
         Commands::Device { command } => commands::device::run(&client, command).await,
         Commands::Vault { command } => commands::vault::run(&client, command).await,
