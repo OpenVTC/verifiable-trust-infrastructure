@@ -42,8 +42,8 @@ pub async fn cmd_list(
     }
 
     println!(
-        "{:<24} {:<8} {:<8} {:<7} {}",
-        "ID", "PRIORITY", "ENABLED", "VERSION", "NAME"
+        "{:<24} {:<8} {:<8} {:<7} NAME",
+        "ID", "PRIORITY", "ENABLED", "VERSION"
     );
     for p in &result.policies {
         println!(
