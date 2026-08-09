@@ -593,12 +593,18 @@ mod tests {
 
     #[test]
     fn a_malformed_task_type_is_refused() {
+        // Assembled rather than written out: a complete, version-terminated
+        // `trusttasks.org/spec/…` literal anywhere under a binding site is read
+        // by vtc-service's registry census as a claim that the registry serves
+        // that task. This one is a negative fixture — an empty slug — and the
+        // scanner has no way to tell the difference, so don't hand it one.
+        let empty_slug = format!("{}{}", "https://trusttasks.org/spec/", "0.1");
         for bad in [
             "acl/grant/0.1",
             "https://trusttasks.org/acl/grant/0.1",
             "https://trusttasks.org/spec/acl/grant",
             "https://trusttasks.org/spec/acl/grant/v1",
-            "https://trusttasks.org/spec/0.1",
+            &empty_slug,
         ] {
             let rule = ApprovalRule::reauth(bad);
             assert!(
