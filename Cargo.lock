@@ -9442,7 +9442,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.14.19"
+version = "0.14.20"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -9759,7 +9759,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.35"
+version = "0.11.36"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",

@@ -55,6 +55,31 @@ pub enum AppError {
     #[error("step-up required: {0}")]
     StepUpRequired(String),
 
+    /// The Policy Decision Point refused the request until an approval is
+    /// obtained, and is handing back what obtaining it requires.
+    ///
+    /// Distinct from [`Self::StepUpRequired`] because that variant can only say
+    /// *that* elevation is needed — it renders `{error, message, requiredAcr}`
+    /// and has nowhere to put the `approveRequest` the caller must get signed,
+    /// nor any way to express a consent requirement (approver set, threshold,
+    /// challenge). A REST caller receiving it could learn it was blocked but
+    /// not what to do about it, while the trust-task caller for the very same
+    /// decision received the full document. That asymmetry is what this closes.
+    ///
+    /// `code` is the stable machine-readable reason (`auth:step_up_required`,
+    /// `auth:consent_required`) — the field a client keys on, rather than the
+    /// HTTP status or the English message. `details` is merged into the body,
+    /// so the REST response carries exactly what the trust-task reject's
+    /// `details` carries.
+    ///
+    /// Rendered as **403 Forbidden**: the request was understood and the caller
+    /// authenticated; it is refused pending a decision they can still obtain.
+    #[error("approval required: {code}")]
+    ApprovalRequired {
+        code: &'static str,
+        details: serde_json::Value,
+    },
+
     #[error("validation error: {0}")]
     Validation(String),
 
@@ -188,6 +213,7 @@ impl IntoResponse for AppError {
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::StepUpRequired(_) => StatusCode::FORBIDDEN,
+            AppError::ApprovalRequired { .. } => StatusCode::FORBIDDEN,
             AppError::Validation(_) => StatusCode::BAD_REQUEST,
             AppError::TrustTaskMissing => StatusCode::BAD_REQUEST,
             AppError::TrustTaskMismatch { .. } => StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -234,6 +260,19 @@ impl IntoResponse for AppError {
                 "message": msg,
                 "requiredAcr": "aal2",
             }),
+            // `details` is merged at the top level rather than nested, so the
+            // body reads the same as the trust-task reject's `details` object
+            // and a client can key on one shape across both transports. `error`
+            // is written last so a `details` carrying that key cannot displace
+            // the code the caller switches on.
+            AppError::ApprovalRequired { code, details } => {
+                let mut body = match details {
+                    serde_json::Value::Object(map) => map.clone(),
+                    _ => serde_json::Map::new(),
+                };
+                body.insert("error".to_string(), serde_json::json!(code));
+                serde_json::Value::Object(body)
+            }
             _ => serde_json::json!({ "error": self.to_string() }),
         };
         (status, axum::Json(body)).into_response()
@@ -261,5 +300,91 @@ pub fn tee_attestation_error(msg: impl Into<String>) -> AppError {
     AppError::ServiceError {
         status: StatusCode::SERVICE_UNAVAILABLE,
         message: format!("TEE attestation error: {}", msg.into()),
+    }
+}
+
+#[cfg(test)]
+mod approval_required_tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::response::IntoResponse;
+
+    async fn body_of(err: AppError) -> serde_json::Value {
+        let resp = err.into_response();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        serde_json::from_slice(&bytes).expect("json body")
+    }
+
+    /// The point of the variant: a REST caller must receive the same actionable
+    /// payload the trust-task caller gets, not merely "you were blocked".
+    #[tokio::test]
+    async fn details_are_merged_alongside_the_code() {
+        let body = body_of(AppError::ApprovalRequired {
+            code: "auth:step_up_required",
+            details: serde_json::json!({
+                "requiredAcr": "aal2",
+                "approveRequest": { "id": "urn:uuid:abc" },
+            }),
+        })
+        .await;
+
+        assert_eq!(body["error"], "auth:step_up_required");
+        assert_eq!(body["requiredAcr"], "aal2");
+        assert_eq!(body["approveRequest"]["id"], "urn:uuid:abc");
+    }
+
+    #[tokio::test]
+    async fn consent_details_survive_the_round_trip() {
+        let body = body_of(AppError::ApprovalRequired {
+            code: "auth:consent_required",
+            details: serde_json::json!({
+                "approverSet": "ops",
+                "minApprovals": 2,
+                "excludeRequester": true,
+            }),
+        })
+        .await;
+
+        assert_eq!(body["error"], "auth:consent_required");
+        assert_eq!(body["minApprovals"], 2);
+        assert_eq!(body["excludeRequester"], true);
+    }
+
+    /// `details` is assembled from a policy decision, so a stray `error` key in
+    /// it must not be able to displace the code a client switches on.
+    #[tokio::test]
+    async fn details_cannot_overwrite_the_code() {
+        let body = body_of(AppError::ApprovalRequired {
+            code: "auth:consent_required",
+            details: serde_json::json!({ "error": "allow", "approverSet": "ops" }),
+        })
+        .await;
+
+        assert_eq!(body["error"], "auth:consent_required");
+        assert_eq!(body["approverSet"], "ops");
+    }
+
+    /// A non-object `details` must still yield a well-formed body rather than
+    /// panicking or emitting a bare scalar.
+    #[tokio::test]
+    async fn a_non_object_details_still_renders_the_code() {
+        let body = body_of(AppError::ApprovalRequired {
+            code: "auth:step_up_required",
+            details: serde_json::Value::Null,
+        })
+        .await;
+
+        assert_eq!(body["error"], "auth:step_up_required");
+        assert!(body.as_object().is_some_and(|m| m.len() == 1));
+    }
+
+    #[tokio::test]
+    async fn renders_as_forbidden() {
+        let resp = AppError::ApprovalRequired {
+            code: "auth:consent_required",
+            details: serde_json::json!({}),
+        }
+        .into_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 }

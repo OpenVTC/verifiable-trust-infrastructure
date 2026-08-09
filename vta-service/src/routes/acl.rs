@@ -96,6 +96,23 @@ pub async fn create_acl(
     State(state): State<AppState>,
     Json(req): Json<CreateAclRequest>,
 ) -> Result<(StatusCode, Json<CreateAclResponseBody>), AppError> {
+    // The PDP gate, in-handler because the consent digest is taken over the
+    // payload. Without this the extractor above is the only thing in front of
+    // the route, and it knows about step-up floors only — so a `requireConsent`
+    // rule an operator wrote bound trust-task callers and silently not REST ones.
+    //
+    // Gated on the whole body rather than on `req.entry`: the trust-task path
+    // digests `doc.payload`, the entire `{entry: …}` object, and the two must
+    // agree or an approval obtained over one transport could not be consumed
+    // over the other.
+    crate::trust_tasks::rest_gate(
+        &state,
+        &auth.0,
+        vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
+        &serde_json::to_value(&req)?,
+    )
+    .await?;
+
     let result = operations::acl::grant_from_entry(
         &state.acl_ks,
         &state.audit_ks,
@@ -129,7 +146,9 @@ pub async fn get_acl(
     Ok(Json(result))
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+// `Serialize` so the handler can hand the body to the PDP gate as JSON; the
+// digest an approver signs must be taken over what the caller actually sent.
+#[derive(Debug, Deserialize, serde::Serialize, utoipa::ToSchema)]
 pub struct UpdateAclRequest {
     pub role: Option<Role>,
     pub label: Option<String>,
@@ -209,6 +228,18 @@ pub async fn update_acl(
              <current-role> --to {role}"
         )));
     }
+
+    // Gate after the shape check above, so a caller who sent an unsupported
+    // patch is told that rather than being sent to find an approver for a
+    // request that could never have executed.
+    crate::trust_tasks::rest_gate(
+        &state,
+        &auth.0,
+        vta_sdk::trust_tasks::TASK_ACL_UPDATE_0_1,
+        &serde_json::to_value(&req)?,
+    )
+    .await?;
+
     let result = operations::acl::update_from_params(
         &state.acl_ks,
         &state.audit_ks,
@@ -237,7 +268,8 @@ pub async fn update_acl(
 }
 
 /// Request body for `POST /acl/{did}/change-role`.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+// `Serialize` for the PDP gate — see `UpdateAclRequest`.
+#[derive(Debug, Deserialize, serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangeRoleRequest {
     /// The role the caller believes the subject currently holds. A
@@ -276,6 +308,14 @@ pub async fn change_role(
     Path(did): Path<String>,
     Json(req): Json<ChangeRoleRequest>,
 ) -> Result<Json<CreateAclResponseBody>, AppError> {
+    crate::trust_tasks::rest_gate(
+        &state,
+        &auth.0,
+        vta_sdk::trust_tasks::TASK_ACL_CHANGE_ROLE_0_1,
+        &serde_json::to_value(&req)?,
+    )
+    .await?;
+
     let result = operations::acl::change_role_by_subject(
         &state.acl_ks,
         &state.audit_ks,
@@ -308,6 +348,16 @@ pub async fn delete_acl(
     State(state): State<AppState>,
     Path(did): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    // A DELETE carries no body, so the gated payload is the path parameter —
+    // the same `{subject}` the `acl/revoke` trust task binds its digest to.
+    crate::trust_tasks::rest_gate(
+        &state,
+        &auth.0,
+        vta_sdk::trust_tasks::TASK_ACL_REVOKE_0_1,
+        &serde_json::json!({ "subject": did }),
+    )
+    .await?;
+
     operations::acl::delete_acl(&state.acl_ks, &state.audit_ks, &auth.0, &did, "rest").await?;
     Ok(StatusCode::NO_CONTENT)
 }

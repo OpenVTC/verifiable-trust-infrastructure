@@ -35,6 +35,7 @@ use uuid::Uuid;
 use super::TrustTaskOutcome;
 use super::helpers::{app_error_to_reject, reject_with};
 use crate::auth::AuthClaims;
+use crate::error::AppError;
 use crate::policy::{self, Disposition, RequireConsent, consent};
 use crate::server::AppState;
 
@@ -90,11 +91,114 @@ pub(super) async fn policy_gate(
     auth: &AuthClaims,
     type_uri: &str,
     doc: &TrustTask<Value>,
+    delegated_out: &mut Vec<String>,
+) -> Option<TrustTaskOutcome> {
+    decide(state, auth, type_uri, &doc.payload, delegated_out)
+        .await
+        .map(|r| r.into_trust_task(doc))
+}
+
+/// What a refused gate decided, before it is shaped for a transport.
+///
+/// The gate used to build its trust-task rejection inline, which is why it
+/// threaded `&TrustTask<Value>` all the way down. That made the decision
+/// unreachable from the REST handlers — they had no document — which is how a
+/// `requireConsent` rule came to be enforced on one transport and not the
+/// other. Deciding first and shaping second is what lets both call it.
+pub(crate) enum GateReject {
+    /// An already-shaped framework reason.
+    Reason(RejectReason),
+    /// An error to be mapped by whichever transport is answering.
+    Error(AppError),
+}
+
+impl GateReject {
+    /// Shape for the trust-task dispatcher.
+    fn into_trust_task(self, doc: &TrustTask<Value>) -> TrustTaskOutcome {
+        match self {
+            GateReject::Reason(r) => reject_with(doc, r),
+            GateReject::Error(e) => app_error_to_reject(doc, e),
+        }
+    }
+
+    /// Shape for a REST handler.
+    ///
+    /// `TaskFailed` carrying an `auth:*` reason is the gate asking for an
+    /// approval, so it becomes [`AppError::ApprovalRequired`] with the details
+    /// intact — the `approveRequest` or the consent challenge reaches a REST
+    /// caller exactly as it reaches a trust-task one.
+    fn into_app_error(self) -> AppError {
+        match self {
+            GateReject::Error(e) => e,
+            GateReject::Reason(RejectReason::TaskFailed { reason, details }) => {
+                match approval_code(&reason) {
+                    Some(code) => AppError::ApprovalRequired {
+                        code,
+                        details: details.unwrap_or_else(|| json!({})),
+                    },
+                    None => AppError::Forbidden(reason),
+                }
+            }
+            GateReject::Reason(RejectReason::PermissionDenied { reason }) => {
+                AppError::Forbidden(reason)
+            }
+            GateReject::Reason(RejectReason::MalformedRequest { reason }) => {
+                AppError::Validation(reason)
+            }
+            GateReject::Reason(RejectReason::InternalError { reason }) => {
+                AppError::Internal(reason)
+            }
+            // The gate returns no other variant today; map conservatively
+            // rather than silently turning a refusal into a 500.
+            GateReject::Reason(other) => AppError::Forbidden(format!("{other:?}")),
+        }
+    }
+}
+
+/// The stable `auth:*` codes the gate uses to say "this needs an approval".
+///
+/// Matched as whole strings rather than by prefix so a future `auth:` reason
+/// that is *not* an approval request cannot be silently rendered as one.
+fn approval_code(reason: &str) -> Option<&'static str> {
+    match reason {
+        "auth:step_up_required" => Some("auth:step_up_required"),
+        "auth:consent_required" => Some("auth:consent_required"),
+        "auth:consent_stale" => Some("auth:consent_stale"),
+        _ => None,
+    }
+}
+
+/// Evaluate the gate for a REST handler, after its body has been parsed.
+///
+/// Must be called in-handler rather than from an extractor: the consent digest
+/// and the planner both need the payload, which an extractor cannot see.
+///
+/// Returns the contexts a consumed delegated grant confers on this execution —
+/// empty for every outcome except a consent grant that carried a delegation.
+pub(crate) async fn rest_gate(
+    state: &AppState,
+    auth: &AuthClaims,
+    type_uri: &str,
+    payload: &Value,
+) -> Result<Vec<String>, AppError> {
+    let mut delegated = Vec::new();
+    match decide(state, auth, type_uri, payload, &mut delegated).await {
+        Some(reject) => Err(reject.into_app_error()),
+        None => Ok(delegated),
+    }
+}
+
+/// The gate proper: one decision, no transport.
+async fn decide(
+    state: &AppState,
+    auth: &AuthClaims,
+    type_uri: &str,
+    payload: &Value,
     // Out: contexts a consumed delegated grant confers on this execution (see
     // `consent_gate`). Only the consent path ever writes it; every other gate
     // outcome leaves it empty.
     delegated_out: &mut Vec<String>,
-) -> Option<TrustTaskOutcome> {
+) -> Option<GateReject> {
     // Ceremony tasks are the mechanism, not a gated operation — never gate them.
     if is_ceremony_task(type_uri) {
         return None;
@@ -102,9 +206,9 @@ pub(super) async fn policy_gate(
 
     // (1) Config-floor step-up (subsumes the inline require_step_up).
     if let Some(op_class) = op_class_for(type_uri)
-        && let Some(reject) = super::step_up::require_step_up(state, auth, op_class, doc).await
+        && let Some(reason) = super::step_up::require_step_up(state, auth, op_class, payload).await
     {
-        return Some(reject);
+        return Some(GateReject::Reason(reason));
     }
 
     // (2) Rego policy — only when enforcement is enabled.
@@ -113,53 +217,43 @@ pub(super) async fn policy_gate(
     }
 
     let class = super::class_for(type_uri);
-    let input = policy::build_policy_input(
-        type_uri,
-        &doc.payload,
-        &auth.did,
-        &auth.acr,
-        &auth.amr,
-        class,
-    );
+    let input =
+        policy::build_policy_input(type_uri, payload, &auth.did, &auth.acr, &auth.amr, class);
 
     let policies = match policy::load_active_for_context(&state.policy_ks, &input.context_id).await
     {
         Ok(p) => p,
         Err(e) => {
             tracing::error!(error = %e, type_uri, "policy load failed — denying (fail-closed)");
-            return Some(reject_with(
-                doc,
-                RejectReason::PermissionDenied {
-                    reason: "policy evaluation unavailable".to_string(),
-                },
-            ));
+            return Some(GateReject::Reason(RejectReason::PermissionDenied {
+                reason: "policy evaluation unavailable".to_string(),
+            }));
         }
     };
 
     let decision = policy::decide(&policies, &input);
     match decision.decision {
         Disposition::Allow => None,
-        Disposition::Deny => Some(reject_with(
-            doc,
-            RejectReason::PermissionDenied {
-                reason: decision
-                    .explanation
-                    .unwrap_or_else(|| "denied by policy".to_string()),
-            },
-        )),
+        Disposition::Deny => Some(GateReject::Reason(RejectReason::PermissionDenied {
+            reason: decision
+                .explanation
+                .unwrap_or_else(|| "denied by policy".to_string()),
+        })),
         Disposition::RequireStepUp => {
             if auth.acr == STEP_UP_TARGET_ACR {
                 // Already elevated — the requirement is satisfied.
                 None
             } else {
-                Some(super::step_up::initiate_self_step_up(state, auth, doc).await)
+                Some(GateReject::Reason(
+                    super::step_up::initiate_self_step_up(state, auth, payload).await,
+                ))
             }
         }
         Disposition::RequireConsent => {
             consent_gate(
                 state,
                 auth,
-                doc,
+                payload,
                 type_uri,
                 decision.require_consent,
                 delegated_out,
@@ -185,7 +279,7 @@ pub(super) async fn policy_gate(
 async fn consent_gate(
     state: &AppState,
     auth: &AuthClaims,
-    doc: &TrustTask<Value>,
+    payload: &Value,
     type_uri: &str,
     require: Option<RequireConsent>,
     // Out: filled with the contexts a consumed *delegated* grant confers on this
@@ -195,20 +289,17 @@ async fn consent_gate(
     // report what the approvers conferred, keeping the augmentation on one
     // explicit, auditable path.
     delegated_out: &mut Vec<String>,
-) -> Option<TrustTaskOutcome> {
+) -> Option<GateReject> {
     // A requireConsent naming no approver set can never be satisfied — fail closed.
     let Some(require) = require else {
-        return Some(reject_with(
-            doc,
-            RejectReason::PermissionDenied {
-                reason: "policy requires consent but named no approver set".into(),
-            },
-        ));
+        return Some(GateReject::Reason(RejectReason::PermissionDenied {
+            reason: "policy requires consent but named no approver set".into(),
+        }));
     };
 
-    let digest = match consent::payload_digest(type_uri, &doc.payload) {
+    let digest = match consent::payload_digest(type_uri, payload) {
         Ok(d) => d,
-        Err(e) => return Some(app_error_to_reject(doc, e)),
+        Err(e) => return Some(GateReject::Error(e)),
     };
     let now = gate_now_secs();
 
@@ -237,18 +328,15 @@ async fn consent_gate(
                 from_row.to_vec()
             }
         }
-        Err(e) => return Some(app_error_to_reject(doc, e)),
+        Err(e) => return Some(GateReject::Error(e)),
     };
     if members.is_empty() {
-        return Some(reject_with(
-            doc,
-            RejectReason::PermissionDenied {
-                reason: format!(
-                    "approver set '{}' is unknown or empty",
-                    require.approver_set
-                ),
-            },
-        ));
+        return Some(GateReject::Reason(RejectReason::PermissionDenied {
+            reason: format!(
+                "approver set '{}' is unknown or empty",
+                require.approver_set
+            ),
+        }));
     }
 
     // An existing grant authorizes this payload — but it was minted minutes ago,
@@ -278,16 +366,15 @@ async fn consent_gate(
                     Some(&format!("digest={digest}; {why}")),
                 )
                 .await;
-                return Some(reject_with(
-                    doc,
-                    RejectReason::PermissionDenied { reason: why },
-                ));
+                return Some(GateReject::Reason(RejectReason::PermissionDenied {
+                    reason: why,
+                }));
             }
             if let Err(why) = super::planner::assert_plan_still_holds(
                 state,
                 auth,
                 type_uri,
-                &doc.payload,
+                payload,
                 grant.state_pin.as_ref(),
                 &grant.guards,
             )
@@ -312,13 +399,10 @@ async fn consent_gate(
                     Some(&format!("digest={digest}; {why}")),
                 )
                 .await;
-                return Some(reject_with(
-                    doc,
-                    RejectReason::TaskFailed {
-                        reason: "auth:consent_stale".into(),
-                        details: Some(json!({ "explanation": why })),
-                    },
-                ));
+                return Some(GateReject::Reason(RejectReason::TaskFailed {
+                    reason: "auth:consent_stale".into(),
+                    details: Some(json!({ "explanation": why })),
+                }));
             }
             // The grant is authorized and the world still matches. If it carries
             // a delegation (approvers conferred a context the requester lacked),
@@ -348,15 +432,15 @@ async fn consent_gate(
                  for this exact payload; will mint/reuse a pending below"
             );
         }
-        Err(e) => return Some(app_error_to_reject(doc, e)),
+        Err(e) => return Some(GateReject::Error(e)),
     }
 
     // Dry-run the handler we are about to gate. `None` means this executor has no
     // dry-run for it — the effects are *unknown*, not absent, and the consent
     // surface is required to say so.
-    let plan = match super::planner::plan_task(state, auth, type_uri, &doc.payload).await {
+    let plan = match super::planner::plan_task(state, auth, type_uri, payload).await {
         Ok(p) => p,
-        Err(e) => return Some(app_error_to_reject(doc, e)),
+        Err(e) => return Some(GateReject::Error(e)),
     };
     let (effects, state_pin, guards, subject_context, requester_authorized) = match &plan {
         Some(p) => (
@@ -405,20 +489,17 @@ async fn consent_gate(
                 )),
             )
             .await;
-            return Some(reject_with(
-                doc,
-                RejectReason::PermissionDenied {
-                    reason: format!(
-                        "this task updates context `{ctx}`, which the requester is not authorized \
+            return Some(GateReject::Reason(RejectReason::PermissionDenied {
+                reason: format!(
+                    "this task updates context `{ctx}`, which the requester is not authorized \
                          for and which consent cannot confer: {eligible} of the required \
                          {min_approvals} member(s) of approver set `{}` hold approve authority \
                          over `{ctx}`. Grant an approver approve-scope (or admin) over `{ctx}`, \
                          or run this as a principal that already holds the context — otherwise \
                          the approval would succeed but the update would still be refused.",
-                        require.approver_set
-                    ),
-                },
-            ));
+                    require.approver_set
+                ),
+            }));
         }
     }
 
@@ -429,7 +510,7 @@ async fn consent_gate(
     // rather than left holding a stale question.
     let existing = match consent::get_pending(&state.task_consent_ks, &digest, now).await {
         Ok(p) => p,
-        Err(e) => return Some(app_error_to_reject(doc, e)),
+        Err(e) => return Some(GateReject::Error(e)),
     };
     // Whether this submit *raised* a new question, as opposed to re-asking one
     // already outstanding. Only a new question is pushed — see below.
@@ -462,12 +543,12 @@ async fn consent_gate(
                  THIS is why the code changes every time."
             );
             if let Err(e) = consent::delete_pending(&state.task_consent_ks, &stale).await {
-                return Some(app_error_to_reject(doc, e));
+                return Some(GateReject::Error(e));
             }
             match mint_pending(
                 state,
                 auth,
-                doc,
+                payload,
                 type_uri,
                 &require,
                 min_approvals,
@@ -480,14 +561,14 @@ async fn consent_gate(
             .await
             {
                 Ok(p) => p,
-                Err(e) => return Some(app_error_to_reject(doc, e)),
+                Err(e) => return Some(GateReject::Error(e)),
             }
         }
         None => {
             match mint_pending(
                 state,
                 auth,
-                doc,
+                payload,
                 type_uri,
                 &require,
                 min_approvals,
@@ -500,18 +581,18 @@ async fn consent_gate(
             .await
             {
                 Ok(p) => p,
-                Err(e) => return Some(app_error_to_reject(doc, e)),
+                Err(e) => return Some(GateReject::Error(e)),
             }
         }
     };
 
     let class = super::class_for(type_uri).unwrap_or_else(crate::policy::TaskClass::floor);
-    let subject = crate::policy::input::subject_of(&doc.payload);
+    let subject = crate::policy::input::subject_of(payload);
     // The page that proposed this, when one did. Stamped into `payload.ext` by the
     // enrolled device from the origin its browser attested — so the approver is
     // told *which site* is asking, and told it by the only party in the chain with
     // any standing to say.
-    let origin = crate::policy::input::origin_of(&doc.payload);
+    let origin = crate::policy::input::origin_of(payload);
     let requests = match super::consent_request::mint_signed_requests(
         state,
         &pending,
@@ -524,7 +605,7 @@ async fn consent_gate(
     .await
     {
         Ok(r) => r,
-        Err(e) => return Some(app_error_to_reject(doc, e)),
+        Err(e) => return Some(GateReject::Error(e)),
     };
 
     // Wake the approvers — but only for a question we have not already asked.
@@ -564,37 +645,34 @@ async fn consent_gate(
     )
     .await;
 
-    Some(reject_with(
-        doc,
-        RejectReason::TaskFailed {
-            reason: "auth:consent_required".into(),
-            details: Some(json!({
-                // The machine-readable reason, so a consumer keys on a stable
-                // field in `details` rather than the standard top-level `code`
-                // (which is `taskFailed` for this rejection) or the free-text
-                // `message`. Mirrors the `RejectReason::TaskFailed.reason` above.
-                "reason": "auth:consent_required",
-                // The salted digest: what the approver signs, and what the two
-                // screens compare. The internal one never leaves this process.
-                "payloadDigest": pending.wire_digest,
-                "challenge": pending.challenge,
-                "approverSet": require.approver_set,
-                "minApprovals": min_approvals,
-                // Whether the requesting device is barred from the threshold.
-                // Told to the caller so a CLI can say "waiting for your device"
-                // versus "approve here" instead of blind-attempting a
-                // self-approval and reading `denied:requester_excluded` back.
-                // This reveals policy shape to a caller that has already
-                // authenticated and just triggered the rule — it grants
-                // nothing; the gate still decides every approval.
-                "excludeRequester": require.exclude_requester,
-                // The signed requests to relay. Each is VTA-authored, so the
-                // approver renders effects it can attribute to the executor
-                // rather than to whoever handed it the document.
-                "consentRequests": requests,
-            })),
-        },
-    ))
+    Some(GateReject::Reason(RejectReason::TaskFailed {
+        reason: "auth:consent_required".into(),
+        details: Some(json!({
+            // The machine-readable reason, so a consumer keys on a stable
+            // field in `details` rather than the standard top-level `code`
+            // (which is `taskFailed` for this rejection) or the free-text
+            // `message`. Mirrors the `RejectReason::TaskFailed.reason` above.
+            "reason": "auth:consent_required",
+            // The salted digest: what the approver signs, and what the two
+            // screens compare. The internal one never leaves this process.
+            "payloadDigest": pending.wire_digest,
+            "challenge": pending.challenge,
+            "approverSet": require.approver_set,
+            "minApprovals": min_approvals,
+            // Whether the requesting device is barred from the threshold.
+            // Told to the caller so a CLI can say "waiting for your device"
+            // versus "approve here" instead of blind-attempting a
+            // self-approval and reading `denied:requester_excluded` back.
+            // This reveals policy shape to a caller that has already
+            // authenticated and just triggered the rule — it grants
+            // nothing; the gate still decides every approval.
+            "excludeRequester": require.exclude_requester,
+            // The signed requests to relay. Each is VTA-authored, so the
+            // approver renders effects it can attribute to the executor
+            // rather than to whoever handed it the document.
+            "consentRequests": requests,
+        })),
+    }))
 }
 
 /// Do the approvals on this grant *still* authorize the task?
@@ -657,7 +735,7 @@ fn approvals_still_authorize(
 async fn mint_pending(
     state: &AppState,
     auth: &AuthClaims,
-    doc: &TrustTask<Value>,
+    payload: &Value,
     type_uri: &str,
     require: &RequireConsent,
     min_approvals: u32,
@@ -670,8 +748,8 @@ async fn mint_pending(
     // 256 bits of entropy. It is both the replay nonce and the digest salt, so
     // guessing it would both replay a decision and unmask the payload.
     let challenge = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    let digest = consent::payload_digest(type_uri, &doc.payload)?;
-    let wire_digest = consent::wire_digest(type_uri, &doc.payload, &challenge)?;
+    let digest = consent::payload_digest(type_uri, payload)?;
+    let wire_digest = consent::wire_digest(type_uri, payload, &challenge)?;
 
     let pending = consent::PendingTaskConsent {
         digest,

@@ -1045,8 +1045,8 @@ pub(super) async fn require_step_up(
     state: &AppState,
     auth: &AuthClaims,
     op_class: &str,
-    doc: &TrustTask<Value>,
-) -> Option<TrustTaskOutcome> {
+    payload: &Value,
+) -> Option<RejectReason> {
     if auth.acr == STEP_UP_TARGET_ACR {
         return None;
     }
@@ -1059,16 +1059,13 @@ pub(super) async fn require_step_up(
             StepUpDecision::Require { recipient } => (recipient, false),
             StepUpDecision::RequireAny => (String::new(), true),
             StepUpDecision::Deny => {
-                return Some(reject_with(
-                    doc,
-                    RejectReason::TaskFailed {
-                        reason: "auth:step_up_required".to_string(),
-                        details: Some(json!({
-                            "requiredAcr": STEP_UP_TARGET_ACR,
-                            "reason": "no step-up approver is configured for this subject",
-                        })),
-                    },
-                ));
+                return Some(RejectReason::TaskFailed {
+                    reason: "auth:step_up_required".to_string(),
+                    details: Some(json!({
+                        "requiredAcr": STEP_UP_TARGET_ACR,
+                        "reason": "no step-up approver is configured for this subject",
+                    })),
+                });
             }
         };
     let vta_did = state
@@ -1084,16 +1081,13 @@ pub(super) async fn require_step_up(
     // approver's device renders *what* is being authorized, and prefer its human
     // `summary` as the `reason` so a context-unaware renderer still shows
     // something meaningful.
-    let (reason, authorization_context) = reason_and_context(&doc.payload);
+    let (reason, authorization_context) = reason_and_context(payload);
     let secret = match load_step_up_signing_secret(state, &vta_did).await {
         Ok(s) => s,
         Err(()) => {
-            return Some(reject_with(
-                doc,
-                RejectReason::InternalError {
-                    reason: "failed to initiate step-up".to_string(),
-                },
-            ));
+            return Some(RejectReason::InternalError {
+                reason: "failed to initiate step-up".to_string(),
+            });
         }
     };
     let reject = match mint_pending_step_up(
@@ -1129,7 +1123,7 @@ pub(super) async fn require_step_up(
             reason: "failed to initiate step-up".to_string(),
         },
     };
-    Some(reject_with(doc, reject))
+    Some(reject)
 }
 
 /// Initiate a **self-approve** step-up for a task the Policy Decision Point
@@ -1144,8 +1138,8 @@ pub(super) async fn require_step_up(
 pub(super) async fn initiate_self_step_up(
     state: &AppState,
     auth: &AuthClaims,
-    doc: &TrustTask<Value>,
-) -> TrustTaskOutcome {
+    payload: &Value,
+) -> RejectReason {
     let vta_did = state
         .config
         .read()
@@ -1153,19 +1147,16 @@ pub(super) async fn initiate_self_step_up(
         .vta_did
         .clone()
         .unwrap_or_default();
-    let (reason, authorization_context) = reason_and_context(&doc.payload);
+    let (reason, authorization_context) = reason_and_context(payload);
     let secret = match load_step_up_signing_secret(state, &vta_did).await {
         Ok(s) => s,
         Err(()) => {
-            return reject_with(
-                doc,
-                RejectReason::InternalError {
-                    reason: "failed to initiate step-up".to_string(),
-                },
-            );
+            return RejectReason::InternalError {
+                reason: "failed to initiate step-up".to_string(),
+            };
         }
     };
-    let reject = match mint_pending_step_up(
+    match mint_pending_step_up(
         &state.sessions_ks,
         &vta_did,
         &secret,
@@ -1191,8 +1182,7 @@ pub(super) async fn initiate_self_step_up(
         Err(()) => RejectReason::InternalError {
             reason: "failed to initiate step-up".to_string(),
         },
-    };
-    reject_with(doc, reject)
+    }
 }
 
 /// Stable operation-class identifiers used to resolve step-up floors.
