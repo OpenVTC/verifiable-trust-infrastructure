@@ -10,6 +10,7 @@
 
 pub(crate) mod acl;
 pub(crate) mod agent_names;
+pub(crate) mod approvals;
 pub(crate) mod audit;
 pub(crate) mod auth;
 pub(crate) mod auth_credential;
@@ -22,6 +23,7 @@ pub(crate) mod device;
 pub(crate) mod did_templates;
 pub(crate) mod health;
 pub(crate) mod keys;
+pub(crate) mod policy;
 pub(crate) mod services;
 pub(crate) mod setup;
 pub(crate) mod step_up;

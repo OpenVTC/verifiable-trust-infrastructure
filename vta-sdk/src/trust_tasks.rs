@@ -1257,6 +1257,45 @@ pub const TASK_CONSENT_APPROVER_SET_1_0: &str =
 pub const TASK_CONSENT_APPROVER_LIST_1_0: &str =
     "https://trusttasks.org/spec/consent/approver-list/1.0";
 
+// ─── Policy slice (spec/policy/*) ────────────────────────────────────────
+//
+// Runtime management of the Policy Decision Point. All canonical, all already
+// published — the VTA served none of them before, which is why changing what
+// the PDP enforced meant editing config.toml and restarting.
+//
+// `policy/activate/0.1` and `policy/active/0.1` are deliberately NOT served:
+// they model an activation pointer (one active module per slot) that this
+// maintainer does not have — the active set here is every enabled row in
+// priority order. See `crate::protocols::policy_management`.
+
+/// `policy/list/0.2` — enumerate stored policy modules, optionally filtered to
+/// a context or to enabled rows. Auth: admin.
+pub const TASK_POLICY_LIST_0_2: &str = "https://trusttasks.org/spec/policy/list/0.2";
+
+/// `policy/get/0.1` — read one policy module by id. Auth: admin.
+pub const TASK_POLICY_GET_0_1: &str = "https://trusttasks.org/spec/policy/get/0.1";
+
+/// `policy/upsert/0.2` — create or revise a policy module. `module` (Rego) is
+/// client-authored and authoritative; a declarative approvals row additionally
+/// carries its rules in `ext` and is byte-compared against them.
+/// Auth: **super-admin** — whoever can write policy can remove their own gate.
+pub const TASK_POLICY_UPSERT_0_2: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+
+/// `policy/delete/0.1` — remove a policy module. Auth: super-admin.
+pub const TASK_POLICY_DELETE_0_1: &str = "https://trusttasks.org/spec/policy/delete/0.1";
+
+// `policy/evaluate/0.3` is NOT served. Its `input` is a `PolicyInput` whose
+// schema still marks `site` — a vault-flow `SiteTarget` (a web origin, an app
+// binding) — as **required**, inherited from the family's vault origins before
+// 0.3 generalised it to any Trust Task. There is no honest `site` for
+// "would `acl/grant` need approval here", and inventing one means fabricating a
+// member of a security decision's input to satisfy a validator.
+//
+// `vta-policy`'s own mirror of the schema already carries this as a known
+// upstream wart (`types::PolicyInput`: "a follow-up should relax `site` to
+// optional in the schema itself"). Until that lands upstream, `pnm approvals
+// explain` answers from the declarative rules rather than from a dry run.
+
 // ─── Future slices ───────────────────────────────────────────────────────
 //
 // attestation, services, webvh, did-templates, passkey-vms, backup,
@@ -1455,6 +1494,11 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_MEMORY_PUT_0_1,
     TASK_VTA_MEMORY_LIST_0_1,
     TASK_VTA_MEMORY_DELETE_0_1,
+    // Policy slice (spec/policy/*)
+    TASK_POLICY_LIST_0_2,
+    TASK_POLICY_GET_0_1,
+    TASK_POLICY_UPSERT_0_2,
+    TASK_POLICY_DELETE_0_1,
 ];
 
 /// The subset of [`ALL_URIS`] served by **dedicated REST routes** rather than
@@ -1586,6 +1630,14 @@ mod tests {
             // someone and signing without exporting them is generic to any
             // agent, so the family is top-level rather than VTA-private.
             "https://trusttasks.org/spec/keys/",
+            // Canonical Policy Decision Point management — `policy/{list,get,
+            // upsert,delete}`. Top-level rather than VTA-private because a
+            // policy module is a Rego document with a decision rule, which is
+            // generic to any maintainer running a PDP: VTC already serves the
+            // same family. This is where the declarative approvals model is
+            // read and written, so it is also the surface that made approval
+            // posture editable at runtime instead of via config + restart.
+            "https://trusttasks.org/spec/policy/",
         ];
         for uri in ALL_URIS {
             assert!(

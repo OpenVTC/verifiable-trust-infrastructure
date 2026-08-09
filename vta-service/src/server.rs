@@ -825,6 +825,22 @@ pub async fn run(
                 &chrono::Utc::now().to_rfc3339(),
             )
             .await?;
+
+            // Seed the declarative approvals row from config the first time we
+            // boot without one. Unlike the reconcile above, this runs ONCE: the
+            // rules are editable at runtime (`pnm approvals`), so re-reading the
+            // file every boot would silently revert an operator's change on the
+            // next restart.
+            {
+                let cfg = app_state.config.read().await;
+                crate::policy::seed_declarative_approvals(
+                    &app_state.policy_ks,
+                    &cfg.policy.approvals,
+                    &cfg.policy.approver_sets,
+                    &chrono::Utc::now().to_rfc3339(),
+                )
+                .await?;
+            }
         }
 
         // Fail-closed on missing identity (P0.9b). `init_auth` (inside

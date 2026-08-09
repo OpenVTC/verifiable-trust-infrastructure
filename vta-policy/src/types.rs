@@ -252,6 +252,15 @@ pub struct PolicyModule {
     pub created_at: String,
     #[serde(rename = "updatedAt")]
     pub updated_at: String,
+    /// Ecosystem extension members (SPEC §4.5.1 reverse-DNS keys), carried
+    /// through `policy/upsert` verbatim.
+    ///
+    /// This is where the declarative approvals model lives
+    /// (`openvtc.approvals` / `openvtc.approver-sets`) — see
+    /// [`crate::approvals`]. Rows written before this field existed decode as
+    /// `null`, which reads as "not a declarative row".
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub ext: serde_json::Value,
 }
 
 fn default_enabled() -> bool {

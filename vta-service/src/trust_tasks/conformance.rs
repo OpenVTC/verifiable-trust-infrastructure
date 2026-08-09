@@ -102,6 +102,10 @@ use vta_sdk::protocols::memory::{
     MemoryDeleteBody, MemoryDeleteResponse, MemoryItem, MemoryListBody, MemoryListResponse,
     MemoryPutBody, MemoryPutResponse,
 };
+use vta_sdk::protocols::policy_management::{
+    DeletePolicyBody, DeletePolicyResultBody, GetPolicyBody, GetPolicyResultBody, ListPoliciesBody,
+    ListPoliciesResultBody, PolicyModuleView, UpsertPolicyBody, UpsertPolicyResultBody,
+};
 use vta_sdk::protocols::vta_management::get_config::{
     ConfigField, GetConfigBody, GetConfigResultBody,
 };
@@ -170,6 +174,42 @@ fn dt() -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::parse_from_rfc3339(TS)
         .expect("valid ts")
         .with_timezone(&chrono::Utc)
+}
+
+/// The Rego the declarative approvals fixture synthesizes to. Derived, not
+/// transcribed: a hand-copied literal would drift from the synthesizer and the
+/// witness would stop testing the shape the VTA actually stores.
+fn declarative_module() -> String {
+    vta_sdk::approvals::synthesize_rego(&[vta_sdk::approvals::ApprovalRule::reauth(
+        uris::TASK_ACL_GRANT_0_1,
+    )])
+}
+
+/// `ext` for the reserved declarative row, matching [`declarative_module`].
+fn declarative_ext() -> Value {
+    json!({
+        vta_sdk::approvals::EXT_KEY_RULES: [
+            { "taskType": uris::TASK_ACL_GRANT_0_1, "requires": "reauth" }
+        ],
+        vta_sdk::approvals::EXT_KEY_APPROVER_SETS: {},
+    })
+}
+
+/// A fully-populated canonical `PolicyModule` projection.
+fn policy_module_view() -> PolicyModuleView {
+    PolicyModuleView {
+        id: "approvals".into(),
+        name: "Declarative approvals".into(),
+        description: Some("Declarative approval rules".into()),
+        module: declarative_module(),
+        applies_to: vec![],
+        priority: vta_sdk::approvals::DECLARATIVE_POLICY_PRIORITY,
+        enabled: true,
+        version: 2,
+        created_at: TS.into(),
+        updated_at: TS.into(),
+        ext: declarative_ext(),
+    }
 }
 
 /// A fully-populated canonical `KeyRecord` (the keys family's shared component).
@@ -1164,6 +1204,81 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 }),
                 to_v(MemoryDeleteResponse {
                     key: "greeting".into(),
+                })
+            ),
+        ),
+        // ─── policy (runtime PDP management) ──────────────────────
+        //
+        // The reserved declarative row is the fixture throughout: it is the
+        // shape that carries `ext`, and `ext` is the part most likely to drift
+        // from the canonical `ExtKey` pattern (lowercase reverse-DNS, which is
+        // why the key is `openvtc.approver-sets` and not `approverSets`).
+        (
+            uris::TASK_POLICY_LIST_0_2,
+            checked!(
+                specs::policy::list::v0_2::Payload,
+                specs::policy::list::v0_2::Response,
+                to_v(ListPoliciesBody {
+                    context_id: Some("ctx-a".into()),
+                    enabled_only: true,
+                    cursor: None,
+                    page_size: Some(50),
+                }),
+                to_v(ListPoliciesResultBody {
+                    policies: vec![policy_module_view()],
+                    truncated: false,
+                    cursor: None,
+                })
+            ),
+        ),
+        (
+            uris::TASK_POLICY_GET_0_1,
+            checked!(
+                specs::policy::get::v0_1::Payload,
+                specs::policy::get::v0_1::Response,
+                to_v(GetPolicyBody {
+                    id: "approvals".into(),
+                }),
+                to_v(GetPolicyResultBody {
+                    policy: policy_module_view(),
+                })
+            ),
+        ),
+        (
+            uris::TASK_POLICY_UPSERT_0_2,
+            checked!(
+                specs::policy::upsert::v0_2::Payload,
+                specs::policy::upsert::v0_2::Response,
+                to_v(UpsertPolicyBody {
+                    id: Some("approvals".into()),
+                    name: "Declarative approvals".into(),
+                    description: None,
+                    module: declarative_module(),
+                    applies_to: vec![],
+                    priority: Some(vta_sdk::approvals::DECLARATIVE_POLICY_PRIORITY),
+                    enabled: true,
+                    expected_version: Some(1),
+                    ext: declarative_ext(),
+                }),
+                to_v(UpsertPolicyResultBody {
+                    policy: policy_module_view(),
+                    created: false,
+                })
+            ),
+        ),
+        (
+            uris::TASK_POLICY_DELETE_0_1,
+            checked!(
+                specs::policy::delete::v0_1::Payload,
+                specs::policy::delete::v0_1::Response,
+                to_v(DeletePolicyBody {
+                    id: "legacy-rego".into(),
+                    expected_version: Some(2),
+                    reason: Some("superseded by the declarative rules".into()),
+                }),
+                to_v(DeletePolicyResultBody {
+                    id: "legacy-rego".into(),
+                    deleted_at: TS.into(),
                 })
             ),
         ),

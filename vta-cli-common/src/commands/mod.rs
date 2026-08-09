@@ -1,5 +1,8 @@
 pub mod acl;
 pub mod agent_names;
+/// Declarative approval requirements — which tasks need re-authentication or
+/// consent, and who may approve.
+pub mod approvals;
 pub mod audit;
 pub mod config;
 pub mod contexts;
@@ -8,6 +11,8 @@ pub mod credentials;
 pub mod device;
 pub mod did_templates;
 pub mod keys;
+/// Raw Rego policy management over the canonical `policy/*` family.
+pub mod policy;
 pub mod services;
 pub mod step_up;
 pub mod vault;

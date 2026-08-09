@@ -31,6 +31,7 @@
 //! per-request [`types::PolicyInput`] construction, and boot-installed default
 //! policies land alongside this in the same PR series.
 
+pub mod approvals;
 pub mod consent;
 pub mod defaults;
 pub mod effects;
@@ -39,7 +40,9 @@ pub mod input;
 pub mod storage;
 pub mod types;
 
-pub use defaults::{install_default_policy, reconcile_config_consent_policy};
+pub use defaults::{
+    install_default_policy, reconcile_config_consent_policy, seed_declarative_approvals,
+};
 pub use engine::{CompiledPolicy, compile, evaluate_decision};
 pub use input::build_policy_input;
 pub use storage::load_active_for_context;

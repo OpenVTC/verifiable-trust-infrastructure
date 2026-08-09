@@ -694,6 +694,8 @@ async fn install_policy(ctx: &TestAppContext, rego: &str) {
         version: 1,
         created_at: "2026-07-14T00:00:00Z".to_string(),
         updated_at: "2026-07-14T00:00:00Z".to_string(),
+        // Hand-authored Rego, not a declarative approvals row.
+        ext: serde_json::Value::Null,
     };
     vta_service::policy::storage::store_policy(&ctx.policy_ks, &module)
         .await

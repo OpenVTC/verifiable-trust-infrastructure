@@ -87,6 +87,11 @@ pub mod hex;
 pub mod acl;
 pub mod context_path;
 pub mod identifier;
+// The declarative approvals model. Unconditional (no feature gate): the VTA,
+// the policy subsystem, and the CLI all derive the same Rego from it, and a
+// synthesizer that differed per feature set would break the byte-compare the
+// server relies on.
+pub mod approvals;
 
 #[cfg(feature = "acl-setup")]
 pub mod acl_setup;

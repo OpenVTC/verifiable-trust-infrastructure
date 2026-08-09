@@ -215,6 +215,7 @@ mod credentials;
 mod did_templates;
 mod keys;
 mod memory;
+mod policy;
 mod secrets;
 mod vault;
 mod vta_management;

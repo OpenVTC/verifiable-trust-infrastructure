@@ -177,6 +177,19 @@ pub(crate) enum Commands {
         command: AclCommands,
     },
 
+    /// Which tasks need re-authentication or human consent before they run
+    Approvals {
+        #[command(subcommand)]
+        command: ApprovalsCommands,
+    },
+
+    /// Hand-authored Rego policy modules (power-user surface; for approval
+    /// requirements use `pnm approvals`)
+    Policy {
+        #[command(subcommand)]
+        command: PolicyModuleCommands,
+    },
+
     /// AAL2 step-up policy management (when/how operations require elevation)
     StepUp {
         #[command(subcommand)]
@@ -1898,6 +1911,140 @@ pub(crate) enum AclCommands {
     Delete {
         /// DID of the entry to delete
         did: String,
+    },
+}
+
+/// `pnm approvals …` — which tasks need an additional human decision before
+/// they run, and who may give it.
+#[derive(Subcommand)]
+pub(crate) enum ApprovalsCommands {
+    /// Show the approval rules and the approver sets they draw on.
+    List,
+    /// Require approval for a task type (replaces any existing rule for it).
+    Require {
+        /// Trust Task Type URI, e.g.
+        /// `https://trusttasks.org/spec/acl/grant/0.1`.
+        task_type: String,
+        /// Require the caller to re-authenticate (AAL2) — no third party.
+        #[arg(long, conflicts_with = "consent")]
+        reauth: bool,
+        /// Require named approvers to sign off on this exact payload.
+        #[arg(long, requires = "set")]
+        consent: bool,
+        /// Approver set the approvals must come from (consent only).
+        #[arg(long)]
+        set: Option<String>,
+        /// Distinct approvals needed (consent only, default 1).
+        #[arg(long)]
+        min: Option<u32>,
+        /// Bar the requester from counting toward the threshold, forcing a
+        /// genuinely second party (consent only).
+        #[arg(long)]
+        exclude_requester: bool,
+        /// Apply only in these contexts. Omit for every context.
+        #[arg(long, value_delimiter = ',')]
+        context: Vec<String>,
+    },
+    /// Stop requiring approval for a task type.
+    Remove {
+        /// Trust Task Type URI.
+        task_type: String,
+        /// Remove only the rule scoped to exactly these contexts.
+        #[arg(long, value_delimiter = ',')]
+        context: Option<Vec<String>>,
+    },
+    /// Manage the named approver sets.
+    Approvers {
+        #[command(subcommand)]
+        command: ApproversCommands,
+    },
+    /// Explain what a task requires, and whether that can be satisfied.
+    Explain {
+        /// Trust Task Type URI.
+        task_type: String,
+        /// Context to explain for (default `default`).
+        #[arg(long)]
+        context: Option<String>,
+    },
+}
+
+/// `pnm approvals approvers …`
+#[derive(Subcommand)]
+pub(crate) enum ApproversCommands {
+    /// Add a DID to an approver set (creating the set if new).
+    Add {
+        /// Set name.
+        set: String,
+        /// Approver DID.
+        did: String,
+    },
+    /// Remove a DID from an approver set.
+    Remove {
+        /// Set name.
+        set: String,
+        /// Approver DID.
+        did: String,
+    },
+}
+
+/// `pnm policy …` — hand-authored Rego policy management (the power-user
+/// surface). For "this task needs approval", reach for `pnm approvals` instead:
+/// it writes one reserved row through this same family, with the rules
+/// validated and the Rego generated for you.
+#[derive(Subcommand)]
+pub(crate) enum PolicyModuleCommands {
+    /// List stored policy modules.
+    List {
+        /// Only policies applying in this context (an unscoped policy applies
+        /// everywhere, so it always matches).
+        #[arg(long)]
+        context: Option<String>,
+        /// Skip disabled policies.
+        #[arg(long)]
+        enabled_only: bool,
+    },
+    /// Show one policy module, including its Rego source.
+    Show {
+        /// Policy id.
+        id: String,
+    },
+    /// Create or revise a policy from a Rego file.
+    Upsert {
+        /// Policy id. Omit to let the VTA allocate one.
+        #[arg(long)]
+        id: Option<String>,
+        /// Human-readable name (required by the canonical shape).
+        #[arg(long)]
+        name: String,
+        /// Path to the Rego source (or `-` for stdin).
+        #[arg(long)]
+        module: String,
+        #[arg(long)]
+        description: Option<String>,
+        /// Contexts this policy applies in. Omit for all contexts.
+        #[arg(long, value_delimiter = ',')]
+        context: Vec<String>,
+        /// Higher runs first; the first policy to return a decision wins.
+        #[arg(long)]
+        priority: Option<i32>,
+        /// Store the policy without enabling it.
+        #[arg(long)]
+        disabled: bool,
+        /// Optimistic concurrency: fail unless the stored row is at this
+        /// version. Read it with `policy show`.
+        #[arg(long)]
+        expected_version: Option<u64>,
+    },
+    /// Delete a policy module.
+    Delete {
+        /// Policy id.
+        id: String,
+        /// Fail unless the stored row is at this version.
+        #[arg(long)]
+        expected_version: Option<u64>,
+        /// Operator rationale, recorded in the audit log.
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 

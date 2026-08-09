@@ -48,11 +48,77 @@ pub async fn install_default_policy(
         version: 1,
         created_at: now_rfc3339.to_string(),
         updated_at: now_rfc3339.to_string(),
+        ext: serde_json::Value::Null,
     };
     storage::store_policy(policy_ks, &baseline).await?;
     tracing::info!(
         policy = DEFAULT_POLICY_ID,
         "installed default PDP baseline policy"
+    );
+    Ok(())
+}
+
+/// Seed the declarative approvals row from config, **iff it does not exist**.
+///
+/// This is the bring-up path: a freshly-provisioned or IaC-managed VTA declares
+/// its approval rules in `config.toml` and comes up already enforcing them,
+/// without an operator having to run `pnm approvals` by hand afterwards.
+///
+/// # Why seed-once, and not reconcile-every-boot
+///
+/// The consent policy this supersedes was reconciled from config on *every*
+/// boot, which made config the source of truth and the keyspace a cache. Once
+/// the rules are editable at runtime that behaviour becomes a trap: an operator
+/// changes a rule with `pnm approvals`, the change takes effect, and then the
+/// next restart — hours or weeks later, for an unrelated reason — silently
+/// reverts it to whatever the file still says. A security control that quietly
+/// undoes itself on restart is worse than one that is awkward to change.
+///
+/// So the row wins once it exists. To re-seed deliberately, delete the row
+/// (`pnm policy delete approvals`, or the offline break-glass) and restart.
+pub async fn seed_declarative_approvals(
+    policy_ks: &KeyspaceHandle,
+    rules: &[vta_sdk::approvals::ApprovalRule],
+    approver_sets: &std::collections::HashMap<String, Vec<String>>,
+    now_rfc3339: &str,
+) -> Result<(), AppError> {
+    if rules.is_empty() && approver_sets.is_empty() {
+        return Ok(());
+    }
+    if storage::get_policy(policy_ks, vta_sdk::approvals::DECLARATIVE_POLICY_ID)
+        .await?
+        .is_some()
+    {
+        tracing::debug!(
+            "declarative approvals row already exists; leaving it alone (config is a seed, \
+             not the source of truth)"
+        );
+        return Ok(());
+    }
+
+    let model = super::approvals::DeclarativeModel {
+        rules: rules.to_vec(),
+        approver_sets: approver_sets
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    };
+    // Validate before seating. A config that cannot be satisfied — a rule naming
+    // an approver set that isn't defined, a threshold larger than its set —
+    // should stop the operator at boot, not at the first request it blocks.
+    vta_sdk::approvals::validate(&model.rules, &model.approver_sets)
+        .map_err(|e| AppError::Validation(format!("[policy] approvals seed is invalid: {e}")))?;
+    let row = super::approvals::declarative_row(&model, 1, now_rfc3339, now_rfc3339);
+    // Compile-check the synthesized module for the same reason the baseline is
+    // compile-checked: a module that will not compile is skipped at load time,
+    // which silently un-gates every task it named.
+    super::engine::compile(&row.module, vta_sdk::approvals::DECLARATIVE_POLICY_ID)?;
+    storage::store_policy(policy_ks, &row).await?;
+
+    tracing::info!(
+        rules = model.rules.len(),
+        approver_sets = model.approver_sets.len(),
+        "seeded the declarative approvals row from config (first boot without one)"
     );
     Ok(())
 }
@@ -110,6 +176,7 @@ pub async fn reconcile_config_consent_policy(
         version: 1,
         created_at: now_rfc3339.to_string(),
         updated_at: now_rfc3339.to_string(),
+        ext: serde_json::Value::Null,
     };
     storage::store_policy(policy_ks, &module).await?;
     tracing::info!(
@@ -220,6 +287,7 @@ mod tests {
             version: 1,
             created_at: "x".into(),
             updated_at: "x".into(),
+            ext: serde_json::Value::Null,
         };
         storage::store_policy(&ks, &op).await.unwrap();
         install_default_policy(&ks, "2026-01-01T00:00:00Z")
@@ -373,6 +441,7 @@ mod tests {
             version: 1,
             created_at: "2026-07-15T00:00:00Z".into(),
             updated_at: "2026-07-15T00:00:00Z".into(),
+            ext: serde_json::Value::Null,
         };
         storage::store_policy(&ks, &op).await.unwrap();
 
@@ -433,6 +502,122 @@ mod tests {
             d.require_consent.unwrap().approver_set,
             injected,
             "the crafted quote stayed inside the string — it did not break out"
+        );
+    }
+
+    // ── Declarative approvals seeding ──────────────────────────────────────
+
+    fn seed_rules() -> Vec<vta_sdk::approvals::ApprovalRule> {
+        vec![vta_sdk::approvals::ApprovalRule::reauth(
+            "https://trusttasks.org/spec/acl/grant/0.1",
+        )]
+    }
+
+    #[tokio::test]
+    async fn seeds_the_declarative_row_on_a_fresh_vta() {
+        let (ks, _d) = temp_ks().await;
+        seed_declarative_approvals(
+            &ks,
+            &seed_rules(),
+            &Default::default(),
+            "2026-08-09T00:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        let row = storage::get_policy(&ks, vta_sdk::approvals::DECLARATIVE_POLICY_ID)
+            .await
+            .unwrap()
+            .expect("row seeded");
+        let model = crate::approvals::verify_declarative_row(&row.ext, &row.module)
+            .expect("seeded row must verify against its own rules");
+        assert_eq!(model.rules.len(), 1);
+    }
+
+    /// The trap this seeding deliberately avoids: config re-read on every boot
+    /// would silently revert a runtime edit at the next restart — possibly weeks
+    /// later, for an unrelated reason. The row wins once it exists.
+    #[tokio::test]
+    async fn a_runtime_edit_survives_a_restart() {
+        let (ks, _d) = temp_ks().await;
+        seed_declarative_approvals(
+            &ks,
+            &seed_rules(),
+            &Default::default(),
+            "2026-08-09T00:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        // Operator changes the rules at runtime (what `pnm approvals` does).
+        let edited = crate::approvals::DeclarativeModel {
+            rules: vec![vta_sdk::approvals::ApprovalRule::reauth(
+                "https://trusttasks.org/spec/keys/revoke/0.1",
+            )],
+            approver_sets: Default::default(),
+        };
+        let row = crate::approvals::declarative_row(
+            &edited,
+            2,
+            "2026-08-09T01:00:00Z",
+            "2026-08-09T00:00:00Z",
+        );
+        storage::store_policy(&ks, &row).await.unwrap();
+
+        // Restart: seeding runs again against the same config.
+        seed_declarative_approvals(
+            &ks,
+            &seed_rules(),
+            &Default::default(),
+            "2026-08-09T02:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        let after = crate::approvals::load(&ks).await.unwrap();
+        assert_eq!(
+            after.rules, edited.rules,
+            "the config seed clobbered a runtime edit on restart"
+        );
+    }
+
+    /// A seed that could never be satisfied should stop the operator at boot,
+    /// not at the first request it blocks.
+    #[tokio::test]
+    async fn an_unsatisfiable_seed_fails_at_boot() {
+        let (ks, _d) = temp_ks().await;
+        let rules = vec![vta_sdk::approvals::ApprovalRule::consent(
+            "https://trusttasks.org/spec/acl/grant/0.1",
+            "nobody",
+        )];
+        let err =
+            seed_declarative_approvals(&ks, &rules, &Default::default(), "2026-08-09T00:00:00Z")
+                .await
+                .expect_err("a rule naming an undefined approver set must not seat");
+        assert!(
+            matches!(err, AppError::Validation(ref s) if s.contains("not defined")),
+            "got {err:?}"
+        );
+        assert!(
+            storage::get_policy(&ks, vta_sdk::approvals::DECLARATIVE_POLICY_ID)
+                .await
+                .unwrap()
+                .is_none(),
+            "nothing should have been written"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_seed_writes_nothing() {
+        let (ks, _d) = temp_ks().await;
+        seed_declarative_approvals(&ks, &[], &Default::default(), "2026-08-09T00:00:00Z")
+            .await
+            .unwrap();
+        assert!(
+            storage::get_policy(&ks, vta_sdk::approvals::DECLARATIVE_POLICY_ID)
+                .await
+                .unwrap()
+                .is_none()
         );
     }
 }

@@ -6241,7 +6241,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pnm-cli"
-version = "0.11.18"
+version = "0.11.20"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -9205,7 +9205,7 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.10.24"
+version = "0.10.26"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -9230,13 +9230,14 @@ dependencies = [
 
 [[package]]
 name = "vta-config"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_ignored",
  "tempfile",
  "toml 1.1.4+spec-1.1.0",
  "tracing",
+ "vta-sdk",
  "vti-common",
  "vti-secrets",
 ]
@@ -9339,7 +9340,7 @@ dependencies = [
 
 [[package]]
 name = "vta-policy"
-version = "0.1.2"
+version = "0.1.4"
 dependencies = [
  "hex",
  "regorus",
@@ -9352,12 +9353,13 @@ dependencies = [
  "tracing",
  "vta-config",
  "vta-keyspaces",
+ "vta-sdk",
  "vti-common",
 ]
 
 [[package]]
 name = "vta-sdk"
-version = "0.21.7"
+version = "0.21.9"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -9419,7 +9421,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.14.16"
+version = "0.14.18"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
