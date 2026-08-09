@@ -31,8 +31,9 @@ const WIRE_INDEX_PREFIX: &[u8] = b"wire:";
 /// SHA-256 over a canonical payload elsewhere in the system.
 const DIGEST_DOMAIN: &[u8] = b"vta/task-consent/v1\0";
 
-/// Deterministic digest of a task: hex SHA-256 over the type URI and the RFC
-/// 8785 (JCS) canonical payload. Stable across serializers, so the requester's
+/// Deterministic digest of a task: SHA-256 over the type URI and the RFC 8785
+/// (JCS) canonical payload, encoded as a multibase multihash
+/// ([`encode_digest_multibase`]). Stable across serializers, so the requester's
 /// re-submit and the approver's signed decision agree on what was authorized.
 ///
 /// The type URI is **part of the digest**, and is length-prefixed so the
@@ -86,7 +87,32 @@ fn digest_with(
     if let Some(c) = challenge {
         h.update(c.as_bytes());
     }
-    Ok(hex::encode(h.finalize()))
+    Ok(encode_digest_multibase(&h.finalize()))
+}
+
+/// Multihash prefix for SHA-256 with a 32-byte digest: code `0x12`, length
+/// `0x20`. Carried in-band so the value is self-describing and the wire format
+/// survives an algorithm change without a schema revision.
+const MULTIHASH_SHA2_256_32: [u8; 2] = [0x12, 0x20];
+
+/// Encode a SHA-256 digest as a multibase-encoded multihash — the
+/// `digestMultibase` form W3C VCDM 2.0 defines and `did:webvh` uses.
+///
+/// This replaced bare hex when the Trust Tasks registry moved `payloadDigest`
+/// to the shared `DigestMultibase` type (pattern `^[zumbfF][A-Za-z0-9+/=_-]+$`),
+/// which explicitly rules out "a bare hex string or a `sha-256:`-style prefix"
+/// as non-conforming. **This is a wire change, not a rendering change**: the
+/// digest is what an approver signs and what the requester's re-submit is
+/// matched against, so every party that computes one independently has to move
+/// together. See `docs/05-design-notes/approvals-convergence.md`.
+///
+/// base58btc (`z`) for consistency with `did:key` and `did:webvh`, matching
+/// `vta_sdk::did_key::ed25519_multibase_pubkey`.
+fn encode_digest_multibase(digest: &[u8]) -> String {
+    let mut buf = Vec::with_capacity(MULTIHASH_SHA2_256_32.len() + digest.len());
+    buf.extend_from_slice(&MULTIHASH_SHA2_256_32);
+    buf.extend_from_slice(digest);
+    multibase::encode(multibase::Base::Base58Btc, &buf)
 }
 
 /// An in-flight consent request accumulating approver signatures.
@@ -378,7 +404,18 @@ mod tests {
             a,
             payload_digest(T_UPDATE, &json!({ "a": 1, "b": 3 })).unwrap()
         );
-        assert_eq!(a.len(), 64, "hex sha-256 is 64 chars");
+        // `digestMultibase`, not hex: base58btc (`z`) over the sha2-256
+        // multihash. Asserted by shape rather than length, because base58 is
+        // not byte-aligned and a leading-zero digest encodes shorter.
+        assert!(a.starts_with('z'), "must be multibase base58btc, got {a}");
+        let (base, bytes) = multibase::decode(&a).expect("valid multibase");
+        assert_eq!(base, multibase::Base::Base58Btc);
+        assert_eq!(
+            &bytes[..2],
+            &[0x12, 0x20],
+            "must carry the sha2-256 multihash prefix in-band"
+        );
+        assert_eq!(bytes.len(), 34, "2-byte multihash prefix + 32-byte digest");
     }
 
     /// The bypass this binding exists to close: an identical payload under two

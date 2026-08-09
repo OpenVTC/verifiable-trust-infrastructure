@@ -273,7 +273,13 @@ fn assemble_decision(
     let payload = decision::Payload {
         challenge: decision::PayloadChallenge::try_from(draft.challenge.clone()).map_err(conv)?,
         decision: d,
-        payload_digest: draft.payload_digest.clone(),
+        // `payloadDigest` moved to the shared `DigestMultibase` type — a
+        // multibase-encoded multihash, not the bare hex it used to be. Parse
+        // rather than assume: a draft carrying a stale hex digest must fail
+        // here, at the device that would otherwise sign a decision the VTA
+        // could never match.
+        payload_digest: decision::DigestMultibase::try_from(draft.payload_digest.clone())
+            .map_err(conv)?,
         reason,
         ext: None,
     };
@@ -472,8 +478,12 @@ mod tests {
             recipient_did: "did:webvh:scid:vta.example:vta".to_string(),
             issued_at: "2026-07-18T10:05:00Z".to_string(),
             challenge: "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ".to_string(),
-            payload_digest: "3b0c7f1d9e2a5648c1f30b7ae4d2986153ca0f7b8d41e6295af03c8bd71e4a62"
-                .to_string(),
+            // `digestMultibase`: base58btc over the sha2-256 multihash
+            // (`0x12 0x20` || digest). The bare hex this used to be is
+            // non-conforming under the shared `DigestMultibase` type, and the
+            // draft-parsing guard rejects it — which is how this fixture was
+            // caught.
+            payload_digest: "zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ".to_string(),
         }
     }
 
@@ -490,9 +500,11 @@ mod tests {
         );
         assert_eq!(v["payload"]["decision"], "approve");
         assert_eq!(v["payload"]["challenge"], "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ");
+        // Echoed verbatim: the decision is bound to the digest the executor
+        // will re-derive, so any re-encoding here would break the match.
         assert_eq!(
             v["payload"]["payloadDigest"],
-            "3b0c7f1d9e2a5648c1f30b7ae4d2986153ca0f7b8d41e6295af03c8bd71e4a62"
+            "zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ"
         );
         assert_eq!(v["issuer"], draft().issuer_did);
         assert_eq!(v["recipient"], "did:webvh:scid:vta.example:vta");

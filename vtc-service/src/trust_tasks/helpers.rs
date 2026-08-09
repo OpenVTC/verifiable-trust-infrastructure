@@ -166,6 +166,9 @@ pub(crate) fn body_parse_error_response(reason: &str) -> TrustTaskOutcome {
     let err = ErrorResponse {
         id: format!("urn:uuid:{}", Uuid::new_v4()),
         thread_id: None,
+        // Unrouted: there is no parent thread to name either, for the same
+        // reason there is no issuer — the body never parsed.
+        parent_thread_id: None,
         type_uri,
         issuer: None,
         recipient: None,
