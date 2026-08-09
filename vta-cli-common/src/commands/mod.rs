@@ -1,5 +1,8 @@
 pub mod acl;
 pub mod agent_names;
+/// Declarative approval requirements — which tasks need re-authentication or
+/// consent, and who may approve.
+pub mod approvals;
 pub mod audit;
 pub mod config;
 pub mod contexts;

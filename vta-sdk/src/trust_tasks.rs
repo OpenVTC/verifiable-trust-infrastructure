@@ -1630,6 +1630,14 @@ mod tests {
             // someone and signing without exporting them is generic to any
             // agent, so the family is top-level rather than VTA-private.
             "https://trusttasks.org/spec/keys/",
+            // Canonical Policy Decision Point management — `policy/{list,get,
+            // upsert,delete}`. Top-level rather than VTA-private because a
+            // policy module is a Rego document with a decision rule, which is
+            // generic to any maintainer running a PDP: VTC already serves the
+            // same family. This is where the declarative approvals model is
+            // read and written, so it is also the surface that made approval
+            // posture editable at runtime instead of via config + restart.
+            "https://trusttasks.org/spec/policy/",
         ];
         for uri in ALL_URIS {
             assert!(

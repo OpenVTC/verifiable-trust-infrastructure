@@ -55,7 +55,14 @@ pub const DECLARATIVE_POLICY_NAME: &str = "Declarative approvals";
 /// Priority of the reserved row: above the permissive baseline (0) so it fires
 /// first for the task types it names, with headroom left for an operator's own
 /// higher-priority Rego.
-pub const DECLARATIVE_POLICY_PRIORITY: i32 = 100;
+///
+/// Specifically **above** the legacy config-synthesized consent row (100), which
+/// still exists during the migration window. A task named by both would
+/// otherwise tie, and `decide()` breaks ties by keyspace iteration order — so
+/// which requirement applied would depend on how the rows happened to be laid
+/// out on disk. The declarative row is the source of truth, so it wins
+/// deterministically.
+pub const DECLARATIVE_POLICY_PRIORITY: i32 = 200;
 
 /// `ext` member carrying the [`ApprovalRule`] list (SPEC §4.5.1 reverse-DNS).
 ///

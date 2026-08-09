@@ -215,15 +215,30 @@ async fn consent_gate(
     // The approver set as it stands *now*, not as it stood when the request was
     // raised. This is resolved before the grant is consumed, because a grant
     // cannot be honoured against a set that no longer exists.
-    let members = state
-        .config
-        .read()
-        .await
-        .policy
-        .approver_sets
-        .get(&require.approver_set)
-        .cloned()
-        .unwrap_or_default();
+    //
+    // The declarative approvals row is authoritative; config is consulted only
+    // as a fallback, for a VTA whose sets are still declared there and which has
+    // not yet been seeded. Row-first is what makes `pnm approvals approvers`
+    // take effect without a restart.
+    let members = match crate::policy::approvals::load(&state.policy_ks).await {
+        Ok(model) => {
+            let from_row = model.approver_set(&require.approver_set);
+            if from_row.is_empty() {
+                state
+                    .config
+                    .read()
+                    .await
+                    .policy
+                    .approver_sets
+                    .get(&require.approver_set)
+                    .cloned()
+                    .unwrap_or_default()
+            } else {
+                from_row.to_vec()
+            }
+        }
+        Err(e) => return Some(app_error_to_reject(doc, e)),
+    };
     if members.is_empty() {
         return Some(reject_with(
             doc,

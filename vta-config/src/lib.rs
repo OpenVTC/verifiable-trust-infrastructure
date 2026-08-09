@@ -26,8 +26,25 @@ pub struct PolicyConfig {
     /// maps to the DIDs permitted to approve a task's execution. Empty by
     /// default — a `requireConsent` naming an unknown or empty set can never be
     /// satisfied (fail-closed), so operators define sets before using them.
+    ///
+    /// **Seed, not source of truth.** Approver sets now live on the declarative
+    /// approvals row in the policy keyspace, editable at runtime with
+    /// `pnm approvals approvers`. What is here is copied into that row the first
+    /// time the VTA boots without one, so an IaC-provisioned or freshly-restored
+    /// VTA comes up already configured. After that the row wins and this is
+    /// inert: re-reading it every boot would silently undo runtime edits on the
+    /// next restart, which is the trap the old reconcile-every-boot consent
+    /// policy had.
     #[serde(default)]
     pub approver_sets: std::collections::HashMap<String, Vec<String>>,
+    /// Declarative approval rules — which tasks require re-authentication or
+    /// consent before they run.
+    ///
+    /// Same seed-once semantics as [`PolicyConfig::approver_sets`]: this is the
+    /// bring-up path for a VTA with no declarative row yet, not a second place
+    /// the rules live. Read them back (and change them) with `pnm approvals`.
+    #[serde(default)]
+    pub approvals: Vec<vta_sdk::approvals::ApprovalRule>,
     /// Refuse any task for which this build knows no payload schema.
     ///
     /// Payload validation always runs where a schema *is* known — that is not

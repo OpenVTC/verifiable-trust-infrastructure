@@ -177,6 +177,12 @@ pub(crate) enum Commands {
         command: AclCommands,
     },
 
+    /// Which tasks need re-authentication or human consent before they run
+    Approvals {
+        #[command(subcommand)]
+        command: ApprovalsCommands,
+    },
+
     /// Hand-authored Rego policy modules (power-user surface; for approval
     /// requirements use `pnm approvals`)
     Policy {
@@ -1904,6 +1910,79 @@ pub(crate) enum AclCommands {
     /// Delete an ACL entry
     Delete {
         /// DID of the entry to delete
+        did: String,
+    },
+}
+
+/// `pnm approvals …` — which tasks need an additional human decision before
+/// they run, and who may give it.
+#[derive(Subcommand)]
+pub(crate) enum ApprovalsCommands {
+    /// Show the approval rules and the approver sets they draw on.
+    List,
+    /// Require approval for a task type (replaces any existing rule for it).
+    Require {
+        /// Trust Task Type URI, e.g.
+        /// `https://trusttasks.org/spec/acl/grant/0.1`.
+        task_type: String,
+        /// Require the caller to re-authenticate (AAL2) — no third party.
+        #[arg(long, conflicts_with = "consent")]
+        reauth: bool,
+        /// Require named approvers to sign off on this exact payload.
+        #[arg(long, requires = "set")]
+        consent: bool,
+        /// Approver set the approvals must come from (consent only).
+        #[arg(long)]
+        set: Option<String>,
+        /// Distinct approvals needed (consent only, default 1).
+        #[arg(long)]
+        min: Option<u32>,
+        /// Bar the requester from counting toward the threshold, forcing a
+        /// genuinely second party (consent only).
+        #[arg(long)]
+        exclude_requester: bool,
+        /// Apply only in these contexts. Omit for every context.
+        #[arg(long, value_delimiter = ',')]
+        context: Vec<String>,
+    },
+    /// Stop requiring approval for a task type.
+    Remove {
+        /// Trust Task Type URI.
+        task_type: String,
+        /// Remove only the rule scoped to exactly these contexts.
+        #[arg(long, value_delimiter = ',')]
+        context: Option<Vec<String>>,
+    },
+    /// Manage the named approver sets.
+    Approvers {
+        #[command(subcommand)]
+        command: ApproversCommands,
+    },
+    /// Explain what a task requires, and whether that can be satisfied.
+    Explain {
+        /// Trust Task Type URI.
+        task_type: String,
+        /// Context to explain for (default `default`).
+        #[arg(long)]
+        context: Option<String>,
+    },
+}
+
+/// `pnm approvals approvers …`
+#[derive(Subcommand)]
+pub(crate) enum ApproversCommands {
+    /// Add a DID to an approver set (creating the set if new).
+    Add {
+        /// Set name.
+        set: String,
+        /// Approver DID.
+        did: String,
+    },
+    /// Remove a DID from an approver set.
+    Remove {
+        /// Set name.
+        set: String,
+        /// Approver DID.
         did: String,
     },
 }

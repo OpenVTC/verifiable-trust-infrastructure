@@ -10,6 +10,7 @@
 
 pub(crate) mod acl;
 pub(crate) mod agent_names;
+pub(crate) mod approvals;
 pub(crate) mod audit;
 pub(crate) mod auth;
 pub(crate) mod auth_credential;

@@ -291,3 +291,245 @@ pub async fn delete_policy(
         deleted_at,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::acl::Role;
+    use crate::store::Store;
+    use vta_sdk::approvals::{ApprovalRule, DECLARATIVE_POLICY_ID, synthesize_rego};
+    use vti_common::config::StoreConfig;
+
+    const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
+    const HAND_REGO: &str =
+        "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"allow\"}";
+
+    async fn keyspaces() -> (KeyspaceHandle, KeyspaceHandle, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        (
+            store.keyspace(vta_keyspaces::POLICY).unwrap(),
+            store.keyspace(vta_keyspaces::AUDIT).unwrap(),
+            dir,
+        )
+    }
+
+    fn super_admin() -> AuthClaims {
+        AuthClaims {
+            did: "did:key:zSuperAdmin".into(),
+            role: Role::Admin,
+            allowed_contexts: Vec::new(),
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        }
+    }
+
+    fn admin_only() -> AuthClaims {
+        AuthClaims {
+            allowed_contexts: vec!["ctx-a".into()],
+            ..super_admin()
+        }
+    }
+
+    fn declarative_body(rules: &[ApprovalRule], module: Option<&str>) -> UpsertPolicyBody {
+        UpsertPolicyBody {
+            id: Some(DECLARATIVE_POLICY_ID.into()),
+            name: "Declarative approvals".into(),
+            description: None,
+            module: module.map_or_else(|| synthesize_rego(rules), str::to_string),
+            applies_to: vec![],
+            priority: Some(vta_sdk::approvals::DECLARATIVE_POLICY_PRIORITY),
+            enabled: true,
+            expected_version: None,
+            ext: serde_json::json!({
+                vta_sdk::approvals::EXT_KEY_RULES: rules,
+                vta_sdk::approvals::EXT_KEY_APPROVER_SETS: {},
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_declarative_row_whose_module_matches_its_rules_is_accepted() {
+        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let rules = vec![ApprovalRule::reauth(ACL_GRANT)];
+        let out = upsert_policy(
+            &policy_ks,
+            &audit_ks,
+            &super_admin(),
+            declarative_body(&rules, None),
+            "test",
+        )
+        .await
+        .expect("matching row accepted");
+        assert!(out.created);
+        assert_eq!(out.policy.version, 1);
+    }
+
+    /// The check the whole declarative design rests on: rules that say one
+    /// thing and Rego that does another must not be storable, or everything
+    /// `pnm approvals list` prints is advisory rather than true.
+    #[tokio::test]
+    async fn a_declarative_row_whose_module_contradicts_its_rules_is_refused() {
+        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let rules = vec![ApprovalRule::reauth(ACL_GRANT)];
+        let err = upsert_policy(
+            &policy_ks,
+            &audit_ks,
+            &super_admin(),
+            declarative_body(&rules, Some(HAND_REGO)),
+            "test",
+        )
+        .await
+        .expect_err("module/rules mismatch must be refused");
+        assert!(
+            matches!(err, AppError::Validation(ref s) if s.contains("synthesizes to")),
+            "got {err:?}"
+        );
+    }
+
+    /// Overwriting the reserved row with unrelated Rego would leave the
+    /// approvals surface reporting rules that no longer decide anything.
+    #[tokio::test]
+    async fn the_reserved_id_cannot_hold_hand_authored_rego() {
+        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let err = upsert_policy(
+            &policy_ks,
+            &audit_ks,
+            &super_admin(),
+            UpsertPolicyBody {
+                ext: serde_json::Value::Null,
+                ..declarative_body(&[], Some(HAND_REGO))
+            },
+            "test",
+        )
+        .await
+        .expect_err("reserved id without declarative ext must be refused");
+        assert!(
+            matches!(err, AppError::Validation(ref s) if s.contains("reserved")),
+            "got {err:?}"
+        );
+    }
+
+    /// And the converse: a second row claiming to be the model would make it
+    /// ambiguous which rules are in force.
+    #[tokio::test]
+    async fn only_the_reserved_id_may_carry_declarative_ext() {
+        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let rules = vec![ApprovalRule::reauth(ACL_GRANT)];
+        let err = upsert_policy(
+            &policy_ks,
+            &audit_ks,
+            &super_admin(),
+            UpsertPolicyBody {
+                id: Some("impostor".into()),
+                ..declarative_body(&rules, None)
+            },
+            "test",
+        )
+        .await
+        .expect_err("a non-reserved row carrying the rules ext must be refused");
+        assert!(
+            matches!(err, AppError::Validation(ref s) if s.contains("reserved policy id")),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_module_that_does_not_compile_is_refused() {
+        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let err = upsert_policy(
+            &policy_ks,
+            &audit_ks,
+            &super_admin(),
+            UpsertPolicyBody {
+                id: Some("broken".into()),
+                ext: serde_json::Value::Null,
+                ..declarative_body(&[], Some("this is not rego {{{"))
+            },
+            "test",
+        )
+        .await
+        .expect_err("uncompilable Rego must not seat");
+        assert!(
+            matches!(err, AppError::Validation(ref s) if s.contains("does not compile")),
+            "got {err:?}"
+        );
+    }
+
+    /// Whoever can write policy can delete the rule that gates them.
+    #[tokio::test]
+    async fn writing_policy_is_super_admin_only() {
+        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let err = upsert_policy(
+            &policy_ks,
+            &audit_ks,
+            &admin_only(),
+            declarative_body(&[ApprovalRule::reauth(ACL_GRANT)], None),
+            "test",
+        )
+        .await
+        .expect_err("a context-scoped admin must not write policy");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn a_stale_expected_version_conflicts() {
+        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let rules = vec![ApprovalRule::reauth(ACL_GRANT)];
+        upsert_policy(
+            &policy_ks,
+            &audit_ks,
+            &super_admin(),
+            declarative_body(&rules, None),
+            "test",
+        )
+        .await
+        .unwrap();
+
+        let err = upsert_policy(
+            &policy_ks,
+            &audit_ks,
+            &super_admin(),
+            UpsertPolicyBody {
+                // The row is at 1 now; a second operator still holding 0.
+                expected_version: Some(0),
+                ..declarative_body(&rules, None)
+            },
+            "test",
+        )
+        .await
+        .expect_err("a stale version must conflict, not silently overwrite");
+        assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
+    }
+
+    /// Deleting the baseline would make the PDP deny every task the operator's
+    /// own policies do not name, and it is not reinstalled while other rows
+    /// exist.
+    #[tokio::test]
+    async fn the_baseline_cannot_be_deleted() {
+        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        vta_policy::install_default_policy(&policy_ks, "2026-08-09T00:00:00Z")
+            .await
+            .unwrap();
+        let err = delete_policy(
+            &policy_ks,
+            &audit_ks,
+            &super_admin(),
+            vta_policy::defaults::DEFAULT_POLICY_ID,
+            None,
+            None,
+            "test",
+        )
+        .await
+        .expect_err("the baseline must not be deletable");
+        assert!(
+            matches!(err, AppError::Validation(ref s) if s.contains("baseline")),
+            "got {err:?}"
+        );
+    }
+}
