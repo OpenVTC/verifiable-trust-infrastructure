@@ -1,8 +1,8 @@
 # Approvals convergence — one model instead of three
 
-**Status:** partially landed. The model and its runtime surface shipped in #909.
-The REST gate and the trigger collapse are designed below and not implemented —
-**a `requireConsent` rule is not enforced for REST callers until step 1 lands.**
+**Status:** partially landed. The model and its runtime surface shipped in #909;
+the shared gate reached the ACL and context REST routes in #912. Still open: the
+webvh update route (see below), and the trigger collapse.
 
 ## What prompted it
 
@@ -113,21 +113,29 @@ trigger. Add the offline `vta approvals` break-glass.
 
 ### The live gap, and the order to close it
 
-The PDP gate runs *only* in the trust-task dispatcher. `routes/acl.rs::create_acl`
-and `routes/did_webvh.rs::update_did_handler` call their operations directly, so
-a `requireConsent` rule is **not enforced for a REST caller** today. The only
-thing gating those routes is the `RequireStepUp` extractor, which is built on
+The PDP gate ran *only* in the trust-task dispatcher: `routes/acl.rs::create_acl`
+and `routes/did_webvh.rs::update_did_handler` called their operations directly,
+so a `requireConsent` rule was **not enforced for a REST caller**. The only thing
+gating those routes was the `RequireStepUp` extractor, which is built on
 `resolve_step_up` — the function the retirement above deletes.
 
 An earlier draft of this note concluded the two must therefore land as one
 atomic change. That was wrong, and the split below is strictly better because it
 ships the security fix first:
 
-**Step 1 — add the shared gate (purely additive).** Introduce
-`approvals::gate()` and call it in the ~13 gated REST handlers while *leaving*
-`RequireStepUp` in place. REST is then gated by both the old floors and the PDP;
-nothing is removed, so there is no un-gated window, and the consent bypass is
-closed on its own merits.
+**Step 1 — add the shared gate (purely additive).** *Landed for the ACL and
+context routes.* `approvals::rest_gate()` is called in-handler by `POST /acl`,
+`PATCH /acl/{did}`, `POST /acl/{did}/change-role`, `DELETE /acl/{did}` and
+`DELETE /contexts/{id}`, with `RequireStepUp` left in place — REST is gated by
+both the old floors and the PDP, so nothing is removed and no window opens.
+
+**Still open: `POST /contexts/{ctx}/dids/{scid}`.** The planner parses the gated
+payload as `UpdateDidWithDid { did, .. }` and the consent digest is taken over
+it, but that handler is addressed by **SCID**. Gating on what it holds would
+produce a digest disagreeing with the trust-task path's for the same update, so
+an approval obtained over one transport could not be consumed over the other.
+Resolve the SCID to its DID before gating; the parity test below extends to it
+directly once that lands.
 
 **Step 2 — delete (pure removal).** Everything listed above. REST keeps its
 gating from step 1, so nothing has to be sequenced inside this step.

@@ -247,6 +247,17 @@ pub async fn delete_context_handler(
     Path(id): Path<String>,
     Query(query): Query<DeleteContextQuery>,
 ) -> Result<StatusCode, AppError> {
+    // The gated payload mirrors the `contexts/delete` trust task's, so an
+    // approval is bound to the same `{id, force}` on either transport — `force`
+    // included, because deleting with it is the materially different act.
+    crate::trust_tasks::rest_gate(
+        &state,
+        &auth.0,
+        vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_0,
+        &serde_json::json!({ "id": id, "force": query.force }),
+    )
+    .await?;
+
     let ks = operations::keyspaces_from_app_state(&state);
     operations::contexts::delete_context(&ks, &auth.0, &id, query.force, "rest").await?;
     Ok(StatusCode::NO_CONTENT)

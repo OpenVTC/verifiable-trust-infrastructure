@@ -91,6 +91,10 @@ mod step_up_policy;
 pub(crate) use step_up::{
     AclChangeRoleOp, AclGrantOp, AclRevokeOp, AclSwapKeyOp, ContextDeleteOp, RequireStepUp,
 };
+// The PDP gate, callable from the REST routes. In-handler by necessity: the
+// consent digest and the planner both need the parsed payload, which an axum
+// extractor does not have.
+pub(crate) use policy_gate::rest_gate;
 mod vault;
 #[cfg(feature = "webvh")]
 pub(crate) mod webvh;

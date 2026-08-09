@@ -1156,7 +1156,7 @@ pub(super) async fn initiate_self_step_up(
             };
         }
     };
-    let reject = match mint_pending_step_up(
+    match mint_pending_step_up(
         &state.sessions_ks,
         &vta_did,
         &secret,
@@ -1182,8 +1182,7 @@ pub(super) async fn initiate_self_step_up(
         Err(()) => RejectReason::InternalError {
             reason: "failed to initiate step-up".to_string(),
         },
-    };
-    reject
+    }
 }
 
 /// Stable operation-class identifiers used to resolve step-up floors.

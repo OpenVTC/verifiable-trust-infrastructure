@@ -728,3 +728,106 @@ async fn create_did(router: &axum::Router, ctx: &TestAppContext, token: &str) ->
         .to_string();
     (did, scid)
 }
+
+/// **The transport-parity regression.**
+///
+/// The PDP gate used to run only in the trust-task dispatcher: `POST /acl` and
+/// the webvh update route reached their operations directly, so a
+/// `requireConsent` rule an operator had written bound one transport and
+/// silently not the other — same mutation, same policy, two answers.
+///
+/// The absence of a test that ran both paths against one policy is precisely
+/// why that went unnoticed, so this asserts the pair rather than either alone.
+#[tokio::test]
+async fn rest_and_trust_task_reach_the_same_consent_decision() {
+    let (router, ctx) = build_test_app_with(TestAppOptions {
+        // The gate signs the `task-consent/request` it mints with the VTA's
+        // `#key-0`, so this needs a real signing identity like the flows above.
+        provisionable_vta: true,
+        ..Default::default()
+    })
+    .await;
+    let requester = "did:key:z6MkTestRequester";
+    let token = ctx.mint_token(requester, "admin", vec![]).await;
+    let ops = approver(11);
+
+    vta_service::contexts::create_context(&ctx.contexts_ks, "default", "Default")
+        .await
+        .expect("seed the default context");
+
+    {
+        let mut cfg = ctx.config.write().await;
+        cfg.policy.enforcement = true;
+        cfg.policy
+            .approver_sets
+            .insert("operators".into(), vec![ops.did.clone()]);
+    }
+    install_policy(&ctx, REQUIRE_CONSENT).await;
+
+    // One grant, expressed identically on both transports.
+    // Canonical `acl/grant/0.1` shape — `scopes`, not `allowedContexts`. The
+    // spine schema-validates before the gate runs, so a wrong field name here
+    // would be rejected as malformed and this test would prove nothing about
+    // consent.
+    let grant = json!({
+        "entry": {
+            "subject": "did:key:z6MkNewlyGrantedAdmin",
+            "role": "admin",
+            "scopes": ["default"],
+        }
+    });
+
+    // ── Trust-task path: refused, as it always was.
+    let doc = envelope(
+        vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
+        requester,
+        &ctx.vta_did,
+        grant.clone(),
+    );
+    let (tt_status, tt_body) = post(&router, &token, &doc).await;
+    assert!(!tt_status.is_success(), "trust-task must refuse: {tt_body}");
+    assert_eq!(
+        tt_body["payload"]["details"]["reason"], "auth:consent_required",
+        "trust-task path must ask for consent: {tt_body}"
+    );
+
+    // ── REST path: the same policy, the same answer. Before the shared gate
+    //    this returned 201 and the ACL entry was created.
+    let rest_req = Request::builder()
+        .method("POST")
+        .uri("/acl")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&grant).unwrap()))
+        .unwrap();
+    let resp = router.clone().oneshot(rest_req).await.unwrap();
+    let rest_status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let rest_body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+
+    assert_eq!(
+        rest_status,
+        StatusCode::FORBIDDEN,
+        "REST must not bypass the consent rule: {rest_body}"
+    );
+    assert_eq!(
+        rest_body["error"], "auth:consent_required",
+        "REST must carry the same machine-readable reason: {rest_body}"
+    );
+    // The actionable half must survive the transport, not merely the refusal —
+    // `AppError::StepUpRequired` could not carry this, which is why the gate
+    // needed its own error variant.
+    assert!(
+        rest_body.get("challenge").is_some(),
+        "REST must carry the consent challenge, not just a 403: {rest_body}"
+    );
+
+    // And the mutation must not have happened on either path.
+    assert!(
+        vta_service::acl::get_acl_entry(&ctx.acl_ks, "did:key:z6MkNewlyGrantedAdmin")
+            .await
+            .expect("acl read")
+            .is_none(),
+        "a refused grant must not have created an entry"
+    );
+}
