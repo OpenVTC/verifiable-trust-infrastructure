@@ -30,12 +30,18 @@ approval that is given, accepted by the human, and then silently never takes
 effect. In-flight pendings and grants are invalidated by the encoding change;
 they are TTL'd at 900s, so the window is short.
 
-**Known follow-up, not fixed here:** `vta-mobile-core` derives the operator's
-6-character match code from the first characters of the digest. Under
-multibase+multihash the first three are always `zQm` — the sha2-256 signature,
-not entropy — so the code now carries ~17.6 bits where it carried ~35. It is
-left alone deliberately: the value has to agree with whatever the requesting
-screen renders, and that implementation is not in this repository. The
-principled fix (derive from the decoded digest bytes, skipping the 2-byte
-multihash prefix) should ride the same coordinated release as the digest change
-itself, since both touch the approver screen.
+**The operator's match code keeps its entropy.** `vta-mobile-core` derives the
+6-character comparison code from the digest; slicing the *encoded* string would
+have spent three of those six on the constant `zQm` (base58btc marker plus
+sha2-256 multihash prefix), leaving ~17.6 bits where the operator believes they
+are comparing ~35 — and still looking like six random characters, which is what
+would have made it dangerous rather than merely wasteful. `match_code_from_digest`
+now decodes and strips the multihash prefix first.
+
+Because the digest is still SHA-256, this reproduces **exactly** the code the
+screen showed when the wire carried bare hex (`hex(digest)[..6]` either way), so
+the encoding migration is invisible on the approver screen. The pre-existing
+assertion `assert_eq!(r.match_code, "3b0c7f")` — written against the hex format —
+passes verbatim against multibase, which is the property in evidence rather than
+in argument. A stale hex digest is now refused outright rather than silently
+producing a code.
