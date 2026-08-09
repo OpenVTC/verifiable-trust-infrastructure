@@ -77,8 +77,14 @@ repository = "https://github.com/OpenVTC/verifiable-trust-infrastructure"
 # Foreign-language bindings for the mobile engine crate (`vta-mobile-core`).
 uniffi = "0.28"
 
-# Affinidi Trust Development Kit
-affinidi-tdk = "0.8"
+# Affinidi Trust Development Kit.
+# Pinned to a minimum patch (not bare `0.8`) because 0.8.5 is the first release
+# carrying the enforced-authcrypt fix (affinidi-tdk-rs #671): it depends on
+# `affinidi-messaging-sdk` 0.19 + `affinidi-messaging-didcomm` 0.15.8, where
+# `unpack` rejects plaintext / anoncrypt / forged-`from` envelopes by default.
+# `0.8` would let a fresh resolve on a clean checkout land on a pre-fix 0.8.x,
+# silently moving sender authentication back out of the library. Do not relax it.
+affinidi-tdk = "0.8.5"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -112,7 +118,6 @@ affinidi-bbs = "0.3"
 affinidi-openid4vp = "0.1.2"
 affinidi-openid4vci = "0.2"
 affinidi-secrets-resolver = "0.5"
-affinidi-messaging-didcomm-service = "0.3"
 # Reliable messaging delivery layer (durable outbox + drain + §5a confirmation)
 # over the MessageTransport contract — the D1 delivery layer the VTI cut-over
 # (D2) wires in. `VtiOutboxStore` (vti-common) backs its OutboxStore with fjall.
