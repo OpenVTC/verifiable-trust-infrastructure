@@ -133,85 +133,34 @@ pub const CONFIG_CONSENT_POLICY_ID: &str = "config:require-consent";
 /// operator's hand-authored policy can still sit above it.
 const CONFIG_CONSENT_PRIORITY: i32 = 100;
 
-/// Reconcile the config-declared `require_consent` rules into the PDP.
+/// Remove a `config:require-consent` row left behind by a previous release.
 ///
-/// Config is the source of truth, applied on **every** boot: the synthesized
-/// policy is upserted when rules are present and deleted when they are not, so an
-/// operator adds a rule and restarts to require consent, or removes it and
-/// restarts to stop — no source edit, no data-dir wipe, no dependence on the
-/// empty-keyspace install semantics `install_default_policy` relies on.
+/// `[[policy.require_consent]]` was the *third* way a VTA could be told an
+/// operation needs a human — alongside the `[auth.step_up]` floors and the
+/// declarative approvals row — and it is retired: `AppConfig` now refuses a
+/// config that still declares it, pointing at `pnm approvals`.
 ///
-/// Runs *after* [`install_default_policy`] so the permissive baseline is present
-/// underneath to handle every task these rules do not name.
-pub async fn reconcile_config_consent_policy(
+/// Refusing the config is not enough on its own. The old reconciler synthesized
+/// a Rego module under a reserved id and rewrote it on **every** boot, which is
+/// what made "delete the config block, restart" turn consent back off. Simply
+/// deleting the reconciler would strand that row: a VTA upgraded from a release
+/// that had the block would keep enforcing a synthesized `requireConsent` that
+/// no config declares, that `pnm approvals list` does not know about, and that
+/// no command can remove — the exact undiagnosable state this convergence
+/// exists to end.
+///
+/// So the reconciler becomes a one-way cleanup: the row is deleted, once, on the
+/// first boot after the upgrade, and never written again. Idempotent, so it is
+/// harmless on every boot after that. It runs *after* [`install_default_policy`]
+/// so the permissive baseline is underneath to handle the tasks it used to name.
+///
+/// An operator who wanted those requirements keeps them by re-declaring them as
+/// approvals rules — which is why the config refusal names the command rather
+/// than only saying no.
+pub async fn remove_stale_config_consent_policy(
     policy_ks: &KeyspaceHandle,
-    rules: &[vta_config::RequireConsentRule],
-    now_rfc3339: &str,
 ) -> Result<(), AppError> {
-    if rules.is_empty() {
-        // No consent rules: ensure a previously-synthesized policy is gone, so
-        // removing the config block actually turns consent back off.
-        storage::delete_policy(policy_ks, CONFIG_CONSENT_POLICY_ID).await?;
-        return Ok(());
-    }
-
-    let rego = synthesize_consent_rego(rules);
-    // Compile-check before storing so a malformed synthesis fails loudly at boot
-    // rather than seating an unparseable policy that would deny every task it is
-    // consulted for.
-    super::engine::compile(&rego, CONFIG_CONSENT_POLICY_ID)?;
-
-    let module = PolicyModule {
-        id: CONFIG_CONSENT_POLICY_ID.to_string(),
-        name: "Config-declared consent".to_string(),
-        description: Some(
-            "Synthesized from [policy.require_consent]; reconciled every boot. \
-             Edit config and restart, do not edit this row."
-                .to_string(),
-        ),
-        module: rego,
-        applies_to: Vec::new(),
-        priority: CONFIG_CONSENT_PRIORITY,
-        enabled: true,
-        version: 1,
-        created_at: now_rfc3339.to_string(),
-        updated_at: now_rfc3339.to_string(),
-        ext: serde_json::Value::Null,
-    };
-    storage::store_policy(policy_ks, &module).await?;
-    tracing::info!(
-        policy = CONFIG_CONSENT_POLICY_ID,
-        rules = rules.len(),
-        "reconciled config-declared consent policy"
-    );
-    Ok(())
-}
-
-/// Turn the declarative rules into a `vta.policy` Rego module.
-///
-/// One `decision` rule per task type, each guarded on `input.request.typeUri`, so
-/// the module fires only for the named tasks and is *undefined* (abstains) for
-/// everything else — which lets `decide()` fall through to the baseline. The
-/// guards are mutually exclusive by construction (distinct URIs), so no two
-/// complete rules ever conflict.
-fn synthesize_consent_rego(rules: &[vta_config::RequireConsentRule]) -> String {
-    let mut out = String::from("package vta.policy\n\nimport rego.v1\n\n");
-    out.push_str(
-        "# Generated from [policy.require_consent] in config.toml. Do not edit — \
-         this row is reconciled on every boot.\n\n",
-    );
-    for rule in rules {
-        let min = rule.min_approvals.unwrap_or(1).max(1);
-        let exclude = rule.exclude_requester.unwrap_or(false);
-        out.push_str(&format!(
-            "decision := {{\n\t\"decision\": \"requireConsent\",\n\t\"requireConsent\": \
-             {{\"approverSet\": {set}, \"minApprovals\": {min}, \"excludeRequester\": {exclude}}},\n\
-             }} if input.request.typeUri == {task}\n\n",
-            set = rego_string(&rule.approver_set),
-            task = rego_string(&rule.task_type),
-        ));
-    }
-    out
+    storage::delete_policy(policy_ks, CONFIG_CONSENT_POLICY_ID).await
 }
 
 /// Encode a string as a Rego string literal, escaping the characters that would
@@ -302,24 +251,13 @@ mod tests {
     use crate::types::{
         Consumer, Discloses, Disposition, Exposure, PolicyInput, PolicyRequest, SideEffectLevel,
     };
-    use vta_config::RequireConsentRule;
 
     const UPDATE_URI: &str = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0";
-    const OTHER_URI: &str = "https://trusttasks.org/spec/vault/release/0.1";
-
-    fn rule(task: &str) -> RequireConsentRule {
-        RequireConsentRule {
-            task_type: task.into(),
-            approver_set: "ops".into(),
-            min_approvals: Some(2),
-            exclude_requester: Some(true),
-        }
-    }
 
     fn input_for(type_uri: &str) -> PolicyInput {
         PolicyInput {
             request: PolicyRequest {
-                type_uri: type_uri.into(),
+                type_uri: type_uri.to_string(),
                 kind: None,
                 subject: None,
                 payload_digest: None,
@@ -330,14 +268,14 @@ mod tests {
                 },
             },
             site: None,
-            context_id: "default".into(),
+            context_id: "default".to_string(),
             consumer: Consumer {
-                did: "did:key:zReq".into(),
+                did: "did:key:zRequester".to_string(),
                 kind: None,
                 device_id: None,
                 last_user_verification_at: None,
                 network_class: None,
-                acr: None,
+                acr: Some("aal1".to_string()),
                 amr: vec![],
             },
         }
@@ -350,158 +288,88 @@ mod tests {
         crate::decide(&policies, &input_for(type_uri))
     }
 
-    /// The whole point: a config rule makes the named task require consent — with
-    /// the operator's approver set, threshold and excludeRequester — through the
-    /// real load + decide path, not just synthesis.
-    #[tokio::test]
-    async fn a_config_rule_requires_consent_for_its_task() {
-        let (ks, _d) = temp_ks().await;
-        install_default_policy(&ks, "2026-07-15T00:00:00Z")
-            .await
-            .unwrap();
-        reconcile_config_consent_policy(&ks, &[rule(UPDATE_URI)], "2026-07-15T00:00:00Z")
-            .await
-            .unwrap();
-
-        let d = decide_for(&ks, UPDATE_URI).await;
-        assert_eq!(d.decision, Disposition::RequireConsent);
-        let rc = d.require_consent.expect("requireConsent carrier");
-        assert_eq!(rc.approver_set, "ops");
-        assert_eq!(rc.min_approvals, 2);
-        assert!(rc.exclude_requester);
-    }
-
-    /// An unnamed task falls through the config module (it abstains) to the
-    /// permissive baseline.
-    #[tokio::test]
-    async fn an_unnamed_task_falls_through_to_the_baseline() {
-        let (ks, _d) = temp_ks().await;
-        install_default_policy(&ks, "2026-07-15T00:00:00Z")
-            .await
-            .unwrap();
-        reconcile_config_consent_policy(&ks, &[rule(UPDATE_URI)], "2026-07-15T00:00:00Z")
-            .await
-            .unwrap();
-        assert_eq!(
-            decide_for(&ks, OTHER_URI).await.decision,
-            Disposition::Allow
-        );
-    }
-
-    /// Config is authoritative every boot: reconciling with no rules removes a
-    /// previously-synthesized policy, so deleting the config block turns consent
-    /// back off without a data-dir wipe.
-    #[tokio::test]
-    async fn removing_the_rule_turns_consent_back_off() {
-        let (ks, _d) = temp_ks().await;
-        install_default_policy(&ks, "2026-07-15T00:00:00Z")
-            .await
-            .unwrap();
-        reconcile_config_consent_policy(&ks, &[rule(UPDATE_URI)], "2026-07-15T00:00:00Z")
-            .await
-            .unwrap();
-        assert_eq!(
-            decide_for(&ks, UPDATE_URI).await.decision,
-            Disposition::RequireConsent
-        );
-
-        reconcile_config_consent_policy(&ks, &[], "2026-07-15T00:00:00Z")
-            .await
-            .unwrap();
-        assert_eq!(
-            decide_for(&ks, UPDATE_URI).await.decision,
-            Disposition::Allow
-        );
-        assert!(
-            storage::get_policy(&ks, CONFIG_CONSENT_POLICY_ID)
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    /// Reconcile is idempotent, and never touches an operator's own policies.
-    #[tokio::test]
-    async fn reconcile_is_idempotent_and_leaves_operator_policies_alone() {
-        let (ks, _d) = temp_ks().await;
-        install_default_policy(&ks, "2026-07-15T00:00:00Z")
-            .await
-            .unwrap();
-
-        let op = PolicyModule {
-            id: "operator-custom".into(),
-            name: "op".into(),
-            description: None,
-            module:
-                "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"deny\"} if false"
-                    .into(),
-            applies_to: vec![],
-            priority: 5,
-            enabled: true,
-            version: 1,
-            created_at: "2026-07-15T00:00:00Z".into(),
-            updated_at: "2026-07-15T00:00:00Z".into(),
-            ext: serde_json::Value::Null,
-        };
-        storage::store_policy(&ks, &op).await.unwrap();
-
-        for _ in 0..3 {
-            reconcile_config_consent_policy(&ks, &[rule(UPDATE_URI)], "2026-07-15T00:00:00Z")
-                .await
-                .unwrap();
-        }
-        assert!(
-            storage::get_policy(&ks, "operator-custom")
-                .await
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            storage::get_policy(&ks, CONFIG_CONSENT_POLICY_ID)
-                .await
-                .unwrap()
-                .is_some()
-        );
-        assert_eq!(
-            decide_for(&ks, UPDATE_URI).await.decision,
-            Disposition::RequireConsent
-        );
-    }
-
-    /// A crafted approver-set name cannot break out of the generated Rego string.
+    /// A row synthesized by a previous release is dropped on the upgrade boot.
     ///
-    /// The teeth: an approver_set containing `", "decision": "allow` would, if
-    /// unescaped, close the string literal and inject a second decision key. The
-    /// property that proves it did NOT is that the task still resolves to
-    /// requireConsent with the approver-set name returned *exactly as given* — the
-    /// quote stayed inside the string.
+    /// This is the whole reason the reconciler became a cleanup rather than just
+    /// disappearing. `[[policy.require_consent]]` rewrote this row on every boot,
+    /// which is what made "delete the config block, restart" turn consent back
+    /// off. Delete the reconciler outright and a VTA upgraded from a release that
+    /// had the block keeps enforcing a `requireConsent` that no config declares,
+    /// `pnm approvals list` cannot see, and no command can remove — a gate with
+    /// no explanation, which is exactly what this convergence exists to end.
+    ///
+    /// So: the row must be gone, and the task must go back to deciding on the
+    /// baseline alone.
     #[tokio::test]
-    async fn synthesis_escapes_operator_strings() {
-        let injected = r#"ops", "decision": "allow"#;
-        let nasty = RequireConsentRule {
-            task_type: "https://trusttasks.org/spec/vta/x/1.0".into(),
-            approver_set: injected.into(),
-            min_approvals: None,
-            exclude_requester: None,
-        };
+    async fn an_upgrade_drops_a_row_a_previous_release_synthesized() {
         let (ks, _d) = temp_ks().await;
         install_default_policy(&ks, "2026-07-15T00:00:00Z")
             .await
             .unwrap();
-        reconcile_config_consent_policy(&ks, std::slice::from_ref(&nasty), "2026-07-15T00:00:00Z")
-            .await
-            .unwrap();
 
-        let d = decide_for(&ks, "https://trusttasks.org/spec/vta/x/1.0").await;
+        // Exactly what the retired reconciler used to write.
+        storage::store_policy(
+            &ks,
+            &PolicyModule {
+                id: CONFIG_CONSENT_POLICY_ID.to_string(),
+                name: "Config-declared consent".to_string(),
+                description: None,
+                module: format!(
+                    "package vta.policy\n\nimport rego.v1\n\n\
+                     decision := {{\"decision\": \"requireConsent\", \"requireConsent\": \
+                     {{\"approverSet\": \"ops\"}}}} if input.request.typeUri == \"{UPDATE_URI}\"\n"
+                ),
+                applies_to: Vec::new(),
+                priority: CONFIG_CONSENT_PRIORITY,
+                enabled: true,
+                version: 1,
+                created_at: "2026-07-15T00:00:00Z".to_string(),
+                updated_at: "2026-07-15T00:00:00Z".to_string(),
+                ext: serde_json::Value::Null,
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(
-            d.decision,
+            decide_for(&ks, UPDATE_URI).await.decision,
             Disposition::RequireConsent,
-            "the injection must not turn the decision into allow"
+            "precondition: the stale row is in force before the upgrade boot"
+        );
+
+        remove_stale_config_consent_policy(&ks).await.unwrap();
+
+        assert!(
+            storage::get_policy(&ks, CONFIG_CONSENT_POLICY_ID)
+                .await
+                .unwrap()
+                .is_none(),
+            "the stale row must be gone, not merely disabled"
         );
         assert_eq!(
-            d.require_consent.unwrap().approver_set,
-            injected,
-            "the crafted quote stayed inside the string — it did not break out"
+            decide_for(&ks, UPDATE_URI).await.decision,
+            Disposition::Allow,
+            "and the task must decide on the baseline alone"
+        );
+
+        // Idempotent: it runs on every boot, and there is nothing left to remove.
+        remove_stale_config_consent_policy(&ks).await.unwrap();
+    }
+
+    /// The cleanup owns one reserved id and must not reach past it.
+    #[tokio::test]
+    async fn the_cleanup_leaves_an_operators_own_policies_alone() {
+        let (ks, _d) = temp_ks().await;
+        install_default_policy(&ks, "2026-07-15T00:00:00Z")
+            .await
+            .unwrap();
+        let before = storage::list_policies(&ks).await.unwrap().len();
+
+        remove_stale_config_consent_policy(&ks).await.unwrap();
+
+        assert_eq!(
+            storage::list_policies(&ks).await.unwrap().len(),
+            before,
+            "a VTA that never had the config block loses nothing"
         );
     }
 

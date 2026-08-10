@@ -815,16 +815,13 @@ pub async fn run(
             )
             .await?;
 
-            // Reconcile config-declared consent rules on top of the baseline. Unlike
-            // the baseline install, this runs every boot and config is authoritative —
-            // so requiring consent for a task is a config edit and a restart, not a
-            // source edit and a rebuild.
-            crate::policy::reconcile_config_consent_policy(
-                &app_state.policy_ks,
-                &app_state.config.read().await.policy.require_consent,
-                &chrono::Utc::now().to_rfc3339(),
-            )
-            .await?;
+            // Drop any `config:require-consent` row synthesized by a previous
+            // release. `[[policy.require_consent]]` is retired and the config
+            // loader now refuses it — but a VTA upgraded from a release that had
+            // the block would otherwise keep enforcing the row it last wrote,
+            // with nothing left that can explain or remove it. One-way and
+            // idempotent; it never writes.
+            crate::policy::remove_stale_config_consent_policy(&app_state.policy_ks).await?;
 
             // Seed the declarative approvals row from config the first time we
             // boot without one. Unlike the reconcile above, this runs ONCE: the

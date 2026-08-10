@@ -210,8 +210,8 @@ human passkey approval.
 
 ```bash
 pnm services webauthn enable --url https://vta.example.com
-pnm step-up policy show
-pnm step-up policy set --file step-up-policy.json   # auth/step-up/policy/0.2 shape
+pnm approvals list
+pnm approvals require https://trusttasks.org/spec/acl/grant/0.1 --reauth
 ```
 
 When a gated op is initiated, the agent's request returns a step-up challenge;

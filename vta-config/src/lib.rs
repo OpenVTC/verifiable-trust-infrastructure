@@ -61,43 +61,45 @@ pub struct PolicyConfig {
     /// missing specs.
     #[serde(default)]
     pub require_payload_schema: bool,
-    /// Consent requirements declared in config, reconciled into the PDP at every
-    /// boot.
+    /// Retired: `[[policy.require_consent]]`.
     ///
-    /// This is the operator-facing way to require human approval for a task
-    /// *without editing and recompiling the baseline Rego*. The reference
-    /// implementation has no runtime policy-install surface; before this, turning
-    /// on consent meant editing `policies/default.rego`, rebuilding, and booting
-    /// against an empty policy keyspace. That is a source change to express an
-    /// operational choice.
+    /// Present only to **refuse** a config that still declares it. It was the
+    /// third way to tell a VTA an operation needs a human — alongside the
+    /// `[auth.step_up]` floors and [`Self::approvals`] — and it behaved
+    /// differently from both: reconciled from the file on every boot, so it
+    /// silently reverted anything an operator changed at runtime.
     ///
-    /// Each rule here becomes a synthesized `requireConsent` policy, installed
-    /// under a reserved id above the permissive baseline, and **reconciled on
-    /// every boot** — so config is the source of truth: add a rule and restart to
-    /// require consent, remove it and restart to stop. Anything the declarative
-    /// form cannot express is still authored as a full Rego policy; this covers
-    /// the common case, which is "a human must approve *this task*".
-    #[serde(default)]
-    pub require_consent: Vec<RequireConsentRule>,
+    /// [`Self::approvals`] replaces it and is seeded once, then owned by
+    /// `pnm approvals` — which is the difference that matters. A rule you can
+    /// change at runtime and read back is a rule you can diagnose.
+    ///
+    /// Absent (the only accepted state) deserializes to `()` via `default`.
+    #[serde(
+        default,
+        deserialize_with = "refuse_retired_require_consent",
+        skip_serializing
+    )]
+    pub require_consent: (),
 }
 
-/// A config-declared "this task needs a human" rule. Synthesized into Rego at
-/// boot; see [`PolicyConfig::require_consent`].
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RequireConsentRule {
-    /// The Type URI to gate, e.g.
-    /// `https://trusttasks.org/spec/vta/webvh/dids/update/1.0`.
-    pub task_type: String,
-    /// Named approver set (must also appear in [`PolicyConfig::approver_sets`],
-    /// or the requirement fails closed at the gate).
-    pub approver_set: String,
-    /// Distinct approvals required. Default 1.
-    #[serde(default)]
-    pub min_approvals: Option<u32>,
-    /// When true, the requesting device may not count toward the threshold,
-    /// forcing cross-device approval. Default false.
-    #[serde(default)]
-    pub exclude_requester: Option<bool>,
+/// Reject `[[policy.require_consent]]` with the migration the operator needs.
+///
+/// Only ever called when the key is present — `#[serde(default)]` covers its
+/// absence — so reaching this function *is* the error.
+fn refuse_retired_require_consent<'de, D>(_: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Err(serde::de::Error::custom(
+        "`[[policy.require_consent]]` has been retired. It was a third, separate \
+         way to say \"this task needs a human\", reconciled from the file on \
+         every boot — so it silently reverted anything changed at runtime. \
+         Declare the same requirements under `[policy.approvals]` (seeded once, \
+         then owned by `pnm approvals require <task-uri> --consent --set \
+         <approver-set>`), and delete this section. A VTA upgraded with the old \
+         section still present drops the rule it synthesized on first boot, so \
+         leaving it in place would enforce nothing regardless.",
+    ))
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
