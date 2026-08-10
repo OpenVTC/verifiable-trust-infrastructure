@@ -190,12 +190,9 @@ pub(crate) enum Commands {
         command: PolicyModuleCommands,
     },
 
-    /// AAL2 step-up policy management (when/how operations require elevation)
-    StepUp {
-        #[command(subcommand)]
-        command: StepUpCommands,
-    },
-
+    // `pnm step-up policy …` lived here. It managed `[auth.step_up]` — the
+    // config floors — which no longer exist: `pnm approvals` and `pnm policy`
+    // are the whole surface now, and they speak the one model the gate reads.
     /// Device management for Service consumers (personal AI agents, companions)
     Device {
         #[command(subcommand)]
@@ -2046,33 +2043,6 @@ pub(crate) enum PolicyModuleCommands {
         #[arg(long)]
         reason: Option<String>,
     },
-}
-
-/// `pnm step-up …` — manage the VTA's AAL2 step-up posture.
-#[derive(Subcommand)]
-pub(crate) enum StepUpCommands {
-    /// Manage the system-wide step-up policy.
-    Policy {
-        #[command(subcommand)]
-        command: PolicyCommands,
-    },
-}
-
-/// `pnm step-up policy …`
-#[derive(Subcommand)]
-pub(crate) enum PolicyCommands {
-    /// Show the current effective step-up policy.
-    Show,
-    /// Set the policy from a JSON file (the `auth/step-up/policy/0.2` payload
-    /// shape: `{ "enabled": bool, "floors": [{ "operation", "mode",
-    /// "allowAal1IfNonEscalating"? }] }`). Use `-` to read from stdin.
-    Set {
-        /// Path to the policy JSON (or `-` for stdin).
-        #[arg(long)]
-        from: String,
-    },
-    /// Disable enforcement — revert to AAL1 everywhere (the shipping default).
-    Disable,
 }
 
 /// `pnm device …` — manage `DeviceBinding`s for Service consumers (personal AI

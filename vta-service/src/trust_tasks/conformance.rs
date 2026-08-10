@@ -436,27 +436,12 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({ "status": "elevated", "session": session_json() })
             ),
         ),
-        (
-            uris::TASK_AUTH_STEP_UP_POLICY_0_2,
-            checked!(
-                specs::auth::step_up::policy::v0_2::Payload,
-                specs::auth::step_up::policy::v0_2::Response,
-                // Handler parses the generated Payload directly; this mirrors
-                // `operations::step_up_policy::effective_response`'s shape.
-                json!({
-                    "enabled": true,
-                    "floors": [{
-                        "operation": "acl/grant",
-                        "mode": "delegated",
-                        "allowAal1IfNonEscalating": true,
-                    }],
-                }),
-                json!({
-                    "enabled": true,
-                    "floors": [{ "operation": "acl/grant", "mode": "delegated" }],
-                })
-            ),
-        ),
+        // `auth/step-up/policy/0.2` had a witness here until the VTA stopped
+        // serving it. The task set `[auth.step_up]` — the config floors — and
+        // there are none to set: the rules are the whole approvals model now,
+        // managed through `policy/*` and `pnm approvals`. The coverage
+        // assertion below checks both directions, so leaving the witness
+        // behind would have failed as stale-witness drift.
         // ─── consent (types are consent.rs-private; fixtures mirror them) ──
         (
             uris::TASK_CONSENT_REQUEST_1_0,

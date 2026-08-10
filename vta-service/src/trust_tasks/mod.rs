@@ -86,7 +86,6 @@ pub(crate) mod transport;
 // is [`policy_gate`] and nothing else — the `RequireStepUp` extractor and its
 // per-route op markers are gone with the config floors they read.
 pub(crate) mod step_up;
-mod step_up_policy;
 // The PDP gate, callable from the REST routes. In-handler by necessity: the
 // consent digest and the planner both need the parsed payload, which an axum
 // extractor does not have.
@@ -766,8 +765,6 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1
         | vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2
         => step_up::handle_approve_response
-        [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_POLICY_0_2 => step_up_policy::handle_set_step_up_policy
         [ Mutating None false ],
     // ─── Policy slice (runtime PDP management) ────────────────────
     // Deliberately NOT exempt from the gate: an operator who wants two-person

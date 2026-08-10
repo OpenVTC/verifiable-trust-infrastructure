@@ -14,7 +14,6 @@ pub mod keys;
 /// Raw Rego policy management over the canonical `policy/*` family.
 pub mod policy;
 pub mod services;
-pub mod step_up;
 pub mod vault;
 pub mod webvh;
 pub mod webvh_edit;

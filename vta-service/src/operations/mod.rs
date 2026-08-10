@@ -61,7 +61,6 @@ pub mod protocol;
 pub mod provision_integration;
 pub mod seeds;
 pub mod step_up_approval;
-pub mod step_up_policy;
 pub mod vault;
 
 /// Shared keyspace handles passed to operations that need multiple keyspaces.
