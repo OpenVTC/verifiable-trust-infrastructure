@@ -1,5 +1,6 @@
 // CLI-only modules (not part of the library)
 mod acl_cli;
+mod approvals_cli;
 mod bootstrap_cli;
 mod did_key;
 #[cfg(feature = "setup")]
@@ -123,12 +124,27 @@ enum Commands {
         #[command(subcommand)]
         command: ConfigCommands,
     },
-    // `vta step-up …` lived here — the offline break-glass for an over-strict
-    // `[auth.step_up]`. The floors are retired, so there is nothing for it to
-    // edit. The break-glass it provided still matters, because the rules can
-    // lock an operator out the same way: that job belongs to an offline
-    // `vta approvals` reading the policy keyspace, which is tracked as the
-    // remaining work in this convergence.
+    /// Inspect and unwedge the approval rules (offline break-glass).
+    ///
+    /// Reads and writes the policy keyspace directly — no auth, no running
+    /// VTA. Approvals are self-gating on purpose (two-person control over the
+    /// gate itself is a feature), so a rule that gates `policy/*` with an
+    /// unreachable approver set cannot be removed over the wire. This is the
+    /// way out. Replaces the retired `vta step-up`, which did the same job for
+    /// the config floors. Daemon must be stopped; not available in TEE.
+    Approvals {
+        #[command(subcommand)]
+        command: ApprovalsCommands,
+    },
+    /// Inspect and remove stored policy modules (offline break-glass).
+    ///
+    /// The hand-authored-Rego half of the above: a module installed with
+    /// `pnm policy upsert` can deny everything, including the `policy/delete`
+    /// that would remove it.
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommands,
+    },
     /// Create a did:key in a context (offline, no server required)
     CreateDidKey {
         /// Target context ID
@@ -1131,6 +1147,52 @@ enum ConfigCommands {
     Show,
 }
 
+/// `vta approvals …` — the offline break-glass over the declarative rules.
+///
+/// Read-mostly by design. There is no offline `require`: adding a gate is never
+/// an emergency, and a break-glass path that can install one is a way to plant a
+/// control that never passed through the authenticated surface.
+#[derive(Subcommand)]
+enum ApprovalsCommands {
+    /// Show the approval rules and approver sets, read from the store.
+    ///
+    /// Also names any hand-authored policy modules present — an empty rule list
+    /// does not mean nothing is gating you, and an operator diagnosing a lockout
+    /// will otherwise conclude that it does.
+    List,
+    /// Drop the rule(s) for one task type — the surgical fix.
+    Remove {
+        /// Trust Task Type URI, e.g.
+        /// `https://trusttasks.org/spec/policy/upsert/0.1`.
+        task_type: String,
+        /// Remove only the rule scoped to exactly these contexts.
+        #[arg(long, value_delimiter = ',')]
+        context: Option<Vec<String>>,
+    },
+    /// Delete the whole declarative row — every rule and every approver set.
+    ///
+    /// The hammer, for when no single rule is identifiable or the row itself is
+    /// unparseable. Every task goes back to running on the caller's own
+    /// authority.
+    Disable,
+}
+
+/// `vta policy …` — the offline break-glass over hand-authored Rego.
+#[derive(Subcommand)]
+enum PolicyCommands {
+    /// List stored policy modules.
+    List {
+        /// Print each module's Rego source, not just its metadata.
+        #[arg(long)]
+        show_module: bool,
+    },
+    /// Delete one policy module by id.
+    Delete {
+        /// Module id, as shown by `vta policy list`.
+        id: String,
+    },
+}
+
 #[derive(Subcommand)]
 enum AuthCommands {
     /// Sign an unseal challenge using a key from the local fjall keystore.
@@ -1509,6 +1571,33 @@ async fn main() {
         Some(Commands::Config { command }) => {
             let result = match command {
                 ConfigCommands::Show => run_config_show(cli.config),
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Approvals { command }) => {
+            let result = match command {
+                ApprovalsCommands::List => approvals_cli::run_list(cli.config).await,
+                ApprovalsCommands::Remove { task_type, context } => {
+                    approvals_cli::run_remove(cli.config, task_type, context).await
+                }
+                ApprovalsCommands::Disable => approvals_cli::run_disable(cli.config).await,
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Policy { command }) => {
+            let result = match command {
+                PolicyCommands::List { show_module } => {
+                    approvals_cli::run_policy_list(cli.config, show_module).await
+                }
+                PolicyCommands::Delete { id } => {
+                    approvals_cli::run_policy_delete(cli.config, id).await
+                }
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");

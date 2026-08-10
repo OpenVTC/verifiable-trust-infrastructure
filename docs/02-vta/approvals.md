@@ -140,11 +140,41 @@ rules `pnm approvals list` shows are always the rules that actually decide.
 Approval rules apply to policy management too, which is a feature: a `consent`
 rule on `https://trusttasks.org/spec/policy/upsert/0.2` gives you two-person
 control over changes to the gate itself. It also means a set of approvers whose
-keys are all lost can wedge you.
+keys are all lost can wedge you — as can a hand-authored module that denies the
+`policy/delete` which would remove it, or `enforcement = true` with no policy
+that decides anything.
 
-The recovery is the offline break-glass — stop the daemon and edit the rules
-directly on the host, with no auth ceremony, the same shape as
-`vta services …`. It requires possession of the machine, which is the point.
+Every one of those is unrecoverable over the wire *by construction*. The way out
+is the offline break-glass: stop the daemon and work on the store directly, with
+no auth ceremony, the same shape as `vta services …`. It requires possession of
+the machine, which is the point.
+
+```bash
+# What does this VTA actually require? (also names any hand-authored modules —
+# an empty rule list does not mean nothing is gating you)
+vta approvals list
+
+# Drop the one rule that wedged you, keeping every other control.
+vta approvals remove https://trusttasks.org/spec/policy/upsert/0.2
+
+# Or, when no single rule is identifiable: delete the whole row.
+# Every task goes back to running on the caller's own authority.
+vta approvals disable
+
+# The hand-authored half — Rego installed with `pnm policy upsert`.
+vta policy list --show-module
+vta policy delete <id>
+```
+
+There is deliberately **no** offline command that *adds* a rule. Adding a gate is
+never an emergency, and a break-glass path that can install one is a way to plant
+a control that never passed through the authenticated surface. Once the VTA is
+reachable again, re-declare what you still want with `pnm approvals require …`.
+
+Two constraints, shared with every other `vta …` offline surface: the daemon must
+be **stopped** (fjall takes a per-data-dir lock, so it will refuse to open
+otherwise), and it is **not available in TEE** — inside an enclave the store lives
+behind a vsock proxy that the host-side binary cannot reach.
 
 ## See also
 
