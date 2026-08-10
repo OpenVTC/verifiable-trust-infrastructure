@@ -43,24 +43,86 @@ pub(crate) async fn deliver_membership_credentials(
 ///
 /// Packed authcrypt **to the proven holder** (not a relayer) and forwarded via
 /// the holder's own mediator. Best-effort by nature (mediator delivery is
-/// end-to-end): the first failure is returned so the caller can log it, but the
+/// end-to-end): failures are reported so the caller can log them, but the
 /// credentials are already issued and persisted — a failure must not unwind the
 /// decision that issued them.
+///
+/// # Every credential is attempted
+///
+/// This loop used to be `push_to_holder(..).await?`, which abandoned every
+/// *remaining* credential the moment one failed. Admission delivers two — the
+/// VMC and the role VEC — so a transient failure packing the second (holder DID
+/// resolution, say) meant the member got their membership credential, never got
+/// their role credential, and never would: the enqueue that makes delivery
+/// durable is the very step that was skipped, so there was nothing to retry.
+/// The caller only `warn!`s, so the member's wallet was simply missing a
+/// credential with nothing but a log line to say why.
+///
+/// Independent one-way deposits have no reason to share a fate. Each is now
+/// attempted regardless of what happened to the others, and the error names
+/// every one that failed — a caller that logs it can say *which* credential to
+/// re-deliver, which the previous first-failure-wins error could not.
 pub(crate) async fn deliver_credentials(
     state: &AppState,
     holder_did: &str,
     credentials: &[&VerifiableCredential],
 ) -> Result<(), AppError> {
-    for credential in credentials {
-        let credential_json = serde_json::to_value(credential)
-            .map_err(|e| AppError::Internal(format!("issued credential serialise: {e}")))?;
-        let body = issue_message_body(credential_json)?;
-        // A fresh thread per delivered credential — `issue` is a one-way deposit,
-        // not a request/response, so it needs no correlation to a prior thread.
-        let msg_id = Uuid::new_v4().to_string();
-        push_to_holder(state, holder_did, &msg_id, CREDENTIAL_ISSUE_TYPE, body).await?;
+    let mut failures: Vec<String> = Vec::new();
+
+    for (index, credential) in credentials.iter().enumerate() {
+        // `push_of` is fallible at three points (serialise, wrap, send); running
+        // it as one unit keeps a failure at any of them from skipping the rest.
+        let push = async {
+            let credential_json = serde_json::to_value(credential)
+                .map_err(|e| AppError::Internal(format!("issued credential serialise: {e}")))?;
+            let body = issue_message_body(credential_json)?;
+            // A fresh thread per delivered credential — `issue` is a one-way
+            // deposit, not a request/response, so it needs no correlation to a
+            // prior thread.
+            let msg_id = Uuid::new_v4().to_string();
+            push_to_holder(state, holder_did, &msg_id, CREDENTIAL_ISSUE_TYPE, body).await
+        };
+
+        if let Err(e) = push.await {
+            // Name the credential by type, not just position: "the role VEC did
+            // not go" is actionable where "credential 2 of 2" is a puzzle.
+            let kind = credential_kind(credential);
+            tracing::warn!(
+                holder = %holder_did,
+                credential = %kind,
+                error = %e,
+                "credential delivery failed; continuing with the rest"
+            );
+            failures.push(format!("{kind} (#{}): {e}", index + 1));
+        }
     }
-    Ok(())
+
+    if failures.is_empty() {
+        return Ok(());
+    }
+    Err(AppError::Internal(format!(
+        "{} of {} credential(s) failed to deliver to {holder_did}: {}",
+        failures.len(),
+        credentials.len(),
+        failures.join("; ")
+    )))
+}
+
+/// The most specific `type` on a VC, for diagnostics — `MembershipCredential`
+/// rather than the `VerifiableCredential` every one of them carries.
+fn credential_kind(credential: &VerifiableCredential) -> String {
+    serde_json::to_value(credential)
+        .ok()
+        .and_then(|v| {
+            v.get("type").and_then(|t| t.as_array()).and_then(|types| {
+                types
+                    .iter()
+                    .filter_map(|t| t.as_str())
+                    .find(|t| *t != "VerifiableCredential")
+                    .map(str::to_string)
+            })
+        })
+        .unwrap_or_else(|| "credential".to_string())
 }
 
 /// Wrap an issued credential JSON value in a `credential-exchange/issue` body —
@@ -147,6 +209,71 @@ mod tests {
         assert_eq!(
             credential, vmc,
             "the delivered credential round-trips intact"
+        );
+    }
+
+    /// The most specific type is what names the credential in a failure.
+    #[test]
+    fn credential_kind_names_the_specific_type() {
+        let vmc: VerifiableCredential = serde_json::from_value(json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": "did:web:vtc.example",
+            "credentialSubject": { "id": "did:key:zHolder" },
+        }))
+        .expect("parse VMC");
+        assert_eq!(credential_kind(&vmc), "MembershipCredential");
+    }
+
+    /// One credential failing must not abandon the others.
+    ///
+    /// The loop was `push_to_holder(..).await?`, so the first failure returned
+    /// and every remaining credential was silently dropped. Admission delivers
+    /// two — the VMC and the role VEC — so a transient failure on the second
+    /// left the member holding one credential, with no retry possible: the
+    /// enqueue that makes delivery durable is the step that was skipped. The
+    /// caller only `warn!`s, so nothing surfaced but a log line.
+    ///
+    /// Driven with messaging deliberately **not** running, which makes every
+    /// push fail identically. That is the point: if delivery still short-
+    /// circuited, the error would name one credential. It must name both,
+    /// because both must have been attempted.
+    #[tokio::test]
+    async fn a_failed_credential_does_not_abandon_the_rest() {
+        let tv = crate::test_support::build_test_vtc().await;
+
+        let vmc: VerifiableCredential = serde_json::from_value(json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": "did:web:vtc.example",
+            "credentialSubject": { "id": "did:key:zHolder" },
+        }))
+        .expect("parse VMC");
+        let vec_: VerifiableCredential = serde_json::from_value(json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "EndorsementCredential"],
+            "issuer": "did:web:vtc.example",
+            "credentialSubject": { "id": "did:key:zHolder" },
+        }))
+        .expect("parse VEC");
+
+        let err = deliver_credentials(&tv.state, "did:key:zHolder", &[&vmc, &vec_])
+            .await
+            .expect_err("messaging is not running, so both pushes fail");
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("MembershipCredential"),
+            "the first credential must be named: {msg}"
+        );
+        assert!(
+            msg.contains("EndorsementCredential"),
+            "the second must be attempted too — naming only the first is the \
+             short-circuit this test exists to catch: {msg}"
+        );
+        assert!(
+            msg.contains("2 of 2"),
+            "the summary should say how many of how many failed: {msg}"
         );
     }
 }

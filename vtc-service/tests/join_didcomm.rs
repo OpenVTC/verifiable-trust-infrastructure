@@ -43,11 +43,36 @@ use std::time::Duration;
 /// test fails — which is precisely when they would bury the delivery warning
 /// this subscriber exists to surface. Override the whole thing with `RUST_LOG`
 /// when you want it back.
+///
+/// # The delivery layer runs at `debug`, on purpose
+///
+/// This test has failed intermittently in CI with "1 of 2 credentials
+/// delivered", and every attempt to place the loss has run out of evidence.
+/// Two things are already known from the warnings, which do print at `warn`:
+/// the VTC logged no delivery failure, and the client's pickup logged no poll
+/// errors. So the VTC sent, the client polled healthily for the full 60s, and
+/// the message was lost between them — and neither side can say more.
+///
+/// `affinidi_messaging_delivery=debug` adds the one fact that decides it:
+/// `drain_once` logs a per-tick `sent` / `retried` / `failed` report, so a
+/// failing run shows whether the sender's outbox actually put **two** messages
+/// on the wire. If it did, the loss is at the mediator or below and the next
+/// probe goes there; if it did not, the loss is in the outbox and this is the
+/// wrong place to have been looking.
+///
+/// It is concise (three counters per 2s tick, not message dumps) and prints
+/// only for a failing test, so it costs nothing until it is needed. Local
+/// reproduction has been tried and failed — 30 runs under CPU contention, all
+/// green — so the next CI occurrence is the only opportunity, and it should not
+/// be wasted a fourth time.
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,lsm_tree=off")),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new(
+                    "warn,lsm_tree=off,affinidi_messaging_delivery=debug",
+                )
+            }),
         )
         .with_test_writer()
         .try_init();
