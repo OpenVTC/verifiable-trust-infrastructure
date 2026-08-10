@@ -29,7 +29,15 @@ pub struct DeriveAndSignDocumentBody {
     pub document: Value,
     /// Proof purpose (default `assertionMethod`, matching the DI-signed REST
     /// auth flow).
-    #[serde(default, alias = "proof_purpose")]
+    ///
+    /// Absent when unset, never `null`: `keys/derive-and-sign-document/0.1`
+    /// types `proofPurpose` as `"string"`, so a serialized `None` fails schema
+    /// validation on arrival rather than being read as "use the default".
+    #[serde(
+        default,
+        alias = "proof_purpose",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub proof_purpose: Option<String>,
 }
 

@@ -321,7 +321,11 @@ pub const MEMBER_SELF_REMOVE_RECEIPT_TYPE: &str =
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SelfRemoveBody {
-    #[serde(default)]
+    /// Absent when unset, never `null`. `vtc/members/self-remove/0.1` types
+    /// `disposition` as a `"string"` constrained to the disposition enum, so a
+    /// serialized `None` is rejected as malformed instead of falling through to
+    /// the stored preference the way an omitted member does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disposition: Option<String>,
 }
 
