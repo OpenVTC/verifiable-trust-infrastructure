@@ -238,12 +238,22 @@ impl VtaClient {
         document: serde_json::Value,
         proof_purpose: Option<&str>,
     ) -> Result<DeriveAndSignDocumentResultBody, VtaError> {
-        let body = serde_json::json!({
-            "keyType": serde_json::to_value(&key_type)?,
-            "derivationPath": derivation_path,
-            "document": document,
-            "proofPurpose": proof_purpose,
-        });
+        // Built from the canonical body, not a hand-rolled map. The map spelled
+        // `proofPurpose` unconditionally, so an unset purpose went on the wire
+        // as `null` and `keys/derive-and-sign-document/0.1` — which types it
+        // `"string"` — rejected the request. Omitting the member is what
+        // selects the `assertionMethod` default, so the *documented* way to
+        // call this was the one that could not work. Same defect as #919's
+        // `keys/create`, and the same fix: let the body struct's
+        // `skip_serializing_if` decide what reaches the wire.
+        let body = serde_json::to_value(
+            crate::protocols::key_management::derive_and_sign_document::DeriveAndSignDocumentBody {
+                key_type,
+                derivation_path: derivation_path.to_string(),
+                document,
+                proof_purpose: proof_purpose.map(str::to_string),
+            },
+        )?;
         self.rpc_tt(
             trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
             body.clone(),

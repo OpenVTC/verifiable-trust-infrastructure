@@ -20,7 +20,9 @@ pub struct CreateContextBody {
 pub struct CreateContextResultBody {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Parent context id, or `None` for a top-level context.
     #[serde(default, skip_serializing_if = "Option::is_none")]

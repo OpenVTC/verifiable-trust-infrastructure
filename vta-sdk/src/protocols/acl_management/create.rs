@@ -46,6 +46,7 @@ pub struct CreateAclResponseBody {
 pub struct CreateAclResultBody {
     pub did: String,
     pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub allowed_contexts: Vec<String>,
     pub created_at: u64,
