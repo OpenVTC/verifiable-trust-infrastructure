@@ -11,9 +11,14 @@ pub struct CreateKeyBody {
     pub key_type: KeyType,
     #[serde(alias = "derivation_path")]
     pub derivation_path: String,
+    /// An unset member must be **absent**, never `null` — `keys/create/0.1`
+    /// types each of these as `"string"`, and none of them accepts null. See
+    /// the `an_unset_member_is_absent_from_the_wire_not_null` test below.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mnemonic: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    #[serde(alias = "context_id")]
+    #[serde(default, alias = "context_id", skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
 }
 
@@ -68,4 +73,74 @@ pub struct CreateKeyResponseBody {
 
 fn default_derived() -> KeyOrigin {
     KeyOrigin::Derived
+}
+
+#[cfg(test)]
+mod null_member_tests {
+    use super::*;
+
+    /// The bug this skip fixes, pinned.
+    ///
+    /// `keys/create/0.1` types every optional member — `mnemonic`, `label`,
+    /// `contextId`, `derivationPath` — as `"string"`. None of them accepts
+    /// null, so serialising `None` as `null` failed schema validation the
+    /// moment the payload reached a maintainer:
+    ///
+    /// ```text
+    /// malformed request: payload does not conform to
+    /// https://trusttasks.org/spec/keys/create/0.1: payload failed schema
+    /// validation: null is not of type "string"
+    /// ```
+    ///
+    /// Every caller that mints a key without a BIP-39 phrase — which is every
+    /// caller that is not importing external seed material — sent
+    /// `"mnemonic": null` and was refused. That is the whole of `keys/create`
+    /// over the trust-task transports, so an OpenVTC persona mint could not
+    /// get past its first key. The REST leg was unaffected: it serialises
+    /// [`CreateKeyRequest`](crate::client::CreateKeyRequest), which already
+    /// skipped its `None`s.
+    ///
+    /// Same defect, same shape, as `did_management::update`'s
+    /// `an_unset_field_is_absent_from_the_wire_not_null` — the canonical-body
+    /// fold reintroduced it on a different task.
+    #[test]
+    fn an_unset_member_is_absent_from_the_wire_not_null() {
+        // What `create_key` builds for a plain, unlabelled, uncontexted key.
+        let minimal = CreateKeyBody {
+            key_type: KeyType::Ed25519,
+            derivation_path: String::new(),
+            mnemonic: None,
+            label: None,
+            context_id: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&minimal).expect("serialises"),
+            serde_json::json!({"keyType": "ed25519", "derivationPath": ""}),
+            "an unset member must be absent, not null"
+        );
+    }
+
+    /// A set member still reaches the wire under its canonical camelCase name
+    /// — the skip must not be reachable for `Some`.
+    #[test]
+    fn a_set_member_still_serialises() {
+        let labelled = CreateKeyBody {
+            key_type: KeyType::Ed25519,
+            derivation_path: "m/26'/2'/0'/1'".into(),
+            mnemonic: None,
+            label: Some("persona-signing".into()),
+            context_id: Some("openvtc".into()),
+        };
+
+        assert_eq!(
+            serde_json::to_value(&labelled).expect("serialises"),
+            serde_json::json!({
+                "keyType": "ed25519",
+                "derivationPath": "m/26'/2'/0'/1'",
+                "label": "persona-signing",
+                "contextId": "openvtc",
+            })
+        );
+    }
 }

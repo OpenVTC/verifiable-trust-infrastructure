@@ -22,8 +22,16 @@
 //! annotated [`Conformance::KnownDrift`] debt entry. The witness's request
 //! must parse as the generated `specs::…::Payload` and the response as
 //! `specs::…::Response`; the generated types carry `deny_unknown_fields`
-//! plus the spec's required set, so the round-trip *is* the conformance
-//! check.
+//! plus the spec's required set.
+//!
+//! The request is then validated against its embedded
+//! `payload.schema.json` — the same check `validate_payload` runs on the
+//! dispatch spine. Parsing alone is strictly weaker and let a whole class of
+//! defect through: serde accepts `null` into an `Option<T>` field, JSON
+//! Schema types that member `"string"` and rejects it. `keys/create/0.1`
+//! shipped a body that serialized every unset member as `null`, its witness
+//! parsed green, and live key creation over DIDComm/TSP failed on arrival.
+//! See [`validates`].
 //!
 //! **Non-vacuity is enforced mechanically.** The `acl/update` defect
 //! survived three PRs because an assertion of the form "adding a forbidden
@@ -57,6 +65,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
 
 use trust_tasks_rs::specs;
+use trust_tasks_rs::validate::ValidatedPayload;
 use vta_sdk::trust_tasks as uris;
 
 use vta_sdk::acl::ContextDirection;
@@ -124,11 +133,28 @@ fn resolved_uris() -> BTreeSet<&'static str> {
 }
 
 type ParseFn = fn(Value) -> Result<(), String>;
+type ValidateFn = fn(&Value) -> Result<(), String>;
 
 fn parses<T: DeserializeOwned>(v: Value) -> Result<(), String> {
     serde_json::from_value::<T>(v)
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// Validate against the embedded `payload.schema.json`, which is what the
+/// dispatch spine actually runs (`validate_payload` → `against_schema`).
+///
+/// This is **not** what [`parses`] checks, and the gap is where a whole class
+/// of defect lived. serde reads `null` into an `Option<T>` field happily; JSON
+/// Schema types the same member `"string"` and rejects null outright. So a body
+/// that serialized every unset member as `null` round-tripped through the
+/// generated type — green sweep — and was refused by the first maintainer it
+/// reached. `keys/create/0.1` shipped exactly that way: the witness below
+/// serializes a real `CreateKeyBody` with `mnemonic: None`, it parsed, and
+/// every live key creation over DIDComm/TSP failed with `null is not of type
+/// "string"`. Both checks now run on every witness.
+fn validates<T: ValidatedPayload>(v: &Value) -> Result<(), String> {
+    T::validate_value(v).map_err(|e| e.to_string())
 }
 
 /// A representative request/response pair for one published, dispatched URI.
@@ -141,6 +167,7 @@ fn parses<T: DeserializeOwned>(v: Value) -> Result<(), String> {
 struct Witness {
     request: Value,
     parse_request: ParseFn,
+    validate_request: ValidateFn,
     response: Value,
     parse_response: ParseFn,
 }
@@ -159,6 +186,7 @@ macro_rules! checked {
         Conformance::Checked(Witness {
             request: $req,
             parse_request: parses::<$p>,
+            validate_request: validates::<$p>,
             response: $resp,
             parse_response: parses::<$r>,
         })
@@ -1799,6 +1827,23 @@ fn every_witnessed_task_round_trips_through_its_generated_types() {
             .unwrap_or_else(|e| panic!("{uri}: request is not canonical: {e}\n{:#}", w.request));
         (w.parse_response)(w.response.clone())
             .unwrap_or_else(|e| panic!("{uri}: response is not canonical: {e}\n{:#}", w.response));
+
+        // And the request against the schema itself — the check the dispatch
+        // spine runs on arrival. Parsing is strictly weaker: serde reads
+        // `null` into an `Option<T>` where the schema types the member
+        // `"string"` and refuses it. See [`validates`].
+        //
+        // Request-only: `trust-tasks-rs` codegen emits `ValidatedPayload` for
+        // `Payload` but not for `Response` (0.4 and 0.5 alike), so there is no
+        // embedded response schema to check against. The response side keeps
+        // its parse check; closing that half needs the codegen to emit the
+        // response schema, which is an upstream change.
+        (w.validate_request)(&w.request).unwrap_or_else(|e| {
+            panic!(
+                "{uri}: request fails its own payload schema: {e}\n{:#}",
+                w.request
+            )
+        });
 
         // Teeth: an unknown member must be rejected on both sides. The
         // generated types carry `deny_unknown_fields` wherever the spec is
