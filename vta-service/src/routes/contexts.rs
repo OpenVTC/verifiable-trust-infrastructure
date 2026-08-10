@@ -12,7 +12,6 @@ use crate::auth::{AdminAuth, AuthClaims, SuperAdminAuth};
 use crate::error::AppError;
 use crate::operations;
 use crate::server::AppState;
-use crate::trust_tasks::{ContextDeleteOp, RequireStepUp};
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateContextRequest {
@@ -240,9 +239,6 @@ pub async fn preview_delete_context_handler(
 )]
 pub async fn delete_context_handler(
     auth: AdminAuth,
-    // Deleting a context requires a stepped-up (AAL2) session when the
-    // `context/delete` policy floor demands it.
-    _step_up: RequireStepUp<ContextDeleteOp>,
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(query): Query<DeleteContextQuery>,

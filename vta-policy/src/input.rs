@@ -96,7 +96,20 @@ pub fn build_policy_input(
             device_id: None,
             last_user_verification_at: None,
             network_class: None,
-            acr: (!caller_acr.is_empty()).then(|| caller_acr.to_string()),
+            // A session that has not stepped up is `aal1`, not "no assurance".
+            // This used to omit the field when the claim was empty, and while
+            // the `[auth.step_up]` floors did the gating that was harmless.
+            // They are gone, so the rules are the only trigger — and the
+            // natural rule an operator writes,
+            // `input.consumer.acr != "aal2" => requireStepUp`, is *undefined*
+            // rather than true against an absent `acr`. It would silently fail
+            // to fire for exactly the un-elevated sessions it was written to
+            // catch. Absence reads as the most restrictive value instead.
+            acr: Some(if caller_acr.is_empty() {
+                "aal1".to_string()
+            } else {
+                caller_acr.to_string()
+            }),
             amr: caller_amr.to_vec(),
         },
     }
@@ -129,6 +142,38 @@ mod tests {
         assert_eq!(input.request.subject.as_deref(), Some("did:webvh:abc"));
         assert_eq!(input.context_id, "ctxA");
         assert_eq!(input.consumer.did, "did:key:zCaller");
+    }
+
+    /// An un-elevated session is `aal1` on the wire, never an absent field.
+    ///
+    /// The rules are the only thing that gates a task now, and the rule an
+    /// operator naturally writes is `input.consumer.acr != "aal2"`. Against an
+    /// *absent* `acr` that expression is undefined, not true — so the rule
+    /// would fail to fire for precisely the sessions it was written to catch,
+    /// and it would fail silently. Absence must read as the most restrictive
+    /// value.
+    #[test]
+    fn an_unelevated_session_reports_aal1_rather_than_nothing() {
+        let input = build_policy_input(
+            "https://…/grant/0.1",
+            &json!({}),
+            "did:key:zCaller",
+            "", // no acr claim on the session
+            &[],
+            None,
+        );
+        assert_eq!(input.consumer.acr.as_deref(), Some("aal1"));
+
+        // A real value passes through untouched.
+        let elevated = build_policy_input(
+            "https://…/grant/0.1",
+            &json!({}),
+            "did:key:zCaller",
+            "aal2",
+            &[],
+            None,
+        );
+        assert_eq!(elevated.consumer.acr.as_deref(), Some("aal2"));
     }
 
     #[test]

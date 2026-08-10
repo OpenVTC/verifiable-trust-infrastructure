@@ -81,16 +81,12 @@ mod replay;
 mod seeds;
 mod task_consent;
 pub(crate) mod transport;
-// `pub(crate)` so the REST routes (`routes::acl`, `routes::contexts`) can
-// reach the `RequireStepUp` extractor + op markers. The step-up *engine* lives
-// in `operations::step_up` (P2.4); this module holds only the transport
-// wrappers (the trust-task `require_step_up`/`handle_approve_response` and the
-// REST `RequireStepUp` extractor) over it.
+// The step-up *ceremony*: minting an approve-request and consuming the
+// approve-response that elevates a session. What decides a ceremony is needed
+// is [`policy_gate`] and nothing else — the `RequireStepUp` extractor and its
+// per-route op markers are gone with the config floors they read.
 pub(crate) mod step_up;
 mod step_up_policy;
-pub(crate) use step_up::{
-    AclChangeRoleOp, AclGrantOp, AclRevokeOp, AclSwapKeyOp, ContextDeleteOp, RequireStepUp,
-};
 // The PDP gate, callable from the REST routes. In-handler by necessity: the
 // consent digest and the planner both need the parsed payload, which an axum
 // extractor does not have.
