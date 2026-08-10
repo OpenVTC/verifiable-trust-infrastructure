@@ -1808,6 +1808,56 @@ mod transport_harness_tests {
     /// Asserted on the raw document rather than `vta_sdk::provision_client`'s
     /// `resolve_vta` so a failure says whether the *encoding* broke or the
     /// SDK's matcher did.
+    /// Encoding only: mint the two-service did:peer and resolve it, with no
+    /// mediator, no app, and no websocket in the picture. Separates "the
+    /// identifier encodes both services" from "a listener can connect as it",
+    /// so a failure in the harness test above is attributable.
+    #[tokio::test]
+    async fn a_two_service_did_peer_encodes_both_transports() {
+        use affinidi_tdk::dids::{OneOrMany, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong};
+
+        let mediator = "did:peer:2.Ez6LSmediator";
+        let didcomm = crate::operations::did_peer::mediator_did_didcomm_service(
+            mediator,
+            vec!["didcomm/v2".to_string()],
+            vec![],
+        );
+        let tsp = PeerService {
+            type_: "TSPTransport".into(),
+            endpoint: PeerServiceEndpoint::Long(OneOrMany::One(PeerServiceEndpointLong {
+                uri: mediator.to_string(),
+                accept: vec![],
+                routing_keys: vec![],
+            })),
+            id: None,
+        };
+        let (did, _secrets) = crate::operations::did_peer::mint_did_peer_with_services(
+            didcomm.into_iter().chain(std::iter::once(tsp)).collect(),
+        )
+        .expect("mint two-service did:peer");
+
+        let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("local DID cache");
+        let resolved = resolver.resolve(&did).await.expect("did:peer resolves");
+        let types: Vec<String> = resolved
+            .doc
+            .service
+            .iter()
+            .map(|s| s.type_.clone().into_iter().collect::<Vec<_>>().join(","))
+            .collect();
+        let ids: Vec<String> = resolved
+            .doc
+            .service
+            .iter()
+            .map(|s| format!("{:?}", s.id))
+            .collect();
+        println!("service types: {types:?}");
+        println!("service ids:   {ids:?}");
+        assert!(types.iter().any(|t| t.contains("DIDCommMessaging")), "types {types:?}");
+        assert!(types.iter().any(|t| t.contains("TSPTransport")), "types {types:?}");
+    }
+
     #[tokio::test]
     async fn the_mock_advertises_both_transports_to_a_foreign_resolver() {
         let mock = MockVta::start_with_transports().await;
