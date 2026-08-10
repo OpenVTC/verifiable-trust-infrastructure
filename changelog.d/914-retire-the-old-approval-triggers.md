@@ -1,4 +1,4 @@
-### vti-common 0.11.37 / vta-sdk 0.21.10 / vta-policy 0.2.1 / vta-service 0.14.22 / vta-cli-common 0.10.27 / pnm-cli 0.11.21 — one trigger for approvals (#914)
+### vti-common 0.11.37 / vta-sdk 0.21.10 / vta-config 0.3.2 / vta-policy 0.2.1 / vta-service 0.14.22 / vta-cli-common 0.10.27 / pnm-cli 0.11.21 — one trigger for approvals (#914)
 
 **Breaking.** #912 and #913 put the Policy Decision Point in front of every gated
 route, leaving REST enforced by *both* the PDP and the old `[auth.step_up]`
