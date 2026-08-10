@@ -372,7 +372,9 @@ pub async fn dispatch(
     // Legacy FPN-private `swap-acl` + canonical Trust Task `acl/swap-key/0.1`
     // both route to the same handler (dispatches on the incoming type).
     if t == acl_management::SWAP_ACL || t == acl_management::ACL_SWAP_KEY {
-        return finish(handlers::handle_swap_acl(ctx, msg, Extension(vta_state)).await);
+        return finish(
+            handlers::handle_swap_acl(ctx, msg, Extension(vta_state), Extension(app_state)).await,
+        );
     }
 
     // ── Audit management ─────────────────────────────────────────────
