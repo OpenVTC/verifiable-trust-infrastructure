@@ -1562,6 +1562,13 @@ impl MockVta {
         // two-service peer can embed a mediator DID at most *once*. The short
         // URL form is what this mediator advertises for its own `#tsp` service,
         // so it is at least a convention already live in the ecosystem.
+        //
+        // Accepted deliberately, and scoped: this is a test harness, where the
+        // point is exercising the dispatch spine over both transports, not
+        // modelling how a production VTA advertises itself. A production VTA is
+        // a `did:webvh` — services live in the document, there is no size
+        // ceiling, and the mediator-DID convention holds there unchanged. Do
+        // not read this as licence to emit a URL `#tsp` outside of tests.
         let tsp = PeerService {
             type_: "TSPTransport".into(),
             endpoint: PeerServiceEndpoint::Long(OneOrMany::One(PeerServiceEndpointLong {
