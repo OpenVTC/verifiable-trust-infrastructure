@@ -123,15 +123,10 @@ pub async fn seed_declarative_approvals(
     Ok(())
 }
 
-/// Reserved policy id for the config-synthesized consent rules. Owned entirely by
-/// the reconciler — an operator's own uploads use their own ids and are never
-/// touched.
+/// Reserved policy id a previous release synthesized `[[policy.require_consent]]`
+/// into. Nothing writes it any more; it survives as the target of the cleanup
+/// below. An operator's own uploads used their own ids and were never touched.
 pub const CONFIG_CONSENT_POLICY_ID: &str = "config:require-consent";
-
-/// Priority for the synthesized consent policy. Above the permissive baseline (0)
-/// so it fires first for the task types it names, and below a large headroom so an
-/// operator's hand-authored policy can still sit above it.
-const CONFIG_CONSENT_PRIORITY: i32 = 100;
 
 /// Remove a `config:require-consent` row left behind by a previous release.
 ///
@@ -163,24 +158,11 @@ pub async fn remove_stale_config_consent_policy(
     storage::delete_policy(policy_ks, CONFIG_CONSENT_POLICY_ID).await
 }
 
-/// Encode a string as a Rego string literal, escaping the characters that would
-/// otherwise let operator-supplied config alter the generated policy's meaning.
-fn rego_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            _ => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
+// `rego_string` lived here — the escaper that kept an operator's config strings
+// from breaking out of the Rego literals `synthesize_consent_rego` built around
+// them. Both are gone with the config trigger. The declarative approvals row
+// synthesizes its own Rego and carries its own escaping (`approvals.rs`), which
+// has its own injection test.
 
 #[cfg(test)]
 mod tests {
@@ -320,7 +302,10 @@ mod tests {
                      {{\"approverSet\": \"ops\"}}}} if input.request.typeUri == \"{UPDATE_URI}\"\n"
                 ),
                 applies_to: Vec::new(),
-                priority: CONFIG_CONSENT_PRIORITY,
+                // The priority the retired reconciler used: above the
+                // permissive baseline (0), so the stale row really does win
+                // until it is removed.
+                priority: 100,
                 enabled: true,
                 version: 1,
                 created_at: "2026-07-15T00:00:00Z".to_string(),

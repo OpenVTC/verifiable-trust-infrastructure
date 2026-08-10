@@ -164,9 +164,10 @@ impl TestContext {
     }
 
     /// Like [`auth_token`], but the session is **stepped-up (AAL2)** — the JWT
-    /// carries `acr=aal2` and a second factor in `amr`. Required for endpoints
-    /// gated by `RequireStepUp` (ACL mutations, context/key deletion). A plain
-    /// `auth_token` is AAL1, which those endpoints reject with a step-up `403`.
+    /// carries `acr=aal2` and a second factor in `amr`. Needed by any test that
+    /// installs a rule demanding step-up and then wants the request to get
+    /// through; a plain `auth_token` is AAL1, which the gate answers with a
+    /// step-up `403`.
     async fn auth_token_aal2(&self, did: &str, role: &str, contexts: Vec<String>) -> String {
         let session_id = format!("sess-{}", uuid::Uuid::new_v4());
         let session = Session {

@@ -543,8 +543,9 @@ async fn load_step_up_signing_secret(state: &AppState, vta_did: &str) -> Result<
 /// A fresh challenge is bound server-side to the caller's
 /// `{session_id, subject, targetAcr=aal2, acceptableEvidence}` via the
 /// pending-step-up store; the approver's `approve-response` is later consumed by
-/// [`handle_approve_response`]. Shared by both gate surfaces — the REST `403`
-/// ([`issue_step_up_challenge`]) and the trust-task reject ([`require_step_up`]).
+/// [`handle_approve_response`]. One caller: [`initiate_self_step_up`], reached
+/// from the gate's `requireStepUp` disposition — the two floor-driven wrappers
+/// that used to share it are gone.
 ///
 /// The document carries the spec's REQUIRED Data-Integrity proof
 /// (`eddsa-jcs-2022`, `assertionMethod`), signed with `secret` — the VTA's

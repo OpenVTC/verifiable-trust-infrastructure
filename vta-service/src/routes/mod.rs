@@ -718,7 +718,6 @@ mod cors_tests {
             "/audit/logs",
             "/cache/{key}",
             "/config",
-            "/step-up/policy",
             "/capabilities",
             "/vta/restart",
             "/backup/export",

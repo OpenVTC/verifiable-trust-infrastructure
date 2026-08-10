@@ -302,10 +302,10 @@ struct VaultReleaseBody {
     #[serde(default)]
     #[allow(dead_code)]
     consumer_context: Option<Value>,
-    // (`step_up_proof` removed in P0.13: step-up is now enforced via the
-    // session ACR gate `require_step_up(op::VAULT_RELEASE)`, not a dormant
-    // body field. An incoming `stepUpProof` is harmlessly ignored — these
-    // bodies don't `deny_unknown_fields`.)
+    // (`step_up_proof` removed in P0.13: step-up is enforced by the
+    // pre-dispatch policy gate reading the session's ACR, not by a dormant body
+    // field. An incoming `stepUpProof` is harmlessly ignored — these bodies
+    // don't `deny_unknown_fields`.)
     #[serde(default)]
     ttl_seconds_hint: Option<u32>,
 }
@@ -357,10 +357,10 @@ struct VaultProxyLoginBody {
     #[serde(default)]
     #[allow(dead_code)]
     consumer_context: Option<Value>,
-    // (`step_up_proof` removed in P0.13: step-up is now the
-    // `require_step_up(op::VAULT_PROXY_LOGIN)` session-ACR gate above, which
-    // an operator opts into via a `vault/proxy-login` policy floor — replacing
-    // the dormant "forward-compatibility" body field this comment described.)
+    // (`step_up_proof` removed in P0.13: step-up is decided by the
+    // pre-dispatch policy gate, which an operator opts into with a rule naming
+    // `vault/proxy-login/0.1` — replacing the dormant "forward-compatibility"
+    // body field this comment described.)
     /// Caller-supplied nonce — embedded verbatim as the SIOP id_token's
     /// `nonce` claim for the `did-self-issued` driver. Drivers without
     /// a nonce concept (Password POST, OAuth refresh — M2B.5+) ignore.
@@ -1719,8 +1719,8 @@ struct VaultSignTrustTaskBody {
     #[serde(default)]
     #[allow(dead_code)]
     consumer_context: Option<Value>,
-    // (`step_up_proof` removed in P0.13: enforced via the
-    // `require_step_up(op::VAULT_SIGN_TRUST_TASK)` session-ACR gate above.)
+    // (`step_up_proof` removed in P0.13: enforced by the pre-dispatch policy
+    // gate, which reads the session's ACR.)
 }
 
 /// Response body for `vault/sign-trust-task/0.1`. Same `unsigned_envelope`
