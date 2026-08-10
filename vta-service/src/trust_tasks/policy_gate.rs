@@ -1,19 +1,20 @@
-//! The pre-dispatch Policy Decision Point gate — the single step-up authority.
+//! The pre-dispatch Policy Decision Point gate — the single approvals authority.
 //!
 //! Every dispatched Trust Task routes through [`policy_gate`] before its handler
-//! runs. The gate is now the one place step-up is decided, sourcing it from two
-//! places and rejecting-with-`approve-request` if either demands it:
+//! runs, and the same decision is reachable from the REST handlers via
+//! [`rest_gate`]. One trigger feeds it: the **policy rules**. When
+//! `config.policy.enforcement` is on, a policy may return `requireStepUp`
+//! (self-approve), `deny`, `requireConsent`, or `allow`. The session's assurance
+//! (`acr`/`amr`) is fed into `PolicyInput.consumer`, so a policy can gate on
+//! step-up state.
 //!
-//! 1. **Config floors** — the existing `[auth.step_up]` floors, via
-//!    [`super::step_up::require_step_up`]. This subsumes the per-handler
-//!    `require_step_up` calls (removed from the slices). Runs for the gated
-//!    op-classes regardless of PDP enforcement, so the config-driven behaviour
-//!    is unchanged; a no-op when no floor applies or the session is already
-//!    `aal2`.
-//! 2. **Rego policy** — when `config.policy.enforcement` is on, a policy may
-//!    return `requireStepUp` (self-approve), `deny`, `requireConsent`, or
-//!    `allow`. The session's assurance (`acr`/`amr`) is fed into
-//!    `PolicyInput.consumer`, so a policy can gate on step-up state.
+//! The gate used to consult a second trigger first — the `[auth.step_up]` config
+//! floors, a closed list of eleven op-class slugs, resolved out of band from the
+//! rules. Two answers to one question is how an operator came to see
+//! `auth:step_up_required` on an operation no rule mentioned, with nothing in
+//! `pnm approvals list` to explain it. The floors are retired: a VTA that wants
+//! an operation gated says so as a rule, and this gate is the only thing that
+//! reads them.
 //!
 //! ## Ordering note
 //!
@@ -25,8 +26,8 @@
 //!
 //! ## Opt-in Rego, fail-safe
 //!
-//! The Rego arm is inert unless enforcement is enabled; the config-floor arm
-//! preserves existing behaviour. Any failure to load the policy set denies.
+//! The gate is inert unless enforcement is enabled. Any failure to load the
+//! policy set denies.
 
 use serde_json::{Value, json};
 use trust_tasks_rs::{RejectReason, TrustTask};
@@ -58,29 +59,6 @@ use super::ceremony::is_ceremony_task;
 
 /// The ACR a satisfied step-up reaches. Mirrors `step_up::STEP_UP_TARGET_ACR`.
 const STEP_UP_TARGET_ACR: &str = "aal2";
-
-/// Map a task's Type URI to its step-up operation-class, for the gated ops that
-/// carry a config floor. Only the ops that previously called `require_step_up`
-/// inline are mapped, preserving current behaviour (`acl/swap-key` had no inline
-/// call and stays unmapped). Returns `None` for ungated tasks.
-#[allow(deprecated)]
-fn op_class_for(type_uri: &str) -> Option<&'static str> {
-    use super::step_up::op;
-    use vta_sdk::trust_tasks as t;
-    match type_uri {
-        t::TASK_ACL_GRANT_0_1 => Some(op::ACL_GRANT),
-        t::TASK_ACL_UPDATE_0_1 => Some(op::ACL_CHANGE_ROLE),
-        t::TASK_ACL_REVOKE_0_1 => Some(op::ACL_REVOKE),
-        t::TASK_CONTEXTS_DELETE_1_0 => Some(op::CONTEXT_DELETE),
-        t::TASK_KEYS_REVOKE_0_1 => Some(op::KEY_REVOKE),
-        t::TASK_VAULT_RELEASE_0_1 => Some(op::VAULT_RELEASE),
-        t::TASK_VAULT_PROXY_LOGIN_0_1 => Some(op::VAULT_PROXY_LOGIN),
-        t::TASK_VAULT_SIGN_TRUST_TASK_0_1 => Some(op::VAULT_SIGN_TRUST_TASK),
-        t::TASK_VTA_CREDENTIALS_ISSUE_0_1 => Some(op::CREDENTIALS_ISSUE),
-        t::TASK_VTA_CREDENTIALS_REVOKE_0_1 => Some(op::CREDENTIALS_REVOKE),
-        _ => None,
-    }
-}
 
 /// Evaluate the gate for a task about to be dispatched.
 ///
@@ -204,14 +182,7 @@ async fn decide(
         return None;
     }
 
-    // (1) Config-floor step-up (subsumes the inline require_step_up).
-    if let Some(op_class) = op_class_for(type_uri)
-        && let Some(reason) = super::step_up::require_step_up(state, auth, op_class, payload).await
-    {
-        return Some(GateReject::Reason(reason));
-    }
-
-    // (2) Rego policy — only when enforcement is enabled.
+    // The rules are the only trigger — only when enforcement is enabled.
     if !state.config.read().await.policy.enforcement {
         return None;
     }
@@ -813,8 +784,8 @@ mod tests {
         .expect("valid trust task")
     }
 
-    // An ungated task URI (not in op_class_for) so the config-floor arm is a
-    // no-op and only the Rego arm runs.
+    // A task URI no rule names by default, so each test's own policy module is
+    // the only thing deciding it.
     const UNGATED_URI: &str = "https://trusttasks.org/spec/vta/memory/list/0.1";
 
     #[tokio::test]
