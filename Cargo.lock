@@ -447,9 +447,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-sdk"
-version = "0.19.3"
+version = "0.19.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "276d0db4e6424387c7340fccc0609df1c1e4e1fd12502b90d24d4ab3ceaa717d"
+checksum = "aed8bc60621324d13d4d44648433e14909c0826efecd930f6782f0393343954c"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-authentication",
@@ -9383,7 +9383,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.21.10"
+version = "0.21.11"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -9445,7 +9445,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.14.23"
+version = "0.14.24"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",

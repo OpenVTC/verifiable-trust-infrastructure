@@ -82,7 +82,12 @@ pub struct BootstrapRequest {
 /// Tagged enum of bootstrap intents. Extensible — add new variants as new
 /// kinds of integration bootstrap emerge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+// `rename_all` renames the *variants*, which are the `type` tag values here.
+// This crate submits under `provision/integration/0.2`, whose schema requires
+// the camelCase tags; emitting the 0.1 PascalCase form made every request fail
+// the VTA's payload-schema gate. Inbound still accepts both, via the aliases
+// below, so a 0.1 holder is unaffected.
+#[serde(tag = "type", rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum BootstrapAsk {
     /// Template-driven integration bootstrap. The VTA mints a fresh
@@ -92,12 +97,12 @@ pub enum BootstrapAsk {
     /// in a [`SealedPayloadV1::TemplateBootstrap`](crate::sealed_transfer::SealedPayloadV1)
     /// bundle.
     ///
-    /// The `templateBootstrap` alias accepts the
-    /// `provision/integration/0.2` camelCase tag; serialisation keeps the
-    /// 0.1 `TemplateBootstrap` form. The tag is inside the signed VP, so
-    /// verification must run over the wire bytes — see
+    /// Serialises as `templateBootstrap`, the tag
+    /// `provision/integration/0.2` requires. The `TemplateBootstrap` alias
+    /// keeps accepting the 0.1 form inbound. The tag is inside the signed VP,
+    /// so verification must run over the wire bytes — see
     /// [`BootstrapRequest::verify_value`].
-    #[serde(alias = "templateBootstrap")]
+    #[serde(alias = "TemplateBootstrap")]
     TemplateBootstrap(TemplateBootstrapAsk),
     /// Admin-DID rotation only — no integration DID minted. The VTA
     /// renders `admin_template`, mints a fresh long-term admin DID,
@@ -113,9 +118,10 @@ pub enum BootstrapAsk {
     /// [`SealedPayloadV1::AdminRotation`]:
     /// crate::sealed_transfer::SealedPayloadV1::AdminRotation
     ///
-    /// The `adminRotation` alias accepts the `provision/integration/0.2`
-    /// camelCase tag; serialisation keeps the 0.1 `AdminRotation` form.
-    #[serde(alias = "adminRotation")]
+    /// Serialises as `adminRotation`, the tag `provision/integration/0.2`
+    /// requires. The `AdminRotation` alias keeps accepting the 0.1 form
+    /// inbound.
+    #[serde(alias = "AdminRotation")]
     AdminRotation(AdminRotationAsk),
 }
 
@@ -846,6 +852,66 @@ mod tests {
         let json = serde_json::to_string(&vp).unwrap();
         let parsed: BootstrapRequest = serde_json::from_str(&json).unwrap();
         parsed.verify().expect("verify deserialized VP");
+    }
+
+    /// The `ask.type` tag goes out camelCase, because that is what the schema
+    /// for the URI this crate submits under actually requires.
+    ///
+    /// This crate sends `provision/integration/0.2`
+    /// ([`crate::trust_tasks::TASK_PROVISION_INTEGRATION_0_2`]) while
+    /// serialising the 0.1 PascalCase tags. The two schemas differ in exactly
+    /// this constant — 0.1 says `AdminRotation`, 0.2 says `adminRotation` — so
+    /// every request failed the VTA's payload-schema gate with a
+    /// `malformedRequest` naming neither casing. Latent since the client moved
+    /// to the 0.2 URI; fatal once the gate landed.
+    ///
+    /// Asserted on the serialized JSON rather than through a round-trip: the
+    /// inbound aliases accept both spellings, so a round-trip passes either way
+    /// and would not have caught this.
+    #[test]
+    fn ask_type_serialises_with_the_0_2_camelcase_tags() {
+        let template = serde_json::to_value(sample_ask()).expect("serialize templateBootstrap");
+        assert_eq!(
+            template["type"], "templateBootstrap",
+            "provision/integration/0.2 requires the camelCase tag: {template}"
+        );
+
+        let admin = serde_json::to_value(BootstrapAsk::AdminRotation(AdminRotationAsk {
+            context_hint: Some("openvtc".into()),
+            admin_template: DidTemplateRef {
+                name: "vta-admin".into(),
+                vars: Default::default(),
+            },
+            note: Some("openvtc".into()),
+        }))
+        .expect("serialize adminRotation");
+        assert_eq!(
+            admin["type"], "adminRotation",
+            "provision/integration/0.2 requires the camelCase tag: {admin}"
+        );
+    }
+
+    /// The 0.1 PascalCase tags are still accepted inbound.
+    ///
+    /// The tag is inside the signed VP, so an existing holder that signed
+    /// `AdminRotation` must keep verifying — changing the outbound casing must
+    /// not strand them. The aliases are what make that true, and dropping one
+    /// while renaming the variants would be an easy and silent mistake.
+    #[test]
+    fn the_0_1_pascalcase_tags_are_still_accepted_inbound() {
+        let template: BootstrapAsk = serde_json::from_value(serde_json::json!({
+            "type": "TemplateBootstrap",
+            "template": { "name": "didcomm-mediator", "vars": {} }
+        }))
+        .expect("0.1 TemplateBootstrap must still parse");
+        assert!(matches!(template, BootstrapAsk::TemplateBootstrap(_)));
+
+        let admin: BootstrapAsk = serde_json::from_value(serde_json::json!({
+            "type": "AdminRotation",
+            "adminTemplate": { "name": "vta-admin", "vars": {} }
+        }))
+        .expect("0.1 AdminRotation must still parse");
+        assert!(matches!(admin, BootstrapAsk::AdminRotation(_)));
     }
 
     #[tokio::test]
@@ -1590,10 +1656,12 @@ mod tests {
         .await
         .unwrap();
 
-        // VP must serialize the AdminRotation tag with its `adminTemplate`
-        // JSON name, not the snake_case Rust name.
+        // VP must serialize the adminRotation tag with its `adminTemplate`
+        // JSON name, not the snake_case Rust name. The tag is camelCase since
+        // this crate submits under `provision/integration/0.2`, whose schema
+        // requires it — see `ask_type_serialises_with_the_0_2_camelcase_tags`.
         let json = serde_json::to_value(&vp).unwrap();
-        assert_eq!(json["ask"]["type"], "AdminRotation");
+        assert_eq!(json["ask"]["type"], "adminRotation");
         assert_eq!(json["ask"]["adminTemplate"]["name"], "vta-admin");
 
         let parsed: BootstrapRequest = serde_json::from_value(json).unwrap();

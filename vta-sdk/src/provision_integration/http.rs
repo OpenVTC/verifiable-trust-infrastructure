@@ -292,4 +292,67 @@ mod tests {
         assert_eq!(s.client_did, "did:key:zClient");
         assert_eq!(s.bundle_id_hex, "deadbeef");
     }
+
+    /// What this crate sends must satisfy the schema of the URI it sends under.
+    ///
+    /// The client submits `provision/integration/0.2`
+    /// ([`crate::trust_tasks::TASK_PROVISION_INTEGRATION_0_2`]) but serialised
+    /// the 0.1 PascalCase `ask.type` tags. The two schemas differ in exactly
+    /// that constant, so the VTA's payload-schema gate rejected every request:
+    ///
+    /// ```text
+    /// malformed request: payload does not conform to
+    /// https://trusttasks.org/spec/provision/integration/0.2:
+    /// {...,"type":"AdminRotation"} is not valid under any of the schemas
+    /// listed in the 'oneOf' keyword
+    /// ```
+    ///
+    /// Latent since the client moved to the 0.2 URI, fatal once the gate
+    /// landed. The unit tests on `BootstrapAsk` pin the tag itself; this pins
+    /// the property that actually matters — the whole payload validating
+    /// against the real published schema, through the same
+    /// `trust_tasks_rs::validate` call the VTA runs.
+    #[tokio::test]
+    async fn the_request_payload_conforms_to_the_0_2_schema() {
+        use crate::provision_integration::{
+            AdminRotationAsk, BootstrapAsk, BootstrapRequest, DidTemplateRef,
+        };
+        use chrono::Duration;
+
+        let schema = trust_tasks_rs::schema_index::schema_for(
+            crate::trust_tasks::TASK_PROVISION_INTEGRATION_0_2,
+        )
+        .expect("the 0.2 schema is published and indexed");
+
+        let (seed, pub_bytes) = crate::sealed_transfer::generate_ed25519_keypair();
+        let client_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&pub_bytes);
+
+        // The AdminRotation shape from the failing report: an OpenVTC setup
+        // rotating its ephemeral setup key to a VTA-minted admin identity.
+        let vp = BootstrapRequest::sign(
+            &seed,
+            &client_did,
+            [0x5Au8; 16],
+            Duration::hours(1),
+            Some("openvtc".into()),
+            BootstrapAsk::AdminRotation(AdminRotationAsk {
+                context_hint: Some("openvtc".into()),
+                admin_template: DidTemplateRef {
+                    name: "vta-admin".into(),
+                    vars: Default::default(),
+                },
+                note: Some("openvtc".into()),
+            }),
+        )
+        .await
+        .expect("sign the VP");
+
+        let payload = serde_json::json!({
+            "request": serde_json::to_value(&vp).expect("serialize VP"),
+        });
+
+        trust_tasks_rs::validate::against_schema(schema, &payload).unwrap_or_else(|e| {
+            panic!("the payload this crate sends must satisfy the 0.2 schema: {e}\n{payload:#}")
+        });
+    }
 }
