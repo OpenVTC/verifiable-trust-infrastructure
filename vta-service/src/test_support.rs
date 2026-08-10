@@ -275,9 +275,13 @@ pub async fn signed_admin_rotation_request(
 /// Shared by [`bootstrap_test_vta`] (direct-call deps) and the provisionable
 /// HTTP app ([`build_provisionable_test_app`] / [`MockVta::start_provisionable`]),
 /// so both paths use the exact same identity wiring the real VTA bootstrap does.
+/// `vta_did_override` replaces the derived `did:key` as the identity the
+/// keystore records are filed under (see [`TestAppOptions::vta_transport`]). The
+/// signing key itself is seed-derived either way — only the record ids change.
 async fn provision_vta_signing_identity(
     keys_ks: &KeyspaceHandle,
     data_dir: &std::path::Path,
+    vta_did_override: Option<&str>,
 ) -> (String, Arc<PlaintextSeedStore>) {
     use crate::keys::seeds::{SeedRecord, save_seed_record, set_active_seed_id};
 
@@ -316,7 +320,10 @@ async fn provision_vta_signing_identity(
     let signing = ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes());
     let pub_bytes = signing.verifying_key().to_bytes();
     let multibase = ed25519_multibase_pubkey(&pub_bytes);
-    let vta_did = format!("did:key:{multibase}");
+    let vta_did = match vta_did_override {
+        Some(did) => did.to_string(),
+        None => format!("did:key:{multibase}"),
+    };
     let key_id = format!("{vta_did}#key-0");
 
     save_key_record(
@@ -360,7 +367,8 @@ async fn provision_vta_signing_identity(
 }
 
 pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegrationDeps) {
-    let (vta_did, _seed_store) = provision_vta_signing_identity(&ts.keys_ks, &ts.data_dir).await;
+    let (vta_did, _seed_store) =
+        provision_vta_signing_identity(&ts.keys_ks, &ts.data_dir, None).await;
 
     let mut config = test_app_config(ts.data_dir.clone());
     config.vta_did = Some(vta_did.clone());
@@ -411,7 +419,7 @@ pub async fn build_signing_test_app_state() -> (crate::server::AppState, tempfil
     // Provision the VTA's `{vta_did}#key-0` VC-issuance key into the keystore
     // and point the config at the resulting self-resolving did:key.
     let keys_ks = store.keyspace(crate::keyspaces::KEYS).expect("keys ks");
-    let (vta_did, seed_store) = provision_vta_signing_identity(&keys_ks, dir.path()).await;
+    let (vta_did, seed_store) = provision_vta_signing_identity(&keys_ks, dir.path(), None).await;
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> = seed_store;
 
     let mut config = test_app_config(dir.path().to_path_buf());
@@ -576,6 +584,14 @@ pub struct TestAppContext {
     /// provision passes this as the `vta_did` argument.
     pub vta_did: String,
     pub config: Arc<RwLock<AppConfig>>,
+    /// The durable messaging outbox keyspace. Exposed because
+    /// [`crate::messaging::service::build_messaging`] requires one, and a
+    /// mediator-backed harness has to build the listener itself.
+    pub outbox_ks: KeyspaceHandle,
+    /// The app's `AppState`. Exposed so a harness can run the **production**
+    /// inbound loop against the very state the HTTP router serves — the same
+    /// reason `vtc-service`'s `TestVtc` exposes its own.
+    pub state: crate::server::AppState,
     /// Owns the on-disk fjall data dir. When this drops, files are
     /// removed; the caller MUST keep it alive for the duration of the
     /// test (`TestAppContext` is normally bound to a `let _ctx = …`).
@@ -660,6 +676,125 @@ pub struct TestAppOptions {
     /// to exercise `atm.unpack` (e.g. the plaintext-forgery guard)
     /// build an offline ATM via [`build_offline_atm`] and pass it here.
     pub atm: Option<affinidi_tdk::messaging::ATM>,
+
+    /// A pre-minted transport identity for the VTA, replacing the `did:key`
+    /// [`provision_vta_signing_identity`] would derive. Set by
+    /// [`MockVta::start_with_transports`] to a `did:peer:2` advertising
+    /// `DIDCommMessaging` / `TSPTransport` — a `did:key` cannot carry a service
+    /// block, so it can never tell a client which transports the VTA speaks.
+    pub vta_transport: Option<VtaTransportIdentity>,
+}
+
+/// A mediator-backed transport identity for the mock VTA
+/// ([`TestAppOptions::vta_transport`]).
+///
+/// The seed-derived `{vta_did}#key-0` / `#sealed-transfer-0` keystore records
+/// are still provisioned against [`did`](Self::did); those ids are keystore
+/// record *keys*, not verification methods resolved from the document, so the
+/// DID method is free to be `did:peer`. The [`secrets`](Self::secrets) here are
+/// the separate *transport* keys (`#key-1` Ed25519, `#key-2` X25519) that the
+/// DIDComm/TSP packing paths resolve out of the document — the same split
+/// `MockVtcDidcomm` uses.
+#[derive(Clone)]
+pub struct VtaTransportIdentity {
+    /// The `did:peer:2` that becomes `config.vta_did`.
+    pub did: String,
+    /// Its `#key-1` (Ed25519) + `#key-2` (X25519) secrets.
+    pub secrets: Vec<affinidi_tdk::secrets_resolver::secrets::Secret>,
+    /// The mediator both advertised services point at.
+    pub mediator_did: String,
+}
+
+/// What [`build_transport_state`] hands back — a struct rather than a tuple so
+/// the TSP slot can be `cfg`-gated (attributes are not allowed on tuple type
+/// elements) and so the five `Option`s stay distinguishable at the call site.
+#[derive(Default)]
+struct TransportState {
+    secrets_resolver: Option<Arc<affinidi_secrets_resolver::ThreadedSecretsResolver>>,
+    signing_vm_id: Option<String>,
+    ka_vm_id: Option<String>,
+    atm: Option<affinidi_tdk::messaging::ATM>,
+    #[cfg(feature = "tsp")]
+    tsp_profile: Option<Arc<affinidi_tdk::messaging::profiles::ATMProfile>>,
+}
+
+/// Build the AppState transport slots from a pre-minted
+/// [`VtaTransportIdentity`], or all-`None` when there isn't one (the REST-only
+/// default every existing caller gets).
+///
+/// The verification-method ids are the fixed `did:peer:2` shape
+/// `#key-1` (Ed25519) / `#key-2` (X25519) that
+/// [`crate::operations::did_peer`] mints — read from the secrets rather than
+/// re-derived, so a change in that shape surfaces here instead of silently
+/// packing with the wrong key.
+async fn build_transport_state(
+    identity: Option<&VtaTransportIdentity>,
+    did_resolver: Option<&DIDCacheClient>,
+) -> TransportState {
+    use affinidi_secrets_resolver::SecretsResolver as _;
+    use affinidi_tdk::common::TDKSharedState;
+    use affinidi_tdk::common::config::TDKConfig;
+    use affinidi_tdk::messaging::config::ATMConfig;
+
+    let Some(identity) = identity else {
+        return TransportState::default();
+    };
+
+    let (secrets_resolver, _task) =
+        affinidi_secrets_resolver::ThreadedSecretsResolver::new(None).await;
+    secrets_resolver.insert_vec(&identity.secrets).await;
+
+    // `#key-1` is Ed25519 (verification), `#key-2` X25519 (key agreement).
+    let vm_id = |suffix: &str| -> Option<String> {
+        identity
+            .secrets
+            .iter()
+            .map(|s| s.id.clone())
+            .find(|id| id.ends_with(suffix))
+    };
+
+    let mut builder = TDKConfig::builder().with_load_environment(false);
+    if let Some(dr) = did_resolver {
+        builder = builder.with_did_resolver(dr.clone());
+    }
+    let tdk = TDKSharedState::new(builder.build().expect("TDK config"))
+        .await
+        .expect("TDK shared state");
+    for secret in &identity.secrets {
+        tdk.secrets_resolver().insert(secret.clone()).await;
+    }
+    let atm = affinidi_tdk::messaging::ATM::new(
+        ATMConfig::builder().build().expect("ATM config"),
+        Arc::new(tdk),
+    )
+    .await
+    .expect("transport ATM");
+
+    #[cfg(feature = "tsp")]
+    let tsp_profile = {
+        let profile = affinidi_tdk::messaging::profiles::ATMProfile::new(
+            &atm,
+            Some("VTA".to_string()),
+            identity.did.clone(),
+            None,
+        )
+        .await
+        .expect("build TSP profile");
+        Some(
+            atm.profile_add(&profile, false)
+                .await
+                .expect("register TSP profile"),
+        )
+    };
+
+    TransportState {
+        secrets_resolver: Some(Arc::new(secrets_resolver)),
+        signing_vm_id: vm_id("#key-1"),
+        ka_vm_id: vm_id("#key-2"),
+        atm: Some(atm),
+        #[cfg(feature = "tsp")]
+        tsp_profile,
+    }
 }
 
 /// Build a fully-offline [`ATM`](affinidi_tdk::messaging::ATM) suitable for
@@ -793,7 +928,12 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     // resulting self-resolving `did:key`.
     let (vta_did, seed_store): (String, Arc<dyn crate::keys::seed_store::SeedStore>) =
         if opts.provisionable_vta {
-            let (did, ps) = provision_vta_signing_identity(&keys_ks, dir.path()).await;
+            let (did, ps) = provision_vta_signing_identity(
+                &keys_ks,
+                dir.path(),
+                opts.vta_transport.as_ref().map(|t| t.did.as_str()),
+            )
+            .await;
             let store: Arc<dyn crate::keys::seed_store::SeedStore> = ps;
             (did, store)
         } else {
@@ -853,6 +993,17 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         resolver
     };
 
+    // Transport wiring. Mirrors what `server::init_auth` does in production —
+    // the VTA's own secrets in a resolver, its `#key-1`/`#key-2` verification
+    // method ids, an ATM for `auth`'s unpack path, and (TSP) a registered
+    // profile for `tsp-message` unseal.
+    //
+    // This ATM deliberately has NO websocket: `MockVta::start_with_transports`
+    // gives the *listener* its own, and the mediator permits one socket per DID
+    // — a second would be terminated as `w.websocket.duplicate-channel`. Same
+    // split, and the same reason, as `MockVtcDidcomm`.
+    let transport = build_transport_state(opts.vta_transport.as_ref(), did_resolver.as_ref()).await;
+
     let policy_ks = store.keyspace(crate::keyspaces::POLICY).unwrap();
     let state = crate::server::AppState {
         keys_ks: keys_ks.clone(),
@@ -896,19 +1047,19 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         seed_store,
         did_resolver,
         status_list_resolver: None,
-        secrets_resolver: None,
+        secrets_resolver: transport.secrets_resolver,
         #[cfg(feature = "didcomm")]
-        signing_vm_id: None,
+        signing_vm_id: transport.signing_vm_id,
         #[cfg(feature = "didcomm")]
-        ka_vm_id: None,
+        ka_vm_id: transport.ka_vm_id,
         #[cfg(feature = "didcomm")]
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
         #[cfg(feature = "tsp")]
         tsp_reach: Arc::new(crate::messaging::tsp_reach::TspReachability::new()),
         jwt_keys: Some(jwt_keys.clone()),
-        atm: opts.atm,
+        atm: transport.atm.or(opts.atm),
         #[cfg(feature = "tsp")]
-        tsp_profile: None,
+        tsp_profile: transport.tsp_profile,
         tee: None,
         restart_tx,
         metrics_handle: None,
@@ -921,6 +1072,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     // (`unauth_endpoint_rate_limit_returns_429_after_burst`)
     // sets `x-forwarded-for: 192.0.2.1` so all calls hash to the
     // same bucket and trip the burst within 20 requests.
+    let state_for_ctx = state.clone();
     let router = crate::routes::router_with_cors(&[], true)
         .with_state(state.clone())
         .merge(crate::routes::health_router().with_state(state));
@@ -939,6 +1091,8 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         contexts_ks: contexts_ks.clone(),
         vta_did,
         config,
+        outbox_ks: store.keyspace(crate::keyspaces::OUTBOX).unwrap(),
+        state: state_for_ctx,
         _dir: dir,
     };
 
@@ -1238,6 +1392,27 @@ pub struct MockVta {
     /// Dropped (shut down) with the `MockVta`.
     #[cfg(feature = "webvh")]
     webvh_host: Option<StubWebvhHost>,
+    /// Mediator-backed transports, present only for
+    /// [`start_with_transports`](Self::start_with_transports).
+    #[cfg(feature = "transport-harness")]
+    transports: Option<MockVtaTransports>,
+}
+
+/// The mediator + inbound listener behind
+/// [`MockVta::start_with_transports`](MockVta::start_with_transports).
+#[cfg(feature = "transport-harness")]
+struct MockVtaTransports {
+    mediator: affinidi_messaging_test_mediator::TestMediatorHandle,
+    /// The mediator both of the VTA's advertised services point at. The VTA's
+    /// own `did:peer:2` is already on `ctx.vta_did`, so it is not repeated here.
+    mediator_did: String,
+    /// Cancels [`run_inbound_loop`](crate::messaging::service::run_inbound_loop).
+    shutdown: tokio_util::sync::CancellationToken,
+    loop_handle: Option<tokio::task::JoinHandle<()>>,
+    /// The listener's ATM. Held so `shutdown` can stop its websocket: the
+    /// mediator permits one socket per DID, and an abandoned one keeps
+    /// auto-reconnecting (vta-sdk #830).
+    atm: Arc<affinidi_tdk::messaging::ATM>,
 }
 
 impl MockVta {
@@ -1303,10 +1478,218 @@ impl MockVta {
             preseed_did_docs: vec![(server_did.clone(), server_doc)],
             webvh_servers: vec![(Self::WEBVH_SERVER_ID.to_string(), server_did)],
             atm: None,
+            vta_transport: None,
         };
         let mut mock = Self::serve(build_test_app_with(opts).await).await;
         mock.webvh_host = Some(host);
         mock
+    }
+
+    /// Like [`start_provisionable`](Self::start_provisionable), but reachable
+    /// over **DIDComm and TSP** as well as REST.
+    ///
+    /// Stands up an embedded mediator, gives the VTA a `did:peer:2` that
+    /// advertises `DIDCommMessaging` *and* `TSPTransport` at it, and runs the
+    /// **production** inbound loop
+    /// ([`run_inbound_loop`](crate::messaging::service::run_inbound_loop)) — so
+    /// a Trust Task arriving on either transport reaches the same
+    /// `dispatch_trust_task_core` spine the REST route uses. One websocket
+    /// carries both protocols (ADR 0005), which is why this is one constructor
+    /// rather than two.
+    ///
+    /// # Why `did:peer:2`
+    ///
+    /// The transport a client picks comes from the VTA's DID *document*, and a
+    /// `did:key` (what [`start_provisionable`](Self::start_provisionable) uses)
+    /// cannot carry a service block — so against that mock a client can only
+    /// ever choose REST. A `did:peer:2` encodes its services in the identifier,
+    /// so it resolves offline through the cache-sdk's built-in `PeerResolver`
+    /// **in the consumer's own resolver**, with nothing seeded and no
+    /// resolver-injection seam. That last part is the whole trick: seeding this
+    /// mock's resolver would not help a caller in another process, which is the
+    /// trap VTI #813 already hit.
+    ///
+    /// # The size budget
+    ///
+    /// A `did:peer:2` carries its services in the identifier, and every
+    /// resolver refuses one over 1000 bytes. Embedding the mediator's own
+    /// 540-byte DID in *both* services blows that (1685) and makes the VTA
+    /// unresolvable everywhere, in ways that surface as a websocket timeout on
+    /// one side and a `403` on the other. So only the DIDComm service embeds
+    /// the mediator DID; `#tsp` points at the mediator's URL. See the
+    /// `MAX_DID_BYTES` assertion in the body — it is the guard that keeps a
+    /// future service addition from re-breaking this silently.
+    ///
+    /// ```no_run
+    /// # async fn demo() {
+    /// use vta_service::test_support::MockVta;
+    /// let mock = MockVta::start_with_transports().await;
+    /// // Drive discovery + provisioning the way the real bootstrap does —
+    /// // `mock.vta_did()` resolves offline to the advertised transports.
+    /// mock.shutdown().await;
+    /// # }
+    /// ```
+    #[cfg(feature = "transport-harness")]
+    pub async fn start_with_transports() -> MockVta {
+        use affinidi_messaging_test_mediator::TestMediator;
+        use affinidi_tdk::dids::{
+            OneOrMany, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong,
+        };
+
+        affinidi_messaging_test_mediator::install_default_crypto_provider();
+
+        // The mediator first: the VTA's DID embeds the mediator DID in its
+        // service blocks, so it cannot be minted until the mediator has one.
+        // `register_local_did` closes the resulting cycle — the VTA is
+        // registered after it exists, rather than at builder time.
+        let mediator = TestMediator::spawn().await.expect("spawn test mediator");
+        let mediator_did = mediator.did().to_string();
+
+        // The `accept` list is deliberately empty — see MAX_DID_BYTES below. It
+        // costs 32 bytes of a budget that has 20 to spare, and DIDComm v2 is
+        // the only thing either side speaks here anyway.
+        let didcomm = crate::operations::did_peer::mediator_did_didcomm_service(
+            &mediator_did,
+            vec![],
+            vec![],
+        );
+        // The TSP counterpart, pointing at the mediator's **URL** rather than
+        // its DID. That is the one deviation from the workspace convention
+        // (`#tsp`'s serviceEndpoint is the mediator's DID), and it is forced by
+        // arithmetic, not preference: the mediator's own DID is 540 bytes, and
+        // embedding it twice puts the VTA's `did:peer` at 1685 — past the
+        // resolver limit below, unresolvable by anyone. Under that limit a
+        // two-service peer can embed a mediator DID at most *once*. The short
+        // URL form is what this mediator advertises for its own `#tsp` service,
+        // so it is at least a convention already live in the ecosystem.
+        //
+        // Accepted deliberately, and scoped: this is a test harness, where the
+        // point is exercising the dispatch spine over both transports, not
+        // modelling how a production VTA advertises itself. A production VTA is
+        // a `did:webvh` — services live in the document, there is no size
+        // ceiling, and the mediator-DID convention holds there unchanged. Do
+        // not read this as licence to emit a URL `#tsp` outside of tests.
+        let tsp = PeerService {
+            type_: "TSPTransport".into(),
+            endpoint: PeerServiceEndpoint::Long(OneOrMany::One(PeerServiceEndpointLong {
+                uri: mediator.endpoint().to_string(),
+                accept: vec![],
+                routing_keys: vec![],
+            })),
+            id: None,
+        };
+        let (vta_did, secrets) = crate::operations::did_peer::mint_did_peer_with_services(
+            didcomm.into_iter().chain(std::iter::once(tsp)).collect(),
+        )
+        .expect("mint VTA did:peer");
+
+        // Every `DIDCacheClient` refuses to resolve a DID longer than
+        // `max_did_size_in_bytes` (default 1000) — a guard applied *before* any
+        // parsing, in `resolve_document`. It bites in two places here, and in
+        // neither does it say so:
+        //
+        //   * our own auth against the mediator fails the whole websocket
+        //     connect as a 30s `WebSocket isActive? command timed out`;
+        //   * the mediator, resolving us to get our sender key, answers the
+        //     challenge response `403 Forbidden` and logs `authcrypt requires
+        //     sender public key for decryption`.
+        //
+        // Raising the limit locally is not a fix: the mediator's resolver is
+        // built inside `affinidi-messaging-test-mediator`, which exposes no
+        // knob for it, and a *consumer* in another process gets a stock
+        // resolver — the offline-resolvability this whole harness exists to
+        // provide. So the DID has to fit the stock limit. Assert it up front,
+        // where the number is legible, rather than 30 seconds later as a
+        // timeout.
+        const MAX_DID_BYTES: usize = 1_000;
+        assert!(
+            vta_did.len() < MAX_DID_BYTES,
+            "the VTA's did:peer is {} bytes, over the {MAX_DID_BYTES}-byte stock resolver limit \
+             ({}-byte mediator DID). Nothing with a default resolver — this process, the \
+             mediator, or a consumer — can resolve it. Shed service metadata, or embed the \
+             mediator DID in fewer services.",
+            vta_did.len(),
+            mediator_did.len(),
+        );
+
+        mediator
+            .register_local_did(&vta_did)
+            .await
+            .expect("register the VTA as a local mediator account");
+        // The account's *default* ACL is enough to connect and go live —
+        // verified by removing the `set_acl(ALLOW_ALL)` that used to sit here
+        // and watching this test stay green. That grant was added while the
+        // failure was misread as a permission problem; the real cause was the
+        // DID size asserted above. `add_user` bundles register + ACL, but mints
+        // its own DID; ours has to be minted first because it embeds the
+        // mediator's DID.
+
+        let (router, ctx) = build_test_app_with(TestAppOptions {
+            provisionable_vta: true,
+            vta_transport: Some(VtaTransportIdentity {
+                did: vta_did.clone(),
+                secrets: secrets.clone(),
+                mediator_did: mediator_did.clone(),
+            }),
+            ..Default::default()
+        })
+        .await;
+
+        // The listener's own ATM + websocket — separate from `AppState.atm`,
+        // which has none (one socket per DID).
+        let messaging = crate::messaging::service::build_messaging(
+            secrets,
+            &vta_did,
+            &mediator_did,
+            ctx.outbox_ks.clone(),
+            ctx.state.did_resolver.as_ref(),
+            None,
+        )
+        .await
+        .expect("build VTA messaging over the test mediator");
+        let atm = messaging.atm.clone();
+
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let loop_handle = tokio::spawn({
+            let (messaging, state, vta_did, mediator_did, shutdown) = (
+                Arc::new(messaging),
+                ctx.state.clone(),
+                vta_did.clone(),
+                mediator_did.clone(),
+                shutdown.clone(),
+            );
+            async move {
+                crate::messaging::service::run_inbound_loop(
+                    messaging,
+                    state,
+                    vta_did,
+                    mediator_did,
+                    shutdown,
+                )
+                .await;
+            }
+        });
+
+        let mut mock = Self::serve((router, ctx)).await;
+        mock.transports = Some(MockVtaTransports {
+            mediator,
+            mediator_did,
+            shutdown,
+            loop_handle: Some(loop_handle),
+            atm,
+        });
+        mock
+    }
+
+    /// The embedded mediator's DID — both advertised services route through it.
+    /// Only present for [`start_with_transports`](Self::start_with_transports).
+    #[cfg(feature = "transport-harness")]
+    pub fn mediator_did(&self) -> &str {
+        &self
+            .transports
+            .as_ref()
+            .expect("mediator_did() requires start_with_transports()")
+            .mediator_did
     }
 
     /// Bind an ephemeral loopback port, serve `router` in a background task,
@@ -1340,6 +1723,8 @@ impl MockVta {
             handle: Some(handle),
             #[cfg(feature = "webvh")]
             webvh_host: None,
+            #[cfg(feature = "transport-harness")]
+            transports: None,
         }
     }
 
@@ -1406,7 +1791,23 @@ impl MockVta {
     }
 
     /// Stop the server and wait for it to wind down gracefully.
+    ///
+    /// For a [`start_with_transports`](Self::start_with_transports) mock this
+    /// also stops the inbound loop, the listener's mediator websocket, and the
+    /// mediator — **in that order, and not optionally**. Dropping an `ATM`
+    /// abandons its websocket task rather than ending it, and an abandoned
+    /// socket keeps auto-reconnecting for the rest of the test binary, with
+    /// every test adding another (vta-sdk #830).
     pub async fn shutdown(mut self) {
+        #[cfg(feature = "transport-harness")]
+        if let Some(mut transports) = self.transports.take() {
+            transports.shutdown.cancel();
+            if let Some(handle) = transports.loop_handle.take() {
+                let _ = handle.await;
+            }
+            transports.atm.graceful_shutdown().await;
+            transports.mediator.shutdown();
+        }
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
@@ -1419,11 +1820,135 @@ impl MockVta {
 impl Drop for MockVta {
     fn drop(&mut self) {
         // Signal graceful shutdown; abort as a backstop if the task is still up.
+        #[cfg(feature = "transport-harness")]
+        if let Some(mut transports) = self.transports.take() {
+            // Best-effort only: `Drop` cannot await, so the ATM's websocket
+            // cannot be stopped politely here. Cancelling ends the inbound loop
+            // and shutting the mediator down makes the abandoned socket's
+            // reconnects fail fast instead of looping against a live mediator.
+            // Prefer `shutdown().await`, which does stop it properly.
+            transports.shutdown.cancel();
+            if let Some(handle) = transports.loop_handle.take() {
+                handle.abort();
+            }
+            transports.mediator.shutdown();
+        }
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
         if let Some(handle) = self.handle.take() {
             handle.abort();
         }
+    }
+}
+
+#[cfg(all(test, feature = "transport-harness"))]
+mod transport_harness_tests {
+    use super::*;
+    use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+
+    /// The point of the whole harness: the mock's DID must advertise both
+    /// transports **to a resolver it has never touched**.
+    ///
+    /// Deliberately resolves through a *fresh* `DIDCacheClient` rather than the
+    /// app's own. A `did:peer:2` is self-describing, so the built-in
+    /// `PeerResolver` decodes it offline anywhere — which is exactly what lets a
+    /// consumer in another process (OpenVTC's bootstrap) discover these
+    /// transports with nothing seeded. Seeding the *app's* resolver would prove
+    /// nothing about that, and is the trap VTI #813 documented.
+    ///
+    /// Asserted on the raw document rather than `vta_sdk::provision_client`'s
+    /// `resolve_vta` so a failure says whether the *encoding* broke or the
+    /// SDK's matcher did.
+    /// Encoding only: mint the two-service did:peer and resolve it, with no
+    /// mediator, no app, and no websocket in the picture. Separates "the
+    /// identifier encodes both services" from "a listener can connect as it",
+    /// so a failure in the harness test above is attributable.
+    #[tokio::test]
+    async fn a_two_service_did_peer_encodes_both_transports() {
+        use affinidi_tdk::dids::{
+            OneOrMany, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong,
+        };
+
+        let mediator = "did:peer:2.Ez6LSmediator";
+        let didcomm = crate::operations::did_peer::mediator_did_didcomm_service(
+            mediator,
+            vec!["didcomm/v2".to_string()],
+            vec![],
+        );
+        let tsp = PeerService {
+            type_: "TSPTransport".into(),
+            endpoint: PeerServiceEndpoint::Long(OneOrMany::One(PeerServiceEndpointLong {
+                uri: mediator.to_string(),
+                accept: vec![],
+                routing_keys: vec![],
+            })),
+            id: None,
+        };
+        let (did, _secrets) = crate::operations::did_peer::mint_did_peer_with_services(
+            didcomm.into_iter().chain(std::iter::once(tsp)).collect(),
+        )
+        .expect("mint two-service did:peer");
+
+        let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("local DID cache");
+        let resolved = resolver.resolve(&did).await.expect("did:peer resolves");
+        let types: Vec<String> = resolved
+            .doc
+            .service
+            .iter()
+            .map(|s| s.type_.clone().into_iter().collect::<Vec<_>>().join(","))
+            .collect();
+        let ids: Vec<String> = resolved
+            .doc
+            .service
+            .iter()
+            .map(|s| format!("{:?}", s.id))
+            .collect();
+        println!("service types: {types:?}");
+        println!("service ids:   {ids:?}");
+        assert!(
+            types.iter().any(|t| t.contains("DIDCommMessaging")),
+            "types {types:?}"
+        );
+        assert!(
+            types.iter().any(|t| t.contains("TSPTransport")),
+            "types {types:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_mock_advertises_both_transports_to_a_foreign_resolver() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_test_writer()
+            .try_init();
+        let mock = MockVta::start_with_transports().await;
+
+        let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("local DID cache");
+        let resolved = resolver
+            .resolve(mock.vta_did())
+            .await
+            .expect("a did:peer resolves offline in any resolver");
+
+        let types: Vec<String> = resolved
+            .doc
+            .service
+            .iter()
+            .map(|s| s.type_.clone().into_iter().collect::<Vec<_>>().join(","))
+            .collect();
+        assert!(
+            types.iter().any(|t| t.contains("DIDCommMessaging")),
+            "expected a DIDCommMessaging service, got {types:?}"
+        );
+        assert!(
+            types.iter().any(|t| t.contains("TSPTransport")),
+            "expected a TSPTransport service, got {types:?}"
+        );
+
+        mock.shutdown().await;
     }
 }

@@ -1,7 +1,7 @@
 [package]
 name = "vta-service"
 description = "Service for Verifiable Trust Agents operating in Verifiable Trust Communities"
-version = "0.14.25"
+version = "0.14.26"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -81,6 +81,23 @@ vsock-store = ["vti-common/vsock-store"]
 # do. Enable via a `[dev-dependencies]` `features = ["test-support"]`
 # entry in the downstream crate. Not meant for production builds.
 test-support = ["webvh", "dep:tempfile"]
+# Mediator-backed transports for `MockVta`: an embedded
+# `affinidi-messaging-test-mediator`, a `did:peer:2` VTA identity advertising
+# `DIDCommMessaging` + `TSPTransport` at it, and the **production** inbound
+# loop (`messaging::service::run_inbound_loop`) driving the real
+# `dispatch_trust_task_core` spine. Lets an external consumer drive a Trust
+# Task over DIDComm or TSP against a real dispatcher, which the REST-only
+# `MockVta` cannot.
+#
+# One socket serves both protocols (ADR 0005), so this is a single feature
+# rather than one per transport. Implies `tsp`, which implies `didcomm`.
+# Test-only — never in a production build.
+transport-harness = [
+    "test-support",
+    "tsp",
+    "rest",
+    "dep:affinidi-messaging-test-mediator",
+]
 
 [lib]
 name = "vta_service"
@@ -274,6 +291,13 @@ ciborium = "0.2"
 url = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tempfile = { version = "3", optional = true }
+# Embedded mediator for `MockVta::start_with_transports` (`transport-harness`).
+# A real dependency rather than a dev-dependency: `test-support` exists to serve
+# *external* consumers, and a dev-dependency would not be available to them.
+# `tsp` so the mediator routes raw-TSP frames, not just DIDComm.
+affinidi-messaging-test-mediator = { version = "0.2", optional = true, features = [
+    "tsp",
+] }
 libc = { workspace = true, optional = true }
 zeroize = { version = "1", features = ["derive"] }
 tower = { version = "0.5", features = ["limit"] }
