@@ -1,8 +1,8 @@
 # Approvals convergence — one model instead of three
 
 **Status:** partially landed. The model and its runtime surface shipped in #909;
-the shared gate reached the ACL and context REST routes in #912. Still open: the
-webvh update route (see below), and the trigger collapse.
+the shared gate reached every gated REST route in #912 and #913. Still open: the
+trigger collapse.
 
 ## What prompted it
 
@@ -123,19 +123,18 @@ An earlier draft of this note concluded the two must therefore land as one
 atomic change. That was wrong, and the split below is strictly better because it
 ships the security fix first:
 
-**Step 1 — add the shared gate (purely additive).** *Landed for the ACL and
-context routes.* `approvals::rest_gate()` is called in-handler by `POST /acl`,
-`PATCH /acl/{did}`, `POST /acl/{did}/change-role`, `DELETE /acl/{did}` and
-`DELETE /contexts/{id}`, with `RequireStepUp` left in place — REST is gated by
+**Step 1 — add the shared gate (purely additive).** *Landed.* `rest_gate()` is
+called in-handler by `POST /acl`, `PATCH /acl/{did}`,
+`POST /acl/{did}/change-role`, `DELETE /acl/{did}`, `DELETE /contexts/{id}` and
+`POST /contexts/{ctx}/dids/{scid}/update`, with `RequireStepUp` left in place — REST is gated by
 both the old floors and the PDP, so nothing is removed and no window opens.
 
-**Still open: `POST /contexts/{ctx}/dids/{scid}`.** The planner parses the gated
-payload as `UpdateDidWithDid { did, .. }` and the consent digest is taken over
-it, but that handler is addressed by **SCID**. Gating on what it holds would
-produce a digest disagreeing with the trust-task path's for the same update, so
-an approval obtained over one transport could not be consumed over the other.
-Resolve the SCID to its DID before gating; the parity test below extends to it
-directly once that lands.
+The webvh update route needed one extra step: it is addressed by **SCID** while
+the gate's payload is keyed on the DID, so it resolves the SCID first
+(`resolve_webvh_did`) and gates on `{did, …body}` — the shape the trust-task
+path sends. Gating on the SCID would have digested the same update differently
+per transport, so an approval obtained over one could not be consumed over the
+other: a subtler failure than no gate at all.
 
 **Step 2 — delete (pure removal).** Everything listed above. REST keeps its
 gating from step 1, so nothing has to be sequenced inside this step.

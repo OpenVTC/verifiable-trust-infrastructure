@@ -831,3 +831,80 @@ async fn rest_and_trust_task_reach_the_same_consent_decision() {
         "a refused grant must not have created an entry"
     );
 }
+
+/// The same parity claim for the webvh update route — the one a
+/// `webvh/dids/update` consent rule actually targets, and the harder of the two
+/// because REST addresses it by **SCID** while the gate's payload is keyed on
+/// the DID. Gating on what the handler holds would digest the same update
+/// differently per transport, so an approval taken over one could not be
+/// consumed over the other.
+///
+/// Note the URL: `…/dids/{scid}/update`, not `…/dids/{scid}`. An earlier draft
+/// of this test dropped the last segment, fell through to the 404 fallback, and
+/// came back `500 Unable To Extract Key!` from the rate limiter — which reads
+/// like a handler fault and is not one. Assert on the route you mean.
+#[tokio::test]
+async fn the_webvh_rest_route_is_gated_like_its_trust_task() {
+    let (router, ctx) = build_test_app_with(TestAppOptions {
+        provisionable_vta: true,
+        ..Default::default()
+    })
+    .await;
+    let requester = "did:key:z6MkTestRequester";
+    let token = ctx.mint_token(requester, "admin", vec![]).await;
+    let ops = approver(13);
+
+    let (did, scid) = create_did(&router, &ctx, &token).await;
+    let keys_before = update_keys_in_force(&ctx, &did).await;
+
+    {
+        let mut cfg = ctx.config.write().await;
+        cfg.policy.enforcement = true;
+        cfg.policy
+            .approver_sets
+            .insert("operators".into(), vec![ops.did.clone()]);
+    }
+    install_policy(&ctx, REQUIRE_CONSENT).await;
+
+    let new_doc = json!({
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "id": did,
+        "service": [{
+            "id": "#files",
+            "type": "FileStore",
+            "serviceEndpoint": "https://files.example.com/acme"
+        }]
+    });
+
+    let rest_req = Request::builder()
+        .method("POST")
+        .uri(format!("/contexts/default/dids/{scid}/update"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({ "document": new_doc })).unwrap(),
+        ))
+        .unwrap();
+    let resp = router.clone().oneshot(rest_req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let raw = String::from_utf8_lossy(&bytes).to_string();
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the webvh REST route must not bypass the consent rule: {raw}"
+    );
+    assert_eq!(body["error"], "auth:consent_required", "{raw}");
+    assert!(
+        body.get("challenge").is_some(),
+        "must carry the consent challenge: {raw}"
+    );
+
+    assert_eq!(
+        update_keys_in_force(&ctx, &did).await,
+        keys_before,
+        "a refused update must not have rotated the DID's update key"
+    );
+}

@@ -419,17 +419,27 @@ pub async fn update_did_handler(
     Path((_ctx_id, scid)): Path<(String, String)>,
     Json(body): Json<UpdateDidWebvhBody>,
 ) -> Result<Json<UpdateDidWebvhResult>, AppError> {
-    // NOT YET GATED — see `docs/05-design-notes/approvals-convergence.md`.
+    // The PDP gate. A webvh update silently rotates the DID's update key, which
+    // is exactly the effect an operator writes a `requireConsent` rule for.
     //
-    // This route is the other half of the consent bypass, and closing it needs
-    // one more step than the ACL and context routes did. The planner parses the
-    // gated payload as `UpdateDidWithDid { did, .. }` and the consent digest is
-    // taken over it, but this handler is addressed by **SCID**: gating on what
-    // it holds would produce a digest that disagrees with the trust-task path's
-    // for the very same update, so an approval obtained over one transport
-    // could not be consumed over the other. Resolving the SCID to its DID first
-    // is the fix, and it belongs with the change that can test it end to end
-    // rather than bolted on here.
+    // Gated on `{did, …body}` — the shape the trust-task path sends and digests
+    // — which is why the SCID this route is addressed by is resolved to its DID
+    // first. Gating on the SCID would digest the same update differently
+    // depending on how it arrived, so an approval obtained over one transport
+    // could not be consumed over the other: a subtler failure than no gate.
+    let did = operations::did_webvh::resolve_webvh_did(&state.webvh_ks, &scid).await?;
+    let mut gated = serde_json::to_value(&body)?;
+    if let Some(map) = gated.as_object_mut() {
+        map.insert("did".to_string(), serde_json::json!(did));
+    }
+    crate::trust_tasks::rest_gate(
+        &state,
+        &auth.0,
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
+        &gated,
+    )
+    .await?;
+
     let options = crate::trust_tasks::webvh::update_body_to_options(body)
         .map_err(|e| AppError::Validation(format!("invalid update body: {e:?}")))?;
     let did_resolver = state

@@ -42,6 +42,23 @@ pub(in crate::operations::did_webvh) async fn find_record_by_scid(
         .find(|r| r.scid == scid_or_did || r.did == scid_or_did))
 }
 
+/// Resolve a SCID **or** a full `did:webvh:…` to the canonical DID.
+///
+/// Exists for the REST update route, which is addressed by SCID while the PDP
+/// gate's payload — and therefore the consent digest an approver signs — is
+/// keyed on the DID, exactly as the trust-task path sends it. Without this the
+/// two transports would digest the same update differently, and an approval
+/// obtained over one could not be consumed over the other.
+pub async fn resolve_webvh_did(
+    webvh_ks: &KeyspaceHandle,
+    scid_or_did: &str,
+) -> Result<String, UpdateDidWebvhError> {
+    find_record_by_scid(webvh_ks, scid_or_did)
+        .await?
+        .map(|r| r.did)
+        .ok_or_else(|| UpdateDidWebvhError::NotFound(format!("SCID {scid_or_did} not found")))
+}
+
 /// Build a [`DIDWebVHState`] from a stored JSONL log string. Splits on
 /// newlines, deserializes each non-empty line as a `LogEntry`, then
 /// validates the chain so `validated_parameters` is populated.
