@@ -9759,7 +9759,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",
