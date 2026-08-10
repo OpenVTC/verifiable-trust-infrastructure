@@ -47,3 +47,13 @@ it:
 That places the loss on the receive side (the client's pickup loop or the
 mediator), not on the VTC's send. Recorded here so the next investigation starts
 from that, rather than re-examining a send path now known to be sound.
+
+Local reproduction was attempted and failed — 30 runs under CPU contention, all
+green — so the next CI occurrence is the only chance to observe it. To keep that
+chance from being wasted a fourth time, the test's default log filter now runs
+`affinidi_messaging_delivery` at `debug`, which prints `drain_once`'s per-tick
+`sent` / `retried` / `failed` report. A passing run shows `sent=2`; a failing run
+showing `sent=1` puts the loss in the sender's outbox, and `sent=2` puts it at
+the mediator or below. Three counters per 2s tick, printed only for a failing
+test — it costs nothing until it is needed, and it turns the next occurrence
+into evidence instead of another round of inference.
