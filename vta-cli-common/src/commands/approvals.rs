@@ -101,23 +101,34 @@ async fn save(client: &VtaClient, model: Model) -> CmdResult {
 /// `approvals list` — the rules and the sets they draw on.
 pub async fn cmd_list(client: &VtaClient) -> CmdResult {
     let model = load(client).await?;
+    render_model(&model.rules, &model.approver_sets)
+}
 
+/// Print the declarative model — the rules and the sets they draw on.
+///
+/// Shared with the **offline** `vta approvals list` break-glass, which reads the
+/// same row straight from fjall when the wire path is unreachable. One renderer
+/// on purpose: an operator diagnosing a lockout is comparing what the offline
+/// command prints against what they remember `pnm approvals list` printing, and
+/// two implementations of "what does this VTA require" would eventually disagree
+/// at exactly the moment that comparison matters most.
+pub fn render_model(rules: &[ApprovalRule], approver_sets: &ApproverSets) -> CmdResult {
     if crate::render::is_json_output() {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "rules": model.rules,
-                "approverSets": model.approver_sets,
+                "rules": rules,
+                "approverSets": approver_sets,
             }))?
         );
         return Ok(());
     }
 
-    if model.rules.is_empty() {
+    if rules.is_empty() {
         println!("No approval rules — every task runs on the caller's own authority.");
     } else {
         println!("Approval rules:");
-        for rule in &model.rules {
+        for rule in rules {
             println!("  {}", rule.task_type);
             match rule.requires {
                 Requires::Reauth => {
@@ -142,9 +153,9 @@ pub async fn cmd_list(client: &VtaClient) -> CmdResult {
         }
     }
 
-    if !model.approver_sets.is_empty() {
+    if !approver_sets.is_empty() {
         println!("\nApprover sets:");
-        for (name, members) in &model.approver_sets {
+        for (name, members) in approver_sets {
             println!("  {name}");
             for did in members {
                 println!("      {did}");

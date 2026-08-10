@@ -102,21 +102,51 @@ validation, deterministic Rego synthesis); the canonical
 explain}` and `pnm policy`; seed-once config; the consent gate resolving
 approver sets from the declarative row.
 
+## The offline break-glass
+
+*Landed (#915).* `vta approvals {list,remove,disable}` and
+`vta policy {list,delete}` read and write the policy keyspace directly, the way
+`vta services …` does for the DID document. This is what the retired
+`vta step-up disable` used to be for the config floors.
+
+Two design choices worth keeping:
+
+- **Read-mostly.** There is no offline `require`. Adding a gate is never an
+  emergency, and a break-glass path that can install one is a way to plant a
+  control that never passed through the authenticated surface.
+- **`approvals list` surfaces hand-authored modules by name.** The declarative
+  view deliberately refuses to show Rego it did not generate — a row whose module
+  said something other than its rules would make the printout a lie — but an
+  operator diagnosing a lockout who sees an empty rule list will otherwise
+  conclude nothing is gating them. `vta policy list/delete` is the other half:
+  a hand-authored module can deny the `policy/delete` that would remove it.
+
+Writing tests for it found two defects in the first draft, both in the same
+place: `list` and `disable` each parsed the declarative row *before* acting, so
+neither worked on an unparseable row — the state where every other command has
+already failed and this is all that is left. Parsing is now best-effort in both.
+
 ## Not yet landed
 
-**The offline `vta approvals` break-glass.** The retired `vta step-up` could
-disable an over-strict policy by editing the config file directly, which is what
-an operator reached for when the wire path had locked everyone out. A rule can
-lock an operator out the same way — `policy/*` is deliberately gateable, because
-two-person control over the gate itself is a feature — and the answer is a
-command that reads and writes the policy keyspace offline, the way
-`vta services …` does for the DID document. Nothing else in the convergence
-blocks on it, and nothing replaces it in the meantime.
+**`AclEntry.step_up_approver` / `step_up_require`.** Published wire fields across
+~250 VTA-side references (`operations/acl.rs` alone has 49) plus CLI flags.
+`step_up_require` is now *refused* on write rather than stored-and-ignored, so
+the field grants nothing, but the removal is its own slice with its own wire
+consequences.
 
-**`AclEntry.step_up_approver` / `step_up_require`.** Published wire fields on
-~35 vta-sdk sites plus CLI flags. `step_up_require` is now *refused* on write
-rather than stored-and-ignored, so the field grants nothing, but the removal
-itself is its own slice with its own wire consequences.
+**`trusted_presentation_verifiers`.** A config allowlist of verifier DIDs that
+auto-consent credential presentation; everything else defers
+(`operations::credential_exchange::ConsentPolicy`). Config-only, no runtime
+surface, invisible to `pnm approvals list` — the same defect class this
+convergence closed twice, on the credential-presentation path rather than the
+task path. It asks a genuinely different question ("may this verifier see my
+credentials?" vs "does this task need a human?"), so folding it in needs a design
+call rather than a mechanical port.
+
+**`policy/evaluate/0.3`.** Still not served: its `PolicyInput` marks `site` (a
+vault-flow `SiteTarget`) required, and there is no honest value for "would
+`acl/grant` need approval". Needs an upstream schema relaxation;
+`pnm approvals explain` answers from the rules instead.
 
 ### The live gap, and the order to close it
 
