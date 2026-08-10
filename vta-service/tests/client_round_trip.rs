@@ -177,8 +177,11 @@ async fn acl_expiry_survives_the_epoch_rfc3339_conversion() {
 ///
 /// These moved from five flat members into `stepUp{}` and `approve{}`. Both are
 /// authority-bearing: a dropped `approve` silently confers nothing (safe but
-/// wrong), and a dropped `stepUp.approver` removes the delegated approver a
-/// policy may depend on.
+/// wrong), and a dropped `stepUp.approver` loses a field a caller set.
+///
+/// `stepUp.require` is deliberately **not** part of this any more — see the test
+/// below. It is the one member of the nesting that is now refused rather than
+/// carried.
 #[tokio::test]
 async fn acl_step_up_and_approve_survive_their_canonical_nesting() {
     let mock = MockVta::start().await;
@@ -189,8 +192,7 @@ async fn acl_step_up_and_approve_survive_their_canonical_nesting() {
         .create_acl(
             CreateAclRequest::new(subject, "application")
                 .contexts(vec!["ctx1".into()])
-                .step_up_approver("did:key:z6MkTheApprover")
-                .step_up_require("delegated"),
+                .step_up_approver("did:key:z6MkTheApprover"),
         )
         .await
         .expect("grant with step-up round-trips");
@@ -198,14 +200,45 @@ async fn acl_step_up_and_approve_survive_their_canonical_nesting() {
     assert_eq!(
         created.step_up_approver(),
         Some("did:key:z6MkTheApprover"),
-        "the delegated approver must survive the nesting"
+        "the approver field must survive the nesting"
     );
-    assert_eq!(created.step_up_require(), Some("delegated"));
 
     // And again on the read path, which is a different response type.
     let fetched = client.get_acl(subject).await.expect("show round-trips");
     assert_eq!(fetched.step_up_approver(), Some("did:key:z6MkTheApprover"));
-    assert_eq!(fetched.step_up_require(), Some("delegated"));
+}
+
+/// `stepUp.require` is refused, not carried.
+///
+/// It used to round-trip here, and that assertion was correct while a per-entry
+/// override could raise an `[auth.step_up]` floor. The floors are retired, so
+/// there is no floor for an override to raise: storing one would echo back on
+/// every read as a gate that does not exist, which is a worse outcome than
+/// refusing the write. The refusal has to reach the client — a caller that sets
+/// the field and gets a success has been told something false.
+#[tokio::test]
+async fn acl_step_up_require_is_refused_rather_than_stored() {
+    let mock = MockVta::start().await;
+    let client = admin_client(&mock).await;
+
+    let err = client
+        .create_acl(
+            CreateAclRequest::new("did:key:z6MkOverrideSubject", "application")
+                .contexts(vec!["ctx1".into()])
+                .step_up_require("delegated"),
+        )
+        .await
+        .expect_err("a per-entry step-up override must be refused");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("no longer honoured"),
+        "the refusal must say the field is dead, got: {msg}"
+    );
+    assert!(
+        msg.contains("pnm approvals require"),
+        "and name what replaces it, got: {msg}"
+    );
 }
 
 // ── Config ──────────────────────────────────────────────────────────
