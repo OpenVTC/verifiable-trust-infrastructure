@@ -31,10 +31,6 @@ use std::time::Duration;
 
 use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
 use affinidi_secrets_resolver::secrets::Secret;
-use axum::extract::FromRequestParts;
-use axum::http::StatusCode;
-use axum::http::request::Parts;
-use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose;
 use serde_json::{Value, json};
@@ -61,11 +57,6 @@ use vti_common::auth::step_up::{
     ConsumeOutcome, consume_pending_step_up, new_pending_step_up, store_pending_step_up,
 };
 use vti_common::store::KeyspaceHandle;
-
-// The step-up gate engine lives in the operations layer (P2.4); the
-// route-layer wrappers below (`require_step_up`, the `RequireStepUp` extractor)
-// turn its `StepUpDecision` into a `403`/reject + approve-request push.
-use crate::operations::step_up::{StepUpDecision, resolve_step_up};
 
 use super::helpers::{TrustTaskOutcome, reject_with, success_response};
 
@@ -670,81 +661,6 @@ async fn mint_pending_step_up(
     Ok(doc)
 }
 
-/// Mint a pending step-up and return the REST `403` that *carries the
-/// approve-request* an AAL1 caller must satisfy to elevate.
-///
-/// This is the relying-party initiation half (the chosen "403 carries the
-/// approve-request" trigger model) for REST routes; applied via the
-/// [`RequireStepUp`] extractor.
-pub(crate) async fn issue_step_up_challenge(
-    sessions_ks: &KeyspaceHandle,
-    vta_did: &str,
-    secret: &Secret,
-    subject: &str,
-    recipient: &str,
-    approver_any: bool,
-    session_id: &str,
-    reason: &str,
-    authorization_context: Option<&Value>,
-) -> Response {
-    let approve_request = match mint_pending_step_up(
-        sessions_ks,
-        vta_did,
-        secret,
-        subject,
-        recipient,
-        approver_any,
-        session_id,
-        reason,
-        authorization_context,
-    )
-    .await
-    {
-        Ok(ar) => ar,
-        Err(()) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [(axum::http::header::CONTENT_TYPE, "application/json")],
-                br#"{"error":"internal_error"}"#.to_vec(),
-            )
-                .into_response();
-        }
-    };
-    // Backward-compatible with the prior 403 shape (`error` + `requiredAcr`),
-    // plus the carried approve-request a step-up-aware client acts on.
-    let body = json!({
-        "error": "step_up_required",
-        "requiredAcr": STEP_UP_TARGET_ACR,
-        "approveRequest": approve_request,
-    });
-    (
-        StatusCode::FORBIDDEN,
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        serde_json::to_vec(&body).unwrap_or_default(),
-    )
-        .into_response()
-}
-
-/// REST `403` for the **fail-closed** case: the operation requires AAL2 but no
-/// step-up method exists for the caller (a `delegated` floor with no
-/// `stepUp.approver` on the caller's ACL entry). Unlike
-/// [`issue_step_up_challenge`], this carries **no** approve-request — there's
-/// nothing the caller can do to elevate until an operator registers an
-/// approver, so we deny rather than hand back a request that can't be satisfied.
-fn step_up_denied_response() -> Response {
-    let body = json!({
-        "error": "step_up_required",
-        "requiredAcr": STEP_UP_TARGET_ACR,
-        "reason": "no step-up approver is configured for this subject; an operator must register one",
-    });
-    (
-        StatusCode::FORBIDDEN,
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        serde_json::to_vec(&body).unwrap_or_default(),
-    )
-        .into_response()
-}
-
 /// Trust Task `type` of a step-up approve-request. 0.2 — both fielded approver
 /// stacks (vta-mobile-core #871, the browser plugin) accept 0.1 and 0.2 request
 /// URIs.
@@ -1031,110 +947,19 @@ fn wake_reply_status(envelope_body: &Value) -> Option<push_wake::ResponseStatus>
         .and_then(|s| serde_json::from_value(s.clone()).ok())
 }
 
-/// Trust-task analogue of [`issue_step_up_challenge`]: enforce a stepped-up
-/// (AAL2) session inside a dispatcher handler.
-///
-/// Returns `None` when the session already satisfies AAL2. Otherwise mints a
-/// pending step-up and returns a routed **reject** whose `details` carry the
-/// `approveRequest`, mirroring the REST `403` so a step-up-aware client acts on
-/// it the same way over either transport.
-///
-/// Call it *after* the handler's role check, so a caller lacking the role still
-/// gets a permission error rather than a step-up prompt.
-pub(super) async fn require_step_up(
-    state: &AppState,
-    auth: &AuthClaims,
-    op_class: &str,
-    payload: &Value,
-) -> Option<RejectReason> {
-    if auth.acr == STEP_UP_TARGET_ACR {
-        return None;
-    }
-    // Trust-task gated ops (grant, change-role, revoke, context-delete,
-    // key-revoke) are all escalating — they never qualify for the
-    // non-escalation carve-out.
-    let (recipient, approver_any) =
-        match resolve_step_up(&state.config, &state.acl_ks, op_class, &auth.did, false).await {
-            StepUpDecision::Allow => return None,
-            StepUpDecision::Require { recipient } => (recipient, false),
-            StepUpDecision::RequireAny => (String::new(), true),
-            StepUpDecision::Deny => {
-                return Some(RejectReason::TaskFailed {
-                    reason: "auth:step_up_required".to_string(),
-                    details: Some(json!({
-                        "requiredAcr": STEP_UP_TARGET_ACR,
-                        "reason": "no step-up approver is configured for this subject",
-                    })),
-                });
-            }
-        };
-    let vta_did = state
-        .config
-        .read()
-        .await
-        .vta_did
-        .clone()
-        .unwrap_or_default();
-    // A gated request MAY carry a structured authorization context (e.g. a
-    // Cierge cross-domain share / spend / tool ask) at
-    // `payload.authorizationContext`. Thread it into the approve-request so the
-    // approver's device renders *what* is being authorized, and prefer its human
-    // `summary` as the `reason` so a context-unaware renderer still shows
-    // something meaningful.
-    let (reason, authorization_context) = reason_and_context(payload);
-    let secret = match load_step_up_signing_secret(state, &vta_did).await {
-        Ok(s) => s,
-        Err(()) => {
-            return Some(RejectReason::InternalError {
-                reason: "failed to initiate step-up".to_string(),
-            });
-        }
-    };
-    let reject = match mint_pending_step_up(
-        &state.sessions_ks,
-        &vta_did,
-        &secret,
-        &auth.did,
-        &recipient,
-        approver_any,
-        &auth.session_id,
-        reason,
-        authorization_context,
-    )
-    .await
-    {
-        Ok(approve_request) => {
-            // Delegated mode: proactively push the approve-request to the
-            // approver's device over DIDComm. Best-effort — the carried
-            // `approveRequest` below remains the relay fallback. Skipped for
-            // `delegated-any` (no single approver device to target).
-            if !approver_any {
-                maybe_push_step_up(state, &recipient, &auth.did, &approve_request).await;
-            }
-            RejectReason::TaskFailed {
-                reason: "auth:step_up_required".to_string(),
-                details: Some(json!({
-                    "requiredAcr": STEP_UP_TARGET_ACR,
-                    "approveRequest": approve_request,
-                })),
-            }
-        }
-        Err(()) => RejectReason::InternalError {
-            reason: "failed to initiate step-up".to_string(),
-        },
-    };
-    Some(reject)
-}
-
 /// Initiate a **self-approve** step-up for a task the Policy Decision Point
-/// decided requires it (a Rego `requireStepUp`), independent of the config
-/// floors. Mints a `PendingStepUp` whose approver is the subject itself and
-/// rejects the task with the `approve-request` — the caller elevates their own
-/// session (via a stronger factor) and re-submits.
+/// decided requires it (a rule's `requireStepUp`). Mints a `PendingStepUp`
+/// whose approver is the subject itself and rejects the task with the
+/// `approve-request` — the caller elevates their own session (via a stronger
+/// factor) and re-submits.
 ///
-/// This is the policy-driven analogue of [`require_step_up`], which resolves the
-/// approver from config/ACL. Delegated (someone-else-approves) approval is the
-/// job of the consent flow, not step-up.
+/// This is the only way a step-up is initiated. It replaced `require_step_up`,
+/// which resolved an approver from the `[auth.step_up]` floors and could
+/// therefore address the request to a third party. Someone-else-approves is the
+/// consent flow's job (`requireConsent` + an approver set), which carries a
+/// threshold, re-checks at consume time that the approvers are still
+/// authorized, and shows the human a signed statement of the effects —
+/// none of which a delegated step-up floor ever did.
 pub(super) async fn initiate_self_step_up(
     state: &AppState,
     auth: &AuthClaims,
@@ -1185,18 +1010,6 @@ pub(super) async fn initiate_self_step_up(
     }
 }
 
-/// Stable operation-class identifiers used to resolve step-up floors.
-/// These are the gated VTA operations; they mirror the canonical
-/// `acl/*` / `context/*` / `key/*` slugs the `auth/step-up/policy` spec uses for
-/// its `Floor.operation`. Re-exported from [`vti_common::auth::step_up::op_class`]
-/// so the gate and the policy-management `unknownOperation` check share one
-/// source of truth.
-// The op-class constants now live with the gate engine in
-// `operations::step_up`; re-export them here so this module's handlers,
-// extractor markers, and the `super::step_up::op::*` call sites across the
-// trust-task slices keep their path unchanged.
-pub use crate::operations::step_up::op;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1204,7 +1017,6 @@ mod tests {
     use affinidi_data_integrity::crypto_suites::CryptoSuite;
     use affinidi_data_integrity::prepare_sign_input;
     use ed25519_dalek::{Signer, SigningKey};
-    use http_body_util::BodyExt;
     use multibase::Base;
     use serde_json::json;
 
@@ -1264,8 +1076,16 @@ mod tests {
         );
     }
 
+    /// The minted approve-request is well-formed, signed, and bound to a
+    /// pending step-up the matching approve-response can consume.
+    ///
+    /// This drove `issue_step_up_challenge` — the REST `403`-shaping wrapper —
+    /// until the extractor that called it was retired with the config floors.
+    /// The 403 shape is now `AppError::ApprovalRequired`'s, covered where that
+    /// lives; what is specific to step-up, and what this keeps, is the document
+    /// and the pending record behind it.
     #[tokio::test]
-    async fn issue_step_up_challenge_mints_pending_and_403s() {
+    async fn minting_a_step_up_binds_a_pending_and_signs_the_request() {
         use vti_common::auth::step_up::get_pending_step_up;
         use vti_common::config::StoreConfig;
         use vti_common::store::Store;
@@ -1283,25 +1103,23 @@ mod tests {
         let (vta_did, mb) = did_key(&sk);
         let secret = issuer_secret(&sk, &format!("{vta_did}#{mb}"));
 
-        let resp = issue_step_up_challenge(
-            &ks,
-            &vta_did,
-            &secret,
-            "did:key:zHolder",
-            // self-approval: recipient == subject
-            "did:key:zHolder",
-            false,
-            "sess-9",
-            "rotate keys",
-            None,
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let v = json!({
+            "approveRequest": mint_pending_step_up(
+                &ks,
+                &vta_did,
+                &secret,
+                "did:key:zHolder",
+                // self-approval: recipient == subject
+                "did:key:zHolder",
+                false,
+                "sess-9",
+                "rotate keys",
+                None,
+            )
+            .await
+            .expect("mint succeeds"),
+        });
 
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(v["error"], "step_up_required");
-        assert_eq!(v["requiredAcr"], "aal2");
         assert_eq!(
             v["approveRequest"]["type"],
             "https://trusttasks.org/spec/auth/step-up/approve-request/0.2"
@@ -1319,6 +1137,10 @@ mod tests {
         let challenge = v["approveRequest"]["payload"]["challenge"]
             .as_str()
             .expect("challenge string");
+        assert!(
+            challenge.len() >= 16,
+            "challenge must carry ≥128 bits: {challenge}"
+        );
 
         // The approve-request is signed (spec: proof REQUIRED) — an
         // eddsa-jcs-2022 assertionMethod proof whose verificationMethod DID is
@@ -1400,22 +1222,22 @@ mod tests {
         let (vta_did, mb) = did_key(&sk);
         let secret = issuer_secret(&sk, &format!("{vta_did}#{mb}"));
 
-        let resp = issue_step_up_challenge(
-            &ks,
-            &vta_did,
-            &secret,
-            "did:key:zHolder",
-            "did:key:zHolder",
-            false,
-            "sess-ctx",
-            "finance wants to share salaryBand with travel",
-            Some(&ctx),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let v = json!({
+            "approveRequest": mint_pending_step_up(
+                &ks,
+                &vta_did,
+                &secret,
+                "did:key:zHolder",
+                "did:key:zHolder",
+                false,
+                "sess-ctx",
+                "finance wants to share salaryBand with travel",
+                Some(&ctx),
+            )
+            .await
+            .expect("mint succeeds"),
+        });
 
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&bytes).unwrap();
         // The `ext` context rides *inside* the signed surface — the proof
         // covers it (SPEC: "The optional `ext` extension is part of the signed
         // surface").
