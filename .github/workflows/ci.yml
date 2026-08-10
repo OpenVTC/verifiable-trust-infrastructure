@@ -298,6 +298,16 @@ jobs:
           cargo test -p vta-service --bin vta --features config-seed setup::interactive
           cargo test -p vta-service --bin vta --features config-seed,vault-secrets,k8s-secrets setup::interactive
 
+      # `transport-harness` is not a default feature, so `cargo test
+      # --workspace` never compiles `MockVta::start_with_transports` — the
+      # harness that exists so an *external* consumer can drive a Trust Task
+      # over DIDComm/TSP against the real dispatch spine. Left to the default
+      # job, a refactor breaks it silently and the consumer finds out. It also
+      # runs a real embedded mediator and a real websocket handshake, so it is
+      # a behaviour test, not a compile check — run it, don't just build it.
+      - name: vta-service mediator-backed transport harness
+        run: cargo test -p vta-service --features transport-harness transport_harness_tests
+
   enclave:
     # The Nitro enclave binary uses a TEE-only feature combo that the
     # default `check` job never touches. Linux-only because vsock-store
