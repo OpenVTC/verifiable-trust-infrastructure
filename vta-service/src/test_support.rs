@@ -1860,6 +1860,10 @@ mod transport_harness_tests {
 
     #[tokio::test]
     async fn the_mock_advertises_both_transports_to_a_foreign_resolver() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_test_writer()
+            .try_init();
         let mock = MockVta::start_with_transports().await;
 
         let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
