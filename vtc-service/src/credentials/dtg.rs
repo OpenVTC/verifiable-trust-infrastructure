@@ -353,3 +353,141 @@ mod tests {
         );
     }
 }
+
+/// The catalog's wire shape, pinned.
+///
+/// The point of minting through `dtg-credentials` is that every issuer in the
+/// ecosystem emits the same document, so what this crate decides — the
+/// `@context` URIs, their order, and the `type` array — *is* the interop
+/// contract. It is also the part a dependency bump can change without changing
+/// a single line here: the constructors keep their signatures, the code keeps
+/// compiling, and every credential the VTC mints quietly becomes a different
+/// document.
+///
+/// The tests above assert `type` and were the whole of the coverage; nothing
+/// asserted `@context`. That gap is why this exists. Verified byte-identical
+/// across the 0.1.3 → 0.2.0 bump by emitting under both and diffing — this test
+/// is what makes the *next* bump answerable without repeating that.
+///
+/// A failure here is not necessarily a defect: the catalog is allowed to move.
+/// It means the wire form changed, so the change is deliberate, coordinated with
+/// the other issuers, and reflected in the values below.
+#[cfg(test)]
+mod catalog_wire_shape {
+    use super::*;
+
+    const TEST_DID: &str = "did:web:acme.example";
+    const CONTEXT: [&str; 2] = [
+        "https://www.w3.org/ns/credentials/v2",
+        "https://firstperson.network/credentials/dtg/v1",
+    ];
+
+    fn signer() -> LocalSigner {
+        LocalSigner::from_ed25519_seed(TEST_DID.into(), &[7u8; 32])
+    }
+
+    /// `@context` and `type`, exactly, in order. Order matters in JSON-LD: the
+    /// later context overlays the earlier, so a swap changes what the terms mean.
+    fn assert_shape(doc: &Value, expected_types: &[&str], kind: &str) {
+        let ctx: Vec<String> = serde_json::from_value(doc["@context"].clone())
+            .unwrap_or_else(|e| panic!("{kind}: @context is not a string array: {e}"));
+        assert_eq!(ctx, CONTEXT, "{kind}: @context drifted");
+
+        let types: Vec<String> = serde_json::from_value(doc["type"].clone())
+            .unwrap_or_else(|e| panic!("{kind}: type is not a string array: {e}"));
+        assert_eq!(types, expected_types, "{kind}: type array drifted");
+    }
+
+    #[tokio::test]
+    async fn membership_credential_wire_shape() {
+        let doc = issue_membership(
+            &signer(),
+            "did:key:zM",
+            None,
+            None,
+            Duration::days(30),
+            true,
+        )
+        .await
+        .expect("issue VMC");
+        assert_shape(
+            &doc,
+            &[
+                "VerifiableCredential",
+                "DTGCredential",
+                "MembershipCredential",
+                // Personhood rides as an extra type, not a separate credential.
+                "PersonhoodCredential",
+            ],
+            "VMC",
+        );
+    }
+
+    #[tokio::test]
+    async fn membership_without_personhood_drops_only_that_type() {
+        let doc = issue_membership(
+            &signer(),
+            "did:key:zM",
+            None,
+            None,
+            Duration::days(30),
+            false,
+        )
+        .await
+        .expect("issue VMC");
+        assert_shape(
+            &doc,
+            &[
+                "VerifiableCredential",
+                "DTGCredential",
+                "MembershipCredential",
+            ],
+            "VMC (no personhood)",
+        );
+    }
+
+    #[tokio::test]
+    async fn endorsement_credential_wire_shape() {
+        let doc = issue_endorsement(
+            &signer(),
+            "did:key:zM",
+            serde_json::json!({ "type": "CommunityRole", "role": "member" }),
+            None,
+            None,
+            Duration::days(30),
+        )
+        .await
+        .expect("issue VEC");
+        assert_shape(
+            &doc,
+            &[
+                "VerifiableCredential",
+                "DTGCredential",
+                "EndorsementCredential",
+            ],
+            "VEC",
+        );
+        // The caller-supplied endorsement rides verbatim — `recognition` parses
+        // this exact path for cross-community role verification.
+        assert_eq!(
+            doc["credentialSubject"]["endorsement"]["type"],
+            "CommunityRole"
+        );
+    }
+
+    #[tokio::test]
+    async fn invitation_credential_wire_shape() {
+        let doc = issue_invitation(&signer(), "did:key:zM", None, None, Duration::days(30), &[])
+            .await
+            .expect("issue VIC");
+        assert_shape(
+            &doc,
+            &[
+                "VerifiableCredential",
+                "DTGCredential",
+                "InvitationCredential",
+            ],
+            "VIC",
+        );
+    }
+}

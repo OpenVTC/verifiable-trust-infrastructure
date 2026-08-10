@@ -62,7 +62,12 @@ pub enum VtcRole {
     /// Approves / rejects join requests; policy-gated removal of
     /// other members.
     Moderator,
-    /// Issues VEC / VWC / RCard on behalf of the community.
+    /// Issues VEC / VWC on behalf of the community.
+    ///
+    /// The R-Card was dropped from this list in dtg-credentials 0.2: Working
+    /// Draft 01 removed it as a DTG credential *type* — it is a verifiable data
+    /// structure, to be defined by the planned DTG VDS specification — so it is
+    /// not something an Issuer mints as a credential.
     Issuer,
     /// Standard member. Default role on join.
     Member,
