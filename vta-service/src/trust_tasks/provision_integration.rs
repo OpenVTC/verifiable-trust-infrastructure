@@ -48,9 +48,28 @@ pub(super) async fn handle_request(
         Err(resp) => return resp,
     };
 
-    // Verify the inbound BootstrapRequest's VP before doing any
-    // state changes.
-    let verified = match req.request.verify() {
+    // Verify the inbound BootstrapRequest's VP before doing any state changes,
+    // over the JSON **as received** — the same thing the DIDComm handler does.
+    //
+    // `req.request.verify()` re-serialises the typed struct first, which
+    // re-imposes this crate's serde casing on the very bytes the holder signed.
+    // That only worked while both sides happened to agree: the moment either
+    // one's casing moves, the proof breaks over a document nobody tampered
+    // with. `verify_value` takes the wire bytes, so the signed form survives
+    // JCS canonicalisation and the typed view is built from it separately.
+    let request_raw = match doc.payload.get("request") {
+        Some(v) => v.clone(),
+        None => {
+            return reject_with(
+                &doc,
+                trust_tasks_rs::RejectReason::MalformedRequest {
+                    reason: "provision-integration request missing 'request' field".into(),
+                },
+            );
+        }
+    };
+    let verified = match vta_sdk::provision_integration::BootstrapRequest::verify_value(request_raw)
+    {
         Ok(v) => v,
         Err(e) => {
             return reject_with(
