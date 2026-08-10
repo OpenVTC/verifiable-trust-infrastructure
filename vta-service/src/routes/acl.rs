@@ -14,7 +14,6 @@ use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::error::AppError;
 use crate::operations;
 use crate::server::AppState;
-use crate::trust_tasks::{AclChangeRoleOp, AclGrantOp, AclRevokeOp, AclSwapKeyOp, RequireStepUp};
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -89,17 +88,11 @@ pub type CreateAclRequest = vta_sdk::protocols::acl_management::create::CreateAc
 )]
 pub async fn create_acl(
     auth: ManageAuth,
-    // Role first, step-up second: a caller lacking the role gets a permission
-    // error; an authorized AAL1 caller gets the step-up `403`. ACL mutations
-    // require AAL2 (operator policy).
-    _step_up: RequireStepUp<AclGrantOp>,
     State(state): State<AppState>,
     Json(req): Json<CreateAclRequest>,
 ) -> Result<(StatusCode, Json<CreateAclResponseBody>), AppError> {
     // The PDP gate, in-handler because the consent digest is taken over the
-    // payload. Without this the extractor above is the only thing in front of
-    // the route, and it knows about step-up floors only — so a `requireConsent`
-    // rule an operator wrote bound trust-task callers and silently not REST ones.
+    // payload — an extractor cannot see the body.
     //
     // Gated on the whole body rather than on `req.entry`: the trust-task path
     // digests `doc.payload`, the entire `{entry: …}` object, and the two must
@@ -212,7 +205,6 @@ where
 )]
 pub async fn update_acl(
     auth: AdminAuth,
-    _step_up: RequireStepUp<AclChangeRoleOp>,
     State(state): State<AppState>,
     Path(did): Path<String>,
     Json(req): Json<UpdateAclRequest>,
@@ -303,7 +295,6 @@ pub struct ChangeRoleRequest {
 )]
 pub async fn change_role(
     auth: AdminAuth,
-    _step_up: RequireStepUp<AclChangeRoleOp>,
     State(state): State<AppState>,
     Path(did): Path<String>,
     Json(req): Json<ChangeRoleRequest>,
@@ -344,7 +335,6 @@ pub async fn change_role(
 )]
 pub async fn delete_acl(
     auth: ManageAuth,
-    _step_up: RequireStepUp<AclRevokeOp>,
     State(state): State<AppState>,
     Path(did): Path<String>,
 ) -> Result<StatusCode, AppError> {
@@ -369,12 +359,20 @@ pub async fn delete_acl(
 /// Field-name aliases let the canonical variant accept both `link_proof`
 /// (snake_case from a Rust producer) and `linkProof` (camelCase from a TS
 /// producer); the spec is camelCase.
-#[derive(Debug, Deserialize)]
+///
+/// `Serialize` so the handler can hand the body to the PDP gate. It serializes
+/// **camelCase**, matching the canonical payload the trust-task path digests —
+/// the snake_case spellings are read-aliases only. If this emitted
+/// `current_subject`, the same rotation would digest differently depending on
+/// which transport carried it, and an approval obtained over one could not be
+/// consumed over the other.
+#[derive(Debug, Deserialize, serde::Serialize)]
 #[serde(untagged)]
 #[derive(utoipa::ToSchema)]
 pub enum SwapAclRequest {
     /// Canonical Trust Task `acl/swap-key/0.1` body. Discriminated by the
     /// presence of `linkProof` (camelCase per spec, with snake_case alias).
+    #[serde(rename_all = "camelCase")]
     Canonical {
         #[serde(alias = "current_subject")]
         current_subject: String,
@@ -386,8 +384,10 @@ pub enum SwapAclRequest {
         /// log — will be wired through when the swap_acl operation signature
         /// grows a reason parameter. Tolerating the field now means existing
         /// clients can populate it without breaking on a subsequent migration.
-        #[serde(default)]
-        #[allow(dead_code)]
+        ///
+        /// Skipped when absent so the digest of a body that omitted it matches
+        /// the trust-task payload that likewise omitted it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
     /// Legacy FPN-private body.
@@ -414,10 +414,29 @@ pub enum SwapAclRequest {
 )]
 pub async fn swap_acl(
     auth: AuthClaims,
-    _step_up: RequireStepUp<AclSwapKeyOp>,
     State(state): State<AppState>,
     Json(req): Json<SwapAclRequest>,
 ) -> Result<Json<CreateAclResultBody>, AppError> {
+    // The PDP gate. This route carried the `RequireStepUp<AclSwapKeyOp>`
+    // extractor instead — the one gated REST route #912 left on the old
+    // trigger, because its floor had a non-escalation carve-out the shared gate
+    // has no concept of. Retiring the floors takes the extractor with it, so the
+    // gate has to be here, or self-service key rotation would be the one ACL
+    // mutation a `requireConsent` rule bound over trust tasks and silently not
+    // over REST.
+    //
+    // Digested over the canonical `acl/swap-key/0.1` payload so an approval is
+    // interchangeable between the two transports. The legacy `{presentation}`
+    // body has no canonical form; it is digested as it arrived, which is
+    // consistent — a legacy caller can only re-submit the same legacy body.
+    crate::trust_tasks::rest_gate(
+        &state,
+        &auth,
+        vta_sdk::trust_tasks::TASK_ACL_SWAP_KEY_0_1,
+        &serde_json::to_value(&req)?,
+    )
+    .await?;
+
     let (presentation, claimed_new_subject) = match req {
         SwapAclRequest::Canonical {
             current_subject,

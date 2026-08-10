@@ -676,6 +676,11 @@ async fn update_acl_via_didcomm_carries_every_member() {
         label: None,
         allowed_contexts: Some(vec!["ctx-a".into()]),
         step_up_approver: Some("did:key:zApprover".into()),
+        // Still on the wire type, and still serialized — but a real VTA now
+        // *refuses* this field rather than storing it (the per-entry override
+        // raised an `[auth.step_up]` floor, and the floors are retired). The
+        // responder here is a mock that accepts anything, so this asserts
+        // serialization only. Don't read it as end-to-end support.
         step_up_require: Some("delegated".into()),
         approve_scope: Some(vta_sdk::acl::ApproveScope::Contexts(vec!["ctx-b".into()])),
         allowed_keys: Some(Some(vec!["tenant-key-a".into()])),

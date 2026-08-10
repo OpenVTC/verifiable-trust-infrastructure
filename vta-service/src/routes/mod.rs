@@ -22,7 +22,6 @@ mod passkey_vms;
 mod protocol;
 #[cfg(feature = "webvh")]
 mod self_hosted_did;
-mod step_up;
 mod vta;
 
 use std::sync::Arc;
@@ -421,11 +420,6 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
             did_templates::delete_context_handler
         ))
         .routes(routes!(did_templates::render_context_handler))
-        // Step-up policy management (read posture; super-admin set).
-        .routes(routes!(
-            step_up::get_step_up_policy,
-            step_up::put_step_up_policy
-        ))
         // ACL routes (flattened for consistency)
         .routes(routes!(acl::list_acl, acl::create_acl))
         // Static segment registered before `/acl/{did}` so it isn't captured
@@ -724,7 +718,6 @@ mod cors_tests {
             "/audit/logs",
             "/cache/{key}",
             "/config",
-            "/step-up/policy",
             "/capabilities",
             "/vta/restart",
             "/backup/export",

@@ -2922,7 +2922,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.3",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -4584,7 +4584,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -6258,7 +6258,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pnm-cli"
-version = "0.11.20"
+version = "0.11.21"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -6450,7 +6450,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.43",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -6489,7 +6489,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -9223,7 +9223,7 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.10.26"
+version = "0.10.27"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -9248,7 +9248,7 @@ dependencies = [
 
 [[package]]
 name = "vta-config"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "serde",
  "serde_ignored",
@@ -9360,7 +9360,7 @@ dependencies = [
 
 [[package]]
 name = "vta-policy"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "multibase",
@@ -9380,7 +9380,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.21.9"
+version = "0.21.10"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -9442,7 +9442,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.14.21"
+version = "0.14.22"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -9759,7 +9759,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",

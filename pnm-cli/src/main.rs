@@ -283,7 +283,6 @@ async fn main() {
         Commands::Acl { command } => commands::acl::run(&client, command).await,
         Commands::Approvals { command } => commands::approvals::run(&client, command).await,
         Commands::Policy { command } => commands::policy::run(&client, command).await,
-        Commands::StepUp { command } => commands::step_up::run(&client, command).await,
         Commands::Device { command } => commands::device::run(&client, command).await,
         Commands::Vault { command } => commands::vault::run(&client, command).await,
         Commands::CredVault { command } => commands::cred_vault::run(&client, command).await,

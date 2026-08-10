@@ -104,12 +104,19 @@ approver sets from the declarative row.
 
 ## Not yet landed
 
-**The trigger collapse.** Retire `[auth.step_up]` and
-`[[policy.require_consent]]` (boot refusal — a silently dropped floor is a
-security downgrade), delete `StepUpMode::{Delegated,DelegatedAny}`,
-`AclEntry.step_up_approver` / `step_up_require`, `op_class::ALL`, `op_class_for`,
-`resolve_step_up`, and arm (1) of `policy_gate`, leaving the PDP as the only
-trigger. Add the offline `vta approvals` break-glass.
+**The offline `vta approvals` break-glass.** The retired `vta step-up` could
+disable an over-strict policy by editing the config file directly, which is what
+an operator reached for when the wire path had locked everyone out. A rule can
+lock an operator out the same way — `policy/*` is deliberately gateable, because
+two-person control over the gate itself is a feature — and the answer is a
+command that reads and writes the policy keyspace offline, the way
+`vta services …` does for the DID document. Nothing else in the convergence
+blocks on it, and nothing replaces it in the meantime.
+
+**`AclEntry.step_up_approver` / `step_up_require`.** Published wire fields on
+~35 vta-sdk sites plus CLI flags. `step_up_require` is now *refused* on write
+rather than stored-and-ignored, so the field grants nothing, but the removal
+itself is its own slice with its own wire consequences.
 
 ### The live gap, and the order to close it
 
@@ -136,8 +143,29 @@ path sends. Gating on the SCID would have digested the same update differently
 per transport, so an approval obtained over one could not be consumed over the
 other: a subtler failure than no gate at all.
 
-**Step 2 — delete (pure removal).** Everything listed above. REST keeps its
-gating from step 1, so nothing has to be sequenced inside this step.
+**Step 2 — delete (pure removal).** *Landed (#914).* REST kept its gating from
+step 1, so nothing had to be sequenced inside this step. Two things turned out
+not to be pure removal:
+
+- **`POST /acl/swap` had no gate behind its extractor.** Step 1 skipped it
+  because its floor carried the `allowAal1IfNonEscalating` carve-out, which the
+  shared gate has no concept of. Deleting the extractor without wiring the gate
+  would have made self-service key rotation the one ACL mutation a
+  `requireConsent` rule bound over trust tasks and silently not over REST. Same
+  for the legacy DIDComm `handle_swap_acl`, which does not route through the
+  dispatcher: the floor check was the only approvals check it had. Both now call
+  `rest_gate`.
+- **`input.consumer.acr` was omitted for an un-elevated session**, so
+  `input.consumer.acr != "aal2"` — the rule an operator would naturally write to
+  demand step-up — was *undefined* rather than true, and would silently never
+  fire for exactly the sessions it targeted. Harmless while the floors did the
+  gating. It now reports `"aal1"`.
+
+The retirement also had to reach *past* the code: a VTA upgraded from a release
+carrying `[[policy.require_consent]]` would have kept enforcing the
+`config:require-consent` row its last boot synthesized, with nothing left able to
+explain or remove it. The reconciler became a one-way cleanup that deletes the row
+on the first boot after upgrade.
 
 ### Shape of the shared gate
 

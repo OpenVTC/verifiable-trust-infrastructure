@@ -635,6 +635,10 @@ pub async fn handle_swap_acl(
     _ctx: HandlerContext,
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
+    // The gate needs an `AppState` (policy, consent, planner, audit); a
+    // `VtaState` cannot reach it. This is the only handler on the legacy
+    // protocol-message surface that takes both — see the gate call below.
+    Extension(app_state): Extension<AppState>,
 ) -> HandlerResult {
     // Routed for both the legacy FPN-private `swap-acl` type URI and the
     // canonical Trust Task `acl/swap-key/0.1` URI. Dispatch on the incoming
@@ -645,6 +649,27 @@ pub async fn handle_swap_acl(
 
     // No require_manage(): self-service rotation of the caller's own entry.
     let auth = app_try!(auth_from_message(&message, &state.acl_ks, &state.sessions_ks).await);
+
+    // The PDP gate. Taken over the body *as it arrived*, before the two wire
+    // shapes are collapsed, so a canonical `acl/swap-key/0.1` message digests
+    // to the same value its REST and trust-task counterparts do and an approval
+    // is interchangeable between them.
+    //
+    // This replaces a `resolve_step_up` call that consulted the `[auth.step_up]`
+    // floors. The floors are gone, and this legacy protocol-message surface
+    // does not route through the trust-task dispatcher — so without a gate here,
+    // a rule an operator wrote would bind self-service rotation over REST and
+    // over the trust-task envelope, and silently not over this one.
+    let gate_body = serde_json::to_value(&message.body).map_err(handler_err)?;
+    app_try!(
+        crate::trust_tasks::rest_gate(
+            &app_state,
+            &auth,
+            vta_sdk::trust_tasks::TASK_ACL_SWAP_KEY_0_1,
+            &gate_body,
+        )
+        .await
+    );
 
     let (presentation, claimed_new_subject, previous_subject) = if is_canonical {
         let body: vta_sdk::protocols::acl_management::swap::SwapKeyBody =
@@ -668,34 +693,6 @@ pub async fn handle_swap_acl(
             serde_json::from_value(message.body).map_err(handler_err)?;
         (body.presentation, None, None)
     };
-
-    // Honour any operator-configured step-up floor for `acl/swap-key` on the
-    // DIDComm transport too (P0.13). Previously only the REST route gated on
-    // step-up, so a `swap-key` floor was silently bypassed over DIDComm.
-    // swap-key is structurally non-escalating (self-service rotation of the
-    // caller's own entry), so a floor with `allow_aal1_if_non_escalating`
-    // still admits it. DIDComm sender-auth is AAL1 and cannot be elevated to
-    // AAL2 in-band, so a floor that genuinely requires step-up is
-    // unsatisfiable here — reject with guidance to use the REST path.
-    if !matches!(
-        crate::operations::step_up::resolve_step_up(
-            &state.config,
-            &state.acl_ks,
-            crate::operations::step_up::op::ACL_SWAP_KEY,
-            &auth.did,
-            true, // swap-key is non-escalating
-        )
-        .await,
-        crate::operations::step_up::StepUpDecision::Allow
-    ) {
-        return Ok(Some(app_err_to_response(AppError::StepUpRequired(
-            "acl/swap-key requires a stepped-up (AAL2) session under this VTA's step-up \
-             policy. DIDComm sender-authentication is AAL1 and cannot be elevated in-band; \
-             perform this self-service rotation over the authenticated REST session, which \
-             can complete step-up."
-                .to_string(),
-        ))));
-    }
 
     let did_resolver = state
         .did_resolver

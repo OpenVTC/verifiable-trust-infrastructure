@@ -4,7 +4,7 @@
 //! Initiator for list/create/get/delete; Admin-only for update.
 
 use super::helpers::TrustTaskOutcome;
-use serde_json::{Value, json};
+use serde_json::Value;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vta_sdk::protocols::acl_management::change_role::ChangeRoleBody;
 use vta_sdk::protocols::acl_management::create::CreateAclBody;
@@ -17,7 +17,6 @@ use vta_sdk::protocols::acl_management::update::UpdateAclBody;
 use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::operations;
-use crate::operations::step_up::{StepUpDecision, op, resolve_step_up};
 use crate::server::AppState;
 
 use super::helpers::{
@@ -252,37 +251,17 @@ pub(super) async fn handle_swap_key(
         );
     }
 
-    // Step-up floor WITH the non-escalating carve-out (swap-key is self-service).
-    // Deliberately NOT the escalating `require_step_up` helper: with the default
-    // no-floor policy this resolves to `Allow`, so AAL1 sender-authenticated
-    // transports (DIDComm/TSP) proceed. A floor that genuinely requires step-up
-    // rejects here with guidance to use the REST session (which can reach AAL2).
-    if !matches!(
-        resolve_step_up(
-            &state.config,
-            &state.acl_ks,
-            op::ACL_SWAP_KEY,
-            &auth.did,
-            true, // swap-key is non-escalating
-        )
-        .await,
-        StepUpDecision::Allow
-    ) {
-        return reject_with(
-            &doc,
-            RejectReason::TaskFailed {
-                reason: "auth:step_up_required".to_string(),
-                details: Some(json!({
-                    "requiredAcr": "aal2",
-                    "reason": "acl/swap-key requires a stepped-up (AAL2) session under this \
-                               VTA's step-up policy. Sender-authenticated transports \
-                               (DIDComm/TSP) are AAL1 and cannot be elevated in-band — perform \
-                               this self-service rotation over the authenticated REST session.",
-                })),
-            },
-        );
-    }
-
+    // No inline step-up check. This handler used to resolve the `acl/swap-key`
+    // config floor itself, passing the non-escalation carve-out — swap-key
+    // being self-service rotation of the caller's own entry — so that a floor
+    // with `allow_aal1_if_non_escalating` still admitted an AAL1
+    // sender-authenticated transport.
+    //
+    // The floors are retired, and with them the carve-out: it existed to let a
+    // blunt, op-class-keyed floor make an exception a rule can simply not
+    // make in the first place. An operator who wants rotation gated writes a
+    // rule naming `acl/swap-key/0.1`, and [`super::policy_gate`] enforces it
+    // before this handler is reached — on every transport.
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
         None => {

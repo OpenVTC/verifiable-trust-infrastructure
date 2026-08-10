@@ -24,6 +24,39 @@ use vta_service::test_support::{build_provisionable_test_app, build_test_app};
 use vti_common::auth::session::{Session, SessionState, get_session, now_epoch, store_session};
 use vti_common::auth::step_up::{new_pending_step_up, store_pending_step_up};
 
+/// Turn enforcement on and install the rule that demands a stepped-up session
+/// for anything an un-elevated caller submits.
+///
+/// This replaces the `[auth.step_up]` `*` floor these tests used to push. The
+/// floors were a second, parallel answer to "does this need another human
+/// decision?" and are retired; the rules are the only trigger. The rule allows
+/// at `aal2` explicitly — an abstaining policy default-denies, which would gate
+/// the caller for the wrong reason and never let the elevated re-submit through.
+async fn require_step_up_for_everything(ctx: &vta_service::test_support::TestAppContext) {
+    ctx.config.write().await.policy.enforcement = true;
+    vta_service::policy::storage::store_policy(
+        &ctx.policy_ks,
+        &vta_service::policy::types::PolicyModule {
+            id: "stepup-all".into(),
+            name: "stepup-all".into(),
+            description: None,
+            module: "package vta.policy\nimport rego.v1\n\
+                     decision := {\"decision\": \"requireStepUp\"} if input.consumer.acr != \"aal2\"\n\
+                     decision := {\"decision\": \"allow\"} if input.consumer.acr == \"aal2\""
+                .into(),
+            applies_to: vec![],
+            priority: 0,
+            enabled: true,
+            version: 1,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            ext: Value::Null,
+        },
+    )
+    .await
+    .expect("store the step-up rule");
+}
+
 /// did:key + method-specific-id for an Ed25519 key (multicodec 0xed01).
 fn did_key(sk: &SigningKey) -> (String, String) {
     let pk = sk.verifying_key();
@@ -290,19 +323,11 @@ async fn trust_task_acl_mutation_requires_step_up() {
     // the spec-REQUIRED VTA proof, which the sentinel-DID app cannot sign.
     let (router, ctx) = build_provisionable_test_app().await;
 
-    // Opt into step-up enforcement (shipping default is disabled): a `*`
-    // floor at AAL2 so the AAL1 trust-task mutation below is gated.
-    {
-        use vti_common::auth::step_up::{StepUpFloor, StepUpMode, StepUpPolicy};
-        ctx.config.write().await.auth.step_up = StepUpPolicy {
-            enabled: true,
-            floors: vec![StepUpFloor {
-                operation: "*".into(),
-                mode: StepUpMode::SelfApprove,
-                allow_aal1_if_non_escalating: false,
-            }],
-        };
-    }
+    // Opt into enforcement (it ships off) with the rule that demands a
+    // stepped-up session for anything an un-elevated caller submits. This was
+    // an `[auth.step_up]` `*` floor until the floors were retired; the rules
+    // are the only trigger now.
+    require_step_up_for_everything(&ctx).await;
 
     let did = "did:key:z6MkAal1Admin".to_string();
     let session_id = "sess-stepup-tt-1".to_string();
@@ -409,18 +434,11 @@ async fn v0_2_minted_request_completes_with_a_0_1_flavored_response() {
     // Signing app: the minted approve-request carries the real VTA proof.
     let (router, ctx) = build_provisionable_test_app().await;
 
-    // Opt into step-up enforcement: `*` floor, self-approve.
-    {
-        use vti_common::auth::step_up::{StepUpFloor, StepUpMode, StepUpPolicy};
-        ctx.config.write().await.auth.step_up = StepUpPolicy {
-            enabled: true,
-            floors: vec![StepUpFloor {
-                operation: "*".into(),
-                mode: StepUpMode::SelfApprove,
-                allow_aal1_if_non_escalating: false,
-            }],
-        };
-    }
+    // Opt into enforcement (it ships off) with the rule that demands a
+    // stepped-up session for anything an un-elevated caller submits. This was
+    // an `[auth.step_up]` `*` floor until the floors were retired; the rules
+    // are the only trigger now.
+    require_step_up_for_everything(&ctx).await;
 
     // The subject: a REAL did:key admin at AAL1 (self step-up — it will sign
     // its own approve-response).

@@ -179,25 +179,43 @@ mod tests {
         doc.get("payload").cloned().unwrap_or(Value::Null)
     }
 
-    /// Configure a `credentials/issue` step-up floor (self-approve, AAL2) on the
-    /// state's policy so an AAL1 session is gated. Without an operator floor the
-    /// gate is a no-op (step-up is opt-in, mirroring the ACL/keys handlers).
+    /// Write a rule demanding step-up for `credentials/issue`, and turn
+    /// enforcement on.
+    ///
+    /// This used to push an `[auth.step_up]` config floor. The floors are gone;
+    /// an operator who wants issuance gated says so as a rule, which is what
+    /// this now asserts still works. The rule allows at `aal2` explicitly — an
+    /// abstaining policy default-denies, which would pass the assertion below
+    /// for the wrong reason.
     async fn require_issue_step_up(state: &AppState) {
-        use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
-        let mut cfg = state.config.write().await;
-        cfg.auth.step_up.enabled = true;
-        cfg.auth.step_up.floors.push(StepUpFloor {
-            operation: super::super::step_up::op::CREDENTIALS_ISSUE.to_string(),
-            mode: StepUpMode::SelfApprove,
-            allow_aal1_if_non_escalating: false,
-        });
+        const STEPUP_ISSUE: &str = "package vta.policy\nimport rego.v1\n\
+            decision := {\"decision\": \"requireStepUp\"} if input.consumer.acr != \"aal2\"\n\
+            decision := {\"decision\": \"allow\"} if input.consumer.acr == \"aal2\"";
+        state.config.write().await.policy.enforcement = true;
+        crate::policy::storage::store_policy(
+            &state.policy_ks,
+            &crate::policy::types::PolicyModule {
+                id: "issue-stepup".into(),
+                name: "issue-stepup".into(),
+                description: None,
+                module: STEPUP_ISSUE.into(),
+                applies_to: vec![],
+                priority: 0,
+                enabled: true,
+                version: 1,
+                created_at: "2026-01-01T00:00:00Z".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                ext: Value::Null,
+            },
+        )
+        .await
+        .expect("store the step-up rule");
     }
 
-    // Step-up is now enforced by the central PDP gate, not inline in the
-    // handler (the inline require_step_up was removed). This exercises the
-    // config-floor step-up path through the gate for credentials/issue.
+    // Step-up is enforced by the central PDP gate, never inline in the handler.
+    // This exercises the rule-driven step-up path through the gate for
+    // credentials/issue.
     #[tokio::test]
-    #[allow(deprecated)]
     async fn issue_at_aal1_is_rejected_by_the_gate() {
         let (state, _dir) = build_signing_test_app_state().await;
         require_issue_step_up(&state).await;

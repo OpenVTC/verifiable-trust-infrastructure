@@ -37,11 +37,39 @@ pub struct AuthConfig {
     pub session_cleanup_interval: u64,
     /// Base64url-no-pad encoded 32-byte Ed25519 private key for JWT signing.
     pub jwt_signing_key: Option<String>,
-    /// AAL2 step-up policy. Defaults to disabled (AAL1 everywhere) — a fresh
-    /// VTA has no approver registered, so step-up is opt-in once one exists.
-    /// See `auth/step-up/policy/0.1`.
-    #[serde(default)]
-    pub step_up: crate::auth::step_up::StepUpPolicy,
+    /// Retired: the `[auth.step_up]` policy floors.
+    ///
+    /// This field exists only to **refuse** a config that still carries the
+    /// section, rather than parse it and silently ignore it. An operator whose
+    /// `config.toml` says `[auth.step_up] enabled = true` believes their VTA is
+    /// gating operations. Dropping the field outright would leave them
+    /// believing it, with the file still saying so and nothing enforcing it —
+    /// the worst of the three outcomes. A VTA that will not start is at least
+    /// unambiguous, and the error names the command that replaces it.
+    ///
+    /// Absent (the only accepted state) deserializes to `()` via `default`.
+    #[serde(default, deserialize_with = "refuse_retired_step_up", skip_serializing)]
+    pub step_up: (),
+}
+
+/// Reject `[auth.step_up]` with the migration the operator needs.
+///
+/// Only ever called when the key is present — `#[serde(default)]` covers its
+/// absence — so reaching this function *is* the error.
+fn refuse_retired_step_up<'de, D>(_: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Err(serde::de::Error::custom(
+        "`[auth.step_up]` has been retired. The step-up floors were a second, \
+         parallel answer to \"does this operation need another human decision?\", \
+         resolved separately from the policy rules — which is how a VTA could \
+         demand a step-up that no rule explained. Approvals are now one model: \
+         delete the `[auth.step_up]` section and express the same requirement as \
+         a rule with `pnm approvals require <task-uri> --reauth` (or \
+         `--consent`). `pnm approvals list` then shows every gated operation, \
+         which the floors never could.",
+    ))
 }
 
 // Manual Debug so a `tracing::debug!(?config, ...)`, panic-with-debug,
@@ -61,7 +89,6 @@ impl std::fmt::Debug for AuthConfig {
                 "jwt_signing_key",
                 &self.jwt_signing_key.as_ref().map(|_| "<redacted>"),
             )
-            .field("step_up", &self.step_up)
             .finish()
     }
 }
@@ -186,7 +213,7 @@ impl Default for AuthConfig {
             challenge_ttl: default_challenge_ttl(),
             session_cleanup_interval: default_session_cleanup_interval(),
             jwt_signing_key: None,
-            step_up: crate::auth::step_up::StepUpPolicy::default(),
+            step_up: (),
         }
     }
 }
@@ -216,7 +243,7 @@ mod tests {
             challenge_ttl: 300,
             session_cleanup_interval: 600,
             jwt_signing_key: Some("SUPER_SECRET_KEY_MATERIAL_MUST_NOT_LEAK".into()),
-            step_up: Default::default(),
+            step_up: (),
         };
         let dbg = format!("{cfg:?}");
         assert!(
@@ -255,12 +282,48 @@ mod tests {
             challenge_ttl: 300,
             session_cleanup_interval: 600,
             jwt_signing_key: Some("key-material".into()),
-            step_up: Default::default(),
+            step_up: (),
         };
         let json = serde_json::to_string(&cfg).expect("serialize");
         assert!(
             json.contains("key-material"),
             "Serialize must not redact — config persistence relies on round-trip: {json}"
         );
+    }
+
+    /// A config still carrying `[auth.step_up]` refuses to load.
+    ///
+    /// Silently ignoring it is the outcome to avoid: the file would keep
+    /// asserting that operations are gated, the operator would keep believing
+    /// it, and nothing would enforce it. Failing to start is unambiguous, and
+    /// the message has to carry the migration or it just moves the confusion.
+    #[test]
+    fn a_config_still_carrying_the_retired_floors_is_refused() {
+        let with_floors = r#"{
+            "jwt_signing_key": null,
+            "step_up": { "enabled": true, "floors": [{ "operation": "*", "mode": "self" }] }
+        }"#;
+        let err = serde_json::from_str::<AuthConfig>(with_floors)
+            .expect_err("`[auth.step_up]` must be refused, not ignored");
+        let msg = err.to_string();
+        assert!(msg.contains("retired"), "got: {msg}");
+        assert!(
+            msg.contains("pnm approvals require"),
+            "the refusal must name what replaces it, got: {msg}"
+        );
+
+        // Even an empty section is refused — an operator who wrote
+        // `[auth.step_up]` and nothing else still has a stale file to fix.
+        assert!(
+            serde_json::from_str::<AuthConfig>(r#"{"jwt_signing_key":null,"step_up":{}}"#).is_err()
+        );
+    }
+
+    /// …and the ordinary case, a config with no such section, still loads.
+    #[test]
+    fn a_config_without_the_retired_section_loads() {
+        let cfg: AuthConfig =
+            serde_json::from_str(r#"{ "jwt_signing_key": null }"#).expect("loads");
+        assert_eq!(cfg.access_token_expiry, default_access_token_expiry());
     }
 }

@@ -60,17 +60,32 @@ pub struct UpdateAclParams {
     pub allowed_keys: Option<Option<std::collections::BTreeSet<String>>>,
 }
 
-/// Parse a wire `stepUp.require` value into a [`StepUpMode`]. Only `self` and
-/// `delegated` are valid per-entry overrides (the spec's enum); an override is
-/// additive and a per-subject relaxation to `delegated-any` is not meaningful.
-/// `None`/empty ⇒ no override.
+/// Refuse a wire `stepUp.require` value.
+///
+/// This used to parse `self` / `delegated` into a per-entry override that
+/// raised the system floor for that subject. The floors are retired, so there
+/// is nothing left to raise: an accepted override would be stored, echoed back
+/// on every read, and consulted by nothing.
+///
+/// Accepting it would be worse than refusing it. An operator who runs
+/// `pnm acl update --step-up-require delegated` and sees it come back in the
+/// entry has been told the subject is gated. Nothing would gate them. Absence
+/// of a signal is recoverable; a false one is not — so a caller that asks for
+/// the override is told plainly that it no longer does anything, and where the
+/// requirement now belongs.
+///
+/// `None`/empty is still fine: that is the overwhelmingly common case (no
+/// override requested), and refusing it would break every unrelated ACL write.
 pub fn parse_step_up_require(s: Option<&str>) -> Result<Option<StepUpMode>, AppError> {
     match s.map(str::trim) {
         None | Some("") => Ok(None),
-        Some("self") => Ok(Some(StepUpMode::SelfApprove)),
-        Some("delegated") => Ok(Some(StepUpMode::Delegated)),
         Some(other) => Err(AppError::Validation(format!(
-            "invalid stepUp.require '{other}': must be 'self' or 'delegated'"
+            "stepUp.require ('{other}') is no longer honoured and this VTA will not \
+             store it — a per-entry override raised an `[auth.step_up]` floor, and \
+             the floors have been retired. Gating is expressed as a rule: \
+             `pnm approvals require <task-uri> --reauth` (or `--consent`), which \
+             `pnm approvals list` can show you. Re-send this request without the \
+             field."
         ))),
     }
 }
@@ -1280,23 +1295,29 @@ mod tests {
         );
     }
 
+    /// The override is refused, not accepted-and-ignored.
+    ///
+    /// `self` and `delegated` used to parse. They no longer mean anything —
+    /// there is no floor for a per-entry override to raise — and storing one
+    /// would echo back on every read as a gate that does not exist. A caller
+    /// asking for it gets told so.
     #[test]
-    fn parse_step_up_require_accepts_self_and_delegated_only() {
+    fn parse_step_up_require_refuses_every_override() {
+        // Absence is still the ordinary case and must not break an ACL write.
         assert_eq!(parse_step_up_require(None).unwrap(), None);
         assert_eq!(parse_step_up_require(Some("")).unwrap(), None);
         assert_eq!(parse_step_up_require(Some("  ")).unwrap(), None);
-        assert_eq!(
-            parse_step_up_require(Some("self")).unwrap(),
-            Some(StepUpMode::SelfApprove)
-        );
-        assert_eq!(
-            parse_step_up_require(Some("delegated")).unwrap(),
-            Some(StepUpMode::Delegated)
-        );
-        // `delegated-any` / `none` / junk are not valid per-entry overrides.
-        assert!(parse_step_up_require(Some("delegated-any")).is_err());
-        assert!(parse_step_up_require(Some("none")).is_err());
-        assert!(parse_step_up_require(Some("nope")).is_err());
+
+        // Every value — including the two that used to be valid.
+        for v in ["self", "delegated", "delegated-any", "none", "nope"] {
+            let err = parse_step_up_require(Some(v))
+                .expect_err("an override must be refused, never silently dropped");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("pnm approvals require"),
+                "the refusal must name what replaces it, got: {msg}"
+            );
+        }
     }
 
     #[test]

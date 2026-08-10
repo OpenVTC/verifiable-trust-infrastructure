@@ -79,29 +79,52 @@ impl TestContext {
         &self.inner.acl_ks
     }
 
-    /// Turn on the AAL2 step-up policy for every operation. The shipping
-    /// default is disabled (AAL1 everywhere); tests that assert the gate
-    /// fires opt in here, mirroring an operator enabling step-up with a `*`
-    /// floor. The config Arc is shared with the live router, so this takes
-    /// effect for subsequent requests.
+    /// Demand a stepped-up (AAL2) session for **every** task, by installing the
+    /// rule an operator would. Enforcement ships off, so a test asserting the
+    /// gate fires opts in here.
+    ///
+    /// This replaces the `[auth.step_up]` `*` floor. The floors were a second,
+    /// parallel answer to "does this need another human decision?", resolved
+    /// out of band from the rules — which is how an operator came to see a
+    /// step-up demand that `pnm approvals list` could not explain. There is now
+    /// one trigger, and this is how you pull it.
     async fn enable_step_up_all(&self) {
-        use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
-        self.set_step_up_floors(vec![StepUpFloor {
-            operation: "*".into(),
-            mode: StepUpMode::SelfApprove,
-            allow_aal1_if_non_escalating: false,
-        }])
+        self.install_rule(
+            "stepup-all",
+            "package vta.policy\nimport rego.v1\n\
+             decision := {\"decision\": \"requireStepUp\"} if input.consumer.acr != \"aal2\"\n\
+             decision := {\"decision\": \"allow\"} if input.consumer.acr == \"aal2\"",
+        )
         .await;
     }
 
-    /// Enable the step-up policy with an explicit set of floors. The config
-    /// Arc is shared with the live router, so this takes effect immediately.
-    async fn set_step_up_floors(&self, floors: Vec<vti_common::auth::step_up::StepUpFloor>) {
-        use vti_common::auth::step_up::StepUpPolicy;
-        self.inner.config.write().await.auth.step_up = StepUpPolicy {
-            enabled: true,
-            floors,
-        };
+    /// Install one Rego module and turn enforcement on. The keyspace and the
+    /// config Arc are shared with the live router, so this takes effect for
+    /// subsequent requests.
+    ///
+    /// The module must decide **every** input it will see, not only the one the
+    /// test cares about: an abstaining policy default-denies, which fails a
+    /// "this route is NOT gated" assertion for the wrong reason.
+    async fn install_rule(&self, id: &str, rego: &str) {
+        self.inner.config.write().await.policy.enforcement = true;
+        vta_service::policy::storage::store_policy(
+            &self.inner.policy_ks,
+            &vta_service::policy::types::PolicyModule {
+                id: id.into(),
+                name: id.into(),
+                description: None,
+                module: rego.into(),
+                applies_to: vec![],
+                priority: 0,
+                enabled: true,
+                version: 1,
+                created_at: "2026-01-01T00:00:00Z".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                ext: Value::Null,
+            },
+        )
+        .await
+        .expect("store the policy module");
     }
 }
 
@@ -141,9 +164,10 @@ impl TestContext {
     }
 
     /// Like [`auth_token`], but the session is **stepped-up (AAL2)** — the JWT
-    /// carries `acr=aal2` and a second factor in `amr`. Required for endpoints
-    /// gated by `RequireStepUp` (ACL mutations, context/key deletion). A plain
-    /// `auth_token` is AAL1, which those endpoints reject with a step-up `403`.
+    /// carries `acr=aal2` and a second factor in `amr`. Needed by any test that
+    /// installs a rule demanding step-up and then wants the request to get
+    /// through; a plain `auth_token` is AAL1, which the gate answers with a
+    /// step-up `403`.
     async fn auth_token_aal2(&self, did: &str, role: &str, contexts: Vec<String>) -> String {
         let session_id = format!("sess-{}", uuid::Uuid::new_v4());
         let session = Session {
@@ -736,7 +760,10 @@ async fn acl_mutation_requires_step_up() {
         .await;
 
     assert_eq!(status, StatusCode::FORBIDDEN, "AAL1 must be gated: {body}");
-    assert_eq!(body["error"], "step_up_required");
+    // `auth:step_up_required`, the code the shared gate emits on both
+    // transports. The retired extractor said bare `step_up_required` on REST
+    // only, so the same refusal read differently depending on how it arrived.
+    assert_eq!(body["error"], "auth:step_up_required");
     assert_eq!(body["requiredAcr"], "aal2");
     // The 403 carries the approve-request the caller hands to its approver.
     let ar = &body["approveRequest"];
@@ -764,16 +791,24 @@ async fn acl_mutation_requires_step_up() {
     assert_eq!(ar["proof"]["proofPurpose"], "assertionMethod", "{body}");
 }
 
+/// A rule that names one task gates that task and no other.
+///
+/// The retired floors resolved a task URI to one of eleven op-class slugs and
+/// matched on that, so this property was a property of the slug table. It is now
+/// a property of the rule, which sees the task URI itself — a strictly finer
+/// instrument, and one an operator can read.
 #[tokio::test]
-async fn step_up_floor_is_per_operation_class() {
-    use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
+async fn a_rule_naming_one_task_does_not_gate_another() {
     let (app, ctx) = TestApp::new().await;
-    // Gate ONLY `context/delete` — no floor for `acl/grant`, no `*` catch-all.
-    ctx.set_step_up_floors(vec![StepUpFloor {
-        operation: "context/delete".into(),
-        mode: StepUpMode::SelfApprove,
-        allow_aal1_if_non_escalating: false,
-    }])
+    // Gate ONLY `contexts/delete`. Everything else is explicitly allowed —
+    // abstaining would default-deny and pass the assertion for the wrong reason.
+    ctx.install_rule(
+        "delete-only",
+        "package vta.policy\nimport rego.v1\n\
+         default decision := {\"decision\": \"allow\"}\n\
+         decision := {\"decision\": \"requireStepUp\"} if \
+         input.request.typeUri == \"https://trusttasks.org/spec/vta/contexts/delete/1.0\"",
+    )
     .await;
     let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
 
@@ -792,55 +827,25 @@ async fn step_up_floor_is_per_operation_class() {
         ))
         .await;
 
-    // The `acl/grant` route must NOT be step-up-gated by a context/delete-only
-    // policy — op-class resolution is specific, not all-or-nothing.
     assert_ne!(
-        body["error"], "step_up_required",
-        "acl/grant gated by a context/delete-only floor: {status} {body}"
+        body["error"], "auth:step_up_required",
+        "acl/grant gated by a contexts/delete-only rule: {status} {body}"
     );
 }
 
+/// Self-service key rotation is gated like any other task.
+///
+/// `/acl/swap` was the one gated REST route that never reached the shared gate:
+/// it carried the `RequireStepUp<AclSwapKeyOp>` extractor instead, because its
+/// floor had a non-escalation carve-out the gate has no concept of. Retiring the
+/// floors took the extractor, so the route had to be wired to the gate — this is
+/// the test that says it was, rather than left as the one ACL mutation a rule
+/// binds over trust tasks and silently not over REST.
 #[tokio::test]
-async fn swap_key_carve_out_admits_aal1_when_configured() {
-    use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
-    let (app, ctx) = TestApp::new().await;
-    // Gate swap-key at AAL2 but allow the non-escalating self-service carve-out.
-    ctx.set_step_up_floors(vec![StepUpFloor {
-        operation: "acl/swap-key".into(),
-        mode: StepUpMode::SelfApprove,
-        allow_aal1_if_non_escalating: true,
-    }])
-    .await;
-    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
-
-    let (_status, body) = app
-        .request(post_auth(
-            "/acl/swap",
-            &token,
-            json!({ "presentation": "not-a-real-vp" }),
-        ))
-        .await;
-
-    // The carve-out admits the swap at AAL1, so it is NOT step-up-gated; it
-    // fails later on the (invalid) presentation rather than on step-up.
-    assert_ne!(
-        body["error"], "step_up_required",
-        "swap-key carve-out should admit AAL1: {body}"
-    );
-}
-
-#[tokio::test]
-async fn swap_key_gated_without_carve_out() {
-    use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
+async fn swap_key_is_gated_by_the_rules() {
     // Signing app: the gate mints a signed approve-request (spec: proof REQUIRED).
     let (app, ctx) = TestApp::new_signing().await;
-    // Same AAL2 floor but WITHOUT the carve-out → swap-key is gated.
-    ctx.set_step_up_floors(vec![StepUpFloor {
-        operation: "acl/swap-key".into(),
-        mode: StepUpMode::SelfApprove,
-        allow_aal1_if_non_escalating: false,
-    }])
-    .await;
+    ctx.enable_step_up_all().await;
     let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
 
     let (status, body) = app
@@ -856,7 +861,13 @@ async fn swap_key_gated_without_carve_out() {
         StatusCode::FORBIDDEN,
         "swap-key must be gated: {body}"
     );
-    assert_eq!(body["error"], "step_up_required");
+    assert_eq!(body["error"], "auth:step_up_required");
+    // Gated *before* the handler, so the bogus presentation is never reached —
+    // the refusal is about the missing elevation, not about the VP.
+    assert!(
+        body["approveRequest"]["payload"]["challenge"].is_string(),
+        "the 403 must carry the approve-request: {body}"
+    );
 }
 
 #[tokio::test]
@@ -920,83 +931,15 @@ async fn acl_grant_persists_step_up_approver() {
     );
 }
 
-#[tokio::test]
-async fn delegated_step_up_routes_to_configured_approver() {
-    use vti_common::acl::{AclEntry, Role, store_acl_entry};
-    use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
-    // Signing app: the approve-request carries the spec-REQUIRED VTA proof.
-    let (app, ctx) = TestApp::new_signing().await;
-    let caller = "did:key:z6MkAdmin";
-    let approver = "did:key:z6MkApprover";
-    // The caller's ACL entry names its delegated approver.
-    store_acl_entry(
-        ctx.acl_ks(),
-        &AclEntry::new(caller, Role::Admin, "test")
-            .with_step_up_approver(Some(approver.to_string())),
-    )
-    .await
-    .unwrap();
-    ctx.set_step_up_floors(vec![StepUpFloor {
-        operation: "acl/grant".into(),
-        mode: StepUpMode::Delegated,
-        allow_aal1_if_non_escalating: false,
-    }])
-    .await;
-    let token = ctx.auth_token(caller, "admin", vec![]).await;
-
-    let (status, body) = app
-        .request(post_auth(
-            "/acl",
-            &token,
-            json!({ "entry": { "subject": "did:key:z6MkNew", "role": "application", "scopes": ["ctx1"] } }),
-        ))
-        .await;
-
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["error"], "step_up_required");
-    // The approve-request is addressed to the configured approver, not the caller.
-    assert_eq!(
-        body["approveRequest"]["recipient"], approver,
-        "delegated approve-request must be addressed to the configured approver: {body}"
-    );
-}
-
-#[tokio::test]
-async fn delegated_step_up_without_approver_fails_closed() {
-    use vti_common::acl::{AclEntry, Role, store_acl_entry};
-    use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
-    let (app, ctx) = TestApp::new().await;
-    let caller = "did:key:z6MkNoApprover";
-    // ACL entry with NO step-up approver under a delegated floor.
-    store_acl_entry(ctx.acl_ks(), &AclEntry::new(caller, Role::Admin, "test"))
-        .await
-        .unwrap();
-    ctx.set_step_up_floors(vec![StepUpFloor {
-        operation: "acl/grant".into(),
-        mode: StepUpMode::Delegated,
-        allow_aal1_if_non_escalating: false,
-    }])
-    .await;
-    let token = ctx.auth_token(caller, "admin", vec![]).await;
-
-    let (status, body) = app
-        .request(post_auth(
-            "/acl",
-            &token,
-            json!({ "entry": { "subject": "did:key:z6MkNew2", "role": "application", "scopes": ["ctx1"] } }),
-        ))
-        .await;
-
-    // Fail-closed: 403 with no approve-request (nothing the caller can do until
-    // an operator registers an approver — the subject can't self-approve a
-    // delegated requirement).
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["error"], "step_up_required");
-    assert!(
-        body.get("approveRequest").is_none(),
-        "fail-closed must not carry an approve-request: {body}"
-    );
-}
+// The two delegated-step-up tests that lived here are gone with the floors.
+// `[auth.step_up]` was the only thing that could route an approve-request to
+// someone other than the subject; a rule's `requireStepUp` is self-approve by
+// construction. Someone-else-approves is the consent flow's job now
+// (`requireConsent` + an approver set), which is a strictly stronger mechanism:
+// it carries a threshold, an approver-still-authorized re-check at consume
+// time, and a signed statement of the effects the human is agreeing to.
+// `AclEntry.stepUp.approver` survives as a wire field — the two tests below
+// cover its round-trip — but nothing reads it to route a step-up any more.
 
 #[tokio::test]
 async fn acl_application_cannot_manage() {
