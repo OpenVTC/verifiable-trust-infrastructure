@@ -1002,8 +1002,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     // gives the *listener* its own, and the mediator permits one socket per DID
     // — a second would be terminated as `w.websocket.duplicate-channel`. Same
     // split, and the same reason, as `MockVtcDidcomm`.
-    let transport =
-        build_transport_state(opts.vta_transport.as_ref(), did_resolver.as_ref()).await;
+    let transport = build_transport_state(opts.vta_transport.as_ref(), did_resolver.as_ref()).await;
 
     let policy_ks = store.keyspace(crate::keyspaces::POLICY).unwrap();
     let state = crate::server::AppState {
@@ -1510,6 +1509,17 @@ impl MockVta {
     /// mock's resolver would not help a caller in another process, which is the
     /// trap VTI #813 already hit.
     ///
+    /// # The size budget
+    ///
+    /// A `did:peer:2` carries its services in the identifier, and every
+    /// resolver refuses one over 1000 bytes. Embedding the mediator's own
+    /// 540-byte DID in *both* services blows that (1685) and makes the VTA
+    /// unresolvable everywhere, in ways that surface as a websocket timeout on
+    /// one side and a `403` on the other. So only the DIDComm service embeds
+    /// the mediator DID; `#tsp` points at the mediator's URL. See the
+    /// `MAX_DID_BYTES` assertion in the body — it is the guard that keeps a
+    /// future service addition from re-breaking this silently.
+    ///
     /// ```no_run
     /// # async fn demo() {
     /// use vta_service::test_support::MockVta;
@@ -1535,18 +1545,27 @@ impl MockVta {
         let mediator = TestMediator::spawn().await.expect("spawn test mediator");
         let mediator_did = mediator.did().to_string();
 
+        // The `accept` list is deliberately empty — see MAX_DID_BYTES below. It
+        // costs 32 bytes of a budget that has 20 to spare, and DIDComm v2 is
+        // the only thing either side speaks here anyway.
         let didcomm = crate::operations::did_peer::mediator_did_didcomm_service(
             &mediator_did,
-            vec!["didcomm/v2".to_string()],
+            vec![],
             vec![],
         );
-        // The TSP counterpart. Same long-form shape, same mediator-DID-as-`uri`
-        // convention the DIDComm service uses; only `type` differs, which is
-        // what `resolve_vta` matches on.
+        // The TSP counterpart, pointing at the mediator's **URL** rather than
+        // its DID. That is the one deviation from the workspace convention
+        // (`#tsp`'s serviceEndpoint is the mediator's DID), and it is forced by
+        // arithmetic, not preference: the mediator's own DID is 540 bytes, and
+        // embedding it twice puts the VTA's `did:peer` at 1685 — past the
+        // resolver limit below, unresolvable by anyone. Under that limit a
+        // two-service peer can embed a mediator DID at most *once*. The short
+        // URL form is what this mediator advertises for its own `#tsp` service,
+        // so it is at least a convention already live in the ecosystem.
         let tsp = PeerService {
             type_: "TSPTransport".into(),
             endpoint: PeerServiceEndpoint::Long(OneOrMany::One(PeerServiceEndpointLong {
-                uri: mediator_did.clone(),
+                uri: mediator.endpoint().to_string(),
                 accept: vec![],
                 routing_keys: vec![],
             })),
@@ -1557,20 +1576,46 @@ impl MockVta {
         )
         .expect("mint VTA did:peer");
 
+        // Every `DIDCacheClient` refuses to resolve a DID longer than
+        // `max_did_size_in_bytes` (default 1000) — a guard applied *before* any
+        // parsing, in `resolve_document`. It bites in two places here, and in
+        // neither does it say so:
+        //
+        //   * our own auth against the mediator fails the whole websocket
+        //     connect as a 30s `WebSocket isActive? command timed out`;
+        //   * the mediator, resolving us to get our sender key, answers the
+        //     challenge response `403 Forbidden` and logs `authcrypt requires
+        //     sender public key for decryption`.
+        //
+        // Raising the limit locally is not a fix: the mediator's resolver is
+        // built inside `affinidi-messaging-test-mediator`, which exposes no
+        // knob for it, and a *consumer* in another process gets a stock
+        // resolver — the offline-resolvability this whole harness exists to
+        // provide. So the DID has to fit the stock limit. Assert it up front,
+        // where the number is legible, rather than 30 seconds later as a
+        // timeout.
+        const MAX_DID_BYTES: usize = 1_000;
+        assert!(
+            vta_did.len() < MAX_DID_BYTES,
+            "the VTA's did:peer is {} bytes, over the {MAX_DID_BYTES}-byte stock resolver limit \
+             ({}-byte mediator DID). Nothing with a default resolver — this process, the \
+             mediator, or a consumer — can resolve it. Shed service metadata, or embed the \
+             mediator DID in fewer services.",
+            vta_did.len(),
+            mediator_did.len(),
+        );
+
         mediator
             .register_local_did(&vta_did)
             .await
             .expect("register the VTA as a local mediator account");
-        // …and give it the ALLOW_ALL bitmask. `register_local_did` creates the
-        // account with the mediator's *default* ACL, which is not enough to open
-        // a websocket — the connect then fails as an "isActive? command timed
-        // out" rather than as a permission error, so this is worth pinning
-        // explicitly. `add_user` bundles the two steps, but mints its own DID;
-        // ours has to be minted first because it embeds the mediator's DID.
-        mediator
-            .set_acl(&vta_did, affinidi_messaging_test_mediator::acl::allow_all())
-            .await
-            .expect("grant the VTA ALLOW_ALL on the mediator");
+        // The account's *default* ACL is enough to connect and go live —
+        // verified by removing the `set_acl(ALLOW_ALL)` that used to sit here
+        // and watching this test stay green. That grant was added while the
+        // failure was misread as a permission problem; the real cause was the
+        // DID size asserted above. `add_user` bundles register + ACL, but mints
+        // its own DID; ours has to be minted first because it embeds the
+        // mediator's DID.
 
         let (router, ctx) = build_test_app_with(TestAppOptions {
             provisionable_vta: true,
@@ -1814,7 +1859,9 @@ mod transport_harness_tests {
     /// so a failure in the harness test above is attributable.
     #[tokio::test]
     async fn a_two_service_did_peer_encodes_both_transports() {
-        use affinidi_tdk::dids::{OneOrMany, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong};
+        use affinidi_tdk::dids::{
+            OneOrMany, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong,
+        };
 
         let mediator = "did:peer:2.Ez6LSmediator";
         let didcomm = crate::operations::did_peer::mediator_did_didcomm_service(
@@ -1854,8 +1901,14 @@ mod transport_harness_tests {
             .collect();
         println!("service types: {types:?}");
         println!("service ids:   {ids:?}");
-        assert!(types.iter().any(|t| t.contains("DIDCommMessaging")), "types {types:?}");
-        assert!(types.iter().any(|t| t.contains("TSPTransport")), "types {types:?}");
+        assert!(
+            types.iter().any(|t| t.contains("DIDCommMessaging")),
+            "types {types:?}"
+        );
+        assert!(
+            types.iter().any(|t| t.contains("TSPTransport")),
+            "types {types:?}"
+        );
     }
 
     #[tokio::test]
