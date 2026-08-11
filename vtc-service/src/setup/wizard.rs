@@ -39,7 +39,10 @@ use serde_json::Value as JsonValue;
 use tokio::sync::mpsc;
 use tracing::warn;
 use vta_sdk::client::VtaClient;
-use vta_sdk::did_templates::{TRUST_REGISTRY_SERVICE_VAR, referral_service};
+use vta_sdk::did_templates::{
+    DIDCOMM_SERVICE_VAR, TRUST_REGISTRY_SERVICE_VAR, TSP_SERVICE_VAR, didcomm_service,
+    referral_service, tsp_service,
+};
 use vta_sdk::provision_client::{
     EphemeralSetupKey, OperatorMessages, ProvisionAsk, ProvisionResult, ResolvedVta, VtaEvent,
     VtaIntent, VtaReply, resolve_vta, run_connection_test, run_provision_flight,
@@ -100,8 +103,15 @@ async fn collect_interactive(config_path: Option<PathBuf>) -> Result<WizardPlan,
         }
     };
 
-    // 2. Mediator choice.
+    // 2. Mediator choice, then which transports to advertise over it. Both
+    //    happen before the mint below, because the answers become service
+    //    entries in the document being minted and cannot be added afterwards.
     let messaging = prompt_messaging(resolved.as_ref().and_then(|r| r.mediator_did.clone()))?;
+    let transports = match messaging.as_ref() {
+        Some(m) => prompt_transports(&m.mediator_did)?,
+        // No mediator, nothing to advertise. The document carries REST only.
+        None => Vec::new(),
+    };
 
     // 3. Mint the ephemeral DID first so we can show it to the
     //    operator before they pick a secret-store backend (the
@@ -137,7 +147,13 @@ async fn collect_interactive(config_path: Option<PathBuf>) -> Result<WizardPlan,
 
     Ok(WizardPlan {
         config_path,
-        inputs,
+        // The transport choice is gathered at step 2 (it needs the mediator),
+        // long after `prompt_inputs` built the rest. Folded in here rather than
+        // threaded through every intervening prompt.
+        inputs: WizardInputs {
+            transports,
+            ..inputs
+        },
         webvh,
         secrets,
         messaging,
@@ -164,7 +180,7 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
     // Drive the provision-integration round-trip. Capture and discard
     // event traffic so the setup UX stays terse — long-form progress UX
     // is for `pnm`, not the daemon setup flow.
-    let provision = run_provision_quietly(&inputs, &webvh, &setup_key).await?;
+    let provision = run_provision_quietly(&inputs, &webvh, messaging.as_ref(), &setup_key).await?;
     let integration_did = provision
         .integration_did()
         .ok_or_else(|| {
@@ -357,6 +373,44 @@ pub(crate) struct WizardInputs {
     /// `did.jsonl` and cannot re-sign its own log, so changing it later means
     /// a VTA-side `dids edit` plus redelivering the log by hand.
     pub(crate) registry_did: Option<String>,
+    /// Messaging transports to advertise in the community's DID document.
+    ///
+    /// Empty when the operator skipped messaging — the document then carries
+    /// REST only, and nothing can be delivered to this community over a
+    /// mediator by any route a DID-driven client would find.
+    ///
+    /// Fixed at mint, like [`Self::registry_did`] and for the same reason: the
+    /// VTC serves a write-once `did.jsonl` and cannot re-sign its own log, so
+    /// adding a transport later means a VTA-side `dids edit` plus redelivering
+    /// the log by hand. This is the community's one chance to say how it can be
+    /// reached.
+    pub(crate) transports: Vec<Transport>,
+}
+
+/// A messaging transport a community can advertise.
+///
+/// Both bind the *same* mediator DID — one dual-protocol mediator serves both
+/// (`docs/05-design-notes/tsp-enablement.md` §14 Q2) — so this enum selects
+/// which service entries are rendered, never which mediator.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Transport {
+    /// `TSPTransport`. Listed first: the workspace prefers TSP over DIDComm
+    /// over REST, and array order is what encodes that to a resolver.
+    Tsp,
+    /// `DIDCommMessaging`.
+    Didcomm,
+}
+
+impl Transport {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Transport::Tsp => "tsp",
+            Transport::Didcomm => "didcomm",
+        }
+    }
 }
 
 /// A fully-resolved setup plan: every operator decision gathered, no
@@ -516,6 +570,9 @@ fn prompt_inputs() -> Result<WizardInputs, AppError> {
         vta_did,
         context,
         registry_did,
+        // Gathered later, once the mediator is known (see `collect_interactive`
+        // step 2) — there is nothing to advertise before then.
+        transports: Vec::new(),
     })
 }
 
@@ -611,6 +668,101 @@ fn prompt_messaging(vta_mediator: Option<String>) -> Result<Option<MessagingConf
         setup_acl: false,
         drain_inbox_on_start: false,
     }))
+}
+
+/// Ask which transports the community's DID document should advertise.
+///
+/// Only reached when the operator configured a mediator: with no mediator there
+/// is no endpoint to advertise, and the document carries REST alone.
+///
+/// **Both are pre-selected**, matching §12 Phase A ("advertise TSP + DIDComm").
+/// Advertising TSP alone strands every peer that does not speak it; advertising
+/// DIDComm alone forgoes the preferred transport. Neither is wrong, so both are
+/// offered — but the default is the one that strands nobody.
+///
+/// The warning is not decoration. Both entries name the operator's mediator,
+/// and nothing here can check that the mediator actually routes the protocol
+/// being advertised — its services belong to its own controller
+/// (`docs/05-design-notes/tsp-enablement.md` §14 Q3). Advertising a transport
+/// the mediator cannot carry produces an entry every conforming client will
+/// choose and none can use, which is the same failure shape as advertising one
+/// the binary cannot serve.
+fn prompt_transports(mediator_did: &str) -> Result<Vec<Transport>, AppError> {
+    use dialoguer::MultiSelect;
+
+    println!();
+    println!("  Which transports should this community advertise in its DID document?");
+    println!();
+    println!("  Both entries point at your mediator:");
+    println!("    {mediator_did}");
+    println!();
+    println!("  ⚠ Advertising a transport your mediator does not route makes this");
+    println!("    community unreachable on it — clients will prefer it and fail.");
+    println!("    Check your mediator advertises the matching service before enabling.");
+    println!();
+    println!("  This is fixed at mint: the VTC serves a write-once did.jsonl and cannot");
+    println!("  re-sign its own log, so changing it later needs a VTA-side `dids edit`.");
+    println!();
+
+    // Order matches the workspace preference (TSP > DIDComm), so the list reads
+    // the way a resolver walks it.
+    let options = [
+        (
+            "TSP     (TSPTransport)   — preferred transport",
+            Transport::Tsp,
+        ),
+        (
+            "DIDComm (DIDCommMessaging) — supported fallback",
+            Transport::Didcomm,
+        ),
+    ];
+    let labels: Vec<&str> = options.iter().map(|(label, _)| *label).collect();
+
+    loop {
+        let picked = MultiSelect::new()
+            .with_prompt("Transports (space to toggle, enter to confirm)")
+            .items(&labels)
+            .defaults(&[true, true])
+            .interact()
+            .map_err(prompt_err)?;
+
+        if picked.is_empty() {
+            // A mediator with no advertised transport is almost certainly a
+            // mis-toggle: the operator just chose a mediator, and this leaves
+            // the VTC connected to it while telling nobody. Re-ask rather than
+            // silently minting an unreachable community.
+            println!();
+            println!("  No transport selected — this community would connect to the mediator");
+            println!("  but advertise no way to reach it. Select at least one, or restart");
+            println!("  setup and choose \"Skip messaging\" if that is what you want.");
+            println!();
+            continue;
+        }
+
+        let chosen: Vec<Transport> = picked.into_iter().map(|i| options[i].1).collect();
+
+        // Echo the decision in the terms the document will carry, so the
+        // operator sees what is about to be minted rather than which
+        // checkboxes they ticked. This is their last chance to notice it.
+        println!();
+        println!(
+            "  Advertising: {}",
+            chosen
+                .iter()
+                .map(|t| t.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        if chosen.len() == 1 && chosen[0] == Transport::Tsp {
+            println!(
+                "  Note: TSP only — peers that do not speak TSP will have no way to reach this"
+            );
+            println!("        community over a mediator.");
+        }
+        println!();
+
+        return Ok(chosen);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1158,6 +1310,12 @@ fn secrets_choice_to_config(choice: SecretsBackendChoice) -> SecretsConfig {
 async fn run_provision_quietly(
     inputs: &WizardInputs,
     webvh: &WebvhTarget,
+    // Supplies the mediator DID that `inputs.transports` advertise. Passed
+    // separately rather than folded into `WizardInputs` because it is also the
+    // daemon's *runtime* messaging config — the DID document and `config.toml`
+    // read the same operator decision, and duplicating the DID into both
+    // structs would let them drift.
+    messaging: Option<&MessagingConfig>,
     setup_key: &EphemeralSetupKey,
 ) -> Result<ProvisionResult, AppError> {
     let mut vars = BTreeMap::new();
@@ -1206,6 +1364,38 @@ async fn run_provision_quietly(
             referral_service(registry_did)
                 .map_err(|e| AppError::Config(format!("trust-registry referral: {e}")))?,
         );
+    }
+    // The messaging transports, same null-pruning slots. Both name the one
+    // mediator the operator chose — TSP and DIDComm share it (§14 Q2), so this
+    // renders one DID under two service types rather than two endpoints.
+    //
+    // A transport selected without a mediator is unrepresentable: the selection
+    // prompt only runs when `messaging` is `Some`, and `from_toml` rejects the
+    // combination. Guarding again here would be dead code that reads as if the
+    // case were possible.
+    if !inputs.transports.is_empty() {
+        let mediator_did = messaging.map(|m| m.mediator_did.as_str()).ok_or_else(|| {
+            AppError::Internal(
+                "transports selected with no mediator configured — the setup front-ends must \
+                     not produce this"
+                    .into(),
+            )
+        })?;
+        for transport in &inputs.transports {
+            let (var, entry) = match transport {
+                Transport::Tsp => (
+                    TSP_SERVICE_VAR,
+                    tsp_service(mediator_did)
+                        .map_err(|e| AppError::Config(format!("TSP service entry: {e}")))?,
+                ),
+                Transport::Didcomm => (
+                    DIDCOMM_SERVICE_VAR,
+                    didcomm_service(mediator_did)
+                        .map_err(|e| AppError::Config(format!("DIDComm service entry: {e}")))?,
+                ),
+            };
+            vars.insert(var.to_string(), entry);
+        }
     }
     let ask = ProvisionAsk::for_template("vtc-host", vars, inputs.context.clone())
         .with_label("vtc-host integration");
