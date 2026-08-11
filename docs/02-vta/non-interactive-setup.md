@@ -164,6 +164,12 @@ summary.
   `pnm services {kind} {enable,disable}` persist to a fjall keyspace
   (`service_state`), not back into `config.toml`. Hand-editing this block after
   first boot has no effect — use the runtime commands.
+  `tsp = true` additionally advertises `#tsp` in the VTA DID document at mint,
+  pointing at the same mediator as DIDComm. It requires `didcomm = true` (that
+  is where the mediator is configured) and a binary built with
+  `--features tsp`; setup refuses either combination by name rather than
+  publishing a transport the VTA cannot answer on. Nothing checks that the
+  mediator actually routes TSP — its services belong to its own controller.
 - **`[server]`** — `host = "0.0.0.0"`, `port = 8100`.
 - **`[log]`** — `level = "info"`, `format = "text"`.
 - **`[secrets]`** — required; tagged enum on `backend`. See below.

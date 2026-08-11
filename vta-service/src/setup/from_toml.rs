@@ -925,6 +925,11 @@ pub async fn apply_inputs(
             let services = super::build_vta_additional_services(
                 &inputs.services,
                 inputs.public_url.as_deref(),
+                // `#tsp` points at the DIDComm mediator resolved above.
+                // `None` when messaging was skipped — then there is no
+                // endpoint to advertise and the entry is dropped rather
+                // than published empty.
+                messaging.as_ref().map(|m| m.mediator_did.as_str()),
             );
             let did = create_simple_webvh_did(
                 "VTA",
@@ -1102,6 +1107,22 @@ fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Erro
              the same mediator as DIDComm. Set services.didcomm = true (and \
              configure messaging), or leave TSP off here and enable it later with \
              `services tsp enable`"
+                .into(),
+        );
+    }
+    // A binary built without the `tsp` feature has no TSP dispatcher (the
+    // inbound half lives behind that flag), so `services.tsp = true` would
+    // advertise `#tsp` — the *first* entry a peer matching on transport
+    // preference picks — for a transport this VTA cannot answer on. The
+    // interactive wizard handles this by not offering the option; the
+    // declarative path has to say it out loud.
+    #[cfg(not(feature = "tsp"))]
+    if inputs.services.tsp {
+        errors.push(
+            "services.tsp = true, but this VTA was built without the `tsp` feature and has \
+             no TSP dispatcher — advertising `#tsp` would publish a transport it cannot \
+             serve, and TSP-preferring peers would fail rather than fall back to DIDComm. \
+             Rebuild with `--features tsp`, or set services.tsp = false"
                 .into(),
         );
     }
@@ -2805,12 +2826,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn services_tsp_with_didcomm_passes_and_carries_through() {
-        // The declarative TSP path: `[services] tsp = true` (with DIDComm)
-        // parses, validates, and the flag is carried on `WizardInputs.services`
-        // (which `apply` writes verbatim to `config.services`).
-        let raw = r#"
+    /// A `[services] tsp = true` + DIDComm setup file, whose fate depends
+    /// on whether this binary can serve TSP. Both outcomes are asserted
+    /// below — one per build.
+    #[cfg(test)]
+    const TSP_WITH_DIDCOMM_TOML: &str = r#"
             config_path = "/tmp/vta-test/config.toml"
             data_dir    = "/tmp/vta-test/data"
 
@@ -2822,9 +2842,31 @@ mod tests {
             [secrets]
             backend = "keyring"
         "#;
-        let inputs = parse(raw).expect("parses");
+
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn services_tsp_with_didcomm_passes_and_carries_through() {
+        // The declarative TSP path: `[services] tsp = true` (with DIDComm)
+        // parses, validates, and the flag is carried on `WizardInputs.services`
+        // (which `apply` writes verbatim to `config.services`).
+        let inputs = parse(TSP_WITH_DIDCOMM_TOML).expect("parses");
         validate_inputs(&inputs).expect("tsp + didcomm should validate");
         assert!(inputs.services.tsp, "tsp flag must be carried through");
+    }
+
+    #[cfg(not(feature = "tsp"))]
+    #[test]
+    fn services_tsp_is_refused_when_the_binary_cannot_serve_it() {
+        // Same file, a binary with no TSP dispatcher: refused by name
+        // rather than minting a DID document that advertises `#tsp` and
+        // then never answering on it.
+        let inputs = parse(TSP_WITH_DIDCOMM_TOML).expect("parses");
+        let err = validate_inputs(&inputs)
+            .expect_err("tsp must be refused without the compiled transport");
+        assert!(
+            err.to_string().contains("built without the `tsp` feature"),
+            "got: {err}"
+        );
     }
 
     #[test]

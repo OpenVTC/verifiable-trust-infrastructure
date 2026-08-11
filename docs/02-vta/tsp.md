@@ -48,10 +48,14 @@ TSP shares the DIDComm mediator, so **enable DIDComm first**. Two paths:
   transports. See [runtime-service-management.md](./runtime-service-management.md).
   Unlike `services didcomm enable`, `services tsp enable` works over **either**
   transport. TSP has **no drain** and **no handshake**.
-- **Declarative setup:** in a `vta setup --from <toml>` file, `[services] tsp =
-  true` (which **requires** `services.didcomm = true`). The interactive `vta
-  setup` wizard does **not** prompt for TSP yet — prefer enabling it post-setup
-  via `services tsp enable`, after verification.
+- **At setup:** the interactive `vta setup` wizard lists **TSP** in its services
+  multi-select, and a `vta setup --from <toml>` file takes `[services] tsp =
+  true`. Both **require** `services.didcomm = true` (that is where the mediator
+  is configured) and a binary built with `--features tsp` — setup refuses either
+  combination by name rather than publishing a transport it cannot serve. TSP is
+  not pre-ticked in the wizard, for the reason in *Rollout posture* below.
+  Choosing it here puts `#tsp` in the DID document from log v1, rather than
+  adding it in a later log entry.
 
 `pnm services list` shows TSP on/off + its mediator; `GET /health/details`
 reports `tsp_enabled`.
@@ -72,6 +76,7 @@ the automatic fallback for any peer that doesn't speak TSP.
 | `services tsp {enable,update,disable,rollback}` (REST + DIDComm + CLI + offline) | ✅ shipped |
 | DID templates advertise `#tsp` | ✅ shipped |
 | Health `tsp_enabled` + `services list` | ✅ shipped |
+| Setup: wizard multi-select + `--from` `[services] tsp`, both minting `#tsp` | ✅ shipped |
 | Inbound: `tsp-message` vault unseal | ✅ shipped (feature-gated; live unpack pending verification) |
 | Inbound: TSP listener (raw-TSP websocket → trust-task spine) | ✅ shipped (feature-gated; live loop pending verification) |
 | Auth over TSP | ✅ by construction (rides the inbound spine → `handle_authenticate`) |

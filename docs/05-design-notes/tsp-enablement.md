@@ -466,11 +466,19 @@ mediator-DID convention work, and the constraints to honour when building routes
 
 ## 9. Setup wizards
 
-- `vta-service/src/setup/interactive.rs`: add **TSP** to the services multiselect
-  (`["REST API", "DIDComm Messaging", "TSP"]`, ≥1 required) and a TSP-config branch
-  (endpoint URL / host) in the messaging section.
-- `vta-service/src/setup/from_toml.rs`: `ServicesConfig.tsp` + a TSP variant of
-  `MessagingInput`.
+- `vta-service/src/setup/interactive.rs`: **done** — TSP is the third entry in the
+  services multiselect, listed only in a `--features tsp` build (an option that
+  can't be served isn't offered), not pre-ticked, and refused without DIDComm.
+  No TSP-config branch was needed after all: D8 settled that TSP advertises the
+  *same* mediator as DIDComm, so there is no separate endpoint to ask for — the
+  DIDComm messaging section already collected it.
+- `vta-service/src/setup/from_toml.rs`: **done** — `ServicesConfig.tsp`, with
+  `validate_inputs` refusing `tsp` without `didcomm` and refusing `tsp` in a
+  binary built without the transport. No TSP variant of `MessagingInput`, for
+  the same D8 reason.
+- `vta-service/src/setup.rs`: **done** — `build_vta_additional_services` emits the
+  `#tsp` entry at mint, so a TSP-enabled VTA advertises it from DID log v1
+  rather than acquiring it by hand later.
 - `pnm-cli/src/setup.rs`, `cnm-cli/src/setup.rs`: these **discover** transport from the
   peer DID doc rather than prompting, so they inherit §3 with little new prompting; PNM
   persists a TSP analog next to `mediator_did` where relevant.

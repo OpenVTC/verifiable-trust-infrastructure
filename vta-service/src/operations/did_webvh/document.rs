@@ -174,5 +174,85 @@ fn build_did_document_inner(
         }));
     }
 
+    // `service[]` order is what tells a resolver which transport to
+    // prefer (TSP > DIDComm > REST > WebAuthn — runtime-service-
+    // management spec §3.3), and the entries above are appended in
+    // construction order, not preference order: DIDComm before the
+    // caller's `additional_services`, which is where `#tsp` arrives.
+    // Sort through the same helper every runtime `with_*_service`
+    // patcher ends with, so a document minted here and one patched by
+    // `services … enable` agree.
+    crate::operations::protocol::document::sort_services_canonical(&mut did_document);
+
     did_document
+}
+
+#[cfg(test)]
+mod tests {
+    use affinidi_tdk::secrets_resolver::secrets::Secret;
+
+    use super::*;
+    use crate::config::MessagingConfig;
+
+    /// Deterministic key material — this module only reads the public
+    /// multibase strings out of it.
+    fn fake_keys() -> keys::DerivedEntityKeys {
+        let signing_secret = Secret::generate_ed25519(None, Some(&[7u8; 32]));
+        let ka_secret = Secret::generate_ed25519(None, Some(&[9u8; 32]))
+            .to_x25519()
+            .expect("x25519 conversion");
+        keys::DerivedEntityKeys {
+            signing_pub: signing_secret.get_public_keymultibase().unwrap(),
+            signing_secret,
+            signing_path: "m/26'/2'/0'/0'".into(),
+            signing_priv: String::new(),
+            signing_label: "signing".into(),
+            ka_pub: ka_secret.get_public_keymultibase().unwrap(),
+            ka_secret,
+            ka_path: "m/26'/2'/0'/1'".into(),
+            ka_priv: String::new(),
+            ka_label: "ka".into(),
+        }
+    }
+
+    /// `service[]` order encodes transport preference to a resolver, and
+    /// the entries are appended here in construction order — DIDComm
+    /// before the caller's `additional_services`, which is where `#tsp`
+    /// and `#vta-rest` arrive. The builder must leave them canonically
+    /// ordered (TSP > DIDComm > REST) regardless.
+    #[test]
+    fn services_are_published_in_canonical_transport_order() {
+        let mut config = crate::test_support::test_app_config(std::path::PathBuf::from("/tmp/x"));
+        config.messaging = Some(MessagingConfig {
+            mediator_url: "https://mediator.example.com".into(),
+            mediator_did: "did:webvh:mediator.example.com:mediator".into(),
+            mediator_host: None,
+            setup_acl: false,
+            drain_inbox_on_start: false,
+        });
+
+        // The order the setup path hands them over: TSP then REST, both
+        // *after* the DIDComm entry this builder pushes itself.
+        let additional = Some(vec![
+            json!({
+                "id": "{DID}#tsp",
+                "type": "TSPTransport",
+                "serviceEndpoint": "did:webvh:mediator.example.com:mediator",
+            }),
+            json!({
+                "id": "{DID}#vta-rest",
+                "type": "VTARest",
+                "serviceEndpoint": "https://vta.example.com",
+            }),
+        ]);
+
+        let doc = build_did_document(&fake_keys(), &config, true, &additional);
+        let types: Vec<&str> = doc["service"]
+            .as_array()
+            .expect("service array")
+            .iter()
+            .map(|s| s["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(types, ["TSPTransport", "DIDCommMessaging", "VTARest"]);
+    }
 }
