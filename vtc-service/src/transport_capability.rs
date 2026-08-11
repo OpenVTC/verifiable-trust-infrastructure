@@ -206,6 +206,114 @@ pub fn advertises_messaging(caps: &ServiceCapabilities) -> bool {
     caps.advertised().iter().any(|p| *p != Protocol::Rest)
 }
 
+/// The messaging transports this build serves that the document does **not**
+/// advertise.
+///
+/// Purely informational: a binary that can serve more than it promises strands
+/// nobody, and this is the normal shape of a staged rollout — ship the capable
+/// binary first, add the service entry once it is deployed everywhere. Reported
+/// so an operator mid-rollout can see the second half is still outstanding,
+/// never as a fault.
+#[must_use]
+pub fn served_not_advertised(served: &[Protocol], caps: &ServiceCapabilities) -> Vec<Protocol> {
+    let advertised = caps.advertised();
+    served
+        .iter()
+        .copied()
+        .filter(|p| !advertised.contains(p))
+        .collect()
+}
+
+/// How loudly a [`Finding`] should be reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// The document promises something this build cannot deliver. Clients that
+    /// obey the document will fail.
+    Error,
+    /// Reachable, but a peer can be stranded — no fallback, or no messaging at
+    /// all.
+    Warn,
+    /// Nothing wrong; stated so a rollout is legible.
+    Info,
+}
+
+/// One observation about the document-versus-binary relationship.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finding {
+    pub severity: Severity,
+    pub message: String,
+}
+
+/// Every observation about `caps` from the standpoint of a build serving
+/// `served`, most severe first.
+///
+/// One function so the boot gate, the messaging listener, and `vtc status` say
+/// the *same* thing about the same document — an operator who runs `vtc status`
+/// to explain a boot refusal must not be told a different story by the tool
+/// they reached for second.
+#[must_use]
+pub fn findings_against(served: &[Protocol], caps: &ServiceCapabilities) -> Vec<Finding> {
+    let mut out = Vec::new();
+
+    // 1. Promised but not deliverable. The failure this module exists for.
+    for u in unservable_against(served, caps) {
+        out.push(Finding {
+            severity: Severity::Error,
+            message: u.remediation(),
+        });
+    }
+
+    // 2. No messaging at all. Legal — the `vtc-host` template mints exactly
+    //    this — but it means no join, no credential delivery, no member
+    //    messaging can reach the VTC by any route a DID-driven client would
+    //    find. An operator who thinks they configured a mediator should learn
+    //    that the document does not say so.
+    if !advertises_messaging(caps) {
+        out.push(Finding {
+            severity: Severity::Warn,
+            message: "this VTC's DID document advertises no messaging transport at all (no \
+                      `TSPTransport`, no `DIDCommMessaging`) — a client resolving it can reach \
+                      this community over REST only, and nothing can be delivered to it over \
+                      the mediator. If that is not deliberate, add a service entry via the \
+                      runtime-service-management flow."
+                .to_string(),
+        });
+    }
+
+    // 3. TSP with nothing behind it.
+    if lacks_didcomm_fallback(caps) {
+        out.push(Finding {
+            severity: Severity::Warn,
+            message: "this VTC advertises TSP but no DIDComm mediator, so a peer that does not \
+                      speak TSP has no messaging transport to fall back to, and a build without \
+                      the `tsp` feature would have none at all. tsp-enablement.md §12 Phase A \
+                      is to advertise both; add a `DIDCommMessaging` service unless dropping \
+                      DIDComm is deliberate."
+                .to_string(),
+        });
+    }
+
+    // 4. Capable of more than it claims. A staged rollout, not a fault.
+    for p in served_not_advertised(served, caps) {
+        out.push(Finding {
+            severity: Severity::Info,
+            message: format!(
+                "this build serves {p} but the DID document does not advertise it, so no client \
+                 will choose it. Normal mid-rollout (ship the capable binary, then add the \
+                 service); add the service entry to start receiving {p} traffic."
+            ),
+        });
+    }
+
+    out
+}
+
+/// [`findings_against`] for the transports this build serves.
+#[must_use]
+pub fn findings_for_build(caps: &ServiceCapabilities) -> Vec<Finding> {
+    findings_against(served_transports(), caps)
+}
+
 /// The DID-document state from the VTC's own on-disk `did.jsonl`, if it has
 /// one.
 ///
@@ -572,6 +680,91 @@ mod tests {
             cfg!(feature = "tsp"),
             "`tsp` must stay a default feature of vtc-service: the shipped binary has to serve \
              the TSP its DID document may advertise."
+        );
+    }
+
+    // ─── findings: the four document-vs-binary relationships ─────────────
+
+    fn messages(findings: &[Finding], want: Severity) -> Vec<&str> {
+        findings
+            .iter()
+            .filter(|f| f.severity == want)
+            .map(|f| f.message.as_str())
+            .collect()
+    }
+
+    /// The deployed failure, as an operator-facing finding: one `Error` naming
+    /// TSP. Also carries the no-fallback warning, since that document had no
+    /// DIDComm either.
+    #[test]
+    fn unservable_advertised_transport_is_an_error_finding() {
+        let f = findings_against(NON_TSP_BUILD, &deployed_shape());
+        let errors = messages(&f, Severity::Error);
+        assert_eq!(errors.len(), 1, "expected one error finding: {f:?}");
+        assert!(errors[0].contains("TSP") && errors[0].contains("--features tsp"));
+    }
+
+    /// A document advertising no messaging transport at all: nothing can be
+    /// delivered to this VTC over a mediator by any route a DID-driven client
+    /// would find. Not an error — the `vtc-host` template mints exactly this —
+    /// but the operator should be told.
+    #[test]
+    fn a_document_with_no_messaging_service_is_warned_about() {
+        for served in [TSP_BUILD, NON_TSP_BUILD] {
+            let f = findings_against(served, &rest_only());
+            assert!(
+                messages(&f, Severity::Error).is_empty(),
+                "REST-only is legal, not an error: {f:?}"
+            );
+            assert!(
+                messages(&f, Severity::Warn)
+                    .iter()
+                    .any(|m| m.contains("no messaging transport at all")),
+                "expected the no-messaging warning: {f:?}"
+            );
+        }
+    }
+
+    /// Built with TSP, document silent about it — a valid staged rollout
+    /// (capable binary first, service entry second). Informational only: it
+    /// must never be an error, or the rollout order itself becomes unshippable.
+    #[test]
+    fn serving_more_than_the_document_advertises_is_informational() {
+        let f = findings_against(TSP_BUILD, &didcomm_only());
+        assert!(
+            messages(&f, Severity::Error).is_empty(),
+            "a capable binary that under-advertises strands nobody: {f:?}"
+        );
+        assert!(
+            messages(&f, Severity::Info)
+                .iter()
+                .any(|m| m.contains("tsp") && m.contains("does not advertise it")),
+            "expected the staged-rollout note for TSP: {f:?}"
+        );
+        assert_eq!(
+            served_not_advertised(TSP_BUILD, &didcomm_only()),
+            vec![Protocol::Tsp]
+        );
+    }
+
+    /// The healthy shape produces nothing at all — otherwise every correct
+    /// deployment prints noise and operators learn to skip the section.
+    #[test]
+    fn a_document_that_matches_the_build_has_no_findings() {
+        assert_eq!(findings_against(TSP_BUILD, &tsp_and_didcomm()), vec![]);
+    }
+
+    /// The severities are what the three call sites switch on — boot refuses on
+    /// `Error`, `vtc status` colours by it. Pin the mapping so a reordering of
+    /// `findings_against` cannot quietly downgrade the failure that motivated
+    /// this module.
+    #[test]
+    fn errors_sort_before_warnings_and_info() {
+        let f = findings_against(NON_TSP_BUILD, &deployed_shape());
+        assert_eq!(
+            f.first().map(|f| f.severity),
+            Some(Severity::Error),
+            "the unservable-transport error must lead: {f:?}"
         );
     }
 }

@@ -84,6 +84,9 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
 
     // 3. VTC DID + resolution check → extract mediator DID from DIDCommMessaging
     let mut discovered_mediator: Option<String> = None;
+    // Captured from the same resolution so the transport section below can
+    // report without resolving twice.
+    let mut resolved_caps: Option<vta_sdk::protocol::matching::ServiceCapabilities> = None;
     if let Some(ref did) = config.vtc_did {
         eprintln!("  {CYAN}{:<13}{RESET} {did}", "VTC DID");
         if let Some(ref resolver) = did_resolver {
@@ -95,6 +98,10 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
                         .unwrap_or("?");
                     eprintln!("                {GREEN}✓{RESET} resolves ({method})");
                     print_claimed_names(&resolved.doc.also_known_as);
+
+                    resolved_caps = serde_json::to_value(&resolved.doc).ok().map(|doc| {
+                        vta_sdk::protocol::matching::ServiceCapabilities::from_did_document(&doc)
+                    });
 
                     // Look for mediator DID in DIDCommMessaging service
                     for svc in &resolved.doc.service {
@@ -133,6 +140,15 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
         "Store",
         config.store.data_dir.display()
     );
+
+    // 4b. Transports — what the document promises vs what this binary serves.
+    //
+    // Here as well as at boot because the two questions an operator has are
+    // "why did it refuse to start" and "will it refuse if I restart", and the
+    // second must be answerable *without* restarting. Renders the same
+    // `transport_capability::findings_*` the daemon logs, so the two never
+    // disagree.
+    print_transport_section(resolved_caps.as_ref());
 
     // 5. Mediator section
     section("Mediator");
@@ -333,5 +349,66 @@ async fn send_trust_ping(
 fn print_claimed_names(also_known_as: &[String]) {
     for claim in also_known_as {
         eprintln!("                {DIM}claims (unverified): {claim}{RESET}");
+    }
+}
+
+/// Print what the VTC's document advertises, what this binary serves, and
+/// every disagreement between them.
+///
+/// The operator-facing half of [`crate::transport_capability`]. The daemon
+/// applies these findings at boot — refusing to start on an `Error`, disabling
+/// messaging when nothing advertised is servable — and this asks the same
+/// question without a restart, off the same functions, so the answers cannot
+/// drift.
+///
+/// `None` means the DID did not resolve (or none is configured). Reported as
+/// unknown rather than as agreement: a document nobody could read is not a
+/// document that matched.
+fn print_transport_section(caps: Option<&vta_sdk::protocol::matching::ServiceCapabilities>) {
+    use crate::transport_capability::{Severity, findings_for_build, served_transports};
+
+    section("Transports");
+
+    let served = served_transports()
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!("  {CYAN}{:<13}{RESET} {served}", "This build");
+
+    let Some(caps) = caps else {
+        eprintln!(
+            "  {CYAN}{:<13}{RESET} {DIM}(DID not resolved — cannot compare){RESET}",
+            "Advertised"
+        );
+        return;
+    };
+
+    let advertised = caps.advertised();
+    if advertised.is_empty() {
+        eprintln!("  {CYAN}{:<13}{RESET} {DIM}(none){RESET}", "Advertised");
+    } else {
+        // Preference order, which is also the order a conforming client tries
+        // them in — so the first entry is the one that actually gets used.
+        let list = advertised
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!("  {CYAN}{:<13}{RESET} {list}", "Advertised");
+    }
+
+    let findings = findings_for_build(caps);
+    if findings.is_empty() {
+        eprintln!("  {GREEN}✓{RESET} document and binary agree");
+        return;
+    }
+    for f in findings {
+        let (mark, colour) = match f.severity {
+            Severity::Error => ("✗", RED),
+            Severity::Warn => ("!", YELLOW),
+            Severity::Info => ("·", DIM),
+        };
+        eprintln!("  {colour}{mark}{RESET} {}", f.message);
     }
 }

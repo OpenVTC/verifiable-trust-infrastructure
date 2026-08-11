@@ -287,47 +287,37 @@ pub async fn run_didcomm_service(
         .await
     {
         Some(caps) => {
-            if crate::transport_capability::lacks_didcomm_fallback(&caps) {
-                warn!(
-                    "this VTC advertises TSP but no DIDComm mediator, so a peer that does not \
-                     speak TSP has no messaging transport to fall back to, and a build without \
-                     the `tsp` feature would have none at all. tsp-enablement.md §12 Phase A is \
-                     to advertise both; add a `DIDCommMessaging` service unless dropping DIDComm \
-                     is deliberate."
-                );
+            use crate::transport_capability::{MessagingVerdict, Severity};
+
+            // Every observation, at its own severity, from the one function
+            // `vtc status` also renders — so an operator who runs `vtc status`
+            // to explain a boot message is told the same story, not a second
+            // one.
+            for finding in crate::transport_capability::findings_for_build(&caps) {
+                match finding.severity {
+                    Severity::Error => error!("{}", finding.message),
+                    Severity::Warn => warn!("{}", finding.message),
+                    Severity::Info => info!("{}", finding.message),
+                }
             }
+
             match crate::transport_capability::classify_for_messaging(&caps) {
-                crate::transport_capability::MessagingVerdict::Ok => {}
-                crate::transport_capability::MessagingVerdict::Degraded(unservable) => {
-                    for u in &unservable {
-                        error!(
-                            transport = %u.protocol,
-                            endpoint = %u.endpoint,
-                            "{}",
-                            u.remediation()
-                        );
-                    }
+                MessagingVerdict::Ok => {}
+                MessagingVerdict::Degraded(_) => {
                     warn!(
-                        "starting messaging anyway — at least one advertised transport is servable, \
-                     but clients preferring the transports above will be silently dropped"
+                        "starting messaging anyway — at least one advertised transport is \
+                         servable, but clients preferring the transports above will be silently \
+                         dropped"
                     );
                 }
-                crate::transport_capability::MessagingVerdict::Unreachable(unservable) => {
-                    for u in &unservable {
-                        error!(
-                            transport = %u.protocol,
-                            endpoint = %u.endpoint,
-                            "{}",
-                            u.remediation()
-                        );
-                    }
+                MessagingVerdict::Unreachable(_) => {
                     // Not starting is the honest outcome: every transport this VTC
                     // advertises is one it cannot answer on, so connecting to the
                     // mediator would buy nothing but a socket that drops frames.
                     error!(
                         "no advertised messaging transport is servable by this build — messaging \
-                     disabled. The VTC will keep serving REST; fix the build or the DID document \
-                     above to restore messaging."
+                         disabled. The VTC will keep serving REST; fix the build or the DID \
+                         document above to restore messaging."
                     );
                     let _ = shutdown_rx.changed().await;
                     return;

@@ -1,4 +1,4 @@
-### vtc-service 0.11.56 — serve the TSP we advertise, and refuse to pretend otherwise (#923)
+### vtc-service 0.11.56 / vta-sdk 0.21.14 — serve the TSP we advertise, and refuse to pretend otherwise (#923)
 
 A VTC whose DID document advertised `#tsp` (`TSPTransport`) and no
 `DIDCommMessaging`, built without `--features tsp`, accepted every community
@@ -40,6 +40,29 @@ assumed "a DIDComm-only build never advertises TSP". This one did.
   `dispatch_trust_task_core` and is stored. The embedded test mediator now
   enables its own `tsp` feature — without it `/inbound` rejects
   `application/tsp` as a malformed DIDComm envelope. Runs in CI.
+
+All four document-vs-binary relationships are now reported, from one
+`findings_against` the boot gate, the messaging listener and `vtc status` all
+render — so an operator who runs `vtc status` to explain a boot refusal is told
+the same story, not a second one:
+
+- advertised but unservable → **error** (refuses to boot / stops the listener);
+- **no messaging service advertised at all** → warning. Legal, and what
+  `vtc-host` mints, but nothing can be delivered to the VTC over a mediator by
+  any route a DID-driven client would find;
+- TSP advertised with no DIDComm behind it → warning (no fallback);
+- served but not advertised → informational, the normal shape of a staged
+  rollout, never a fault.
+
+`vtc status` grows a **Transports** section printing what the build serves, what
+the document advertises, and every finding — so the question "will it refuse if
+I restart" is answerable without restarting.
+
+`vta-sdk`: the `vtc-host` template description pointed at
+`docs/03-integrating/runtime-service-management.md`, a directory that does not
+exist; corrected to `docs/02-vta/`, and reworded to say that *no* messaging
+transport is advertised by default (not just DIDComm) and that a community
+adding one should add both.
 
 The capability predicates take the served transport set as a parameter rather
 than reading it from `cfg`, because the crate's `[dev-dependencies]` self-dep
