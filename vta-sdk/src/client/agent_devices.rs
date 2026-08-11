@@ -15,10 +15,14 @@
 //! marked deprecated in favour of `0.2`, but `0.1` is what the VTA dispatches.
 #![allow(deprecated)]
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::VtaClient;
 use crate::error::VtaError;
+use crate::protocols::device_management::{
+    DeviceDisableBody, DeviceHeartbeatBody, DeviceRegisterBody, DeviceSetWakeBody, DeviceWipeBody,
+    WakeHandle,
+};
 use crate::trust_tasks;
 
 /// Round-trip timeout (seconds) for device trust tasks. Device ops are cheap
@@ -38,16 +42,12 @@ impl VtaClient {
         platform: Option<&str>,
         hpke_public_key: Option<&str>,
     ) -> Result<Value, VtaError> {
-        let mut payload = json!({
-            "consumerKind": consumer_kind,
-            "displayName": display_name,
-        });
-        if let Some(p) = platform {
-            payload["platform"] = json!(p);
-        }
-        if let Some(k) = hpke_public_key {
-            payload["hpkePublicKey"] = json!(k);
-        }
+        let payload = serde_json::to_value(DeviceRegisterBody {
+            consumer_kind,
+            display_name: display_name.to_string(),
+            platform: platform.map(str::to_string),
+            hpke_public_key: hpke_public_key.map(str::to_string),
+        })?;
         self.dispatch_trust_task(
             trust_tasks::TASK_DEVICE_REGISTER_0_1,
             payload,
@@ -59,10 +59,10 @@ impl VtaClient {
     /// `device/heartbeat/0.1` — refresh `lastSeenAt` (and `platform` if
     /// supplied). Returns server time + any queued operations for the device.
     pub async fn device_heartbeat(&self, platform: Option<&str>) -> Result<Value, VtaError> {
-        let mut payload = json!({});
-        if let Some(p) = platform {
-            payload["platform"] = json!(p);
-        }
+        let payload = serde_json::to_value(DeviceHeartbeatBody {
+            platform: platform.map(str::to_string),
+            vault_seq: None,
+        })?;
         self.dispatch_trust_task(
             trust_tasks::TASK_DEVICE_HEARTBEAT_0_1,
             payload,
@@ -86,7 +86,10 @@ impl VtaClient {
     /// `device/disable/0.1` — disable a device by id (the record is kept; it can
     /// no longer authenticate). The maintainer/operator kill switch.
     pub async fn device_disable(&self, device_id: &str) -> Result<Value, VtaError> {
-        let payload = json!({ "deviceId": device_id });
+        let payload = serde_json::to_value(DeviceDisableBody {
+            device_id: device_id.to_string(),
+            reason: None,
+        })?;
         self.dispatch_trust_task(
             trust_tasks::TASK_DEVICE_DISABLE_0_1,
             payload,
@@ -105,7 +108,11 @@ impl VtaClient {
         reason: &str,
         scope: &str,
     ) -> Result<Value, VtaError> {
-        let payload = json!({ "deviceId": device_id, "reason": reason, "scope": scope });
+        let payload = serde_json::to_value(DeviceWipeBody {
+            device_id: device_id.to_string(),
+            scope: scope.to_string(),
+            reason: reason.to_string(),
+        })?;
         self.dispatch_trust_task(
             trust_tasks::TASK_DEVICE_WIPE_0_1,
             payload,
@@ -123,10 +130,13 @@ impl VtaClient {
         handle: &str,
         suggested_triggers: Vec<String>,
     ) -> Result<Value, VtaError> {
-        let payload = json!({
-            "wakeHandle": { "gateway": gateway, "handle": handle },
-            "suggestedTriggers": suggested_triggers,
-        });
+        let payload = serde_json::to_value(DeviceSetWakeBody {
+            wake_handle: Some(WakeHandle {
+                gateway: gateway.to_string(),
+                handle: handle.to_string(),
+            }),
+            suggested_triggers: Some(suggested_triggers),
+        })?;
         self.dispatch_trust_task(
             trust_tasks::TASK_DEVICE_SET_WAKE_0_1,
             payload,

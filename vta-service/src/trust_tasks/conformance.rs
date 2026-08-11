@@ -89,6 +89,10 @@ use vta_sdk::protocols::credential_exchange::{
 use vta_sdk::protocols::credentials_issuance::{
     IssueCredentialBody, IssueCredentialResponse, RevokeCredentialBody, RevokeCredentialResponse,
 };
+use vta_sdk::protocols::device_management::{
+    DeviceDisableBody, DeviceHeartbeatBody, DeviceRegisterBody, DeviceSetWakeBody, DeviceWipeBody,
+    WakeHandle,
+};
 use vta_sdk::protocols::did_management::servers::{
     ListWebvhServerDomainsBody, ListWebvhServerDomainsResultBody, WebvhServerDomainEntry,
 };
@@ -168,30 +172,31 @@ fn validates<T: ValidatedPayload>(v: &Value) -> Result<(), String> {
 ///
 /// ## Where a transcription remains, and why
 ///
-/// 26 of these witnesses still build their request with `json!`. The reason is
+/// 21 of these witnesses still build their request with `json!`. The reason is
 /// **not** the one this comment used to give ("the slice's wire type is
-/// module-private"): 21 of the 26 name a `vta-sdk` client method that exists
+/// module-private") — most of them name a `vta-sdk` client method that exists
 /// today. The accurate position, per family:
 ///
 /// - **`auth/{whoami,sessions-list,step-up/approve-response}`,
 ///   `task-consent/decision`** (5) — the VTA is the *consumer*; no `vta-sdk`
 ///   producer sends these, so there is no emission of ours to assert. A fixture
-///   is the honest witness here.
-/// - **`consent/*` (6), `device/*` (6), `messaging/ping`** — a producer exists,
-///   but it builds its payload as an inline `json!` with a conditional insert
-///   per optional member. There is no type to point a witness at. Converting
-///   these means first giving those producers canonical body structs — the
-///   #888 fold, applied to the families it did not reach — and only then can a
-///   witness be built rather than transcribed.
-/// - **`vault/*` (7)** — `vault_upsert` and friends take a caller-supplied
+///   is the honest witness here, and no further work is owed.
+/// - **`consent/*` (6), `messaging/ping`** (7 total) — a producer exists, but
+///   it builds its payload as an inline `json!` with a conditional insert per
+///   optional member. There is no type to point a witness at. Converting these
+///   means first giving those producers canonical body structs — the #888 fold,
+///   applied to the families it did not reach — and only then can a witness be
+///   built rather than transcribed. `device/*` went this way in #925 and is the
+///   worked example.
+/// - **`vault/*` (7), `device/list`** (8 total) — these take a caller-supplied
 ///   `Value`; the SDK is a pass-through that contributes at most one member.
 ///   There is no SDK type at all, and inventing one is an API change, not a
 ///   test change.
 ///
-/// So the remaining work is real but is *not* "rewrite 26 fixtures": it is one
-/// producer fold (consent/device/ping) plus an API decision (vault), with five
-/// entries that are correct as they stand. Recorded here rather than in an
-/// issue because the next person to read this comment is the one who needs it.
+/// So the remaining work is one producer fold (consent + ping) plus an API
+/// decision (the pass-throughs), with five entries that are correct as they
+/// stand. Recorded here rather than in an issue because the next person to read
+/// this comment is the one who needs it.
 struct Witness {
     request: Value,
     parse_request: ParseFn,
@@ -903,12 +908,16 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::device::register::v0_1::Payload,
                 specs::device::register::v0_1::Response,
-                json!({
-                    "consumerKind": { "kind": "companion", "formFactor": "browser" },
-                    "displayName": "Laptop",
-                    "platform": "macOS",
-                    "keyCustody": { "tier": "hardware" },
-                    "attestation": { "kind": "none" },
+                // The producer's own body, with its optionals unset — the
+                // shape `device_register(kind, name, None, None)` emits, and
+                // the one a caller reaches for first. The fixture used to set
+                // `keyCustody` and `attestation`, which no producer here sends:
+                // members we never emit prove nothing about our wire form.
+                to_v(DeviceRegisterBody {
+                    consumer_kind: json!({ "kind": "companion", "formFactor": "browser" }),
+                    display_name: "Laptop".into(),
+                    platform: None,
+                    hpke_public_key: None,
                 }),
                 json!({ "binding": device_binding_json() })
             ),
@@ -918,7 +927,9 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::device::heartbeat::v0_1::Payload,
                 specs::device::heartbeat::v0_1::Response,
-                json!({ "platform": "macOS", "vaultSeq": 42 }),
+                // A bare "still here" — every member unset, which must
+                // serialize to `{}` rather than a map of nulls.
+                to_v(DeviceHeartbeatBody::default()),
                 json!({ "serverTime": TS, "queuedOperations": [], "syncHint": "up-to-date" })
             ),
         ),
@@ -936,7 +947,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::device::disable::v0_1::Payload,
                 specs::device::disable::v0_1::Response,
-                json!({ "deviceId": "dev-1", "reason": "lost" }),
+                to_v(DeviceDisableBody {
+                    device_id: "dev-1".into(),
+                    reason: None,
+                }),
                 json!({ "deviceId": "dev-1", "disabledAt": TS })
             ),
         ),
@@ -945,7 +959,11 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::device::wipe::v0_1::Payload,
                 specs::device::wipe::v0_1::Response,
-                json!({ "deviceId": "dev-1", "scope": "full", "reason": "stolen", "issuedAt": TS }),
+                to_v(DeviceWipeBody {
+                    device_id: "dev-1".into(),
+                    scope: "full".into(),
+                    reason: "stolen".into(),
+                }),
                 json!({ "deviceId": "dev-1", "scope": "full", "completedAt": TS })
             ),
         ),
@@ -954,10 +972,12 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::device::set_wake::v0_1::Payload,
                 specs::device::set_wake::v0_1::Response,
-                json!({
-                    "wakeHandle": { "gateway": "did:web:gateway.example", "handle": "h-1" },
-                    "pushPlatform": "apns",
-                    "suggestedTriggers": ["did:web:mediator.example"],
+                to_v(DeviceSetWakeBody {
+                    wake_handle: Some(WakeHandle {
+                        gateway: "did:web:gateway.example".into(),
+                        handle: "h-1".into(),
+                    }),
+                    suggested_triggers: Some(vec!["did:web:mediator.example".into()]),
                 }),
                 json!({
                     "pushCapable": true,

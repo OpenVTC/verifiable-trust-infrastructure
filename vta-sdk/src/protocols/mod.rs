@@ -8,6 +8,7 @@ pub mod credential_exchange;
 /// Issued-credential lifecycle (`spec/vta/credentials/{issue,revoke}/0.1`) —
 /// mint + revoke a VTA-signed W3C VC addressed to a holder DID.
 pub mod credentials_issuance;
+pub mod device_management;
 pub mod did_management;
 pub mod did_template_management;
 pub mod discovery;
