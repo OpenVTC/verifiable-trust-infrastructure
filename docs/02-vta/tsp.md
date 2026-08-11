@@ -40,7 +40,11 @@ hosted DID, exactly as it can't advertise REST/DIDComm without one.
 
 ## Enabling TSP
 
-TSP shares the DIDComm mediator, so **enable DIDComm first**. Two paths:
+TSP shares the DIDComm mediator, so **enable DIDComm first**. That is a
+constraint of this implementation, not of TSP — a TSP-only mediator is
+legitimate, and lifting the requirement is designed in
+[transport-neutral-mediator.md](../05-design-notes/transport-neutral-mediator.md).
+Two paths:
 
 - **Runtime (recommended):** once you've verified TSP against your mediator,
   `pnm services tsp enable --mediator-did <did>` advertises a `#tsp` service on
@@ -48,10 +52,14 @@ TSP shares the DIDComm mediator, so **enable DIDComm first**. Two paths:
   transports. See [runtime-service-management.md](./runtime-service-management.md).
   Unlike `services didcomm enable`, `services tsp enable` works over **either**
   transport. TSP has **no drain** and **no handshake**.
-- **Declarative setup:** in a `vta setup --from <toml>` file, `[services] tsp =
-  true` (which **requires** `services.didcomm = true`). The interactive `vta
-  setup` wizard does **not** prompt for TSP yet — prefer enabling it post-setup
-  via `services tsp enable`, after verification.
+- **At setup:** the interactive `vta setup` wizard lists **TSP** in its services
+  multi-select, and a `vta setup --from <toml>` file takes `[services] tsp =
+  true`. Both **require** `services.didcomm = true` (that is where the mediator
+  is configured) and a binary built with `--features tsp` — setup refuses either
+  combination by name rather than publishing a transport it cannot serve. TSP is
+  not pre-ticked in the wizard, for the reason in *Rollout posture* below.
+  Choosing it here puts `#tsp` in the DID document from log v1, rather than
+  adding it in a later log entry.
 
 `pnm services list` shows TSP on/off + its mediator; `GET /health/details`
 reports `tsp_enabled`.
@@ -72,6 +80,7 @@ the automatic fallback for any peer that doesn't speak TSP.
 | `services tsp {enable,update,disable,rollback}` (REST + DIDComm + CLI + offline) | ✅ shipped |
 | DID templates advertise `#tsp` | ✅ shipped |
 | Health `tsp_enabled` + `services list` | ✅ shipped |
+| Setup: wizard multi-select + `--from` `[services] tsp`, both minting `#tsp` | ✅ shipped |
 | Inbound: `tsp-message` vault unseal | ✅ shipped (feature-gated; live unpack pending verification) |
 | Inbound: TSP listener (raw-TSP websocket → trust-task spine) | ✅ shipped (feature-gated; live loop pending verification) |
 | Auth over TSP | ✅ by construction (rides the inbound spine → `handle_authenticate`) |
@@ -90,6 +99,12 @@ requires a Bidirectional relationship — `tsp-outbound-send.md` §3).
   protocol tag (a TSP VID is a DID too) — deferred until there's a consumer.
 - **`vta-mcp` / `didcomm-test`** TSP wiring — deferred until they have a
   TSP-specific path to exercise.
+- **TSP-only VTAs.** TSP currently requires DIDComm (shared mediator, shared
+  socket, shared cargo feature). Also note that a mediator minted by `vta setup`
+  does **not** advertise `TSPTransport` today, so a TSP-enabled VTA can point
+  `#tsp` at a mediator whose own document says it doesn't carry TSP. Both are
+  addressed in
+  [transport-neutral-mediator.md](../05-design-notes/transport-neutral-mediator.md).
 
 ## References
 

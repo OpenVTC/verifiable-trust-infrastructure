@@ -34,6 +34,7 @@ use serde_json::json;
 use url::Url;
 
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use vta_sdk::protocol::matching::Protocol;
 
 use crate::config::{
     AppConfig, AuditConfig, AuthConfig, LogConfig, MessagingConfig, SecretBackend, SecretsConfig,
@@ -475,11 +476,52 @@ pub enum MessagingInput {
         template_vars: HashMap<String, serde_json::Value>,
         #[serde(default)]
         setup_acl: bool,
+        /// Which transports this mediator will serve, rendered into the
+        /// mediator's own DID document.
+        ///
+        /// Omitted — the normal case — means "whatever this VTA advertises":
+        /// DIDComm always, TSP when `services.tsp` is on. We are minting the
+        /// mediator, so its capability is a choice rather than a discovery,
+        /// and the only choice that keeps the VTA reachable is one that
+        /// covers what the VTA advertises.
+        ///
+        /// Set it explicitly to mint a mediator that serves *more* than this
+        /// VTA uses — e.g. a shared mediator carrying TSP for other clients
+        /// while this VTA stays on DIDComm. Serving *less* is refused: it
+        /// would publish a VTA `#tsp` pointing at a mediator whose own
+        /// document says it doesn't carry TSP.
+        ///
+        /// `rest` is not a mediator transport and is refused here.
+        #[serde(default)]
+        protocols: Option<Vec<Protocol>>,
     },
 }
 
 fn default_mediator_context() -> String {
     "mediator".into()
+}
+
+/// Which transports a mediator minted by setup will serve.
+///
+/// Explicit `messaging.protocols` wins. Omitted — the normal case — it is
+/// whatever this VTA advertises: DIDComm always (the `didcomm-mediator`
+/// template renders that entry unconditionally), plus TSP when the VTA
+/// advertises TSP. Deriving is not a convenience here: the two must agree for
+/// the VTA to be reachable, and the operator has no information setup lacks.
+///
+/// `validate_inputs` refuses an explicit list that serves *less* than the VTA
+/// advertises; serving more is legitimate (a shared mediator).
+fn mediator_protocols(explicit: Option<&[Protocol]>, services: &ServicesConfig) -> Vec<Protocol> {
+    match explicit {
+        Some(list) => list.to_vec(),
+        None => {
+            let mut derived = vec![Protocol::Didcomm];
+            if services.tsp {
+                derived.push(Protocol::Tsp);
+            }
+            derived
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -802,6 +844,7 @@ pub async fn apply_inputs(
             mediator_host,
             template_vars,
             setup_acl,
+            protocols,
         } => {
             let _med_ctx =
                 create_seed_context(&contexts_ks, context, "DIDComm Messaging Mediator").await?;
@@ -828,6 +871,23 @@ pub async fn apply_inputs(
                 })?,
             };
             effective_vars.insert("WS_URL".into(), json!(ws_url));
+
+            // TSP: fill the template's `{SERVICE_TSP}` null-pruning slot when
+            // this mediator serves TSP. Omitted, the slot prunes and the
+            // mediator advertises DIDComm only — which is what happened to
+            // every TSP-enabled VTA before this, leaving the VTA's `#tsp`
+            // pointing at a mediator whose own document said it didn't carry
+            // TSP (transport-neutral-mediator.md §2).
+            //
+            // The mediator's own entry names its **URL**, the inverse of the
+            // VTA's, which names the mediator's DID. The indirection has to
+            // terminate at the node that actually serves the transport.
+            if mediator_protocols(protocols.as_deref(), &inputs.services).contains(&Protocol::Tsp) {
+                let entry = vta_sdk::did_templates::tsp_transport_service(url)
+                    .map_err(|e| format!("build the mediator's TSP service entry: {e}"))?;
+                effective_vars.insert(vta_sdk::did_templates::TSP_SERVICE_VAR.into(), entry);
+                eprintln!("  Mediator will advertise: TSP + DIDComm");
+            }
 
             // `url` is the DIDComm endpoint; `webvh_url` is the DID-document
             // hosting URL. They are usually the same host but are semantically
@@ -925,6 +985,11 @@ pub async fn apply_inputs(
             let services = super::build_vta_additional_services(
                 &inputs.services,
                 inputs.public_url.as_deref(),
+                // `#tsp` points at the DIDComm mediator resolved above.
+                // `None` when messaging was skipped — then there is no
+                // endpoint to advertise and the entry is dropped rather
+                // than published empty.
+                messaging.as_ref().map(|m| m.mediator_did.as_str()),
             );
             let did = create_simple_webvh_did(
                 "VTA",
@@ -1105,15 +1170,95 @@ fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Erro
                 .into(),
         );
     }
+    // A binary built without the `tsp` feature has no TSP dispatcher (the
+    // inbound half lives behind that flag), so `services.tsp = true` would
+    // advertise `#tsp` — the *first* entry a peer matching on transport
+    // preference picks — for a transport this VTA cannot answer on. The
+    // interactive wizard handles this by not offering the option; the
+    // declarative path has to say it out loud.
+    #[cfg(not(feature = "tsp"))]
+    if inputs.services.tsp {
+        errors.push(
+            "services.tsp = true, but this VTA was built without the `tsp` feature and has \
+             no TSP dispatcher — advertising `#tsp` would publish a transport it cannot \
+             serve, and TSP-preferring peers would fail rather than fall back to DIDComm. \
+             Rebuild with `--features tsp`, or set services.tsp = false"
+                .into(),
+        );
+    }
     if let MessagingInput::CreateMediator {
         context,
         webvh_url,
         ws_url,
+        protocols,
         ..
     } = &inputs.messaging
     {
         if context.trim().is_empty() {
             errors.push("messaging.context cannot be empty".into());
+        }
+        if let Some(protocols) = protocols {
+            if protocols.is_empty() {
+                errors.push(
+                    "messaging.protocols = [] — a mediator that carries nothing is not a \
+                     mediator. Remove the key to serve what this VTA advertises, or list \
+                     the transports it should serve"
+                        .into(),
+                );
+            }
+            if protocols.contains(&Protocol::Rest) {
+                errors.push(
+                    "messaging.protocols contains \"rest\" — REST is not a mediator transport \
+                     (a REST peer is reached directly, with no mediator). Use \"tsp\" and/or \
+                     \"didcomm\""
+                        .into(),
+                );
+            }
+            // Duplicates would render one service entry twice. Always a
+            // mistake, and refused rather than de-duplicated (same call as
+            // the VTC's `transports`, #929).
+            let mut seen = Vec::new();
+            for p in protocols {
+                if seen.contains(p) {
+                    errors.push(format!(
+                        "messaging.protocols lists \"{p}\" more than once; each transport is \
+                         advertised exactly once"
+                    ));
+                } else {
+                    seen.push(*p);
+                }
+            }
+            // The `didcomm-mediator` template renders its DIDComm `#service`
+            // block unconditionally — only `{SERVICE_TSP}` is a pruning slot.
+            // So a `protocols` omitting DIDComm describes a document setup
+            // does not mint, and would be believed by nothing.
+            if !protocols.contains(&Protocol::Didcomm) {
+                errors.push(
+                    "messaging.protocols omits \"didcomm\", but the `didcomm-mediator` \
+                     template always advertises a DIDComm endpoint — a minted mediator \
+                     cannot be TSP-only today. Include \"didcomm\", or point at a TSP-only \
+                     mediator with kind = \"existing\""
+                        .into(),
+                );
+            }
+        }
+        // §3's invariant, on the slice setup can enforce today: the VTA must
+        // not advertise a transport its own mediator doesn't carry. Since we
+        // are the ones minting that mediator, an explicit `protocols` that
+        // omits TSP while the VTA advertises it is a contradiction the
+        // operator has to resolve, not something to silently widen.
+        if inputs.services.tsp
+            && protocols
+                .as_ref()
+                .is_some_and(|p| !p.contains(&Protocol::Tsp))
+        {
+            errors.push(
+                "services.tsp = true but messaging.protocols omits \"tsp\" — the VTA would \
+                 advertise `#tsp` pointing at a mediator whose own DID document says it \
+                 does not carry TSP. Add \"tsp\" to messaging.protocols, or set \
+                 services.tsp = false"
+                    .into(),
+            );
         }
         if webvh_url.as_deref().is_some_and(str::is_empty) {
             errors.push(
@@ -2780,6 +2925,114 @@ mod tests {
         validate_inputs(&inputs).expect("rest disabled means public_url is optional");
     }
 
+    /// A minted mediator serves what the VTA advertises, unless the operator
+    /// says otherwise. This is what decides whether `{SERVICE_TSP}` gets
+    /// filled, so it is the difference between a reachable `#tsp` and one
+    /// pointing at a mediator that doesn't carry TSP.
+    #[test]
+    fn minted_mediator_protocols_follow_the_vtas_services() {
+        let didcomm_only = ServicesConfig {
+            rest: true,
+            didcomm: true,
+            webauthn: false,
+            tsp: false,
+        };
+        let with_tsp = ServicesConfig {
+            tsp: true,
+            ..didcomm_only
+        };
+
+        // Derived: DIDComm always (the template renders it unconditionally),
+        // TSP iff the VTA advertises TSP.
+        assert_eq!(
+            mediator_protocols(None, &didcomm_only),
+            vec![Protocol::Didcomm]
+        );
+        assert_eq!(
+            mediator_protocols(None, &with_tsp),
+            vec![Protocol::Didcomm, Protocol::Tsp]
+        );
+
+        // Explicit wins, including serving more than this VTA uses — a
+        // shared mediator carrying TSP for other clients.
+        assert_eq!(
+            mediator_protocols(Some(&[Protocol::Didcomm, Protocol::Tsp]), &didcomm_only),
+            vec![Protocol::Didcomm, Protocol::Tsp]
+        );
+    }
+
+    /// The mint-time slice of the §3 invariant: a VTA that advertises TSP
+    /// cannot mint itself a mediator that doesn't carry it.
+    #[test]
+    fn a_minted_mediator_may_not_serve_less_than_the_vta_advertises() {
+        let raw = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+
+            [services]
+            rest    = false
+            didcomm = true
+            tsp     = true
+
+            [secrets]
+            backend = "keyring"
+
+            [messaging]
+            kind      = "create_mediator"
+            url       = "https://mediator.example.com"
+            protocols = ["didcomm"]
+        "#;
+        let inputs = parse(raw).expect("parses");
+        let err = validate_inputs(&inputs).expect_err("must refuse a TSP-less mediator");
+        assert!(
+            err.to_string()
+                .contains("messaging.protocols omits \"tsp\""),
+            "got: {err}"
+        );
+    }
+
+    /// The other ways `messaging.protocols` can be wrong. Each is refused by
+    /// name rather than normalised — a config that means something other than
+    /// it says is how the `#tsp`-at-a-DIDComm-mediator state arose.
+    #[test]
+    fn messaging_protocols_rejects_malformed_lists() {
+        let cases = [
+            (r#"protocols = []"#, "a mediator that carries nothing"),
+            (
+                r#"protocols = ["didcomm", "rest"]"#,
+                "REST is not a mediator transport",
+            ),
+            (r#"protocols = ["didcomm", "didcomm"]"#, "more than once"),
+            (r#"protocols = ["tsp"]"#, "always advertises a DIDComm"),
+        ];
+        for (line, expected) in cases {
+            let raw = format!(
+                r#"
+                config_path = "/tmp/vta-test/config.toml"
+                data_dir    = "/tmp/vta-test/data"
+
+                [services]
+                rest    = false
+                didcomm = true
+                tsp     = false
+
+                [secrets]
+                backend = "keyring"
+
+                [messaging]
+                kind = "create_mediator"
+                url  = "https://mediator.example.com"
+                {line}
+            "#
+            );
+            let inputs = parse(&raw).unwrap_or_else(|e| panic!("{line} should parse: {e}"));
+            let err = validate_inputs(&inputs)
+                .expect_err(&format!("{line} must be refused"))
+                .to_string();
+            assert!(err.contains(expected), "{line}: got {err}");
+        }
+    }
+
     #[test]
     fn services_tsp_without_didcomm_is_rejected() {
         // TSP shares the DIDComm mediator, so it can't be advertised without
@@ -2805,12 +3058,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn services_tsp_with_didcomm_passes_and_carries_through() {
-        // The declarative TSP path: `[services] tsp = true` (with DIDComm)
-        // parses, validates, and the flag is carried on `WizardInputs.services`
-        // (which `apply` writes verbatim to `config.services`).
-        let raw = r#"
+    /// A `[services] tsp = true` + DIDComm setup file, whose fate depends
+    /// on whether this binary can serve TSP. Both outcomes are asserted
+    /// below — one per build.
+    #[cfg(test)]
+    const TSP_WITH_DIDCOMM_TOML: &str = r#"
             config_path = "/tmp/vta-test/config.toml"
             data_dir    = "/tmp/vta-test/data"
 
@@ -2822,9 +3074,31 @@ mod tests {
             [secrets]
             backend = "keyring"
         "#;
-        let inputs = parse(raw).expect("parses");
+
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn services_tsp_with_didcomm_passes_and_carries_through() {
+        // The declarative TSP path: `[services] tsp = true` (with DIDComm)
+        // parses, validates, and the flag is carried on `WizardInputs.services`
+        // (which `apply` writes verbatim to `config.services`).
+        let inputs = parse(TSP_WITH_DIDCOMM_TOML).expect("parses");
         validate_inputs(&inputs).expect("tsp + didcomm should validate");
         assert!(inputs.services.tsp, "tsp flag must be carried through");
+    }
+
+    #[cfg(not(feature = "tsp"))]
+    #[test]
+    fn services_tsp_is_refused_when_the_binary_cannot_serve_it() {
+        // Same file, a binary with no TSP dispatcher: refused by name
+        // rather than minting a DID document that advertises `#tsp` and
+        // then never answering on it.
+        let inputs = parse(TSP_WITH_DIDCOMM_TOML).expect("parses");
+        let err = validate_inputs(&inputs)
+            .expect_err("tsp must be refused without the compiled transport");
+        assert!(
+            err.to_string().contains("built without the `tsp` feature"),
+            "got: {err}"
+        );
     }
 
     #[test]

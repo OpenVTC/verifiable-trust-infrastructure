@@ -87,6 +87,13 @@ Data directory [data/vta]: data/vta
 (For a REST-only setup, uncheck DIDComm. DIDComm requires a mediator —
 see "Adding DIDComm messaging" at the end.)
 
+A binary built with `--features tsp` offers a third option, **TSP**, which
+advertises `#tsp` in the VTA DID document alongside DIDComm and points it at
+the same mediator. It is not pre-ticked, and it requires DIDComm — that is
+where the mediator is configured. Leave it off if you are unsure whether your
+mediator routes TSP: peers that prefer TSP fail rather than fall back, and
+`pnm services tsp enable` turns it on later.
+
 ### 2.2 BIP-39 mnemonic
 
 Choose **Generate new 24-word mnemonic**. Write down and store the

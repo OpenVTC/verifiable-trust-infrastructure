@@ -213,6 +213,16 @@ jobs:
         run: bash scripts/check-version-bumps.sh "${{ github.event.pull_request.base.sha }}"
 
       - name: Changelog guard for bumped publishable crates
+        env:
+          # Lets the guard check that a fragment this PR adds actually names
+          # this PR — in its filename and its heading. Unset locally, where
+          # there is no PR to name, and the check is skipped.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # The `release` label is the escape hatch for a release PR that edits
+          # CHANGELOG.md without collating fragments (stamping a version
+          # heading, correcting a shipped entry). A collation PR needs no label:
+          # deleting the fragments it folds in is how the guard recognises it.
+          ALLOW_CHANGELOG_EDIT: ${{ contains(github.event.pull_request.labels.*.name, 'release') && '1' || '0' }}
         run: bash scripts/check-changelogs.sh "${{ github.event.pull_request.base.sha }}"
 
   lockfile-self-pins:

@@ -51,9 +51,32 @@ scripts/collate-changelog.sh          # rewrite CHANGELOG.md, remove fragments
 scripts/collate-changelog.sh --check  # dry run; prints what would be folded in
 ```
 
-## Why the guard still passes
+## What CI enforces
 
-`scripts/check-changelogs.sh` requires every bumped publishable crate to be named
-with its new version in a changelog entry. It now searches `CHANGELOG.md` **and**
-`changelog.d/*.md`, so the contract is unchanged — only the file you write it in
-moved. A bump with no entry in either place still fails.
+`scripts/check-changelogs.sh` runs on every PR (the `release-guards` job) and
+fails on:
+
+1. **A fragment filename that isn't `<PR-number>-<slug>.md`.** The number is what
+   makes fragments collision-free.
+2. **A fragment that names the wrong PR** — filename or `###` heading — when it
+   is one *this* PR adds. Other PRs' fragments sit in this directory too and are
+   not your PR's business. Needs the PR number, which CI passes as `PR_NUMBER`;
+   a local run skips this rather than inventing one.
+3. **An edit to `CHANGELOG.md`.** The shared file is the thing that conflicts, so
+   editing it is refused rather than merely discouraged. The release collation is
+   exempt and needs no ceremony — it *deletes* the fragments it folds in, and
+   that is how the guard tells it apart. `ALLOW_CHANGELOG_EDIT=1` (CI sets it
+   from the `release` label) covers the rest: stamping a version heading,
+   correcting an entry that already shipped.
+4. **A bumped publishable crate with no entry naming its new version**, searching
+   `CHANGELOG.md` **and** `changelog.d/*.md` — so a repo that has just collated
+   still passes, and the contract is about the record existing rather than which
+   file it currently lives in.
+
+A PR that bumps nothing and records nothing gets a **notice**, not a failure.
+Most such PRs genuinely need no entry; the ones that do — release-process
+changes, CI contracts, docs restructures — are worth a nudge at the moment
+you're looking, but not worth taxing every typo fix to catch.
+
+Every check reads the **committed** diff, so a fragment you haven't committed is
+invisible to a local run.
