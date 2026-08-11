@@ -369,6 +369,64 @@ async fn public_profile_returns_curated_subset_unauthenticated() {
     // Curated subset — operational + opaque fields stay private.
     assert!(body.get("registryStatus").is_none());
     assert!(body.get("extensions").is_none());
+    // The transport view is always present, even when empty (see below), so a
+    // consumer can tell "this VTC reports no transports" from "this response
+    // predates the field".
+    assert!(
+        body.get("transports").is_some_and(|t| t.is_array()),
+        "public profile must always carry a transports array: {body}"
+    );
+}
+
+/// A VTC whose own DID cannot be resolved reports transports as **unknown**
+/// (an empty array), never as "advertises nothing".
+///
+/// The distinction matters to a visitor: "no way in" is actionable and would be
+/// a lie here. This fixture has no DID resolver wired, which is the same
+/// observable state as a resolution failure.
+#[tokio::test]
+async fn public_profile_reports_unknown_transports_when_the_did_does_not_resolve() {
+    let fix = build().await;
+    seed_profile(&fix).await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/community/public-profile")
+        .body(Body::empty())
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, body) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["transports"].as_array().map(Vec::len),
+        Some(0),
+        "unresolvable DID must yield an empty (unknown) transport list, not a \
+         fabricated one: {body}"
+    );
+}
+
+/// The public endpoint must not leak build configuration. The operator-facing
+/// remediation text in `transport_capability::Finding` names feature flags and
+/// rebuild commands on purpose — for `vtc status` and the daemon log. None of
+/// it may ride out on an unauthenticated response.
+#[tokio::test]
+async fn public_profile_leaks_no_build_configuration() {
+    let fix = build().await;
+    seed_profile(&fix).await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/community/public-profile")
+        .body(Body::empty())
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, body) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    let serialised = body.to_string();
+    for leak in ["--features", "cargo", "rebuild", "feature"] {
+        assert!(
+            !serialised.contains(leak),
+            "public profile must not mention {leak:?}: {serialised}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -133,6 +133,19 @@
               </button>
             </dd>
           </div>
+          <!--
+            How to reach this community, and whether each route works right
+            now. Hidden until the profile fetch fills it: an empty transport
+            list means the community's DID could not be resolved, which is
+            "unknown", not "no way in" — better to show nothing than to
+            imply the latter.
+          -->
+          <div class="status-row stacked" id="transports-row" hidden>
+            <dt>Transports</dt>
+            <dd>
+              <ul class="transport-list" id="transport-list"></ul>
+            </dd>
+          </div>
         </dl>
       </section>
 
