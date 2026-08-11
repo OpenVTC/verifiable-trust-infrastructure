@@ -30,6 +30,8 @@ pub struct CreateDidWebvhArgs {
     pub export_secrets: bool,
     /// Create an ACL admin entry for the new DID in the target context.
     pub admin: bool,
+    /// Write the DID log (did.jsonl) to this file.
+    pub did_log_file: Option<PathBuf>,
 }
 
 pub async fn run_create_did_webvh(
@@ -270,6 +272,12 @@ pub async fn run_create_did_webvh(
             eprintln!("  \x1b[2mTo self-host this DID, upload {did_file} to:");
             eprintln!("  {url_str}\x1b[0m");
         } else {
+            // Non-interactive: write to --did-log-file if specified
+            if let Some(ref path) = args.did_log_file {
+                std::fs::write(path, log_entry)
+                    .map_err(|e| format!("failed to write did.jsonl to {}: {e}", path.display()))?;
+                eprintln!("  DID log written to: {}", path.display());
+            }
             eprintln!("  Context '{}' updated with DID: {final_did}", args.context);
             eprintln!("  \x1b[2mDID log (did.jsonl) ready; self-host at: {url_str}\x1b[0m");
         }

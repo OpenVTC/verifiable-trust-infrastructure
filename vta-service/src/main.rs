@@ -183,6 +183,10 @@ enum Commands {
         /// the target context (mirrors `create-did-key --admin`).
         #[arg(long)]
         admin: bool,
+        /// Write the DID log (did.jsonl) to this file path. Useful for
+        /// publishing to external hosting (e.g. GitLab Pages).
+        #[arg(long)]
+        did_log_file: Option<PathBuf>,
     },
     /// Create a self-contained did:peer:2 agent identity for a context.
     ///
@@ -1628,6 +1632,7 @@ async fn main() {
             url,
             export_secrets,
             admin,
+            did_log_file,
         }) => {
             // SEALED CHECK: creates keys and DIDs
             check_seal(&cli.config).await;
@@ -1640,6 +1645,7 @@ async fn main() {
                     url,
                     export_secrets,
                     admin,
+                    did_log_file,
                 };
                 if let Err(e) = did_webvh::run_create_did_webvh(args).await {
                     eprintln!("Error: {e}");
