@@ -54,13 +54,34 @@ context = "default"   # the VTA context this community provisions under
 # domain    = "tenant.example.com"     # tenant domain on a multi-domain host
 # path      = "communities/acme"       # path in did:webvh:<scid>:<host>:<path>
 
-# ── DIDComm messaging (optional) ────────────────────────────────────────
-# Omit for no messaging — the daemon stays healthy on REST and logs a
-# one-line "messaging not configured" warning at startup. When present,
-# `mediator_did` is required; the endpoint is resolved from its DID
-# document, so `mediator_url` is informational only.
+# ── Messaging (optional) ────────────────────────────────────────────────
+# Omit the whole table for no messaging — the daemon stays healthy on REST
+# and logs a one-line "messaging not configured" warning at startup.
+#
+# When present, `mediator_did` and `transports` are both REQUIRED;
+# `mediator_url` is informational (the endpoint is resolved from the
+# mediator's DID document).
+#
+# `transports` decides what this community's DID document advertises, and
+# therefore how anyone reaches it. Every entry points at `mediator_did` —
+# TSP and DIDComm share one dual-protocol mediator.
+#
+#   ["tsp", "didcomm"]  both. The recommended shape: clients prefer TSP,
+#                       and peers that don't speak it fall back to DIDComm.
+#   ["didcomm"]         mediator routes DIDComm only.
+#   ["tsp"]             TSP only — strands every peer that can't speak it.
+#
+# ⚠ Advertising a transport your mediator does not route makes this
+#   community unreachable on it: conforming clients prefer it and fail.
+#   Confirm your mediator advertises the matching service first — nothing
+#   here can check it for you.
+#
+# ⚠ Fixed at mint. The VTC serves a write-once did.jsonl and cannot re-sign
+#   its own log, so changing this later needs a VTA-side `dids edit` plus
+#   redelivering the log by hand.
 # [messaging]
 # mediator_did = "did:web:mediator.example.com"
+# transports   = ["tsp", "didcomm"]
 # mediator_url = "https://mediator.example.com"
 
 # ── Secret-store backend (required) ─────────────────────────────────────

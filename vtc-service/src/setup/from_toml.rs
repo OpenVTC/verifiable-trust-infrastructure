@@ -37,9 +37,39 @@ use vti_common::error::AppError;
 use crate::config::{MessagingConfig, SecretsConfig};
 
 use super::wizard::{
-    SetupOutcome, WebvhTarget, WizardInputs, WizardPlan, apply, normalize_registry_did,
+    SetupOutcome, Transport, WebvhTarget, WizardInputs, WizardPlan, apply, normalize_registry_did,
     refuse_if_already_set_up,
 };
+
+/// The `[messaging]` table: the mediator, plus which transports the
+/// community's DID document advertises over it.
+///
+/// Flattens [`MessagingConfig`] — the runtime shape written to `config.toml`
+/// — and adds `transports`, which is **not** runtime config. It is consumed
+/// once, at mint, to render service entries into the DID document, and the
+/// document is authoritative thereafter. Persisting it would create a second
+/// source of truth that could drift from the document it produced.
+///
+/// `transports` is required rather than defaulted. The choice determines
+/// whether anyone can reach this community over a mediator, it cannot be
+/// changed after mint without a VTA-side `dids edit`, and a silent default
+/// would be a guess about someone else's mediator — see
+/// [`super::wizard::prompt_transports`] for the same reasoning interactively.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MessagingSetup {
+    #[serde(flatten)]
+    pub config: MessagingConfig,
+
+    /// Transports to advertise: `["tsp"]`, `["didcomm"]`, or both. Both is the
+    /// §12 Phase A shape and strands nobody.
+    ///
+    /// Every entry points at `mediator_did`. Advertising a transport that
+    /// mediator does not route makes this community unreachable on it —
+    /// conforming clients prefer it and fail — and nothing here can verify the
+    /// mediator's own services.
+    pub transports: Vec<Transport>,
+}
 
 /// TOML schema for `vtc setup --from <file>`.
 ///
@@ -96,13 +126,16 @@ pub(crate) struct VtcWizardInputs {
     #[serde(default)]
     pub webvh: WebvhTarget,
 
-    /// DIDComm mediator the VTC routes through. Omit for no messaging
-    /// (the daemon stays healthy on REST and logs a one-line warning).
-    /// `mediator_did` is required when present; `mediator_url` /
-    /// `mediator_host` are optional (the endpoint is resolved from the
-    /// DID document).
+    /// Mediator the VTC routes through, and which transports its DID
+    /// document advertises over that mediator. Omit the whole table for no
+    /// messaging (the daemon stays healthy on REST and logs a one-line
+    /// warning).
+    ///
+    /// `mediator_did` and `transports` are both required when the table is
+    /// present; `mediator_url` / `mediator_host` are optional (the endpoint is
+    /// resolved from the mediator's DID document).
     #[serde(default)]
-    pub messaging: Option<MessagingConfig>,
+    pub messaging: Option<MessagingSetup>,
 
     /// Secret-store backend for the VTC's key bundle. Required — the
     /// choice is security-sensitive and there is no safe implicit
@@ -151,6 +184,15 @@ pub(crate) fn parse_from_toml(file_path: &Path) -> Result<WizardPlan, AppError> 
     // both front-ends hand `apply` the same shape.
     let registry_did = normalize_registry_did(inputs.registry_did.as_deref().unwrap_or(""))?;
 
+    // Split the `[messaging]` table: `transports` feeds the DID document being
+    // minted, the rest becomes the daemon's runtime messaging config. One
+    // operator decision, two destinations — and `transports` is deliberately
+    // not persisted, because the minted document is authoritative for it.
+    let (messaging, transports) = match inputs.messaging {
+        Some(m) => (Some(m.config), m.transports),
+        None => (None, Vec::new()),
+    };
+
     Ok(WizardPlan {
         config_path: inputs.config_path,
         inputs: WizardInputs {
@@ -158,10 +200,11 @@ pub(crate) fn parse_from_toml(file_path: &Path) -> Result<WizardPlan, AppError> 
             vta_did: inputs.vta_did,
             context: inputs.context,
             registry_did,
+            transports,
         },
         webvh: inputs.webvh,
         secrets: inputs.secrets,
-        messaging: inputs.messaging,
+        messaging,
         setup_key,
     })
 }
@@ -216,10 +259,33 @@ fn validate(inputs: &VtcWizardInputs) -> Result<(), AppError> {
         }
     }
 
-    if let Some(messaging) = inputs.messaging.as_ref()
-        && messaging.mediator_did.trim().is_empty()
-    {
-        errors.push("messaging.mediator_did must not be empty when [messaging] is present".into());
+    if let Some(messaging) = inputs.messaging.as_ref() {
+        if messaging.config.mediator_did.trim().is_empty() {
+            errors.push(
+                "messaging.mediator_did must not be empty when [messaging] is present".into(),
+            );
+        }
+        // `transports = []` parses, so serde's required-field check does not
+        // catch it — and it is the one value that silently produces an
+        // unreachable community: connected to a mediator, advertising no way to
+        // reach it. Refuse it by name, with the fix.
+        if messaging.transports.is_empty() {
+            errors.push(
+                "messaging.transports must name at least one transport when [messaging] is \
+                 present — e.g. transports = [\"tsp\", \"didcomm\"]. An empty list connects this \
+                 VTC to the mediator while advertising no way to reach it, and the DID document \
+                 is write-once. Omit the whole [messaging] table for a REST-only community."
+                    .into(),
+            );
+        }
+        // Duplicates would render the same service entry twice, which is a
+        // malformed document rather than a stronger claim.
+        let mut seen = messaging.transports.clone();
+        seen.sort_unstable();
+        seen.dedup();
+        if seen.len() != messaging.transports.len() {
+            errors.push("messaging.transports must not repeat a transport".into());
+        }
     }
 
     if errors.is_empty() {
@@ -339,6 +405,7 @@ path      = "communities/acme"
 
 [messaging]
 mediator_did = "did:web:mediator.example.com"
+transports   = ["tsp", "didcomm"]
 
 [secrets]
 keyring_service = "vtc-acme"
@@ -348,9 +415,137 @@ keyring_service = "vtc-acme"
         assert_eq!(inputs.webvh.server_id.as_deref(), Some("host-1"));
         assert_eq!(inputs.webvh.domain.as_deref(), Some("tenant.example.com"));
         assert_eq!(inputs.webvh.path.as_deref(), Some("communities/acme"));
+        let messaging = inputs.messaging.as_ref().unwrap();
         assert_eq!(
-            inputs.messaging.as_ref().unwrap().mediator_did,
+            messaging.config.mediator_did,
             "did:web:mediator.example.com"
+        );
+        assert_eq!(
+            messaging.transports,
+            vec![Transport::Tsp, Transport::Didcomm]
+        );
+    }
+
+    /// `transports` is required, not defaulted. A `[messaging]` table without
+    /// it must fail loudly at parse rather than mint a community that connects
+    /// to a mediator and advertises no way to reach it — a state the write-once
+    /// `did.jsonl` makes expensive to correct.
+    #[test]
+    fn messaging_without_transports_is_refused() {
+        let err = toml::from_str::<VtcWizardInputs>(
+            r#"
+config_path = "/srv/vtc/config.toml"
+base_url    = "https://vtc.example.com"
+vta_did     = "did:web:vta.example.com"
+setup_key_file = "/tmp/key.json"
+
+[messaging]
+mediator_did = "did:web:mediator.example.com"
+
+[secrets]
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("transports"),
+            "must name the missing key: {err}"
+        );
+    }
+
+    /// An *empty* list parses (serde only checks presence), so validation has
+    /// to catch it — and it is the exact shape that produces an unreachable
+    /// community.
+    #[test]
+    fn validate_rejects_an_empty_transport_list() {
+        let inputs: VtcWizardInputs = toml::from_str(
+            r#"
+config_path = "/srv/vtc/config.toml"
+base_url    = "https://vtc.example.com"
+vta_did     = "did:web:vta.example.com"
+setup_key_file = "/tmp/key.json"
+
+[messaging]
+mediator_did = "did:web:mediator.example.com"
+transports   = []
+
+[secrets]
+"#,
+        )
+        .expect("an empty list is valid TOML");
+        let err = validate(&inputs).unwrap_err().to_string();
+        assert!(err.contains("at least one transport"), "{err}");
+        assert!(
+            err.contains("Omit the whole [messaging] table"),
+            "must name the REST-only alternative: {err}"
+        );
+    }
+
+    /// A repeated transport would render the same service entry twice —
+    /// malformed, not emphatic.
+    #[test]
+    fn validate_rejects_duplicate_transports() {
+        let inputs: VtcWizardInputs = toml::from_str(
+            r#"
+config_path = "/srv/vtc/config.toml"
+base_url    = "https://vtc.example.com"
+vta_did     = "did:web:vta.example.com"
+setup_key_file = "/tmp/key.json"
+
+[messaging]
+mediator_did = "did:web:mediator.example.com"
+transports   = ["tsp", "tsp"]
+
+[secrets]
+"#,
+        )
+        .expect("parse");
+        let err = validate(&inputs).unwrap_err().to_string();
+        assert!(err.contains("must not repeat"), "{err}");
+    }
+
+    /// Omitting `[messaging]` entirely stays valid — a REST-only community is
+    /// a supported shape, and this is the migration path for an existing setup
+    /// file that never configured messaging.
+    #[test]
+    fn no_messaging_table_needs_no_transports() {
+        let inputs: VtcWizardInputs = toml::from_str(
+            r#"
+config_path = "/srv/vtc/config.toml"
+base_url    = "https://vtc.example.com"
+vta_did     = "did:web:vta.example.com"
+setup_key_file = "/tmp/key.json"
+
+[secrets]
+"#,
+        )
+        .expect("parse");
+        assert!(inputs.messaging.is_none());
+        validate(&inputs).expect("REST-only is valid");
+    }
+
+    /// One transport is legal — a community whose mediator routes only DIDComm.
+    #[test]
+    fn a_single_transport_is_accepted() {
+        let inputs: VtcWizardInputs = toml::from_str(
+            r#"
+config_path = "/srv/vtc/config.toml"
+base_url    = "https://vtc.example.com"
+vta_did     = "did:web:vta.example.com"
+setup_key_file = "/tmp/key.json"
+
+[messaging]
+mediator_did = "did:web:mediator.example.com"
+transports   = ["didcomm"]
+
+[secrets]
+"#,
+        )
+        .expect("parse");
+        validate(&inputs).expect("didcomm-only is valid");
+        assert_eq!(
+            inputs.messaging.unwrap().transports,
+            vec![Transport::Didcomm]
         );
     }
 
@@ -384,6 +579,7 @@ setup_key_file = "/tmp/key.json"
 
 [messaging]
 mediator_did = ""
+transports   = ["didcomm"]
 
 [secrets]
 "#,

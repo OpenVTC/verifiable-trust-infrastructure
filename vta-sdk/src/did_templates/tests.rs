@@ -956,6 +956,127 @@ fn vtc_host_omits_the_referral_when_no_registry_is_named() {
     );
 }
 
+// ─── vtc-host messaging transports ───────────────────────────────────
+
+const MEDIATOR: &str = "did:webvh:QmTS3:webvh.example.com:mediator";
+
+/// The shape §12 Phase A asks for: both transports advertised, both naming the
+/// same mediator, ahead of REST in the array.
+///
+/// Order is not cosmetic — CLAUDE.md §3.3 encodes transport preference as array
+/// order (TSP > DIDComm > REST), so a DID-Core resolver walking `service` picks
+/// the highest-preference transport first. Rendering REST ahead of the
+/// messaging entries would quietly demote them for every conforming client.
+#[test]
+fn vtc_host_advertises_both_transports_in_canonical_order() {
+    let tpl = load_embedded("vtc-host").unwrap();
+    let mut vars = ambient_vars();
+    vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("URL", "https://vtc.example.com");
+    vars.insert(TSP_SERVICE_VAR, tsp_service(MEDIATOR).unwrap());
+    vars.insert(DIDCOMM_SERVICE_VAR, didcomm_service(MEDIATOR).unwrap());
+
+    let out = tpl.render(&vars).unwrap();
+    let services = out["service"].as_array().unwrap();
+
+    assert_eq!(services.len(), 4, "tsp + didcomm + rest + status-list");
+    assert_eq!(
+        services
+            .iter()
+            .map(|s| s["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            "TSPTransport",
+            "DIDCommMessaging",
+            "VTCRest",
+            "VTCStatusList"
+        ],
+    );
+
+    // Both messaging entries carry the *same* mediator DID (§14 Q2) — one
+    // dual-protocol mediator advertised twice, never two endpoints.
+    assert_eq!(services[0]["serviceEndpoint"], MEDIATOR);
+    assert_eq!(services[1]["serviceEndpoint"], MEDIATOR);
+    assert_eq!(services[0]["id"], "{DID}#tsp");
+    assert_eq!(services[1]["id"], "{DID}#didcomm");
+}
+
+/// DIDComm alone — the shape for a community whose mediator does not route
+/// TSP. The TSP slot prunes, leaving no null and no half-built entry.
+#[test]
+fn vtc_host_advertises_didcomm_alone_when_tsp_is_not_selected() {
+    let tpl = load_embedded("vtc-host").unwrap();
+    let mut vars = ambient_vars();
+    vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("URL", "https://vtc.example.com");
+    vars.insert(DIDCOMM_SERVICE_VAR, didcomm_service(MEDIATOR).unwrap());
+
+    let out = tpl.render(&vars).unwrap();
+    let services = out["service"].as_array().unwrap();
+
+    assert_eq!(services.len(), 3);
+    assert_eq!(services[0]["type"], "DIDCommMessaging");
+    assert!(
+        !services.iter().any(|s| s["type"] == "TSPTransport"),
+        "the unselected TSP slot must prune entirely: {services:#?}"
+    );
+}
+
+/// The pre-existing shape has to keep rendering unchanged: a community that
+/// skips messaging advertises REST + status-list and nothing else. This is the
+/// regression guard for every VTC provisioned before transports were
+/// selectable.
+#[test]
+fn vtc_host_advertises_no_messaging_when_neither_transport_is_selected() {
+    let tpl = load_embedded("vtc-host").unwrap();
+    let mut vars = ambient_vars();
+    vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("URL", "https://vtc.example.com");
+
+    let out = tpl.render(&vars).unwrap();
+    let services = out["service"].as_array().unwrap();
+
+    assert_eq!(services.len(), 2);
+    assert_eq!(services[0]["type"], "VTCRest");
+    assert_eq!(services[1]["type"], "VTCStatusList");
+    assert!(
+        !services.iter().any(|s| s.is_null()),
+        "a pruned slot must vanish, not render as null: {services:#?}"
+    );
+}
+
+/// Transports and the registry referral prune independently — three optional
+/// slots in one array, and selecting some must not disturb the others.
+#[test]
+fn transport_and_registry_slots_prune_independently() {
+    let tpl = load_embedded("vtc-host").unwrap();
+    let mut vars = ambient_vars();
+    vars.insert_string("KA_KEY_MB", "z6LSKeyAgreement");
+    vars.insert_string("URL", "https://vtc.example.com");
+    vars.insert(TSP_SERVICE_VAR, tsp_service(MEDIATOR).unwrap());
+    vars.insert(
+        TRUST_REGISTRY_SERVICE_VAR,
+        referral_service("did:webvh:xyz:registry.example.com").unwrap(),
+    );
+
+    let out = tpl.render(&vars).unwrap();
+    let types: Vec<&str> = out["service"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        vec![
+            "TSPTransport",
+            "VTCRest",
+            "VTCStatusList",
+            TRUST_REGISTRY_SERVICE_TYPE
+        ],
+    );
+}
+
 #[test]
 fn vtc_host_status_list_path_override() {
     let tpl = load_embedded("vtc-host").unwrap();
