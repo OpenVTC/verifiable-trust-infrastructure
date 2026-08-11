@@ -31,6 +31,7 @@ pub mod protocol_management;
 #[cfg(feature = "provision-integration")]
 pub mod provision_integration_management;
 pub mod seed_management;
+pub mod vault_management;
 pub mod vta_management;
 
 // Standard DIDComm protocol types used across VTA/VTC services

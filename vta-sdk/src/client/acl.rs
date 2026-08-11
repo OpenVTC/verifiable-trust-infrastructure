@@ -7,6 +7,7 @@ use super::{
 };
 use crate::acl::ContextDirection;
 use crate::error::VtaError;
+use crate::protocols::acl_management::change_role::ChangeRoleBody;
 
 #[cfg(feature = "client")]
 use crate::protocols::acl_management;
@@ -168,12 +169,19 @@ impl VtaClient {
         let wrapped: AclEntryEnvelope = self
             .rpc_tt(
                 crate::trust_tasks::TASK_ACL_CHANGE_ROLE_0_1,
-                serde_json::json!({
-                    "subject": did,
-                    "fromRole": &req.from_role,
-                    "toRole": &req.to_role,
-                    "reason": &req.reason,
-                }),
+                // Built from the canonical body, not a hand-rolled map. The
+                // map interpolated `req.reason` — an `Option` — directly, so a
+                // change with no rationale sent `"reason": null` and
+                // `acl/change-role/0.1` types it `"string"`. `ChangeRoleBody`
+                // already carried the right `skip_serializing_if`; this call
+                // simply did not use it. Same defect as #919's `keys/create`
+                // and #921's `derive_and_sign_document`.
+                serde_json::to_value(ChangeRoleBody {
+                    subject: did.to_string(),
+                    from_role: req.from_role.clone(),
+                    to_role: req.to_role.clone(),
+                    reason: req.reason.clone(),
+                })?,
                 30,
                 |c, url| {
                     c.post(format!(

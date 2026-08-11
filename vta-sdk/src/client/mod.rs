@@ -1432,12 +1432,49 @@ impl VtaClient {
     /// the generic escape hatch for invoking *any* of the VTA's trust-task
     /// operations by URI (see `vta_sdk::trust_tasks::ALL_URIS` for the catalog).
     #[cfg_attr(not(feature = "session"), allow(unused_variables))]
+    /// Refuse a payload the recipient's schema will reject, before sending it.
+    ///
+    /// The recipient already runs this exact check — `validate_payload` on the
+    /// dispatch spine — and rejects with `malformedRequest`. Running it here
+    /// too changes *where the operator finds out*, which is the whole value:
+    ///
+    /// - **Locally, naming the member.** `keys/create` sending
+    ///   `"mnemonic": null` surfaced as `null is not of type "string"` from a
+    ///   remote service, with the client reporting a successful send. The
+    ///   payload never had to leave the process to be known bad.
+    /// - **On the pass-through surface especially.** `vault_*` and
+    ///   `device/list` take the whole payload as a caller-supplied `Value`, so
+    ///   no body struct guards them and no census can see them. This is the
+    ///   only check they can have.
+    ///
+    /// Skipped when the task has no published schema — `None` means "we cannot
+    /// know", not "anything goes", and refusing on that basis would break every
+    /// task the registry has not caught up with.
+    ///
+    /// This can only reject payloads the recipient would have rejected anyway;
+    /// the failure moves earlier and gets more legible, it does not get more
+    /// frequent.
+    fn check_payload_conforms(type_uri: &str, payload: &serde_json::Value) -> Result<(), VtaError> {
+        let Some(schema) = trust_tasks_rs::schema_index::schema_for(type_uri) else {
+            return Ok(());
+        };
+        trust_tasks_rs::validate::against_schema(schema, payload).map_err(|e| {
+            VtaError::Protocol(format!(
+                "refusing to send a payload that does not conform to {type_uri}: {e}. \
+                 The recipient would reject this as `malformedRequest`. An unset optional \
+                 member must be ABSENT from the payload, not `null`."
+            ))
+        })
+    }
+
     pub async fn dispatch_trust_task(
         &self,
         type_uri: &str,
         payload: serde_json::Value,
         timeout: u64,
     ) -> Result<serde_json::Value, VtaError> {
+        Self::check_payload_conforms(type_uri, &payload)?;
+
         // Ahead of the transport: a loopback client answers the Trust-Task
         // surface in-process. See `client::loopback`.
         #[cfg(feature = "test-loopback")]
