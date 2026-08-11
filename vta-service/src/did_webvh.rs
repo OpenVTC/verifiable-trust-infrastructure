@@ -34,9 +34,29 @@ pub struct CreateDidWebvhArgs {
     pub did_log_file: Option<PathBuf>,
 }
 
+/// Resolve `path` against cwd and reject it if it escapes the working directory.
+fn safe_did_log_path(path: &std::path::Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let base = std::env::current_dir().map_err(|e| format!("cannot resolve cwd: {e}"))?;
+    let joined = base.join(path);
+    let canonical = joined.canonicalize().unwrap_or(joined);
+    if !canonical.starts_with(&base) {
+        return Err(format!(
+            "did-log-file path escapes the working directory: {}",
+            canonical.display()
+        )
+        .into());
+    }
+    Ok(canonical)
+}
+
 pub async fn run_create_did_webvh(
     args: CreateDidWebvhArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate early — before any store I/O.
+    if let Some(ref p) = args.did_log_file {
+        safe_did_log_path(p)?;
+    }
+
     let config = AppConfig::load(args.config_path)?;
     let store = Store::open(&config.store)?;
     let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
@@ -254,19 +274,24 @@ pub async fn run_create_did_webvh(
     // Persist all writes (DID + optional ACL entry)
     store.persist().await?;
 
-    // Save did.jsonl. Interactive: prompt for the filename. Non-interactive
-    // (`--url`): no prompt — the operator wanted automation, and stdout is
-    // reserved for the secrets bundle, so we only note the log on stderr.
+    // Save did.jsonl. Interactive: prompt for the filename (defaulting to
+    // `--did-log-file` if given). Non-interactive (`--url`): write to
+    // `--did-log-file` silently, or skip if not specified.
     if let Some(ref log_entry) = result.log_entry {
         if interactive {
-            let default_file = format!("{label}-did.jsonl");
+            let default_file = args
+                .did_log_file
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| format!("{label}-did.jsonl"));
             let did_file: String = Input::new()
                 .with_prompt("Save DID log to file")
                 .default(default_file)
                 .interact_text()?;
 
-            std::fs::write(&did_file, log_entry)?;
-            eprintln!("  DID log saved to: {did_file}");
+            let did_file_path = safe_did_log_path(std::path::Path::new(&did_file))?;
+            std::fs::write(&did_file_path, log_entry)?;
+            eprintln!("  DID log saved to: {}", did_file_path.display());
             eprintln!("  Context '{}' updated with DID: {final_did}", args.context);
             eprintln!();
             eprintln!("  \x1b[2mTo self-host this DID, upload {did_file} to:");
@@ -274,9 +299,11 @@ pub async fn run_create_did_webvh(
         } else {
             // Non-interactive: write to --did-log-file if specified
             if let Some(ref path) = args.did_log_file {
-                std::fs::write(path, log_entry)
-                    .map_err(|e| format!("failed to write did.jsonl to {}: {e}", path.display()))?;
-                eprintln!("  DID log written to: {}", path.display());
+                let canonical = safe_did_log_path(path)?;
+                std::fs::write(&canonical, log_entry).map_err(|e| {
+                    format!("failed to write did.jsonl to {}: {e}", canonical.display())
+                })?;
+                eprintln!("  DID log written to: {}", canonical.display());
             }
             eprintln!("  Context '{}' updated with DID: {final_did}", args.context);
             eprintln!("  \x1b[2mDID log (did.jsonl) ready; self-host at: {url_str}\x1b[0m");
@@ -485,6 +512,7 @@ mod tests {
             url: Some("https://example.com/agents/agent-1".to_string()),
             export_secrets: true,
             admin: true,
+            did_log_file: None,
         };
         run_create_did_webvh(args).await.expect("create-did-webvh");
 
@@ -519,5 +547,53 @@ mod tests {
             .expect("ACL entry created for the did:webvh");
         assert_eq!(entry.role, Role::Admin);
         assert_eq!(entry.allowed_contexts, vec!["agents".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn did_log_file_rejects_traversal() {
+        let args = CreateDidWebvhArgs {
+            config_path: None,
+            context: "x".into(),
+            label: None,
+            url: Some("https://example.com".into()),
+            export_secrets: false,
+            admin: false,
+            did_log_file: Some(PathBuf::from("../etc/evil.jsonl")),
+        };
+        let err = run_create_did_webvh(args).await.unwrap_err();
+        assert!(
+            err.to_string().contains("escapes the working directory"),
+            "expected traversal rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn safe_path_rejects_dotdot() {
+        assert!(safe_did_log_path(std::path::Path::new("../evil.jsonl")).is_err());
+    }
+
+    #[test]
+    fn safe_path_rejects_nested_dotdot() {
+        assert!(safe_did_log_path(std::path::Path::new("sub/../../evil.jsonl")).is_err());
+    }
+
+    #[test]
+    fn safe_path_rejects_absolute_outside_cwd() {
+        assert!(safe_did_log_path(std::path::Path::new("/tmp/evil.jsonl")).is_err());
+    }
+
+    #[test]
+    fn safe_path_accepts_relative_in_cwd() {
+        assert!(safe_did_log_path(std::path::Path::new("out.jsonl")).is_ok());
+    }
+
+    #[test]
+    fn safe_path_accepts_subdir() {
+        assert!(safe_did_log_path(std::path::Path::new("output/did.jsonl")).is_ok());
+    }
+
+    #[test]
+    fn safe_path_accepts_dot_slash() {
+        assert!(safe_did_log_path(std::path::Path::new("./did.jsonl")).is_ok());
     }
 }

@@ -129,89 +129,89 @@ vta-service/src/
 
 ### Public
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | /health | Status + version |
+| Method | Path    | Purpose          |
+| ------ | ------- | ---------------- |
+| GET    | /health | Status + version |
 
 ### Authentication
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| POST | /auth/challenge | None (ACL) | Request DIDComm challenge |
-| POST | /auth/ | None | Submit signed challenge, get tokens |
-| POST | /auth/refresh | None | Refresh access token |
-| POST | /auth/credentials | Manage | Generate did:key credential |
-| GET | /auth/sessions | Manage | List sessions |
-| DELETE | /auth/sessions/{id} | Auth | Revoke session |
-| DELETE | /auth/sessions?did=X | Admin | Revoke all sessions for a DID |
+| Method | Path                 | Auth       | Purpose                             |
+| ------ | -------------------- | ---------- | ----------------------------------- |
+| POST   | /auth/challenge      | None (ACL) | Request DIDComm challenge           |
+| POST   | /auth/               | None       | Submit signed challenge, get tokens |
+| POST   | /auth/refresh        | None       | Refresh access token                |
+| POST   | /auth/credentials    | Manage     | Generate did:key credential         |
+| GET    | /auth/sessions       | Manage     | List sessions                       |
+| DELETE | /auth/sessions/{id}  | Auth       | Revoke session                      |
+| DELETE | /auth/sessions?did=X | Admin      | Revoke all sessions for a DID       |
 
 ### Configuration
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | /config | Auth | Read config |
-| PATCH | /config | Super Admin | Update config |
+| Method | Path    | Auth        | Purpose       |
+| ------ | ------- | ----------- | ------------- |
+| GET    | /config | Auth        | Read config   |
+| PATCH  | /config | Super Admin | Update config |
 
 ### Keys
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | /keys | Auth | List (filtered by context access) |
-| POST | /keys | Admin | Create (context access checked) |
-| GET | /keys/{key_id} | Auth | Get key record (context access checked) |
-| DELETE | /keys/{key_id} | Admin | Invalidate key (context access checked) |
-| PATCH | /keys/{key_id} | Admin | Rename key (context access checked) |
-| GET | /keys/{key_id}/secret | Admin | Export private key material |
-| POST | /keys/{key_id}/sign | Auth | Sign payload (signing oracle) |
+| Method | Path                  | Auth  | Purpose                                 |
+| ------ | --------------------- | ----- | --------------------------------------- |
+| GET    | /keys                 | Auth  | List (filtered by context access)       |
+| POST   | /keys                 | Admin | Create (context access checked)         |
+| GET    | /keys/{key_id}        | Auth  | Get key record (context access checked) |
+| DELETE | /keys/{key_id}        | Admin | Invalidate key (context access checked) |
+| PATCH  | /keys/{key_id}        | Admin | Rename key (context access checked)     |
+| GET    | /keys/{key_id}/secret | Admin | Export private key material             |
+| POST   | /keys/{key_id}/sign   | Auth  | Sign payload (signing oracle)           |
 
 ### Cache
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | /cache/{key} | Auth | Retrieve cached value |
-| PUT | /cache/{key} | Auth | Store value with TTL |
-| DELETE | /cache/{key} | Auth | Delete cached value |
+| Method | Path         | Auth | Purpose               |
+| ------ | ------------ | ---- | --------------------- |
+| GET    | /cache/{key} | Auth | Retrieve cached value |
+| PUT    | /cache/{key} | Auth | Store value with TTL  |
+| DELETE | /cache/{key} | Auth | Delete cached value   |
 
 ### Contexts
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | /contexts | Auth | List contexts (filtered by access) |
-| POST | /contexts | Super Admin | Create context |
-| GET | /contexts/{id} | Auth | Get context (access checked) |
-| PATCH | /contexts/{id} | Super Admin | Update context |
-| DELETE | /contexts/{id} | Super Admin | Delete context |
+| Method | Path           | Auth        | Purpose                            |
+| ------ | -------------- | ----------- | ---------------------------------- |
+| GET    | /contexts      | Auth        | List contexts (filtered by access) |
+| POST   | /contexts      | Super Admin | Create context                     |
+| GET    | /contexts/{id} | Auth        | Get context (access checked)       |
+| PATCH  | /contexts/{id} | Super Admin | Update context                     |
+| DELETE | /contexts/{id} | Super Admin | Delete context                     |
 
 ### ACL
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | /acl/ | Manage | List entries |
-| POST | /acl/ | Manage | Create entry |
-| GET | /acl/{did} | Manage | Get entry |
-| PATCH | /acl/{did} | Manage | Update entry |
+| Method | Path       | Auth   | Purpose      |
+| ------ | ---------- | ------ | ------------ |
+| GET    | /acl/      | Manage | List entries |
+| POST   | /acl/      | Manage | Create entry |
+| GET    | /acl/{did} | Manage | Get entry    |
+| PATCH  | /acl/{did} | Manage | Update entry |
 | DELETE | /acl/{did} | Manage | Delete entry |
 
 ### VTA management
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| POST | /vta/restart | Admin | Trigger soft restart |
+| Method | Path         | Auth  | Purpose              |
+| ------ | ------------ | ----- | -------------------- |
+| POST   | /vta/restart | Admin | Trigger soft restart |
 
 ### Backup
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| POST | /backup/export | Admin | Export encrypted backup |
-| POST | /backup/import | Admin | Import encrypted backup |
+| Method | Path           | Auth  | Purpose                 |
+| ------ | -------------- | ----- | ----------------------- |
+| POST   | /backup/export | Admin | Export encrypted backup |
+| POST   | /backup/import | Admin | Import encrypted backup |
 
 ### Bootstrap
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| POST | /bootstrap/request | None (rate-limited) | TEE Mode B sealed first-boot |
-| POST | /bootstrap/provision-integration | Admin | Template-driven integration bootstrap |
-| GET | /did/{did}/log | None (rate-limited) | Public webvh `did.jsonl` retrieval |
+| Method | Path                             | Auth                | Purpose                               |
+| ------ | -------------------------------- | ------------------- | ------------------------------------- |
+| POST   | /bootstrap/request               | None (rate-limited) | TEE Mode B sealed first-boot          |
+| POST   | /bootstrap/provision-integration | Admin               | Template-driven integration bootstrap |
+| GET    | /did/{did}/log                   | None (rate-limited) | Public webvh `did.jsonl` retrieval    |
 
 Auth levels: **Auth** = any valid JWT, **Manage** = Admin or
 Initiator, **Admin** = Admin role only, **Super Admin** = Admin with
@@ -221,16 +221,16 @@ empty `allowed_contexts`.
 
 All data lives in fjall keyspaces:
 
-| Keyspace | Key Pattern | Value |
-|---|---|---|
-| keys | `key:{key_id}` | KeyRecord (JSON) |
-| keys | `path_counter:{base_path}` | u32 (LE bytes) |
-| sessions | `session:{session_id}` | Session (JSON) |
-| sessions | `refresh:{token}` | session_id bytes |
-| acl | `acl:{did}` | AclEntry (JSON) |
-| contexts | `ctx:{id}` | ContextRecord (JSON) |
-| contexts | `ctx_counter` | u32 (LE bytes) |
-| cache | `cache:{did}:{key}` | CacheEntry (JSON) |
+| Keyspace | Key Pattern                | Value                |
+| -------- | -------------------------- | -------------------- |
+| keys     | `key:{key_id}`             | KeyRecord (JSON)     |
+| keys     | `path_counter:{base_path}` | u32 (LE bytes)       |
+| sessions | `session:{session_id}`     | Session (JSON)       |
+| sessions | `refresh:{token}`          | session_id bytes     |
+| acl      | `acl:{did}`                | AclEntry (JSON)      |
+| contexts | `ctx:{id}`                 | ContextRecord (JSON) |
+| contexts | `ctx_counter`              | u32 (LE bytes)       |
+| cache    | `cache:{did}:{key}`        | CacheEntry (JSON)    |
 
 In TEE deployments the `Store` enum dispatches transparently to a
 `VsockStore` running on the parent EC2 instance instead of a local
@@ -251,6 +251,10 @@ vta export-admin                        Export admin DID and credential
 vta bootstrap-admin --did DID           Seed first super-admin and seal the VTA
 vta create-did-key --context ID         Create a did:key in a context
 vta create-did-webvh --context ID       Create a did:webvh interactively
+                     [--url URL]        Non-interactive (skip prompts)
+                     [--did-log-file P] Write did.jsonl to path P
+                     [--export-secrets] Emit secrets bundle to stdout
+                     [--admin]          Create admin ACL entry for the new DID
 vta import-did --did DID [--role ...]   Import external DID into ACL
 vta acl list / get / update / delete    ACL management
 vta keys list / secrets / seeds / rotate-seed   Key + seed management
@@ -304,9 +308,9 @@ bootstrapping and calls `server::run()`.
 
 ### Current front-ends
 
-| Crate | Binary | Purpose |
-|-------|--------|---------|
-| `vta-service` | `vta` | Local/dev/cloud — opens a local fjall store, no TEE |
+| Crate         | Binary        | Purpose                                                         |
+| ------------- | ------------- | --------------------------------------------------------------- |
+| `vta-service` | `vta`         | Local/dev/cloud — opens a local fjall store, no TEE             |
 | `vta-enclave` | `vta-enclave` | AWS Nitro Enclave — KMS bootstrap, vsock store, TEE attestation |
 
 ### 1. Create the crate
@@ -387,13 +391,13 @@ async fn main() {
 
 The entry point `server::run()` accepts five parameters:
 
-| Parameter | Type | Purpose |
-|-----------|------|---------|
-| `config` | `AppConfig` | Loaded from TOML + env var overrides |
-| `store` | `Store` | `Store::Local(...)` for fjall, `Store::Vsock(...)` for vsock proxy |
-| `seed_store` | `Arc<dyn SeedStore>` | Where the master seed lives — see [`secret-backends.md`](../02-vta/secret-backends.md) |
-| `storage_encryption_key` | `Option<[u8; 32]>` | AES-256-GCM key for at-rest encryption (None = unencrypted) |
-| `tee_context` | `Option<TeeContext>` | TEE attestation provider + mnemonic guard (None = no TEE) |
+| Parameter                | Type                 | Purpose                                                                                |
+| ------------------------ | -------------------- | -------------------------------------------------------------------------------------- |
+| `config`                 | `AppConfig`          | Loaded from TOML + env var overrides                                                   |
+| `store`                  | `Store`              | `Store::Local(...)` for fjall, `Store::Vsock(...)` for vsock proxy                     |
+| `seed_store`             | `Arc<dyn SeedStore>` | Where the master seed lives — see [`secret-backends.md`](../02-vta/secret-backends.md) |
+| `storage_encryption_key` | `Option<[u8; 32]>`   | AES-256-GCM key for at-rest encryption (None = unencrypted)                            |
+| `tee_context`            | `Option<TeeContext>` | TEE attestation provider + mnemonic guard (None = no TEE)                              |
 
 Your front-end's job is to **construct these values** using whatever
 platform-specific logic your environment needs, then call
