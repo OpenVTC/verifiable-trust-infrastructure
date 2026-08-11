@@ -20,6 +20,3036 @@ Released versions are recorded below, newest first.
 
 ## Unreleased
 
+### Repository — the changelog convention is signposted, enforced, and current (#935)
+
+No crate versions change. Recorded here because it changes where contributors
+are told to write changelog entries and what CI does about it — exactly the kind
+of process change `changelog.d/README.md` asks for a fragment about.
+
+`CHANGELOG.md` opened with a `## Unreleased` section that stopped at #876, while
+every entry since — 52 fragments — lived in `changelog.d/` with nothing in the
+file saying so.
+
+**Signposting.** `CHANGELOG.md` gains a note *above* `## Unreleased`: unreleased
+entries live in `changelog.d/` until a release is cut, this file lags that
+directory by design, and reading both is how you see everything pending. Above
+the heading deliberately — `collate-changelog.sh` inserts fragments immediately
+after the `## Unreleased` line, so a note underneath would sink below the newest
+entries on every release. `CONTRIBUTING.md`'s PR checklist asked for
+"CHANGELOG.md updated for user-facing changes" — the one thing the convention
+forbids, told to every contributor at the moment they were about to do it; it
+now asks for a fragment, beside a new Changelog section. `README.md` names both
+locations.
+
+**Enforcement.** `scripts/check-changelogs.sh` gains two rules, because the
+convention had been documented in four places and enforced in none — and the
+cost of ignoring it never lands on the author, it lands on every other open PR
+as a conflict they did not cause:
+
+- A fragment a PR *adds* must name that PR, in its filename **and** in its `###`
+  heading. The heading half is the easy mistake — you write the fragment before
+  the PR exists, guess the next number, and lose the race — and it is the worse
+  one, because a wrong number survives collation and permanently points readers
+  at an unrelated PR. Only files this PR adds are checked; the directory holds
+  every open PR's fragment.
+- A PR may not edit `CHANGELOG.md`. The release collation is exempt and is
+  recognised by its own diff — it deletes the fragments it folds in — so it
+  needs no ceremony. A `release` label covers the rest (stamping a version
+  heading, correcting an entry that already shipped).
+
+Both need the PR number, which CI now passes as `PR_NUMBER`; local runs skip
+them rather than inventing one. A PR that bumps no version and records nothing
+gets a **notice**, never a failure — release-process changes have shipped
+unrecorded for want of a mention at the right moment, but taxing every typo fix
+to catch them would produce a guard people learn to route around.
+
+**Currency.** The 52 pending fragments (#877–#935) are collated into
+`## Unreleased`, verbatim and newest-first, joining the entries already there up
+to #876. `changelog.d/` is back to just its README.
+
+### vta-sdk 0.21.21 / vta-service 0.14.34 — mint a mediator that actually carries TSP (#934)
+
+A mediator minted by `vta setup` never advertised TSP, on any VTA. The
+`didcomm-mediator` template has carried a `{SERVICE_TSP}` null-pruning slot
+since #929, but neither setup front-end supplied the variable —
+`MessagingInput::CreateMediator` built `effective_vars` with `URL` and `WS_URL`
+only.
+
+So the state a TSP-enabled VTA reached through `vta setup` was: the VTA's
+document advertises `#tsp` → mediator *m* (as of #933), and *m*'s own document
+advertises `DIDCommMessaging` and no `TSPTransport`. A peer following the
+documents finds a TSP endpoint whose mediator says it doesn't carry TSP — the
+same class of defect #933 fixed one hop earlier, failing two layers down as a
+parse error rather than as anything nameable.
+
+Setup now fills the slot. Which transports a minted mediator serves is
+**derived from `[services]`** — DIDComm always (the template renders that entry
+unconditionally), plus TSP when the VTA advertises TSP. Deriving rather than
+prompting is deliberate: the two must agree for the VTA to be reachable, and
+setup already knows the only correct answer. A new `[messaging] protocols`
+overrides it for the one case derivation can't reach — a shared mediator
+serving *more* than this VTA uses. Serving *less* is refused by name, as are
+`rest` (not a mediator transport), duplicates (they would render one entry
+twice), an empty list, and a list omitting `didcomm` (the template always
+advertises it, so such a config describes a document setup does not mint).
+
+`vta-sdk` gains `did_templates::tsp_transport_service`, the **mediator side** of
+the TSP entry. It is the inverse of the existing `tsp_service`: a consumer's
+`#tsp` names its mediator's DID, a mediator's own `#tsp` names the URL it serves
+TSP at, because the indirection has to terminate at the node that actually
+carries the transport (`forward_tsp_remote` URL-parses exactly this value for
+the mediator→mediator hop). Each helper refuses the other's argument with a
+message naming the other — handing a mediator DID to the mediator-side builder
+is the likelier slip, since it is the value in scope at every call site.
+
+Design note: `docs/05-design-notes/transport-neutral-mediator.md`, which also
+covers what this deliberately does *not* yet do — per-transport mediators
+(`[messaging.tsp]`, default stays one shared mediator) and TSP without DIDComm.
+Both need runtime work sequenced there, and two open questions want a live
+mediator run first. The note revises D8 of `tsp-enablement.md`: its default (one
+dual-protocol mediator) stands, its "no separate TSP-mediator field, ever" does
+not.
+
+### vta-service 0.14.33 — the setup wizard can choose TSP, and minting says so (#933)
+
+`vta setup` offered two transports, REST and DIDComm, in a hardcoded two-item
+list, and wrote `services.tsp = false` unconditionally — the wizard's TSP prompt
+had been deferred to "a later phase". A build compiled with `--features tsp`
+looked exactly like one without it.
+
+**The wizard now offers TSP as a third option**, but only in a build that
+compiled it. Without the feature there is no TSP dispatcher, and `#tsp` is the
+*first* entry a peer matching on transport preference picks — advertising it
+from a binary that can't answer would make the VTA unreachable for exactly the
+peers that read its DID document most carefully. An option that can't be served
+isn't offered.
+
+It is not pre-ticked. Whether TSP works depends on the operator's mediator,
+which nothing here can check, so opting in is a decision rather than a default
+someone accepted by pressing enter. Selecting it without DIDComm re-asks: TSP
+advertises the *same* mediator as DIDComm (D8), and that mediator is configured
+in the DIDComm section. The wizard says all of this at the prompt, including
+that `pnm services tsp enable` / `disable` can change it later.
+
+**Minting now advertises what was chosen.** `build_vta_additional_services`
+emits the `#tsp` entry (`TSPTransport`, endpoint = the mediator's DID, not a
+URL) alongside `VTARest`, using the same fragment and type constants the runtime
+`services tsp enable` patcher uses. Before this, `[services] tsp = true` set a
+config flag and published nothing — the VTA spoke TSP while its DID document
+told nobody, which is the shape of the bug #929 fixed for the VTC, and how the
+reference deployment acquired its `#tsp` entry at DID log version 3 by hand.
+A TSP-enabled VTA now carries it from log v1.
+
+`build_did_document_inner` ends by sorting `service[]` through
+`sort_services_canonical`, the same helper every runtime `with_*_service`
+patcher ends with. The entries are appended in construction order — DIDComm
+before the caller's additional services, which is where `#tsp` arrives — so
+without the sort a minted document would advertise DIDComm ahead of TSP and
+invert the preference order it is supposed to encode.
+
+**`--from <toml>`** gains the matching refusal: `services.tsp = true` in a
+binary built without the `tsp` feature now fails validation by name, next to the
+existing "TSP requires DIDComm" rule. The declarative path can't be protected by
+declining to offer a menu item, so it says it out loud.
+
+No capability detection, deliberately — nothing here can verify the named
+mediator routes TSP; its services belong to its own controller. The operator is
+told that plainly instead.
+
+Wizard test scripts answer the services multi-select **by label** rather than by
+index (`Answer::Labels`), the convention the secrets-backend menu already
+follows: its option list varies with the compiled feature set, so a positional
+answer would mean something different under `--features tsp`. The selection
+helpers take the option list as an argument, so the TSP mapping is covered in
+CI's default (non-`tsp`) build too, not only where the option appears.
+
+### vta-sdk 0.21.20 / vta-service 0.14.32 — a typed `vault/upsert`, with an escape hatch (#931)
+
+Option C, scoped to the one member of the pass-through family worth typing.
+
+`VaultUpsertBody` names the members that exist today — `contextId`, `targets`,
+`label`, `secretKind`, plus the optionals — and carries
+`#[serde(flatten)] extra` for everything this build does not model.
+
+**The hatch is the whole design.** Typing the body without it would mean an SDK
+release before a caller could use *any* member the spec adds. That
+forward-compatibility cost — not the typing effort — is why the rest of
+`vault/*` stays a pass-through, and the hatch is what buys the coverage without
+paying it. The trade is explicit rather than hidden: modelled members are
+guarded by the null census, `extra` is not. It is greppable, and a member that
+lands in it repeatedly is one that wants promoting into the struct.
+
+**Additive, not breaking.** `vault_upsert` keeps its `Value` signature exactly
+as it was; the new `vault_upsert_typed` sits beside it. Changing the existing
+method would break every caller for a benefit they can opt into instead — and
+the pass-through is no longer unguarded anyway, since #930 validates it against
+the published schema before dispatch.
+
+`sealedSecret` stays off the body and is inserted by the method, because sealing
+needs the client's HPKE context rather than the caller's.
+
+The `vault/upsert` witness is now built from the body — a minimal create with
+every optional unset, plus the sealed envelope the method would add. Teeth
+checked: reverting the skip on `tags` fails the sweep with `null is not of type
+"array"`, which the old fixture could not have caught because it set `tags`.
+
+That closes the design question from #930. Of the six genuine pass-throughs,
+`vault_upsert` gets a typed body; the other five keep theirs, guarded by the
+pre-dispatch check.
+
+### vta-sdk 0.21.19 / vta-service 0.14.31 — refuse a payload the recipient will reject (#930)
+
+Option D from the pass-through design question, plus the one `vault/*` method
+that turned out to be ordinary unfinished work rather than a design question.
+
+**The client now validates a Trust Task payload against its published schema
+before sending it.** The recipient already runs this exact check — the same
+`validate_payload` on the dispatch spine — so it cannot reject anything a
+*validating* recipient would have accepted. What changes is *where the operator
+finds out*:
+
+- **Locally, naming the member.** `keys/create` sending `"mnemonic": null`
+  (#919) surfaced as a remote `malformedRequest` while the client reported a
+  successful send. The payload never had to leave the process to be known bad.
+- **On the pass-through surface especially.** `vault_list`, `vault_release`,
+  `vault_proxy_login`, `vault_sign_trust_task`, `vault_upsert` and
+  `device/list` take the whole payload as a caller-supplied `Value`. No body
+  struct guards them, no census can walk them, no witness can be built from
+  them. This is the only check they can have — which is why D was worth doing
+  before C.
+
+A task with **no** published schema still dispatches. `None` from the registry
+means "we cannot know", not "anything goes", and refusing on that basis would
+break every legacy `vta/*` task the registry has not caught up with. Both
+directions are pinned by tests, and the refusal test asserts on the transport
+sink rather than just the error — proving the payload never reaches the wire.
+
+**`vault/delete` is folded.** It was miscategorised as a pass-through: it takes
+typed parameters and built its payload with an inline `json!` plus a conditional
+insert per optional, which is exactly the #919 shape. New
+`protocols::vault_management::VaultDeleteBody`, producer rewired, witness built
+from it with both optionals unset.
+
+The rest of `vault/*` stays a pass-through deliberately. Modelling it means
+tracking a large, still-moving surface and shipping an SDK release for every
+member the spec adds — the forward-compatibility cost is the real one, not the
+typing effort. `vault_upsert` alone is worth a typed body with a flatten escape
+hatch (option C), and that follows separately.
+
+**It found a live one immediately.** `change_acl_role` interpolated `req.reason`
+— an `Option` — straight into an inline `json!`, so a role change with no
+rationale sent `"reason": null` against a schema that types it `"string"`.
+`ChangeRoleBody` already existed with the right `skip_serializing_if`; the
+producer simply did not use it. Exactly #919's `keys/create` and #921's
+`derive_and_sign_document`, a third time. Now built from the canonical body.
+
+Worth being precise about what that reveals: the e2e covering this call passed
+before, so *some* recipients accept the null. The claim is not "this rejects
+only what would have failed everywhere" — it is "this rejects only what a
+recipient running the published schema would reject". A tolerant recipient is
+not a reason to send a non-conforming payload.
+
+Two further `Option`-into-`json!` sites remain — `rotate_seed`'s `mnemonic` and
+`list_dids_webvh`'s filters. Both are on tasks with **no published schema**, so
+neither this check nor the recipient can see them, and there is no schema to
+confirm the correct wire shape against. Left as-is deliberately rather than
+changed blind; they become checkable the day those specs publish.
+
+### vtc-service 0.11.58 / vta-sdk 0.21.18 — choose a community's transports at setup, when it is still possible (#929)
+
+`vtc setup` asked which mediator to route through, wrote it to `config.toml`, and
+never advertised it. The `vtc-host` template minted `#vtc-rest` and
+`#vtc-status-list` and no messaging service at all — so a VTC connected outbound
+to a mediator while its DID document told nobody, and DIDComm only worked when
+the sender had been handed the mediator out of band.
+
+That is also why the reference deployment acquired its `#tsp` entry at DID log
+version 3, published by hand long after mint — the state that led to #923 and
+#926.
+
+**Setup is the only clean moment to fix this.** A VTC serves a write-once
+`did.jsonl` and cannot re-sign its own log, so adding a service afterwards means
+a VTA-side `dids edit` plus redelivering the log by hand. So the decision moves
+to provisioning, where the document is being minted anyway.
+
+**Interactive** — after the mediator choice, a multi-select with both transports
+pre-ticked (the §12 Phase A shape, which strands nobody). It states that both
+entries point at the operator's mediator, warns that advertising one the mediator
+does not route makes the community unreachable on it, notes the choice is fixed
+at mint, and echoes back what will be advertised. Deselecting everything re-asks
+rather than minting a community that connects to a mediator and advertises no way
+in.
+
+**Non-interactive** — `transports` is **required** in `[messaging]`:
+
+```toml
+[messaging]
+mediator_did = "did:web:mediator.example.com"
+transports   = ["tsp", "didcomm"]
+```
+
+Required rather than defaulted: it decides whether anyone can reach the
+community, it cannot be changed after mint, and any default would be a guess
+about someone else's mediator. `transports = []` is refused by name with the
+REST-only alternative spelled out, and duplicates are refused (they would render
+the same service entry twice). **Existing setup files that omit `[messaging]`
+entirely are unaffected** — a REST-only community stays valid.
+
+Deliberately no capability detection. Nothing here can verify that the named
+mediator actually routes the protocol being advertised; its services belong to
+its own controller (§14 Q3). The operator is told that plainly rather than having
+it guessed for them.
+
+`vta-sdk`: new `did_templates::{tsp_service, didcomm_service}` build the service
+entries, and `vtc-host` gains `SERVICE_TSP` / `SERVICE_DIDCOMM` null-pruning
+slots — the same mechanism `SERVICE_TRUST_REGISTRY` uses, and the only conditional
+the template format has. Both entries name the *same* mediator DID (§14 Q2), and
+the emitted service order is canonical (TSP, DIDComm, then REST) because array
+order is what encodes transport preference to a resolver. A URL endpoint is
+refused: the sender's routing layer reads this value as a DID to resolve onward,
+so a URL is unroutable rather than merely unconventional.
+
+Closes the loop with #923 (a build cannot advertise what it can't serve) and #926
+(the public transport view) — a community can now *say* how to reach it, and
+everything downstream already checks that the saying is true.
+
+### vta-sdk 0.21.17 / vta-service 0.14.30 — the #888 fold reaches `consent/*` (#928)
+
+Same shape as #925, applied to the last family that had unset optional members
+going out through an inline `json!` plus a conditional insert each.
+
+New `protocols::consent_management` carries canonical bodies for request,
+decision, revoke, list, approver-set and approver-list, each with
+`skip_serializing_if` on its optionals. The null census then sees them — it
+walks structs under `protocols/` and an inline map is invisible to it — and the
+six witnesses are built from the producer's body rather than transcribed.
+
+**Teeth checked, not assumed.** Reverting the skips on `ConsentRequestBody` and
+`ConsentListBody` fails the sweep with `null is not of type "string"`. The old
+fixtures set those members, so they could not have caught it.
+
+The witnesses are minimal on purpose: `consent/list` and `consent/approver-list`
+are now bare `{}` (the unfiltered call), and request sets neither hint. A
+witness that fills every member leaves nothing unset, which is exactly where
+this defect class lives.
+
+**The count was wrong, and is now measured.** #925's note said 21 witnesses
+still transcribed; the real figure was 20 — arithmetic rather than a count. The
+module now states **14**, counted from the table, and more usefully splits them
+into three situations of which only one is unfinished work:
+
+- **5** (`auth/*`, `task-consent/decision`) — the VTA is the consumer; no
+  producer of ours sends these, so a fixture is the honest witness and nothing
+  is owed.
+- **8** (`vault/*`, `device/list`) — the caller supplies the whole payload as a
+  `Value`; the SDK is a pass-through. An API decision, not a test change.
+- **1** (`messaging/ping`) — a producer exists, but the payload is a single
+  required `nonce`. A body struct would guard nothing today: this defect class
+  lives in *unset optional* members and ping has none. Worth folding the day it
+  gains a second member, not before.
+
+So the fold is complete for every family that could exhibit the defect. What is
+left is one design question and a handful of witnesses that are already correct.
+
+### vta-policy 0.2.2 — document the consent ceremony, and retire the step-up vision page (#927)
+
+The approvals convergence documented the **trigger** — `docs/02-vta/approvals.md`
+covers which tasks need a human and how to say so — and left the **ceremony**
+undocumented. Nothing described what actually goes on the wire once a
+`requireConsent` rule fires, so the operational facts that decide whether an
+operator can run the feature lived only in changelog fragments and source
+comments.
+
+## New: `docs/02-vta/task-consent.md`
+
+The DTTE reference. The wire (three URIs, one of them dispatched), the four
+hardcoded timers, the two-digest design and why one is salted, who may approve,
+what the approver is shown, the three re-checks at consume, and the
+pending-vs-denied distinction that decides when a client may re-submit.
+
+It also writes down four things that were only discoverable by reading source:
+
+- `pnm approvals` / `pnm policy` are **Trust-Task-only**. The SDK's REST arm is
+  unimplemented and no `/policies` route exists, so a REST-transport client gets
+  a **404** rather than a permission error — which reads as a broken deployment.
+- `vta setup --from` **cannot** carry `[policy]`. `WizardInputs` is
+  `deny_unknown_fields`, so a `[policy]` section is a hard parse error, and setup
+  always emits `policy: Default::default()`. The seed goes in the generated
+  `config.toml`.
+- `pnm approvals list` / `explain` do **not** surface enforcement state. A
+  satisfiable rule prints cleanly while nothing is gated.
+- Your pre-upgrade consent rules are **deleted, not orphaned** — first boot runs
+  `remove_stale_config_consent_policy`.
+
+The trust-tasks 0.4 `digestMultibase` hazard is promoted here too. It was
+documented in a fragment that a release collates and buries, and it is a live
+interop trap: a mismatched approver stack produces an approval that is given,
+accepted by the human, and then silently never takes effect.
+
+## Removed: `docs/vta-step-up-art-of-the-possible.html`
+
+A forward-looking vision page for a model that no longer exists. Doubly stale:
+its headline principle ("Delegated modes mean a different person or device must
+sign off") described the mechanism #914 deleted, and its roadmap listed "M-of-N
+quorum on one challenge" as *next* when consent has shipped it — with tighter
+binding — for some time. Left in place it argues for the wrong design.
+
+Replaced by `docs/02-vta/task-consent-infographic.html`, which keeps the format
+and tells the accurate story: why payload-binding beats session-elevation, the
+six-step ceremony, the timers, and an honest live-vs-gap capability read rather
+than a roadmap.
+
+## Corrections
+
+- `approvals-convergence.md`'s status header still read *"partially landed …
+  Still open: the trigger collapse"* — landed in #914, with the same file saying
+  so two sections down. The `## Not yet landed` heading had also swallowed the
+  fully-landed REST-gap narrative; the genuine deferrals now sit under
+  `## Deferred` and the landed sequencing is its own section.
+- `docs/README.md` never listed `approvals.md` at all — not in the task table,
+  not in the Part II contents — nor `approvals-convergence.md` in Part V. All
+  four pages are now indexed.
+- `CLAUDE.md` gained an **Approvals + task consent (DTTE)** integration flow. It
+  was the one wire-level flow with its own Trust Task family missing from that
+  map, so an agent reading the file found the retired config shape nowhere
+  contradicted.
+- `vta-policy/src/consent.rs` now expands DTTE in its module header and points at
+  the operator doc. The acronym appeared ~14 times in the workspace, all prose,
+  and never in the subsystem it names — so grepping the word an operator would
+  use found nothing.
+
+### vtc-service 0.11.57 — publish which transports a community offers, and whether they answer (#926)
+
+A community's DID document says how to reach it, but resolving a `did:webvh`
+and matching service `type`s is a lot to ask of someone who just wants to know
+whether they can connect — and it still cannot tell them whether the endpoint on
+the other side is actually answering. That gap is what let a VTC advertise
+`#tsp` while silently dropping every join (#923): from outside, a working
+transport and a dead one looked identical.
+
+`GET /v1/community/public-profile` (public, unauthenticated) now carries a
+`transports` array, and the default landing page renders it:
+
+```json
+"transports": [
+  { "protocol": "tsp",     "advertised": true,  "serviceable": true,
+    "endpoint": "did:webvh:QmTS3…:mediator" },
+  { "protocol": "didcomm", "advertised": false, "serviceable": true },
+  { "protocol": "rest",    "advertised": true,  "serviceable": true,
+    "endpoint": "https://first.openvtc.net" }
+]
+```
+
+Two facts per transport, deliberately not collapsed into one "reachable"
+boolean:
+
+- **`advertised`** — the DID document offers it, so a resolving client will find
+  it. Read from the document as *resolved* at request time.
+- **`serviceable`** — this VTC can answer on it right now: the build supports the
+  protocol *and* the mediator connection is live, off the same re-falsifiable
+  signal `/health/diagnostics` uses, never a boot latch (R6.2).
+
+Reachable means both. `advertised && !serviceable` is exactly the state that
+broke the reference deployment, and a single boolean would have hidden it the
+same way the original defect did.
+
+**The DID document remains authoritative.** This is a view of it for humans and
+monitors, never a substitute or a second source of truth — a client selecting a
+transport still matches on the document's service `type`. If the two ever
+disagree, the document wins and this field is what is wrong.
+
+Notes:
+
+- **Endpoint, not page.** Operators replace the public website
+  (`website.root_dir`), so a landing-page-only change would vanish for exactly
+  the real deployments worth checking. The endpoint survives, is machine-readable
+  for CI and monitoring, and any custom site can render it. `website-default`
+  renders it from the fetch it already makes.
+- **Unknown is not "none".** A community whose own DID does not resolve reports
+  an empty array. Publishing "advertises nothing" would be an actionable claim,
+  and a false one.
+- **Nothing about the build is disclosed.** Build feature flags, versions, and
+  the operator remediation text in `transport_capability::Finding` stay in
+  `vtc status` and the daemon log. `advertised` and `endpoint` are already public
+  in the DID document; `serviceable` is discoverable by attempting the transport.
+  Pinned by tests on both the wire type and the route response.
+
+### vta-sdk 0.21.16 / vta-service 0.14.29 — the #888 fold reaches `device/*` (#925)
+
+The `device/*` client methods built their payloads as an inline `json!` plus a
+conditional insert per optional member:
+
+```rust
+let mut payload = json!({ "consumerKind": …, "displayName": … });
+if let Some(p) = platform { payload["platform"] = json!(p); }
+```
+
+That shape is not wrong — the conditional insert is exactly what kept `null` off
+the wire — but it is **unguarded and untestable**, and both matter:
+
+- **Unguarded.** The invariant lives in the shape of an `if let`, so nothing
+  checks it. `vta-sdk`'s null census (#921) walks structs under `protocols/` and
+  would have caught `keys/create` (#919); it cannot see an inline map. The next
+  person who reaches for a struct here — as #888 did for `keys/create` —
+  reintroduces the defect with nothing to stop them.
+- **Untestable.** A conformance witness has no type to point at, so it
+  hand-writes the JSON and stops tracking the producer the moment the producer
+  changes.
+
+New `protocols::device_management` carries canonical bodies for register,
+heartbeat, disable, wipe and set-wake, each with `skip_serializing_if` on its
+optionals. Both properties then fall out for free: the census enforces the
+invariant, and the five witnesses are **built** rather than transcribed.
+
+**The conversion has teeth, checked rather than assumed.** Reverting the skips on
+`DeviceHeartbeatBody` now fails the sweep:
+
+```text
+device/heartbeat/0.1: request fails its own payload schema:
+payload failed schema validation: null is not of type "string";
+null is not of type "integer"
+```
+
+The old fixture set both members and so could not have caught it — the same trap
+that made #924's first webvh conversion pass vacuously.
+
+**The witnesses got smaller on purpose.** The old device fixtures set members no
+producer here sends — `keyCustody`, `attestation`, `pushPlatform`, `issuedAt`.
+A witness asserting members we never emit proves nothing about our wire form,
+and leaves almost nothing unset, which is where this class of defect lives. The
+heartbeat witness is now a bare `{}` — the "still here" call — and register sets
+neither optional.
+
+Only what the client can actually send is modelled: `attestation` and
+`keyCustody` are in the schema but have no producer, and a field nothing sets is
+a claim the type should not make.
+
+`device/list` is **not** folded. Like `vault/*`, it takes a caller-supplied
+`Value` filter object and the SDK is a pass-through; giving it a type is an API
+change, not a test change. It stays a transcription, now recorded as such.
+
+The conformance module's per-family account is updated: 21 witnesses still
+transcribe (from 26), of which 5 are consumer-only and correct as they stand,
+7 (`consent/*` + `messaging/ping`) await this same fold, and 8 are
+pass-throughs awaiting an API decision.
+
+### vta-sdk 0.21.15 / vta-service 0.14.28 — witness the producer, not a transcription of it (#924)
+
+The conformance sweep (#857) checks a *witness* per task — a request/response
+pair — against that task's schema. 26 of its 70 witnesses build their request
+from a hand-written `json!` literal rather than from the type the producer
+actually sends. A transcription only proves someone can type valid JSON: it
+stops tracking the producer the moment the producer changes, and stays green
+while live traffic fails.
+
+`vta/webvh/dids/update/1.0` is the worked example, and the reason to start
+there: its witness was transcribed, and #895 shipped anyway — every unset member
+went out as `null`, so `pnm did-mgmt dids edit --label x` could not run at all.
+
+**The root cause was an API boundary, not laziness.** The request shape for that
+family lives in `flatten_with_did` — body members flattened beside `did` — and
+that function was private to `vta-sdk`. From another crate the shape was
+literally unassertable except by hand-writing it. So `flatten_with_did` is now
+`pub` (re-exported as `vta_sdk::client::flatten_with_did`) and the witness is
+built by the producer's own shaping.
+
+The witness is deliberately a **one-member** update — `label` and nothing else,
+which is the invocation that could not run. A witness that set most members
+would leave almost nothing unset and so would not exercise the defect at all;
+this was caught while checking the conversion had teeth, because the first
+version of it set five members and passed happily with the fix reverted.
+Reverting a `skip_serializing_if` now reproduces #895 exactly:
+
+```text
+vta/webvh/dids/update/1.0: request fails its own payload schema:
+payload failed schema validation: null is not of type "integer"
+```
+
+**The remaining 25 are documented accurately for the first time.** The module
+claimed they were transcribed because "the slice's wire type is module-private
+(consent, task-consent, vault)". That is no longer true — 21 of the 26 name a
+`vta-sdk` client method that exists today. The honest position, now recorded per
+family:
+
+- **5** (`auth/{whoami,sessions-list,step-up/approve-response}`,
+  `task-consent/decision`) — the VTA is the consumer; no producer of ours sends
+  these, so a fixture is the correct witness and needs no further work.
+- **13** (`consent/*`, `device/*`, `messaging/ping`) — a producer exists but
+  builds its payload as an inline `json!` with a conditional insert per optional
+  member. There is no type to witness. Converting these means first giving those
+  producers canonical body structs — the #888 fold, applied to the families it
+  did not reach.
+- **7** (`vault/*`) — the SDK is a pass-through over a caller-supplied `Value`
+  and contributes at most one member. No SDK type exists, and inventing one is
+  an API change rather than a test change.
+
+So the outstanding work is one producer fold plus one API decision, not "rewrite
+26 fixtures" — which is a materially smaller and better-shaped job than the
+previous comment implied, and the reason to write it down rather than leave it
+as a count.
+
+### vtc-service 0.11.56 / vta-sdk 0.21.14 — serve the TSP we advertise, and refuse to pretend otherwise (#923)
+
+A VTC whose DID document advertised `#tsp` (`TSPTransport`) and no
+`DIDCommMessaging`, built without `--features tsp`, accepted every community
+join and recorded none. The applicant saw a successful send; the operator saw
+`Error unpacking message: DidcommError("Cannot parse message as JSON", "invalid
+number at line 1 column 2")` — an error naming neither TSP nor a missing
+feature.
+
+The frame never reached the VTC. `affinidi-messaging-sdk`'s websocket transport
+classifies TSP frames only under its own `tsp` feature; without it a CESR frame
+is never tagged `Protocol::TSP` and falls through to the DIDComm unpacker, where
+its leading `-` reads as the start of a JSON number. That is two layers below
+`messaging.rs`'s own "the `tsp` feature is disabled" warning, which therefore
+could never fire — and below the SDK's equivalent warning too, whose comment
+assumed "a DIDComm-only build never advertises TSP". This one did.
+
+- **`tsp` is now a default feature of `vtc-service`**, so the shipped binary
+  serves what its document may advertise. Receive-side only: this is Phase A of
+  `docs/05-design-notes/tsp-enablement.md` §12 — a TSP request is answered over
+  TSP because the caller is waiting on that correlation, while VTC-*initiated*
+  sends to members (`send_to_member`) stay DIDComm until the Phase B flip.
+- **New `transport_capability` module** compares the transports the VTC's DID
+  document advertises against the ones this build can serve, matching on service
+  `type` and never on the `#id` fragment. `server::run` refuses to boot when the
+  document the VTC itself publishes advertises something unservable; the
+  messaging listener re-checks against the DID as *resolved* — the deployed
+  `#tsp` arrived at DID log version 3, published long after the `vtc-host`
+  template minted the document, so a local-only check would have passed the
+  exact deployment that failed. Advertising an unservable transport alongside a
+  servable one starts degraded with a loud error; advertising nothing servable
+  stops the listener rather than dropping frames quietly, leaving REST serving.
+- **The errors name the failure class** (R6.4): which transport, why this build
+  cannot serve it, and both remediations — rebuild with `--features tsp`, or
+  remove the service entry.
+- **The TSP receive path is now exercised, not just compiled.**
+  `MockVtcDidcomm::start_with_tsp` mints a VTC `did:peer` advertising both
+  transports and `TestJoinClient::send_tsp` seals a real CESR frame through an
+  embedded TSP-routing mediator; `tests/join_tsp.rs` asserts the join reaches
+  `dispatch_trust_task_core` and is stored. The embedded test mediator now
+  enables its own `tsp` feature — without it `/inbound` rejects
+  `application/tsp` as a malformed DIDComm envelope. Runs in CI.
+
+All four document-vs-binary relationships are now reported, from one
+`findings_against` the boot gate, the messaging listener and `vtc status` all
+render — so an operator who runs `vtc status` to explain a boot refusal is told
+the same story, not a second one:
+
+- advertised but unservable → **error** (refuses to boot / stops the listener);
+- **no messaging service advertised at all** → warning. Legal, and what
+  `vtc-host` mints, but nothing can be delivered to the VTC over a mediator by
+  any route a DID-driven client would find;
+- TSP advertised with no DIDComm behind it → warning (no fallback);
+- served but not advertised → informational, the normal shape of a staged
+  rollout, never a fault.
+
+`vtc status` grows a **Transports** section printing what the build serves, what
+the document advertises, and every finding — so the question "will it refuse if
+I restart" is answerable without restarting.
+
+`vta-sdk`: the `vtc-host` template description pointed at
+`docs/03-integrating/runtime-service-management.md`, a directory that does not
+exist; corrected to `docs/02-vta/`, and reworded to say that *no* messaging
+transport is advertised by default (not just DIDComm) and that a community
+adding one should add both.
+
+The capability predicates take the served transport set as a parameter rather
+than reading it from `cfg`, because the crate's `[dev-dependencies]` self-dep
+unifies default features into every test build: a `#[cfg(not(feature = "tsp"))]`
+test here would never compile in, never run, and never fail.
+
+### vta-sdk 0.21.13 / vta-service 0.14.27 — check what we *send*, not what we wrote down (#921)
+
+#919 fixed `keys/create` sending `"mnemonic": null`. It did not answer the
+question the fix raised: how many more are there, and what would have caught
+this? Both defects of this shape (#895, #919) were found in production, by a
+person, from a rejected request. This adds the two checks that find them
+without one.
+
+**A source census, in `vta-sdk`** (`tests/payload_null_census.rs`). Every
+`Option` member of every `Serialize` struct under `protocols/` must skip `None`,
+because every Trust Task schema types its optional members by what they hold and
+none of them accepts null. Exceptions go in `NULLABLE_BY_DESIGN` with a reason
+and are checked in both directions, so an exemption cannot outlive the member it
+exempts. Parsed with `syn` rather than grepped — the attribute is routinely
+written across several lines, which a line-oriented regex misreads in exactly
+the direction that lets a violation through.
+
+It found five on its first run, all latent, all now fixed:
+`CreateAclResultBody::label`, `CreateContextResultBody::{did,description}`,
+`CreateKeyResultBody::label`, `SeedRecordBackup::retired_at`, plus
+`AclEntryBackup::label`. Each sits in a struct whose *sibling* members already
+skip, so these were oversights rather than decisions. Only
+`GetKeyResponseBody::key` is exempt, and that one is spec-mandated:
+`keys/show/0.1#response` types it `oneOf: [KeyRecord, null]` and requires it
+present, because "no such key" is a successful answer.
+
+**A producer census, in `vta-service`**
+(`tests/producer_payload_conformance.rs`). The census above cannot see a payload
+built by hand, and the conformance sweep (#857) cannot see one at all — it
+checks a witness written in the test, and no client method runs during it. So
+this drives the client methods themselves, through a new in-process transport
+(`vta_sdk::client::loopback`, behind `test-loopback`), with **every optional
+argument unset** — the shape that broke `keys/create` — and validates what they
+emit against the published schema. No VTA, no mediator, no socket.
+
+It found a live one immediately: **`derive_and_sign_document` sent
+`"proofPurpose": null`** on every call that did not name a purpose. Omitting the
+purpose is what selects the documented `assertionMethod` default, so the
+documented way to call it was the way that could not work. #919's fix had
+already added `skip_serializing_if` to `DeriveAndSignDocumentBody` — and the
+method did not use it, building a `json!` map instead. That is the gap between
+the two censuses in one example: fixing the struct does not fix a producer that
+never touches the struct. It now builds the canonical body, as #888 intended.
+
+The census also makes four unvalidatable tasks visible in `UNPUBLISHED`, each
+with its reason. They share a pattern worth naming: every one is a legacy
+`vta/`-namespaced task the canonical folds have not reached, so the
+unvalidatable surface is exactly the un-folded surface, and each closes for free
+when its family is folded.
+
+**On the loopback seam.** It intercepts ahead of the transport rather than
+adding a `Transport` variant. A variant would have to be answered at each of the
+~20 sites that match on `Transport`, almost all of which would say
+"unsupported" — twenty arms of noise in production code to serve a test. The
+hook touches the three functions that dispatch a Trust Task and leaves every
+transport match exhaustive over the transports that really exist.
+
+**Not covered, deliberately.** Framing — TSP sealing, DIDComm authcrypt,
+mediator routing — sits below the loopback point and still needs a harness with
+a real mediator. And 26 of the sweep's 70 witnesses still transcribe their
+request as a `json!` fixture rather than building it from the producer; 21 of
+those name a client method that exists today, so the module comment calling
+those slices "module-private" is stale. Converting them is follow-up work this
+does not do.
+
+### vta-service 0.14.26 — mediator-backed DIDComm + TSP transports for `MockVta` (#920)
+
+- **`MockVta::start_with_transports`** (new `transport-harness` feature) starts
+  a mock VTA reachable over **DIDComm and TSP** as well as REST: an embedded
+  `affinidi-messaging-test-mediator`, a `did:peer:2` identity advertising
+  `DIDCommMessaging` + `TSPTransport` at it, and the **production** inbound loop
+  — so a Trust Task on either transport reaches the same
+  `dispatch_trust_task_core` spine the REST route uses. The REST-only mock could
+  not express this: a `did:key` carries no service block, so a client could only
+  ever choose REST. A `did:peer:2` resolves offline in the **consumer's own**
+  resolver with nothing seeded, which is what makes the harness usable from
+  another process.
+- **Watch the DID size.** Every `DIDCacheClient` refuses a DID over
+  `max_did_size_in_bytes` (default 1000) before parsing, and neither side says
+  so: the client fails the websocket connect as `isActive? command timed out`,
+  the mediator answers `403` with `authcrypt requires sender public key`. Only
+  `affinidi_did_authentication` logs the real reason. The harness therefore
+  embeds the mediator DID in one service, points `#tsp` at the mediator URL
+  (test-scoped; production `did:webvh` keeps the mediator-DID convention), and
+  asserts the length at mint time.
+- CI now **runs** the harness — `transport-harness` is not a default feature, so
+  `cargo test --workspace` never compiled it.
+
+### vta-sdk 0.21.12 / vta-service 0.14.25 — an unset member is absent, never `null` (#919)
+
+`keys/create` was unusable over DIDComm and TSP. Every call that did not supply
+a BIP-39 phrase — which is every call that is not importing external seed
+material — sent `"mnemonic": null`, and `keys/create/0.1` types that member
+`"string"`:
+
+```text
+malformed request: payload does not conform to
+https://trusttasks.org/spec/keys/create/0.1: payload failed schema validation:
+null is not of type "string"
+```
+
+Nothing downstream could mint a key. An OpenVTC community join, whose first act
+is to create a persona's signing key, died on its first round-trip with that
+text and rolled back.
+
+This is the same defect as #895 (`vta/webvh/dids/update/1.0`, where every
+partial update was unusable for the same reason), reintroduced on a different
+task by the canonical-body fold in #888: `create_key` moved off a hand-rolled
+map — which skipped its `None`s — onto `CreateKeyBody`, which did not.
+
+- **`vta-sdk`**: `CreateKeyBody`'s `mnemonic` / `label` / `contextId`,
+  `DeriveAndSignDocumentBody`'s `proofPurpose`, and `SelfRemoveBody`'s
+  `disposition` all skip `None` now. The other two were latent variants of the
+  same bug, not collateral: `vtc/members/self-remove/0.1` constrains
+  `disposition` to an enum of strings, so a member removing themselves under
+  the community's default preference was sending the one value the schema
+  cannot accept.
+- **`vta-service`**: the schema-conformance sweep (#857) now validates each
+  witness's request against its embedded `payload.schema.json` — the check
+  `validate_payload` runs on the dispatch spine — and not only parses it into
+  the generated type.
+
+That last part is why this shipped. The sweep already built its `keys/create`
+witness from a real `CreateKeyBody` with `mnemonic: None`, and it passed:
+serde reads `null` into an `Option<String>` without complaint, while JSON
+Schema types the member `"string"` and refuses it. Parsing is strictly weaker
+than validating, so the witness proved the shape and said nothing about the
+wire. Reverting the SDK fix now fails the sweep with the exact production
+error.
+
+The REST leg was never affected — it serializes `CreateKeyRequest`, which
+already skipped its `None`s. Only the transports the stack prefers were broken.
+
+Requests only: `trust-tasks-rs` codegen emits `ValidatedPayload` for `Payload`
+but not for `Response` (0.4 and 0.5 alike), so there is no embedded response
+schema to validate against. The response side keeps its parse check. Closing
+that half needs the codegen to emit response schemas, which is an upstream
+change and is not included here.
+
+### vtc-service 0.11.55 — one credential's failure no longer abandons the rest (#918)
+
+`deliver_credentials` was a `for` loop ending in `push_to_holder(..).await?`, so
+the first failure returned and every **remaining** credential was silently
+dropped.
+
+Admission delivers two — the MembershipCredential and the role
+EndorsementCredential — as independent one-way deposits. A transient failure on
+the first therefore meant the member never received their role credential, and
+never would: `send_to_member` enqueues with `Delivery::Guaranteed`, so the
+retry-until-delivered machinery lives *behind* the very call that was skipped.
+Nothing was queued, so nothing was retried.
+
+The caller only `warn!`s — correctly, since the credentials are already issued
+and persisted and a delivery failure must not unwind the decision that issued
+them. The result was a member admitted into the community with a credential
+missing from their wallet and a single log line to say so.
+
+Independent deposits have no reason to share a fate. Each credential is now
+attempted regardless of what happened to the others, and the error names every
+one that failed, by credential *type* rather than position — "the
+EndorsementCredential did not go" is actionable where "credential 2 of 2" is a
+puzzle. A per-credential `warn!` fires as each failure happens, so the log shows
+which ones went and which did not rather than only the first casualty.
+
+#### Tests
+
+`a_failed_credential_does_not_abandon_the_rest` drives delivery with messaging
+deliberately not running, so every push fails identically, and asserts the error
+names **both** credentials. Under the old short-circuit it names only the first;
+verified by re-introducing the early return, which fails the test.
+
+#### Not the `join_didcomm` flake
+
+This was found while investigating
+`didcomm_join_round_trips_…_vmc_delivery`, which intermittently fails with "1 of
+2 credentials delivered". It is **not** the cause, and this change does not fix
+it:
+
+- In that failure the *second* push is the one that goes missing, so
+  short-circuiting after it abandons nothing. The outcome is identical before
+  and after this change.
+- The CI log for the failing run carries **no** VTC delivery-failure warning —
+  and that test defaults its subscriber to `warn`, so one would have printed.
+  Both sends succeeded.
+
+That places the loss on the receive side (the client's pickup loop or the
+mediator), not on the VTC's send. Recorded here so the next investigation starts
+from that, rather than re-examining a send path now known to be sound.
+
+Local reproduction was attempted and failed — 30 runs under CPU contention, all
+green — so the next CI occurrence is the only chance to observe it. To keep that
+chance from being wasted a fourth time, the test's default log filter now runs
+`affinidi_messaging_delivery` at `debug`, which prints `drain_once`'s per-tick
+`sent` / `retried` / `failed` report. A passing run shows `sent=2`; a failing run
+showing `sent=1` puts the loss in the sender's outbox, and `sent=2` puts it at
+the mediator or below. Three counters per 2s tick, printed only for a failing
+test — it costs nothing until it is needed, and it turns the next occurrence
+into evidence instead of another round of inference.
+
+### vta-sdk 0.21.11 / vta-service 0.14.24 — provisioning speaks 0.2, and the messaging SDK stops stalling shutdown (#917)
+
+Three fixes that ship together because they land in the same release: the client
+had to move to the 0.2 wire tags, the server had to stop re-imposing its own
+casing on a signed document, and both want the messaging SDK that no longer
+holds a lock through shutdown. One `vta-sdk` release, one VTA redeploy.
+
+#### `ask.type` goes out camelCase — provisioning works again
+
+`BootstrapAsk` serialised the **0.1** PascalCase tags (`AdminRotation`,
+`TemplateBootstrap`) while the client submitted under
+`provision/integration/**0.2**`. The two schemas differ in exactly that constant
+— 0.1 requires `AdminRotation`, 0.2 requires `adminRotation` — so the VTA's
+payload-schema gate rejected every request:
+
+```
+malformed request: payload does not conform to
+https://trusttasks.org/spec/provision/integration/0.2:
+{"adminTemplate":{…},"contextHint":"openvtc","note":"openvtc","type":"AdminRotation"}
+is not valid under any of the schemas listed in the 'oneOf' keyword
+```
+
+Latent since the client moved to the 0.2 URI; fatal once the schema gate landed.
+No config could bypass it — `policy.require_payload_schema` only governs *unknown*
+URIs, and a known schema is always enforced.
+
+The variants now `rename_all = "camelCase"`, with the PascalCase spellings kept
+as inbound **aliases** so a 0.1 holder still parses. That direction matters: the
+tag is inside the signed VP, so an existing holder that signed `AdminRotation`
+must keep verifying.
+
+Reported from OpenVTC, whose setup wizard could not get past
+"Provision integration DID + admin credential".
+
+#### The trust-task handler verifies the bytes it received
+
+`handle_request` called `req.request.verify()`, which re-serialises the typed
+struct — re-imposing this crate's serde casing on the very bytes the holder
+signed. It only worked while both sides happened to agree; changing either one's
+casing breaks the signature over a document nobody tampered with.
+
+It now uses `verify_value` over the raw `doc.payload["request"]`, which is what
+the DIDComm handler already did and what `verify_value`'s own documentation
+tells network handlers to do. Client and server casing no longer have to match.
+
+Fixing only the client would have moved the failure one step later rather than
+resolving it.
+
+#### `affinidi-messaging-sdk` 0.19.3 → 0.19.4
+
+Carries [affinidi-tdk-rs#694](https://github.com/affinidi/affinidi-tdk-rs/pull/694):
+`live_stream_next*` held a **read** guard on `ws_channel_tx` across its wait,
+while `stop_websocket` needs the **write** guard — so a poll in flight blocked
+every shutdown until the poll window elapsed.
+
+For the delivery layer that is 10s, and its inbound pump issues a read-ahead
+after every frame, so any consumer finishing mid-window paid the remainder on
+exit. `pnm` showed it as a fixed pause *after* its output. Measured against a
+live VTA: **13.1s → ~3.5s**, with the remaining time genuine mediator
+round-trips.
+
+Lockfile-only on our side — the `affinidi-tdk = "0.8.5"` pin already admits it
+via a caret requirement. The lockfile also reassigns which `socket2` / `syn` a
+few dependents use; both versions were already present, and this is the resolver
+normalising on any lock touch, not a downgrade of the graph.
+
+#### Tests
+
+- `the_request_payload_conforms_to_the_0_2_schema` builds the exact
+  AdminRotation request from the report and validates it against the **real**
+  published schema, through the same `trust_tasks_rs::validate` call the VTA
+  runs. Reverting the casing fix reproduces the reported error character for
+  character.
+- `ask_type_serialises_with_the_0_2_camelcase_tags` pins the wire tags, asserted
+  on serialized JSON rather than a round-trip — the inbound aliases accept both
+  spellings, so a round-trip passes either way and would not have caught this.
+- `the_0_1_pascalcase_tags_are_still_accepted_inbound` pins the alias direction,
+  since dropping one while renaming the variants would strand existing holders
+  silently.
+
+`admin_rotation_ask_round_trips_through_sign_verify` asserted the old
+PascalCase tag incidentally — its stated subject is the `adminTemplate` field
+name — and is updated to the 0.2 form.
+
+#### Downstream
+
+OpenVTC needs only a dependency bump; no code change there.
+
+### vtc-service 0.11.54 — dtg-credentials 0.2 (#916)
+
+Moves the workspace from `dtg-credentials` 0.1.3 to 0.2, tracking DTG Core
+Credentials **Working Draft 01**. The catalog is the source of truth for the
+canonical wire shape of every credential the VTC mints, so staying a spec draft
+behind means issuing a form the rest of the ecosystem has moved off.
+
+#### Nothing we mint changed
+
+Verified rather than assumed: the emitted VMC, VEC and VIC documents are
+**byte-identical** across the bump — same `@context` (both URIs, same order),
+same `type` array, same `credentialSubject` shape. Checked by emitting all three
+under 0.1.3 and 0.2.0 and diffing, not by reading the changelog.
+
+A 0.x minor bump is semver-breaking and this crate fixes wire shapes, so "it
+compiles" was never sufficient: the constructors could have kept their signatures
+while every credential quietly became a different document.
+
+#### What 0.2 actually changes, and why none of it reaches us
+
+- **`taskContext` is REQUIRED on Witness credentials (VWC).** Parsing a VWC
+  without one is now `MissingTaskContext`. We construct only VMC/VEC/VIC; the
+  `WitnessCredential` references in `ceremony/` and `policy/` are JSON string
+  literals in the decision pipeline and never round-trip through `DTGCredential`.
+  **Worth knowing before that changes**: the day the VTC parses a witness
+  credential through this crate, it must carry a `taskContext`.
+- **`digest_multibase()` / `verify_digest()` are new** — SHA-256 over JCS,
+  multihash, base58btc multibase. Deliberately *not* the
+  `sha256:<lowercase-hex>` of Working Draft 01. Same underlying hash, different
+  encoding; the same hex → `digestMultibase` move trust-tasks 0.4 made in #911.
+- **`DTGCredentialType::RCard` is deprecated.** The R-Card was removed as a DTG
+  credential *type* in WD-01 — it is a verifiable data structure, to be defined
+  by the planned DTG VDS spec. We never constructed one; the `VtcRole::Issuer`
+  doc comment that listed it is corrected.
+
+No new transitive dependencies — `multibase`, `sha2` and
+`serde_json_canonicalizer` were already in the tree. `cargo deny` clean on
+advisories, bans, licenses and sources.
+
+#### The gap this exposed
+
+The existing tests asserted the `type` array but **nothing asserted `@context`**,
+so a changed context would have compiled, passed 85 credential tests, and shipped
+a document no one else in the ecosystem recognises. Four new tests pin
+`@context` and `type` exactly — including order, which is load-bearing in JSON-LD
+because a later context overlays an earlier one.
+
+Verified by canary: flipping the expected context fails all four with
+`@context drifted`. A future failure there is not automatically a defect — the
+catalog is allowed to move — but it forces the change to be deliberate and
+coordinated rather than silent.
+
+### vta-service 0.14.23 / vta-cli-common 0.10.28 — the offline approvals break-glass (#915)
+
+#914 retired `vta step-up`, which was the offline way out of an over-strict
+`[auth.step_up]`. The lockout it recovered from did not go away — it moved. This
+is the replacement, and the last open item from the trigger collapse.
+
+Approvals are self-gating on purpose: `policy/*` is not exempt from the policy
+gate, because two-person control over the gate *itself* is a feature. The cost is
+a reachable, wire-unrecoverable lockout:
+
+- a `consent` rule on `policy/upsert` whose approver set has rotated away;
+- a rule that gates the very task you would use to remove it;
+- a hand-authored Rego module that denies the `policy/delete` which would remove
+  it;
+- `enforcement = true` with no policy that decides — the gate default-denies, on
+  purpose, and nothing on the wire can fix it.
+
+#### New
+
+```
+vta approvals list                    # what this VTA requires, from the store
+vta approvals remove <task-uri>       # drop one rule — the surgical fix
+vta approvals disable                 # drop the row and every approver set
+vta policy list [--show-module]       # hand-authored Rego
+vta policy delete <id>
+```
+
+Same security model as every other `vta …` offline surface (`acl`, `keys`,
+`services`, `vault`): direct fjall access, no auth ceremony, whoever holds the
+filesystem holds this. Daemon must be stopped; not available in TEE.
+
+#### Two choices worth stating
+
+**Read-mostly.** There is no offline `require`. Adding a gate is never an
+emergency, and a break-glass path that can install one is a way to plant a
+control that never passed through the authenticated surface.
+
+**`approvals list` names hand-authored modules.** The declarative view refuses to
+show Rego it did not generate — a row whose module said something other than its
+rules would make the printout a lie — but an operator diagnosing a lockout who
+sees an empty rule list will otherwise conclude nothing is gating them. So the
+listing names them and points at `vta policy list`.
+
+#### Found while testing
+
+The first draft was wrong in the same way twice: `list` and `disable` each parsed
+the declarative row *before* acting, so neither worked on an unparseable row —
+the state where every other command has already failed and this is all that is
+left. `list` died with a bare serde error on the row it was being run to inspect;
+`disable`, the hammer, refused to swing. Parsing is best-effort in both now:
+`list` reports the row as unreadable and names the escape hatch, `disable`
+deletes first and summarises only if it can.
+
+Both surfaces render through one shared `render_model`, moved out of
+`vta_cli_common::commands::approvals::cmd_list`. An operator diagnosing a lockout
+is comparing what the offline command prints against what they remember
+`pnm approvals list` printing; two implementations of "what does this VTA
+require" would eventually disagree at exactly the moment that comparison matters.
+
+Covered by seven unit tests over a real fjall store and four end-to-end tests
+that drive the built `vta` binary against a real config file — the wiring, not
+just the functions, because "correct function, subcommand never wired up" is a
+failure an operator would otherwise discover mid-incident with no way in.
+
+Docs: `docs/02-vta/approvals.md` §"If you lock yourself out" is now concrete
+rather than a promise.
+
+### vti-common 0.11.37 / vta-sdk 0.21.10 / vta-config 0.3.2 / vta-policy 0.2.1 / vta-service 0.14.22 / vta-cli-common 0.10.27 / pnm-cli 0.11.21 — one trigger for approvals (#914)
+
+**Breaking.** #912 and #913 put the Policy Decision Point in front of every gated
+route, leaving REST enforced by *both* the PDP and the old `[auth.step_up]`
+floors. This removes the floors, and the other parallel trigger beside them. A
+VTA now answers "does this operation need an additional human decision?" in
+exactly one place, from exactly one list of rules — the thing an operator can
+read back with `pnm approvals list`.
+
+That reading-back is the point. The convergence started from a `pnm contexts
+create` that failed `auth:step_up_required` with nothing an operator could
+consult to find out why.
+
+#### Retired
+
+- **`[auth.step_up]`** — the floors: eleven op-class slugs, four modes, and an
+  `allowAal1IfNonEscalating` carve-out. Gone with `StepUpPolicy`, `StepUpFloor`,
+  `op_class`, the `resolve_step_up` engine, the `RequireStepUp` axum extractor
+  and its per-route markers, `require_step_up`, `issue_step_up_challenge`, and
+  `step_up_denied_response`.
+- **`[[policy.require_consent]]`** — a third trigger, reconciled from the file on
+  every boot, so it silently reverted anything changed at runtime.
+- **The management surface**: `auth/step-up/policy/0.2` and its dispatch arm,
+  `GET`/`PUT /step-up/policy`, `VtaClient::{get,set}_step_up_policy`,
+  `pnm step-up policy …`, and the offline `vta step-up …`.
+
+#### Refused, not ignored
+
+Both retired config sections now **fail the load**, with an error naming the
+command that replaces them. Parsing and ignoring them would leave the file
+asserting that operations are gated, the operator believing it, and nothing
+enforcing it. `stepUp.require` on an ACL write is refused for the same reason —
+an accepted override would be stored and echoed back on every read as a gate that
+does not exist.
+
+And the first boot after upgrade **deletes** the `config:require-consent` policy
+row a previous release synthesized. Without that, a VTA upgraded from a release
+carrying the block would keep enforcing a `requireConsent` that no config
+declares, `pnm approvals list` cannot see, and no command can remove.
+
+#### Two gaps closed on the way out
+
+- **`POST /acl/swap`** was the one gated REST route #912 left on the old trigger,
+  because its floor had a carve-out the shared gate has no concept of. Removing
+  the extractor without wiring the gate would have made self-service key rotation
+  the one ACL mutation a `requireConsent` rule bound over trust tasks and silently
+  not over REST. It now calls `rest_gate`, and `SwapAclRequest` serializes
+  camelCase so the same rotation digests identically on both transports. The
+  legacy DIDComm `handle_swap_acl` — which does not route through the trust-task
+  dispatcher — is gated the same way; the floor check was the only approvals check
+  it had.
+- **`input.consumer.acr` is now `"aal1"` for an un-elevated session**, where it
+  used to be omitted. Harmless while the floors did the gating; not harmless now,
+  because `input.consumer.acr != "aal2"` is *undefined* against an absent field.
+  The rule an operator would naturally write to demand step-up would have silently
+  never fired for exactly the sessions it was written to catch. Two integration
+  tests default-denied instead of demanding step-up, which is how this surfaced.
+
+#### Behaviour that goes away
+
+Delegated step-up — a *third party* ratifying another session's elevation — has
+no direct replacement, deliberately. `[auth.step_up]` was the only thing that
+could address an approve-request to someone other than the subject; a rule's
+`requireStepUp` is self-approve by construction. `requireConsent` covers the same
+intent and covers it better: a threshold, a re-check at consume time that the
+approvers are **still** authorized, and a VTA-signed statement of the effects in
+front of the human. A delegated floor had none of those.
+
+The step-up **ceremony** itself is untouched — approve-request/approve-response,
+the did-signed and WebAuthn gates, the pending store, the bounded elevation
+window, the push to an approver's device. Only what decides a ceremony is needed
+has changed.
+
+`StepUpMode` survives as the type of `AclEntry.stepUp.require`, a published wire
+field, serialisable and inert. Removing the field is its own slice.
+
+#### Still open
+
+An offline `vta approvals` break-glass. The retired `vta step-up` could disable an
+over-strict policy from the config file when it had locked everyone out over the
+wire; a rule can lock an operator out the same way, and answering that needs a
+command reading the policy keyspace directly. Recorded in
+`docs/05-design-notes/approvals-convergence.md`.
+
+Docs: `docs/02-vta/approvals.md` is the operator guide;
+`docs/02-vta/step-up-policy.md` is now a superseded redirect carrying the
+migration table.
+
+### vta-service 0.14.21 — the webvh update route joins the shared gate (#913)
+
+Completes the REST half of the policy gate. `POST /contexts/{ctx}/dids/{scid}/update`
+was the last route reaching its operation directly, and it is the one a
+`webvh/dids/update` consent rule actually targets — a DID-document update
+silently rotates the DID's update key, which is exactly the effect an operator
+writes such a rule for.
+
+It needed one step the ACL and context routes did not. The route is addressed by
+**SCID** while the gate's payload — and therefore the consent digest an approver
+signs — is keyed on the DID, as the trust-task path sends it. Gating on what the
+handler holds would have digested the same update differently depending on how it
+arrived, so an approval obtained over one transport could not have been consumed
+over the other: a subtler failure than no gate at all. `resolve_webvh_did`
+resolves the SCID first (reusing `find_record_by_scid`, which already accepts
+either identifier form), and the route gates on `{did, …body}`.
+
+The parity test extends to this route, asserting the refusal, that the body
+carries the consent `challenge`, and that the DID's update key was **not**
+rotated.
+
+One note for whoever writes the next route test: assert on the route you mean.
+An earlier draft posted to `…/dids/{scid}` rather than `…/dids/{scid}/update`,
+fell through to the 404 fallback, and came back `500 Unable To Extract Key!` —
+`tower_governor` failing to extract a peer IP from a `oneshot` request. That
+reads like a handler fault and is not one; it cost a full debugging cycle and a
+wrong conclusion about where the problem was.
+
+### vti-common 0.11.36 / vta-service 0.14.20 — the PDP gate reaches the REST routes (#912)
+
+Closes most of a live enforcement gap: the Policy Decision Point ran **only** in
+the trust-task dispatcher, so `POST /acl` and friends called their operations
+directly and a `requireConsent` rule an operator had written bound one transport
+and silently not the other. Same mutation, same policy, two answers.
+
+Purely additive — `RequireStepUp` stays in place, so REST is now gated by both
+the old step-up floors and the PDP, and nothing is removed until the retirement
+that follows.
+
+- **`policy_gate` is split into a decision and its shaping.** It used to do both,
+  threading `&TrustTask<Value>` down to nine `app_error_to_reject(doc, e)` sites
+  — which is the mechanical reason the decision was unreachable from a REST
+  handler, which has a parsed body and no document. `decide` now takes the
+  payload and returns `GateReject`; `policy_gate` shapes it exactly as before,
+  and `rest_gate` shapes it for a route. `require_step_up` /
+  `initiate_self_step_up` likewise take `&Value` and return a `RejectReason`.
+  No behaviour change — the 791 lib tests pass unmoved.
+- **New `AppError::ApprovalRequired { code, details }`.** `StepUpRequired(String)`
+  renders `{error, message, requiredAcr}` and has nowhere to put the
+  `approveRequest` a caller needs, nor any way to express a consent requirement,
+  so a REST caller could learn it was blocked but not what to do about it while
+  the trust-task caller for the same decision got the whole document. `details`
+  is merged at the top level so the body reads like the trust-task reject's, with
+  `error` written last so a `details` carrying that key cannot displace the code
+  clients switch on.
+- **Gated in-handler** (the consent digest is taken over the payload, which an
+  axum extractor cannot see): `POST /acl`, `PATCH /acl/{did}`,
+  `POST /acl/{did}/change-role`, `DELETE /acl/{did}`, `DELETE /contexts/{id}`.
+  Each gates on the same payload shape its trust-task counterpart digests — the
+  whole `{entry: …}` body for a grant, not the inner entry — because a digest
+  that differed by transport would mean an approval obtained over one could not
+  be consumed over the other.
+- **A transport-parity test**: one policy, both paths, same decision, and the
+  REST body must carry the consent `challenge` rather than a bare 403. The
+  absence of exactly this test is why the bypass went unnoticed.
+
+**Still open — `POST /contexts/{ctx}/dids/{scid}`.** The planner parses the gated
+payload as `UpdateDidWithDid { did, .. }`, but that handler is addressed by
+**SCID**; gating on what it holds would produce a digest disagreeing with the
+trust-task path's for the same update. Resolving the SCID to its DID first is the
+fix, and it belongs with the change that can test it end to end rather than
+bolted on. Recorded in `docs/05-design-notes/approvals-convergence.md`.
+
+### vta-policy 0.2.0 / vta-service 0.14.19 / vtc-service 0.11.53 / vta-mobile-core 0.6.18 — trust-tasks 0.4, and the consent digest becomes `digestMultibase` (#911)
+
+Moves the workspace onto `trust-tasks-rs` 0.4.0 (from 0.2.60), now that
+`affinidi-messaging-sdk` 0.19.3 depends on it. Before that release the bump
+resolved to **two** copies of `trust-tasks-rs` in one graph and broke
+`vta-sdk::acl_setup` on a `MediatorAcl` type mismatch; there is now exactly one.
+
+**This carries a wire change.** 0.4 moves `payloadDigest` to the shared
+`DigestMultibase` type — a multibase-encoded multihash matching
+`^[zumbfF][A-Za-z0-9+/=_-]+$` — and states that "a bare hex string or a
+`sha-256:`-style prefix hard-codes one algorithm into the wire contract and is
+non-conforming". `vta-policy::consent` emitted bare hex, and because the
+dispatcher validates payloads against the published schema, on 0.4 the VTA would
+have started **rejecting its own approvers' decisions**. Migrating is not
+optional at this version.
+
+- `vta_policy::consent::{payload_digest, wire_digest}` now emit base58btc over
+  the sha2-256 multihash (`0x12 0x20` || digest), matching the `did:key` /
+  `did:webvh` convention already used by `vta_sdk::did_key`.
+- `vta-mobile-core` **parses** the draft digest into `DigestMultibase` rather
+  than passing a string through, so a stale hex digest fails at the device that
+  would otherwise sign a decision the VTA could never match.
+- `TrustTask` gained `parentThreadId`; the two unrouted parse-failure errors pass
+  `None` (no thread to name, for the same reason there is no issuer).
+
+**Operators and integrators:** any approver stack that computes the digest
+independently — the browser plugin, anything built on an older
+`vta-mobile-core` — must move in lockstep. A mismatched pair produces an
+approval that is given, accepted by the human, and then silently never takes
+effect. In-flight pendings and grants are invalidated by the encoding change;
+they are TTL'd at 900s, so the window is short.
+
+**The operator's match code keeps its entropy.** `vta-mobile-core` derives the
+6-character comparison code from the digest; slicing the *encoded* string would
+have spent three of those six on the constant `zQm` (base58btc marker plus
+sha2-256 multihash prefix), leaving ~17.6 bits where the operator believes they
+are comparing ~35 — and still looking like six random characters, which is what
+would have made it dangerous rather than merely wasteful. `match_code_from_digest`
+now decodes and strips the multihash prefix first.
+
+Because the digest is still SHA-256, this reproduces **exactly** the code the
+screen showed when the wire carried bare hex (`hex(digest)[..6]` either way), so
+the encoding migration is invisible on the approver screen. The pre-existing
+assertion `assert_eq!(r.match_code, "3b0c7f")` — written against the hex format —
+passes verbatim against multibase, which is the property in evidence rather than
+in argument. A stale hex digest is now refused outright rather than silently
+producing a code.
+
+### vta-config 0.3.1 / vta-sdk 0.21.9 / vta-policy 0.1.4 / vta-service 0.14.18 / vta-cli-common 0.10.26 / pnm-cli 0.11.20 — one approval model, manageable at runtime (#909)
+
+The VTA answered "does this operation need an additional human decision?" with
+three independent subsystems — step-up floors keyed by a closed list of eleven
+op-class slugs, `[[policy.require_consent]]` rules keyed by task type URI, and
+the messaging-consent registry — using two config languages over two identifier
+spaces, only one of which could be changed at runtime. This is the first half of
+collapsing them. Additive throughout: nothing is retired, no path is un-gated.
+
+- **New `vta_sdk::approvals`** — one `ApprovalRule` list keyed on task type URI
+  (`requires: "reauth" | "consent"`, optional approver set, threshold,
+  `excludeRequester`, per-context scoping) plus the named approver sets, and the
+  deterministic Rego synthesizer both the CLI and the VTA derive from.
+  Validation is **write-time**: an unknown or empty approver set, a threshold no
+  set could meet, a consent-only field on a `reauth` rule, or two rules whose
+  guards overlap are all refused when an operator writes them, not discovered by
+  the first caller they block.
+- **Runtime PDP management on the canonical `policy/*` family** —
+  `policy/list/0.2`, `policy/get/0.1`, `policy/upsert/0.2`, `policy/delete/0.1`,
+  all already published upstream, none previously served here. The VTA had **no**
+  runtime policy surface at all; changing what the PDP enforced meant editing
+  `config.toml` and restarting. Reachable over DIDComm and TSP as well as REST,
+  which matters because the step-up policy surface this begins to replace was
+  REST-only in the SDK — an operator on a mediator-only VTA could not read the
+  policy that was blocking them.
+- **`pnm approvals {list,require,remove,approvers,explain}`** — the rules and
+  their approver sets, edited live. Each command is a read-modify-write of the
+  reserved policy row carrying `expectedVersion`, so two operators editing at
+  once collide instead of silently overwriting each other. `explain` names the
+  rule that applies, who can satisfy it, and says outright when a rule *cannot*
+  be satisfied.
+- **`pnm policy {list,show,upsert,delete}`** — the hand-authored-Rego escape
+  hatch. The two surfaces cannot collide: `approvals` owns one reserved row and
+  refuses hand-written Rego in it, and `policy` refuses to create a second row
+  claiming to carry approval rules.
+- **The declarative row stays spec-honest.** Canonical `policy/upsert` treats
+  `module` as client-authored and authoritative (`minLength: 1`), so the VTA does
+  not synthesize over it: the caller generates the Rego from its rules and sends
+  both, and the VTA re-derives from `ext["openvtc.approvals"]` and
+  **byte-compares**, refusing a mismatch. The rules an operator reads back are
+  therefore guaranteed to describe the policy that actually decides.
+- **`[policy.approvals]` / `[policy.approver_sets]` are a seed, applied once**
+  when the VTA boots without a declarative row — the bring-up path for a fresh
+  or IaC-provisioned VTA. Deliberately **not** the reconcile-every-boot
+  behaviour of the consent policy it supersedes: once rules are editable at
+  runtime, re-reading the file every boot means a restart weeks later silently
+  reverts an operator's change. Pinned by a test. An unsatisfiable seed stops the
+  VTA at boot rather than starting an agent whose declared protections do not
+  work.
+- The consent gate resolves approver sets from the declarative row first, falling
+  back to config, so `pnm approvals approvers add` takes effect without a
+  restart while a VTA whose sets are still in config keeps working. The row sits
+  at priority 200, above the legacy config-synthesized consent row (100) — a task
+  named by both would otherwise tie, and ties break by keyspace iteration order.
+- `policy/activate` / `policy/active` are deliberately not served (this
+  maintainer has no activation pointer — the active set is every enabled row in
+  priority order). `policy/evaluate/0.3` is not served either: its `PolicyInput`
+  still marks `site` — a vault-flow `SiteTarget` — as required, and there is no
+  honest `site` for "would `acl/grant` need approval here". Relaxing that
+  upstream is the prerequisite.
+- No new Trust Task URIs: every URI above was already published, so the census
+  and conformance harnesses pass without growing `UNSPECCED_DISPATCHED_URIS`.
+- Docs: `docs/02-vta/approvals.md` (operator guide),
+  `docs/05-design-notes/approvals-convergence.md` (why one model instead of
+  three, what is retired, and what remains).
+
+### Dependencies — the enforced-authcrypt TDK is pinned, not merely resolved (#908)
+
+`affinidi-tdk = "0.8"` accepted any 0.8.x. The enforced-authcrypt fix
+(affinidi-tdk-rs #671) — DIDComm `unpack` rejecting plaintext / anoncrypt /
+forged-`from` envelopes **by default** — first ships in **0.8.5**, through
+`affinidi-messaging-sdk` 0.19 and `affinidi-messaging-didcomm` 0.15.8.
+
+`Cargo.lock` happened to hold 0.8.5, so the property held by accident rather
+than by requirement. A `cargo update`, a lockfile regeneration, or a clean
+checkout resolving afresh could each move sender authentication back out of the
+library, with nothing in the build to notice. The pin is now `0.8.5`, with the
+reason recorded beside it.
+
+The guarantee above the library is unchanged: `bind_authcrypt_sender` and the
+DIDComm `inbound_gate` still enforce authcrypt themselves, as defence in depth.
+
+## A dead workspace dependency, removed
+
+`affinidi-messaging-didcomm-service` is dropped from `[workspace.dependencies]`.
+No member consumes it — it is absent from `Cargo.lock` entirely, and both
+`vta-service` and `vtc-service` carry comments recording that they replaced it
+with local `shim.rs` / `router.rs` equivalents. A requirement that resolves
+nothing reads as a supported edge and invites maintenance against something the
+build never sees.
+
+## Lockfile refresh
+
+`cargo update` collapses two long-standing duplicate trees:
+
+- **`affinidi-messaging-sdk` 0.18.65 is gone.** It survived behind
+  `affinidi-messaging-test-mediator` → `affinidi-messaging-mediator`, the
+  dev-only e2e / `vtc-service` fixture chain. `test-mediator` 0.2.47 moved to
+  sdk 0.19 and `mediator` 0.18.9 with it, so the graph now holds **one**
+  messaging SDK — the assumption the `tsp` feature pins depend on, now true of
+  dev builds too.
+- **The legacy `ssi-*` stack drops out** (`ssi-jwk`, `ssi-jws`,
+  `ssi-dids-core`, `ssi-json-ld` and ~15 siblings), taking `reqwest` 0.11,
+  `sha2` 0.9, `ripemd160`, `tiny-keccak`, `uint` and `windows-sys` 0.48 with it.
+  `reqwest` unifies on 0.13.4. Net −1393 lockfile lines.
+
+`curve25519-dalek` (5) and `ed25519-dalek` (3) remain single. `elliptic-curve`,
+`ecdsa`, `p256` and `sha2` are still doubled across the RustCrypto 0.13 → 0.14
+transition, which remains upstream-gated.
+
+Manifest and lockfile only — no workspace crate's source changes, so no version
+bumps.
+
+Supersedes #900, whose source change and `affinidi-messaging-sdk` 0.19 pins had
+already landed in #902.
+
+### vta-service 0.14.16 — an approver need not hold VTA authority to answer (#907)
+
+A `task-consent/decision` is authorized by the document — the approver's
+Data-Integrity proof, checked against the policy-named approver set.
+`handle_decision` does not read its `AuthClaims` at all, and the PDP gate already
+exempts ceremony tasks from re-gating. But the ACL check every intrinsic-sender
+transport (DIDComm, TSP) runs before dispatch did not know that, and refused
+those senders outright.
+
+That inverts the model. An approver device holds no authority to *act* — the
+whole point of the `approve_scope` axis — so it has no reason to hold an ACL
+entry, and the consent subsystem is built for exactly that: both
+`compute_delegated_contexts` and the gate's eligibility count read "absent from
+the ACL" as *confers nothing*, never as *cannot speak*. Only the transport gate
+disagreed, and it disagreed first, before any of the code written to accommodate
+that approver could run.
+
+It failed silently in both directions. The VTA replies with a `permissionDenied`
+envelope an approver wallet has no reason to recognise, and logs nothing — the
+`trust-task received` line and every `consent.decision` audit row live past the
+gate. So a decision a human gave and a wallet sent looked, from either end,
+exactly like one that was never delivered, while the requester re-submitted into
+a pending that could never be granted.
+
+The ceremony predicate now lives in `trust_tasks::ceremony`, shared by the PDP
+gate and both transports so the two cannot disagree about what a ceremony task
+is. When — and only when — the ACL turns a sender away and the envelope names a
+ceremony task, `messaging::auth::auth_for_trust_task_envelope` dispatches on the
+proven sender DID over `Role::Monitor` with no contexts: authorized nowhere, and
+no session row minted. It is a fallback, not an override — an enrolled sender
+keeps the claims its entry earns it, an expired grant does not resurrect its
+role, every non-ceremony task from an unenrolled DID is refused as before, and an
+unparseable body is not a ceremony task.
+
+The carve-out is floored on approver-set membership for consent decisions, since
+a decision citing an unknown digest writes a durable audit row and retention is
+time-based rather than size-capped. That keeps the write to DIDs the operator
+actually named, without narrowing the population the feature serves. Step-up
+`approve-response` is deliberately unfiltered: its authorized signer is
+`pending.approver`, recorded at mint and not required to hold an ACL entry (the
+delegated phone-as-authorizer), and it writes no audit row on an unknown
+challenge.
+
+Both transports now name the sender and type URI when they refuse a trust task,
+and a refused ceremony task says which of the two enrolments — approver set or
+ACL — is missing.
+
+**Operator note.** An approver device needs to be in the approver set the policy
+names; it no longer additionally needs an ACL entry to deliver its decision. An
+ACL entry granted purely to get an approver past the transport (e.g.
+`--role reader --approve-contexts …` with no act scope) is still honoured and
+still what you want when the approver must *confer* a context the requester
+lacks — approve-authority for delegation is resolved from live ACL state at the
+moment the grant is minted, and is unchanged by this release.
+
+### vtc-service 0.11.52 — make the join_didcomm credential-delivery failure diagnosable (#906)
+
+`didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_delivery` has
+failed on CI at least three times across unrelated PRs (#903, #904 — one of them
+with a diff that was purely DIDComm framing in another crate). Every failure
+produced the same line and no way to act on it:
+
+```
+panicked at vtc-service/tests/join_didcomm.rs:288:14:
+admission credential delivered over DIDComm
+```
+
+**This changes no production behaviour and does not attempt a fix.** It removes
+the reasons the failure has never been attributable.
+
+## What the investigation ruled out
+
+- **R1.1 silent drop.** `send_to_member` uses `Delivery::Guaranteed` — durable
+  outbox with retries. Not a bare send.
+- **Idempotency-key collision.** `deliver_credentials` mints a fresh UUID per
+  credential and `push_to_holder` uses it as the message id, so the two pushes
+  cannot dedup against each other.
+- **Arrival-order race.** Already handled; the test collects both and searches.
+- **Runner slowness — the explanation the test itself gives.** It does not fit.
+  The bound is already **60s** on a test that completes in ~23s on CI, and the
+  client polls every 300ms, so a failure means ~200 consecutive empty polls.
+  That is a message that is not there, not one that is late.
+
+Six local runs did not reproduce it. No root cause is claimed here.
+
+## Three blind spots, all removed
+
+**No tracing subscriber.** These tests installed none, so the service's
+`warn!("membership-credential delivery failed on approve…")` — the *only* report
+of a failed push, and deliberately non-fatal because the credentials are already
+issued and returned inline — went nowhere. `init_tracing()` installs one, with
+`lsm_tree` filtered out: its temp-dir teardown emits a screenful of harmless
+cleanup warnings exactly when a test fails, which would bury the line that
+matters.
+
+**The assertion could not distinguish "got 0" from "got 1".** `deliver_credentials`
+is a sequential loop with `?`, so a failure on the first push sends **zero** and a
+failure on the second sends **one** — different bugs, identical symptom. The
+panic now names the index, the timeout, how many arrived, and which of the two
+explanations applies.
+
+**`recv_matching` discarded every pickup error.** `if let Ok(Some(..)) = next`
+swallowed up to ~200 `Err`s per failure, so a broken socket and an unsent message
+looked the same. Errors are now counted and reported on timeout — still
+non-fatal, since a transient pickup error is expected and retrying is the point.
+
+## Verified
+
+The new panic path was exercised rather than assumed (timeout shortened, loop
+extended by one) and produces:
+
+```
+admission credential 3/2 not delivered over DIDComm within 3s (2 already received).
+The first arrived and the second did not, so the VTC either failed on the second
+`push_to_holder` (again warn-only) or the frame was lost between the mediator and
+this client.
+```
+
+with no `lsm_tree` noise around it. Restored to 60s / two credentials; the suite
+passes.
+
+### vta-service 0.14.15 / vtc-service 0.11.51 — an unknown inbound protocol is dropped, not fatal (#905)
+
+`affinidi-messaging-core` 0.1.6 added a `Protocol::DIDCommV1` variant and marked
+the enum `#[non_exhaustive]`, so both inbound routers stopped compiling:
+
+```
+error[E0004]: non-exhaustive patterns: `_` not covered
+  --> vta-service/src/messaging/service.rs:310:11
+  --> vtc-service/src/messaging.rs:341:23
+```
+
+## Not the fix rustc suggests
+
+rustc proposes `_ => todo!()`. That would be a **remotely triggerable panic**:
+this match runs on every inbound frame off the mediator socket, so any peer
+sending a protocol we don't implement yet would take the listener down. Both
+routers now warn and drop.
+
+## DIDComm v1 is not a flavour of v2.1
+
+`DIDCommV1` (Aries RFC 0019) gets its own arm rather than being folded into the
+`DIDComm` one. Upstream is explicit that the two "share no wire format, no
+algorithms, and no identifier scheme", and both services speak v2.1 only.
+
+In `vtc-service` this distinction is load-bearing rather than cosmetic: its
+`Protocol::DIDComm` arm falls *through* to the v2.1 parse below, so an unhandled
+variant reaching it would be parsed as a v2.1 plaintext and dropped **silently** —
+which is precisely the failure the comment above that match already records for
+TSP. The new arms `continue` instead.
+
+## Why this class keeps landing
+
+Second `#[non_exhaustive]` break in two days (#902 carried the `UnpackMetadata`
+one). Both were invisible until a dependency moved: the upstream attribute exists
+so *additive* changes are not breaking, but a `match` without a wildcard opts back
+into breakage. Worth preferring a wildcard on any upstream enum matched in a hot
+inbound path, whether or not it is `#[non_exhaustive]` today.
+
+`affinidi-messaging-core` 0.1.5 → 0.1.6. Verified: workspace at `--all-features`
+and `--all-targets`; `vta-service` at `--no-default-features` and each of
+`didcomm`, `rest`, `tsp`, `didcomm,tsp`, `rest,didcomm,webvh,tsp`.
+
+### vta-service 0.14.14 — VTA↔DID-hosting DIDComm uses the Trust-Task envelope binding (#904)
+
+The last and largest of the envelope-binding fixes (#901, #903). `webvh_didcomm.rs`
+sent seven DID-management verbs with the **task** type as the DIDComm message
+type, where `trust_tasks_didcomm::ENVELOPE_TYPE` is required with the `TrustTask`
+in the body.
+
+## Why this one was invisible
+
+Unlike the device pushes, **this never broke anything**. did-hosting's control
+plane accepts both framings — `build_control_router` routes the bare `MSG_*`
+types *and* `ENVELOPE_TYPE` — so DID publish, register, delete and the
+agent-name verbs all worked. The defect was latent: the moment the host retires
+bare-type acceptance (its stated direction), every one of these verbs would have
+started timing out at 30s with no diagnostic, exactly as the retired
+`did/publish/0.1` did in affinidi-webvh-service#144.
+
+## The shape of the change
+
+One private `send_task` is now the only place this module names a DIDComm
+message type, and it names the envelope both ways. Each verb passes just its
+task URI, so no call site can put a task type on the wire.
+
+- **Outbound:** `build_outbound` returns the `(message_type, document)` pair —
+  envelope type on the message, task type on the document, payload unchanged.
+- **Inbound:** `unwrap_envelope_reply` discriminates on the *document's* type,
+  because on this binding every reply arrives as `ENVELOPE_TYPE` and
+  `send_and_wait`'s outer type check can no longer tell success from rejection:
+  - `<task>#response` → its `payload`,
+  - `did/problem-report/0.1` → the typed `AppError`, through the **same**
+    `problem_report_to_app_error` table the bare framing uses (now
+    `pub(crate)`), so a host rejection keeps its status — `path-unavailable`
+    stays a 409 rather than collapsing to 502,
+  - `trust-task-error/0.x` → 502; the framework refused the envelope, not the
+    task, so it is not an outcome a caller can act on. Matched by prefix: the
+    version floats between 0.1 and 0.2 within one conversation.
+
+## Prerequisite, already shipped
+
+affinidi-webvh-service#155 gave the host's envelope path the anti-replay gate
+its bare-type path already had. Both framings reach the same `dispatch_did_op`
+table, so without it this change would have worked *and* silently dropped replay
+protection for delete, change-owner and register. Merged first, deliberately.
+
+## Tests
+
+Six new tests. The outbound one asserts both halves off `build_outbound`, which
+is what keeps it from being circular — `send_task` destructures that return, so
+restoring the defect means bypassing the function rather than editing an
+argument. Verified against the defect, not just the fix:
+
+```
+assertion `left == right` failed: the DIDComm message must carry the binding's envelope type
+  left: "https://trusttasks.org/spec/did-management/did/check-name/0.1"
+ right: "https://trusttasks.org/binding/didcomm/0.1/envelope"
+```
+
+An earlier draft tested only the document builder and did **not** catch that
+regression; the tests were restructured until they did.
+
+TSP is untouched — it carries document bytes directly, so the envelope belongs
+to the DIDComm binding. `webvh_didcomm` and `trust-tasks-didcomm` are both
+ungated, so the import needs no `#[cfg]`; verified at `--no-default-features` and
+with each of `didcomm`, `rest`, `tsp`, `didcomm,tsp`, `rest,didcomm,webvh,tsp`.
+
+### vta-service 0.14.13 — the last three device pushes carry the envelope type (#903)
+
+#901 fixed the consent-request push and named three sites it had not reached.
+This is those three. Same defect, same binding rule, same silence: the DIDComm
+message carried the **task** type where `trust_tasks_didcomm::ENVELOPE_TYPE` is
+required with the `TrustTask` in the body, and a conformant peer rejects that
+without saying so — "not an envelope" is indistinguishable from "not addressed
+to me".
+
+| site | protocol family | what the breakage cost |
+|---|---|---|
+| `push_granted` | `task-consent/*` | a requester waits for its next poll instead of re-submitting at once |
+| `maybe_push_step_up` | `auth/step-up/*` | **delegated step-up approvals never reached the device** |
+| `maybe_wake_consent_approver` | `consent/*` | a `wake`-routed approver is never roused |
+
+## The one that mattered
+
+`maybe_push_step_up` had been broken the entire time and nothing surfaced it.
+The reject still carries the `approveRequest` as a relay fallback, so the
+ceremony completes by the slow route while the proactive push lands in a void —
+delivered, acked, unreadable. A push whose only failure mode is *latency* is a
+push nobody notices is dead.
+
+## Protocol family, confirmed rather than assumed
+
+`consent/approve-request/0.1` belongs to **`spec/consent/*`** — the conversation
+consent family (`request` / `decision` / `revoke` / `list`, all `1.0`) — not to
+`spec/task-consent/*`, which is the per-task RP→wallet family `consent_request.rs`
+serves. The distinction does not change the fix: neither family puts its task
+type on the DIDComm envelope, because the envelope belongs to the binding, not
+the task.
+
+## Also
+
+`STEP_UP_APPROVE_REQUEST_TYPE` was the DIDComm message type *and* the document
+type. Now it is only the document type — and `mint_pending_step_up` reads the
+constant instead of repeating the literal, so the two cannot drift. Its
+`#[cfg(feature = "didcomm")]` gate came off with that move: the mint site is not
+DIDComm-specific.
+
+TSP is untouched, deliberately. It carries the document bytes directly
+(`serde_json::to_vec(doc)` → `send_routed`), so the wrapper is a property of the
+DIDComm binding. Every `ENVELOPE_TYPE` import is `#[cfg]`-gated to the feature
+combination that actually sends over DIDComm, so reduced builds neither break nor
+carry an unused import.
+
+## Tests
+
+Four new tests, each asserting the **envelope on the message** and the **task
+type inside the document** — the shape #901 established when it un-pinned
+`a_resubmit_re_asks_nobody`. Verified to actually catch the defect: reinstating
+the old `message_type` on the step-up push fails
+`delegated_step_up_push_is_an_envelope` with the task URI on the left and the
+envelope URI on the right.
+
+`vta-service` compiles clean at `--no-default-features` and with each of
+`didcomm`, `rest`, `tsp`, `didcomm,tsp`, `rest,didcomm,webvh,tsp`.
+
+### vta-sdk 0.21.7 / vta-service 0.14.12 / vti-common 0.11.35 — the workspace builds again, and keeps building under reduced feature sets (#902)
+
+Four independent build breaks, all of the same shape: a feature combination or a
+dependency edge nobody compiles routinely, so nothing caught the drift.
+
+## `--features tsp` stopped resolving `TspWebSocket` and `atm.tsp()`
+
+`vta-sdk` and `vta-service` each take a **direct** `affinidi-messaging-sdk`
+dependency purely so their own `tsp` feature can flip
+`affinidi-messaging-sdk/tsp` — the toggle that gates `atm.tsp()` and
+`TspWebSocket`. `affinidi-tdk/tsp` does not flip it. The comment at the pin says
+so explicitly, and adds the load-bearing assumption: *"Cargo unifies to one
+instance, the one `affinidi_tdk::messaging` re-exports."*
+
+That unification stopped holding. `affinidi-tdk` 0.8.5 moved to
+`affinidi-messaging-sdk` 0.19, while both pins still read `"0.18"` — two
+semver-incompatible units in one graph, with independent feature sets. The
+`tsp` feature flipped `tsp` on the 0.18 copy; the source names
+`affinidi_tdk::messaging::TspWebSocket`, which is the 0.19 copy, whose `tsp`
+feature nothing enabled. rustc said it plainly — *"found an item that was
+configured out"* — for a feature the manifest appears to turn on.
+
+Pins move to `"0.19"` (`vta-sdk`, `vta-service`, `tests/e2e`), restoring the one
+instance the comment assumed. `affinidi-messaging-didcomm` goes to 0.15.8 with
+it: 0.19.1 needs `jws::verify::{parse_jws, verify_parsed_signature, VerifyKey}`,
+which 0.15.6 does not export.
+
+The lockfile still carries a 0.18 copy behind
+`affinidi-messaging-test-mediator` → `affinidi-messaging-mediator`. That is a
+**dev**-dependency chain, a separate unit, and does not reach either library
+build.
+
+## `--no-default-features` named a value that was configured out
+
+`server.rs` builds `app_state` under `#[cfg(any(feature = "rest", feature =
+"didcomm"))]` — `build_app_state` is what constructs the policy keyspace — but
+the two policy-bootstrap calls that read `app_state.policy_ks` carried no gate,
+so a build with neither transport failed on an undefined name. They now sit
+inside the same gate.
+
+## `--features tsp` alone could never have worked
+
+In `vta-service`, TSP is not a standalone transport: `messaging::tsp_inbound`
+and `messaging::tsp_reach` live inside the `didcomm`-gated `messaging` module,
+because TSP receive arrives on the **DIDComm pickup socket** rather than opening
+a second one (ADR 0005 — one websocket per DID). `tsp` therefore requires
+`didcomm`, and now declares it.
+
+`vta-sdk/tsp` is deliberately left standalone: its `TspPingSession` is a real
+TSP-only client that owns its own socket, and it builds on its own.
+
+## `UnpackMetadata` went `#[non_exhaustive]`
+
+Carried in by the `affinidi-messaging-didcomm` 0.15.8 bump above, and only
+visible when *test* targets compile: a `vti-common` test helper built
+`UnpackMetadata` with a struct expression. `#[non_exhaustive]` bars that form
+outside the defining crate, and a `..Default::default()` tail does not exempt it.
+The helper now mutates a `Default` field by field — which is also the shape that
+survives the upstream adding another field, the point of the attribute.
+
+## Plaintext-envelope rejection moved one layer earlier
+
+Also carried in by 0.15.8, and a strengthening rather than a regression: `unpack`
+now refuses a `Plaintext` envelope outright ("not in the accepted set
+[AuthcryptPlaintext, …]") before `bind_authcrypt_sender` is reached. The forged-
+plaintext tests in `vta-service` and `vtc-service` asserted the 401 was
+attributable to *our* guard by matching its message, so they failed on the new
+wording while the behaviour they exist to protect — 401, no token issued — was
+unchanged throughout.
+
+They now accept either attribution, and gained an explicit assertion that the
+401 did **not** come from the `ATM not configured` short-circuit — which was the
+real intent of the original message match, and was previously only implied.
+Our guard is unchanged and still covers the envelopes the library does accept.
+
+## Verified
+
+`vta-service` compiles at `--no-default-features` and with each of `didcomm`,
+`rest`, `tsp`, `didcomm,tsp`, and `rest,didcomm,tsp,webvh`; `vta-sdk` at
+`--no-default-features`, `--features tsp`, and `--all-features`; the workspace at
+`--all-features`, and every workspace **test** target compiles — which is where
+the `UnpackMetadata` break hid.
+
+### vta-service 0.14.11 — the DIDComm envelope type comes from the binding crate (#900)
+
+A consent request pushed to an approver device was delivered, acked, and then
+discarded unread. The DIDComm message carried the **task** type
+(`task-consent/request/0.1`) where the binding requires the **envelope** type
+(`binding/didcomm/0.1/envelope`) with the `TrustTask` in the body. A conformant
+peer rejects that — and rejects it *silently*, because "not an envelope" is
+indistinguishable from "not addressed to me".
+
+The symptom was a week of nothing: the request arrived on the approver's inbox,
+verified, de-duplicated, and vanished. No prompt, no log, no decision, and the
+mediator's queued copy already deleted by the ack.
+
+## Why it drifted
+
+The envelope URI was hand-written in **four** places across the workspace, each
+with a comment explaining it was a local copy "to avoid taking a dependency on
+the binding crate for one constant". Nothing connected `consent_request.rs` to
+the binding it was supposed to implement, so it used the task type and no
+compiler, test, or reviewer noticed.
+
+`trust-tasks-didcomm` is now a real dependency and
+`trust_tasks_didcomm::ENVELOPE_TYPE` is the single source; the four copies are
+gone. The crate that defines the wire format defines the constant.
+
+## TSP is deliberately untouched
+
+The envelope is a property of the **DIDComm binding**, not of the task. TSP
+carries the Trust-Task bytes directly with no wrapper, and the TSP branch of
+`push_one` was always correct. Applying the envelope unconditionally would have
+broken the working transport to fix the broken one — the fix is confined to the
+two DIDComm sites (the mediator buffer and the guaranteed send).
+
+## The test was pinning the defect
+
+`a_resubmit_re_asks_nobody` asserted `message_type == TASK_CONSENT_REQUEST_0_1`
+— the task type on the wire, which is exactly what a conformant peer refuses. It
+now asserts the envelope on the message and the task type inside the document,
+which is the actual invariant.
+
+## Known remaining, not in this change
+
+Same defect, same peer, to be fixed together: `push_granted`
+(`TASK_CONSENT_GRANTED_0_1`) and `maybe_push_step_up`
+(`STEP_UP_APPROVE_REQUEST_TYPE`) — **step-up approvals to a device are broken
+identically** and have not been noticed. `consent.rs`'s
+`CONSENT_APPROVE_REQUEST_TYPE` needs its family confirmed.
+
+Separately, `webvh_didcomm.rs` sends bare task types to the webvh host and
+*works*, so that peer accepts them. Converting it is a cross-repo wire migration,
+not a cleanup, and must not be swept in.
+
+### vti-common 0.11.34 / vta-service 0.14.10 — see what a Guaranteed send actually did (#899)
+
+A durable send that never reached its mediator was indistinguishable, from the
+outside, from one that arrived. `send_guaranteed` returns the moment the outbox
+entry is written; the three delivery loops that move it afterwards
+(`drain_loop`, `outbox_drain_loop`, `confirmation_loop`) logged nothing. So the
+whole state machine — `Queued → Sent → Delivered | Unconfirmed | Failed` — ran
+in silence, and a message that settled `Unconfirmed` after its `deliver_by`
+elapsed produced no output at all.
+
+This is not hypothetical. Diagnosing a live "the approver is never notified"
+report reached the point where the sender logged a correct push (#898: right
+approver, right mediator, right transport), the recipient's inbox was confirmed
+listening on the right DID, and the message still never appeared. Establishing
+that it had never reached the mediator took manually SHA-256'ing DIDs to match
+the mediator's hashed recipient records against the VTA's plaintext ones.
+
+## What changed
+
+**`VtiOutboxStore::put` logs every transition.** It is the single point every
+state change passes through, so one log site covers the entire lifecycle.
+`Unconfirmed` and `Failed` are `warn` — they mean the send is over without
+confirmed delivery — and the rest are `info`. An operator scanning for trouble
+should not have to know the state machine to spot a message that never arrived.
+
+Each line carries `dest_hash = sha256(dest_did)` alongside the plaintext DID.
+The mediator records recipients as hashed DIDs, so this is the field that makes
+a sender log line greppable against a mediator one, instead of the hand-hashing
+described above.
+
+**`send_guaranteed` stops discarding the message id.** It was bound as
+`_msg_id`, leaving nothing to correlate a send against — not the outbox entry,
+not the mediator's record, not the recipient's. It now logs `msg_id`,
+recipient, type, `deliver_by` and idempotency key *before* the enqueue, so an
+enqueue that fails still names what was being sent and to whom.
+
+## Note on expiry
+
+Deliberately unchanged: neither transport carries a message expiry. DIDComm's
+`expires_time` is not set (see the comment in `send_guaranteed` — `deliver_by`
+bounds hop-retry, not content validity, because a held push must stay
+collectable until the request's own `expiresAt`), and the TSP envelope has no
+expiry field at all. Expiry for consent requests is application-level:
+`task-consent/request/0.1` carries `expiresAt`, and the executor holds the
+authoritative `PENDING_TTL_SECS`.
+
+## Scope
+
+Instrumentation only — no behaviour change, no wire types, no config. Same
+sends, same recipients, same delivery semantics; the difference is that the
+outcome is now on the record.
+
+### vta-service 0.14.9 — say when an approver is not notified (#898)
+
+A consent request the VTA decides not to push produced **no output on a normal
+deployment**. The skip was `tracing::debug!`, so at INFO the log showed a
+perfectly healthy sequence — `pending:raised`, requests minted and signed, a 422
+back to the caller — with nothing to indicate that no device had been told.
+
+From the outside that is indistinguishable from a device that is simply asleep,
+and the two have opposite fixes: one is a config error on the VTA, the other is
+a client that needs to reconnect. Diagnosing a real "nothing pops up" report
+against production logs came down to guessing between them, because the one line
+that decides it was compiled to a level nobody runs.
+
+## What changed
+
+- The no-route skip is now `warn`, and says what it means: the approver will not
+  learn of this request unless the **requester** relays it — which a CLI cannot
+  do to a browser extension. It also reports the configured mediator, since a
+  `did:key` approver routes via the VTA's own `[messaging] mediator_did` and an
+  unset one is the most likely cause.
+- A successful push logs at `info` with the approver DID, the mediator and the
+  transport. "Who did we notify, and how?" was previously unanswerable from a
+  normal log — the approver DID appeared nowhere, so an approver-set entry
+  pointing at a stale device DID looked identical to a working push.
+
+The push log is emitted *before* the enqueue rather than after. The enqueue is
+the last thing this service controls; beyond it the message is the mediator's to
+hold and the device's to collect, and silence there is not ours to claim either
+way. What must be on the record is that we tried, to which DID, over which
+mediator — so a missing prompt can be attributed to a side instead of argued
+about.
+
+## Not changed
+
+`push_granted`'s equivalent skip stays at `debug`. That notice is explicitly
+best-effort and non-load-bearing — the requester re-submits regardless and the
+single-use grant is the real gate — so a lost one costs a poll cycle, not an
+approval. Raising it would add noise without adding a decision anyone acts on.
+
+No behaviour changes: the same requests are pushed to the same approvers by the
+same routes. This only makes the existing decision visible.
+
+### vta-sdk 0.21.6 / vta-cli-common 0.10.24 / vta-service 0.14.8 — a CLI can answer a consent gate (#897)
+
+A `requireConsent` rule made the task it gates unreachable from the command
+line. `pnm` printed
+
+```
+✗ Protocol error: trust task failed [taskFailed]: task failed: auth:consent_required
+```
+
+and exited. No digest, no instruction, no way to proceed — so an operator whose
+policy gated `webvh/dids/update` could not manage those DIDs from the CLI at
+all, however privileged. The browser extension implemented the approval loop;
+nothing in Rust did.
+
+A consent refusal is not a dead end. It is a question the VTA is holding an
+answer for, and everything needed to answer it was already on the wire — the
+SDK was throwing it away.
+
+## The refusal is now something a caller can act on
+
+`trust_task_error` folded every rejection into `VtaError::Protocol(String)`,
+discarding `details`. `VtaError::ConsentRequired` now carries `payload_digest`,
+`challenge`, `approver_set`, `min_approvals` and `exclude_requester`.
+
+Detection keys on `details.reason`, which is where the gate puts the
+machine-readable answer precisely so consumers do not key on the top-level
+`code` (`taskFailed` for every gated task) or the free-text message.
+
+## `excludeRequester` is now reported
+
+The gate knew whether the requesting device may approve its own request and did
+not say. Without it a CLI must blind-attempt a self-approval and read
+`denied:requester_excluded` back, so it cannot tell the operator whether to
+approve *here* or on *another device* — the one thing they need to know. The
+field is added to the rejection details.
+
+This reveals policy shape to a caller that has already authenticated and just
+triggered the rule. It grants nothing; the gate still decides every approval.
+The SDK defaults it to `true` when absent, so an older server produces "use
+another device", which is correct wherever a second device exists.
+
+## Waiting, without turning a refusal into a nag
+
+`vta_cli_common::consent::with_consent` wraps a submit and waits. Shared with
+the offline `vta` binary so both CLIs behave identically.
+
+There is no read-only status surface for task-consent, so "approved yet?" can
+only be asked by submitting again — and whether that is safe depends on state
+in a way that is easy to get wrong:
+
+- **Pending**: the gate recognises the payload, returns the *same* `challenge`,
+  and deliberately does not re-notify. The push follows the question, not the
+  submit. Polling cannot ring the approver's device.
+- **Denied or lapsed**: the pending record is **deleted**. The next submit finds
+  nothing, raises a *new* question, and pushes again.
+
+So the loop stops the instant the challenge changes. Continuing would convert a
+"no" into repeated prompts — the habituation attack the gate's own design notes
+call out, where a prompt an attacker can summon on demand is worth more than one
+they must wait for. One re-prompt after a denial is unavoidable without a
+server-side status task; an unbounded stream is not.
+
+The timeout is bounded because an operator is sitting at a terminal, and giving
+up is not failure: the request stays pending, so re-running resumes on the same
+challenge.
+
+## Testing
+
+- Five loop cases: approval lets the task through; an ungated task submits
+  exactly once; **a changed challenge stops the loop** (asserting the call count,
+  so a regression that keeps polling fails); the wait is bounded; a non-consent
+  error propagates instead of reading as "still waiting".
+- Three SDK cases from the gate's real rejection shape: the refusal carries what
+  answering needs; an absent `excludeRequester` defaults to the restrictive
+  reading; a non-consent failure with a `details` object stays a `Protocol`
+  error, so the new variant cannot swallow unrelated rejections.
+
+Note the SDK tests need `--features client` — the module is feature-gated, and
+without it they compile out and pass vacuously. `--lib` alone reported an
+unchanged 239.
+
+## Scope
+
+Remote approval only: the CLI shows the code and waits for a device. Letting the
+CLI approve its own request needs a `task-consent/decision/0.1` signer, which
+exists in no client crate; that is the single-operator posture
+(`exclude_requester = false` with the CLI's DID in the approver set) and is
+tracked separately. Wired into `did-mgmt dids edit` here; the helper is generic
+and other gated commands can adopt it.
+
+### vta-service 0.14.7 — a DID with no confirmed-publish marker is no longer wedged (#896)
+
+#894 unwedged DIDs whose local head had run ahead of the host, but only when
+the confirmed-publish marker matched what the caller read. It left the case
+that marker is *absent* still refusing — and absent is not rare, it is what
+every DID carried until its first successful update. A DID in that state was
+still uneditable through the admin UI, which is the surface that actually
+implements the consent flow, so there was no route out at all.
+
+## The marker was never written outside the update path
+
+`set_published_version` had exactly two call sites, both in the update
+orchestrator. Creation published the genesis log to the host and recorded
+nothing; register-with-server pushed the log and recorded nothing. So "absent"
+conflated two states that need opposite treatment — *hosted since creation,
+host has our log* and *we have never confirmed a publish*.
+
+Both publish sites now record what they published. Serverless creation
+deliberately still does not: there is no host to confirm against, and its
+marker is legitimately always absent.
+
+## The precondition, stated properly
+
+Step 4a now refuses only when the caller is genuinely stale. It excuses a
+mismatch when **all** of:
+
+- the DID is **hosted** — serverless has no host, so the local head is the only
+  truth and a mismatch really is a stale caller;
+- `expected` **names an entry in our own chain**, so the caller read a real
+  past state rather than a value we never issued; and
+- **nothing after it reached the host** — the marker is `expected`, or absent.
+
+Absent has to count. The marker is written only on a successful publish, so a
+genuine concurrent update would have set it; its absence alongside a moved
+local head means a publish that never landed — the wedge itself. Seeding the
+marker at the two publish sites makes absence rare going forward, but DIDs
+already in the field have none, and they are exactly the ones stuck today.
+
+The rule is extracted to `caller_is_merely_ahead_of_an_unpublished_head` so it
+can be pinned as a truth table rather than inferred from control flow. Getting
+it wrong is costly in both directions: too strict wedges a DID permanently
+(the reconciler that would heal it sits *below* the check that refuses), too
+loose silently drops the lost-update protection the check exists for.
+
+## Testing
+
+Five cases, one per branch of the rule:
+
+- `a_caller_in_step_with_the_confirmed_publish_is_not_stale` — the #894 case.
+- `an_absent_marker_counts_as_nothing_published_beyond` — the case #894 missed.
+- `a_caller_behind_the_confirmed_publish_is_still_stale` — the protection the
+  check exists for, so the relaxation cannot become "precondition deleted".
+- `a_version_absent_from_our_chain_is_never_excused` — an invented version is
+  not a past state anyone could have read.
+- `a_serverless_did_is_never_excused` — both marker states.
+
+The integration coverage from #894
+(`a_caller_pinned_to_the_host_version_recovers_a_failed_publish`,
+`a_stale_caller_still_conflicts`) continues to pin the end-to-end paths.
+
+## Note on the register-with-server marker write
+
+Best-effort, and deliberately so: by that point the DID is registered on the
+host and the local record already flipped to hosted, so failing the operation
+over a bookkeeping write would undo nothing while reporting failure for work
+that succeeded. An absent marker is a state the update path now handles.
+
+### vta-sdk 0.21.5 / vta-service 0.14.6 — a partial webvh DID edit no longer serialises nulls the schema refuses (#895)
+
+`pnm did-mgmt dids edit --did <DID> --label resync --no-confirm` could not run
+at all:
+
+```
+✗ Protocol error: trust task failed [malformedRequest]: malformed request:
+  payload does not conform to https://trusttasks.org/spec/vta/webvh/dids/update/1.0:
+  payload failed schema validation: null is not of type "object";
+  null is not of type "string"; null is not of type "integer";
+  null is not of type "integer"; null is not of type "array"
+```
+
+`UpdateDidWebvhBody` carried **no** `skip_serializing_if`, so every field the
+caller did not set serialised as an explicit `null`. The published schema types
+each optional member by what it holds — object, string, integer, array — and
+none of them are nullable, so the payload was refused once per unset field.
+
+This was not specific to `--label`. Every partial edit failed, and adding flags
+did not help: each one removed a single null and left the rest. The documented
+non-interactive edit path did not work over the trust-task transport for any
+combination of arguments.
+
+Every sibling body in `did_management` already skipped its `None`s — `create.rs`
+in 22 places, `servers.rs` in 6, `list.rs` in 2. `update.rs` was the sole
+outlier at zero. `UpdateDidWebvhBody` and `RotateDidWebvhKeysBody` now skip
+theirs, nine fields in total. `UpdateDidWebvhResultBody` has no optional members
+and is unchanged.
+
+## Why the existing tests did not catch it
+
+Both of the obvious guards look like they cover this, and neither does.
+
+The **conformance sweep** validates each witnessed task against its *generated
+type*, and its `vta/webvh/dids/update/1.0` fixture sets every member. A fully
+populated payload has no nulls to reject — and even a null-bearing one would
+have passed, because `null` deserialises happily into `Option::None`. The sweep
+tests the generated types; only the JSON-Schema validator types the members.
+
+The **round-trip tests** serialise and deserialise the same struct, so a null
+written on the way out is read straight back as `None` on the way in. That is
+symmetric and wrong in exactly the way that survives a round trip.
+
+## Testing
+
+- `a_partial_edit_from_the_cli_validates` drives the CLI's real payload —
+  **serialised from `UpdateDidWebvhBody`, not hand-written JSON** — through
+  `validate_payload`. A literal would only encode what the author believed the
+  type emits, which is precisely the gap that produced the bug.
+  **Verified by mutation**: reverting the `skip_serializing_if` attributes fails
+  it on the no-nulls assertion.
+- `the_null_form_that_broke_the_cli_is_still_refused` puts the nulls back by
+  hand and asserts the refusal, so the test above pins the serialisation rather
+  than a schema that stopped typing its members.
+- `an_unset_field_is_absent_from_the_wire_not_null` pins the wire shape at the
+  SDK layer, including that an empty body is `{}` rather than seven nulls.
+- `a_set_field_still_reaches_the_wire` guards the other direction: `Some(0)`
+  (disable pre-rotation) and `Some(vec![])` (disable watchers) are meaningful
+  values, not absences, and must survive the skip.
+
+## Context
+
+Third defect found in this flow, after #894's two. The first two wedged updates
+that had already diverged; this one blocked the CLI path an operator would use
+to *recover* from that state.
+
+### vta-service 0.14.5 — an unpublished local head no longer wedges every future update (#894)
+
+A `did:webvh` DID could reach a state where **every** update failed, permanently,
+with `concurrent update: … has been updated since you read it`. Observed in
+production on `webvh.storm.ws`: an agent-name bind published a version the host
+never received, and from then on the admin UI could neither show the new version
+nor bind the name, retry after retry.
+
+Two independent defects, one of which was hiding the other.
+
+## 1. The reconciler sat below the check that made it necessary
+
+`run_update` does its optimistic-concurrency check (step 4a) *before* the
+reconciler that heals a failed publish (step 4b). Those two steps disagree about
+what the caller's `expectedVersionId` means.
+
+The caller reads that version from the **host**. 4a compares it against the
+VTA's **local** log head. Those are the same value right up until a publish
+fails — at which point the local head advances and the host does not, and the
+comparison starts calling the caller stale for correctly reading the only thing
+it can see.
+
+Refusing there is what makes the state permanent. Step 4b exists precisely to
+re-publish an unconfirmed local head, and its own comment says so: *"That is
+what makes a failed attempt self-recover instead of wedging the DID."* It never
+ran, because 4a returned first. Every retry died in the same place.
+
+The consent flow makes it worse. There the refusal is raised by the **Plan**
+dry-run, and 4b is `Mode::Execute`-only by design — a plan must not mutate. So a
+delegated update could not self-heal even in principle: the task never got far
+enough to try.
+
+4a now consults `get_published_version` before declaring a conflict. If the
+caller matches the last version we *confirmed* on the host, the caller is not
+stale — we are — so the update proceeds and 4b reconciles. This grants no new
+authority: the unpublished head was already signed under a prior authorization,
+so it resumes an interrupted publish rather than smuggling in an unapproved
+change.
+
+The precondition is unchanged where it earns its keep. `None` (never confirmed)
+still conflicts, because nothing proves the caller read anything real, and
+serverless DIDs never set the marker — with no host, the local head is the only
+truth and a mismatch really is a stale caller. `a_stale_caller_still_conflicts`
+pins that.
+
+## 2. REST silently dropped the precondition entirely
+
+`update_did_handler` deserialised the request body straight into the op-layer
+`UpdateDidWebvhOptions`. That struct is snake_case with no aliases; the wire body
+`UpdateDidWebvhBody` is `rename_all = "camelCase"`. A caller sending
+`expectedVersionId` — every SDK caller — matched no field, and with no
+`deny_unknown_fields` nothing rejected it. It defaulted to `None`: **the
+optimistic-concurrency precondition never applied to any REST update.**
+
+This is the same defect `the_concurrency_precondition_is_read_from_the_wire`
+was written to pin. That test fixed the SDK type; the REST route kept its own
+shortcut and stayed broken. The doc comment on `UpdateDidWebvhOptions` already
+said route handlers "deserialise the SDK body and convert to this struct at
+intake" — the route simply wasn't doing it.
+
+It now takes `UpdateDidWebvhBody` and converts via the same
+`update_body_to_options` the trust-task dispatcher uses. One conversion, so the
+two paths cannot drift.
+
+A silently-ignored safety precondition is worse than an absent one: it reads, in
+the caller's source, as though the lost update were handled. Per R3.6, a request
+contract includes what you ignore.
+
+## Testing
+
+- `a_caller_pinned_to_the_host_version_recovers_a_failed_publish` reproduces the
+  production wedge: land an update, fail the next publish, then re-submit pinned
+  to the host's version the way the admin UI does. **Verified by mutation** —
+  reverting the 4a change fails it with the exact `concurrent update` error.
+- `a_stale_caller_still_conflicts` pins the other side, so the fix cannot
+  quietly become "the precondition was deleted".
+- The pre-existing `a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers`
+  passed throughout — it sends no `expectedVersionId`, which is exactly why the
+  wedge survived it. That gap is now covered.
+
+Note that defect 2 was masking defect 1 in the test suite: until REST forwarded
+the field, no integration test could reach 4a at all.
+
+### vta-sdk 0.21.4 / vta-service 0.14.4 — `keys/import` is canonical on every transport, because the dispatcher now knows its own transport (#893)
+
+The last first-party legacy send is gone. `import_key` sends canonical
+`keys/import/0.1` for **every** carrier, on REST, DIDComm and TSP alike.
+
+## The path this replaces was dead, not deliberate
+
+The cleartext `privateKeyMultibase` carrier forked onto the legacy
+`key-management/1.0/import-key` message, justified as preserving a capability on
+the transport where authcrypt makes cleartext safe. **The VTA has never routed
+that type** — it is absent from `messaging/router.rs` — so the call failed with
+`unsupported message type` over DIDComm, and REST refuses the field outright.
+Multibase import worked nowhere. The fork preserved nothing; it was asserted from
+the client side without checking the router.
+
+## The rule was always right; the VTA could not evaluate it
+
+The published spec says a custodian must refuse cleartext *"unless the transport
+provides end-to-end confidentiality"*. One spine serves the Trust-Task surface
+over REST, DIDComm and TSP and discarded the transport before any handler ran, so
+the only safe reading was a blanket refusal — over-refusing on precisely the two
+transports where cleartext is safe.
+
+`vta-service/src/trust_tasks/transport.rs` records what the transport
+guarantees, set at the three entry points that know it:
+
+| transport | guarantee | why |
+|---|---|---|
+| DIDComm | end-to-end | authcrypt seals to this VTA's key; the mediator never holds plaintext |
+| TSP | end-to-end | seals to the recipient VID |
+| REST | hop-by-hop | TLS terminates wherever the operator terminates it — a load balancer, an ingress — and the plaintext exists there |
+
+`keys/import` then applies the specification's actual rule.
+
+## Two decisions worth reviewing
+
+**A task-local, not a handler parameter.** The dispatch table has 157 entries
+sharing one signature. Threading a parameter through all of them to serve one
+handler would be a large mechanical diff that buries the single call site that
+matters. It is set in exactly one place (`dispatch_trust_task_core`) and read in
+exactly one (`keys::handle_import`).
+
+**The default is the restrictive one.** Outside a dispatch scope,
+`transport::current()` reports hop-by-hop. A future entry point that dispatches
+without establishing the scope therefore refuses cleartext rather than accepting
+it: a wiring mistake costs a working import, not a leaked key. That direction is
+pinned by a unit test.
+
+## Testing
+
+- `keys_import_trust_task_refuses_cleartext_over_rest` posts the task to
+  `/api/trust-tasks` and asserts both the refusal and its reason.
+  **Verified by mutation**: with the gate disabled the request proceeds past it
+  and the assertion fails, so the test pins the gate rather than passing
+  incidentally.
+- `multibase_import_key_via_didcomm_uses_the_canonical_task` pins the accepting
+  side, with a fixture carrying `origin: "imported"` so a broken mapping cannot
+  pass.
+- The scope's default and non-leakage are unit-tested in `transport.rs`.
+
+## Where the legacy surface stands
+
+No first-party call sends a legacy protocol message on any default path. What
+remains on `rpc` is deprecated and reachable only by explicit opt-in: the inline
+`backup_export`/`backup_import` behind `--use-rest-legacy` (removed at rollout
+step 6), and the `(context_id, scid)` webvh update pair, which has no first-party
+caller at all.
+
+### vta-sdk 0.21.3 / pnm-cli 0.11.18 — backup defaults to the descriptor flow, and CI stops restoring other jobs' caches (#892)
+
+## CI: no job restores another job's cache
+
+`Test` failed on #891 with `No space left on device` — reported from the runner's
+*own* log writer, so there was no failing step and no job log, only a red job that
+reads exactly like a code failure. The successful rerun logged the cause:
+
+```
+Cache Size: ~2962 MB
+Cache restored from key: Linux-cargo-features-74bb9c97…
+```
+
+`Test` missed its own cache keys, fell through to the shared
+`${{ runner.os }}-cargo-` fallback, and unpacked ~3 GB of the **Feature combos**
+job's `target/` before building its own. Almost none of it is reusable —
+different feature sets mean different fingerprints — so it is pure cost: disk,
+and download time. This workspace's `target/` after a full `cargo test
+--workspace` is enormous (196 GB locally), so a job that starts by importing a
+foreign tree is the one that runs out.
+
+The shared fallback is removed from **every** job. Each keeps its own prefix
+(`Linux-cargo-test-` and friends), which is what actually warms a branch build
+from `main`; only the cross-job fallback goes. This is the same fix #884 applied
+to MSRV, now supported by a log line naming the foreign cache — and the same
+shared key that let one fat Enclave cache evict the repo's whole 10 GB
+allowance.
+
+`Test` also prints `df -h /` after the cache restore, so the next occurrence says
+so in one line instead of presenting as an unexplained failure.
+
+## Backup: the descriptor flow is the default
+
+Rollout step 5 of `docs/05-design-notes/backup-descriptor-pattern.md`, whose
+bake-in condition ("one release cycle") has been met several times over.
+`pnm backup export|import` now use the two-phase trust-task flow; the escape
+hatch is `--use-rest-legacy`, which step 6 removes along with the route it calls.
+
+**This corrects something I had wrong.** Backup was described as blocked on the
+descriptor's `chunked-trust-task` algorithm. It is not: the two-phase flow has
+been implemented, tested and CLI-exposed for some time, and only the *byte
+transfer* uses the descriptor's HTTPS URL — deliberately, so a multi-megabyte
+envelope never enters a message envelope. `chunked-trust-task` would move those
+bytes too, which is a refinement, not a prerequisite.
+
+The SDK's inline `backup_export` / `backup_import` are now `#[deprecated]`: they
+ride a legacy protocol message and therefore have no TSP dispatcher at all, which
+is the concrete reason the descriptor flow is the default rather than merely the
+newer option.
+
+## The one remaining first-party legacy send is deliberate
+
+`import_key`'s cleartext `privateKeyMultibase` carrier stays on the legacy
+DIDComm message, because that is the transport where authcrypt has already
+established end-to-end confidentiality — the canonical task refuses cleartext
+precisely because one dispatcher serves REST, DIDComm and TSP and cannot tell
+which carried a request. Sealed and JWE carriers ride the canonical task and
+reach TSP. Both legs are covered by tests, so the fork is a recorded decision
+rather than an unexamined leftover.
+
+### vta-sdk 0.21.2 / vta-service 0.14.3 / vta-webvh 0.1.4 — the domain relay reaches TSP, and stops dropping `createdAt` (#891)
+
+`list_webvh_server_domains` was the last webvh read with no published Trust Task,
+and `VtaClient::rpc`'s TSP arm is an `UnsupportedTransport` error — so it did not
+exist over TSP at all. The spec was authored upstream
+(`trustoverip/dtgwg-trust-tasks-tf` #171, published in `trust-tasks-rs` 0.2.55);
+this binds it.
+
+The response items reference the **existing** canonical
+`did-management/_shared/0.1/domain-entry#DomainEntry` rather than a parallel
+shape. This is one object crossing two hops — operator → VTA → hosting server —
+and an operator comparing the VTA's answer against the server's should not have
+to reconcile two spellings of the same domain.
+
+## The VTA was discarding `createdAt`
+
+Not in the mapping — at its own HTTP boundary. `MyDomainEntry` had no field for
+it, so the host's value was dropped before any VTA code saw it. Canonical
+`DomainEntry` **requires** `createdAt`, so the relayed response was not merely
+thinner than the host's: it could not satisfy the schema it relays into.
+
+The host does send it (`did-hosting-common`'s `DomainEntry.created_at` is a
+required `u64`), so this is recovered information, not invented: parsed, then
+converted from Unix seconds to RFC 3339. An unrepresentable timestamp becomes
+*absent* rather than epoch-zero, which would read as "created in 1970".
+
+## The relay does not re-filter
+
+The hosting server holds the ACL and has already scoped its answer to this
+caller. A second filter in the VTA could only ever *narrow* it, reporting fewer
+domains than the operator may actually use — and the operator would conclude a
+domain is unavailable when the server would accept it. Under-reporting is the
+dangerous direction here, because it silently removes valid choices instead of
+raising an error, so the handler is deliberately transparent and the spec makes
+that a **MUST**.
+
+## Also in this PR
+
+**Removes `ci-test.log`** (492 KB), a GitHub Actions runner log committed by
+accident in #888 — a `curl -o` in the repo root met a `git add -A`. Nothing
+references it. `.gitignore` had no `*.log` coverage at all, which it now does.
+
+**Testing.** The call had no test on any transport before this. Now:
+`vta-sdk/tests/client_rest.rs` covers the REST leg including `createdAt`
+preservation and the empty-list answer (a server the VTA can reach but holds no
+grant on — a true answer, not an error); `tests/e2e/tests/client_didcomm.rs`
+pins the Trust Task; a conformance witness round-trips the payload through its
+generated types, with `createdAt` populated so a witness cannot pass while the
+real relay emits a non-conformant entry.
+
+First-party legacy sends are now down to three, all deliberate or blocked:
+`import_key`'s cleartext-multibase fork (which belongs on authcrypt), and
+`backup_export`/`backup_import`, whose bulk bytes need the descriptor's
+already-declared `chunked-trust-task` algorithm before they can leave HTTP.
+
+### vti-common 0.11.33 / vta-keys 0.2.1 / vta-service 0.14.2 — SLIP-0010 derivation moves in-tree (#890)
+
+`ed25519-dalek-bip32` is gone. The SLIP-0010 Ed25519 derivation it provided now
+lives in `vti_common::slip10`, built on the workspace's own `ed25519-dalek` 3,
+`hmac` 0.13 and `sha2` 0.11.
+
+This is the follow-up #887 named and deferred. That PR moved the workspace to
+`curve25519-dalek` 5 but had to leave `ed25519-dalek-bip32` behind: the crate is
+pinned to `ed25519-dalek` 2, has had no release since 2023-08, and has no v3. It
+was the last first-party holder of the old dalek subtree — two `vta-service`
+sites were passing its `SigningKey` into workspace slots as raw bytes precisely
+because the two `SigningKey` types had silently become different types. That
+type-punning is now gone: derivation produces the same `SigningKey` every
+consumer already uses.
+
+**Derivation output is byte-identical.** This is a compatibility surface with
+every DID the workspace has ever published — a changed byte here means existing
+VTAs fail to re-derive their own keys on restart. Two independent pins:
+
+- The published SLIP-0010 Ed25519 test vectors (both vector 1 and vector 2, all
+  six chain steps each) are reproduced verbatim in the module's tests. The spec
+  is frozen, so these are a permanent oracle.
+- `vta-keys/src/derivation.rs` already asserted hard-coded multibase key strings
+  generated by the old crate (e.g.
+  `z6MkestKNR7EyyB8yojbPcRoG8rF6iX4uXYkyVbDBsM9Fj5i` at `m/44'/0'/0'`). Those
+  tests are untouched and still pass — the workspace's own derived values, not a
+  synthetic comparison.
+
+Path parsing is a faithful reimplementation of `derivation-path` 0.2.0 rather
+than a fresh design, for the same reason: operators have these strings in stored
+key records, so a string that parsed before parses to the same indexes now, and
+one that failed before still fails.
+
+Two deliberate behaviour changes, neither affecting derived output:
+
+- **`Debug` no longer prints key material.** The old crate derived `Debug` on
+  its extended key, so anything that logged one — or a struct containing one —
+  leaked the private key and chain code. Both are now `<redacted>`, and a test
+  enforces it.
+- **A master seed shorter than 16 bytes is rejected** (`Slip10Error::SeedTooShort`)
+  rather than silently accepted. SLIP-0010 specifies 128–512 bits; only the
+  floor is enforced, since rejecting a longer seed would break an existing store
+  for no benefit. Every seed this workspace produces is 32 bytes (random) or 64
+  (BIP-39), so no live deployment is affected.
+
+Intermediate HMAC blocks are now wiped on drop — `zeroize` becomes a
+non-optional `vti-common` dependency (it was gated behind `encryption`), so the
+`encryption` feature no longer lists `dep:zeroize`. No consumer needs a change:
+enabling `encryption` still works, and `zeroize` is simply always present.
+
+**This completes the dalek-3 migration: the duplicate curve25519 stack is
+gone.** #889 moved the `affinidi-*` crates onto dalek 3, which left
+`ed25519-dalek-bip32` as the single remaining consumer of `ed25519-dalek` 2 in
+the whole graph (and `ed25519-dalek` 2 as the single remaining consumer of
+`curve25519-dalek` 4). Removing it takes the entire subtree with it — six crates
+leave `Cargo.lock`, 1004 → 998:
+
+    curve25519-dalek 4.1.3      ed25519 2.2.3
+    ed25519-dalek 2.2.0         ed25519-dalek-bip32 0.3.0
+    derivation-path 0.2.0       fiat-crypto 0.2.9
+
+Every binary in the workspace now links **one** curve25519 implementation. That
+was the actual goal of the #887 → #889 → #890 sequence; this is the last step.
+
+Not yet clean, so nobody goes looking: `sha2` 0.10 and `hmac` 0.12 **remain**,
+via `affinidi-crypto` / `affinidi-data-integrity` / `affinidi-messaging-didcomm`
+/ `affinidi-oid4vc-core` / `affinidi-tsp` plus the RustCrypto 0.13-era
+`k256`/`p256`/`p384`, `hkdf` 0.12 and `rfc6979`. Those are a separate hash/MAC
+generation, not the curve stack, and they move when those crates do.
+
+Also worth recording, since it comes up: the similarly-named `ed25519-bip32`
+crate is **not** a newer version of what was removed. It implements
+BIP32-Ed25519 (Khovratovich–Law, as used by Cardano), which derives different
+key material from the same seed and path and whose extended keys have no 32-byte
+seed to feed `did:key`. Adopting it would re-key every VTA. The module docs say
+so at the top so the question does not get re-litigated.
+
+**`didcomm-test` 0.6.9** picks up a `vti-common` path dependency, which it did
+not previously have, to reach `slip10`.
+
+### vta-sdk 0.21.1 / vta-service 0.14.1 — the keys surface folds onto canonical `keys/*` (#888)
+
+**Breaking.** The VTA now emits the canonical key shapes on **every** transport:
+camelCase members, and the single-record responses (`create`, `show`, `import`)
+wrapped as `{ key }`. Snake_case is still accepted on *intake* via serde aliases,
+so a producer written against the old spelling keeps working — but a consumer
+reading responses must be rebuilt. `pnm` needs a rebuild for `keys` commands.
+
+This is phase D of the canonical-task reduction. The specs were authored upstream
+first (`trustoverip/dtgwg-trust-tasks-tf` #167, #169) and published as
+`trust-tasks-rs` 0.2.53; this binds them.
+
+## What moved
+
+| Was | Now |
+|---|---|
+| `vta/keys/{list,create,get,rename,revoke,sign,derive-and-sign,derive-and-sign-document}/1.0` | `keys/{list,create,show,rename,revoke,sign,derive-and-sign,derive-and-sign-document}/0.1` |
+| *(no task)* | `keys/import/0.1` — new binding |
+
+Nine entries leave `UNSPECCED_DISPATCHED_URIS`, which is the metric that
+programme tracks. `SignAlgorithm` moves to the IANA JOSE spellings (`EdDSA`,
+`ES256`) with the lowercase forms accepted on intake.
+
+## `keys/import` refuses the cleartext carrier
+
+The new task accepts `privateKeySealed` and `privateKeyJwe` and **refuses
+`privateKeyMultibase` outright**. One dispatcher serves the trust-task surface
+over REST, DIDComm *and* TSP, so a handler there cannot tell whether the request
+travelled end to end — and cleartext is admissible only where it did. Refusing is
+the only reading that cannot leak a key.
+
+The client forks on the same line: a sealed or JWE carrier rides the canonical
+task (so it reaches TSP); a raw multibase key stays on the legacy DIDComm
+message, where authcrypt has already established the guarantee. No capability is
+lost, and none moves to a transport that cannot carry it safely.
+
+## What conformance caught
+
+The round-trip harness rejected the first cut of the spec:
+
+```
+keys/create/0.1: request is not canonical: unknown field `mnemonic`
+```
+
+`create_key` has always been able to derive from a caller-supplied BIP-39 phrase,
+and the published schema had no member for it. Binding the task as it stood would
+have compiled cleanly and **silently dropped the capability** — create-from-a-phrase
+would have kept "working" while deriving from the wrong seed. Fixed at the source
+(#169), which is why the dependency is 0.2.53 rather than 0.2.52.
+
+That is the second time in this programme that a hand-rolled client payload has
+been the defect (after `update_acl` in #884), so `create_key`, `list_keys` and
+`import_key` now build their task payloads from the canonical Rust bodies rather
+than a `json!` map. A member that exists in the type but not in the map is a
+compile error; a member that exists in neither is a schema failure. Neither is
+silence.
+
+**Testing.** Nine conformance witnesses — every task in the family round-trips
+through its generated `Payload`/`Response` types. `tests/e2e/tests/client_didcomm.rs`
+pins the canonical envelope and the sealed-vs-multibase import fork, including
+the assertion that the cleartext carrier never rides the canonical task.
+`vta-sdk/tests/client_rest.rs` moves its fixtures to the canonical shape; the
+imported-key fixture carries `origin: "imported"` so a broken mapping cannot pass.
+
+### vta-sdk 0.21.0 / vta-keys 0.2.0 / vta-service 0.14.0 — the workspace moves to curve25519-dalek 5 (#887)
+
+`ed25519-dalek` 2 → 3, `x25519-dalek` 2 → 3, `curve25519-dalek` 4 → 5 and `hpke`
+0.13 → 0.14. These shipped together on 2026-07-06 (hpke on 07-09) and bring the
+next-generation RustCrypto stack with them: rand_core 0.10, signature 3,
+ed25519 3, aead 0.6.
+
+`vta-sdk` was the single reason `curve25519-dalek` 4 could not leave the
+affinidi-tdk-rs graph. It pinned `curve25519-dalek = "4"` directly, plus
+ed25519-dalek 2, x25519-dalek 2 and hpke 0.13, and every TDK consumer inherits
+that through the mediator.
+
+- **`vta-sdk`**: **breaking.** Dalek types sit in public signatures —
+  `protocols::acl_management::swap::build_swap_presentation` takes
+  `&ed25519_dalek::SigningKey` — so callers must move to ed25519-dalek 3 in
+  step. `sealed_transfer::hpke` loses its hand-rolled `OsCsprng` adapter, which
+  existed only to bridge `getrandom` onto hpke 0.13's rand_core 0.9 traits;
+  hpke 0.14 ships OS-CSPRNG variants of `single_shot_seal` / `gen_keypair`
+  backed by `UnwrapErr(SysRng)`, the same panic-on-CSPRNG-failure posture the
+  adapter documented. **The sealed-transfer wire format is unchanged** and the
+  randomness posture is unchanged.
+- **`vta-keys`**: ephemeral X25519 wrapping-key generation moves to
+  `rand::rng()`. rand 0.10 renamed `OsRng` → `SysRng` *and* made it fallible
+  (`TryRng<Error = SysError>`), so it no longer satisfies dalek's `CryptoRng`
+  bound; `rand_core` 0.10 has no `OsRng` at all.
+- **`vta-service`**: two sites passed an `ed25519-dalek-bip32` `SigningKey`
+  straight into a workspace slot. That crate (0.3, last released 2023-08) still
+  pins ed25519-dalek 2 and has no v3, so its `SigningKey` is now a *different
+  type* — they cross the boundary as raw bytes, which is what every other
+  derivation site here already did.
+
+**`ed25519-dalek-bip32` keeps a dalek-2 subtree** in vta-service, vta-keys and
+didcomm-test. It is contained: the crate is absent from `vta-sdk`'s dependency
+tree, so it never reaches TDK consumers. Removing it means reimplementing
+SLIP-0010 ed25519 derivation — security-sensitive, and tracked separately
+rather than folded into a dependency bump.
+
+**Version-pin fan-out.** `vta-sdk`'s minor bump moves the `version = "0.20"`
+requirement every dependent carries, and a changed requirement has to publish or
+the registry keeps resolving the old one. Those crates are otherwise untouched —
+their own APIs do not change — so they take patch bumps: **cnm-cli 0.11.14**,
+**pnm-cli 0.11.17**, **vta-audit 0.1.2**, **vta-backup 0.1.5**,
+**vta-cli-common 0.10.23**, **vta-support 0.2.3**, **vta-tee 0.1.5**,
+**vta-vault 0.1.2**, **vta-webvh 0.1.3**, **vtc-client 0.3.1**,
+**vtc-service 0.11.50**, **vti-common 0.11.32**, **vti-secrets 0.1.9**.
+
+**Sequencing for consuming repos.** `curve25519-dalek` 4 does not fully leave
+this workspace on merge. The `affinidi-*` crates are the other dalek-2 source
+inside `vta-sdk`'s own tree, so the order is: affinidi-tdk-rs publishes its leaf
+crypto crates on dalek 3 (with `affinidi-crypto` going to 0.3.0 — a public
+break, since `PrivateKeyAgreement::X25519` holds an `x25519_dalek::StaticSecret`)
+→ `vta-sdk` 0.21.0 publishes → `affinidi-messaging-mediator` moves its
+`vta-sdk ^0.20.0` requirement to `^0.21` and publishes → the lockfile here drops
+the registry `vta-sdk` node, and dalek 4 with it. Until that third step lands,
+`[patch.crates-io] vta-sdk` no longer applies (mediator 0.18.0 requires
+`^0.20.0`) and the registry copy stays in `Cargo.lock`.
+
+### vta-sdk 0.20.32 / vta-cli-common 0.10.22 — the webvh DID mutations reach TSP (#885)
+
+`VtaClient::rpc`'s TSP arm is an `UnsupportedTransport` error, so a client method
+still on the legacy DIDComm protocol message does not merely risk wire drift — it
+**does not exist over TSP**. #884 moved the ACL slice; this moves the two webvh
+DID mutations, which were the largest remaining pair.
+
+`update_did_webvh_by_did` and `rotate_did_webvh_keys_by_did` send canonical
+`webvh/dids/{update,rotate-keys}/1.0` on every transport, REST included (through
+the trust-task endpoint, leaving the dedicated routes mounted for other
+consumers). The maintainer has served both tasks all along — only the client
+never used them.
+
+**Why they were stranded:** the canonical tasks key on the **DID**, while the
+methods took `(context_id, scid)`. That is not a transport swap, so #861 left
+them behind. Callers already hold the DID — `pnm did-mgmt dids update` was
+fetching the DID record purely to translate it into the pair the method wanted,
+and now keeps that call only for the clean 404 it also provides.
+
+Both bodies flatten *beside* `did` rather than nesting under it, because the
+maintainer reads them back with `serde(flatten)`. A nested body would
+deserialize into an update that changes nothing — published, version-bumped and
+silently empty — so `flatten_with_did` refuses a body that is not a JSON object
+or that already carries a `did`.
+
+The `(context_id, scid)` methods are **deprecated, not removed**: they still work
+over REST and DIDComm, and deleting them would be a breaking change to a
+published crate for no gain. They have no TSP path and will not get one.
+
+## Still not on TSP, and why
+
+| method | blocker |
+|---|---|
+| `import_key`, `list_webvh_server_domains` | No published spec. The dispatcher's own guard (`every_served_uri_has_a_published_spec_or_is_tracked_debt`) refuses a newly-served URI the registry cannot resolve, and says so: author it upstream in `trustoverip/dtgwg-trust-tasks-tf` and bump `trust-tasks-rs` — growing the allowlist is the wrong fix. So these need an upstream spec PR first, not a binding here. |
+| `backup_export`, `backup_import` | Tasks already bound (`backup/{initiate,complete}-export`, `backup/{initiate,finalize}-import`) — but the **bytes** ride an HTTPS blob URL carried in the descriptor, deliberately, so a multi-megabyte envelope never enters a message envelope. A TSP-only client still needs an HTTP leg until the descriptor's already-declared `chunked-trust-task` algorithm exists. That is a design change, not a rewiring. |
+
+**Testing.** `tests/e2e/tests/client_didcomm.rs` pins both new calls as Trust
+Tasks — including that the body's members arrive un-nested, the assertion that
+would fail if `flatten` were dropped. `vta-sdk/tests/client_rest.rs` pins the
+REST leg on `/api/trust-tasks`; the two legacy-route tests remain, under
+`#[allow(deprecated)]`, so the deprecated path stays covered until it is removed.
+
+### vta-sdk 0.20.31 / vta-service 0.13.22 / vtc-service 0.11.49 — the ACL slice speaks Trust Tasks on every transport (#884)
+
+`pnm acl get <did>` against a DIDComm-connected VTA failed with
+
+```
+✗ Error: serialization error: missing field `entry`
+```
+
+while the VTA logged `ACL entry retrieved … status="ok(response)"`. Both were
+right: the maintainer answered, and the client could not read the answer.
+
+**Root cause.** Folding the ACL surface onto canonical `acl/*` (#842, #855) moved
+the REST routes and the Trust Task spine onto the canonical bodies — `{ entry }`,
+`{ entries, truncated, … }` over the shared camelCase `AclEntry` — and moved the
+SDK client with them. The legacy `acl-management/1.0/*` DIDComm handlers were
+folded only partway: `create`, `update` and `revoke` moved, while `get-acl`,
+`list-acl` and `change-role` kept calling the maintainer's **stored** shape
+(`CreateAclResultBody`: flat, snake_case, `did`/`allowed_contexts`). The SDK
+deserializes both transports with the same type, so the same call worked over
+REST and failed over DIDComm. Nothing caught it — each side of that wire is
+tested against its own hand-written fixture.
+
+Three ACL calls were affected over DIDComm, in two directions:
+
+| call | failure |
+|---|---|
+| `acl get` | response `missing field 'entry'` |
+| `acl list` | request rejected (`ListAclBody` is `deny_unknown_fields` and the client sent the pre-fold `context`), response a bare array |
+| `acl change-role` | response `missing field 'entry'` |
+
+**The client now sends Trust Tasks for the whole ACL slice** — `acl/show/0.1`,
+`acl/list/0.1`, `acl/update/0.1`, `acl/change-role/0.1`, joining the `grant` and
+`revoke` that #861 had already moved. The REST leg of each call is byte-identical
+to before; only the DIDComm leg changes shape, and TSP — which carries the
+Trust-Task surface and nothing else — reaches these four calls for the first
+time.
+
+`update_acl` gained back what the legacy leg dropped. It hand-built three members
+of its DIDComm body (`subject`, `label`, `scopes`), so an operator narrowing a
+step-up approver, an approve scope, an expiry or an `allowedKeys` filter over
+DIDComm silently changed none of them and got a healthy-looking entry back. The
+task payload is now the full canonical `UpdateAclBody`.
+
+**Why it cannot drift back.** The stored-shape operations
+(`operations::acl::{get_acl, list_acl, update_acl, change_role}`) are private to
+`operations::acl`. Transports reach them only through the canonical wrappers —
+`show_by_subject`, `list_entries`, `update_from_params`, and the new
+`change_role_by_subject`, which replaces the identical hand-wrapping REST and the
+Trust Task spine each did. A handler that returns the internal shape no longer
+compiles.
+
+The DIDComm handlers keep answering the legacy type URIs with the canonical
+bodies, so an already-installed `pnm` gets working `acl get` and `acl change-role`
+from a VTA upgrade alone; `acl list` needs the rebuilt client, since its old
+request is refused at the maintainer.
+
+## `swap_acl` works again, on all three transports
+
+Self-service key rotation was broken the same way, but everywhere at once: the
+client parsed the canonical entry (`subject`/`scopes`) while REST `/acl/swap` and
+legacy DIDComm both answered the flat stored row and the Trust Task spine
+answered `{ entry, previousSubject }`. Three shapes, one parser, no working
+caller — `missing field 'subject'` on every transport.
+
+It now sends canonical `acl/swap-key/0.1` **everywhere**, over REST through the
+trust-task endpoint rather than the legacy route (which stays mounted, unchanged,
+for the non-Rust consumers reading it). `newSubject` is read from the
+presentation's own `iss` via the new `swap::peek_presentation_holder` — which
+`AclSwapPresentation::peek_holder` now delegates to, so producer and verifier
+cannot disagree about what a proof says. `currentSubject` comes from the DID the
+client sends as (new `VtaClient::caller_did`). Both are declarations the
+maintainer cross-checks against the proof and the authenticated caller.
+
+A REST client has a bearer token, not a DID, so it has nothing to infer the
+swapped-out VID from: `swap_acl` there fails before the request leaves the
+process, naming the additive `swap_acl_for(current_subject, req)` that takes it.
+
+Server-side, the bare-DIDComm `acl/swap-key/0.1` route answered the flat row too,
+so the same canonical URI had two shapes depending on which envelope carried it.
+It now answers `{ entry, previousSubject }` like the spine. The legacy
+`swap-acl` type keeps the flat row — that is its documented contract.
+
+## Sweep of the remaining legacy `rpc` surfaces
+
+`rpc`'s TSP arm is an `UnsupportedTransport` error, so **every method still on it
+is unavailable over TSP** — which is what made this worth auditing rather than
+just fixing the reported call. Findings for the eight that remained:
+
+| method | DIDComm shape | disposition |
+|---|---|---|
+| `swap_acl` | broken (above) | → canonical task, all transports |
+| `update_webvh_server` | agrees | → `webvh/servers/register/1.0`, whose payload is byte-identical to what it already sent (#850 folded add + update into it) |
+| `update_did_webvh`, `rotate_did_webvh_keys` | agree | left: their canonical twins key on `did`, while these take `(context_id, scid)` — moving them is a signature change plus a CLI lookup, not a transport swap |
+| `import_key`, `backup_export`, `backup_import`, `list_webvh_server_domains` | agree | left: no canonical twin exists, and minting task URIs is spec work (VTI #856/#857), not something to do inside a bug fix |
+
+The four left behind are shape-correct over REST and DIDComm and dead over TSP.
+None of them is the defect class this PR fixes; all of them are on the TSP gap
+list.
+
+## Dependency refresh
+
+`cargo update` (69 crates) and `npm update` in `vtc-service/admin-ui` — both
+within the existing requirement ranges, so no `Cargo.toml` or `package.json`
+changed. `vtc-service` is version-bumped because the admin UI is **embedded in
+its binary**: the npm move changes what that crate publishes even though no Rust
+line differs. Two open advisories close as a side effect: `rustls-webpki` 0.103.13
+(high) and `postcss` 8.5.23 plus `react-router` 7.18.2 (high + three medium).
+
+Still open afterwards, and **not** fixable by an in-range update:
+`rustls-webpki` 0.101.7, which arrives through the AWS SDK's legacy `rustls`
+0.21 and needs an `aws-config` feature change rather than a lockfile move.
+
+Twenty direct dependencies remain a major behind, including the crypto core
+(`ed25519-dalek` 3, `curve25519-dalek` 5, `x25519-dalek` 3, `hpke` 0.14,
+`aes-gcm` 0.11, `p256` 0.14, `jsonwebtoken` 11) and `kube` 4 / `rmcp` 3 /
+`uniffi` 0.32 / `azure_*` 1.0. Each needs an API migration through code this PR
+does not otherwise touch — sealed-transfer, DI proofs and auth for the crypto
+set — so they are left for their own changes.
+
+**Testing.** `tests/e2e/tests/client_didcomm.rs` pins each moved call as a Trust
+Task — including the members `update` used to drop, the canonical `scope` filter
+name that replaced `context`, and a `swap_acl` whose `currentSubject` is the
+session's own DID and whose `newSubject` is read out of an SDK-built
+presentation. `vta-sdk/tests/client_rest.rs` pins swap's REST leg on
+`/api/trust-tasks` and the error that names `swap_acl_for`.
+
+### vtc-client 0.3.0 — `submit_join` works: signs its own document, needs no token (#882)
+
+`VtcClient::submit_join` posted the VP-framed body to `POST /join-requests`, a
+route that is **no longer mounted**. The holder-facing join verbs
+(`submit`/`request`, `manifest`, `status`) were folded into the single Trust-Task
+document endpoint `POST /trust-tasks`, routed by document `type`, with the
+holder's `eddsa-jcs-2022` proof as the authentication. #880 stopped it silently
+404ing by returning a typed error naming the replacement; this implements it.
+
+That fold moved the applicant's authentication from "a signature somewhere inside
+the body" to "a proof over the whole document" — which is why the signature grew
+the key:
+
+```rust
+submit_join(&body, applicant_did, private_key_multibase) -> VerdictResponse
+```
+
+**Breaking.** The two extra parameters, and the return type: the server answers a
+Trust-Task request with a `#response` document carrying a `VerdictResponse`
+(`allow` with the VMC + role VEC inline on auto-admit, `refer` when queued for an
+admin, `deny`, `requestMore`), which is not the old `DecideResult`.
+
+- **New `VtcClient::anonymous(base_url, vtc_did)`.** `submit_join` authenticates
+  with the document's own proof, so an applicant — by definition not yet a member,
+  with no token to get — needs a client with no token. Every other method returns
+  `NotAuthenticated`, which beats a 401 from the server.
+- `applicant_did` must be a `did:key` (the server's proof resolver accepts no
+  other method) and is the DID that becomes the member on admission — *not*
+  whatever identity the client may hold a token for. A fleet manager submitting on
+  behalf of a VTA signs with that VTA's key.
+- The document is addressed to the client's `vtc_did`. The VTC enforces
+  `recipient == its own DID`, so a submit signed for one community cannot be
+  replayed into another.
+
+Built on `vta_sdk::trust_task_sign` (#881) rather than a fourth copy of the
+signing logic.
+
+**Testing.** `vtc-service/tests/vtc_client_live.rs` drives the real client
+against a live `MockVtc` through all three server-side gates, each of which was a
+way to get this wrong: the proof verifies under the `did:key` resolver, the
+document `issuer` equals the proven signer (a document signed by one key while
+claiming another as issuer is refused), and the submitted request lands in the
+admin queue attributed to the *signing* DID rather than anything the body claimed.
+
+### vta-sdk 0.20.30 — one holder-signing primitive for Trust Task documents (#881)
+
+Both VTI services authenticate a holder-submitted Trust Task the same way: verify
+its `eddsa-jcs-2022` Data-Integrity proof with a **`did:key`-only** resolver
+(`vti_common::auth::di_proof`) and take the proof's `verificationMethod` DID as
+the proven signer. That is the whole authentication for the VTC's `POST
+/trust-tasks` holder surface (join submit / manifest / status) and for both
+services' canonical REST login.
+
+The *signing* side had been written three times — `auth_di`, the
+provision-client's VP signer, and `vta-mobile-core` — each handling JCS
+presence-sensitivity slightly differently. That is a bad thing to have three of:
+a mistake in it produces a signature that verifies nowhere, and the failure is
+opaque at every call site.
+
+**New `vta_sdk::trust_task_sign`** (feature `client`): `build_unsigned`,
+`sign_in_place`, `build_signed`. It enforces by construction the two invariants
+that are easy to get wrong —
+
+- **Sign the proof-less document.** `eddsa-jcs-2022` canonicalises via JCS, which
+  is presence-sensitive, and the verifier strips `proof` before checking.
+- **Set `recipient`.** SPEC §4.8.2 audience binding rejects a signed document
+  with no in-band recipient; it is also the replay defence that stops a document
+  signed for one community being posted to another.
+
+`auth_di` now builds on it and keeps its public API unchanged, except that its
+signing-failure variants collapse into `AuthDiError::Sign(TrustTaskSignError)` —
+`NotDidKey` / `BadPrivateKey` / `TypeUri` move to the shared error, which renders
+the same text. No behaviour change; the auth suites are unmodified apart from the
+two tests that were purely about the signing primitive and now live beside it.
+
+### vta-sdk 0.20.29 / vti-common 0.11.31 / vta-service 0.13.21 / vtc-service 0.11.48 / vtc-client 0.2.0 — REST auth signs again, and the VTC accepts it (#880)
+
+Every REST client authenticating through the SDK's lightweight tier was failing
+with `authentication failed: {"error":"authentication error: authenticate
+message must be an authenticated (authcrypt) DIDComm envelope"}`. Most visibly
+the VTC setup wizard, which degraded to "Could not reach the VTA to list
+did-hosting servers … the VTA will auto-select one (or self-host)" and skipped
+the server/domain picker entirely — so the operator silently lost control of
+where the community DID gets published.
+
+`auth_light` packed its `auth/authenticate/0.1` message as an **anoncrypt**
+DIDComm envelope (`didcomm_light::pack_auth_message`) and discarded the caller's
+private key: the sender was merely *asserted* in a plaintext `from` header. VTI
+#771 correctly closed that hole by requiring an authenticated (authcrypt)
+envelope on `/auth/` and `/auth/refresh` — which rejects every anoncrypt message,
+so the whole tier had been dead since. It surfaced now because the VTC wizard is
+the one caller with no fallback; `integration::auth::try_rest` had been quietly
+absorbing it by dropping to the heavyweight ATM path.
+
+The fix is the transport the VTA already prefers and tries **first**: a
+`auth/authenticate/0.1` Trust Task carrying the holder's `eddsa-jcs-2022`
+Data-Integrity proof, where the signature *is* the authentication. No mediator,
+no ATM, works against a REST-only VTA, and the key the caller already holds now
+proves the sender instead of a header claiming it.
+
+**vta-sdk**
+
+- **New `vta_sdk::auth_di`** (feature `client`): `sign_authenticate_doc`,
+  `build_refresh_doc`, `parse_auth_response`. `provision_client::auth_rest`,
+  which had the only working copy of this logic, now builds its documents here
+  too — the two transports can't drift apart again.
+- `challenge_response_light` and `refresh_token_light` keep their signatures;
+  callers (`VtaClient` re-auth + auto-refresh, `vtc-client`, the VTC setup
+  wizard, `integration::auth::try_rest`) need no change.
+- Payloads are built from the **generated spec types** (`authenticate::Payload`,
+  `refresh::Payload`) rather than hand-written JSON, so wire casing can't drift
+  (R3.1) and the spec's own validation runs client-side — a short challenge is
+  now a clear local error instead of a 401.
+- **All three REST auth paths now send the `Trust-Task` URL header** —
+  `auth_light`, `provision_client::auth_rest`, and `session::challenge_response`
+  (the authcrypt-DIDComm-over-REST path `cnm`'s VTC backup authenticates
+  through). The VTA ignores it; the VTC gates every route on it and answers 400
+  without it, so its absence made these clients VTC-incompatible at the
+  transport layer regardless of the body.
+- `refresh_token_light` posts an *unsigned* `auth/refresh/0.1` Trust Task: the
+  opaque refresh token is the bearer credential (RFC 6749 §10.4).
+- Both accept either response shape — the Trust-Task `#response` document or
+  flat JSON.
+- The server resolves the proof's verification method with a `did:key`-only
+  resolver, so **`challenge_response_light` now requires a `did:key` holder**
+  and returns `VtaError::Validation` for any other method, refused locally
+  before a round trip. Other methods need `session::challenge_response` over
+  DIDComm authcrypt — the fallback `integration::auth::try_rest` already takes.
+- Conversely the VTA's DID is no longer resolved by the client at all — it is
+  just the document's `recipient` — so the `did:webvh` log fetch that preceded
+  every login is gone.
+- `didcomm_light` is documented as unusable for `/auth/*` and left in place for
+  any consumer packing anoncrypt on a non-auth surface.
+
+**vti-common / vta-service** — the Trust-Task DI-proof verifier moves to
+`vti_common::auth::di_proof`. It had already drifted into two copies inside the
+VTA and a third when the VTC ported it; both services verify the same holder
+proof over the same wire shape, so a divergence between them is a divergence in
+what a signature *means*. `vta_service::auth::di_proof` is re-exported at its
+original path — no VTA call site changes.
+
+**vtc-service** — `POST /auth/` gains the DI-signed Trust-Task login path,
+tried after SIOP and before the DIDComm envelope. A body is claimed only when it
+parses as a Trust Task, carries the authenticate Type URI, **and** has a `proof`
+— the proof requirement is what keeps it from shadowing the SIOP envelope, which
+shares that URI. `/auth/refresh` had grown this path already; login had not,
+which left a client able to *rotate* a token it had no way to obtain.
+
+**vtc-client 0.2.0** — was broken on **every** route, by three independent
+faults that each hid behind the others:
+
+1. `connect` sent the anoncrypt envelope above (fixed by the SDK + the VTC's new
+   login path).
+2. Nothing sent the mandatory `Trust-Task` header, so every call 400'd before
+   reaching a handler. All requests now go through one `tt(...)` helper, with the
+   per-route URLs collected in a `task` module that can be read against the
+   server's router in one pass.
+3. `approve_join` / `reject_join` posted to `/approve` + `/reject` mounts that
+   were replaced by a single `/decide` endpoint carrying the decision in the
+   body, and `submit_join` posted to a route that is **no longer mounted at all**
+   — the holder-facing join verbs moved to the Trust-Task document endpoint.
+
+  Breaking: `reject_join` takes an optional `reason` (the `/decide` body carries
+  it). `submit_join` now returns a typed `VtcError::Unsupported` naming the
+  endpoint that replaced it, rather than issuing a silent 404 — submitting needs
+  the applicant's holder key to sign a Trust Task, which is a different shape
+  from this method's signature and is driven today by `vta-cli-common` /
+  `vta-mobile-core`.
+
+  Its HTTP client also had no timeouts (R1.2) — a blackholed VTC hung the caller
+  forever. It now uses `vta_sdk::http::rest_client`, which is promoted from
+  `pub(crate)` to `pub` so sibling client crates share that one chokepoint
+  instead of each reaching for `reqwest::Client::new()`.
+
+**Regression cover.** The gap that let all of this accumulate was that no test
+ever ran a client and its server together — client tests stubbed the server,
+server tests hand-wrote the request. Three suites now close that:
+`vta-service/tests/auth_flow.rs` and `vtc-service/tests/auth_di_trust_task.rs`
+drive each service's real `/auth/` route with the SDK's own document (login
+succeeds; a challenge swapped in after signing is refused 401; an unsigned
+document falls through rather than being claimed), and
+`vtc-service/tests/vtc_client_live.rs` drives `vtc-client` against a live
+`MockVtc`. A builder that drifts from what the route accepts now fails the
+build rather than an operator's setup run.
+
+### vta-service 0.13.20 / vta-webvh 0.1.2 / vtc-service 0.11.47 — stop sending Trust-Task URIs did-hosting retired in 0.8.3 (#879)
+
+VTC setup against a current VTA failed with `bad gateway: failed to send message:
+transport error: request timed out after 30s`, and the error text sent operators
+to check an ACL that was never the problem. The VTA was sending
+`did-management/did/publish/0.1`, which did-hosting 0.8.3 retired in favour of
+`did/register/0.1` (spec `supersededBy`). The host's DIDComm router has no arm
+for the retired task and its fallback drops an unrouted type *without replying*,
+so every server-managed publish burned the full 30s `send_and_wait` timeout — on
+DIDComm, which is the preferred transport whenever a host advertises both. REST
+was unaffected: `PUT /api/dids/{mnemonic}` kept its handler and was only
+re-identified.
+
+- **vta-service**: the DIDComm `publish_did` now sends `did/register/0.1` with
+  the reserved slot's mnemonic as `path` and `force: false`. On the host, an
+  owner re-registering their own slot is a publish — content replaced in-batch,
+  `version_count` bumped, `created_at` preserved, agent-name registry
+  reconciled. `force` stays false deliberately: forcing is how a *different*
+  owner takes a slot, so a forced publish would turn a real ownership conflict
+  into a silent takeover.
+- **vta-service / vta-webvh**: the agent-name `set` / `enable` / `disable` trio
+  was folded into one declarative `update` carrying `state: active | parked` by
+  the same upstream release, so the VTA's three outbound verbs were hanging 30s
+  on DIDComm and 404ing on REST. Both transports now map onto the host's two
+  remaining tasks through `AgentNameVerb::{host_endpoint,host_state}`. The VTA's
+  own inbound four-verb surface is unchanged — the collapse is a property of the
+  host wire, and an operator parking a name still reads `disable`.
+- **vtc-service**: the setup wizard's failure hint no longer suggests an ACL
+  grant for a transport failure. A hint that names the wrong layer costs more
+  than no hint; unrecognised failures keep the ACL wording, which is usually
+  right.
+
+Operators who cannot yet upgrade can point the VTA's webvh server record at the
+REST transport, or roll the DID-hosting daemon back to 0.8.2.
+
+### Release process — changelog fragments replace direct `CHANGELOG.md` edits (#878)
+
+Feature PRs now add `changelog.d/<PR-number>-<slug>.md` instead of editing
+`CHANGELOG.md`. Every PR previously inserted at the same anchor — the first line
+under `## Unreleased` — so any two concurrent PRs conflicted, structurally and
+every time. Two PRs adding two different files never conflict.
+
+`scripts/collate-changelog.sh` folds the fragments into `## Unreleased` at release
+time (newest PR first, verbatim) and deletes them, as one commit by one author.
+`scripts/check-changelogs.sh` keeps its contract — a bumped publishable crate must
+be named with its new version — and now searches both locations, so only the file
+the entry lives in moved.
+
+Also fixes two latent bugs in that guard: a `cut -f3` against two-column data,
+which made the anti-vacuous-pass check unable to ever fire, and a glob passed to
+`grep` that would have read stdin and hung CI on an empty fragment directory.
+
+No crate versions change; this is release tooling and convention only.
+
+### vta-sdk 0.20.28 / vtc-service 0.11.46 — a community can advertise the registry authoritative for it (#877)
+
+TRQP v2.0 recommends a trust registry be machine-discoverable *"via the
+`authority_id`"* — from the DID document of the authority whose records it
+holds. A VTC **is** the `authority_id` in every tuple evaluated under it, so
+the pointer belongs in the community's own document. Nothing emitted one:
+`trql-client` gained `registry_referral` to *follow* a referral
+(affinidi/affinidi-trust-registry-rs#118) and returns `None` for every document
+in the wild because no producer existed. This is the producer.
+
+- **`vta-sdk`**: `vtc-host` gains an optional `#trust-registry` service entry
+  whose `serviceEndpoint` is `{uri: <registry DID>, profile: <TRQP profile
+  URI>}`. New `did_templates::referral_service` builds it, and owns
+  `TRUST_REGISTRY_SERVICE_TYPE` + `TRQP_PROFILE_URI` — the **single source of
+  truth** for both wire constants, matching `trust-registry`'s own values. The
+  entry rides as the `SERVICE_TRUST_REGISTRY` var through the template's
+  null-pruning slot, so a community with no registry renders byte-identically
+  to before. Built in Rust rather than written into the template JSON because
+  the format's only conditional is whole-array-element pruning, which requires
+  the caller to supply the whole element — the template cannot own a constant
+  it can also omit.
+- **`vtc-service`**: `vtc setup` prompts for the registry DID; `setup --from`
+  takes `registry_did`. Both refuse a non-DID before the first VTA round-trip
+  — a referral is distinguished from a registry advertising its own endpoint
+  by the `uri` carrying a `did:` prefix, so an https URL here would be read as
+  this community serving TRQP itself. Blank reads as "no registry", since
+  templated deploys emit empty strings for unset values.
+- **Docs**: `docs/02-vta/did-templates.md`, `docs/05-design-notes/vtc-mvp.md`
+  §4.4, and the shipped `vtc-setup.example.toml`.
+
+A consuming repo can then configure **one** DID — the community — and resolve
+one hop to its registry, instead of being handed both.
+
+Publishing a referral asserts nothing about authority: anyone may name any
+registry in their own document. Authority flows registry → subject, and
+closing that loop is the client's job (`TrqlClient::referred_by`,
+affinidi/affinidi-trust-registry-rs#122, which lands first for that reason).
+Emitting the entry establishes where to ask and nothing more.
+
+**Fixed at mint time.** A VTC serves a write-once `did.jsonl` and holds no
+update authority over its own log, so changing the referral later needs a
+VTA-side `pnm did-mgmt dids edit` plus redelivering the log by hand — a
+serverless DID's updated log is persisted only in the VTA's store and nothing
+pushes it. Existing communities therefore cannot gain a referral without
+re-provisioning. Automating that redelivery (a VTC-side pull against the VTA's
+public `GET /did/{did}/log`, plus a staleness check in `vtc status`) is the
+natural follow-up and is not included here.
+
 ### vta-service 0.13.19 / vta-config 0.3.0 / vta-backup 0.1.4 / vta-support 0.2.2 / vta-keys 0.1.4 / vta-policy 0.1.2 / vta-tee 0.1.4 — mediator readiness gate + connection supervisor (#876)
 
 Fixes a cold-start race where a freshly deployed VTA could fail to establish its
