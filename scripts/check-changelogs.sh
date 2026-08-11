@@ -12,9 +12,21 @@
 # pin these crates loosely, so a behavioural change is breaking for them even
 # when no signature changes, and CHANGELOG.md is where they find out.
 #
-# The rule: if a publishable crate's VERSION changed in this PR, a changelog
-# entry must MENTION THE NEW VERSION — in the root CHANGELOG.md, or in a
-# fragment under changelog.d/.
+# The rules, in the order they are checked:
+#
+#   1. Fragment filenames are <PR-number>-<slug>.md.
+#   2. A fragment this PR ADDS names this PR — in the filename and in the `###`
+#      heading. (Needs $PR_NUMBER; skipped locally.)
+#   3. A PR does not edit CHANGELOG.md. The release collation is exempt, and is
+#      recognised by its own diff: it deletes the fragments it folds in.
+#      $ALLOW_CHANGELOG_EDIT=1 is the escape hatch for the rest.
+#   4. If a publishable crate's VERSION changed, a changelog entry must MENTION
+#      THE NEW VERSION — in the root CHANGELOG.md, or in a fragment.
+#
+# Rules 2 and 3 exist because rule 4 alone left the convention documented in
+# four places and enforced in none: an entry in either location satisfied it, so
+# nothing ever stopped a PR from editing the shared file and handing a conflict
+# to every other open PR.
 #
 # Fragments exist because a shared CHANGELOG.md conflicted on every pair of
 # concurrent PRs: each one inserts a section at the same anchor (the top of
@@ -45,9 +57,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 
 if [ -t 1 ]; then
-  RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; CYAN=$'\033[0;36m'; NC=$'\033[0m'
+  RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[0;33m'; CYAN=$'\033[0;36m'; NC=$'\033[0m'
 else
-  RED=''; GREEN=''; CYAN=''; NC=''
+  RED=''; GREEN=''; YELLOW=''; CYAN=''; NC=''
 fi
 
 if ! git rev-parse --verify --quiet "$BASE" >/dev/null; then
@@ -113,6 +125,90 @@ if [ "$bad_names" -ne 0 ]; then
   echo "${RED}Fragment filenames must be <PR-number>-<slug>.md${NC} (lowercase slug)."
   echo "The PR number is what guarantees two concurrent PRs cannot collide."
   exit 1
+fi
+
+# The fragment a PR adds must carry THAT PR's number — in the filename and in
+# the heading.
+#
+# `changelog.d/` holds every open PR's fragment at once, so this inspects only
+# the files this PR *adds*; anyone else's are not its business. Skipped when
+# `PR_NUMBER` is unset (a local run, a push build) — there is no number to check
+# against, and a guard that guessed one would fail every local invocation.
+#
+# Both halves are worth checking. A wrong filename defeats the collision-freedom
+# the number exists for; a wrong number in the heading is worse, because it
+# survives collation into CHANGELOG.md and permanently points readers at an
+# unrelated PR. The heading one is easy to get wrong: you write the fragment
+# before the PR exists, guess the next number, and lose the race.
+#
+# Note this reads the COMMITTED diff, like every check here — an uncommitted
+# fragment is invisible to it, which is what you want in CI and worth knowing
+# when running it by hand.
+if [ -n "${PR_NUMBER:-}" ]; then
+  wrong_number=0
+  added_frags=$(git diff --name-only --diff-filter=A "$BASE"...HEAD -- "$FRAGMENT_DIR" 2>/dev/null || true)
+  for frag in $added_frags; do
+    [ -f "$frag" ] || continue
+    base_name="$(basename "$frag")"
+    case "$base_name" in
+      README.md) continue ;;
+    esac
+    frag_pr="${base_name%%-*}"
+    if [ "$frag_pr" != "$PR_NUMBER" ]; then
+      echo "  ${RED}WRONG PR${NC} $frag names PR #$frag_pr, but this is PR #$PR_NUMBER"
+      wrong_number=1
+      continue
+    fi
+    if ! grep -qE "^### .*\(#$PR_NUMBER\)[[:space:]]*$" "$frag"; then
+      echo "  ${RED}WRONG PR${NC} $frag — its \`###\` heading does not end with (#$PR_NUMBER)"
+      wrong_number=1
+    fi
+  done
+  if [ "$wrong_number" -ne 0 ]; then
+    echo
+    echo "${RED}A fragment must name the PR that adds it.${NC}"
+    echo "The number is what keeps fragments collision-free, and what lets a reader"
+    echo "get from a changelog entry back to the discussion behind it."
+    echo
+    echo "  ${CYAN}git mv $FRAGMENT_DIR/<wrong>-<slug>.md $FRAGMENT_DIR/$PR_NUMBER-<slug>.md${NC}"
+    echo "  ${CYAN}# and make the heading end with (#$PR_NUMBER)${NC}"
+    exit 1
+  fi
+fi
+
+# CHANGELOG.md is not a feature PR's file to edit.
+#
+# This guard accepts an entry in either location, because a repo that has just
+# collated has them in CHANGELOG.md — which meant "add a file, don't edit the
+# file" was documented in four places and enforced in none. The cost of ignoring
+# it does not land on the author: it lands on every OTHER open PR, as a conflict
+# they did not cause and cannot avoid.
+#
+# The one PR that legitimately rewrites CHANGELOG.md is the release collation,
+# and it is recognisable from its own diff: it DELETES fragments (that is what
+# collate-changelog.sh does). `ALLOW_CHANGELOG_EDIT=1` covers the remainder — a
+# release PR that only stamps a version heading, or a genuine correction to an
+# already-released entry. CI sets it from the `release` label.
+if printf '%s\n' "$changed" | grep -qx "$CHANGELOG"; then
+  deleted_frags=$(git diff --name-only --diff-filter=D "$BASE"...HEAD -- "$FRAGMENT_DIR" 2>/dev/null || true)
+  if [ -z "$deleted_frags" ] && [ "${ALLOW_CHANGELOG_EDIT:-0}" != "1" ]; then
+    echo "  ${RED}EDITED${NC} $CHANGELOG — feature PRs add a fragment instead"
+    echo
+    echo "${RED}$CHANGELOG is shared; a fragment is not.${NC}"
+    echo "Every PR that edits this file inserts at the same anchor, so any two open"
+    echo "PRs conflict — structurally, every time, with the same mechanical"
+    echo "resolution. Two PRs adding two different files never conflict."
+    echo
+    echo "Move your entry to ${CYAN}$FRAGMENT_DIR/${PR_NUMBER:-<PR-number>}-<slug>.md${NC} and revert"
+    echo "the change to $CHANGELOG. It is folded back in, verbatim, at release."
+    echo
+    echo "Cutting a release? ${CYAN}scripts/collate-changelog.sh${NC} deletes the fragments it"
+    echo "folds in, which is how this check recognises the collation. For a release PR"
+    echo "that only stamps a heading, add the ${CYAN}release${NC} label."
+    echo
+    echo "See ${CYAN}$FRAGMENT_DIR/README.md${NC}."
+    exit 1
+  fi
 fi
 
 # Publishable crates as  name<TAB>relative-crate-dir. Non-publishable crates are
@@ -196,6 +292,23 @@ EOF
 echo
 if [ "$found" -eq 0 ]; then
   echo "${GREEN}No publishable crate versions changed — nothing to check.${NC}"
+  # A PR that bumps nothing needs no entry, and most genuinely need none. But
+  # release-process changes, CI contracts and docs restructures have shipped
+  # unrecorded precisely because nothing mentioned it at the one moment the
+  # author was looking. So: a notice, never a failure. Failing would tax every
+  # typo fix to catch the few that matter, and a guard people learn to route
+  # around is worse than one that only advises.
+  added_any=$(git diff --name-only --diff-filter=A "$BASE"...HEAD -- "$FRAGMENT_DIR" 2>/dev/null || true)
+  if [ -z "$added_any" ] && ! printf '%s\n' "$changed" | grep -qx "$CHANGELOG"; then
+    echo
+    echo "${YELLOW}note:${NC} this PR records nothing in the changelog."
+    echo "Fine for a typo or a test-only change. If it alters how the project is"
+    echo "released, built, or contributed to, add ${CYAN}$FRAGMENT_DIR/${PR_NUMBER:-<PR-number>}-<slug>.md${NC}"
+    echo "— those are exactly the changes that have shipped unrecorded before."
+    if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+      echo "::notice title=No changelog entry::This PR bumps no crate version and adds no changelog fragment. Fine for typo/test-only changes; add one if it changes how the project is released, built, or contributed to."
+    fi
+  fi
   exit 0
 fi
 

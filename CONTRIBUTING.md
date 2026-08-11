@@ -85,7 +85,14 @@ Prose explaining what changed and why, in the same voice as the rest of
   `scripts/check-changelogs.sh` matches `<crate> <version>` as whole tokens and
   fails a bump with no entry.
 - You won't know the PR number until the PR exists, so push, open the PR, then
-  add the fragment in a second commit.
+  add the fragment in a second commit. Don't guess the number: CI checks that
+  the fragment names *your* PR, in the filename and in the `###` heading, and a
+  guessed number that loses the race points readers at someone else's work
+  forever once it's collated.
+- **CI fails a PR that edits `CHANGELOG.md`.** That is the whole point — the
+  shared file is what conflicts. The release collation is exempt (it deletes the
+  fragments it folds in, which is how the guard recognises it); anything else
+  that must touch the file needs the `release` label.
 - No version bump? A fragment is optional, but add one anyway for anything an
   operator or a sibling repo would want to know — release-process changes, CI
   contracts, docs restructures.
