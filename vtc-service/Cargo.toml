@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.11.55"
+version = "0.11.56"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -11,11 +11,32 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["setup", "keyring", "website", "admin-ui"]
-# Trust Spanning Protocol transport (additive, OFF by default). Enables the
-# SDK's `tsp` capability for the VTC; later PRs add the TSP listener + the
-# `send_to_member` TSP path behind it. DIDComm stays the VTC's default member
-# transport until the phased flip (docs/05-design-notes/tsp-enablement.md §12).
+default = ["setup", "keyring", "website", "admin-ui", "tsp"]
+# Trust Spanning Protocol transport. **Receive-side, and ON by default.**
+#
+# On by default because a DID document is a contract and this one is routinely
+# edited after mint: the reference VTC's `#tsp` service arrived at DID log
+# version 3, published long after `vtc-host` minted the document, and the VTC
+# has no service-management surface that could have gated it. A binary that
+# cannot serve what its document advertises drops every conforming client's
+# messages — and, before this feature was default, did so as a bare JSON parse
+# error raised inside the messaging SDK, below anything the VTC could log about
+# it. `crate::transport_capability` refuses to boot on the mismatch that
+# remains possible (`--no-default-features`); this default is what keeps the
+# mismatch from being the *shipped* configuration.
+#
+# This is Phase A of docs/05-design-notes/tsp-enablement.md §12 — "advertise
+# TSP + DIDComm; prefer TSP when both peers speak it" — and NOT the Phase B
+# flip. It enables `handle_tsp`, which answers an inbound TSP frame over TSP
+# because the caller is waiting on the TSP correlation. VTC-*initiated* sends
+# to a member (`AppState::send_to_member`) stay DIDComm until Phase B (§14 Q4);
+# nothing here touches that path.
+#
+# The two legs: `vta-sdk/tsp` for the SDK capability, and `affinidi-tdk/tsp`
+# for `atm.tsp()` — the receive side reads TSP frames off the shared mediator
+# socket and seals its replies back through the same profile. Routed via
+# `affinidi-tdk` (already a dependency, and where `ATM` comes from) rather than
+# adding a direct `affinidi-messaging-sdk` dependency.
 tsp = [
     "vta-sdk/tsp",
     # `atm.tsp()` — the receive side reads TSP frames off the shared mediator
@@ -187,7 +208,16 @@ affinidi-messaging-didcomm = "0.15"
 # Embedded in-process test mediator for the `didcomm-harness` feature
 # (`MockVtc::start_didcomm`, #436). Optional + feature-gated so it never
 # enters a production build; same crate the e2e suite uses.
-affinidi-messaging-test-mediator = { version = "0.2", optional = true }
+# `tsp` so the embedded mediator routes raw-TSP frames, not just DIDComm.
+# Without it the mediator's `/inbound` route does not understand
+# `Content-Type: application/tsp` and tries to parse the CESR body as a DIDComm
+# envelope, rejecting the send with `400 w.m.message.deserialize` — the
+# mediator-side twin of the client-side failure this crate's TSP work is about.
+# Always on (not conditioned on this crate's `tsp`): the harness is test-only,
+# and a mediator that can route TSP is harmless to the DIDComm suite.
+affinidi-messaging-test-mediator = { version = "0.2", optional = true, features = [
+    "tsp",
+] }
 tokio-util = { workspace = true, features = ["rt"] }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 base64 = { workspace = true }

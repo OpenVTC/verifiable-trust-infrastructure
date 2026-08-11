@@ -138,7 +138,7 @@ fn is_safe_label(s: &str) -> bool {
 /// the setup wizard used when it wrote `did/<label>.jsonl`. For a
 /// serverless `did:webvh:<scid>:<host>` that's the host. Returns
 /// `None` for a non-webvh DID or a label that isn't filesystem-safe.
-fn did_log_label(did: &str) -> Option<String> {
+pub(crate) fn did_log_label(did: &str) -> Option<String> {
     let suffix = did.strip_prefix("did:webvh:")?;
     let label = suffix.split(':').next_back()?;
     if is_safe_label(label) {

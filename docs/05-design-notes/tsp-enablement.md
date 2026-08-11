@@ -532,6 +532,55 @@ TSP is additive now; DIDComm removal is a later, separate decision. Sketch:
 No peer is stranded mid-migration: the §3 matcher always picks a protocol both sides
 share, and the brick-prevention invariant keeps ≥1 transport advertised throughout.
 
+### 12.1 The advertisement and the binary must not be able to disagree
+
+Added 2026-08-11, after a live failure. The `#tsp` half of that invariant had no
+enforcement, and the VTC found the gap.
+
+**What happened.** The reference VTC's document advertised `#tsp` (`TSPTransport`) and
+**no** `DIDCommMessaging`, while its binary was built without `--features tsp`. Because
+the workspace prefers TSP > DIDComm > REST, every conforming client chose the one
+transport that could not work. Joins were accepted and never recorded; the operator saw
+only `Error unpacking message: DidcommError("Cannot parse message as JSON", "invalid
+number at line 1 column 2")`.
+
+The frame never reached the VTC's router. `affinidi-messaging-sdk`'s websocket transport
+classifies TSP frames only under its own `tsp` feature (`force_packed =
+atm.tsp().is_tsp(..)`); without it the CESR bytes go to the DIDComm unpacker, where the
+leading `-` reads as the start of a JSON number. Two `cfg`-gated warnings existed — the
+SDK's and `vtc-service`'s — and neither could fire, because the outer gate meant the
+frame was never tagged `Protocol::TSP` in the first place. The SDK's comment on that arm
+reads "a DIDComm-only build never advertises TSP, so this is unreachable in practice".
+That assumption is the bug: **nothing enforced it**.
+
+**Three things follow, and they generalise beyond the VTC.**
+
+1. **Advertising is not a mint-time property.** The `#tsp` service arrived at DID log
+   version 3, published well after `vtc-host` minted versions 1 and 2 — and `vtc-host`
+   emits no messaging service at all. A mint-time gate would have passed this deployment.
+   Any capability check has to run against the document *as resolved*, at startup.
+2. **A default-off transport feature is a loaded gun** once the document can name it.
+   `tsp` is now a **default feature of `vtc-service`**; the shipped binary serves what it
+   may advertise. This is still Phase A — receive-side only. `handle_tsp` answers over TSP
+   because the caller waits on that correlation; VTC-initiated `send_to_member` stays
+   DIDComm until Phase B (§14 Q4).
+3. **Compiling a transport path proves nothing about traversing it.**
+   `messaging::handle_tsp` compiled throughout. `vtc-service/tests/join_tsp.rs` now drives
+   a real CESR frame through a real mediator into the dispatcher, in CI.
+
+**Enforcement** lives in `vtc-service/src/transport_capability.rs`: `server::run` refuses
+to boot when the document the VTC publishes advertises an unservable transport, and the
+messaging listener re-checks the resolved document — starting *degraded* (loud error, but
+running) when a servable transport remains, and declining to start when none does, which
+leaves REST serving rather than holding a socket that drops every frame.
+
+**TSP-only is not the intended shape.** Phase A is "advertise TSP **+** DIDComm"; dropping
+DIDComm is Phase D, gated on telemetry. A TSP-only document is not something the mint
+produces — it is what an operator gets by adding `#tsp` after mint and never adding
+`#didcomm`, which strands every peer that does not yet speak TSP. The VTC now warns on it
+at startup (`transport_capability::lacks_didcomm_fallback`). An operator adding a
+messaging service to a VTC post-mint should add both.
+
 ---
 
 ## 13. Suggested PR breakdown (stacked, individually reviewable)
