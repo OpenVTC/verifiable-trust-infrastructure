@@ -167,6 +167,17 @@ impl std::fmt::Display for SurfaceTransport {
 #[derive(Clone)]
 pub struct VtaClient {
     pub(super) transport: Transport,
+    /// Test-only interception, ahead of the transport — see [`loopback`].
+    ///
+    /// A hook rather than a `Transport` variant on purpose. A variant would
+    /// have to be answered at every one of the ~20 sites that match on
+    /// `Transport`, almost all of which would say "unsupported", so 20 arms
+    /// of noise would be carried in production code to serve a test seam.
+    /// Intercepting ahead of the match touches only the three functions that
+    /// dispatch a Trust Task, and leaves every transport match exhaustive over
+    /// the transports that really exist.
+    #[cfg(feature = "test-loopback")]
+    pub(super) loopback: Option<std::sync::Arc<dyn loopback::LoopbackSink>>,
 }
 
 // ── Protocol response aliases ──────────────────────────────────────
@@ -214,6 +225,13 @@ mod contexts;
 mod credentials;
 mod did_templates;
 mod keys;
+// Consumed from `vta-service`'s dev-dependency, which enables the feature the
+// ordinary way. `cargo -p vta-sdk --features test-loopback` does *not* rebuild
+// this crate — the workspace patches `vta-sdk` onto itself, so the `-p` node
+// and the built node differ and cargo reports the unit Fresh — which is why the
+// census lives downstream rather than in this crate's own tests.
+#[cfg(feature = "test-loopback")]
+pub mod loopback;
 mod memory;
 mod policy;
 mod secrets;
@@ -331,6 +349,8 @@ impl VtaClient {
     /// Create a new REST-only client.
     pub fn new(base_url: &str) -> Self {
         Self {
+            #[cfg(feature = "test-loopback")]
+            loopback: None,
             transport: Transport::Rest {
                 client: crate::http::rest_client(),
                 base_url: base_url.trim_end_matches('/').to_string(),
@@ -362,6 +382,8 @@ impl VtaClient {
             .to_string();
 
         Ok(Self {
+            #[cfg(feature = "test-loopback")]
+            loopback: None,
             transport: Transport::Rest {
                 client: http,
                 base_url,
@@ -443,6 +465,8 @@ impl VtaClient {
     ) -> Self {
         let rest_client = rest_url.as_ref().map(|_| crate::http::rest_client());
         Self {
+            #[cfg(feature = "test-loopback")]
+            loopback: None,
             transport: Transport::DIDComm {
                 session,
                 rest_client,
@@ -679,6 +703,8 @@ impl VtaClient {
     ) -> Self {
         let rest_client = rest_url.as_ref().map(|_| crate::http::rest_client());
         Self {
+            #[cfg(feature = "test-loopback")]
+            loopback: None,
             transport: Transport::Tsp {
                 session: std::sync::Arc::new(session),
                 vta_did: vta_did.to_string(),
@@ -1303,6 +1329,17 @@ impl VtaClient {
         timeout: u64,
         build_rest: impl FnOnce(&Client, &str) -> RequestBuilder,
     ) -> Result<T, VtaError> {
+        // Ahead of the transport, and of the REST fork in particular: on a REST
+        // transport this method takes `build_rest` and never builds a Trust
+        // Task at all, so a loopback client that fell through to the match
+        // would observe nothing. See `client::loopback`.
+        #[cfg(feature = "test-loopback")]
+        if let Some(sink) = &self.loopback {
+            let response = sink.dispatch(tt_uri, &payload)?;
+            return serde_json::from_value(response)
+                .map_err(|e| VtaError::Protocol(format!("loopback response decode: {e}")));
+        }
+
         match &self.transport {
             Transport::Rest {
                 client,
@@ -1341,6 +1378,13 @@ impl VtaClient {
         timeout: u64,
         build_rest: impl FnOnce(&Client, &str) -> RequestBuilder,
     ) -> Result<(), VtaError> {
+        // As in `rpc_tt` — see `client::loopback`.
+        #[cfg(feature = "test-loopback")]
+        if let Some(sink) = &self.loopback {
+            sink.dispatch(tt_uri, &payload)?;
+            return Ok(());
+        }
+
         match &self.transport {
             Transport::Rest {
                 client,
@@ -1389,6 +1433,13 @@ impl VtaClient {
         payload: serde_json::Value,
         timeout: u64,
     ) -> Result<serde_json::Value, VtaError> {
+        // Ahead of the transport: a loopback client answers the Trust-Task
+        // surface in-process. See `client::loopback`.
+        #[cfg(feature = "test-loopback")]
+        if let Some(sink) = &self.loopback {
+            return sink.dispatch(type_uri, &payload);
+        }
+
         let doc = serde_json::json!({
             "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
             "type": type_uri,

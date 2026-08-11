@@ -52,6 +52,7 @@ pub struct CreateKeyResultBody {
     #[serde(alias = "public_key")]
     pub public_key: String,
     pub status: KeyStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default = "default_derived")]
     pub origin: KeyOrigin,

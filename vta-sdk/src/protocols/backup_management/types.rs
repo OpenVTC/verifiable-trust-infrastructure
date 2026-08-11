@@ -207,6 +207,7 @@ pub struct SeedRecordBackup {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed_enc: Option<Vec<u8>>,
     pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retired_at: Option<DateTime<Utc>>,
 }
 
@@ -228,6 +229,7 @@ impl std::fmt::Debug for SeedRecordBackup {
 pub struct AclEntryBackup {
     pub did: String,
     pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default)]
     pub allowed_contexts: Vec<String>,

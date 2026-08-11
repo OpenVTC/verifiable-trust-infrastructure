@@ -2922,7 +2922,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -4587,7 +4587,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -6453,7 +6453,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.43",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -6492,7 +6492,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -9383,7 +9383,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.21.12"
+version = "0.21.13"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -9427,6 +9427,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "syn 2.0.119",
  "tempfile",
  "thiserror 2.0.20",
  "time",
