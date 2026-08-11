@@ -308,6 +308,22 @@ jobs:
       - name: vta-service mediator-backed transport harness
         run: cargo test -p vta-service --features transport-harness transport_harness_tests
 
+      # The VTC's TSP **receive** path. `didcomm-harness` is not a default
+      # feature, so `cargo test --workspace` never builds this; and compiling
+      # `messaging::handle_tsp` was never the problem — it compiled fine
+      # throughout the incident that motivated this test. A VTC advertising
+      # `#tsp` in a build whose messaging SDK lacked `tsp` dropped every join
+      # inside the SDK's websocket transport, below anything the VTC could log.
+      # So this runs a real embedded mediator with TSP routing enabled, seals a
+      # real CESR frame, and asserts the join lands in the dispatcher: a
+      # behaviour test, not a compile check.
+      - name: vtc-service TSP receive path over a real mediator
+        run: cargo test -p vtc-service --features didcomm-harness --test join_tsp
+        env:
+          # The admin-UI npm build is irrelevant to the messaging path and adds
+          # minutes to this job.
+          VTC_SKIP_ADMIN_UI_BUILD: "1"
+
   enclave:
     # The Nitro enclave binary uses a TEE-only feature combo that the
     # default `check` job never touches. Linux-only because vsock-store

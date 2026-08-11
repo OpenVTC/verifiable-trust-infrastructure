@@ -14,7 +14,7 @@ use affinidi_tdk::secrets_resolver::secrets::Secret;
 use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
 use futures_util::StreamExt;
 use tokio::sync::watch;
-use tracing::{info, warn};
+use tracing::{debug, error, info, warn};
 
 use serde_json::json;
 use vti_common::error::AppError;
@@ -267,6 +267,83 @@ pub async fn run_didcomm_service(
             return;
         }
     };
+
+    // Does the document we publish match what this binary serves? Checked
+    // against the DID as *resolved*, not against the local mirror: a service
+    // entry can be published long after the VTC last wrote its own copy (the
+    // reference deployment's `#tsp` arrived at log version 3), so the resolved
+    // document is the only view that reflects what clients actually read.
+    //
+    // Reported here rather than left to the per-frame arm below because by the
+    // time a frame arrives it is already too late to say anything useful — a
+    // TSP frame in a non-`tsp` build never reaches this loop at all. It dies in
+    // the messaging SDK's websocket transport, which classifies TSP only under
+    // its own `tsp` feature and otherwise hands the CESR bytes to the DIDComm
+    // unpacker, where they surface as `Cannot parse message as JSON` (CESR
+    // starts with `-`, which serde_json reads as a number). That is the whole
+    // reason this check exists at startup: it is the last layer that still
+    // knows what the failure means.
+    match crate::transport_capability::resolved_capabilities(state.did_resolver.as_ref(), vtc_did)
+        .await
+    {
+        Some(caps) => {
+            if crate::transport_capability::lacks_didcomm_fallback(&caps) {
+                warn!(
+                    "this VTC advertises TSP but no DIDComm mediator, so a peer that does not \
+                     speak TSP has no messaging transport to fall back to, and a build without \
+                     the `tsp` feature would have none at all. tsp-enablement.md §12 Phase A is \
+                     to advertise both; add a `DIDCommMessaging` service unless dropping DIDComm \
+                     is deliberate."
+                );
+            }
+            match crate::transport_capability::classify_for_messaging(&caps) {
+                crate::transport_capability::MessagingVerdict::Ok => {}
+                crate::transport_capability::MessagingVerdict::Degraded(unservable) => {
+                    for u in &unservable {
+                        error!(
+                            transport = %u.protocol,
+                            endpoint = %u.endpoint,
+                            "{}",
+                            u.remediation()
+                        );
+                    }
+                    warn!(
+                        "starting messaging anyway — at least one advertised transport is servable, \
+                     but clients preferring the transports above will be silently dropped"
+                    );
+                }
+                crate::transport_capability::MessagingVerdict::Unreachable(unservable) => {
+                    for u in &unservable {
+                        error!(
+                            transport = %u.protocol,
+                            endpoint = %u.endpoint,
+                            "{}",
+                            u.remediation()
+                        );
+                    }
+                    // Not starting is the honest outcome: every transport this VTC
+                    // advertises is one it cannot answer on, so connecting to the
+                    // mediator would buy nothing but a socket that drops frames.
+                    error!(
+                        "no advertised messaging transport is servable by this build — messaging \
+                     disabled. The VTC will keep serving REST; fix the build or the DID document \
+                     above to restore messaging."
+                    );
+                    let _ = shutdown_rx.changed().await;
+                    return;
+                }
+            }
+        }
+        None => {
+            // No resolver, or resolution failed. Unknown is not bad — don't
+            // turn a resolver blip into a messaging outage.
+            debug!(
+                %vtc_did,
+                "could not resolve the VTC DID to check advertised transports against this \
+                 build — continuing"
+            );
+        }
+    }
 
     // Collect secrets for the profile, keyed by the verification-method ids
     // the VTC's own DID document actually declares (see `vtc_key_ids`).

@@ -695,6 +695,66 @@ mod didcomm_harness {
         ]
     }
 
+    /// Mint a VTC `did:peer:2` advertising **both** `DIDCommMessaging` and
+    /// `TSPTransport` — the Phase A shape from
+    /// `docs/05-design-notes/tsp-enablement.md` §12, and the shape a client's
+    /// protocol matcher needs in order to *choose* TSP rather than be told.
+    ///
+    /// The TSP entry points at the mediator's **URL** rather than its DID. That
+    /// is the one deviation from the workspace convention (`#tsp`'s
+    /// serviceEndpoint is the mediator's DID) and it is forced by arithmetic,
+    /// not preference — the same constraint VTI #920 hit and documented: the
+    /// test mediator's own DID is ~540 bytes, and embedding it in two services
+    /// puts this `did:peer` past the 1000-byte limit every `DIDCacheClient`
+    /// applies *before parsing*. A production VTC is a `did:webvh`, whose
+    /// services live in a document with no size ceiling, so the mediator-DID
+    /// convention holds there unchanged. Do not read this as licence to emit a
+    /// URL `#tsp` outside of tests.
+    #[cfg(feature = "tsp")]
+    fn mint_dual_transport_did(mediator_did: &str, mediator_url: &str) -> (String, Vec<Secret>) {
+        use affinidi_tdk::dids::{
+            OneOrMany, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong,
+        };
+
+        let service = |type_: &str, uri: &str| PeerService {
+            type_: type_.into(),
+            endpoint: PeerServiceEndpoint::Long(OneOrMany::One(PeerServiceEndpointLong {
+                uri: uri.to_string(),
+                accept: vec![],
+                routing_keys: vec![],
+            })),
+            id: None,
+        };
+
+        let (did, secrets) = DID::generate_did_peer_with_services(
+            peer_key_roles(),
+            Some(vec![
+                service("DIDCommMessaging", mediator_did),
+                service("TSPTransport", mediator_url),
+            ]),
+        )
+        .expect("mint dual-transport VTC did:peer");
+
+        // Assert the size up front, where the number is legible. Over the limit
+        // this fails 30 seconds later as an unattributable `WebSocket isActive?
+        // command timed out` on our side and a `403 authcrypt requires sender
+        // public key` on the mediator's — neither of which names the real
+        // cause. Only `affinidi_did_authentication` logs it. VTI #920 lost
+        // significant time to exactly this.
+        const MAX_DID_BYTES: usize = 1_000;
+        assert!(
+            did.len() < MAX_DID_BYTES,
+            "the VTC's dual-transport did:peer is {} bytes, over the {MAX_DID_BYTES}-byte stock \
+             resolver limit ({}-byte mediator DID). Nothing with a default resolver — this \
+             process, the mediator, or a client — can resolve it, and none of them will say so. \
+             Shed service metadata, or embed the mediator DID in fewer services.",
+            did.len(),
+            mediator_did.len(),
+        );
+
+        (did, secrets)
+    }
+
     /// Build an ATM whose secrets resolver holds `secrets` (a `did:peer`'s keys).
     async fn build_atm(secrets: &[Secret]) -> ATM {
         let tdk = TDKSharedState::new(TDKConfig::builder().build().expect("TDK config"))
@@ -897,6 +957,38 @@ mod didcomm_harness {
             }
         }
 
+        /// Send a Trust Task document to `vtc_did` **over TSP**, routed through
+        /// the mediator.
+        ///
+        /// The wire shape is the whole difference from
+        /// [`request`](Self::request), and it is the difference that broke: TSP
+        /// carries the Trust-Task document bytes directly, where DIDComm nests
+        /// them in a packed envelope. A VTC without the `tsp` feature never sees
+        /// this frame at all — the messaging SDK's websocket transport
+        /// classifies TSP only under its own `tsp` feature, and otherwise hands
+        /// the CESR bytes to the DIDComm unpacker, which fails with `Cannot
+        /// parse message as JSON` because CESR starts with `-`.
+        ///
+        /// `route` is `[mediator_did, vtc_did]`: the payload is sealed
+        /// end-to-end to the VTC and wrapped in a routing layer sealed to the
+        /// mediator, which forwards it without being able to read it. Exactly
+        /// the call `messaging::handle_tsp` makes for its reply, in reverse.
+        ///
+        /// Returns once the mediator has accepted the frame. Per R1.1 that is
+        /// *not* proof of delivery, so assert on the VTC's recorded state (or
+        /// its reply), never on this returning `Ok`.
+        #[cfg(feature = "tsp")]
+        pub async fn send_tsp(&self, vtc_did: &str, typ: &str, payload: Value) {
+            let doc = wrap_trust_task(typ, &self.did, vtc_did, payload);
+            let bytes = serde_json::to_vec(&doc).expect("serialise Trust Task document");
+            let route = vec![self.mediator_did.clone(), vtc_did.to_string()];
+            self.atm
+                .tsp()
+                .send_routed(&self.profile, &route, &bytes)
+                .await
+                .expect("send the Trust Task over TSP via the mediator");
+        }
+
         /// Await the next unsolicited inbound message (no thread correlation),
         /// e.g. a pushed `credential-exchange/issue`. `None` on timeout.
         pub async fn next_pushed(&self, timeout: Duration) -> Option<(String, Value)> {
@@ -1030,8 +1122,30 @@ mod didcomm_harness {
         /// messaging wired), and a connected applicant. Returns once everything
         /// is bound and the dispatch loop is running.
         pub async fn start() -> MockVtcDidcomm {
+            MockVtcDidcomm::start_inner(false).await
+        }
+
+        /// As [`start`](Self::start), but the VTC's DID additionally advertises
+        /// a `TSPTransport` service — so a client can reach it over TSP and the
+        /// document is honest about it.
+        ///
+        /// Separate from `start()` rather than folded into it because minting
+        /// the services changes the VTC's identifier length, and the DIDComm
+        /// suite has no reason to carry that risk. See
+        /// [`TestJoinClient::send_tsp`] for the sending half.
+        #[cfg(feature = "tsp")]
+        pub async fn start_with_tsp() -> MockVtcDidcomm {
+            MockVtcDidcomm::start_inner(true).await
+        }
+
+        async fn start_inner(advertise_tsp: bool) -> MockVtcDidcomm {
             // Transport identities. The applicant's is generated up front so it
             // can be registered LOCAL on the mediator (needed to open inbound).
+            //
+            // The mediator has to exist before the VTC's DID when that DID
+            // embeds the mediator's — so mint a throwaway pair first, spawn the
+            // mediator against them, then (for the TSP variant) re-mint the VTC
+            // with its service block. `register_local_did` closes the cycle.
             let (vtc_did, vtc_secrets) =
                 DID::generate_did_peer(peer_key_roles(), None).expect("VTC did:peer");
             let (applicant_did, applicant_secrets) =
@@ -1044,6 +1158,23 @@ mod didcomm_harness {
                 .await
                 .expect("spawn test mediator");
             let mediator_did = mediator.did().to_string();
+
+            // Re-mint the VTC with the transports it will actually serve, and
+            // register the new identifier with the running mediator.
+            #[cfg(feature = "tsp")]
+            let (vtc_did, vtc_secrets) = if advertise_tsp {
+                let (did, secrets) =
+                    mint_dual_transport_did(&mediator_did, mediator.endpoint().as_ref());
+                mediator
+                    .register_local_did(&did)
+                    .await
+                    .expect("register the dual-transport VTC as a local mediator account");
+                (did, secrets)
+            } else {
+                (vtc_did, vtc_secrets)
+            };
+            #[cfg(not(feature = "tsp"))]
+            let _ = advertise_tsp;
 
             // The VTC's transport keys, in the resolver the production DIDComm
             // listener loads its profile from. `run_didcomm_service` reads the

@@ -363,6 +363,15 @@ pub async fn run(
         &crate::config_store::ConfigStore::new(config_ks.clone()),
     )
     .await?;
+
+    // Refuse to serve a DID document this binary can't honour. The document is
+    // a contract, and the workspace prefers TSP > DIDComm > REST, so a
+    // transport advertised but not served is the path every *conforming*
+    // client picks — and the only one that cannot work. Runs after the
+    // config-store overlay above because it reads `vtc_did` + `store.data_dir`,
+    // both of which an operator PATCH can move.
+    crate::transport_capability::enforce_at_boot(&config).await?;
+
     let passkey_ks = store.keyspace(keyspaces::PASSKEY)?;
     let install_ks = store.keyspace(keyspaces::INSTALL)?;
     // `install_store` is built later (after `init_auth` yields the storage
