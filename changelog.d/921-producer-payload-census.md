@@ -1,4 +1,4 @@
-### vta-sdk 0.21.13 / vta-service 0.14.26 — check what we *send*, not what we wrote down (#921)
+### vta-sdk 0.21.13 / vta-service 0.14.27 — check what we *send*, not what we wrote down (#921)
 
 #919 fixed `keys/create` sending `"mnemonic": null`. It did not answer the
 question the fix raised: how many more are there, and what would have caught
