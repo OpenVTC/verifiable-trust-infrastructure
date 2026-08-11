@@ -40,7 +40,11 @@ hosted DID, exactly as it can't advertise REST/DIDComm without one.
 
 ## Enabling TSP
 
-TSP shares the DIDComm mediator, so **enable DIDComm first**. Two paths:
+TSP shares the DIDComm mediator, so **enable DIDComm first**. That is a
+constraint of this implementation, not of TSP — a TSP-only mediator is
+legitimate, and lifting the requirement is designed in
+[transport-neutral-mediator.md](../05-design-notes/transport-neutral-mediator.md).
+Two paths:
 
 - **Runtime (recommended):** once you've verified TSP against your mediator,
   `pnm services tsp enable --mediator-did <did>` advertises a `#tsp` service on
@@ -95,6 +99,12 @@ requires a Bidirectional relationship — `tsp-outbound-send.md` §3).
   protocol tag (a TSP VID is a DID too) — deferred until there's a consumer.
 - **`vta-mcp` / `didcomm-test`** TSP wiring — deferred until they have a
   TSP-specific path to exercise.
+- **TSP-only VTAs.** TSP currently requires DIDComm (shared mediator, shared
+  socket, shared cargo feature). Also note that a mediator minted by `vta setup`
+  does **not** advertise `TSPTransport` today, so a TSP-enabled VTA can point
+  `#tsp` at a mediator whose own document says it doesn't carry TSP. Both are
+  addressed in
+  [transport-neutral-mediator.md](../05-design-notes/transport-neutral-mediator.md).
 
 ## References
 
