@@ -1,5 +1,23 @@
 # Changelog
 
+Released versions are recorded below, newest first.
+
+> **Looking for what changed recently? This file is not the whole picture.**
+>
+> Each PR records its entry as its own file under
+> [`changelog.d/`](changelog.d/) — one per PR, named `<PR-number>-<slug>.md` —
+> because two PRs editing a shared section here conflicted every single time.
+> Those fragments are folded into `## Unreleased` below when a release is cut
+> (`scripts/collate-changelog.sh`), so between releases this file lags that
+> directory **by design**.
+>
+> To see everything not yet released, read both: the `## Unreleased` section
+> below, then `changelog.d/`. `scripts/collate-changelog.sh --check` lists the
+> pending fragments without changing anything.
+>
+> Writing one: see [`changelog.d/README.md`](changelog.d/README.md). Do **not**
+> add your entry to this file — that is what the fragments exist to avoid.
+
 ## Unreleased
 
 ### vta-service 0.13.19 / vta-config 0.3.0 / vta-backup 0.1.4 / vta-support 0.2.2 / vta-keys 0.1.4 / vta-policy 0.1.2 / vta-tee 0.1.4 — mediator readiness gate + connection supervisor (#876)

@@ -139,6 +139,11 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md). Workspace-wide design
 principles live in [`CLAUDE.md`](CLAUDE.md); each crate has its own
 `CLAUDE.md` with crate-scoped guidance.
 
+Changes are recorded in [`CHANGELOG.md`](CHANGELOG.md) for released versions
+and in [`changelog.d/`](changelog.d/) — one file per PR — for everything not
+yet released. A PR adds a fragment there rather than editing `CHANGELOG.md`;
+see [`changelog.d/README.md`](changelog.d/README.md).
+
 ## License
 
 Apache-2.0. See [`LICENSE`](LICENSE).

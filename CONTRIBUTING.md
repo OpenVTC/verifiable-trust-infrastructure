@@ -61,8 +61,39 @@ Before submitting a pull request:
 - [ ] `cargo fmt --check` shows no formatting issues
 - [ ] New public functions have `///` doc comments
 - [ ] Security-sensitive changes include tests (auth, ACL, crypto)
-- [ ] CHANGELOG.md updated for user-facing changes
+- [ ] Changelog fragment added for user-facing changes — `changelog.d/<PR-number>-<slug>.md`, **not** an edit to `CHANGELOG.md` (see [Changelog](#changelog))
 - [ ] Commits are signed off (DCO: `git commit -s`)
+
+## Changelog
+
+**Add a file, don't edit `CHANGELOG.md`.** Every PR used to insert its entry at
+the same anchor in that one file, so any two open PRs conflicted — structurally,
+every time, with the same mechanical "keep both" resolution. Two PRs adding two
+different files never conflict.
+
+Create `changelog.d/<PR-number>-<slug>.md` containing the `###` block you would
+otherwise have pasted into `CHANGELOG.md`:
+
+```markdown
+### vta-sdk 0.21.21 / vta-service 0.14.34 — one line on what changed (#934)
+
+Prose explaining what changed and why, in the same voice as the rest of
+`CHANGELOG.md`. Bullets per crate when several are involved.
+```
+
+- The heading must name **every crate you bumped, with its new version** —
+  `scripts/check-changelogs.sh` matches `<crate> <version>` as whole tokens and
+  fails a bump with no entry.
+- You won't know the PR number until the PR exists, so push, open the PR, then
+  add the fragment in a second commit.
+- No version bump? A fragment is optional, but add one anyway for anything an
+  operator or a sibling repo would want to know — release-process changes, CI
+  contracts, docs restructures.
+- At release, `scripts/collate-changelog.sh` folds every fragment into
+  `## Unreleased` and deletes them: one commit, one author, nothing to conflict
+  with.
+
+Full convention, including why: [`changelog.d/README.md`](changelog.d/README.md).
 
 ## Coding Guidelines
 
