@@ -1,4 +1,4 @@
-### vta-config 0.3.3 / vta-service 0.14.35 — configurable unauth rate limit (#935)
+### vta-config 0.3.3 / vta-service 0.14.35 — configurable unauth rate limit (#936)
 
 `[server]` gains `rate_limit_interval_secs` and `rate_limit_burst` fields
 (defaults: 5 / 10, matching the previous hardcoded values).
