@@ -82,6 +82,10 @@ use vta_sdk::protocols::audit_management::list::{
     AuditEnvelope, ListAuditLogsBody, ListAuditLogsResultBody,
 };
 use vta_sdk::protocols::auth::{RevokeSessionRequest, RevokeSessionResponse};
+use vta_sdk::protocols::consent_management::{
+    ConsentApproverListBody, ConsentApproverSetBody, ConsentDecisionBody, ConsentListBody,
+    ConsentRequestBody, ConsentRevokeBody,
+};
 use vta_sdk::protocols::credential_exchange::{
     self as credx, PendingApproveBody, PendingDenyBody, PendingDenyResponse, PendingListResponse,
     PendingPresentationSummary, PresentBody, RequestedCredentialSummary,
@@ -172,31 +176,27 @@ fn validates<T: ValidatedPayload>(v: &Value) -> Result<(), String> {
 ///
 /// ## Where a transcription remains, and why
 ///
-/// 21 of these witnesses still build their request with `json!`. The reason is
-/// **not** the one this comment used to give ("the slice's wire type is
-/// module-private") — most of them name a `vta-sdk` client method that exists
-/// today. The accurate position, per family:
+/// **14** of these witnesses still build their request with `json!`, and the
+/// count is not the useful framing — what remains is three distinct situations,
+/// only one of which is unfinished work. (The previous note said 21; it was
+/// arithmetic, not measurement. The number above is counted from the table.)
 ///
 /// - **`auth/{whoami,sessions-list,step-up/approve-response}`,
 ///   `task-consent/decision`** (5) — the VTA is the *consumer*; no `vta-sdk`
 ///   producer sends these, so there is no emission of ours to assert. A fixture
-///   is the honest witness here, and no further work is owed.
-/// - **`consent/*` (6), `messaging/ping`** (7 total) — a producer exists, but
-///   it builds its payload as an inline `json!` with a conditional insert per
-///   optional member. There is no type to point a witness at. Converting these
-///   means first giving those producers canonical body structs — the #888 fold,
-///   applied to the families it did not reach — and only then can a witness be
-///   built rather than transcribed. `device/*` went this way in #925 and is the
-///   worked example.
-/// - **`vault/*` (7), `device/list`** (8 total) — these take a caller-supplied
-///   `Value`; the SDK is a pass-through that contributes at most one member.
-///   There is no SDK type at all, and inventing one is an API change, not a
-///   test change.
+///   is the honest witness, and **nothing is owed here**.
+/// - **`vault/*` (7), `device/list`** (8) — the caller supplies the whole
+///   payload as a `Value` and the SDK is a pass-through contributing at most one
+///   member. There is no SDK type, and giving them one is an **API decision**,
+///   not a test change.
+/// - **`messaging/ping`** (1) — a producer exists, but its payload is a single
+///   required `nonce`. A body struct would guard nothing today: this defect
+///   class lives in *unset optional* members, and ping has none. Worth folding
+///   the day it gains a second member, not before.
 ///
-/// So the remaining work is one producer fold (consent + ping) plus an API
-/// decision (the pass-throughs), with five entries that are correct as they
-/// stand. Recorded here rather than in an issue because the next person to read
-/// this comment is the one who needs it.
+/// The families that did have unset optionals — `keys/*` (#888), `webvh` (#924),
+/// `device/*` (#925), `consent/*` (#928) — are folded, and their witnesses are
+/// built from the producer's own body rather than transcribed.
 struct Witness {
     request: Value,
     parse_request: ParseFn,
@@ -509,11 +509,15 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::consent::request::v1_0::Payload,
                 specs::consent::request::v1_0::Response,
-                json!({
-                    "subject": consent_subject_json(),
-                    "scope": "converse",
-                    "challenge": "chal-0123456789abcdef",
-                    "contextHint": "ctx-a",
+                // Neither hint set — the shape
+                // `consent_request(subject, scope, challenge, None, None)`
+                // emits, and the one that leaves both optionals to the skip.
+                to_v(ConsentRequestBody {
+                    subject: consent_subject_json(),
+                    scope: "converse".into(),
+                    challenge: "chal-0123456789abcdef".into(),
+                    display_hint: None,
+                    context_hint: None,
                 }),
                 json!({ "status": "accepted", "requestId": "chal-1" })
             ),
@@ -523,12 +527,12 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::consent::decision::v1_0::Payload,
                 specs::consent::decision::v1_0::Response,
-                json!({
-                    "subject": consent_subject_json(),
-                    "effect": "allow",
-                    "scope": "converse",
-                    "challenge": "chal-0123456789abcdef",
-                    "expiresAt": TS,
+                to_v(ConsentDecisionBody {
+                    subject: consent_subject_json(),
+                    effect: "allow".into(),
+                    scope: Some("converse".into()),
+                    challenge: Some("chal-0123456789abcdef".into()),
+                    expires_at: None,
                 }),
                 json!({ "status": "recorded", "grantId": "urn:uuid:6d9c" })
             ),
@@ -538,7 +542,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::consent::revoke::v1_0::Payload,
                 specs::consent::revoke::v1_0::Response,
-                json!({ "subject": consent_subject_json(), "reason": "operator revoked" }),
+                to_v(ConsentRevokeBody {
+                    subject: consent_subject_json(),
+                    reason: None,
+                }),
                 json!({ "status": "revoked" })
             ),
         ),
@@ -547,7 +554,9 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::consent::list::v1_0::Payload,
                 specs::consent::list::v1_0::Response,
-                json!({ "platform": "slack", "agent": "agent-1" }),
+                // An unfiltered list — every member unset, which must
+                // serialize to `{}` rather than a map of nulls.
+                to_v(ConsentListBody::default()),
                 json!({ "grants": [{
                     "subject": consent_subject_json(),
                     "effect": "allow",
@@ -564,12 +573,12 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::consent::approver_set::v1_0::Payload,
                 specs::consent::approver_set::v1_0::Response,
-                json!({
-                    "platform": "slack",
-                    "context": "ctx-a",
-                    "approver": "did:key:z6MkKeeper",
-                    "route": "wake",
-                    "routeHint": "gateway-1",
+                to_v(ConsentApproverSetBody {
+                    platform: "slack".into(),
+                    context: "ctx-a".into(),
+                    approver: "did:key:z6MkKeeper".into(),
+                    route: Some("wake".into()),
+                    route_hint: None,
                 }),
                 json!({ "status": "set" })
             ),
@@ -579,7 +588,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::consent::approver_list::v1_0::Payload,
                 specs::consent::approver_list::v1_0::Response,
-                json!({ "platform": "slack" }),
+                to_v(ConsentApproverListBody::default()),
                 json!({ "approvers": [{
                     "platform": "slack",
                     "context": "ctx-a",

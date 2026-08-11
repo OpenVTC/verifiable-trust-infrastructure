@@ -9,10 +9,14 @@
 //! object; `conversationRef` is the bridge's OPAQUE handle — never a raw
 //! platform address.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::VtaClient;
 use crate::error::VtaError;
+use crate::protocols::consent_management::{
+    ConsentApproverListBody, ConsentApproverSetBody, ConsentDecisionBody, ConsentListBody,
+    ConsentRequestBody, ConsentRevokeBody,
+};
 use crate::trust_tasks;
 
 /// Round-trip timeout (seconds) for consent trust tasks.
@@ -31,17 +35,13 @@ impl VtaClient {
         display_hint: Option<&str>,
         context_hint: Option<&str>,
     ) -> Result<Value, VtaError> {
-        let mut payload = json!({
-            "subject": subject,
-            "scope": scope,
-            "challenge": challenge,
-        });
-        if let Some(h) = display_hint {
-            payload["displayHint"] = json!(h);
-        }
-        if let Some(c) = context_hint {
-            payload["contextHint"] = json!(c);
-        }
+        let payload = serde_json::to_value(ConsentRequestBody {
+            subject,
+            scope: scope.to_string(),
+            challenge: challenge.to_string(),
+            display_hint: display_hint.map(str::to_string),
+            context_hint: context_hint.map(str::to_string),
+        })?;
         self.dispatch_trust_task(
             trust_tasks::TASK_CONSENT_REQUEST_1_0,
             payload,
@@ -62,19 +62,13 @@ impl VtaClient {
         challenge: Option<&str>,
         expires_at: Option<&str>,
     ) -> Result<Value, VtaError> {
-        let mut payload = json!({
-            "subject": subject,
-            "effect": effect,
-        });
-        if let Some(s) = scope {
-            payload["scope"] = json!(s);
-        }
-        if let Some(c) = challenge {
-            payload["challenge"] = json!(c);
-        }
-        if let Some(e) = expires_at {
-            payload["expiresAt"] = json!(e);
-        }
+        let payload = serde_json::to_value(ConsentDecisionBody {
+            subject,
+            effect: effect.to_string(),
+            scope: scope.map(str::to_string),
+            challenge: challenge.map(str::to_string),
+            expires_at: expires_at.map(str::to_string),
+        })?;
         self.dispatch_trust_task(
             trust_tasks::TASK_CONSENT_DECISION_1_0,
             payload,
@@ -89,10 +83,10 @@ impl VtaClient {
         subject: Value,
         reason: Option<&str>,
     ) -> Result<Value, VtaError> {
-        let mut payload = json!({ "subject": subject });
-        if let Some(r) = reason {
-            payload["reason"] = json!(r);
-        }
+        let payload = serde_json::to_value(ConsentRevokeBody {
+            subject,
+            reason: reason.map(str::to_string),
+        })?;
         self.dispatch_trust_task(
             trust_tasks::TASK_CONSENT_REVOKE_1_0,
             payload,
@@ -109,16 +103,11 @@ impl VtaClient {
         platform: Option<&str>,
         subject: Option<Value>,
     ) -> Result<Value, VtaError> {
-        let mut payload = json!({});
-        if let Some(a) = agent {
-            payload["agent"] = json!(a);
-        }
-        if let Some(p) = platform {
-            payload["platform"] = json!(p);
-        }
-        if let Some(s) = subject {
-            payload["subject"] = s;
-        }
+        let payload = serde_json::to_value(ConsentListBody {
+            agent: agent.map(str::to_string),
+            platform: platform.map(str::to_string),
+            subject,
+        })?;
         self.dispatch_trust_task(
             trust_tasks::TASK_CONSENT_LIST_1_0,
             payload,
@@ -138,17 +127,13 @@ impl VtaClient {
         route: Option<&str>,
         route_hint: Option<&str>,
     ) -> Result<Value, VtaError> {
-        let mut payload = json!({
-            "platform": platform,
-            "context": context,
-            "approver": approver,
-        });
-        if let Some(r) = route {
-            payload["route"] = json!(r);
-        }
-        if let Some(h) = route_hint {
-            payload["routeHint"] = json!(h);
-        }
+        let payload = serde_json::to_value(ConsentApproverSetBody {
+            platform: platform.to_string(),
+            context: context.to_string(),
+            approver: approver.to_string(),
+            route: route.map(str::to_string),
+            route_hint: route_hint.map(str::to_string),
+        })?;
         self.dispatch_trust_task(
             trust_tasks::TASK_CONSENT_APPROVER_SET_1_0,
             payload,
@@ -164,13 +149,10 @@ impl VtaClient {
         platform: Option<&str>,
         context: Option<&str>,
     ) -> Result<Value, VtaError> {
-        let mut payload = json!({});
-        if let Some(p) = platform {
-            payload["platform"] = json!(p);
-        }
-        if let Some(c) = context {
-            payload["context"] = json!(c);
-        }
+        let payload = serde_json::to_value(ConsentApproverListBody {
+            platform: platform.map(str::to_string),
+            context: context.map(str::to_string),
+        })?;
         self.dispatch_trust_task(
             trust_tasks::TASK_CONSENT_APPROVER_LIST_1_0,
             payload,
