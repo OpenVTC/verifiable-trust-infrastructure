@@ -1312,11 +1312,16 @@ fn run_rest_thread(
         // service restart (which the operator triggers via
         // /vta/restart after editing the file), so reading the
         // current values here is correct.
-        let (cors_origins, trust_xff) = {
+        let (cors_origins, trust_xff, rps, burst) = {
             let cfg = state.config.read().await;
-            (cfg.server.cors_origins.clone(), cfg.server.trust_xff)
+            (
+                cfg.server.cors_origins.clone(),
+                cfg.server.trust_xff,
+                cfg.server.rate_limit_rps,
+                cfg.server.rate_limit_burst,
+            )
         };
-        let traced_routes = routes::router_with_cors(&cors_origins, trust_xff)
+        let traced_routes = routes::router_with_cors(&cors_origins, trust_xff, rps, burst)
             .with_state(state.clone())
             .layer(axum::middleware::from_fn(crate::metrics::track_metrics))
             .layer(

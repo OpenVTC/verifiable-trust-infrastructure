@@ -381,6 +381,15 @@ pub struct ServerConfig {
     /// Closes L2 from the May 2026 security review.
     #[serde(default)]
     pub trust_xff: bool,
+    /// Token replenishment interval for the unauth rate limiter (seconds per
+    /// token). `per_second(5)` = one new token every 5 s; with `burst_size(10)`
+    /// that allows 10 rapid requests then 1 every 5 s. Default: 5.
+    /// Lower values = more permissive. Set to 1 for local dev.
+    #[serde(default = "default_rate_limit_rps")]
+    pub rate_limit_rps: u64,
+    /// Burst capacity for the rate limiter (max tokens). Default: 10.
+    #[serde(default = "default_rate_limit_burst")]
+    pub rate_limit_burst: u32,
 }
 
 fn default_host() -> String {
@@ -389,6 +398,14 @@ fn default_host() -> String {
 
 fn default_port() -> u16 {
     8100
+}
+
+fn default_rate_limit_rps() -> u64 {
+    5
+}
+
+fn default_rate_limit_burst() -> u32 {
+    10
 }
 
 fn default_server_config() -> ServerConfig {
@@ -408,6 +425,8 @@ impl Default for ServerConfig {
             port: default_port(),
             cors_origins: Vec::new(),
             trust_xff: false,
+            rate_limit_rps: default_rate_limit_rps(),
+            rate_limit_burst: default_rate_limit_burst(),
         }
     }
 }

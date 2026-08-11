@@ -117,11 +117,12 @@ pub(super) const BACKUP_BLOB_BODY_SIZE: usize = 100 * 1024 * 1024;
 
 /// Per-client-IP rate-limit budget for unauthenticated endpoints.
 ///
-/// 5 req/sec with a 10-request burst — loose enough that a legit operator
-/// running provisioning scripts doesn't hit it, tight enough that a
-/// sustained flood from one IP is rejected with 429. These endpoints do
-/// real crypto work (attestation, HPKE seal, Ed25519 verify) so throttling
-/// them protects VTA CPU regardless of any reverse proxy upstream.
+/// `per_second(n)` = replenish one token every `n` seconds.
+/// `burst_size(b)` = bucket holds `b` tokens.
+/// So (5, 10) = 10 rapid requests then 1 every 5 s.
+///
+/// Overridable via `[server]` config: `rate_limit_rps` / `rate_limit_burst`.
+/// Lower `rate_limit_rps` = more permissive. Set to 1 for local dev.
 const UNAUTH_RPS: u64 = 5;
 const UNAUTH_BURST: u32 = 10;
 
@@ -149,25 +150,29 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 fn apply_unauth_governor(
     router: OpenApiRouter<AppState>,
     trust_xff: bool,
+    rps: u64,
+    burst: u32,
 ) -> OpenApiRouter<AppState> {
+    let rps = rps.max(1);
+    let burst = burst.max(1);
     if trust_xff {
         let cfg = Arc::new(
             GovernorConfigBuilder::default()
-                .per_second(UNAUTH_RPS)
-                .burst_size(UNAUTH_BURST)
+                .per_second(rps)
+                .burst_size(burst)
                 .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
                 .finish()
-                .expect("governor config values are static and non-zero"),
+                .expect("rate_limit_rps and rate_limit_burst are clamped to ≥1"),
         );
         router.layer(GovernorLayer::new(cfg))
     } else {
         let cfg = Arc::new(
             GovernorConfigBuilder::default()
-                .per_second(UNAUTH_RPS)
-                .burst_size(UNAUTH_BURST)
+                .per_second(rps)
+                .burst_size(burst)
                 .key_extractor(tower_governor::key_extractor::PeerIpKeyExtractor)
                 .finish()
-                .expect("governor config values are static and non-zero"),
+                .expect("rate_limit_rps and rate_limit_burst are clamped to ≥1"),
         );
         router.layer(GovernorLayer::new(cfg))
     }
@@ -246,7 +251,7 @@ fn build_cors_layer(allowed_origins: &[String]) -> Option<CorsLayer> {
 }
 
 pub fn router() -> Router<AppState> {
-    router_with_cors(&[], false)
+    router_with_cors(&[], false, UNAUTH_RPS, UNAUTH_BURST)
 }
 
 /// Assemble the VTA REST surface as an [`OpenApiRouter`] — the single source
@@ -266,7 +271,11 @@ pub fn router() -> Router<AppState> {
 ///   `Forwarded`. Only safe behind a trust-boundary reverse
 ///   proxy that overwrites or strips these headers from external
 ///   requests. Misconfiguring this is a silent rate-limit bypass.
-fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
+///
+/// `rps` / `burst` control the per-IP rate limiter on unauthenticated
+/// endpoints. Read from `[server]` config at startup; fall back to
+/// [`UNAUTH_RPS`] / [`UNAUTH_BURST`] for tests and the OpenAPI spec builder.
+fn build_api_router(trust_xff: bool, rps: u64, burst: u32) -> OpenApiRouter<AppState> {
     // Per-IP rate-limit layer applied to every unauthenticated endpoint.
     // Authenticated routes stay unthrottled — JWT auth is itself a gate,
     // and legitimate operator traffic against the management plane
@@ -333,7 +342,7 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
     // import etc.
     let unauth = unauth.layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
     // Rate-limit every unauth endpoint (see `apply_unauth_governor`).
-    let unauth = apply_unauth_governor(unauth, trust_xff);
+    let unauth = apply_unauth_governor(unauth, trust_xff, rps, burst);
 
     // Auth portal — same-origin popup target for cross-origin WebAuthn
     // flows. Sits on its own router branch so:
@@ -551,7 +560,7 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
     let backup_blob_router = OpenApiRouter::new()
         .routes(routes!(backup_blob::get_blob, backup_blob::post_blob))
         .layer(DefaultBodyLimit::max(BACKUP_BLOB_BODY_SIZE));
-    let backup_blob_router = apply_unauth_governor(backup_blob_router, trust_xff);
+    let backup_blob_router = apply_unauth_governor(backup_blob_router, trust_xff, rps, burst);
     let router = router.merge(backup_blob_router);
 
     // Authenticated health details and capabilities
@@ -571,19 +580,26 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
 pub fn openapi_spec() -> utoipa::openapi::OpenApi {
     // CORS attribution doesn't affect the documented surface; build with the
     // safe default.
-    build_api_router(false).split_for_parts().1
+    build_api_router(false, UNAUTH_RPS, UNAUTH_BURST)
+        .split_for_parts()
+        .1
 }
 
 /// Build the router and conditionally apply a CORS layer for the given list of
 /// allowed origins. Wraps [`build_api_router`] for callers (production VTA
 /// front-ends) that already hold a config; empty list = no layer = legacy
 /// behaviour. See [`build_api_router`] for the `trust_xff` semantics.
-pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<AppState> {
+pub fn router_with_cors(
+    allowed_origins: &[String],
+    trust_xff: bool,
+    rps: u64,
+    burst: u32,
+) -> Router<AppState> {
     // Finalise the OpenAPI document from the assembled router (paths come from
     // the `routes!()` registrations) and recover a plain axum `Router` to layer
     // + serve. Splitting here, *before* the global layers, lets `/openapi.json`
     // be added as a sibling that the same global layers then wrap.
-    let (router, api) = build_api_router(trust_xff).split_for_parts();
+    let (router, api) = build_api_router(trust_xff, rps, burst).split_for_parts();
     let router = router.route("/openapi.json", get(move || serve_openapi(api.clone())));
 
     // Apply global request body size limit to protect enclave memory,
@@ -751,5 +767,18 @@ mod cors_tests {
         let _with = health_router_with_cors(&["http://localhost:8000".to_string()]);
         let _without = health_router_with_cors(&[]);
         let _wildcard_only = health_router_with_cors(&["*".to_string()]);
+    }
+
+    #[test]
+    fn build_api_router_accepts_custom_rate_limit() {
+        // Constructing with non-default rps/burst must not panic.
+        let _ = build_api_router(false, 50, 100);
+        let _ = build_api_router(true, 1000, 2000);
+    }
+
+    #[test]
+    fn router_with_cors_passes_rate_limit_through() {
+        // The full router assembly with custom rate limits must not panic.
+        let _ = router_with_cors(&[], false, 50, 100);
     }
 }
