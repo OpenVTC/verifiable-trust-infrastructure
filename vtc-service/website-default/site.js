@@ -37,6 +37,81 @@ function showMediatorRow(did) {
   row.hidden = false;
 }
 
+/**
+ * Render "how do I reach this community, and does it work right now".
+ *
+ * Each transport carries two independent facts, and both are shown:
+ *   advertised  — the community's DID document offers it, so a resolving
+ *                 client will find it;
+ *   serviceable — this VTC can answer on it at the moment.
+ *
+ * Reachable means both. They are deliberately not collapsed into one badge:
+ * "advertised but not serviceable" is precisely the state that silently broke
+ * a live deployment (a DID document offering TSP to a binary that could not
+ * serve it), and a single boolean would hide it all over again.
+ *
+ * The DID document remains authoritative for transport selection — this is a
+ * view of it for humans and monitors, never a substitute. A client picks a
+ * transport by matching the document's service `type`.
+ */
+function showTransports(transports) {
+  const row = document.getElementById("transports-row");
+  const list = document.getElementById("transport-list");
+  // An empty list means the community DID did not resolve, so the daemon
+  // could not tell us what it advertises. Leave the row hidden rather than
+  // render an empty state a visitor would read as "offers nothing".
+  if (!row || !list || !Array.isArray(transports) || transports.length === 0) {
+    return;
+  }
+
+  list.replaceChildren();
+  for (const t of transports) {
+    if (!t || typeof t.protocol !== "string") continue;
+
+    const item = document.createElement("li");
+    item.className = "transport";
+
+    const name = document.createElement("code");
+    name.className = "transport-name";
+    name.textContent = t.protocol.toUpperCase();
+    item.append(name);
+
+    const note = document.createElement("span");
+    if (t.advertised && t.serviceable) {
+      item.classList.add("is-reachable");
+      note.className = "transport-note ok";
+      note.textContent = "reachable";
+    } else if (t.advertised) {
+      // Advertised but not answering. The one a visitor most needs to see:
+      // a conforming client will choose this and get nothing.
+      item.classList.add("is-degraded");
+      note.className = "transport-note warn";
+      note.textContent = "advertised, not responding";
+    } else if (t.serviceable) {
+      // Supported but not published, so nothing will route to it. Normal
+      // mid-rollout; stated so the gap is legible rather than mysterious.
+      note.className = "transport-note muted";
+      note.textContent = "supported, not advertised";
+    } else {
+      note.className = "transport-note muted";
+      note.textContent = "not available";
+    }
+    item.append(note);
+
+    // Only meaningful when advertised — that is the address a client uses.
+    if (t.advertised && t.endpoint) {
+      const endpoint = document.createElement("code");
+      endpoint.className = "transport-endpoint";
+      endpoint.textContent = t.endpoint;
+      item.append(endpoint);
+    }
+
+    list.append(item);
+  }
+
+  row.hidden = false;
+}
+
 function showLogo(url, alt) {
   const img = document.getElementById("community-logo");
   if (!img || !url) return;
@@ -186,6 +261,9 @@ async function refresh() {
       if (profile.mediatorDid) {
         showMediatorRow(profile.mediatorDid);
       }
+      // Same fetch carries the transport view, so validating connectivity
+      // costs nothing extra.
+      showTransports(profile.transports);
     }
   } catch (err) {
     // The default landing page sits in front of every freshly-

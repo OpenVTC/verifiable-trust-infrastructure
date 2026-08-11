@@ -72,6 +72,23 @@ pub struct PublicCommunityProfile {
     /// Sourced from the live daemon config (same as `/health`), not
     /// the persisted profile row.
     pub mediator_did: Option<String>,
+    /// How to reach this community, and whether each route currently works.
+    ///
+    /// Every protocol is listed, each carrying `advertised` (the DID document
+    /// offers it) and `serviceable` (this VTC can answer on it right now).
+    /// Reachable means both.
+    ///
+    /// **The DID document remains authoritative.** This is a *view* of it,
+    /// resolved at request time, published so a visitor or a monitor can
+    /// validate connectivity without resolving the DID themselves — never an
+    /// independent declaration. A client choosing a transport must still match
+    /// on the document's service `type`; if the two ever disagree, the document
+    /// wins and this field is the thing that is wrong.
+    ///
+    /// Empty when the community's own DID could not be resolved — reported as
+    /// unknown rather than as "advertises nothing", which would be a lie a
+    /// caller might act on.
+    pub transports: Vec<crate::transport_capability::TransportStatus>,
 }
 
 /// Public GET handler. Trust-Task-exempt, no auth. Returns only the
@@ -98,6 +115,37 @@ pub async fn get_public_profile(
         .messaging
         .as_ref()
         .map(|m| m.mediator_did.clone());
+
+    // Live mediator connectivity, off the delivery transport's re-falsifiable
+    // signal — the same source `/health/diagnostics` reads, never a boot latch
+    // (R6.2). A published "reachable" that cannot go false again would be worse
+    // than publishing nothing.
+    let messaging_connected = matches!(
+        state.didcomm.get().map(|m| m.service.status()),
+        Some(affinidi_messaging_delivery::MessagingStatus::Connected)
+    );
+
+    // Resolved rather than read from config or the local `did.jsonl`: the
+    // document is the authority for what this community advertises, and it can
+    // gain a service long after the VTC last wrote its own mirror — which is
+    // exactly what happened to the deployment that motivated this
+    // (`#tsp` arrived at DID log version 3). The resolver caches, so the common
+    // case costs no network even though this endpoint is unauthenticated.
+    let transports = match crate::transport_capability::resolved_capabilities(
+        state.did_resolver.as_ref(),
+        &profile.community_did,
+    )
+    .await
+    {
+        Some(caps) => {
+            crate::transport_capability::public_transport_view_for_build(&caps, messaging_connected)
+        }
+        // Unknown, not "none". Publishing an empty advertised set would tell a
+        // visitor this community offers no way in, which is a different — and
+        // actionable — claim from "we could not check".
+        None => Vec::new(),
+    };
+
     Ok(Json(PublicCommunityProfile {
         community_did: profile.community_did,
         name: profile.name,
@@ -108,6 +156,7 @@ pub async fn get_public_profile(
         language: profile.language,
         created_at: profile.created_at,
         mediator_did,
+        transports,
     }))
 }
 

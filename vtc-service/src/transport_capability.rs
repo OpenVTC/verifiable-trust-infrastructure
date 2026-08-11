@@ -48,6 +48,7 @@
 //! is unservable, and both ways to fix it — so an operator can tell a
 //! capability mismatch from a network or auth failure.
 
+use serde::Serialize;
 use vta_sdk::protocol::matching::{Protocol, ServiceCapabilities};
 
 /// The transports a build with the `tsp` feature serves inbound.
@@ -312,6 +313,92 @@ pub fn findings_against(served: &[Protocol], caps: &ServiceCapabilities) -> Vec<
 #[must_use]
 pub fn findings_for_build(caps: &ServiceCapabilities) -> Vec<Finding> {
     findings_against(served_transports(), caps)
+}
+
+/// One transport's public connectivity status, as reported on the
+/// unauthenticated community profile.
+///
+/// The two flags answer different questions and both are needed:
+///
+/// - `advertised` — will a client resolving this community's DID *find* this
+///   transport? Read from the DID document, which is the authority (CLAUDE.md).
+/// - `serviceable` — if reached on it, can this VTC actually answer? Build
+///   capability plus live messaging connectivity.
+///
+/// A transport is genuinely reachable only when **both** are true. Splitting
+/// them is the point: the failure that motivated all of this was `advertised`
+/// without `serviceable`, and a single boolean would have hidden it exactly the
+/// way the original defect did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TransportStatus {
+    /// `"tsp"` / `"didcomm"` / `"rest"`.
+    pub protocol: String,
+    /// Present in the community's DID document, so a resolving client will
+    /// find it.
+    pub advertised: bool,
+    /// This VTC can answer on it right now. For the messaging transports that
+    /// means the build supports the protocol *and* the mediator connection is
+    /// live — a re-falsifiable signal, never a boot-time latch (R6.2).
+    pub serviceable: bool,
+    /// The advertised endpoint: the mediator DID for TSP/DIDComm, the base URL
+    /// for REST. `None` when not advertised — there is no endpoint to give.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+}
+
+/// The public transport view: every protocol, whether the document advertises
+/// it, and whether this VTC can serve it.
+///
+/// Deliberately reports **all three** protocols rather than only the advertised
+/// ones, so the response shape is stable and a client can tell "not advertised"
+/// from "absent from an older response". A `serviceable` transport that is not
+/// `advertised` is the staged-rollout state — the binary is ready, the DID
+/// document has not caught up.
+///
+/// Discloses nothing that isn't already public or externally observable:
+/// `advertised` and `endpoint` are read straight out of the DID document, which
+/// anyone can resolve, and `serviceable` is discoverable by simply attempting
+/// the transport. Deliberately **excluded**: build feature flags, version
+/// strings, and the operator-facing remediation text from [`Finding`] — those
+/// are for `vtc status` and the daemon log, not a public page.
+///
+/// `messaging_connected` is the live mediator-connection signal; REST is always
+/// serviceable, since serving this response proves it.
+#[must_use]
+pub fn public_transport_view(
+    served: &[Protocol],
+    caps: &ServiceCapabilities,
+    messaging_connected: bool,
+) -> Vec<TransportStatus> {
+    Protocol::PREFERENCE_ORDER
+        .into_iter()
+        .map(|protocol| {
+            let endpoint = caps.endpoint(protocol).map(str::to_string);
+            let serviceable = match protocol {
+                // Answering this request is the proof.
+                Protocol::Rest => true,
+                // A messaging transport needs both halves: compiled in, and a
+                // live socket to the mediator.
+                _ => served.contains(&protocol) && messaging_connected,
+            };
+            TransportStatus {
+                protocol: protocol.as_str().to_string(),
+                advertised: endpoint.is_some(),
+                serviceable,
+                endpoint,
+            }
+        })
+        .collect()
+}
+
+/// [`public_transport_view`] for the transports this build serves.
+#[must_use]
+pub fn public_transport_view_for_build(
+    caps: &ServiceCapabilities,
+    messaging_connected: bool,
+) -> Vec<TransportStatus> {
+    public_transport_view(served_transports(), caps, messaging_connected)
 }
 
 /// The DID-document state from the VTC's own on-disk `did.jsonl`, if it has
@@ -680,6 +767,108 @@ mod tests {
             cfg!(feature = "tsp"),
             "`tsp` must stay a default feature of vtc-service: the shipped binary has to serve \
              the TSP its DID document may advertise."
+        );
+    }
+
+    // ─── the public transport view ───────────────────────────────────────
+
+    fn status<'a>(view: &'a [TransportStatus], protocol: &str) -> &'a TransportStatus {
+        view.iter()
+            .find(|t| t.protocol == protocol)
+            .unwrap_or_else(|| panic!("{protocol} missing from the view: {view:?}"))
+    }
+
+    /// The shape is stable: all three protocols, always, in preference order.
+    /// A consumer must be able to tell "not advertised" from "this response is
+    /// from an older build that omitted the field".
+    #[test]
+    fn every_protocol_is_reported_in_preference_order() {
+        let view = public_transport_view(TSP_BUILD, &deployed_shape(), true);
+        assert_eq!(
+            view.iter().map(|t| t.protocol.as_str()).collect::<Vec<_>>(),
+            vec!["tsp", "didcomm", "rest"]
+        );
+    }
+
+    /// The deployed community, served by a build that can answer: TSP is
+    /// advertised and serviceable, and carries the mediator DID a client needs.
+    #[test]
+    fn an_advertised_and_servable_transport_reports_both() {
+        let view = public_transport_view(TSP_BUILD, &deployed_shape(), true);
+        let tsp = status(&view, "tsp");
+        assert!(tsp.advertised && tsp.serviceable);
+        assert_eq!(tsp.endpoint.as_deref(), Some("did:webvh:y:h:mediator"));
+    }
+
+    /// The failure this whole line of work exists for, as a visitor would see
+    /// it: advertised, but not serviceable. A single "reachable" boolean would
+    /// have collapsed these two and hidden it — the same way the original
+    /// defect was hidden.
+    #[test]
+    fn advertised_but_unservable_is_visible_as_two_separate_facts() {
+        let view = public_transport_view(NON_TSP_BUILD, &deployed_shape(), true);
+        let tsp = status(&view, "tsp");
+        assert!(tsp.advertised, "the document offers it");
+        assert!(!tsp.serviceable, "this build cannot answer on it");
+    }
+
+    /// The staged-rollout state: the binary is ready, the document has not
+    /// caught up. Serviceable, not advertised, and no endpoint to give.
+    #[test]
+    fn servable_but_unadvertised_reports_no_endpoint() {
+        let view = public_transport_view(TSP_BUILD, &didcomm_only(), true);
+        let tsp = status(&view, "tsp");
+        assert!(!tsp.advertised);
+        assert!(tsp.serviceable);
+        assert_eq!(tsp.endpoint, None, "nothing to publish when unadvertised");
+    }
+
+    /// A dropped mediator connection makes every messaging transport
+    /// unserviceable — and must, or the published flag is a latch (R6.2).
+    /// REST stays serviceable: answering the request proves it.
+    #[test]
+    fn losing_the_mediator_makes_messaging_unserviceable_but_not_rest() {
+        let view = public_transport_view(TSP_BUILD, &tsp_and_didcomm(), false);
+        assert!(!status(&view, "tsp").serviceable);
+        assert!(!status(&view, "didcomm").serviceable);
+        assert!(
+            status(&view, "rest").serviceable,
+            "serving this response is the proof REST works"
+        );
+    }
+
+    /// Nothing in the public view leaks build configuration or operator
+    /// remediation. `Finding`'s text names feature flags and rebuild commands
+    /// on purpose — for `vtc status` and the daemon log. It must not ride out
+    /// on an unauthenticated endpoint.
+    #[test]
+    fn the_public_view_leaks_no_build_detail() {
+        let view = public_transport_view(NON_TSP_BUILD, &deployed_shape(), true);
+        let json = serde_json::to_string(&view).expect("serialises");
+        for leak in ["feature", "--features", "rebuild", "cargo", "version"] {
+            assert!(
+                !json.contains(leak),
+                "public transport view must not mention {leak:?}: {json}"
+            );
+        }
+    }
+
+    /// Wire casing is camelCase (R3.1), and the two flags are named
+    /// distinctly enough that a consumer cannot confuse them.
+    #[test]
+    fn wire_shape_is_camel_case() {
+        let view = public_transport_view(TSP_BUILD, &deployed_shape(), true);
+        let json = serde_json::to_value(&view).expect("serialises");
+        let first = &json[0];
+        assert!(first.get("protocol").is_some());
+        assert!(first.get("advertised").is_some());
+        assert!(first.get("serviceable").is_some());
+        assert!(first.get("endpoint").is_some());
+        // Not snake_case, and no stray fields.
+        assert_eq!(
+            first.as_object().unwrap().len(),
+            4,
+            "unexpected fields on the public wire type: {first}"
         );
     }
 

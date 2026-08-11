@@ -177,6 +177,7 @@ async fn the_mock_advertises_tsp_and_didcomm_and_serves_both() {
     // This build serves everything it advertises...
     assert_eq!(classify_against(TSP_BUILD, &caps), MessagingVerdict::Ok);
     // ...and the same document in a build without `tsp` is a mismatch the
+
     // startup check reports rather than a silent drop. Degraded, not
     // Unreachable, because DIDComm is still advertised here — unlike the
     // deployed VTC, which offered TSP alone.
@@ -186,6 +187,96 @@ async fn the_mock_advertises_tsp_and_didcomm_and_serves_both() {
             MessagingVerdict::Degraded(u) if u.len() == 1 && u[0].protocol == Protocol::Tsp
         ),
         "a non-tsp build must report the advertised TSP it cannot serve"
+    );
+
+    mock.shutdown().await;
+}
+
+/// The public connectivity view, end to end against a real running VTC: a
+/// visitor (or a monitor) fetching the unauthenticated community profile can
+/// see which transports this community offers and whether each one answers.
+///
+/// This is the populated counterpart to
+/// `community_profile::public_profile_reports_unknown_transports_when_the_did_does_not_resolve`,
+/// and it needs the TSP harness because it needs a VTC whose DID actually
+/// resolves to a document advertising real transports — the whole point being
+/// that the view is derived from the document rather than declared.
+#[tokio::test]
+async fn the_public_profile_publishes_a_usable_connectivity_view() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    init_tracing();
+    let mock = MockVtcDidcomm::start_with_tsp().await;
+
+    // `public-profile` 404s without a profile row; the community DID must be
+    // the harness's resolvable did:peer so the view is built from its document.
+    vtc_service::community::store_profile(
+        &mock.vtc.state.community_ks,
+        &vtc_service::community::CommunityProfile::new(mock.vtc_did(), "TSP Test Community"),
+    )
+    .await
+    .expect("seed community profile");
+
+    let resp = mock
+        .vtc
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/community/public-profile")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes())
+            .expect("public profile is JSON");
+
+    let transports = body["transports"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no transports array: {body}"));
+
+    let find = |protocol: &str| {
+        transports
+            .iter()
+            .find(|t| t["protocol"] == protocol)
+            .unwrap_or_else(|| panic!("{protocol} missing: {body}"))
+    };
+
+    // The harness advertises both messaging transports and this build serves
+    // both, so both read as genuinely reachable — advertised *and* serviceable.
+    for protocol in ["tsp", "didcomm"] {
+        let t = find(protocol);
+        assert_eq!(
+            t["advertised"], true,
+            "{protocol} should be advertised: {t}"
+        );
+        assert_eq!(
+            t["serviceable"], true,
+            "{protocol} should be serviceable — the listener is up and this build supports it: {t}"
+        );
+        assert!(
+            t["endpoint"].is_string(),
+            "an advertised transport must publish the endpoint a client routes to: {t}"
+        );
+    }
+
+    // REST is always serviceable — answering this very request proves it — but
+    // this harness's did:peer advertises no REST service, so it is not
+    // reachable. Exactly the "supported, not advertised" state, and the reason
+    // the two flags are reported separately rather than as one boolean.
+    let rest = find("rest");
+    assert_eq!(rest["serviceable"], true);
+    assert_eq!(rest["advertised"], false);
+    assert!(
+        rest["endpoint"].is_null(),
+        "an unadvertised transport has no endpoint to publish: {rest}"
     );
 
     mock.shutdown().await;

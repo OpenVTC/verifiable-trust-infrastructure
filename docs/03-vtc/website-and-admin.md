@@ -188,6 +188,61 @@ that fetches `/v1/community/profile` + `/health` and renders them.
 The moment an operator sets `root_dir`, the filesystem handler
 takes over and the default is unreachable.
 
+### Transport connectivity
+
+`GET /v1/community/public-profile` (public, unauthenticated) carries a
+`transports` array, and the default landing page renders it as a
+**Transports** row. Anyone can use it to check how to reach the
+community and whether each route currently answers:
+
+```console
+$ curl -s https://community.example/v1/community/public-profile | jq .transports
+[
+  { "protocol": "tsp",     "advertised": true,  "serviceable": true,
+    "endpoint": "did:webvh:QmTS3…:mediator" },
+  { "protocol": "didcomm", "advertised": false, "serviceable": true },
+  { "protocol": "rest",    "advertised": true,  "serviceable": true,
+    "endpoint": "https://community.example" }
+]
+```
+
+Each transport carries **two** facts, and they mean different things:
+
+| Field | Question it answers |
+|---|---|
+| `advertised` | Does the community's DID document offer this transport, so a resolving client will find it? |
+| `serviceable` | Can this VTC answer on it *right now* — protocol compiled in, and the mediator connection live? |
+
+A transport is genuinely reachable only when **both** are true. The
+interesting combinations:
+
+- `advertised: true, serviceable: false` — clients will choose this
+  transport and get nothing. This is the state that silently broke a
+  live deployment; the daemon also refuses to start if *no* advertised
+  transport is serviceable (see `vtc status`).
+- `advertised: false, serviceable: true` — the binary supports it but
+  the DID document has not caught up. Normal mid-rollout; nothing
+  routes to it yet.
+- An **empty** array means the community's own DID could not be
+  resolved, so the answer is *unknown* — not "offers nothing".
+
+Because it is a plain unauthenticated GET, it works from a browser,
+from `curl`, and from a monitoring check. Note the endpoint — not the
+page — is the durable surface: an operator who replaces the website
+with their own keeps the endpoint and can render it however they like.
+
+> **The DID document stays authoritative.** This field is a *view* of
+> it, resolved at request time, published so connectivity can be
+> validated without resolving the DID by hand. A client selecting a
+> transport must still match on the document's service `type`. If the
+> two ever disagree, the document wins.
+
+Deliberately **not** published here: build feature flags, version
+strings, and the operator-facing remediation text. Those stay in
+`vtc status` and the daemon log. Everything in `transports` is either
+already public in the DID document or discoverable by attempting the
+transport.
+
 ## Admin UX
 
 ```mermaid
