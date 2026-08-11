@@ -639,6 +639,49 @@ new flow, update both this section and the relevant `docs/*.md`.
   (EdDSA or ES256). Key derived BIP-32 → signature → memory zeroized.
 - **DIDComm**: `key-management/1.0/sign-request`.
 
+### Approvals + task consent (DTTE)
+- **What**: The single answer to "does this operation need an additional
+  human decision?" One rule list keyed on **Trust Task type URI**, carried
+  in the `ext` of one reserved row (`approvals`, priority 200) in the
+  policy keyspace. `requires: reauth` → PDP `requireStepUp` →
+  self-elevation. `requires: consent` → PDP `requireConsent` → the **DTTE**
+  ceremony (Delegated Trust-Task Execution).
+- **Retired, and refused rather than ignored**: `[auth.step_up]` floors and
+  `[[policy.require_consent]]`. A config carrying either **fails to load**,
+  with an error naming `pnm approvals require …`. Delegated step-up is
+  deleted, not ported — consent binds to the payload digest instead of
+  elevating a session. First boot after upgrade also deletes the stranded
+  `config:require-consent` row.
+- **Enablement**: rules are inert unless `policy.enforcement = true`
+  (`vta-config`, default **false**, config + restart — the runtime
+  config-patch registry carries only `vta_did` / `vta_name` /
+  `public_url`). `[policy.approvals]` / `[policy.approver_sets]` are a
+  **seed applied once**, then the stored row wins; `vta setup --from`
+  cannot carry them (`WizardInputs` is `deny_unknown_fields`).
+- **Runtime surface**: `pnm approvals {list,require,remove,approvers,
+  explain}` and `pnm policy {list,show,upsert,delete}` — read-modify-write
+  of the reserved row over `policy/get/0.1` + `policy/upsert/0.2`.
+  **Trust-Task transport only**; the SDK's REST arm is unimplemented and
+  no `/policies` axum route exists, so a REST client gets a 404.
+- **Offline break-glass**: `vta approvals {list,remove,disable}` +
+  `vta policy {list,delete}`. Deliberately **cannot create** a rule; daemon
+  stopped; not available in TEE.
+- **Ceremony**: `task-consent/request/0.1` (outbound push, VTA-signed),
+  `task-consent/decision/0.1` (**the only dispatched one**, DI-signed by
+  the approver), `task-consent/granted/0.1` (notice). Approver-set
+  membership alone authorizes a decision — an ACL entry is **not** required
+  (#907). Ceremony tasks are exempt from PDP re-gating
+  (`trust_tasks/ceremony.rs`). Two digests: internal `payload_digest` keys
+  storage, challenge-salted `wire_digest` is all the approver ever sees.
+- **Code**: `vta-policy/src/{consent,approvals,defaults,effects,types}.rs`,
+  `vta-service/src/trust_tasks/{policy_gate,task_consent,consent_request,
+  ceremony,planner}.rs`, `vta-service/src/approvals_cli.rs`,
+  `vta-sdk/src/approvals/`, `vta-cli-common/src/{commands/approvals,
+  commands/policy,consent}.rs`, `vta-mobile-core/src/consent.rs`.
+- **Docs**: `docs/02-vta/approvals.md` (the rules),
+  `docs/02-vta/task-consent.md` (the ceremony),
+  `docs/05-design-notes/approvals-convergence.md` (why one model).
+
 ### Vault archival lifecycle (archive / soft-delete / restore / purge)
 - **What**: Full lifecycle for **both** VTA stores — the password
   vault (`vault:` keyspace, `vti_common::vault::VaultEntry`) and the

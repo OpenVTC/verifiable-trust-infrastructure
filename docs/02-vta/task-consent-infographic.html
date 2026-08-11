@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DTTE · Task Consent in the VTA</title>
+<style>
+  :root {
+    --bg: #0a0e1a;
+    --bg-2: #111726;
+    --panel: #161d2f;
+    --panel-2: #1c2540;
+    --line: #2a3450;
+    --ink: #e8edf7;
+    --muted: #94a3c4;
+    --dim: #647196;
+    --accent: #6ea8ff;
+    --accent-2: #58e6c9;
+    --accent-3: #c79bff;
+    --warn: #ffb454;
+    --hard: #ff7a8a;
+    --good: #58e6a8;
+    --shadow: 0 18px 50px rgba(0,0,0,.45);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 700px at 80% -10%, #1a2238 0%, transparent 60%),
+      radial-gradient(1000px 600px at 0% 10%, #16203a 0%, transparent 55%),
+      var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 28px; }
+  .mono { font-family: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
+  a { color: var(--accent); }
+
+  header.hero {
+    padding: 88px 0 64px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(110,168,255,.06), transparent 70%);
+  }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 13px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--accent-2); font-weight: 600;
+    padding: 6px 14px; border: 1px solid var(--line); border-radius: 999px;
+    background: var(--panel);
+  }
+  h1 {
+    font-size: 52px; line-height: 1.08; margin: 22px 0 14px; letter-spacing: -.02em;
+    background: linear-gradient(110deg, #fff 10%, var(--accent) 55%, var(--accent-3) 95%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    max-width: 20ch;
+  }
+  .lede { font-size: 20px; color: var(--muted); max-width: 72ch; margin: 0; }
+  .hero-tags { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
+  .tag {
+    font-size: 13px; color: var(--ink); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px;
+  }
+  .tag b { color: var(--accent-2); font-weight: 600; }
+
+  section { padding: 70px 0; border-bottom: 1px solid var(--line); }
+  .kicker { font-size: 13px; letter-spacing: .16em; text-transform: uppercase; color: var(--dim); font-weight: 600; margin: 0 0 10px; }
+  h2 { font-size: 34px; margin: 0 0 14px; letter-spacing: -.015em; }
+  h2 + .sub { color: var(--muted); font-size: 18px; max-width: 74ch; margin: 0 0 36px; }
+  h3 { font-size: 19px; margin: 8px 0; }
+
+  /* contrast: the old model vs this one */
+  .versus { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .vs {
+    border: 1px solid var(--line); border-radius: 16px; padding: 26px 24px;
+    background: var(--panel); position: relative; overflow: hidden;
+  }
+  .vs::before { content:""; position:absolute; inset:0 0 auto 0; height:4px; }
+  .vs.old::before { background: linear-gradient(90deg, var(--hard), transparent); }
+  .vs.new::before { background: linear-gradient(90deg, var(--good), transparent); }
+  .vs .lbl { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; font-weight: 700; }
+  .vs.old .lbl { color: var(--hard); }
+  .vs.new .lbl { color: var(--good); }
+  .vs p { color: var(--muted); font-size: 15px; margin: 10px 0 0; }
+  .vs ul { margin: 14px 0 0; padding-left: 18px; color: var(--muted); font-size: 15px; }
+  .vs li { margin: 6px 0; }
+
+  .why-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .why {
+    background: linear-gradient(180deg, var(--panel), var(--bg-2));
+    border: 1px solid var(--line); border-radius: 16px; padding: 24px;
+    box-shadow: var(--shadow);
+  }
+  .why .n { font-size: 13px; color: var(--accent); font-weight: 700; letter-spacing: .1em; }
+  .why p { margin: 0; color: var(--muted); font-size: 15px; }
+
+  /* flow */
+  .flow { display: grid; gap: 14px; }
+  .step {
+    display: grid; grid-template-columns: 54px 1fr; gap: 20px; align-items: start;
+    border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; background: var(--panel);
+  }
+  .step .num {
+    width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center;
+    background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--accent); font-weight: 700; font-size: 15px;
+  }
+  .step .who { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent-2); font-weight: 700; }
+  .step h4 { margin: 6px 0 8px; font-size: 18px; }
+  .step p { margin: 0; color: var(--muted); font-size: 15px; }
+  .wire {
+    display: inline-block; margin-top: 12px; font-size: 13px;
+    background: #0d1322; border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 11px; color: var(--accent-2);
+  }
+  .wire.warnline { color: var(--warn); }
+
+  /* dials / capability table */
+  .dials { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .dial { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 24px; }
+  .dial h3 { margin-top: 0; }
+  .dial ul { list-style: none; margin: 14px 0 0; padding: 0; }
+  .dial li { display: flex; gap: 10px; align-items: baseline; margin: 9px 0; font-size: 14.5px; color: var(--muted); }
+  .pill {
+    flex: none; font-size: 10.5px; font-weight: 700; letter-spacing: .08em;
+    padding: 3px 7px; border-radius: 5px; border: 1px solid var(--line);
+  }
+  .pill.live { color: var(--good); background: rgba(88,230,168,.09); }
+  .pill.gap  { color: var(--warn); background: rgba(255,180,84,.09); }
+
+  /* timers */
+  .timers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .timer { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 22px; text-align: center; }
+  .timer .v { font-size: 34px; font-weight: 700; color: var(--accent); letter-spacing: -.02em; }
+  .timer .k { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  .timer .src { font-size: 11.5px; color: var(--dim); margin-top: 8px; }
+
+  /* usage */
+  pre {
+    background: #0d1322; border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px 20px; overflow-x: auto; font-size: 13.5px; line-height: 1.65;
+    font-family: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    color: var(--ink); margin: 0;
+  }
+  pre .c { color: var(--dim); }
+  pre .k { color: var(--accent-3); }
+  pre .s { color: var(--accent-2); }
+  .use-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .use { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 24px; }
+  .use .n { font-size: 13px; color: var(--accent); font-weight: 700; letter-spacing: .1em; }
+  .use h3 { margin: 8px 0 12px; }
+  .use p { color: var(--muted); font-size: 14.5px; margin: 0 0 12px; }
+
+  .note {
+    border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: 12px;
+    background: rgba(255,180,84,.05); padding: 20px 22px; margin-top: 22px;
+  }
+  .note b { color: var(--warn); }
+  .note p { margin: 8px 0 0; color: var(--muted); font-size: 15px; }
+
+  .pitch { background: linear-gradient(180deg, var(--panel), var(--bg-2)); }
+  .pitch p { font-size: 19px; color: var(--muted); max-width: 76ch; }
+  .pitch strong { color: var(--ink); }
+
+  footer { padding: 40px 0 60px; color: var(--dim); font-size: 13.5px; }
+  footer .tags { margin-top: 10px; color: var(--dim); }
+
+  @media (max-width: 900px) {
+    h1 { font-size: 38px; }
+    .why-grid, .dials, .versus, .use-grid { grid-template-columns: 1fr; }
+    .timers { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow">◆ Verifiable Trust Agent · Approvals</span>
+    <h1>DTTE: consent bound to the act, not the session</h1>
+    <p class="lede">
+      <b>Delegated Trust-Task Execution</b> is how a VTA requires that a different
+      party agrees to <em>this exact operation</em> before it runs. Not a login, not a
+      15-minute elevation — an approval bound to one payload, re-checked against the
+      world at the moment it is used, and consumed once.
+    </p>
+    <div class="hero-tags">
+      <span class="tag"><b>Payload-bound</b> digest, not session</span>
+      <span class="tag"><b>N-of-M</b> with requester exclusion</span>
+      <span class="tag"><b>Re-verified</b> at consume</span>
+      <span class="tag"><b>Signed effects</b> shown to the human</span>
+      <span class="tag"><b>Runtime-managed</b> via <span class="mono">pnm approvals</span></span>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <p class="kicker">What changed</p>
+    <h2>One model replaced three</h2>
+    <p class="sub">
+      A VTA used to answer "does this need another human?" in three unreconciled
+      places. An operator could be refused for a reason nothing they could read
+      explained. That collapsed into a single rule list — and DTTE is the mechanism
+      the <span class="mono">consent</span> half of it drives.
+    </p>
+    <div class="versus">
+      <div class="vs old">
+        <div class="lbl">Retired</div>
+        <h3>Delegated step-up</h3>
+        <p>
+          A third party ratified, and the result was a <b>session elevation</b>:
+          approve one ACL grant, and for the next fifteen minutes every gated
+          operation passed.
+        </p>
+        <ul>
+          <li>Bound to a session, not an act</li>
+          <li>Keyed on 11 fixed op-class slugs</li>
+          <li>Config file + restart; no runtime surface</li>
+          <li>No threshold, no requester exclusion</li>
+          <li>Approver saw no computed effects</li>
+        </ul>
+      </div>
+      <div class="vs new">
+        <div class="lbl">Live today</div>
+        <h3>Task consent (DTTE)</h3>
+        <p>
+          The approval authorizes exactly the act described. Approving one thing
+          authorizes one thing — there is no window in which other operations pass.
+        </p>
+        <ul>
+          <li>Bound to the payload digest</li>
+          <li>Keyed on the task type URI itself</li>
+          <li><span class="mono">pnm approvals</span> at runtime, no restart</li>
+          <li>N-of-M, optionally excluding the requester</li>
+          <li>Approver reads VTA-signed effects</li>
+        </ul>
+      </div>
+    </div>
+    <div class="note">
+      <b>Note.</b>
+      <p>
+        Everything the earlier step-up vision listed as <em>next</em> — M-of-N quorum
+        on one challenge, four-eyes on the most dangerous actions — ships today under
+        DTTE, with strictly tighter binding. Delegated step-up was removed rather than
+        ported because consent does the same job better.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="kicker">The reasoning</p>
+    <h2>Why it is shaped this way</h2>
+    <p class="sub">Three properties do the real work. Each answers a specific way approvals go wrong.</p>
+    <div class="why-grid">
+      <div class="why">
+        <div class="n">01 — BINDING</div>
+        <h3>Approve an act, not a window</h3>
+        <p>
+          The digest covers the task URI <em>and</em> its canonical payload, length-prefixed
+          so the boundary cannot shift. An approver cannot be shown one payload while a
+          different one executes, nor approve a benign URI whose payload canonicalizes
+          like a destructive one's.
+        </p>
+      </div>
+      <div class="why">
+        <div class="n">02 — FRESHNESS</div>
+        <h3>The world is re-checked at consume</h3>
+        <p>
+          A grant minted minutes ago is not trusted blindly. Policy, approver enrolment,
+          and the pinned state are all re-asserted before the handler runs. An approver
+          removed from the set during the window invalidates the grant.
+        </p>
+      </div>
+      <div class="why">
+        <div class="n">03 — SEPARATION</div>
+        <h3>An approver needs no power to act</h3>
+        <p>
+          Set membership is sufficient to answer — no ACL entry required. The device
+          that agrees to a key revocation holds no authority to revoke keys itself,
+          which is exactly the posture you want for an approver.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="kicker">End-to-end</p>
+    <h2>The ceremony</h2>
+    <p class="sub">
+      Three Trust Task URIs, of which exactly one is dispatched. There are no
+      DTTE-specific REST endpoints — the gate runs on both transports, but the
+      ceremony itself is Trust-Task-only.
+    </p>
+    <div class="flow">
+
+      <div class="step">
+        <div class="num">1</div>
+        <div>
+          <div class="who">● Requester → VTA</div>
+          <h4>Submit the task; the gate refuses it</h4>
+          <p>
+            The PDP returns <span class="mono">requireConsent</span>. The VTA computes the
+            executor-internal payload digest, parks the request as a pending record, and
+            refuses — handing back everything needed to answer: challenge, digest,
+            approver set, threshold, and whether the requester may self-approve.
+          </p>
+          <span class="wire mono">auth:consent_required · VtaError::ConsentRequired</span>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">2</div>
+        <div>
+          <div class="who">● VTA → Approver devices</div>
+          <h4>Push a signed question carrying the effects</h4>
+          <p>
+            The VTA dry-runs the handler it is about to invoke, signs the resulting
+            effects and a state pin into the request, and pushes it to each set member.
+            The effect <span class="mono">kind</span> set is open — a surface must render
+            a kind it does not recognise.
+          </p>
+          <span class="wire mono">task-consent/request/0.1 · outbound only, no handler</span>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">3</div>
+        <div>
+          <div class="who">● Human</div>
+          <h4>Compare the match code, read the effects</h4>
+          <p>
+            Six hex characters, derived from the <b>decoded digest bytes</b> — never from
+            the multibase string, whose first three characters are the constant
+            <span class="mono">zQm</span>. Slicing the encoded form would leave ~17.6 bits
+            where the operator believes they are comparing ~35, while still looking like
+            six random characters.
+          </p>
+          <span class="wire mono">match code = hex(digest)[..6] · UI-only, no wire field</span>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">4</div>
+        <div>
+          <div class="who">● Approver → VTA</div>
+          <h4>Sign a decision echoing the challenge</h4>
+          <p>
+            A Data-Integrity proof authorizes the document — the VTA does not read the
+            sender's ACL claims at all. Set membership is checked, the threshold counted,
+            and the requester barred if the rule says so. This is the only dispatched
+            URI of the three.
+          </p>
+          <span class="wire mono">task-consent/decision/0.1 · DI-signed</span>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">5</div>
+        <div>
+          <div class="who">● VTA</div>
+          <h4>Mint a single-use grant, notify the requester</h4>
+          <p>
+            Threshold met inside the window → a grant keyed to the digest and the
+            requesting DID. Every step is audited:
+            <span class="mono">consent.required</span> →
+            <span class="mono">consent.decision</span> →
+            <span class="mono">consent.granted</span> →
+            <span class="mono">consent.consumed</span>.
+          </p>
+          <span class="wire mono">task-consent/granted/0.1 · fire-and-forget notice</span>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">6</div>
+        <div>
+          <div class="who">● Requester → VTA</div>
+          <h4>Re-submit; the grant is consumed and re-checked</h4>
+          <p>
+            The identical task goes back in. The grant is consumed <em>before</em> the
+            checks can refuse it — single-use is single-use even when the outcome is a
+            refusal. Policy, approver enrolment and the state pin are all re-asserted;
+            only then does the handler run.
+          </p>
+          <span class="wire mono">executed · or auth:consent_stale</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="kicker">Windows</p>
+    <h2>Timers you cannot configure</h2>
+    <p class="sub">
+      All four are hardcoded. Design your operator experience around them — an approver
+      has fifteen minutes to answer, and the requester ten to consume the result.
+    </p>
+    <div class="timers">
+      <div class="timer">
+        <div class="v">900s</div>
+        <div class="k">Pending request TTL</div>
+        <div class="src mono">policy_gate.rs:43</div>
+      </div>
+      <div class="timer">
+        <div class="v">600s</div>
+        <div class="k">Grant lifetime once minted</div>
+        <div class="src mono">task_consent.rs:23</div>
+      </div>
+      <div class="timer">
+        <div class="v">300s</div>
+        <div class="k">Push deliver-by</div>
+        <div class="src mono">consent_request.rs:12</div>
+      </div>
+      <div class="timer">
+        <div class="v">300s</div>
+        <div class="k">CLI wait, polling every 3s</div>
+        <div class="src mono">cli-common/consent.rs:53</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="kicker">The surface</p>
+    <h2>What you can drive, and what you cannot</h2>
+    <p class="sub">
+      Honest state of the surface as it stands. Amber is a real gap, not a roadmap
+      aspiration.
+    </p>
+    <div class="dials">
+
+      <div class="dial">
+        <h3>Declaring the rule</h3>
+        <ul>
+          <li><span class="pill live">LIVE</span> <span><span class="mono">pnm approvals require</span> at runtime, no restart</span></li>
+          <li><span class="pill live">LIVE</span> <span>N-of-M threshold + requester exclusion</span></li>
+          <li><span class="pill live">LIVE</span> <span>Context-scoped rules; scoped beats unscoped</span></li>
+          <li><span class="pill live">LIVE</span> <span>Refused at write time if unsatisfiable</span></li>
+          <li><span class="pill live">LIVE</span> <span><span class="mono">explain</span> names why a rule can never be met</span></li>
+          <li><span class="pill gap">GAP</span> <span>Trust-Task transport only — REST returns 404</span></li>
+        </ul>
+      </div>
+
+      <div class="dial">
+        <h3>Answering the question</h3>
+        <ul>
+          <li><span class="pill live">LIVE</span> <span>DI-signed decision from a mobile approver</span></li>
+          <li><span class="pill live">LIVE</span> <span>Set membership alone suffices — no ACL entry</span></li>
+          <li><span class="pill live">LIVE</span> <span>CLI waits on the gate instead of dying</span></li>
+          <li><span class="pill live">LIVE</span> <span>Stops polling the instant a denial lands</span></li>
+          <li><span class="pill gap">GAP</span> <span>No Rust client can sign a decision</span></li>
+          <li><span class="pill gap">GAP</span> <span>No read-only "approved yet?" status task</span></li>
+        </ul>
+      </div>
+
+      <div class="dial">
+        <h3>Operating it</h3>
+        <ul>
+          <li><span class="pill live">LIVE</span> <span>Full audit chain on every ceremony step</span></li>
+          <li><span class="pill live">LIVE</span> <span>Offline break-glass for a rules lockout</span></li>
+          <li><span class="pill live">LIVE</span> <span>Seed-once config for IaC bring-up</span></li>
+          <li><span class="pill gap">GAP</span> <span><span class="mono">enforcement</span> needs a config edit + restart</span></li>
+          <li><span class="pill gap">GAP</span> <span><span class="mono">list</span>/<span class="mono">explain</span> do not show enforcement state</span></li>
+          <li><span class="pill gap">GAP</span> <span><span class="mono">vta setup --from</span> cannot carry <span class="mono">[policy]</span></span></li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="kicker">How to use it</p>
+    <h2>From nothing to a gated task</h2>
+    <p class="sub">Four steps. Only the first needs a restart.</p>
+    <div class="use-grid">
+
+      <div class="use">
+        <div class="n">STEP 01</div>
+        <h3>Turn the PDP on</h3>
+        <p>
+          Rules are stored and listed but <b>nothing consults them</b> while enforcement
+          is off — and it defaults off. There is no runtime surface for this flag.
+        </p>
+<pre><span class="c"># config.toml — then restart</span>
+[<span class="k">policy</span>]
+enforcement = <span class="s">true</span></pre>
+      </div>
+
+      <div class="use">
+        <div class="n">STEP 02</div>
+        <h3>Declare the rule</h3>
+        <p>
+          Keyed on the task type URI. Your client must be on DIDComm or TSP
+          transport — the REST arm is unimplemented.
+        </p>
+<pre>pnm approvals approvers add ops <span class="s">did:key:z6Mkngm…</span>
+pnm approvals approvers add ops <span class="s">did:key:z6MkSecond…</span>
+
+pnm approvals require \
+  <span class="s">…/spec/vta/webvh/dids/update/1.0</span> \
+  --consent --set ops --min <span class="s">2</span> --exclude-requester</pre>
+      </div>
+
+      <div class="use">
+        <div class="n">STEP 03</div>
+        <h3>Verify it can be satisfied</h3>
+        <p>
+          <span class="mono">explain</span> tells you when a rule can <em>never</em> be
+          met, rather than letting you find out at the next request.
+        </p>
+<pre>pnm approvals explain <span class="s">…/dids/update/1.0</span>
+
+<span class="c">  requires: consent — 2 approval(s) from `ops`,
+            requester excluded
+  approvers: 1 member(s) — fewer than the 2
+            required, so this task can never run</span></pre>
+      </div>
+
+      <div class="use">
+        <div class="n">STEP 04</div>
+        <h3>Run the gated task</h3>
+        <p>
+          The CLI submits, prints the match code, and waits. Approve on a device;
+          the re-submit goes through. Timing out is safe — the pending survives.
+        </p>
+<pre>pnm did-mgmt dids edit …
+
+<span class="c"># waiting for approval · match code 3b0c7f
+# approve on an enrolled device</span></pre>
+      </div>
+
+    </div>
+
+    <div class="note">
+      <b>Upgrading?</b>
+      <p>
+        A config still carrying <span class="mono">[[policy.require_consent]]</span> or
+        <span class="mono">[auth.step_up]</span> <b>will not start</b> — deliberately, and
+        the error names the fix. Your previous consent rules are also deleted rather than
+        orphaned: the first boot after upgrade removes the
+        <span class="mono">config:require-consent</span> row, because the old block was
+        reconciled from file every boot and leaving it would strand a rule nothing could
+        read back or remove. Re-declare with
+        <span class="mono">pnm approvals require</span>.
+      </p>
+    </div>
+
+    <div class="note">
+      <b>Interop hazard.</b>
+      <p>
+        The digest moved from bare hex to <span class="mono">digestMultibase</span> in
+        trust-tasks 0.4. Any approver stack computing a digest independently — the browser
+        plugin, anything on an older <span class="mono">vta-mobile-core</span> — must move
+        in lockstep. A mismatched pair produces an approval that is given, accepted by the
+        human, and then <b>silently never takes effect</b>.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="pitch">
+  <div class="wrap">
+    <p class="kicker">The one-sentence version</p>
+    <h2>Consent is the strong form</h2>
+    <p>
+      <strong>Task consent authorizes an act; re-authentication authorizes a session.</strong>
+      Reach for <span class="mono">--consent</span> whenever the point is that a
+      <em>different party</em> agrees — it binds to the payload digest, re-asserts the world
+      at execution, supports N-of-M with requester exclusion, and puts a VTA-signed statement
+      of what the task will actually do in front of the human. Reach for
+      <span class="mono">--reauth</span> only when you mean "prove it is still you at the
+      keyboard", which raises the assurance of the caller's own session and nothing more.
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    Reference: <span class="mono">docs/02-vta/task-consent.md</span> ·
+    Rules: <span class="mono">docs/02-vta/approvals.md</span> ·
+    Rationale: <span class="mono">docs/05-design-notes/approvals-convergence.md</span>
+    <div class="tags mono">dtte · task-consent · approvals · trust-tasks</div>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -50,6 +50,8 @@ VTA via the `vtc-host` DID template.
 | Deploy a VTA inside a Nitro Enclave | [TEE architecture](02-vta/tee-architecture.md) |
 | Build an app that uses a VTA | [VTA integration guide](02-vta/integration-guide.md) |
 | Provision a mediator / webvh-host / custom integration | [Provision-integration](02-vta/provision-integration.md) |
+| Require a second person to approve an operation | [Approvals](02-vta/approvals.md) |
+| Understand the consent ceremony (DTTE) end to end | [Task consent](02-vta/task-consent.md) |
 | Configure community membership policy | [VTC community lifecycle](03-vtc/community-lifecycle.md) |
 | Host a public community website | [VTC website + admin UX](03-vtc/website-and-admin.md) |
 | Deploy a trust registry and wire a VTC to it | [Trust-registry deployment](03-vtc/trust-registry-deployment.md) |
@@ -104,6 +106,13 @@ How to operate, deploy, and integrate against a VTA.
 - **[Runtime service management](02-vta/runtime-service-management.md)** —
   enable / disable / migrate REST + DIDComm services on a running
   VTA without rebuilds.
+- **[Approvals](02-vta/approvals.md)** — which tasks require
+  re-authentication or human consent before they run, managed at
+  runtime with `pnm approvals`.
+- **[Task consent (DTTE)](02-vta/task-consent.md)** — the approval
+  ceremony behind a `consent` rule: the wire, the timers, who may
+  approve, and what the approver sees. Companion infographic:
+  [task-consent-infographic.html](02-vta/task-consent-infographic.html).
 - **[DID:WebVH update](02-vta/did-webvh-update.md)** — log-entry
   format, rotation, hosting.
 - **[Setup example](02-vta/examples/vta-setup.example.toml)** —
@@ -167,6 +176,11 @@ are implementer-facing rather than operator-facing.
   DID to be bound after initial wallet provisioning.
 - **[DIDComm protocol management](05-design-notes/didcomm-protocol-management.md)** —
   precursor design notes for the runtime service management work.
+- **[Approvals convergence](05-design-notes/approvals-convergence.md)** —
+  why a VTA answers "does this need another human?" in one place
+  rather than three, and what was retired to get there.
+- **[ACL scope semantics](05-design-notes/acl-scope-semantics.md)** —
+  the *act* vs *confer* axis on an ACL entry.
 
 ## Conventions
 

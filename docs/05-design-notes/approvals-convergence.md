@@ -1,8 +1,12 @@
 # Approvals convergence — one model instead of three
 
-**Status:** partially landed. The model and its runtime surface shipped in #909;
-the shared gate reached every gated REST route in #912 and #913. Still open: the
-trigger collapse.
+**Status:** landed. The model and its runtime surface shipped in #909; the shared
+gate reached every gated REST route in #912 and #913; the trigger collapse landed
+in #914 and the offline break-glass in #915. What remains are the deliberate
+deferrals recorded below, not unfinished work.
+
+Operator-facing documentation: [Approvals](../02-vta/approvals.md) for the rules,
+[Task consent](../02-vta/task-consent.md) for the ceremony they trigger.
 
 ## What prompted it
 
@@ -126,7 +130,11 @@ place: `list` and `disable` each parsed the declarative row *before* acting, so
 neither worked on an unparseable row — the state where every other command has
 already failed and this is all that is left. Parsing is now best-effort in both.
 
-## Not yet landed
+## Deferred
+
+Three things were deliberately left out of scope. None of them is unfinished
+work from the convergence itself — each needs either a deprecation window or a
+design call of its own.
 
 **`AclEntry.step_up_approver` / `step_up_require`.** Published wire fields across
 ~250 VTA-side references (`operations/acl.rs` alone has 49) plus CLI flags.
@@ -148,7 +156,10 @@ vault-flow `SiteTarget`) required, and there is no honest value for "would
 `acl/grant` need approval". Needs an upstream schema relaxation;
 `pnm approvals explain` answers from the rules instead.
 
-### The live gap, and the order to close it
+## How the REST gap was closed
+
+*All of this has landed; it is kept because the sequencing is the reusable
+lesson.*
 
 The PDP gate ran *only* in the trust-task dispatcher: `routes/acl.rs::create_acl`
 and `routes/did_webvh.rs::update_did_handler` called their operations directly,

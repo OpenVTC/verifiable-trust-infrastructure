@@ -1,5 +1,12 @@
-//! Task-execution consent — the data layer behind the PDP's `requireConsent`
-//! disposition.
+//! Task-execution consent — **DTTE** (Delegated Trust-Task Execution) — the
+//! data layer behind the PDP's `requireConsent` disposition.
+//!
+//! "DTTE" is the name this subsystem goes by in prose and in design notes; the
+//! code spells it `task_consent` / `requireConsent` throughout. Operator
+//! documentation is `docs/02-vta/task-consent.md`.
+//!
+//! Not to be confused with *messaging consent* (`consent/*/1.0`, the
+//! `consent_ks` keyspace), which asks whether two parties may correspond.
 //!
 //! When a policy returns `requireConsent`, a privileged task can't proceed until
 //! one or more named approvers have signed off on **this exact task**. The
