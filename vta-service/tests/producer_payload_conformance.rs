@@ -345,3 +345,71 @@ async fn the_sink_observes_the_serialized_payload() {
         "a set optional must reach the payload: {payload:#}"
     );
 }
+
+/// A payload the recipient would reject never leaves the process.
+///
+/// The pre-dispatch check exists for the surface no body struct can guard:
+/// `vault_*` and `device/list` take the whole payload as a caller-supplied
+/// `Value`, so there is nothing for the null census to walk and nothing for a
+/// witness to be built from. This is the only check they can have.
+///
+/// Asserting on the *sink* rather than just the error is the point — it proves
+/// the refusal happens before dispatch, so the failure is local and names the
+/// member, instead of arriving as a remote `malformedRequest` after the client
+/// has already reported a successful send.
+#[tokio::test]
+async fn a_non_conforming_payload_is_refused_before_it_is_sent() {
+    let sink = Arc::new(RecordingSink::new());
+    let client = VtaClient::loopback(sink.clone());
+
+    // `keys/create/0.1` types `mnemonic` as a string. This is the exact payload
+    // that shipped in #919 and was rejected by every VTA it reached.
+    let outcome = client
+        .dispatch_trust_task(
+            "https://trusttasks.org/spec/keys/create/0.1",
+            json!({ "keyType": "ed25519", "mnemonic": null }),
+            5,
+        )
+        .await;
+
+    let err = outcome.expect_err("a null-valued string member must be refused");
+    let text = err.to_string();
+    assert!(
+        text.contains("does not conform"),
+        "the error should say the payload is non-conforming, got: {text}"
+    );
+    assert!(
+        text.contains("null"),
+        "the error should name what is wrong, got: {text}"
+    );
+    assert!(
+        sink.recorded().is_empty(),
+        "nothing may reach the transport — the whole point is that the failure \
+         is local, not a remote rejection after a reported-successful send"
+    );
+}
+
+/// A task with no published schema still dispatches.
+///
+/// `None` from the registry means "we cannot know", not "anything goes".
+/// Refusing on that basis would break every task the registry has not caught up
+/// with — several legacy `vta/*` tasks are in exactly that position.
+#[tokio::test]
+async fn a_task_with_no_published_schema_is_not_blocked() {
+    let sink = Arc::new(RecordingSink::new());
+    let client = VtaClient::loopback(sink.clone());
+
+    let _ = client
+        .dispatch_trust_task(
+            "https://trusttasks.org/spec/vta/seeds/rotate/1.0",
+            json!({ "anything": null }),
+            5,
+        )
+        .await;
+
+    assert_eq!(
+        sink.recorded().len(),
+        1,
+        "an unvalidatable task must still be dispatched, not refused"
+    );
+}

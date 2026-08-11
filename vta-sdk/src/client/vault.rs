@@ -85,13 +85,12 @@ impl VtaClient {
         force: bool,
         reason: Option<&str>,
     ) -> Result<Value, VtaError> {
-        let mut payload = json!({ "id": id, "force": force });
-        if let Some(v) = expected_version {
-            payload["expectedVersion"] = json!(v);
-        }
-        if let Some(r) = reason {
-            payload["reason"] = json!(r);
-        }
+        let payload = serde_json::to_value(crate::protocols::vault_management::VaultDeleteBody {
+            id: id.to_string(),
+            force,
+            expected_version,
+            reason: reason.map(str::to_string),
+        })?;
         self.dispatch_trust_task(
             trust_tasks::TASK_VAULT_DELETE_0_1,
             payload,

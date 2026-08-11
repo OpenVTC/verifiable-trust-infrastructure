@@ -1131,7 +1131,15 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::vault::delete::v0_1::Payload,
                 specs::vault::delete::v0_1::Response,
-                json!({ "id": "01HVAULTENTRY", "expectedVersion": 3, "reason": "rotated away" }),
+                // Built from the producer's body, with the precondition and
+                // reason unset — the shape `vault_delete(id, None, false, None)`
+                // emits, and the one that leaves both optionals to the skip.
+                to_v(vta_sdk::protocols::vault_management::VaultDeleteBody {
+                    id: "01HVAULTENTRY".into(),
+                    force: false,
+                    expected_version: None,
+                    reason: None,
+                }),
                 json!({ "id": "01HVAULTENTRY", "deletedAt": TS, "graceUntil": TS })
             ),
         ),
