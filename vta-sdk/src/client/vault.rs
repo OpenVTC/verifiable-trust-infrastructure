@@ -78,6 +78,36 @@ impl VtaClient {
     /// until the sweeper purges it at the returned `graceUntil`. `force ==
     /// true` **hard-deletes immediately** (no recovery) — equivalent to
     /// [`Self::vault_purge`]. `reason` is recorded in the audit trail.
+    /// `vault/upsert/0.1` from a typed body — the checked alternative to
+    /// [`Self::vault_upsert`].
+    ///
+    /// Additive on purpose. `vault_upsert` takes the whole payload as a `Value`
+    /// and stays exactly as it was: changing its signature would break every
+    /// caller for a benefit they can opt into instead. This one names the
+    /// members that exist today and carries an escape hatch for the rest, so a
+    /// caller is never blocked on an SDK release to use a new one.
+    ///
+    /// `sealed_secret` is inserted here rather than taken on the body, because
+    /// sealing needs the client's HPKE context and not the caller's.
+    pub async fn vault_upsert_typed(
+        &self,
+        body: crate::protocols::vault_management::VaultUpsertBody,
+        sealed_secret: Option<Value>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = serde_json::to_value(body)?;
+        if let Some(env) = sealed_secret
+            && let Some(obj) = payload.as_object_mut()
+        {
+            obj.insert("sealedSecret".to_string(), env);
+        }
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VAULT_UPSERT_0_1,
+            payload,
+            VAULT_TT_TIMEOUT,
+        )
+        .await
+    }
+
     pub async fn vault_delete(
         &self,
         id: &str,
