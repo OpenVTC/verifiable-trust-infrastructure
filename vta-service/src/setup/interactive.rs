@@ -767,6 +767,11 @@ async fn configure_messaging(p: &dyn Prompter) -> Result<MessagingInput, DynErr>
                 mediator_host,
                 template_vars,
                 setup_acl,
+                // Derived from the services chosen earlier: a mediator minted
+                // for this VTA serves what this VTA advertises. Overriding
+                // that (a shared mediator carrying more) is a `--from <toml>`
+                // affair — see `MessagingInput::CreateMediator::protocols`.
+                protocols: None,
             })
         }
         _ => Ok(MessagingInput::Skip),

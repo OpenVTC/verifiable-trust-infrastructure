@@ -170,6 +170,16 @@ service = "vta-prod"   # default "vta"; use a unique name per VTA on the same ho
 # traffic goes via a vsock proxy that needs the upstream hostname for SNI.
 # `setup_acl` provisions a per-DID allow-all ACL on the mediator after
 # connecting (required for mediators using ExplicitAllow mode; default false).
+# `protocols` (create_mediator only, for now) declares which transports the
+# minted mediator will serve, rendered into the mediator's own DID document.
+# Omit it — the normal case — and it follows `[services]`: DIDComm always,
+# plus TSP when `services.tsp = true`. Set it only to mint a mediator that
+# serves MORE than this VTA uses (a shared mediator carrying TSP for other
+# clients). Serving less is refused: the VTA's `#tsp` would point at a
+# mediator whose own document says it doesn't carry TSP. See
+# docs/05-design-notes/transport-neutral-mediator.md.
+#   protocols = ["didcomm", "tsp"]
+
 # [messaging]
 # kind          = "existing"
 # did           = "did:webvh:.../mediator"

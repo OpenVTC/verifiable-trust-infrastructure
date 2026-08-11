@@ -102,6 +102,40 @@ pub fn tsp_service(mediator_did: &str) -> Result<Value, TemplateError> {
     transport_service(mediator_did, TSP_SERVICE_TYPE, TSP_FRAGMENT, "TSP")
 }
 
+/// Build the `TSPTransport` entry a **mediator** publishes for *itself*.
+///
+/// This is the other end of the indirection [`tsp_service`] builds, and it is
+/// the inverse shape. A consumer's `#tsp` names its mediator's DID; a
+/// mediator's own `#tsp` names the **URL** its TSP transport is served at,
+/// because the chain has to terminate somewhere. `forward_tsp_remote` on the
+/// sending mediator URL-parses exactly this value for the mediator→mediator
+/// hop, so a DID here is unroutable in the same way a URL is unroutable in a
+/// consumer's entry.
+///
+/// Pass the result as [`TSP_SERVICE_VAR`] when rendering `didcomm-mediator`.
+/// Without it the template's null-pruning slot drops the entry and the mediator
+/// advertises DIDComm only.
+///
+/// # Errors
+///
+/// [`TemplateError::Invalid`] if `url` is not an `http(s)` URL — including when
+/// it is a DID, which is the confusion this pair of helpers exists to prevent.
+pub fn tsp_transport_service(url: &str) -> Result<Value, TemplateError> {
+    let url = url.trim();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(TemplateError::Invalid(format!(
+            "a mediator's own TSP service must name the URL it serves TSP at, got '{url}'. \
+             The mediator is the endpoint — a DID here would point at another node to \
+             resolve onward, which is the consumer-side shape (see `tsp_service`)."
+        )));
+    }
+    Ok(json!({
+        "id": format!("{{DID}}{TSP_FRAGMENT}"),
+        "type": TSP_SERVICE_TYPE,
+        "serviceEndpoint": url,
+    }))
+}
+
 fn transport_service(
     mediator_did: &str,
     type_: &str,
@@ -183,6 +217,51 @@ mod tests {
     fn an_empty_mediator_is_refused() {
         assert!(didcomm_service("").is_err());
         assert!(tsp_service("   ").is_err());
+    }
+
+    /// A mediator's own entry is the inverse shape: the URL it serves TSP at,
+    /// because the mediator is where the indirection terminates.
+    #[test]
+    fn a_mediators_own_tsp_entry_names_its_url() {
+        let e = tsp_transport_service("https://mediator.example.com").unwrap();
+        assert_eq!(e["id"], "{DID}#tsp");
+        assert_eq!(e["type"], TSP_SERVICE_TYPE);
+        assert_eq!(e["serviceEndpoint"], "https://mediator.example.com");
+
+        // Same `{DID}` late-substitution contract as the consumer entry.
+        assert!(e["id"].as_str().unwrap().starts_with("{DID}"));
+        // And the same whitespace tolerance.
+        assert_eq!(
+            tsp_transport_service("  https://mediator.example.com  ").unwrap()["serviceEndpoint"],
+            "https://mediator.example.com"
+        );
+    }
+
+    /// The two helpers refuse each other's argument. Handing a mediator DID to
+    /// the mediator-side builder is the likelier slip — it is the value in
+    /// scope at every call site — and it would publish a mediator that points
+    /// at itself for onward resolution.
+    #[test]
+    fn the_two_tsp_shapes_refuse_each_others_input() {
+        let err = tsp_transport_service(MEDIATOR).unwrap_err().to_string();
+        assert!(err.contains("URL it serves TSP at"), "got: {err}");
+        assert!(
+            err.contains("tsp_service"),
+            "must point at the other helper: {err}"
+        );
+
+        let err = tsp_service("https://mediator.example.com")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("by DID"), "got: {err}");
+    }
+
+    #[test]
+    fn a_mediator_tsp_entry_refuses_empty_and_non_http() {
+        assert!(tsp_transport_service("").is_err());
+        assert!(tsp_transport_service("   ").is_err());
+        assert!(tsp_transport_service("wss://mediator.example.com/ws").is_err());
+        assert!(tsp_transport_service("mediator.example.com").is_err());
     }
 
     /// The `{DID}` sentinel must survive verbatim into the rendered entry —

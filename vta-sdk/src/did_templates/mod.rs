@@ -55,7 +55,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub use builtin::{BUILTIN_NAMES, load_embedded};
-pub use transports::{DIDCOMM_SERVICE_VAR, TSP_SERVICE_VAR, didcomm_service, tsp_service};
+pub use transports::{
+    DIDCOMM_SERVICE_VAR, TSP_SERVICE_VAR, didcomm_service, tsp_service, tsp_transport_service,
+};
 pub use trust_registry::{
     TRQP_PROFILE_URI, TRUST_REGISTRY_SERVICE_TYPE, TRUST_REGISTRY_SERVICE_VAR, referral_service,
 };
