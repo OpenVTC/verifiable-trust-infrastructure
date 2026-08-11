@@ -1317,7 +1317,7 @@ fn run_rest_thread(
             (
                 cfg.server.cors_origins.clone(),
                 cfg.server.trust_xff,
-                cfg.server.rate_limit_rps,
+                cfg.server.rate_limit_interval_secs,
                 cfg.server.rate_limit_burst,
             )
         };

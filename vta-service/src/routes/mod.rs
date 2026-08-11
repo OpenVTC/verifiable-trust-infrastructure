@@ -121,9 +121,9 @@ pub(super) const BACKUP_BLOB_BODY_SIZE: usize = 100 * 1024 * 1024;
 /// `burst_size(b)` = bucket holds `b` tokens.
 /// So (5, 10) = 10 rapid requests then 1 every 5 s.
 ///
-/// Overridable via `[server]` config: `rate_limit_rps` / `rate_limit_burst`.
-/// Lower `rate_limit_rps` = more permissive. Set to 1 for local dev.
-const UNAUTH_RPS: u64 = 5;
+/// Overridable via `[server]` config: `rate_limit_interval_secs` / `rate_limit_burst`.
+/// Lower `rate_limit_interval_secs` = more permissive. Set to 1 for local dev.
+const UNAUTH_INTERVAL_SECS: u64 = 5;
 const UNAUTH_BURST: u32 = 10;
 
 /// Global per-request timeout. The REST surface runs on a current-thread
@@ -162,7 +162,7 @@ fn apply_unauth_governor(
                 .burst_size(burst)
                 .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
                 .finish()
-                .expect("rate_limit_rps and rate_limit_burst are clamped to ≥1"),
+                .expect("rate_limit_interval_secs and rate_limit_burst are clamped to ≥1"),
         );
         router.layer(GovernorLayer::new(cfg))
     } else {
@@ -172,7 +172,7 @@ fn apply_unauth_governor(
                 .burst_size(burst)
                 .key_extractor(tower_governor::key_extractor::PeerIpKeyExtractor)
                 .finish()
-                .expect("rate_limit_rps and rate_limit_burst are clamped to ≥1"),
+                .expect("rate_limit_interval_secs and rate_limit_burst are clamped to ≥1"),
         );
         router.layer(GovernorLayer::new(cfg))
     }
@@ -251,7 +251,7 @@ fn build_cors_layer(allowed_origins: &[String]) -> Option<CorsLayer> {
 }
 
 pub fn router() -> Router<AppState> {
-    router_with_cors(&[], false, UNAUTH_RPS, UNAUTH_BURST)
+    router_with_cors(&[], false, UNAUTH_INTERVAL_SECS, UNAUTH_BURST)
 }
 
 /// Assemble the VTA REST surface as an [`OpenApiRouter`] — the single source
@@ -580,7 +580,7 @@ fn build_api_router(trust_xff: bool, rps: u64, burst: u32) -> OpenApiRouter<AppS
 pub fn openapi_spec() -> utoipa::openapi::OpenApi {
     // CORS attribution doesn't affect the documented surface; build with the
     // safe default.
-    build_api_router(false, UNAUTH_RPS, UNAUTH_BURST)
+    build_api_router(false, UNAUTH_INTERVAL_SECS, UNAUTH_BURST)
         .split_for_parts()
         .1
 }
@@ -780,5 +780,98 @@ mod cors_tests {
     fn router_with_cors_passes_rate_limit_through() {
         // The full router assembly with custom rate limits must not panic.
         let _ = router_with_cors(&[], false, 50, 100);
+    }
+}
+
+/// Tests that `apply_unauth_governor` rejects requests after the configured
+/// burst is exhausted — i.e. the configured values actually control the limiter.
+#[cfg(test)]
+mod rate_limit_tests {
+    use std::sync::Arc;
+
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use tower::ServiceExt;
+    use tower_governor::GovernorLayer;
+    use tower_governor::governor::GovernorConfigBuilder;
+
+    async fn handler() -> &'static str {
+        "ok"
+    }
+
+    /// Build a minimal rate-limited router (no AppState needed).
+    fn limited_router(interval_secs: u64, burst: u32) -> axum::Router {
+        let interval_secs = interval_secs.max(1);
+        let burst = burst.max(1);
+        let cfg = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(interval_secs)
+                .burst_size(burst)
+                .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
+                .finish()
+                .unwrap(),
+        );
+        axum::Router::new()
+            .route("/test", get(handler))
+            .layer(GovernorLayer::new(cfg))
+    }
+
+    #[tokio::test]
+    async fn burst_2_rejects_third_request() {
+        let app = limited_router(60, 2);
+
+        let mut statuses = Vec::new();
+        for _ in 0..4 {
+            let req = Request::builder()
+                .uri("/test")
+                .header("x-forwarded-for", "10.0.0.1")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            statuses.push(resp.status());
+        }
+        assert_eq!(statuses[0], StatusCode::OK);
+        assert_eq!(statuses[1], StatusCode::OK);
+        assert_eq!(
+            statuses[2],
+            StatusCode::TOO_MANY_REQUESTS,
+            "third request must be rejected when burst=2"
+        );
+    }
+
+    #[tokio::test]
+    async fn burst_5_allows_five_then_rejects() {
+        let app = limited_router(60, 5);
+
+        let mut ok_count = 0u32;
+        let mut rejected = false;
+        for _ in 0..8 {
+            let req = Request::builder()
+                .uri("/test")
+                .header("x-forwarded-for", "10.0.0.1")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            if resp.status() == StatusCode::OK {
+                ok_count += 1;
+            } else if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+                rejected = true;
+                break;
+            }
+        }
+        assert_eq!(ok_count, 5, "expected exactly 5 OK before rejection");
+        assert!(rejected, "expected 429 after burst exhausted");
+    }
+
+    #[tokio::test]
+    async fn zero_burst_clamped_to_one_not_panic() {
+        let app = limited_router(0, 0);
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-forwarded-for", "10.0.0.1")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

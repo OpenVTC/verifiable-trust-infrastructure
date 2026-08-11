@@ -9251,7 +9251,7 @@ dependencies = [
 
 [[package]]
 name = "vta-config"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "serde",
  "serde_ignored",
@@ -9446,7 +9446,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.14.34"
+version = "0.14.35"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",

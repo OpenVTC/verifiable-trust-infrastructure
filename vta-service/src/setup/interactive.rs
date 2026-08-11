@@ -1169,7 +1169,7 @@ async fn gather_inputs(
             port,
             cors_origins,
             trust_xff,
-            rate_limit_rps: ServerConfig::default().rate_limit_rps,
+            rate_limit_interval_secs: ServerConfig::default().rate_limit_interval_secs,
             rate_limit_burst: ServerConfig::default().rate_limit_burst,
         },
         log: LogConfig {

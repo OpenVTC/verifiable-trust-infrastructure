@@ -385,8 +385,8 @@ pub struct ServerConfig {
     /// token). `per_second(5)` = one new token every 5 s; with `burst_size(10)`
     /// that allows 10 rapid requests then 1 every 5 s. Default: 5.
     /// Lower values = more permissive. Set to 1 for local dev.
-    #[serde(default = "default_rate_limit_rps")]
-    pub rate_limit_rps: u64,
+    #[serde(default = "default_rate_limit_interval_secs", alias = "rate_limit_rps")]
+    pub rate_limit_interval_secs: u64,
     /// Burst capacity for the rate limiter (max tokens). Default: 10.
     #[serde(default = "default_rate_limit_burst")]
     pub rate_limit_burst: u32,
@@ -400,7 +400,7 @@ fn default_port() -> u16 {
     8100
 }
 
-fn default_rate_limit_rps() -> u64 {
+fn default_rate_limit_interval_secs() -> u64 {
     5
 }
 
@@ -425,7 +425,7 @@ impl Default for ServerConfig {
             port: default_port(),
             cors_origins: Vec::new(),
             trust_xff: false,
-            rate_limit_rps: default_rate_limit_rps(),
+            rate_limit_interval_secs: default_rate_limit_interval_secs(),
             rate_limit_burst: default_rate_limit_burst(),
         }
     }
