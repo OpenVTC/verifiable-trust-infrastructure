@@ -123,6 +123,7 @@ use vta_sdk::protocols::policy_management::{
     DeletePolicyBody, DeletePolicyResultBody, GetPolicyBody, GetPolicyResultBody, ListPoliciesBody,
     ListPoliciesResultBody, PolicyModuleView, UpsertPolicyBody, UpsertPolicyResultBody,
 };
+use vta_sdk::protocols::vault_management::VaultUpsertBody;
 use vta_sdk::protocols::vta_management::get_config::{
     ConfigField, GetConfigBody, GetConfigResultBody,
 };
@@ -1114,15 +1115,31 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::vault::upsert::v0_1::Payload,
                 specs::vault::upsert::v0_1::Response,
-                json!({
-                    "contextId": "ctx-a",
-                    "targets": [{ "kind": "web-origin", "origin": "https://example.com" }],
-                    "label": "example.com login",
-                    "secretKind": "password",
-                    "tags": ["work"],
-                    "sealedSecret": { "envelope": "didcomm-authcrypt", "jwe": "eyJwcm90ZWN0ZWQiOiJ..." },
-                    "expectedVersion": 3,
-                }),
+                {
+                    // Built from the producer's body — the minimal create,
+                    // with every optional unset. `sealedSecret` is not on the
+                    // body: `vault_upsert_typed` inserts it, because sealing
+                    // needs the client's HPKE context rather than the caller's.
+                    let mut v = to_v(VaultUpsertBody {
+                        context_id: "ctx-a".into(),
+                        targets: vec![
+                            json!({ "kind": "web-origin", "origin": "https://example.com" }),
+                        ],
+                        label: "example.com login".into(),
+                        secret_kind: "password".into(),
+                        id: None,
+                        expected_version: None,
+                        tags: None,
+                        notes: None,
+                        expires_at: None,
+                        extra: serde_json::Map::new(),
+                    });
+                    v.as_object_mut().expect("body is an object").insert(
+                        "sealedSecret".into(),
+                        json!({ "envelope": "didcomm-authcrypt", "jwe": "eyJ0eXAiOiJKV0UifQ" }),
+                    );
+                    v
+                },
                 json!({ "entry": to_v(vault_entry()), "created": false })
             ),
         ),
