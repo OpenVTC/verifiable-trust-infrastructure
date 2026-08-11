@@ -223,20 +223,117 @@ fn prompt_hardened(p: &dyn Prompter) -> Result<HardenedConfig, DynErr> {
     })
 }
 
-/// Prompt which services to enable. Returns `(rest, didcomm)`; at least one.
-fn prompt_services(p: &dyn Prompter) -> Result<(bool, bool), DynErr> {
-    let items = ["REST API", "DIDComm Messaging"];
+/// Labels for the transport multiselect. Answers are mapped back onto
+/// flags **by label** ([`services_from_selection`]) rather than by
+/// position, because the option list varies with the compiled feature
+/// set — a positional mapping would quietly mean something different in
+/// a `--features tsp` build than in a default one.
+const REST_ITEM: &str = "REST API";
+const DIDCOMM_ITEM: &str = "DIDComm Messaging";
+const TSP_ITEM: &str = "TSP (Trust Spanning Protocol)";
+
+/// Which transports the operator chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ServiceSelection {
+    pub rest: bool,
+    pub didcomm: bool,
+    pub tsp: bool,
+}
+
+/// The transport options *this build* can offer.
+///
+/// TSP is listed only when the binary was compiled with `--features
+/// tsp`. Without it there is no TSP dispatcher (the inbound half lives
+/// behind that flag), so advertising a `#tsp` service would publish a
+/// transport this VTA cannot serve — and because TSP is *first* in the
+/// preference order, a peer that honours the DID document would pick it
+/// and fail rather than fall back to DIDComm. An option that can't be
+/// served isn't offered.
+fn service_items() -> Vec<&'static str> {
+    // `mut` is load-bearing only in a `tsp` build.
+    #[allow(unused_mut)]
+    let mut items = vec![REST_ITEM, DIDCOMM_ITEM];
+    #[cfg(feature = "tsp")]
+    items.push(TSP_ITEM);
+    items
+}
+
+/// Resolve the chosen indices into flags by matching labels, so the
+/// mapping is independent of how many options this build offered.
+fn services_from_selection(items: &[&str], selected: &[usize]) -> ServiceSelection {
+    let picked = |label: &str| {
+        items
+            .iter()
+            .position(|it| *it == label)
+            .is_some_and(|i| selected.contains(&i))
+    };
+    ServiceSelection {
+        rest: picked(REST_ITEM),
+        didcomm: picked(DIDCOMM_ITEM),
+        tsp: picked(TSP_ITEM),
+    }
+}
+
+/// The rules a transport selection must satisfy, as the text shown when
+/// it doesn't. `Ok(())` means the selection is usable.
+fn validate_services(sel: &ServiceSelection) -> Result<(), String> {
+    if !sel.rest && !sel.didcomm && !sel.tsp {
+        return Err("Please select at least one service.".into());
+    }
+    // TSP advertises the **same** mediator as DIDComm (one dual-protocol
+    // mediator — tsp-enablement.md D8), and that mediator is configured in
+    // the DIDComm section further down. TSP without DIDComm would point
+    // `#tsp` at a mediator this VTA never configured. `validate_inputs`
+    // enforces the same rule for `--from <toml>`; both paths need it
+    // because neither reaches the other's checkpoint.
+    if sel.tsp && !sel.didcomm {
+        return Err(
+            "TSP shares the DIDComm mediator — select DIDComm Messaging as well, \
+                    or leave TSP off and enable it later with `pnm services tsp enable`."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Prompt which services to enable. At least one, and TSP implies
+/// DIDComm; anything else re-asks rather than proceeding.
+fn prompt_services(p: &dyn Prompter) -> Result<ServiceSelection, DynErr> {
+    let items = service_items();
+    // TSP is not pre-ticked even in a build that can serve it: whether it
+    // works depends on the operator's mediator, which nothing here can
+    // check. Opting in should be a decision, not a default someone
+    // accepted by pressing enter.
+    let defaults: Vec<bool> = items.iter().map(|it| *it != TSP_ITEM).collect();
     loop {
         let selected = p.multiselect(
             "Services to enable (select at least one)",
             &items,
-            &[true, true],
+            &defaults,
         )?;
-        if selected.is_empty() {
-            eprintln!("\x1b[31mPlease select at least one service.\x1b[0m");
+        let selection = services_from_selection(&items, &selected);
+        if let Err(msg) = validate_services(&selection) {
+            eprintln!("\x1b[31m{msg}\x1b[0m");
             continue;
         }
-        return Ok((selected.contains(&0), selected.contains(&1)));
+        if selection.tsp {
+            eprintln!();
+            eprintln!(
+                "  \x1b[2mTSP will be advertised as `#tsp` in the VTA DID document, \
+                 pointing at the same mediator as DIDComm.\x1b[0m"
+            );
+            eprintln!(
+                "  \x1b[2mNothing here can verify that mediator routes TSP — its services \
+                 belong to its own controller. If it doesn't, peers that prefer TSP fail \
+                 rather than fall back.\x1b[0m"
+            );
+            eprintln!(
+                "  \x1b[2mThis is changeable later: `pnm services tsp enable` / \
+                 `disable`.\x1b[0m"
+            );
+            eprintln!();
+        }
+        return Ok(selection);
     }
 }
 
@@ -861,7 +958,11 @@ async fn gather_inputs(
     };
 
     // 3. Services.
-    let (enable_rest, enable_didcomm) = prompt_services(p)?;
+    let ServiceSelection {
+        rest: enable_rest,
+        didcomm: enable_didcomm,
+        tsp: enable_tsp,
+    } = prompt_services(p)?;
 
     // 4. Server host + port + REST URL (URL asked after the port so the
     //    localhost default can use it).
@@ -1056,9 +1157,7 @@ async fn gather_inputs(
             rest: enable_rest,
             didcomm: enable_didcomm,
             webauthn,
-            // TSP is enabled post-setup via `services tsp enable` (the
-            // interactive wizard's TSP prompt lands in a later phase).
-            tsp: false,
+            tsp: enable_tsp,
         },
         server: ServerConfig {
             host,
@@ -1115,7 +1214,6 @@ mod tests {
         Text(String),
         Bool(bool),
         Index(usize),
-        Indices(Vec<usize>),
         /// Pick a `select` option by its **label** rather than its position.
         ///
         /// Prefer this over [`Answer::Index`] whenever the option list depends
@@ -1130,6 +1228,10 @@ mod tests {
         /// Matching on the label is immune to options being added, removed, or
         /// reordered, and fails at the *right* prompt when a label disappears.
         Label(&'static str),
+        /// [`Answer::Label`] for a `multiselect`: pick every listed option by
+        /// label. The services prompt needs it for the same reason — its option
+        /// list grows a "TSP" entry under `--features tsp`.
+        Labels(Vec<&'static str>),
     }
 
     /// Head-less [`Prompter`] that replays a fixed script of answers. Panics on
@@ -1194,12 +1296,23 @@ mod tests {
         fn multiselect(
             &self,
             prompt: &str,
-            _items: &[&str],
+            items: &[&str],
             _defaults: &[bool],
         ) -> Result<Vec<usize>, DynErr> {
             match self.next(prompt) {
-                Answer::Indices(v) => Ok(v),
-                _ => panic!("expected Indices answer for prompt: {prompt}"),
+                Answer::Labels(want) => want
+                    .iter()
+                    .map(|w| {
+                        items.iter().position(|it| it == w).ok_or_else(|| {
+                            format!(
+                                "scripted label {w:?} is not an option for prompt {prompt:?}; \
+                                 available: {items:?}"
+                            )
+                            .into()
+                        })
+                    })
+                    .collect(),
+                _ => panic!("expected Labels answer for prompt: {prompt}"),
             }
         }
     }
@@ -1224,12 +1337,14 @@ mod tests {
         let answers = vec![
             text("/tmp/vta-golden/config.toml"), // config path (doesn't exist)
             text("golden-vta"),                  // vta name
-            Answer::Indices(vec![0, 1]),         // services: REST + DIDComm
-            text("0.0.0.0"),                     // host
-            text("8100"),                        // port
-            text("https://trust.example.com"),   // REST URL
-            text("info"),                        // log level
-            Answer::Index(0),                    // log format = text
+            // Labels, not indices: the services list grows a TSP option
+            // under `--features tsp`.
+            Answer::Labels(vec![REST_ITEM, DIDCOMM_ITEM]), // services
+            text("0.0.0.0"),                               // host
+            text("8100"),                                  // port
+            text("https://trust.example.com"),             // REST URL
+            text("info"),                                  // log level
+            Answer::Index(0),                              // log format = text
             // TEE builds add an extra "Remote DID resolver WebSocket URL"
             // prompt here (vsock-bridged resolution); empty = skip. Only
             // scripted when `tee` is active so the answer sequence stays
@@ -1330,7 +1445,7 @@ mod tests {
         let answers = vec![
             text(dir.path().join("config.toml").to_str().unwrap()), // doesn't exist
             text(""),                                               // vta name (skip)
-            Answer::Indices(vec![0]),                               // services: REST only
+            Answer::Labels(vec![REST_ITEM]),                        // services: REST only
             text("0.0.0.0"),                                        // host
             text("8100"),                                           // port
             text("https://t.example.com"),                          // REST URL
@@ -1380,7 +1495,7 @@ mod tests {
             text(config_path.to_str().unwrap()), // config path — exists
             Answer::Bool(true),                  // overwrite? yes
             text(""),                            // vta name (skip)
-            Answer::Indices(vec![1]),            // services: DIDComm only (no URL prompts)
+            Answer::Labels(vec![DIDCOMM_ITEM]),  // services: DIDComm only (no URL prompts)
             text("info"),                        // log level
             Answer::Index(0),                    // log format
             #[cfg(feature = "tee")]
@@ -1420,20 +1535,20 @@ mod tests {
 
             let answers = vec![
                 text(dir.path().join("config.toml").to_str().unwrap()),
-                text(""),                 // vta name (skip)
-                Answer::Indices(vec![1]), // services: DIDComm only
-                text("info"),             // log level
-                Answer::Index(0),         // log format
+                text(""),                           // vta name (skip)
+                Answer::Labels(vec![DIDCOMM_ITEM]), // services: DIDComm only
+                text("info"),                       // log level
+                Answer::Index(0),                   // log format
                 #[cfg(feature = "tee")]
                 text(""), // TEE-only: remote DID resolver URL (skip)
-                text("28"),               // audit retention
-                text(data_dir.to_str().unwrap()), // data dir — holds a store
-                Answer::Index(choice),    // reuse / delete
-                Answer::Label("OS keyring"), // label, not index: menu grows with features
-                text("vta"),              // keyring service
-                Answer::Bool(false),      // hardened configuration? no
-                Answer::Index(2),         // messaging = skip
-                Answer::Index(1),         // VTA DID = did:key
+                text("28"),                         // audit retention
+                text(data_dir.to_str().unwrap()),   // data dir — holds a store
+                Answer::Index(choice),              // reuse / delete
+                Answer::Label("OS keyring"),        // label, not index: menu grows with features
+                text("vta"),                        // keyring service
+                Answer::Bool(false),                // hardened configuration? no
+                Answer::Index(2),                   // messaging = skip
+                Answer::Index(1),                   // VTA DID = did:key
             ];
             let gathered = gather_inputs(&ScriptedPrompter::new(answers), None)
                 .await
@@ -1449,13 +1564,13 @@ mod tests {
     async fn advanced_existing_keys_mode_maps_through() {
         let answers = vec![
             text("/tmp/vta-golden2/config.toml"),
-            text(""),                      // vta name (skip)
-            Answer::Indices(vec![0]),      // services: REST only
-            text("0.0.0.0"),               // host
-            text("8100"),                  // port
-            text("https://t.example.com"), // REST URL
-            text("info"),                  // log level
-            Answer::Index(0),              // log format
+            text(""),                        // vta name (skip)
+            Answer::Labels(vec![REST_ITEM]), // services: REST only
+            text("0.0.0.0"),                 // host
+            text("8100"),                    // port
+            text("https://t.example.com"),   // REST URL
+            text("info"),                    // log level
+            Answer::Index(0),                // log format
             // TEE-only "Remote DID resolver WebSocket URL" prompt; empty =
             // skip. See the note in `interactive_matches_equivalent_toml`.
             #[cfg(feature = "tee")]
@@ -1503,5 +1618,184 @@ mod tests {
             }
             other => panic!("expected CreateWebvh, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Transport selection
+    //
+    // The three helpers below are deliberately feature-independent: they
+    // take the option list as an argument, so these tests exercise the
+    // TSP mapping in *every* build. CI runs a plain `cargo test
+    // --workspace` (no `tsp`), so a `#[cfg(feature = "tsp")]` test of the
+    // mapping would never run there.
+    // -----------------------------------------------------------------
+
+    /// TSP is offered iff this build can serve it.
+    #[test]
+    fn service_items_lists_tsp_only_in_a_tsp_build() {
+        let items = service_items();
+        assert!(items.contains(&REST_ITEM) && items.contains(&DIDCOMM_ITEM));
+        assert_eq!(
+            items.contains(&TSP_ITEM),
+            cfg!(feature = "tsp"),
+            "a build without the TSP dispatcher must not offer to advertise `#tsp`"
+        );
+    }
+
+    /// Answers map to flags by label, so the same index means different
+    /// things in the two-option and three-option lists.
+    #[test]
+    fn services_from_selection_maps_by_label_not_position() {
+        let without_tsp = [REST_ITEM, DIDCOMM_ITEM];
+        let with_tsp = [REST_ITEM, DIDCOMM_ITEM, TSP_ITEM];
+
+        // Index 1 is DIDComm in both lists — and TSP in neither.
+        for items in [&without_tsp[..], &with_tsp[..]] {
+            let sel = services_from_selection(items, &[1]);
+            assert_eq!(
+                sel,
+                ServiceSelection {
+                    rest: false,
+                    didcomm: true,
+                    tsp: false
+                },
+                "items {items:?}"
+            );
+        }
+
+        // Index 2 is TSP only where TSP is on the menu; a selection that
+        // can't be resolved to a label leaves the flag off rather than
+        // guessing.
+        assert_eq!(
+            services_from_selection(&with_tsp, &[1, 2]),
+            ServiceSelection {
+                rest: false,
+                didcomm: true,
+                tsp: true
+            }
+        );
+        assert_eq!(
+            services_from_selection(&without_tsp, &[1, 2]),
+            ServiceSelection {
+                rest: false,
+                didcomm: true,
+                tsp: false
+            }
+        );
+
+        // Everything ticked.
+        assert_eq!(
+            services_from_selection(&with_tsp, &[0, 1, 2]),
+            ServiceSelection {
+                rest: true,
+                didcomm: true,
+                tsp: true
+            }
+        );
+    }
+
+    /// At least one transport, and TSP implies DIDComm (it advertises the
+    /// DIDComm mediator). Mirrors `validate_inputs`' rule for `--from`.
+    #[test]
+    fn validate_services_requires_one_and_tsp_implies_didcomm() {
+        let none = ServiceSelection::default();
+        assert!(
+            validate_services(&none)
+                .unwrap_err()
+                .contains("at least one service")
+        );
+
+        let tsp_only = ServiceSelection {
+            rest: false,
+            didcomm: false,
+            tsp: true,
+        };
+        assert!(
+            validate_services(&tsp_only)
+                .unwrap_err()
+                .contains("shares the DIDComm mediator"),
+            "TSP alone points `#tsp` at a mediator the VTA never configured"
+        );
+
+        // REST + TSP is the same defect with a transport in hand — still
+        // refused, because the `#tsp` endpoint would still be unset.
+        let rest_and_tsp = ServiceSelection {
+            rest: true,
+            didcomm: false,
+            tsp: true,
+        };
+        assert!(validate_services(&rest_and_tsp).is_err());
+
+        for ok in [
+            ServiceSelection {
+                rest: true,
+                didcomm: false,
+                tsp: false,
+            },
+            ServiceSelection {
+                rest: false,
+                didcomm: true,
+                tsp: false,
+            },
+            ServiceSelection {
+                rest: true,
+                didcomm: true,
+                tsp: true,
+            },
+        ] {
+            assert!(validate_services(&ok).is_ok(), "{ok:?} must be accepted");
+        }
+    }
+
+    /// End-to-end: ticking TSP in the wizard reaches `services.tsp` in the
+    /// plan the engine consumes. Only meaningful where TSP is on the menu
+    /// — the mapping itself is covered feature-independently above.
+    #[cfg(feature = "tsp")]
+    #[tokio::test]
+    async fn ticking_tsp_reaches_the_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let answers = vec![
+            text(dir.path().join("config.toml").to_str().unwrap()),
+            text(""), // vta name (skip)
+            Answer::Labels(vec![DIDCOMM_ITEM, TSP_ITEM]),
+            text("info"),     // log level
+            Answer::Index(0), // log format
+            #[cfg(feature = "tee")]
+            text(""), // TEE-only: remote DID resolver URL (skip)
+            text("28"),       // audit retention
+            text(dir.path().join("data").to_str().unwrap()), // data dir (fresh)
+            Answer::Label("OS keyring"),
+            text("vta"),         // keyring service
+            Answer::Bool(false), // hardened configuration? no
+            Answer::Index(2),    // messaging = skip
+            Answer::Index(1),    // VTA DID = did:key
+        ];
+        let gathered = gather_inputs(&ScriptedPrompter::new(answers), None)
+            .await
+            .expect("gather should succeed")
+            .expect("gather should not cancel");
+
+        assert!(gathered.services.tsp, "ticking TSP must set services.tsp");
+        assert!(gathered.services.didcomm);
+        assert!(!gathered.services.rest);
+    }
+
+    /// Selecting TSP without DIDComm re-asks instead of proceeding.
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn tsp_without_didcomm_reasks() {
+        let p = ScriptedPrompter::new(vec![
+            Answer::Labels(vec![TSP_ITEM]), // refused → re-prompt
+            Answer::Labels(vec![DIDCOMM_ITEM, TSP_ITEM]),
+        ]);
+        let sel = prompt_services(&p).expect("second answer is valid");
+        assert_eq!(
+            sel,
+            ServiceSelection {
+                rest: false,
+                didcomm: true,
+                tsp: true
+            }
+        );
     }
 }

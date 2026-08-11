@@ -21,6 +21,7 @@ use url::Url;
 
 use crate::config::ServicesConfig;
 use crate::contexts::{self, ContextRecord};
+use crate::operations::protocol::document::{TSP_SERVICE_FRAGMENT, TSP_SERVICE_TYPE};
 use crate::store::KeyspaceHandle;
 
 mod from_toml;
@@ -114,11 +115,24 @@ pub(crate) fn generate_mnemonic_silent() -> Result<Mnemonic, Box<dyn std::error:
 /// publishes apart from the auto-injected DIDComm/Authentication
 /// entries that `create_simple_webvh_did` adds itself.
 ///
-/// Currently this is just the `VTARest` entry: present iff REST is
-/// enabled and a `public_url` is configured. Returns `None` (rather
-/// than `Some(vec![])`) when the array would be empty so the
-/// downstream call can pass `None` through to the WebVH builder
-/// without a special case.
+/// Two entries live here:
+///
+/// - `VTARest`, present iff REST is enabled and a `public_url` is
+///   configured;
+/// - `TSPTransport` (`#tsp`), present iff TSP is enabled and a mediator
+///   was resolved — TSP advertises the **same** mediator as DIDComm
+///   (tsp-enablement.md D8), so the endpoint is that mediator's DID, not
+///   a transport URL.
+///
+/// Returns `None` (rather than `Some(vec![])`) when the array would be
+/// empty so the downstream call can pass `None` through to the WebVH
+/// builder without a special case.
+///
+/// Minting `#tsp` here rather than leaving it to a later `services tsp
+/// enable` is the point: a VTA that speaks TSP but doesn't say so in its
+/// DID document is unreachable over TSP, since the document is what a
+/// peer matches on. Publishing it by hand after the fact is how the
+/// reference deployment ended up with a `#tsp` entry at log version 3.
 ///
 /// The non-interactive setup path's `validate_inputs` rejects
 /// `services.rest = true` + `public_url = None` at parse time, and
@@ -134,8 +148,22 @@ pub(crate) fn generate_mnemonic_silent() -> Result<Mnemonic, Box<dyn std::error:
 pub(crate) fn build_vta_additional_services(
     services: &ServicesConfig,
     public_url: Option<&str>,
+    mediator_did: Option<&str>,
 ) -> Option<Vec<JsonValue>> {
     let mut additional = Vec::new();
+    // Same fragment + type the runtime `services tsp enable` patcher
+    // emits, so a document minted at setup and one patched later are the
+    // same shape. Order within this Vec doesn't matter: the document
+    // builder sorts `service[]` canonically once everything is appended.
+    if services.tsp
+        && let Some(did) = mediator_did.map(str::trim).filter(|d| !d.is_empty())
+    {
+        additional.push(json!({
+            "id": format!("{{DID}}{TSP_SERVICE_FRAGMENT}"),
+            "type": TSP_SERVICE_TYPE,
+            "serviceEndpoint": did,
+        }));
+    }
     if services.rest
         && let Some(url) = public_url.map(str::trim).filter(|u| !u.is_empty())
     {
@@ -261,7 +289,7 @@ mod tests {
             webauthn: false,
             tsp: false,
         };
-        let out = build_vta_additional_services(&services, url)
+        let out = build_vta_additional_services(&services, url, None)
             .expect("REST + URL must emit a service entry");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["type"], "VTARest");
@@ -269,18 +297,19 @@ mod tests {
         assert_eq!(out[0]["id"], "{DID}#vta-rest");
 
         // 2. REST + URL with surrounding whitespace → trimmed in the entry.
-        let out = build_vta_additional_services(&services, Some("  https://vta.example.com  "))
-            .expect("whitespace-padded URL must still emit");
+        let out =
+            build_vta_additional_services(&services, Some("  https://vta.example.com  "), None)
+                .expect("whitespace-padded URL must still emit");
         assert_eq!(out[0]["serviceEndpoint"], "https://vta.example.com");
 
         // 3. REST + None → empty (validate_inputs rejects this combo
         //    upstream, but the helper still must not produce a bogus
         //    entry if it ever sees it).
-        assert!(build_vta_additional_services(&services, None).is_none());
+        assert!(build_vta_additional_services(&services, None, None).is_none());
 
         // 4. REST + empty string → empty (treated like None).
-        assert!(build_vta_additional_services(&services, Some("")).is_none());
-        assert!(build_vta_additional_services(&services, Some("   ")).is_none());
+        assert!(build_vta_additional_services(&services, Some(""), None).is_none());
+        assert!(build_vta_additional_services(&services, Some("   "), None).is_none());
 
         // 5. REST disabled, URL set → no VTARest entry. The URL is
         //    still in `AppConfig.public_url` for other uses, but it
@@ -292,7 +321,7 @@ mod tests {
             tsp: false,
         };
         assert!(
-            build_vta_additional_services(&services, url).is_none(),
+            build_vta_additional_services(&services, url, None).is_none(),
             "URL must not be published as a service when REST is disabled"
         );
 
@@ -304,7 +333,65 @@ mod tests {
             webauthn: false,
             tsp: false,
         };
-        assert!(build_vta_additional_services(&services, None).is_none());
+        assert!(build_vta_additional_services(&services, None, None).is_none());
+    }
+
+    /// The `#tsp` half of the same helper: swept over
+    /// `(services.tsp, mediator_did)`.
+    ///
+    /// TSP advertises the DIDComm mediator's **DID** (mediator
+    /// indirection — the transport URL lives in the mediator's own
+    /// document), so with no mediator resolved there is nothing to
+    /// point at and the entry must not be emitted.
+    #[test]
+    fn build_vta_additional_services_tsp_matrix() {
+        let mediator = Some("did:webvh:mediator.example.com:mediator");
+        let tsp_only = ServicesConfig {
+            rest: false,
+            didcomm: true,
+            webauthn: false,
+            tsp: true,
+        };
+
+        // 1. TSP + mediator → one TSPTransport entry, endpoint = the
+        //    mediator DID as a plain string (not an object, not a URL).
+        let out = build_vta_additional_services(&tsp_only, None, mediator)
+            .expect("TSP + mediator must emit a service entry");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["type"], "TSPTransport");
+        assert_eq!(out[0]["id"], "{DID}#tsp");
+        assert_eq!(
+            out[0]["serviceEndpoint"],
+            "did:webvh:mediator.example.com:mediator"
+        );
+
+        // 2. TSP without a mediator (messaging skipped) → nothing. An
+        //    endpoint-less `#tsp` would advertise a route to nowhere.
+        assert!(build_vta_additional_services(&tsp_only, None, None).is_none());
+        assert!(build_vta_additional_services(&tsp_only, None, Some("")).is_none());
+        assert!(build_vta_additional_services(&tsp_only, None, Some("   ")).is_none());
+
+        // 3. TSP off + mediator present → no `#tsp`. A VTA running
+        //    DIDComm through a TSP-capable mediator still doesn't claim
+        //    TSP unless the operator asked for it.
+        let no_tsp = ServicesConfig {
+            tsp: false,
+            ..tsp_only
+        };
+        assert!(build_vta_additional_services(&no_tsp, None, mediator).is_none());
+
+        // 4. REST + TSP → both entries. Their order in this Vec is not
+        //    the published order: `build_did_document_inner` sorts
+        //    `service[]` canonically after appending.
+        let both = ServicesConfig {
+            rest: true,
+            ..tsp_only
+        };
+        let out = build_vta_additional_services(&both, Some("https://vta.example.com"), mediator)
+            .expect("REST + TSP must emit both entries");
+        assert_eq!(out.len(), 2);
+        let types: Vec<&str> = out.iter().map(|s| s["type"].as_str().unwrap()).collect();
+        assert!(types.contains(&"TSPTransport") && types.contains(&"VTARest"));
     }
 
     /// `derive_ws_url` is the single source of truth for the mediator's
