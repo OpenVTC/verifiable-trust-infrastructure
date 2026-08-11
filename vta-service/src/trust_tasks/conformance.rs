@@ -159,11 +159,39 @@ fn validates<T: ValidatedPayload>(v: &Value) -> Result<(), String> {
 
 /// A representative request/response pair for one published, dispatched URI.
 ///
-/// The request is, wherever a public producer/consumer type exists, the
-/// serialization of that type — so the assertion is about **our wire form**,
-/// not about a hand-typed fixture. Where the slice's wire type is
-/// module-private (consent, task-consent, vault), the fixture replicates the
-/// handler's emission and the comment names the type it mirrors.
+/// The request should be the serialization of the type the producer actually
+/// sends, so the assertion is about **our wire form** rather than a hand-typed
+/// fixture. A transcription only proves someone can type valid JSON: it stops
+/// tracking the producer the moment the producer changes, and stays green while
+/// live traffic fails. `dids/update` is the worked example — its witness was
+/// transcribed, and #895 shipped anyway.
+///
+/// ## Where a transcription remains, and why
+///
+/// 26 of these witnesses still build their request with `json!`. The reason is
+/// **not** the one this comment used to give ("the slice's wire type is
+/// module-private"): 21 of the 26 name a `vta-sdk` client method that exists
+/// today. The accurate position, per family:
+///
+/// - **`auth/{whoami,sessions-list,step-up/approve-response}`,
+///   `task-consent/decision`** (5) — the VTA is the *consumer*; no `vta-sdk`
+///   producer sends these, so there is no emission of ours to assert. A fixture
+///   is the honest witness here.
+/// - **`consent/*` (6), `device/*` (6), `messaging/ping`** — a producer exists,
+///   but it builds its payload as an inline `json!` with a conditional insert
+///   per optional member. There is no type to point a witness at. Converting
+///   these means first giving those producers canonical body structs — the
+///   #888 fold, applied to the families it did not reach — and only then can a
+///   witness be built rather than transcribed.
+/// - **`vault/*` (7)** — `vault_upsert` and friends take a caller-supplied
+///   `Value`; the SDK is a pass-through that contributes at most one member.
+///   There is no SDK type at all, and inventing one is an API change, not a
+///   test change.
+///
+/// So the remaining work is real but is *not* "rewrite 26 fixtures": it is one
+/// producer fold (consent/device/ping) plus an API decision (vault), with five
+/// entries that are correct as they stand. Recorded here rather than in an
+/// issue because the next person to read this comment is the one who needs it.
 struct Witness {
     request: Value,
     parse_request: ParseFn,
@@ -1725,22 +1753,34 @@ fn table() -> Vec<(&'static str, Conformance)> {
     // ─── vta/webvh/dids/update (webvh-gated like its dispatch arm) ─
     #[cfg(feature = "webvh")]
     {
-        use vta_sdk::protocols::did_management::update::UpdateDidWebvhResultBody;
+        use vta_sdk::protocols::did_management::update::{
+            UpdateDidWebvhBody, UpdateDidWebvhResultBody,
+        };
         t.push((
             uris::TASK_WEBVH_DIDS_UPDATE_1_0,
             checked!(
                 specs::vta::webvh::dids::update::v1_0::Payload,
                 specs::vta::webvh::dids::update::v1_0::Response,
-                // Mirrors `webvh.rs`'s `UpdateDidWithDid` (did + flattened
-                // camelCase `UpdateDidWebvhBody`).
-                json!({
-                    "did": "did:webvh:scid:vta.example",
-                    "label": "rotate after audit",
-                    "preRotationCount": 2,
-                    "ttl": 3600,
-                    "watchers": ["https://watcher.example"],
-                    "expectedVersionId": "1-zVer",
-                }),
+                // Built by the producer's own shaping, not transcribed. The
+                // comment here used to name a `UpdateDidWithDid` type that does
+                // not exist — the shape lives in `flatten_with_did`, which is
+                // now public for exactly this reason.
+                //
+                // **Deliberately a one-member update.** `--label x` and nothing
+                // else is the exact invocation that could not run in #895: six
+                // unset members each went out as `null` and the maintainer
+                // refused all six. A witness that sets most members would leave
+                // almost nothing unset and so would not exercise the defect
+                // this task has already shipped. Setting one member and leaving
+                // the rest is what keeps the other six honest.
+                vta_sdk::client::flatten_with_did(
+                    "did:webvh:scid:vta.example",
+                    &UpdateDidWebvhBody {
+                        label: Some("rotate after audit".into()),
+                        ..Default::default()
+                    },
+                )
+                .expect("the producer's own shaping succeeds"),
                 to_v(UpdateDidWebvhResultBody {
                     did: "did:webvh:scid:vta.example".into(),
                     new_version_id: "2-zVer".into(),

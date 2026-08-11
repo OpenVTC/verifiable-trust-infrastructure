@@ -492,7 +492,16 @@ impl VtaClient {
 /// programming error here, and is refused rather than silently reshaped: a
 /// dropped member on an update body is a DID-document change the operator
 /// believes they published.
-fn flatten_with_did<T: serde::Serialize>(
+/// **Public because the wire shape must be testable from outside.**
+///
+/// This function *is* the `vta/webvh/dids/*` request shape — body members
+/// flattened beside `did`. While it was private, the only way to assert that
+/// shape from another crate was to hand-write the JSON, and a hand-written
+/// fixture stops tracking the code the moment the code changes. The
+/// conformance sweep's witness for `dids/update` did exactly that, for the task
+/// that had already shipped broken once (#895). Exporting the shaping is what
+/// lets a witness be built rather than transcribed.
+pub fn flatten_with_did<T: serde::Serialize>(
     did: &str,
     body: &T,
 ) -> Result<serde_json::Value, VtaError> {
