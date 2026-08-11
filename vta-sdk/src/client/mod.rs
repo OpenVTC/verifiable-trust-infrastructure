@@ -238,6 +238,11 @@ mod secrets;
 mod vault;
 mod vta_management;
 mod webvh;
+/// The `vta/webvh/dids/*` request shaping — see [`webvh::flatten_with_did`].
+///
+/// Re-exported so the shape can be *built* by anything that needs to assert it,
+/// rather than hand-written a second time and left to drift.
+pub use webvh::flatten_with_did;
 
 #[cfg(feature = "client")]
 mod audit;
