@@ -285,6 +285,13 @@ jobs:
       # consumers were behind `didcomm`; nothing built it, so nothing said so.
       - name: vta-service rest only
         run: cargo clippy -p vta-service --no-default-features --features rest -- -D warnings
+      # TSP *without* DIDComm — the combination the `tsp = ["didcomm"]` feature
+      # edge used to make unbuildable. `-D warnings` for the same reason as the
+      # REST-only step above: the dead code this build exposes (DIDComm-only
+      # imports, helpers and constants that no longer have a consumer) is
+      # exactly what a silent-pass would hide.
+      - name: vta-service tsp without didcomm
+        run: cargo clippy -p vta-service --no-default-features --features setup,keyring,rest,tsp,cli-synthesis --all-targets -- -D warnings
       - name: vta-service aws-secrets
         run: cargo check -p vta-service --no-default-features --features aws-secrets,keyring,rest
       - name: vta-service azure-secrets

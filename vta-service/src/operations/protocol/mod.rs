@@ -6,22 +6,31 @@
 //! DIDComm transports (enable / update / disable / rollback / list)
 //! plus the DIDComm-only drain set (cancel / list / report).
 
+// The `*_didcomm` family and the drain surface it owns exist only in a build
+// that speaks DIDComm. Everything else here — REST, TSP, WebAuthn, the shared
+// document/invariant/snapshot machinery — is transport-neutral and always
+// compiled, so a TSP-only VTA still gets `services {rest,tsp} …`.
+#[cfg(feature = "didcomm")]
 pub mod disable_didcomm;
 pub mod disable_rest;
 pub mod disable_tsp;
 pub mod disable_webauthn;
 pub mod document;
+#[cfg(feature = "didcomm")]
 pub mod drain_cancel;
+#[cfg(feature = "didcomm")]
 pub mod enable_didcomm;
 pub mod enable_rest;
 pub mod enable_tsp;
 pub mod enable_webauthn;
 pub mod invariant;
 pub mod list;
+#[cfg(feature = "didcomm")]
 pub mod list_drain;
 pub mod passkey_vm_cleanup;
 pub mod preconditions;
 pub mod report;
+#[cfg(feature = "didcomm")]
 pub mod rollback_didcomm;
 pub mod rollback_rest;
 pub mod rollback_tsp;
@@ -29,6 +38,7 @@ pub mod rollback_webauthn;
 pub mod runtime_state;
 pub(crate) mod service_lifecycle;
 pub mod snapshot;
+#[cfg(feature = "didcomm")]
 pub mod update_didcomm;
 pub mod update_rest;
 pub mod update_tsp;
@@ -79,6 +89,10 @@ impl std::error::Error for DrainTtlBoundsError {}
 /// `update_didcomm`, `rollback_didcomm` — enforce the same bounds.
 /// Mirrors the spec §7a.4 "drain-ttl 31d" / "drain-ttl 30s over
 /// DIDComm" matrix cells.
+///
+/// Drain is a DIDComm-only concept (REST and TSP have no drain window), so
+/// this and its bounds live with the transport that has them.
+#[cfg(feature = "didcomm")]
 pub fn validate_drain_ttl(
     transport: crate::operations::protocol::disable_didcomm::DisableTransport,
     ttl: std::time::Duration,
@@ -176,10 +190,10 @@ pub struct ServiceOpDeps<'a> {
     pub telemetry: &'a vti_common::telemetry::SharedTelemetrySink,
     pub webvh_auth_locks: &'a crate::operations::did_webvh::WebvhAuthLocks,
     /// Active + draining mediator listener registry — DIDComm family only.
-    #[cfg(feature = "webvh")]
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
     pub registry: &'a crate::messaging::registry::MediatorListenerRegistry,
     /// Per-mediator drain-TTL sweeper — DIDComm family only.
-    #[cfg(feature = "webvh")]
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
     pub sweeper: &'a crate::messaging::drain_sweeper::DrainSweeper,
 }
 
@@ -190,7 +204,10 @@ impl<'a> ServiceOpDeps<'a> {
     /// `did_resolver` is threaded separately because `AppState` holds it as an
     /// `Option` — the caller unwraps it (surfacing the typed
     /// `DidResolverUnavailable` reject) before building the deps.
-    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    // Only `webvh`: the REST, TSP and WebAuthn ops all build their deps this
+    // way, and none of them touch the DIDComm-only registry/sweeper — those two
+    // fields are simply absent from a TSP-only build (see the struct above).
+    #[cfg(feature = "webvh")]
     pub fn from_app_state(
         s: &'a crate::server::AppState,
         did_resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
@@ -210,7 +227,9 @@ impl<'a> ServiceOpDeps<'a> {
             didcomm_bridge: &s.didcomm_bridge,
             telemetry: &s.telemetry,
             webvh_auth_locks: &s.webvh_auth_locks,
+            #[cfg(feature = "didcomm")]
             registry: &s.mediator_registry,
+            #[cfg(feature = "didcomm")]
             sweeper: &s.drain_sweeper,
         }
     }

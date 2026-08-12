@@ -45,26 +45,35 @@ use crate::cli_store::CliStore;
 use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::keys::seed_store::{SeedStore, create_seed_store};
+#[cfg(feature = "didcomm")]
 use crate::messaging::drain_sweeper::{DrainSweeper, teardown_channel};
+#[cfg(feature = "didcomm")]
 use crate::messaging::handshake::AlwaysOkProver;
+#[cfg(feature = "didcomm")]
 use crate::messaging::registry::MediatorListenerRegistry;
 use crate::operations::protocol::OpContext;
 use crate::operations::protocol::ServiceOpDeps;
+#[cfg(feature = "didcomm")]
 use crate::operations::protocol::disable_didcomm::{
     DisableDidcommParams, DisableTransport, disable_didcomm,
 };
 use crate::operations::protocol::disable_rest::{DisableRestParams, disable_rest};
 use crate::operations::protocol::disable_tsp::{DisableTspParams, disable_tsp};
+#[cfg(feature = "didcomm")]
 use crate::operations::protocol::drain_cancel::{DrainCancelParams, drain_cancel};
+#[cfg(feature = "didcomm")]
 use crate::operations::protocol::enable_didcomm::{EnableDidcommParams, enable_didcomm};
 use crate::operations::protocol::enable_rest::{EnableRestParams, enable_rest};
 use crate::operations::protocol::enable_tsp::{EnableTspParams, enable_tsp};
 use crate::operations::protocol::list::list_services;
+#[cfg(feature = "didcomm")]
 use crate::operations::protocol::list_drain::list_drain;
+#[cfg(feature = "didcomm")]
 use crate::operations::protocol::rollback_didcomm::{RollbackDidcommParams, rollback_didcomm};
 use crate::operations::protocol::rollback_rest::{RollbackRestParams, rollback_rest};
 use crate::operations::protocol::rollback_tsp::{RollbackTspParams, rollback_tsp};
 use crate::operations::protocol::snapshot;
+#[cfg(feature = "didcomm")]
 use crate::operations::protocol::update_didcomm::{
     MigrateAuditKind, UpdateDidcommParams, update_didcomm,
 };
@@ -92,7 +101,9 @@ struct OfflineDeps {
     did_resolver: DIDCacheClient,
     didcomm_bridge: Arc<DIDCommBridge>,
     telemetry: SharedTelemetrySink,
+    #[cfg(feature = "didcomm")]
     registry: Arc<MediatorListenerRegistry>,
+    #[cfg(feature = "didcomm")]
     sweeper: Arc<DrainSweeper>,
     auth: AuthClaims,
     /// Fresh per-invocation auth-locks. The offline CLI is a
@@ -123,7 +134,9 @@ impl OfflineDeps {
             didcomm_bridge: &self.didcomm_bridge,
             telemetry: &self.telemetry,
             webvh_auth_locks: &self.webvh_auth_locks,
+            #[cfg(feature = "didcomm")]
             registry: &self.registry,
+            #[cfg(feature = "didcomm")]
             sweeper: &self.sweeper,
         }
     }
@@ -181,8 +194,11 @@ async fn build_offline_deps(
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
     let didcomm_bridge = Arc::new(DIDCommBridge::placeholder());
     let telemetry: SharedTelemetrySink = Arc::new(RingBufferTelemetry::new());
+    #[cfg(feature = "didcomm")]
     let registry = Arc::new(MediatorListenerRegistry::new(Arc::clone(&telemetry)));
+    #[cfg(feature = "didcomm")]
     let (tx, _rx) = teardown_channel(8);
+    #[cfg(feature = "didcomm")]
     let sweeper = Arc::new(DrainSweeper::new(
         Arc::clone(&registry),
         drains_ks.clone(),
@@ -210,7 +226,9 @@ async fn build_offline_deps(
         did_resolver,
         didcomm_bridge,
         telemetry,
+        #[cfg(feature = "didcomm")]
         registry,
+        #[cfg(feature = "didcomm")]
         sweeper,
         auth,
         webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
@@ -472,6 +490,7 @@ pub async fn run_services_tsp_rollback(config_path: Option<PathBuf>) -> CliResul
 
 // ── services didcomm {enable, update, disable, rollback} ──────────
 
+#[cfg(feature = "didcomm")]
 pub async fn run_services_didcomm_enable(
     config_path: Option<PathBuf>,
     mediator_did: String,
@@ -506,6 +525,7 @@ pub async fn run_services_didcomm_enable(
     Ok(())
 }
 
+#[cfg(feature = "didcomm")]
 pub async fn run_services_didcomm_update(
     config_path: Option<PathBuf>,
     new_mediator_did: String,
@@ -542,6 +562,7 @@ pub async fn run_services_didcomm_update(
     Ok(())
 }
 
+#[cfg(feature = "didcomm")]
 pub async fn run_services_didcomm_disable(
     config_path: Option<PathBuf>,
     drain_ttl_secs: u64,
@@ -575,6 +596,7 @@ pub async fn run_services_didcomm_disable(
     Ok(())
 }
 
+#[cfg(feature = "didcomm")]
 pub async fn run_services_didcomm_rollback(
     config_path: Option<PathBuf>,
     drain_ttl_secs: Option<u64>,
@@ -619,6 +641,7 @@ pub async fn run_services_didcomm_rollback(
 
 // ── services didcomm drain {list, cancel} ─────────────────────────
 
+#[cfg(feature = "didcomm")]
 pub async fn run_services_didcomm_drain_list(config_path: Option<PathBuf>) -> CliResult {
     let d = build_offline_deps(config_path).await?;
     let response = list_drain(&d.config, &d.drains_ks, &d.auth)
@@ -639,6 +662,7 @@ pub async fn run_services_didcomm_drain_list(config_path: Option<PathBuf>) -> Cl
     Ok(())
 }
 
+#[cfg(feature = "didcomm")]
 pub async fn run_services_didcomm_drain_cancel(
     config_path: Option<PathBuf>,
     mediator_did: String,

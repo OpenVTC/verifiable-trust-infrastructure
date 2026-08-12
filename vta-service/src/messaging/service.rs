@@ -20,7 +20,10 @@ use std::time::Duration;
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder;
 use affinidi_messaging_core::{Inbound, MessageTransport, Protocol, ReceivedMessage};
-use affinidi_messaging_delivery::{Delivery, MessagingService, OutboxStore};
+#[cfg(feature = "didcomm")]
+use affinidi_messaging_delivery::Delivery;
+use affinidi_messaging_delivery::{MessagingService, OutboxStore};
+#[cfg(feature = "didcomm")]
 use affinidi_messaging_didcomm::Message;
 use affinidi_tdk::common::TDKSharedState;
 use affinidi_tdk::common::config::TDKConfig;
@@ -35,7 +38,9 @@ use tracing::{info, warn};
 
 use vti_common::outbox_store::VtiOutboxStore;
 
+#[cfg(feature = "didcomm")]
 use crate::messaging::router::{self, VtaState};
+#[cfg(feature = "didcomm")]
 use crate::messaging::shim::{DIDCommResponse, ProblemReport, ServiceProblemReport};
 use crate::server::AppState;
 use crate::store::KeyspaceHandle;
@@ -229,6 +234,10 @@ pub async fn run_inbound_loop(
     mediator_did: String,
     shutdown: CancellationToken,
 ) {
+    // Handler state for the DIDComm dispatcher only — TSP's spine entry
+    // (`tsp_inbound::dispatch_one`) takes `AppState` directly, so a TSP-only
+    // build never assembles this.
+    #[cfg(feature = "didcomm")]
     let vta_state = Arc::new(VtaState::from(&app_state));
     let mut stream = messaging.service.subscribe();
     info!("VTA messaging connected to mediator — inbound messages will be processed");
@@ -272,11 +281,17 @@ pub async fn run_inbound_loop(
 
                 let messaging = Arc::clone(&messaging);
                 let app_state = app_state.clone();
+                #[cfg(feature = "didcomm")]
                 let vta_state = Arc::clone(&vta_state);
                 let vta_did = vta_did.clone();
                 let mediator_did = mediator_did.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
+                    // Two call sites rather than one with a `#[cfg]` argument:
+                    // attributes on call arguments are not stable, while
+                    // attributes on the parameter (below) and on a statement
+                    // are.
+                    #[cfg(feature = "didcomm")]
                     handle_inbound(
                         inbound,
                         &messaging,
@@ -286,6 +301,8 @@ pub async fn run_inbound_loop(
                         &mediator_did,
                     )
                     .await;
+                    #[cfg(not(feature = "didcomm"))]
+                    handle_inbound(inbound, &messaging, &app_state, &vta_did, &mediator_did).await;
                 });
             }
             _ = shutdown.cancelled() => {
@@ -303,14 +320,25 @@ async fn handle_inbound(
     inbound: Inbound,
     messaging: &Arc<VtaMessaging>,
     app_state: &AppState,
-    vta_state: &Arc<VtaState>,
+    #[cfg(feature = "didcomm")] vta_state: &Arc<VtaState>,
     vta_did: &str,
     mediator_did: &str,
 ) {
     match inbound.message.protocol {
+        #[cfg(feature = "didcomm")]
         Protocol::DIDComm => {
             let _ = mediator_did;
             handle_didcomm(inbound, messaging, app_state, vta_state, vta_did).await;
+        }
+        // Mirror of the TSP arm below: a mediator that routes both protocols
+        // can hand a TSP-only VTA a DIDComm frame, and dropping it with a
+        // named reason beats a panic or a silent discard.
+        #[cfg(not(feature = "didcomm"))]
+        Protocol::DIDComm => {
+            let _ = (messaging, app_state, vta_did, mediator_did);
+            warn!(
+                "received an inbound DIDComm frame but the `didcomm` feature is disabled — dropping"
+            );
         }
         #[cfg(feature = "tsp")]
         Protocol::TSP => {
@@ -348,6 +376,7 @@ async fn handle_inbound(
 /// Outcome of the framework `MessagePolicy` gate for one inbound DIDComm frame,
 /// factored out of [`handle_didcomm`] so the policy is unit-testable without a
 /// live mediator socket. See [`inbound_gate`].
+#[cfg(feature = "didcomm")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum InboundGate {
     /// The frame was not encrypted — reply `bad_request` ("must be encrypted").
@@ -361,6 +390,7 @@ enum InboundGate {
     Authenticated(String),
 }
 
+#[cfg(feature = "didcomm")]
 impl InboundGate {
     /// The dispatchable sender DID, or `None` for a rejected frame.
     fn authenticated_sender(&self) -> Option<&str> {
@@ -387,6 +417,7 @@ impl InboundGate {
 /// sender, exactly as the removed middleware layer guaranteed. There is NO
 /// discovery exemption: the old policy layer required authcrypt for discovery
 /// too, so requiring it here is behaviour-preserving.
+#[cfg(feature = "didcomm")]
 fn inbound_gate(message: &ReceivedMessage) -> InboundGate {
     if !message.encrypted {
         return InboundGate::NotEncrypted;
@@ -402,6 +433,7 @@ fn inbound_gate(message: &ReceivedMessage) -> InboundGate {
 
 /// DIDComm inbound: rehydrate, stamp the verified sender, gate encryption,
 /// dispatch, pack + send the reply.
+#[cfg(feature = "didcomm")]
 async fn handle_didcomm(
     inbound: Inbound,
     messaging: &Arc<VtaMessaging>,
