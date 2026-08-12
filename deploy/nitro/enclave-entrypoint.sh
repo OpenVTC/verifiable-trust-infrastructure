@@ -226,8 +226,16 @@ fetch_rc=0
 if [ -f "$CONFIG_PATH" ]; then
     echo "Using existing config at $CONFIG_PATH"
 else
-    fetch_config_over_vsock
-    fetch_rc=$?
+    # Call in an `if` condition so `set -eu` (line 29) does NOT abort on the
+    # fetch's non-zero return (1 = unreachable after retries, 2 = bad version).
+    # A BARE `fetch_config_over_vsock` here would exit the shell immediately,
+    # making the fail-closed diagnostics and VTA_ALLOW_DEFAULT_CONFIG fallback
+    # below unreachable dead code. Keep this in condition context.
+    if fetch_config_over_vsock; then
+        fetch_rc=0
+    else
+        fetch_rc=$?
+    fi
 fi
 
 if [ ! -f "$CONFIG_PATH" ] && [ "$fetch_rc" -ne 0 ]; then

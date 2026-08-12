@@ -154,13 +154,16 @@ async fn main() {
     // ── Security floor for the runtime-delivered (un-baked) config ──
     // The tenant config is authored by the untrusted parent, so on real Nitro
     // hardware refuse to boot if it would (a) weaken `[tee] mode` below `required`
-    // (the default is `Optional`, which silently continues without TEE), or
-    // (b) set `[tee.kms] admin_did` (a parent-supplied super-admin is not
-    // attested). The attested path for admin is sealed-bootstrap Mode B. See
-    // `config_floor_violation` for the exact rules (unit-tested).
+    // (the default is `Optional`, which silently continues without TEE), (b) omit
+    // `[tee.kms]` — which silently disables KMS bootstrap and lets the seed come
+    // from the parent-supplied `[secrets]` block (a full bypass of the property
+    // the floor protects), or (c) set `[tee.kms] admin_did` (a parent-supplied
+    // super-admin is not attested). The attested path for admin is sealed-bootstrap
+    // Mode B. See `config_floor_violation` for the exact rules (unit-tested).
     if let Some(violation) = config_floor_violation(
         on_nitro,
         &config.tee.mode,
+        config.tee.kms.is_some(),
         config
             .tee
             .kms
@@ -364,7 +367,7 @@ async fn main() {
                         Ok(report) => {
                             info!(
                                 config_sha384_b64url = %digest_b64,
-                                "config attestation anchor — signed NSM document committing the config digest generated"
+                                "config attestation anchor — signed NSM document committing the config digest generated; a tenant/verifier MUST check (PCR0, config-digest), incl. that key_arn is theirs, before onboarding (see deploy/nitro/README.md)"
                             );
                             // Full multi-KB document at debug to keep boot logs lean.
                             tracing::debug!(
@@ -427,12 +430,16 @@ async fn main() {
 /// Rules (only when `nsm_present`):
 /// - `[tee] mode` must be `Required` (its default is `Optional`, which silently
 ///   continues without TEE).
+/// - `[tee.kms]` must be present (`kms_present`) — without it the enclave skips
+///   KMS bootstrap and takes its seed from the parent-supplied `[secrets]` block,
+///   a full bypass of `mode = required`.
 /// - `[tee.kms] admin_did` must be unset — a parent-supplied super-admin is not
 ///   attested. The attested path is sealed-bootstrap Mode B
 ///   (`POST /bootstrap/request`).
 fn config_floor_violation(
     nsm_present: bool,
     mode: &vta_service::config::TeeMode,
+    kms_present: bool,
     admin_did: Option<&str>,
 ) -> Option<String> {
     use vta_service::config::TeeMode;
@@ -445,6 +452,19 @@ fn config_floor_violation(
             "/dev/nsm is present but [tee] mode = {mode:?} (not `required`) — a runtime-delivered \
              config must not weaken TEE enforcement"
         ));
+    }
+    if !kms_present {
+        // Without `[tee.kms]` the enclave skips KMS bootstrap entirely: the seed
+        // comes from the parent-supplied `[secrets]` block, the store is local
+        // (not vsock), the env-override lockdown turns off, and the admin
+        // carve-out stays open. `mode = "required"` without `[tee.kms]` is
+        // therefore a silent bypass — refuse it.
+        return Some(
+            "/dev/nsm is present and [tee] mode = required but [tee.kms] is absent — the enclave \
+             would skip KMS bootstrap and take its seed from the parent-supplied [secrets] block. \
+             A runtime-delivered config must include [tee.kms] (region + key_arn)"
+                .to_string(),
+        );
     }
     if admin_did.is_some() {
         return Some(
@@ -488,28 +508,41 @@ mod tests {
     fn no_enforcement_off_real_hardware() {
         // Simulated/dev (no /dev/nsm): config is trusted local input — never blocked.
         assert!(
-            config_floor_violation(false, &TeeMode::Optional, Some("did:key:zAdmin")).is_none()
+            config_floor_violation(false, &TeeMode::Optional, false, Some("did:key:zAdmin"))
+                .is_none()
         );
-        assert!(config_floor_violation(false, &TeeMode::Simulated, None).is_none());
+        assert!(config_floor_violation(false, &TeeMode::Simulated, false, None).is_none());
     }
 
     #[test]
-    fn required_mode_without_admin_is_accepted_on_nitro() {
-        assert!(config_floor_violation(true, &TeeMode::Required, None).is_none());
+    fn required_mode_with_kms_and_no_admin_is_accepted_on_nitro() {
+        assert!(config_floor_violation(true, &TeeMode::Required, true, None).is_none());
     }
 
     #[test]
     fn weakened_mode_is_rejected_on_nitro() {
         for mode in [TeeMode::Optional, TeeMode::Simulated] {
-            let v = config_floor_violation(true, &mode, None)
+            let v = config_floor_violation(true, &mode, true, None)
                 .expect("weakened mode must be rejected on real Nitro");
             assert!(v.contains("mode"), "message should mention mode: {v}");
         }
     }
 
     #[test]
+    fn missing_tee_kms_is_rejected_on_nitro_even_when_mode_required() {
+        // mode = required but [tee.kms] absent must NOT pass — it silently
+        // disables KMS bootstrap (seed from parent [secrets]).
+        let v = config_floor_violation(true, &TeeMode::Required, false, None)
+            .expect("mode=required with [tee.kms] absent must be rejected on real Nitro");
+        assert!(
+            v.contains("[tee.kms]"),
+            "message should mention [tee.kms]: {v}"
+        );
+    }
+
+    #[test]
     fn admin_did_is_rejected_on_nitro_even_when_mode_required() {
-        let v = config_floor_violation(true, &TeeMode::Required, Some("did:key:zAdmin"))
+        let v = config_floor_violation(true, &TeeMode::Required, true, Some("did:key:zAdmin"))
             .expect("a parent-supplied admin_did must be rejected on real Nitro");
         assert!(
             v.contains("admin_did"),
@@ -522,12 +555,24 @@ mod tests {
     }
 
     #[test]
-    fn mode_floor_takes_precedence_over_admin_did() {
-        // Both violations present: the mode message is returned first.
-        let v = config_floor_violation(true, &TeeMode::Optional, Some("did:key:zAdmin")).unwrap();
+    fn mode_floor_takes_precedence() {
+        // Multiple violations present: the mode message is returned first.
+        let v = config_floor_violation(true, &TeeMode::Optional, false, Some("did:key:zAdmin"))
+            .unwrap();
         assert!(
             v.contains("mode"),
             "mode violation should be reported first: {v}"
+        );
+    }
+
+    #[test]
+    fn missing_kms_takes_precedence_over_admin_did() {
+        // kms-absent is checked before admin_did (admin_did lives under kms anyway).
+        let v = config_floor_violation(true, &TeeMode::Required, false, Some("did:key:zAdmin"))
+            .unwrap();
+        assert!(
+            v.contains("[tee.kms]"),
+            "missing-kms should be reported before admin_did: {v}"
         );
     }
 }

@@ -38,13 +38,31 @@ storage, and signed enclave images.
 > a parent-supplied super-admin is not attested. Leave `admin_did` unset and use
 > the attested sealed-bootstrap flow (Mode B, `POST /bootstrap/request`) instead.
 >
-> **Config attestation anchor.** At boot the enclave commits a SHA-384 digest of
-> the delivered config into an NSM attestation document (`user_data`) and logs it.
-> PCR0 stays tenant-agnostic; the AWS-signed document lets a verifier who holds it
-> confirm which config the enclave booted. This currently only *produces* the
-> signed evidence (emitted to the log, which flows to the parent) — exposing it to
-> verifiers on demand, bound to a caller-supplied nonce via an attested REST
-> endpoint, is the follow-up that makes availability + freshness verifier-grade.
+> **Config attestation anchor — and the verification step it REQUIRES.** Because
+> the parent supplies `tee.kms.key_arn`, on first boot the enclave generates its
+> seed and encrypts it under whatever key the config named; if that key is one the
+> parent controls, the seed is recoverable off-box. The mitigation is the anchor:
+> at boot the enclave commits a SHA-384 digest of the delivered config into an NSM
+> attestation document (`user_data`) and logs it. PCR0 stays tenant-agnostic, and
+> the AWS-signed document proves which config (hence which `key_arn`) the enclave
+> booted.
+>
+> **This is only safe if someone actually checks it.** The anchor *produces*
+> signed evidence but does not yet serve it on demand — it is emitted to the log,
+> which flows over the parent's own channel, with an empty nonce. So it is an
+> **operational requirement**, not an automatic property:
+>
+> > Before onboarding a tenant / trusting a VTA instance, the tenant (or an
+> > independent verifier — NOT the parent operator) MUST obtain the boot
+> > attestation document and verify: (1) its signature chains to the AWS Nitro
+> > root, (2) `PCR0` matches the pinned image, and (3) the committed config digest
+> > matches the config they expect — in particular that `tee.kms.key_arn` is the
+> > tenant's own key, not one the parent controls.
+>
+> Landing an attested pull endpoint (`GET /attestation/status` returning the
+> digest bound to a caller-supplied nonce) is the follow-up that makes this
+> availability- and freshness-safe without the manual step. Until then, treat the
+> check above as a mandatory onboarding gate.
 >
 > **Multi-tenant isolation is now a KMS-policy requirement.** With `key_arn` no
 > longer baked, one PCR0 is shared across tenants and the parent supplies the
