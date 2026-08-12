@@ -417,6 +417,13 @@ sed -i.bak "s|key_arn = \"PLACEHOLDER\"|key_arn = \"$KEY_ARN\"|" "$CONFIG_PATH"
 rm -f "$CONFIG_PATH.bak"
 ok "Config updated with KMS key ARN"
 
+# Emit the vsock config envelope (un-baked config). The tenant config is NOT
+# baked into the EIF; the parent serves this envelope to the enclave over vsock
+# at boot. `-Rs` slurps config.toml as a single JSON string into `.config_toml`.
+ENVELOPE_PATH="$BUILD_DIR/config-envelope.json"
+jq -Rs '{version: 1, config_toml: ., integrity: null}' "$CONFIG_PATH" > "$ENVELOPE_PATH"
+ok "Config envelope written: $ENVELOPE_PATH"
+
 cp "$CONFIG_PATH" "$SCRIPT_DIR/config.toml"
 
 info "Rebuilding Docker image..."
@@ -436,7 +443,10 @@ NEW_PCR0=$(echo "$BUILD_OUTPUT" | jq -r '.Measurements.PCR0')
 ok "EIF rebuilt"
 
 if [ "$NEW_PCR0" != "$PCR0" ]; then
-    info "PCR0 changed (config was baked in) — updating KMS policy..."
+    # Tenant config is no longer baked into the EIF, so inserting the KMS ARN
+    # should NOT change PCR0. A change here means something else in the image
+    # moved (code/deps/Dockerfile) — update the KMS policy to match.
+    info "PCR0 changed — updating KMS policy..."
     PCR0="$NEW_PCR0"
     echo "$PCR0" > "$BUILD_DIR/pcr0.txt"
     bash "$SCRIPT_DIR/setup-kms-policy.sh" \
@@ -487,6 +497,7 @@ echo ""
 echo -e "  ${GREEN}Bundle ready at: $BUILD_DIR/${NC}"
 echo "    - vta.eif"
 echo "    - config.toml"
+echo "    - config-envelope.json"
 echo "    - pcr0.txt, pcr8.txt"
 echo "    - manifest.json"
 echo ""

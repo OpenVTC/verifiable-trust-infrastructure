@@ -599,6 +599,78 @@ fn build_tls_connector() -> Result<TlsConnector, Box<dyn std::error::Error>> {
     Ok(TlsConnector::from(Arc::new(config)))
 }
 
+// ---------------------------------------------------------------------------
+// [0] Config: vsock → file (parent → enclave un-baked config envelope)
+// ---------------------------------------------------------------------------
+
+/// Serves the un-baked tenant config envelope to the enclave over vsock.
+///
+/// The enclave connects on first boot, reads the envelope
+/// (`{ "version":1, "config_toml":"…", "integrity":null }`) and writes
+/// `/etc/vta/config.toml` before starting the VTA. The file is re-read per
+/// connection so a rotated envelope is picked up on the enclave's next boot,
+/// and each connection is served by its own task so the enclave can reconnect
+/// after a boot race or restart.
+///
+/// This is the parent side of the vsock config channel that replaces baking the
+/// config into the EIF; the shell equivalent is
+/// `socat -U VSOCK-LISTEN:PORT,fork OPEN:envelope,rdonly` in `parent-proxy.sh`.
+pub async fn run_config_server(vsock_port: u32, envelope_path: std::path::PathBuf) {
+    use tokio::io::AsyncWriteExt;
+
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+
+    let listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
+        Ok(l) => l,
+        Err(e) => {
+            error!("[config] failed to bind vsock:{vsock_port}: {e}");
+            return;
+        }
+    };
+    info!("[config] listening on vsock:{vsock_port} → {}", envelope_path.display());
+
+    loop {
+        let (mut vsock_stream, peer) = match listener.accept().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("[config] accept error: {e}");
+                continue;
+            }
+        };
+
+        let permit = match semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                warn!("[config] connection limit reached, rejecting vsock peer {peer:?}");
+                drop(vsock_stream);
+                continue;
+            }
+        };
+        debug!("[config] connection from vsock peer {peer:?}");
+
+        let path = envelope_path.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            // Re-read per connection (tiny boot-time file) so a rotated envelope
+            // is served on the enclave's next boot.
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    if let Err(e) = vsock_stream.write_all(&bytes).await {
+                        debug!("[config] write to vsock peer {peer:?} failed: {e}");
+                    }
+                    // Fully-qualified: VsockStream also has an inherent
+                    // `shutdown(Shutdown)`; we want the async AsyncWriteExt one.
+                    let _ = AsyncWriteExt::shutdown(&mut vsock_stream).await;
+                    debug!("[config] served {} bytes to vsock peer {peer:?}", bytes.len());
+                }
+                Err(e) => {
+                    error!("[config] failed to read envelope {}: {e}", path.display());
+                }
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -76,6 +76,9 @@ fi
 if [ -n "$BUNDLE_DIR" ]; then
     [ -z "$EIF_PATH" ]    && EIF_PATH="$BUNDLE_DIR/vta.eif"
     [ -z "$CONFIG_PATH" ] && CONFIG_PATH="$BUNDLE_DIR/config.toml"
+    # Un-baked config: the enclave fetches its tenant config from the parent
+    # proxy over vsock instead of a baked EIF. Served when present in the bundle.
+    [ -z "${CONFIG_ENVELOPE_PATH:-}" ] && CONFIG_ENVELOPE_PATH="$BUNDLE_DIR/config-envelope.json"
 fi
 
 RUNTIME_DIR="${VTA_RUNTIME_DIR:-${BUNDLE_DIR:-$REPO_ROOT/.deploy-nitro}}"
@@ -255,7 +258,20 @@ if pid_alive "$PROXY_PID_FILE"; then
 else
     rm -f "$PROXY_PID_FILE"
     info "Starting enclave proxy in background..."
+    # Serve the un-baked tenant config envelope over vsock when present. A
+    # rebuilt (un-baked) EIF has no config inside and REQUIRES this; warn loudly
+    # if it is missing so the failure is obvious, not a 60 s enclave timeout.
+    PROXY_ENVELOPE_ARGS=()
+    if [ -f "${CONFIG_ENVELOPE_PATH:-}" ]; then
+        ok "Config envelope: $CONFIG_ENVELOPE_PATH (served over vsock:5800)"
+        PROXY_ENVELOPE_ARGS=(--config-envelope "$CONFIG_ENVELOPE_PATH")
+    else
+        warn "No config-envelope.json in bundle — an un-baked EIF will fail to boot."
+        warn "Generate it from config.toml:"
+        warn "  jq -Rs '{version:1, config_toml:., integrity:null}' config.toml > config-envelope.json"
+    fi
     nohup "$PROXY_BIN" --config "$CONFIG_PATH" --enclave-cid 16 \
+        "${PROXY_ENVELOPE_ARGS[@]}" \
         > "$PROXY_LOG" 2>&1 &
     PROXY_PID=$!
     echo "$PROXY_PID" > "$PROXY_PID_FILE"
