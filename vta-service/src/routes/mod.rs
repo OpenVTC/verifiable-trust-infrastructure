@@ -117,14 +117,23 @@ pub(super) const BACKUP_BLOB_BODY_SIZE: usize = 100 * 1024 * 1024;
 
 /// Per-client-IP rate-limit budget for unauthenticated endpoints.
 ///
-/// `per_second(n)` = replenish one token every `n` seconds.
-/// `burst_size(b)` = bucket holds `b` tokens.
-/// So (5, 10) = 10 rapid requests then 1 every 5 s.
+/// **`per_second(n)` is a replenishment interval, not a rate** — it sets
+/// `Quota::with_period(Duration::from_secs(n))`, one token every `n` seconds.
+/// `burst_size(b)` sizes the bucket. So (5, 10) means 10 rapid requests, then
+/// one every 5 s — *not* 5 requests per second. Raising the interval tightens
+/// the limiter; lowering it loosens.
 ///
-/// Overridable via `[server]` config: `rate_limit_interval_secs` / `rate_limit_burst`.
-/// Lower `rate_limit_interval_secs` = more permissive. Set to 1 for local dev.
-const UNAUTH_INTERVAL_SECS: u64 = 5;
-const UNAUTH_BURST: u32 = 10;
+/// Loose enough that a legit operator running provisioning scripts doesn't hit
+/// it, tight enough that a sustained flood from one IP is rejected with 429.
+/// These endpoints do real crypto work (attestation, HPKE seal, Ed25519
+/// verify) so throttling them protects VTA CPU regardless of any reverse proxy
+/// upstream.
+///
+/// Both are overridable per-deployment via `[server] rate_limit_interval_secs`
+/// / `rate_limit_burst`; these remain the defaults and the values the test
+/// harness and OpenAPI spec builder use.
+pub(crate) const UNAUTH_INTERVAL_SECS: u64 = 5;
+pub(crate) const UNAUTH_BURST: u32 = 10;
 
 /// Global per-request timeout. The REST surface runs on a current-thread
 /// runtime, so a handler that stalls on network I/O (a dead mediator, a
@@ -147,32 +156,39 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// `trust_xff`: `false` keys on the socket peer (`PeerIpKeyExtractor`,
 /// spoof-safe for direct binding); `true` honours `X-Forwarded-For`
 /// (`SmartIpKeyExtractor`, only safe behind a header-sanitising proxy).
+///
+/// `interval_secs` / `burst` come from `[server]` config (see
+/// [`UNAUTH_INTERVAL_SECS`] for the units — seconds per token, not a rate).
+/// Both are clamped to ≥1: `GovernorConfigBuilder::finish` returns `None` on a
+/// zero period or burst, and an operator writing `0` means "no limit", which
+/// this layer cannot express. Clamping keeps the strictest reading rather than
+/// panicking the REST thread on a typo.
 fn apply_unauth_governor(
     router: OpenApiRouter<AppState>,
     trust_xff: bool,
-    rps: u64,
+    interval_secs: u64,
     burst: u32,
 ) -> OpenApiRouter<AppState> {
-    let rps = rps.max(1);
+    let interval_secs = interval_secs.max(1);
     let burst = burst.max(1);
     if trust_xff {
         let cfg = Arc::new(
             GovernorConfigBuilder::default()
-                .per_second(rps)
+                .per_second(interval_secs)
                 .burst_size(burst)
                 .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
                 .finish()
-                .expect("rate_limit_interval_secs and rate_limit_burst are clamped to ≥1"),
+                .expect("interval_secs and burst are clamped to >= 1 above"),
         );
         router.layer(GovernorLayer::new(cfg))
     } else {
         let cfg = Arc::new(
             GovernorConfigBuilder::default()
-                .per_second(rps)
+                .per_second(interval_secs)
                 .burst_size(burst)
                 .key_extractor(tower_governor::key_extractor::PeerIpKeyExtractor)
                 .finish()
-                .expect("rate_limit_interval_secs and rate_limit_burst are clamped to ≥1"),
+                .expect("interval_secs and burst are clamped to >= 1 above"),
         );
         router.layer(GovernorLayer::new(cfg))
     }
@@ -272,10 +288,11 @@ pub fn router() -> Router<AppState> {
 ///   proxy that overwrites or strips these headers from external
 ///   requests. Misconfiguring this is a silent rate-limit bypass.
 ///
-/// `rps` / `burst` control the per-IP rate limiter on unauthenticated
-/// endpoints. Read from `[server]` config at startup; fall back to
-/// [`UNAUTH_RPS`] / [`UNAUTH_BURST`] for tests and the OpenAPI spec builder.
-fn build_api_router(trust_xff: bool, rps: u64, burst: u32) -> OpenApiRouter<AppState> {
+/// `interval_secs` / `burst` control the per-IP rate limiter on unauthenticated
+/// endpoints. Read from `[server]` config at startup; callers that have no
+/// config (tests, the OpenAPI spec builder) pass
+/// [`UNAUTH_INTERVAL_SECS`] / [`UNAUTH_BURST`].
+fn build_api_router(trust_xff: bool, interval_secs: u64, burst: u32) -> OpenApiRouter<AppState> {
     // Per-IP rate-limit layer applied to every unauthenticated endpoint.
     // Authenticated routes stay unthrottled — JWT auth is itself a gate,
     // and legitimate operator traffic against the management plane
@@ -342,7 +359,7 @@ fn build_api_router(trust_xff: bool, rps: u64, burst: u32) -> OpenApiRouter<AppS
     // import etc.
     let unauth = unauth.layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
     // Rate-limit every unauth endpoint (see `apply_unauth_governor`).
-    let unauth = apply_unauth_governor(unauth, trust_xff, rps, burst);
+    let unauth = apply_unauth_governor(unauth, trust_xff, interval_secs, burst);
 
     // Auth portal — same-origin popup target for cross-origin WebAuthn
     // flows. Sits on its own router branch so:
@@ -560,7 +577,8 @@ fn build_api_router(trust_xff: bool, rps: u64, burst: u32) -> OpenApiRouter<AppS
     let backup_blob_router = OpenApiRouter::new()
         .routes(routes!(backup_blob::get_blob, backup_blob::post_blob))
         .layer(DefaultBodyLimit::max(BACKUP_BLOB_BODY_SIZE));
-    let backup_blob_router = apply_unauth_governor(backup_blob_router, trust_xff, rps, burst);
+    let backup_blob_router =
+        apply_unauth_governor(backup_blob_router, trust_xff, interval_secs, burst);
     let router = router.merge(backup_blob_router);
 
     // Authenticated health details and capabilities
@@ -592,14 +610,14 @@ pub fn openapi_spec() -> utoipa::openapi::OpenApi {
 pub fn router_with_cors(
     allowed_origins: &[String],
     trust_xff: bool,
-    rps: u64,
+    interval_secs: u64,
     burst: u32,
 ) -> Router<AppState> {
     // Finalise the OpenAPI document from the assembled router (paths come from
     // the `routes!()` registrations) and recover a plain axum `Router` to layer
     // + serve. Splitting here, *before* the global layers, lets `/openapi.json`
     // be added as a sibling that the same global layers then wrap.
-    let (router, api) = build_api_router(trust_xff, rps, burst).split_for_parts();
+    let (router, api) = build_api_router(trust_xff, interval_secs, burst).split_for_parts();
     let router = router.route("/openapi.json", get(move || serve_openapi(api.clone())));
 
     // Apply global request body size limit to protect enclave memory,
@@ -771,7 +789,7 @@ mod cors_tests {
 
     #[test]
     fn build_api_router_accepts_custom_rate_limit() {
-        // Constructing with non-default rps/burst must not panic.
+        // Constructing with non-default interval_secs/burst must not panic.
         let _ = build_api_router(false, 50, 100);
         let _ = build_api_router(true, 1000, 2000);
     }
@@ -781,10 +799,31 @@ mod cors_tests {
         // The full router assembly with custom rate limits must not panic.
         let _ = router_with_cors(&[], false, 50, 100);
     }
+
+    /// A `0` in either `[server]` field reaches `apply_unauth_governor`, whose
+    /// `GovernorConfigBuilder::finish()` returns `None` on a zero period or
+    /// burst — the `.expect()` there would panic the REST thread. This asserts
+    /// the production clamp, not a test helper's: it goes through the real
+    /// router builders on both `trust_xff` branches.
+    #[test]
+    fn zero_rate_limit_config_is_clamped_not_panicked() {
+        let _ = build_api_router(false, 0, 0);
+        let _ = build_api_router(true, 0, 0);
+        let _ = router_with_cors(&[], false, 0, 0);
+    }
 }
 
-/// Tests that `apply_unauth_governor` rejects requests after the configured
-/// burst is exhausted — i.e. the configured values actually control the limiter.
+/// Pins the meaning of the two `[server]` rate-limit knobs against
+/// `tower_governor` itself: `per_second(n)` is a *replenishment interval*
+/// (one token every `n` seconds), and `burst_size(b)` is how many requests
+/// get through back-to-back before throttling starts.
+///
+/// This exercises the governor directly rather than
+/// [`apply_unauth_governor`] — that takes an `OpenApiRouter<AppState>`, and a
+/// full `AppState` is far more machinery than these assertions need. The
+/// end-to-end wiring is covered by the harness test
+/// `unauth_endpoint_rate_limit_returns_429_after_burst`, and the clamp by
+/// `cors_tests::zero_rate_limit_config_is_clamped_not_panicked` above.
 #[cfg(test)]
 mod rate_limit_tests {
     use std::sync::Arc;
@@ -799,10 +838,10 @@ mod rate_limit_tests {
         "ok"
     }
 
-    /// Build a minimal rate-limited router (no AppState needed).
+    /// Build a minimal rate-limited router (no AppState needed). Deliberately
+    /// does *not* clamp — clamping is the production path's job and is
+    /// asserted there, so a helper that repeated it would hide a regression.
     fn limited_router(interval_secs: u64, burst: u32) -> axum::Router {
-        let interval_secs = interval_secs.max(1);
-        let burst = burst.max(1);
         let cfg = Arc::new(
             GovernorConfigBuilder::default()
                 .per_second(interval_secs)
@@ -863,15 +902,23 @@ mod rate_limit_tests {
         assert!(rejected, "expected 429 after burst exhausted");
     }
 
-    #[tokio::test]
-    async fn zero_burst_clamped_to_one_not_panic() {
-        let app = limited_router(0, 0);
-        let req = Request::builder()
-            .uri("/test")
-            .header("x-forwarded-for", "10.0.0.1")
-            .body(axum::body::Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+    /// The reason the production path clamps: a zero period or burst makes
+    /// `finish()` return `None`, so an unclamped `.expect()` would panic.
+    #[test]
+    fn zero_period_or_burst_has_no_governor_config() {
+        // Same builder chain as `apply_unauth_governor`, minus the clamp.
+        let zero_period = GovernorConfigBuilder::default()
+            .per_second(0)
+            .burst_size(10)
+            .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
+            .finish();
+        assert!(zero_period.is_none(), "zero period must not yield a config");
+
+        let zero_burst = GovernorConfigBuilder::default()
+            .per_second(5)
+            .burst_size(0)
+            .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
+            .finish();
+        assert!(zero_burst.is_none(), "zero burst must not yield a config");
     }
 }

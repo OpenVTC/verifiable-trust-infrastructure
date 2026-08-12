@@ -838,9 +838,15 @@ These are load-bearing — know they exist before adjusting nearby code.
   built on them — and match on the `ActScope`. Same shape as the
   `ApproveScope` axis beside it in `vta-sdk/src/acl.rs`: act vs confer.
   See `docs/05-design-notes/acl-scope-semantics.md`.
-- **Rate limit** on all unauth routes: `tower-governor` at 5 rps + 10
-  burst per source IP (`vta-service/src/routes/mod.rs`). Keep JWT-gated
-  routes off the limiter — auth is the gate.
+- **Rate limit** on all unauth routes: `tower-governor` per source IP
+  (`vta-service/src/routes/mod.rs`). Keep JWT-gated routes off the
+  limiter — auth is the gate. **`per_second(n)` is a replenishment
+  *interval*, not a rate** — `(5, 10)` is 10 back-to-back requests then
+  one every 5 s, so a *bigger* number is a *tighter* limit. The VTA's
+  values are `[server] rate_limit_interval_secs` / `rate_limit_burst`
+  (defaults 5 / 10, zero clamped to 1). Prose elsewhere in the repo —
+  including `vtc-service`, which runs the same governor — still says
+  "5 rps"; that phrasing is wrong wherever it appears.
 - **Request body cap**: 1 MB globally (`MAX_BODY_SIZE`). Matters in TEE
   where memory is tight.
 - **Audience isolation** between VTA and VTC JWTs. Cross-audience tokens
