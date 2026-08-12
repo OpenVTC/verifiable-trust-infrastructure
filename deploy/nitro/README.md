@@ -47,22 +47,30 @@ storage, and signed enclave images.
 > the AWS-signed document proves which config (hence which `key_arn`) the enclave
 > booted.
 >
-> **This is only safe if someone actually checks it.** The anchor *produces*
-> signed evidence but does not yet serve it on demand — it is emitted to the log,
-> which flows over the parent's own channel, with an empty nonce. So it is an
-> **operational requirement**, not an automatic property:
+> **This is a required verification step, and there is a pull endpoint for it.**
+> The boot-time anchor only *produces* signed evidence (log-only, empty nonce) —
+> so verification is a **mandatory onboarding gate**, not an automatic property:
 >
 > > Before onboarding a tenant / trusting a VTA instance, the tenant (or an
-> > independent verifier — NOT the parent operator) MUST obtain the boot
-> > attestation document and verify: (1) its signature chains to the AWS Nitro
-> > root, (2) `PCR0` matches the pinned image, and (3) the committed config digest
-> > matches the config they expect — in particular that `tee.kms.key_arn` is the
-> > tenant's own key, not one the parent controls.
+> > independent verifier — NOT the parent operator) MUST obtain a fresh config
+> > attestation and verify: (1) its signature chains to the AWS Nitro root,
+> > (2) `PCR0` matches the pinned image, (3) the bound `nonce` equals the one they
+> > sent, and (4) the committed config digest (`user_data`) matches the config
+> > they expect — in particular that `tee.kms.key_arn` is the tenant's own key,
+> > not one the parent controls.
 >
-> Landing an attested pull endpoint (`GET /attestation/status` returning the
-> digest bound to a caller-supplied nonce) is the follow-up that makes this
-> availability- and freshness-safe without the manual step. Until then, treat the
-> check above as a mandatory onboarding gate.
+> Use **`POST /attestation/config-report`** with a fresh caller nonce:
+>
+> ```bash
+> curl -s https://<vta>/attestation/config-report \
+>   -H 'content-type: application/json' -d '{"nonce":"<hex>"}'
+> # → { config_digest_sha384, nonce, tee_type, evidence (base64 COSE_Sign1), generated_at }
+> ```
+>
+> The digest is committed as the attestation `user_data` (signed, not merely
+> asserted) and the nonce is bound for freshness, so — unlike the boot log — the
+> parent can neither withhold nor replay it. Verify `evidence` with
+> `vta_sdk::attestation` against the AWS Nitro root.
 >
 > **Multi-tenant isolation is now a KMS-policy requirement.** With `key_arn` no
 > longer baked, one PCR0 is shared across tenants and the parent supplies the

@@ -328,6 +328,7 @@ fn build_api_router(trust_xff: bool, interval_secs: u64, burst: u32) -> OpenApiR
             attestation::cached_report,
             attestation::generate_report
         ))
+        .routes(routes!(attestation::config_report))
         .routes(routes!(attestation::did_log));
     #[cfg(feature = "webvh")]
     let unauth = unauth
