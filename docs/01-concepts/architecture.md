@@ -251,6 +251,10 @@ vta export-admin                        Export admin DID and credential
 vta bootstrap-admin --did DID           Seed first super-admin and seal the VTA
 vta create-did-key --context ID         Create a did:key in a context
 vta create-did-webvh --context ID       Create a did:webvh interactively
+                     [--url URL]        Non-interactive (skip prompts)
+                     [--did-log-file P] Write did.jsonl to path P
+                     [--export-secrets] Emit secrets bundle to stdout
+                     [--admin]          Create admin ACL entry for the new DID
 vta import-did --did DID [--role ...]   Import external DID into ACL
 vta acl list / get / update / delete    ACL management
 vta keys list / secrets / seeds / rotate-seed   Key + seed management
