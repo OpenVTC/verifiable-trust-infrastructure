@@ -57,7 +57,11 @@ pub mod error;
 pub use vta_keys as keys;
 pub mod hardened_bootstrap;
 pub mod keyspaces;
-#[cfg(feature = "didcomm")]
+/// Mediator connection + inbound dispatch. Present whenever *either*
+/// transport is compiled: the mediator socket is shared, and TSP rides it
+/// (ADR 0005 — one websocket per DID). The DIDComm protocol surface inside
+/// is separately gated on `didcomm`.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 pub mod messaging;
 #[cfg(feature = "rest")]
 pub mod metrics;

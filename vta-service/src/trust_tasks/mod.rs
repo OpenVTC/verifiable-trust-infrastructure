@@ -736,7 +736,9 @@ fn vault_audit_outcome_label(outcome: &TrustTaskOutcome) -> String {
 /// conformant Trust-Task client can't read. (On REST the JWT extractor
 /// rejects unauthenticated callers before dispatch, so this gap is
 /// DIDComm-only — hence the feature gate.)
-#[cfg(feature = "didcomm")]
+// Either inbound transport rejects malformed work the same way — TSP frames
+// arrive on the same mediator socket and go through the same spine.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 pub(crate) fn reject_trust_task(body: &[u8], reason: RejectReason) -> TrustTaskOutcome {
     match serde_json::from_slice::<TrustTask<Value>>(body) {
         Ok(doc) => reject_with(&doc, reason),

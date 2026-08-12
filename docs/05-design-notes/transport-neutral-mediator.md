@@ -262,6 +262,17 @@ Questions 1 and 2 want one live run against a mediator — the same smoke test
 
 ## 10. Sequencing
 
+**Update (phase D shipped).** §1's three reasons are now history: the mediator
+prompt is reached by either transport, the connect supervisor is mounted on
+`services.didcomm || services.tsp`, and the `tsp = ["didcomm"]` feature edge is
+gone — `messaging::{service,readiness,auth}` are gated on either transport while
+the DIDComm protocol surface (router, handlers, drain, registry, protocol
+management, and their routes and CLI) is `didcomm`-only. A TSP-only VTA connects
+to its mediator, speaks TSP on that socket, and does not advertise
+`#vta-didcomm`. §9's two open questions are unchanged and are what the live run
+answers. Phases B and C — `protocols` with DID-document resolution, and the
+split routing table — remain.
+
 - **A — mint a TSP-capable mediator.** `create_mediator` fills `SERVICE_TSP`
   when the mediator serves TSP, derived from `services.tsp` and overridable via
   `messaging.protocols`. Closes §2, needs none of the model. **Implemented in

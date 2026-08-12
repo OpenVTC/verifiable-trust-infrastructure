@@ -36,7 +36,7 @@
 //! auth_for_trust_task_envelope` lets a ceremony task through on a
 //! zero-authority claim when — and only when — the ACL turns its sender away.
 
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 use crate::auth::AuthClaims;
 
 /// Does this Type URI name a ceremony task?
@@ -82,7 +82,7 @@ pub(crate) fn is_ceremony_task(type_uri: &str) -> bool {
 /// `handle_approve_response` writes no audit row on `challenge_unknown`,
 /// `subject_mismatch` or `approver_unauthorized`, so an unknown sender leaves no
 /// durable trace to flood.
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 pub(crate) async fn may_attempt_ceremony(
     state: &crate::server::AppState,
     type_uri: &str,
@@ -116,7 +116,7 @@ pub(crate) async fn may_attempt_ceremony(
 /// Only the intrinsic-sender transports need this — REST authenticates on a JWT
 /// the caller had to obtain first, so there is no pre-auth routing decision to
 /// make there.
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 pub(crate) fn peek_type_uri(body: &[u8]) -> Option<String> {
     #[derive(serde::Deserialize)]
     struct TypeOnly {
@@ -143,7 +143,7 @@ pub(crate) fn peek_type_uri(body: &[u8]) -> Option<String> {
 /// mediator write a row. `session_id` mirrors the DID-keyed convention
 /// [`vti_common::auth::session::resolve_did_session`] uses so the value lines up
 /// with what an enrolled peer would see, without persisting anything.
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 pub(crate) fn ceremony_claims(sender_did: &str) -> AuthClaims {
     AuthClaims {
         did: sender_did.to_string(),
@@ -164,7 +164,7 @@ pub(crate) fn ceremony_claims(sender_did: &str) -> AuthClaims {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "didcomm")]
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
     use crate::acl::Role;
 
     #[test]
@@ -186,7 +186,7 @@ mod tests {
         assert!(!is_ceremony_task(""));
     }
 
-    #[cfg(feature = "didcomm")]
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
     #[test]
     fn peek_reads_the_type_and_ignores_the_rest() {
         let body = br#"{"id":"urn:uuid:1","type":"https://example.com/a/0.1",
@@ -200,7 +200,7 @@ mod tests {
     /// A body we cannot read must fall through to the ordinary ACL path, not
     /// past it. This is the only reason the function returns `Option` rather
     /// than defaulting to something.
-    #[cfg(feature = "didcomm")]
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
     #[test]
     fn an_unreadable_body_is_not_a_ceremony_task() {
         assert!(peek_type_uri(b"not json").is_none());
@@ -211,7 +211,7 @@ mod tests {
 
     /// The claim must confer nothing. If this ever loosens, an unenrolled DID
     /// that can reach the mediator gains standing at the VTA.
-    #[cfg(feature = "didcomm")]
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
     #[test]
     fn ceremony_claims_are_authorized_nowhere() {
         let auth = ceremony_claims("did:key:zApprover");

@@ -111,7 +111,11 @@ impl<'a> WebvhDeps<'a> {
     /// (REST + trust-task transports). `did_resolver` is threaded separately
     /// because `AppState` holds it as an `Option` — the caller unwraps it
     /// (surfacing the typed "DID resolver not available" reject) first.
-    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    // Only `webvh`: every field it borrows exists in any build. The DIDComm
+    // edge came from `from_vta_state` below (VtaState is the DIDComm handler
+    // state) and was never needed on this side — trust tasks reach these ops
+    // over whichever transport is compiled.
+    #[cfg(feature = "webvh")]
     pub fn from_app_state(
         s: &'a crate::server::AppState,
         did_resolver: &'a DIDCacheClient,
@@ -184,7 +188,11 @@ impl<'a> CreateDidWebvhDeps<'a> {
     /// Borrow create-deps from an [`AppState`](crate::server::AppState) (REST +
     /// trust-task). `config` (the read-guard snapshot) and the unwrapped
     /// `did_resolver` are threaded separately.
-    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    // Only `webvh`: every field it borrows exists in any build. The DIDComm
+    // edge came from `from_vta_state` below (VtaState is the DIDComm handler
+    // state) and was never needed on this side — trust tasks reach these ops
+    // over whichever transport is compiled.
+    #[cfg(feature = "webvh")]
     pub fn from_app_state(
         s: &'a crate::server::AppState,
         config: &'a AppConfig,

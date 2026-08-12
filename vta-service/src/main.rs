@@ -1367,6 +1367,7 @@ enum ServicesCommands {
         command: RestCommands,
     },
     /// Manage DIDComm advertisement.
+    #[cfg(feature = "didcomm")]
     Didcomm {
         #[command(subcommand)]
         command: DidcommCommands,
@@ -2039,9 +2040,10 @@ async fn main() {
             // List/report/drain-list are read-only and skip the
             // check.
             match &command {
-                ServicesCommands::List
-                | ServicesCommands::Report { .. }
-                | ServicesCommands::Didcomm {
+                ServicesCommands::List | ServicesCommands::Report { .. } => {}
+                // `drain list` is the DIDComm family's only read-only member.
+                #[cfg(feature = "didcomm")]
+                ServicesCommands::Didcomm {
                     command:
                         DidcommCommands::Drain {
                             command: DrainCommands::List,
@@ -2079,6 +2081,10 @@ async fn main() {
                         services_cli::run_services_rest_rollback(cli.config).await
                     }
                 },
+                // The DIDComm family of `vta services …` exists only in a
+                // build with a DIDComm dispatcher; the clap subcommand is
+                // gated alongside it, so this arm is unreachable elsewhere.
+                #[cfg(feature = "didcomm")]
                 ServicesCommands::Didcomm { command } => match command {
                     DidcommCommands::Enable {
                         mediator_did,

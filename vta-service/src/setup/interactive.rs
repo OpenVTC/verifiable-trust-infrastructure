@@ -280,19 +280,14 @@ fn validate_services(sel: &ServiceSelection) -> Result<(), String> {
     if !sel.rest && !sel.didcomm && !sel.tsp {
         return Err("Please select at least one service.".into());
     }
-    // TSP advertises the **same** mediator as DIDComm (one dual-protocol
-    // mediator — tsp-enablement.md D8), and that mediator is configured in
-    // the DIDComm section further down. TSP without DIDComm would point
-    // `#tsp` at a mediator this VTA never configured. `validate_inputs`
-    // enforces the same rule for `--from <toml>`; both paths need it
-    // because neither reaches the other's checkpoint.
-    if sel.tsp && !sel.didcomm {
-        return Err(
-            "TSP shares the DIDComm mediator — select DIDComm Messaging as well, \
-                    or leave TSP off and enable it later with `pnm services tsp enable`."
-                .into(),
-        );
-    }
+    // TSP no longer implies DIDComm. Both transports ride the same mediator
+    // socket, and the mediator section below is now reached by either — so a
+    // TSP-only VTA is a VTA that connects to a mediator and speaks TSP on it,
+    // with no DIDComm dispatcher compiled or advertised. Whether that mediator
+    // *carries* TSP is the operator's call (nothing here can verify it), and
+    // skipping the mediator entirely degrades the same way it always has for
+    // DIDComm: the transport is enabled in config and no service entry is
+    // published, because there is no endpoint to name.
     Ok(())
 }
 
@@ -1141,8 +1136,25 @@ async fn gather_inputs(
     // 11. Hardened configuration.
     let hardened = prompt_hardened(p)?;
 
-    // 12. Messaging (DIDComm only).
-    let messaging = if enable_didcomm {
+    // 12. Messaging — the mediator, for whichever transports ride it.
+    //
+    // Reached by TSP as well as DIDComm: both arrive on the same mediator
+    // socket, and `#tsp`'s serviceEndpoint is that mediator's DID. Asking only
+    // in the DIDComm branch is what made TSP-without-DIDComm inexpressible —
+    // there was nowhere to put the mediator a TSP-only VTA needs.
+    let messaging = if enable_didcomm || enable_tsp {
+        if enable_tsp && !enable_didcomm {
+            eprintln!();
+            eprintln!(
+                "  \x1b[2mTSP rides a mediator, the same way DIDComm does — `#tsp` in your DID \
+                 document names the mediator's DID, and the transport URL lives in the \
+                 mediator's own document.\x1b[0m"
+            );
+            eprintln!(
+                "  \x1b[2mThe questions below configure that mediator. It must route TSP; \
+                 nothing here can verify that it does.\x1b[0m"
+            );
+        }
         configure_messaging(p).await?
     } else {
         MessagingInput::Skip
@@ -1699,10 +1711,12 @@ mod tests {
         );
     }
 
-    /// At least one transport, and TSP implies DIDComm (it advertises the
-    /// DIDComm mediator). Mirrors `validate_inputs`' rule for `--from`.
+    /// At least one transport — and that is now the *only* rule. TSP used to
+    /// imply DIDComm because the mediator was collected in the DIDComm branch
+    /// and the TSP dispatcher was compiled behind the DIDComm one; neither is
+    /// true any more.
     #[test]
-    fn validate_services_requires_one_and_tsp_implies_didcomm() {
+    fn validate_services_requires_at_least_one_and_tsp_may_stand_alone() {
         let none = ServiceSelection::default();
         assert!(
             validate_services(&none)
@@ -1710,28 +1724,18 @@ mod tests {
                 .contains("at least one service")
         );
 
-        let tsp_only = ServiceSelection {
-            rest: false,
-            didcomm: false,
-            tsp: true,
-        };
-        assert!(
-            validate_services(&tsp_only)
-                .unwrap_err()
-                .contains("shares the DIDComm mediator"),
-            "TSP alone points `#tsp` at a mediator the VTA never configured"
-        );
-
-        // REST + TSP is the same defect with a transport in hand — still
-        // refused, because the `#tsp` endpoint would still be unset.
-        let rest_and_tsp = ServiceSelection {
-            rest: true,
-            didcomm: false,
-            tsp: true,
-        };
-        assert!(validate_services(&rest_and_tsp).is_err());
-
         for ok in [
+            // TSP alone — the selection this whole change exists to permit.
+            ServiceSelection {
+                rest: false,
+                didcomm: false,
+                tsp: true,
+            },
+            ServiceSelection {
+                rest: true,
+                didcomm: false,
+                tsp: true,
+            },
             ServiceSelection {
                 rest: true,
                 didcomm: false,
@@ -1788,17 +1792,29 @@ mod tests {
     /// Selecting TSP without DIDComm re-asks instead of proceeding.
     #[cfg(feature = "tsp")]
     #[test]
-    fn tsp_without_didcomm_reasks() {
-        let p = ScriptedPrompter::new(vec![
-            Answer::Labels(vec![TSP_ITEM]), // refused → re-prompt
-            Answer::Labels(vec![DIDCOMM_ITEM, TSP_ITEM]),
-        ]);
-        let sel = prompt_services(&p).expect("second answer is valid");
+    fn tsp_alone_is_accepted_and_an_empty_selection_reasks() {
+        // TSP on its own: accepted at the prompt, no re-ask. This is the
+        // selection the wizard used to refuse.
+        let p = ScriptedPrompter::new(vec![Answer::Labels(vec![TSP_ITEM])]);
         assert_eq!(
-            sel,
+            prompt_services(&p).expect("TSP alone is a valid selection"),
             ServiceSelection {
                 rest: false,
-                didcomm: true,
+                didcomm: false,
+                tsp: true
+            }
+        );
+
+        // Selecting nothing is still the one thing that re-asks.
+        let p = ScriptedPrompter::new(vec![
+            Answer::Labels(vec![]), // refused → re-prompt
+            Answer::Labels(vec![TSP_ITEM]),
+        ]);
+        assert_eq!(
+            prompt_services(&p).expect("second answer is valid"),
+            ServiceSelection {
+                rest: false,
+                didcomm: false,
                 tsp: true
             }
         );
