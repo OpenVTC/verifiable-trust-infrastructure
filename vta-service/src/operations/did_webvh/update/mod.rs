@@ -744,6 +744,7 @@ mod pre_rotation_e2e_tests {
                 did_document: None,
                 did_log: None,
                 set_primary: true,
+                pre_derived: None,
                 signing_key_id: None,
                 ka_key_id: None,
                 template: None,
