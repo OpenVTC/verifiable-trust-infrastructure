@@ -63,7 +63,7 @@ Before submitting a pull request:
 - [ ] Security-sensitive changes include tests (auth, ACL, crypto)
 - [ ] PR title is a conventional commit — it becomes the changelog entry (see [Changelog](#changelog))
 - [ ] No `version = ` edits in any `Cargo.toml` — the Release PR assigns versions (see [RELEASING.md](RELEASING.md))
-- [ ] Commits are signed off (DCO: `git commit -s`)
+- [ ] Commits are signed off (DCO: `git commit -s`) — required for all outside contributions
 
 ## Changelog
 
