@@ -271,7 +271,7 @@ else
         warn "  jq -Rs '{version:1, config_toml:., integrity:null}' config.toml > config-envelope.json"
     fi
     nohup "$PROXY_BIN" --config "$CONFIG_PATH" --enclave-cid 16 \
-        "${PROXY_ENVELOPE_ARGS[@]}" \
+        ${PROXY_ENVELOPE_ARGS[@]+"${PROXY_ENVELOPE_ARGS[@]}"} \
         > "$PROXY_LOG" 2>&1 &
     PROXY_PID=$!
     echo "$PROXY_PID" > "$PROXY_PID_FILE"

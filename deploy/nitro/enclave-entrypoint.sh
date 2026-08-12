@@ -214,7 +214,15 @@ fetch_config_over_vsock() {
             echo "Fetched tenant config over vsock (attempt ${attempt}) → $CONFIG_PATH"
             return 0
         fi
-        echo "config server not ready on vsock:${VSOCK_CONFIG_PORT} (attempt ${attempt}/${max_attempts}); retrying in 2s..."
+        # Distinguish "envelope too big" (hit the read cap, so jq saw truncated
+        # JSON) from "server not ready" — otherwise an oversized envelope just
+        # looks like 30 failed connects for 60s.
+        if [ -s "$envelope_tmp" ] \
+            && [ "$(wc -c < "$envelope_tmp")" -ge "${MAX_CONFIG_ENVELOPE_BYTES}" ]; then
+            echo "config envelope hit the ${MAX_CONFIG_ENVELOPE_BYTES}-byte read cap and was truncated — refusing (check the parent's config-envelope.json size); attempt ${attempt}/${max_attempts}" >&2
+        else
+            echo "config server not ready on vsock:${VSOCK_CONFIG_PORT} (attempt ${attempt}/${max_attempts}); retrying in 2s..."
+        fi
         sleep 2
         attempt=$((attempt + 1))
     done
@@ -223,8 +231,19 @@ fetch_config_over_vsock() {
 }
 
 fetch_rc=0
+# Config provenance for the enclave's security floor (see vta-enclave). The
+# entrypoint is baked into the image (measured into PCR0), so the value it sets
+# here is trustworthy — the parent cannot forge it. Default to the untrusted
+# value up front (overriding anything the parent tried to inject), then refine:
+#   baked   = config already in the image / mounted (in PCR0 when baked → trusted)
+#   vsock   = config fetched from the parent at runtime (parent-authored)
+#   default = env-var dev fallback (parent-influenced)
+# The Rust floor enforces only on the non-`baked` (parent-influenced) sources, so
+# a legitimately baked config may carry admin_did / its own settings.
+export VTA_CONFIG_SOURCE=vsock
 if [ -f "$CONFIG_PATH" ]; then
     echo "Using existing config at $CONFIG_PATH"
+    export VTA_CONFIG_SOURCE=baked
 else
     # Call in an `if` condition so `set -eu` (line 29) does NOT abort on the
     # fetch's non-zero return (1 = unreachable after retries, 2 = bad version).
@@ -233,6 +252,7 @@ else
     # below unreachable dead code. Keep this in condition context.
     if fetch_config_over_vsock; then
         fetch_rc=0
+        export VTA_CONFIG_SOURCE=vsock
     else
         fetch_rc=$?
     fi
@@ -260,6 +280,7 @@ if [ ! -f "$CONFIG_PATH" ] && [ "$fetch_rc" -ne 0 ]; then
     MEDIATOR_DID="${VTA_MEDIATOR_DID:-}"
 
     echo "VTA_ALLOW_DEFAULT_CONFIG=true — generating dev fallback config at $CONFIG_PATH"
+    export VTA_CONFIG_SOURCE=default
     mkdir -p "$(dirname "$CONFIG_PATH")"
     cat > "$CONFIG_PATH" <<TOML
 # VTA Configuration — Nitro Enclave (auto-generated fallback)
@@ -319,9 +340,14 @@ echo ""
 echo "Starting VTA on 127.0.0.1:${VTA_PORT} (TEE mode: required)"
 echo ""
 
-# Run VTA (not exec, so we can capture crash output)
-vta-enclave --config "$CONFIG_PATH" 2>&1
-VTA_EXIT=$?
+# Run VTA (not exec, so we can capture crash output). Call in an `if` so `set -eu`
+# does not abort on a non-zero exit before we log it and keep the console alive
+# (the new config-floor hard-exits make a crashed/rejected boot common).
+if vta-enclave --config "$CONFIG_PATH" 2>&1; then
+    VTA_EXIT=0
+else
+    VTA_EXIT=$?
+fi
 echo "VTA exited with code ${VTA_EXIT}"
 # Keep the enclave alive briefly so console output can be read
 sleep 10
