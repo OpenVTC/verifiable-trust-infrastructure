@@ -21,7 +21,7 @@ use vta_service::*;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 use config::AppConfig;
 use ed25519_dalek::SigningKey;
 use keys::seed_store::create_seed_store;
@@ -208,15 +208,33 @@ enum Commands {
     /// ephemeral agents (production uses did:webvh). Fully non-interactive:
     /// there is no hosting step, so nothing to prompt for. Mirrors
     /// `create-did-webvh` minus all hosting (no `--url`, no did.jsonl, no log).
+    ///
+    /// Exactly one of `--mediator-url` / `--mediator-did` is required; the
+    /// `mediator` arg group makes that a clap usage error rather than a
+    /// runtime one.
+    #[command(group(
+        ArgGroup::new("mediator")
+            .required(true)
+            .args(["mediator_url", "mediator_did"])
+    ))]
     CreateDidPeer {
         /// Target context ID
         #[arg(long)]
         context: String,
         /// Mediator HTTP endpoint (e.g. http://127.0.0.1:61881/mediator/v1)
         /// used to build the did:peer's DIDComm + Authentication services so
-        /// the agent is reachable. The ws:// endpoint is derived from it.
-        #[arg(long)]
-        mediator_url: String,
+        /// the agent is reachable (URL-style). The ws:// endpoint is derived
+        /// from it. Mutually exclusive with --mediator-did.
+        #[arg(long, group = "mediator")]
+        mediator_url: Option<String>,
+        /// Mediator DID (e.g. did:webvh:...:mediator). Builds a DID-style
+        /// DIDComm service (serviceEndpoint.uri = the mediator DID), matching
+        /// the online provision-integration path and the ai-agent template.
+        /// Required for mediators that route by DID: they treat a URL endpoint
+        /// as a remote hop and self-forward the reply, so the agent never
+        /// receives one. Mutually exclusive with --mediator-url.
+        #[arg(long, group = "mediator")]
+        mediator_did: Option<String>,
         /// Emit the `DidSecretsBundle` JSON to stdout (the only thing on
         /// stdout; human text goes to stderr).
         #[arg(long)]
@@ -1678,6 +1696,7 @@ async fn main() {
         Some(Commands::CreateDidPeer {
             context,
             mediator_url,
+            mediator_did,
             export_secrets,
             admin,
             label,
@@ -1691,6 +1710,7 @@ async fn main() {
                     context,
                     label,
                     mediator_url,
+                    mediator_did,
                     export_secrets,
                     admin,
                 };
@@ -1701,7 +1721,14 @@ async fn main() {
             }
             #[cfg(not(feature = "setup"))]
             {
-                let _ = (context, label, mediator_url, export_secrets, admin);
+                let _ = (
+                    context,
+                    label,
+                    mediator_url,
+                    mediator_did,
+                    export_secrets,
+                    admin,
+                );
                 eprintln!("create-did-peer is not available (compiled without 'setup' feature)");
                 std::process::exit(1);
             }
