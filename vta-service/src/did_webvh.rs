@@ -97,68 +97,14 @@ pub async fn run_create_did_webvh(
     .await
     .map_err(|e| format!("{e}"))?;
 
-    // Derive keys temporarily just to build a preview document
-    let derived = crate::keys::derive_entity_keys(
-        &seed,
-        &ctx.base_path,
-        &format!("{label} signing key"),
-        &format!("{label} key-agreement key"),
-        &keys_ks,
-    )
-    .await?;
-
-    let mut did_document =
-        operations::did_webvh::build_did_document(&derived, &config, false, &None);
-
-    // Service endpoint selection. Interactive: prompt. Non-interactive:
-    // advertise the DIDComm mediator endpoint when messaging is configured
-    // (the same default as the interactive prompt).
-    if let Some(ref msg) = config.messaging {
-        let want_didcomm = if interactive {
-            let service_options = &[
-                "DIDComm endpoint (references mediator DID for routing)",
-                "No service endpoints",
-            ];
-            Select::new()
-                .with_prompt("Service endpoints")
-                .items(service_options)
-                .default(0)
-                .interact()?
-                == 0
-        } else {
-            true
-        };
-
-        if want_didcomm {
-            did_document["service"] = json!([
-                {
-                    "id": "{DID}#vta-didcomm",
-                    "type": "DIDCommMessaging",
-                    "serviceEndpoint": [{
-                        "accept": ["didcomm/v2"],
-                        "uri": msg.mediator_did
-                    }]
-                }
-            ]);
-        }
-    }
-
-    eprintln!();
-    eprintln!(
-        "\x1b[2mDID Document:\n{}\x1b[0m",
-        serde_json::to_string_pretty(&did_document)?
-    );
-    eprintln!();
-
-    // Offer to edit in $EDITOR (interactive only).
-    if interactive
-        && Confirm::new()
-            .with_prompt("Edit DID document in your editor?")
-            .default(false)
-            .interact()?
-    {
-        did_document = edit_did_document(did_document)?;
-    }
+    // In non-interactive mode, the operation derives keys and builds the
+    // document itself. In interactive mode, we derive a preview for the user
+    // to inspect/edit before passing it to the operation.
+    let did_document = if interactive {
+        Some(build_interactive_did_document(&seed, &ctx.base_path, label, &config, &keys_ks).await?)
+    } else {
+        None
+    };
 
     // Portability (interactive prompt; non-interactive uses the prompt default).
     let portable = if interactive {
@@ -198,7 +144,7 @@ pub async fn run_create_did_webvh(
         add_mediator_service: false, // handled via did_document template
         additional_services: None,
         pre_rotation_count,
-        did_document: Some(did_document),
+        did_document,
         did_log: None,
         set_primary: true,
         signing_key_id: None,
@@ -370,6 +316,69 @@ pub async fn run_create_did_webvh(
     }
 
     Ok(())
+}
+
+/// Interactive DID document builder: derives preview keys, prompts for
+/// service endpoints, displays the document, and offers editor access.
+async fn build_interactive_did_document(
+    seed: &[u8],
+    base_path: &str,
+    label: &str,
+    config: &AppConfig,
+    keys_ks: &vti_common::store::KeyspaceHandle,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let derived = crate::keys::derive_entity_keys(
+        seed,
+        base_path,
+        &format!("{label} signing key"),
+        &format!("{label} key-agreement key"),
+        keys_ks,
+    )
+    .await?;
+    let mut doc = operations::did_webvh::build_did_document(&derived, config, false, &None);
+
+    if let Some(ref msg) = config.messaging {
+        let service_options = &[
+            "DIDComm endpoint (references mediator DID for routing)",
+            "No service endpoints",
+        ];
+        let want_didcomm = Select::new()
+            .with_prompt("Service endpoints")
+            .items(service_options)
+            .default(0)
+            .interact()?
+            == 0;
+
+        if want_didcomm {
+            doc["service"] = json!([
+                {
+                    "id": "{DID}#vta-didcomm",
+                    "type": "DIDCommMessaging",
+                    "serviceEndpoint": [{
+                        "accept": ["didcomm/v2"],
+                        "uri": msg.mediator_did
+                    }]
+                }
+            ]);
+        }
+    }
+
+    eprintln!();
+    eprintln!(
+        "\x1b[2mDID Document:\n{}\x1b[0m",
+        serde_json::to_string_pretty(&doc)?
+    );
+    eprintln!();
+
+    if Confirm::new()
+        .with_prompt("Edit DID document in your editor?")
+        .default(false)
+        .interact()?
+    {
+        doc = edit_did_document(doc)?;
+    }
+
+    Ok(doc)
 }
 
 fn edit_did_document(
@@ -611,6 +620,134 @@ mod tests {
         assert!(
             entry.get("versionId").is_some(),
             "log entry carries versionId, got: {entry}"
+        );
+    }
+
+    /// The DID document's `publicKeyMultibase` must match the key the VTA
+    /// serves via `get_key_secret`. This is the bug that caused the
+    /// "double-allocate path counter" mismatch: derivation happened twice
+    /// (once for preview, once in the operation), consuming different indices.
+    /// After the fix, non-interactive mode derives once — the document and
+    /// the store agree.
+    #[tokio::test]
+    async fn non_interactive_did_doc_key_matches_stored_key() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let config_path = dir.path().join("config.toml");
+
+        let seed_hex = hex::encode([42u8; 64]);
+        std::fs::write(
+            &config_path,
+            format!(
+                "[store]\ndata_dir = \"{}\"\n\n[secrets]\nseed = \"{seed_hex}\"\n",
+                data_dir.display()
+            ),
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(config_path.clone())).expect("load config");
+        let store = Store::open(&config.store).expect("open store");
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+        let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
+
+        save_seed_record(
+            &keys_ks,
+            &SeedRecord {
+                id: 0,
+                seed_hex: None,
+                seed_enc: None,
+                created_at: chrono::Utc::now(),
+                retired_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        set_active_seed_id(&keys_ks, 0).await.unwrap();
+        crate::contexts::create_context(&contexts_ks, "test-ctx", "Test")
+            .await
+            .unwrap();
+        store.persist().await.unwrap();
+        drop(keys_ks);
+        drop(contexts_ks);
+        drop(store);
+
+        // Create DID non-interactively with --did-log-file
+        let log_path = dir.path().join("did.jsonl");
+        let args = CreateDidWebvhArgs {
+            config_path: Some(config_path.clone()),
+            context: "test-ctx".to_string(),
+            label: Some("test".to_string()),
+            url: Some("https://example.com/test".to_string()),
+            export_secrets: false,
+            admin: false,
+            did_log_file: Some(log_path.clone()),
+        };
+        run_create_did_webvh(args).await.expect("create-did-webvh");
+
+        // Extract the public key from the DID document
+        let content = std::fs::read_to_string(&log_path).expect("did.jsonl");
+        let entry: serde_json::Value =
+            serde_json::from_str(content.lines().next().unwrap()).unwrap();
+        let state = entry.get("state").expect("state field");
+        let vms = state
+            .get("verificationMethod")
+            .and_then(|v| v.as_array())
+            .expect("verificationMethod array");
+        // Find the Ed25519 key (multicodec prefix 0xed01)
+        let doc_pubkey: [u8; 32] = vms
+            .iter()
+            .filter_map(|vm| vm.get("publicKeyMultibase")?.as_str())
+            .filter_map(|mb| multibase::decode(mb).ok())
+            .filter_map(|(_, bytes)| {
+                if bytes.starts_with(&[0xed, 0x01]) && bytes.len() == 34 {
+                    <[u8; 32]>::try_from(&bytes[2..]).ok()
+                } else {
+                    None
+                }
+            })
+            .next()
+            .expect("DID doc must have an Ed25519 key");
+
+        // Fetch the same key from the store (same path the VTA REST would use)
+        let store = Store::open(&config.store).expect("reopen store");
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+        let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
+        let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+        let seed_store = Arc::from(create_seed_store(&config).unwrap());
+        let auth = cli_super_admin();
+
+        let did = entry
+            .get("state")
+            .and_then(|s| s.get("id"))
+            .and_then(|v| v.as_str())
+            .expect("DID id");
+        let key_id = format!("{did}#key-0");
+
+        let secret = crate::operations::keys::get_key_secret(
+            &keys_ks,
+            &imported_ks,
+            &seed_store,
+            &audit_ks,
+            &auth,
+            &key_id,
+            "test",
+        )
+        .await
+        .expect("fetch key secret");
+
+        // Derive the public key from the secret
+        let secret_bytes =
+            multibase::decode(&secret.private_key_multibase).expect("decode secret multibase");
+        let signing_key =
+            ed25519_dalek::SigningKey::from_bytes(secret_bytes.1[2..].try_into().unwrap());
+        let store_pubkey = signing_key.verifying_key().to_bytes();
+
+        // The key in the DID document MUST match the key the store serves.
+        assert_eq!(
+            doc_pubkey, store_pubkey,
+            "DID doc key must match stored key — if this fails, the path \
+             counter was double-allocated (preview + operation derived separately)"
         );
     }
 }
