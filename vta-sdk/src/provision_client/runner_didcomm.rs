@@ -61,7 +61,7 @@ pub async fn provision_via_didcomm(
         let nonce = decode_nonce_b64url(&vp.nonce).map_err(ProvisionError::Armor)?;
         let response = provision_integration_didcomm(
             &session,
-            vp,
+            vp.to_signed_wire_value()?,
             Some(ask.context.clone()),
             None,
             None,
@@ -390,7 +390,7 @@ pub async fn provision_admin_rotation_via_didcomm(
         let nonce = decode_nonce_b64url(&vp.nonce).map_err(ProvisionError::Armor)?;
         let response = provision_integration_didcomm(
             &session,
-            vp,
+            vp.to_signed_wire_value()?,
             Some(ask.context.clone()),
             None,
             None,

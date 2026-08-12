@@ -518,10 +518,20 @@ pub async fn run_provision_integration(
 
     // 1. Parse the integration's VP (but don't verify locally — the
     //    server does the authoritative verification).
+    //
+    //    Two views of the same document, deliberately. `vp_raw` is what
+    //    goes on the wire: this VP was signed by the integration, not by
+    //    us, so relaying the typed struct would re-render it in the SDK's
+    //    casing and the maintainer would verify bytes the holder never
+    //    signed. `vp` is a local read-only view, used only to resolve the
+    //    context hint below.
     let request_json =
         fs::read_to_string(&request).map_err(|e| format!("read {}: {e}", request.display()))?;
-    let vp: vta_sdk::provision_integration::BootstrapRequest = serde_json::from_str(&request_json)
+    let vp_raw: serde_json::Value = serde_json::from_str(&request_json)
         .map_err(|e| format!("parse BootstrapRequest (VP): {e}"))?;
+    let vp: vta_sdk::provision_integration::BootstrapRequest =
+        serde_json::from_value(vp_raw.clone())
+            .map_err(|e| format!("parse BootstrapRequest (VP): {e}"))?;
 
     // 2. Resolve context: explicit > hint > fail. If both present they
     //    must agree.
@@ -542,7 +552,7 @@ pub async fn run_provision_integration(
     // 4. Submit.
     let resp = client
         .provision_integration(ProvisionIntegrationRequest {
-            request: vp,
+            request: vp_raw,
             // `--context` is required on the pnm-cli surface today, so
             // we always pass a concrete value. The wire field is
             // `Option<String>` per the canonical spec; future flag

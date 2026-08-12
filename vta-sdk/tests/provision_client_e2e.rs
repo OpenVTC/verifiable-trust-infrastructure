@@ -519,7 +519,7 @@ async fn admin_rotated_via_rest_round_trip() {
     client.set_token_async(token.access_token).await;
 
     let req = ProvisionIntegrationRequest {
-        request: signed,
+        request: signed.to_signed_wire_value().expect("serialize VP"),
         context: Some("ctx-1".into()),
         assertion: None,
         vc_validity_seconds: None,

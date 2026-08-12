@@ -190,8 +190,22 @@ pub(crate) async fn run_rest_attempt_full_setup(
         }
     };
 
+    // This process signed `vp` moments ago, so its serde rendering *is*
+    // the signed bytes. A VP from anywhere else must travel as the raw
+    // JSON it arrived as.
+    let request = match vp.to_signed_wire_value() {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::ProvisionIntegration,
+                DiagStatus::Failed(e.to_string()),
+            ));
+            return AttemptOutcome::PostAuthFailure(format!("serialize VP: {e}"));
+        }
+    };
+
     let req = ProvisionIntegrationRequest {
-        request: vp,
+        request,
         context: Some(ask.context.clone()),
         assertion: None,
         vc_validity_seconds: None,
@@ -341,8 +355,22 @@ pub(crate) async fn run_rest_attempt_admin_rotated(
         }
     };
 
+    // This process signed `vp` moments ago, so its serde rendering *is*
+    // the signed bytes. A VP from anywhere else must travel as the raw
+    // JSON it arrived as.
+    let request = match vp.to_signed_wire_value() {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::ProvisionIntegration,
+                DiagStatus::Failed(e.to_string()),
+            ));
+            return AttemptOutcome::PostAuthFailure(format!("serialize VP: {e}"));
+        }
+    };
+
     let req = ProvisionIntegrationRequest {
-        request: vp,
+        request,
         context: Some(ask.context.clone()),
         assertion: None,
         vc_validity_seconds: None,

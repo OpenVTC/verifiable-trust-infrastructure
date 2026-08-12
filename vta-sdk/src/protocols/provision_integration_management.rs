@@ -284,7 +284,7 @@ mod tests {
             .expect("sign VP");
         let vp_value = serde_json::to_value(&vp).expect("serialize VP");
         let req = ProvisionIntegrationRequest {
-            request: vp,
+            request: vp_value.clone(),
             context: Some("ctx".into()),
             assertion,
             vc_validity_seconds,
@@ -328,6 +328,99 @@ mod tests {
         assert_eq!(v["context"], "ctx");
         // The signed VP subtree is byte-identical — the proof still covers it.
         assert_eq!(v["request"], vp_value);
+    }
+
+    /// Sign a VP the way a holder on vta-sdk < 0.21.11 does: `ask.type`
+    /// PascalCase (`TemplateBootstrap`), signed over that wire form.
+    ///
+    /// Deliberately *not* built through [`ProvisionRequestBuilder`]. The
+    /// point is a document this crate did not render — the relaying tests
+    /// above compare the SDK's own serde output against itself, which is
+    /// true by construction and cannot catch a relayer that re-renders
+    /// what it forwards.
+    async fn foreign_holder_vp() -> Value {
+        use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+        use affinidi_secrets_resolver::secrets::Secret;
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+
+        let (seed, pub_bytes) = crate::sealed_transfer::generate_ed25519_keypair();
+        let did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&pub_bytes);
+        let mb = did.strip_prefix("did:key:").expect("did:key prefix");
+        let vm_id = format!("{did}#{mb}");
+        let mut signer = Secret::generate_ed25519(Some(&vm_id), Some(&seed));
+        signer.id = vm_id;
+
+        let now = chrono::Utc::now();
+        let mut doc = serde_json::json!({
+            "@context": [
+                crate::provision_integration::VC_V2_CONTEXT_URL,
+                crate::provision_integration::BOOTSTRAP_CONTEXT_URL,
+            ],
+            "type": ["VerifiablePresentation", "BootstrapRequest"],
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "holder": did,
+            "nonce": B64URL.encode([0xF1u8; 16]),
+            "validUntil": (now + chrono::Duration::hours(1)).to_rfc3339(),
+            "ask": {
+                "type": "TemplateBootstrap",
+                "template": { "name": "didcomm-mediator", "vars": {} }
+            }
+        });
+        let proof = DataIntegrityProof::sign(
+            &doc,
+            &signer,
+            SignOptions::new()
+                .with_proof_purpose("authentication")
+                .with_created(now),
+        )
+        .await
+        .expect("sign foreign VP");
+        doc.as_object_mut()
+            .unwrap()
+            .insert("proof".into(), serde_json::to_value(&proof).unwrap());
+        doc
+    }
+
+    #[tokio::test]
+    async fn a_foreign_holders_vp_is_relayed_byte_for_byte() {
+        let vp = foreign_holder_vp().await;
+
+        // Guard against this test going vacuous. It only proves anything
+        // while the SDK's rendering of the document differs from the
+        // document — if the two ever converge, the assertions below pass
+        // for the wrong reason and the fixture needs a new divergence.
+        let round_tripped = serde_json::to_value(
+            serde_json::from_value::<crate::provision_integration::BootstrapRequest>(vp.clone())
+                .expect("foreign VP parses"),
+        )
+        .expect("re-serialize");
+        assert_ne!(
+            round_tripped, vp,
+            "fixture no longer diverges from this crate's serde output"
+        );
+
+        for uri in [
+            CANONICAL_PROVISION_INTEGRATION,
+            CANONICAL_PROVISION_INTEGRATION_0_2,
+        ] {
+            let req = ProvisionIntegrationRequest {
+                request: vp.clone(),
+                context: Some("ctx".into()),
+                assertion: None,
+                vc_validity_seconds: None,
+                create_context: false,
+            };
+            let body = request_body_for_version(&req, uri).expect("build body");
+            assert_eq!(
+                body["request"], vp,
+                "relaying under {uri} altered the holder's signed document"
+            );
+            // The end the relayer is talking to must still be able to
+            // verify it — the whole reason the bytes matter.
+            crate::provision_integration::BootstrapRequest::verify_value(body["request"].clone())
+                .expect("relayed VP still verifies");
+        }
     }
 
     #[test]

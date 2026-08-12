@@ -270,6 +270,25 @@ impl BootstrapRequest {
         Ok(out)
     }
 
+    /// Wire form of a request **this process just signed**, for handing to
+    /// [`ProvisionIntegrationRequest`].
+    ///
+    /// Only correct on a VP whose signature this process produced, where
+    /// serde output and signed bytes are the same by construction. A VP
+    /// that arrived from elsewhere — read from a file, received over a
+    /// socket — must be carried as the raw [`Value`] it arrived as and
+    /// never routed through the typed struct: re-serialising re-imposes
+    /// this crate's casing on someone else's signature, and the holder's
+    /// own valid proof then reads as a forgery. See [`verify_value`] for
+    /// the same rule on the verifying side.
+    ///
+    /// [`ProvisionIntegrationRequest`]: super::http::ProvisionIntegrationRequest
+    /// [`verify_value`]: Self::verify_value
+    pub fn to_signed_wire_value(&self) -> Result<Value, ProvisionIntegrationError> {
+        serde_json::to_value(self)
+            .map_err(|e| ProvisionIntegrationError::Parse(format!("serialize VP: {e}")))
+    }
+
     /// Verify the proof + freshness + structure, returning the typestate
     /// form that downstream handlers consume.
     ///
