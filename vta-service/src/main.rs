@@ -156,6 +156,19 @@ enum Commands {
         /// Human-readable label for the key record and ACL entry
         #[arg(long)]
         label: Option<String>,
+        /// Import an EXTERNAL Ed25519 private key from this file (64 hex chars
+        /// = 32 bytes) instead of deriving a fresh key from the VTA seed. The
+        /// resulting did:key is deterministic in that key material, so re-runs
+        /// on a fresh volume reproduce the SAME did:key — used to bind a vault
+        /// signing entry to a persona DID whose key is held off-box.
+        ///
+        /// A file, not a flag value: an argv-borne secret is visible in `ps`,
+        /// shell history, and container/CI process listings. Keep it 0600.
+        ///
+        /// With --admin this grants admin to a DID whose private key lives
+        /// outside the VTA. Only point it at key material you control.
+        #[arg(long, value_name = "PATH")]
+        private_key_file: Option<PathBuf>,
     },
     /// Create a did:webvh DID for a context (interactive wizard, no server required).
     ///
@@ -1613,6 +1626,7 @@ async fn main() {
             context,
             admin,
             label,
+            private_key_file,
         }) => {
             // SEALED CHECK: creates keys and optionally admin ACL entries
             check_seal(&cli.config).await;
@@ -1621,6 +1635,7 @@ async fn main() {
                 context,
                 admin,
                 label,
+                private_key_file,
             };
             if let Err(e) = did_key::run_create_did_key(args).await {
                 eprintln!("Error: {e}");
