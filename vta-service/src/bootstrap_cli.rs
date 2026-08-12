@@ -492,12 +492,21 @@ pub async fn run_provision_integration(
     use vta_sdk::provision_integration::BootstrapRequest;
 
     // 1. Parse + verify the request file (VP shape).
+    //
+    // Verify over the JSON **exactly as it arrived in the file**, never a
+    // re-serialisation of the typed struct: the holder's proof covers the
+    // bytes it signed, and this crate's serde output need not reproduce
+    // them. `ask.type` is the live example — a holder on vta-sdk < 0.21.11
+    // signed the 0.1 `TemplateBootstrap` tag, which `verify()` would
+    // re-emit as 0.2's `templateBootstrap` and then fail to verify against
+    // its own signature. `verify_value` is what the DIDComm and Trust-Task
+    // handlers already use, and what its own docs require of any surface
+    // receiving a request from elsewhere.
     let request_json = std::fs::read_to_string(&request_path)
         .map_err(|e| format!("read {}: {e}", request_path.display()))?;
-    let request: BootstrapRequest = serde_json::from_str(&request_json)
+    let request_value: serde_json::Value = serde_json::from_str(&request_json)
         .map_err(|e| format!("parse BootstrapRequest (VP): {e}"))?;
-    let verified = request
-        .verify()
+    let verified = BootstrapRequest::verify_value(request_value)
         .map_err(|e| format!("verify BootstrapRequest: {e}"))?;
 
     // 2. Resolve target context: explicit --context overrides the
