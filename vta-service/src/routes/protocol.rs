@@ -6,7 +6,9 @@
 //! routes (`/services/didcomm/disable`, `/services`, `/mediators/*`)
 //! are added by Phase 4 verticals.
 
+#[cfg(feature = "didcomm")]
 use std::sync::Arc;
+#[cfg(feature = "didcomm")]
 use std::time::Duration;
 
 use axum::Json;
@@ -16,8 +18,11 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::SuperAdminAuth;
+#[cfg(feature = "didcomm")]
 use crate::messaging::handshake::{AlwaysOkProver, HandshakeError, HandshakeStage};
+#[cfg(feature = "didcomm")]
 use crate::operations::protocol::disable_didcomm::DisableTransport as DidcommTransport;
+#[cfg(feature = "didcomm")]
 use crate::operations::protocol::disable_didcomm::{
     DisableDidcommError, DisableDidcommParams, DisableTransport, disable_didcomm,
 };
@@ -28,6 +33,7 @@ use crate::operations::protocol::disable_tsp::{DisableTspError, DisableTspParams
 use crate::operations::protocol::disable_webauthn::{
     DisableWebauthnError, DisableWebauthnParams, disable_webauthn,
 };
+#[cfg(feature = "didcomm")]
 use crate::operations::protocol::enable_didcomm::{
     EnableDidcommError, EnableDidcommParams, enable_didcomm,
 };
@@ -36,6 +42,7 @@ use crate::operations::protocol::enable_tsp::{EnableTspError, EnableTspParams, e
 use crate::operations::protocol::enable_webauthn::{
     EnableWebauthnError, EnableWebauthnParams, enable_webauthn,
 };
+#[cfg(feature = "didcomm")]
 use crate::operations::protocol::rollback_didcomm::{
     RollbackDidcommError, RollbackDidcommParams, RollbackKind as DidcommRollbackKind,
     rollback_didcomm,
@@ -50,6 +57,7 @@ use crate::operations::protocol::rollback_webauthn::{
     RollbackKind as WebauthnRollbackKind, RollbackWebauthnError, RollbackWebauthnParams,
     rollback_webauthn,
 };
+#[cfg(feature = "didcomm")]
 use crate::operations::protocol::update_didcomm::{
     MigrateAuditKind, UpdateDidcommError, UpdateDidcommParams, update_didcomm,
 };
@@ -60,13 +68,16 @@ use crate::operations::protocol::update_webauthn::{
 };
 use crate::operations::protocol::{OpContext, ServiceOpDeps};
 use crate::server::AppState;
+#[cfg(feature = "didcomm")]
 use vta_sdk::protocol::DidcommStatusResponse;
 
 /// Default trust-ping round-trip timeout for first-enable when the
 /// caller doesn't specify `handshake_timeout_secs`. Spec default 10s.
+#[cfg(feature = "didcomm")]
 const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[cfg(feature = "didcomm")]
 pub struct EnableDidcommRequest {
     pub mediator_did: String,
     /// Optional: skip steps 2-5 of the handshake (DID resolution
@@ -81,6 +92,7 @@ pub struct EnableDidcommRequest {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[cfg(feature = "didcomm")]
 pub struct EnableDidcommResponse {
     pub new_version_id: String,
     pub mediator_did: String,
@@ -120,6 +132,7 @@ pub struct EnableDidcommResponse {
         (status = 409, description = "DIDComm is already enabled"),
     ),
 )]
+#[cfg(feature = "didcomm")]
 pub async fn enable_didcomm_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -206,6 +219,7 @@ pub async fn enable_didcomm_handler(
         (status = 403, description = "Caller is not a super-admin"),
     ),
 )]
+#[cfg(feature = "didcomm")]
 pub async fn get_didcomm_status_handler(
     _auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -258,6 +272,7 @@ pub async fn get_didcomm_status_handler(
     })
 }
 
+#[cfg(feature = "didcomm")]
 async fn current_didcomm_mediator_did(state: &AppState) -> Option<String> {
     state
         .config
@@ -272,12 +287,14 @@ async fn current_didcomm_mediator_did(state: &AppState) -> Option<String> {
 /// HTTP error wrapper for `EnableDidcommError` that maps each typed
 /// variant to an appropriate status code + suggested-fix body.
 #[derive(Debug)]
+#[cfg(feature = "didcomm")]
 pub enum EnableDidcommHttpError {
     Op(EnableDidcommError),
     AlreadyEnabled { mediator_did: Option<String> },
     DidResolverUnavailable,
 }
 
+#[cfg(feature = "didcomm")]
 impl From<EnableDidcommError> for EnableDidcommHttpError {
     fn from(value: EnableDidcommError) -> Self {
         Self::Op(value)
@@ -299,6 +316,7 @@ struct ErrorBody {
     stage: Option<&'static str>,
 }
 
+#[cfg(feature = "didcomm")]
 impl IntoResponse for EnableDidcommHttpError {
     fn into_response(self) -> Response {
         let (status, body) = match self {
@@ -465,6 +483,7 @@ impl IntoResponse for EnableDidcommHttpError {
     }
 }
 
+#[cfg(feature = "didcomm")]
 fn stage_str(stage: HandshakeStage) -> &'static str {
     match stage {
         HandshakeStage::Resolve => "resolve",
@@ -480,6 +499,7 @@ fn stage_str(stage: HandshakeStage) -> &'static str {
 // ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[cfg(feature = "didcomm")]
 pub struct DisableDidcommRequest {
     /// Drain TTL in seconds. 0 = immediate teardown (REST only;
     /// over DIDComm transport, minimum 1h is enforced).
@@ -488,6 +508,7 @@ pub struct DisableDidcommRequest {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[cfg(feature = "didcomm")]
 pub struct DisableDidcommResponse {
     pub new_version_id: String,
     pub prior_mediator_did: String,
@@ -519,6 +540,7 @@ pub struct DisableDidcommResponse {
         (status = 409, description = "DIDComm not enabled, or last remaining service"),
     ),
 )]
+#[cfg(feature = "didcomm")]
 pub async fn disable_didcomm_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -553,17 +575,20 @@ pub async fn disable_didcomm_handler(
 }
 
 #[derive(Debug)]
+#[cfg(feature = "didcomm")]
 pub enum DisableDidcommHttpError {
     Op(DisableDidcommError),
     DidResolverUnavailable,
 }
 
+#[cfg(feature = "didcomm")]
 impl From<DisableDidcommError> for DisableDidcommHttpError {
     fn from(value: DisableDidcommError) -> Self {
         Self::Op(value)
     }
 }
 
+#[cfg(feature = "didcomm")]
 impl IntoResponse for DisableDidcommHttpError {
     fn into_response(self) -> Response {
         let (status, body) = match self {
@@ -749,6 +774,7 @@ impl IntoResponse for DisableDidcommHttpError {
 // ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[cfg(feature = "didcomm")]
 pub struct UpdateDidcommRequest {
     pub new_mediator_did: String,
     pub drain_ttl_secs: u64,
@@ -762,6 +788,7 @@ pub struct UpdateDidcommRequest {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[cfg(feature = "didcomm")]
 pub struct UpdateDidcommResponse {
     pub new_version_id: String,
     pub prior_mediator_did: String,
@@ -796,6 +823,7 @@ pub struct UpdateDidcommResponse {
         (status = 409, description = "DIDComm not enabled, or mediator already active/draining"),
     ),
 )]
+#[cfg(feature = "didcomm")]
 pub async fn update_didcomm_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -863,17 +891,20 @@ pub async fn update_didcomm_handler(
 }
 
 #[derive(Debug)]
+#[cfg(feature = "didcomm")]
 pub enum UpdateDidcommHttpError {
     Op(UpdateDidcommError),
     DidResolverUnavailable,
 }
 
+#[cfg(feature = "didcomm")]
 impl From<UpdateDidcommError> for UpdateDidcommHttpError {
     fn from(value: UpdateDidcommError) -> Self {
         Self::Op(value)
     }
 }
 
+#[cfg(feature = "didcomm")]
 impl IntoResponse for UpdateDidcommHttpError {
     fn into_response(self) -> Response {
         let (status, body) = match self {
@@ -1100,11 +1131,13 @@ impl IntoResponse for UpdateDidcommHttpError {
 // ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[cfg(feature = "didcomm")]
 pub struct DrainCancelRequest {
     pub mediator_did: String,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[cfg(feature = "didcomm")]
 pub struct DrainCancelResponse {
     pub mediator_did: String,
 }
@@ -1120,6 +1153,7 @@ pub struct DrainCancelResponse {
         (status = 409, description = "Mediator not in drain state, or is the active mediator"),
     ),
 )]
+#[cfg(feature = "didcomm")]
 pub async fn drain_cancel_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -1144,16 +1178,19 @@ pub async fn drain_cancel_handler(
 }
 
 #[derive(Debug)]
+#[cfg(feature = "didcomm")]
 pub enum DrainCancelHttpError {
     Op(crate::operations::protocol::drain_cancel::DrainCancelError),
 }
 
+#[cfg(feature = "didcomm")]
 impl From<crate::operations::protocol::drain_cancel::DrainCancelError> for DrainCancelHttpError {
     fn from(value: crate::operations::protocol::drain_cancel::DrainCancelError) -> Self {
         Self::Op(value)
     }
 }
 
+#[cfg(feature = "didcomm")]
 impl IntoResponse for DrainCancelHttpError {
     fn into_response(self) -> Response {
         use crate::operations::protocol::drain_cancel::DrainCancelError;
@@ -1320,6 +1357,7 @@ impl IntoResponse for MediatorReportHttpError {
 /// intended behaviour when DIDComm isn't running. The live prover
 /// is only meaningful for `update_didcomm` and `services didcomm
 /// rollback`, where DIDComm is by definition already up.
+#[cfg(feature = "didcomm")]
 async fn build_live_prover(
     state: &AppState,
     bridge: &Arc<crate::didcomm_bridge::DIDCommBridge>,
@@ -1348,6 +1386,7 @@ async fn build_live_prover(
 /// built — that one is a `Connect`-stage failure rather than a fall
 /// through, because the only available fallback resolves DIDs locally
 /// and would defeat the point of running the handshake at all.
+#[cfg(feature = "didcomm")]
 async fn try_run_first_enable_handshake(
     state: &AppState,
     resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
@@ -2262,6 +2301,7 @@ pub async fn rollback_tsp_handler(
         (status = 409, description = "No prior mutation, or last remaining service"),
     ),
 )]
+#[cfg(feature = "didcomm")]
 pub async fn rollback_didcomm_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -2322,6 +2362,7 @@ pub async fn rollback_didcomm_handler(
 /// is optional — server applies the spec §3.6 default (24h) when
 /// omitted.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[cfg(feature = "didcomm")]
 pub struct RollbackDidcommHttpRequest {
     #[serde(default)]
     pub drain_ttl_secs: Option<u64>,
@@ -2382,6 +2423,7 @@ fn tsp_kind_str(k: TspRollbackKind) -> &'static str {
     }
 }
 
+#[cfg(feature = "didcomm")]
 fn didcomm_kind_str(k: DidcommRollbackKind) -> &'static str {
     match k {
         DidcommRollbackKind::Disabled => "disabled",
@@ -2529,17 +2571,20 @@ impl IntoResponse for RollbackTspHttpError {
 }
 
 #[derive(Debug)]
+#[cfg(feature = "didcomm")]
 pub enum RollbackDidcommHttpError {
     Op(RollbackDidcommError),
     DidResolverUnavailable,
 }
 
+#[cfg(feature = "didcomm")]
 impl From<RollbackDidcommError> for RollbackDidcommHttpError {
     fn from(value: RollbackDidcommError) -> Self {
         Self::Op(value)
     }
 }
 
+#[cfg(feature = "didcomm")]
 impl IntoResponse for RollbackDidcommHttpError {
     fn into_response(self) -> Response {
         let (status, body) = match self {
@@ -2675,6 +2720,7 @@ impl IntoResponse for ListServicesHttpError {
 
 // ── List drain handler (T5/list_drain) ────────────────────────────
 
+#[cfg(feature = "didcomm")]
 use crate::operations::protocol::list_drain::{ListDrainError, list_drain};
 
 #[utoipa::path(
@@ -2686,6 +2732,7 @@ use crate::operations::protocol::list_drain::{ListDrainError, list_drain};
         (status = 403, description = "Caller is not a super-admin"),
     ),
 )]
+#[cfg(feature = "didcomm")]
 pub async fn list_drain_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -2695,16 +2742,19 @@ pub async fn list_drain_handler(
 }
 
 #[derive(Debug)]
+#[cfg(feature = "didcomm")]
 pub enum ListDrainHttpError {
     Op(ListDrainError),
 }
 
+#[cfg(feature = "didcomm")]
 impl From<ListDrainError> for ListDrainHttpError {
     fn from(value: ListDrainError) -> Self {
         Self::Op(value)
     }
 }
 
+#[cfg(feature = "didcomm")]
 impl IntoResponse for ListDrainHttpError {
     fn into_response(self) -> Response {
         let (status, body) = match self {

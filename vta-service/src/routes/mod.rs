@@ -482,9 +482,6 @@ fn build_api_router(trust_xff: bool, interval_secs: u64, burst: u32) -> OpenApiR
     // docs/05-design-notes/runtime-service-management.md §3.4).
     #[cfg(feature = "webvh")]
     let router = router
-        .routes(routes!(protocol::enable_didcomm_handler))
-        .routes(routes!(protocol::get_didcomm_status_handler))
-        .routes(routes!(protocol::disable_didcomm_handler))
         .routes(routes!(protocol::enable_rest_handler))
         .routes(routes!(protocol::update_rest_handler))
         .routes(routes!(protocol::disable_rest_handler))
@@ -498,6 +495,17 @@ fn build_api_router(trust_xff: bool, interval_secs: u64, burst: u32) -> OpenApiR
         .routes(routes!(protocol::disable_webauthn_handler))
         .routes(routes!(protocol::rollback_webauthn_handler))
         .routes(routes!(protocol::list_services_handler))
+        .routes(routes!(protocol::mediator_report_handler));
+
+    // The DIDComm half of service management — enable/disable/update/rollback
+    // plus the drain surface, which is DIDComm-only (REST and TSP have no
+    // drain window). Absent from a TSP-only build, along with the operations
+    // behind them; `services {rest,tsp,webauthn} …` above stay mounted.
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    let router = router
+        .routes(routes!(protocol::enable_didcomm_handler))
+        .routes(routes!(protocol::get_didcomm_status_handler))
+        .routes(routes!(protocol::disable_didcomm_handler))
         // GET list-drain + POST cancel share /services/didcomm/drain.
         .routes(routes!(
             protocol::list_drain_handler,
@@ -511,8 +519,7 @@ fn build_api_router(trust_xff: bool, interval_secs: u64, burst: u32) -> OpenApiR
         .route(
             "/mediators/drain/cancel",
             post(protocol::drain_cancel_handler),
-        )
-        .routes(routes!(protocol::mediator_report_handler));
+        );
 
     // WebVH routes (feature-gated)
     #[cfg(feature = "webvh")]

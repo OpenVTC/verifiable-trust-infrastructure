@@ -16,7 +16,7 @@ use crate::auth::AuthState;
 use crate::auth::jwt::JwtKeys;
 use crate::auth::session::cleanup_expired_sessions;
 use crate::config::{AppConfig, AuthConfig};
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
 use crate::keys::KeyRecord;
@@ -35,10 +35,11 @@ use tracing::{debug, error, info, warn};
 // D2 P2a: the reliable-messaging delivery layer replaces the
 // `affinidi-messaging-didcomm-service` framework. `MessagingService` (built in
 // `messaging::service`) drives inbound + outbound over a `DidCommTransport`.
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 use tokio_util::sync::CancellationToken;
-// Only the DIDComm listener wires the client ACL on connect.
-#[cfg(feature = "didcomm")]
+// The mediator ACL is keyed on the VTA DID, so it authorises whichever
+// protocol rides the socket — either transport wires it on connect.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 use vta_sdk::acl_setup;
 
 /// TEE context passed by the caller (main.rs or vta-enclave).
@@ -146,7 +147,7 @@ pub struct AppState {
     /// In-process registry of active + draining mediator listeners.
     /// Owns the per-listener bounded outbound buffer and the
     /// active/drain state machine.
-    #[cfg(feature = "webvh")]
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
     pub mediator_registry: Arc<crate::messaging::registry::MediatorListenerRegistry>,
     /// Per-webvh-server async mutex registry for serializing
     /// daemon-REST auth-cache read-modify-writes. Two concurrent
@@ -159,7 +160,7 @@ pub struct AppState {
     /// task per drain entry; on expiry, calls
     /// `record_expiries_persisted` and signals upstream listener
     /// teardown via the teardown channel.
-    #[cfg(feature = "webvh")]
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
     pub drain_sweeper: Arc<crate::messaging::drain_sweeper::DrainSweeper>,
     /// Pluggable telemetry sink for mediator-attribution events.
     /// Default impl is the in-memory ring buffer; alternative
@@ -179,13 +180,15 @@ pub struct AppState {
     /// `{did}#key-0`). Populated by `init_auth`. Needed by the
     /// live mediator-handshake prover to fetch the corresponding
     /// secret out of [`Self::secrets_resolver`].
-    #[cfg(feature = "didcomm")]
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
     pub signing_vm_id: Option<String>,
     /// Verification-method id for the VTA's key-agreement key
     /// (e.g. `{did}#key-1`). Populated by `init_auth`.
-    #[cfg(feature = "didcomm")]
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
     pub ka_vm_id: Option<String>,
-    #[cfg(feature = "didcomm")]
+    /// Outbound seam over the mediator socket. Present for either transport —
+    /// the service it holds multiplexes DIDComm and TSP.
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
     pub didcomm_bridge: Arc<DIDCommBridge>,
 
     /// Learn-from-inbound TSP reachability: which device DIDs were last seen
@@ -239,13 +242,13 @@ pub struct AppStateParts {
     /// Telemetry sink shared with the mediator registry. `None` → fresh ring buffer.
     pub telemetry: Option<vti_common::telemetry::SharedTelemetrySink>,
     /// Live mediator listener registry. `None` → fresh registry over `telemetry`.
-    #[cfg(feature = "webvh")]
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
     pub mediator_registry: Option<Arc<crate::messaging::registry::MediatorListenerRegistry>>,
     /// Drain sweeper wired to a real teardown channel. `None` → dead-channel no-op sweeper.
-    #[cfg(feature = "webvh")]
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
     pub drain_sweeper: Option<Arc<crate::messaging::drain_sweeper::DrainSweeper>>,
-    /// Outbound DIDComm bridge. `None` → placeholder (no live service).
-    #[cfg(feature = "didcomm")]
+    /// Outbound mediator bridge. `None` → placeholder (no live service).
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
     pub didcomm_bridge: Option<Arc<DIDCommBridge>>,
     /// Prometheus handle for `/metrics`. `None` → no metrics rendering.
     #[cfg(feature = "rest")]
@@ -333,7 +336,7 @@ pub async fn build_app_state(
     let telemetry: vti_common::telemetry::SharedTelemetrySink = parts
         .telemetry
         .unwrap_or_else(|| Arc::new(vti_common::telemetry::RingBufferTelemetry::new()));
-    #[cfg(feature = "webvh")]
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
     let mediator_registry = parts.mediator_registry.unwrap_or_else(|| {
         Arc::new(crate::messaging::registry::MediatorListenerRegistry::new(
             Arc::clone(&telemetry),
@@ -343,7 +346,7 @@ pub async fn build_app_state(
     // consumed by a real task that calls `DIDCommService::remove_listener`.
     // Non-axum front-ends (e.g. Lambda) that don't run a teardown consumer get
     // a sweeper whose channel sender goes nowhere, so signals become no-ops.
-    #[cfg(feature = "webvh")]
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
     let drain_sweeper = parts.drain_sweeper.unwrap_or_else(|| {
         let (tx, _rx) = crate::messaging::drain_sweeper::teardown_channel(
             crate::messaging::drain_sweeper::DEFAULT_TEARDOWN_CHANNEL_CAPACITY,
@@ -383,9 +386,9 @@ pub async fn build_app_state(
         drains_ks,
         #[cfg(feature = "webvh")]
         snapshot_ks,
-        #[cfg(feature = "webvh")]
+        #[cfg(all(feature = "webvh", feature = "didcomm"))]
         mediator_registry,
-        #[cfg(feature = "webvh")]
+        #[cfg(all(feature = "webvh", feature = "didcomm"))]
         drain_sweeper,
         #[cfg(feature = "webvh")]
         webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
@@ -396,11 +399,11 @@ pub async fn build_app_state(
         did_resolver: auth.did_resolver.clone(),
         status_list_resolver: crate::vault::status::default_status_resolver(auth.did_resolver),
         secrets_resolver: auth.secrets_resolver,
-        #[cfg(feature = "didcomm")]
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
         signing_vm_id: auth.signing_vm_id,
-        #[cfg(feature = "didcomm")]
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
         ka_vm_id: auth.ka_vm_id,
-        #[cfg(feature = "didcomm")]
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
         didcomm_bridge: parts
             .didcomm_bridge
             .unwrap_or_else(|| Arc::new(DIDCommBridge::placeholder())),
@@ -675,7 +678,9 @@ pub async fn run(
         let vault_ks = apply_encryption(store.keyspace(crate::keyspaces::VAULT)?);
         let backup_bundles_ks = apply_encryption(store.keyspace(crate::keyspaces::BACKUP_BUNDLES)?);
         let backup_blob_dir = config.store.data_dir.join("backups");
-        #[cfg(feature = "webvh")]
+        // Read by the DIDComm drain machinery only; a TSP-only build has no
+        // drain window, so it never opens the keyspace.
+        #[cfg(all(feature = "webvh", feature = "didcomm"))]
         let drains_ks = apply_encryption(store.keyspace(crate::keyspaces::DRAINS)?);
 
         // Pluggable telemetry sink + multi-mediator listener registry.
@@ -684,7 +689,7 @@ pub async fn run(
         // `docs/05-design-notes/didcomm-protocol-management.md`.
         let telemetry: vti_common::telemetry::SharedTelemetrySink =
             Arc::new(vti_common::telemetry::RingBufferTelemetry::new());
-        #[cfg(feature = "webvh")]
+        #[cfg(all(feature = "webvh", feature = "didcomm"))]
         let mediator_registry = Arc::new(
             crate::messaging::registry::MediatorListenerRegistry::new(Arc::clone(&telemetry)),
         );
@@ -693,11 +698,11 @@ pub async fn run(
         // teardown channel; the consumer task spawned below
         // translates each signal into a
         // `DIDCommService::remove_listener` call.
-        #[cfg(feature = "webvh")]
+        #[cfg(all(feature = "webvh", feature = "didcomm"))]
         let (teardown_tx, teardown_rx) = crate::messaging::drain_sweeper::teardown_channel(
             crate::messaging::drain_sweeper::DEFAULT_TEARDOWN_CHANNEL_CAPACITY,
         );
-        #[cfg(feature = "webvh")]
+        #[cfg(all(feature = "webvh", feature = "didcomm"))]
         let drain_sweeper = Arc::new(crate::messaging::drain_sweeper::DrainSweeper::new(
             Arc::clone(&mediator_registry),
             drains_ks.clone(),
@@ -706,7 +711,7 @@ pub async fn run(
         // Boot replay: load any drains persisted from a previous
         // run, drop already-expired entries, register the live
         // ones with the registry, and arm the sweeper for each.
-        #[cfg(feature = "webvh")]
+        #[cfg(all(feature = "webvh", feature = "didcomm"))]
         match mediator_registry.replay_drains(&drains_ks).await {
             Ok(live) => {
                 if !live.is_empty() {
@@ -723,7 +728,7 @@ pub async fn run(
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (restart_tx, mut restart_rx) = watch::channel(false);
 
-        #[cfg(feature = "didcomm")]
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
         let didcomm_shutdown = CancellationToken::new();
 
         // Spawn signal handler. First signal triggers cooperative shutdown;
@@ -732,13 +737,13 @@ pub async fn run(
         // complete before its timeout fires).
         tokio::spawn({
             let shutdown_tx = shutdown_tx.clone();
-            #[cfg(feature = "didcomm")]
+            #[cfg(any(feature = "didcomm", feature = "tsp"))]
             let didcomm_shutdown = didcomm_shutdown.clone();
             async move {
                 shutdown_signal().await;
                 info!("shutting down — press Ctrl-C again to force exit");
                 let _ = shutdown_tx.send(true);
-                #[cfg(feature = "didcomm")]
+                #[cfg(any(feature = "didcomm", feature = "tsp"))]
                 didcomm_shutdown.cancel();
 
                 shutdown_signal().await;
@@ -762,7 +767,7 @@ pub async fn run(
 
         // Shared DIDComm bridge for outbound request-response messaging.
         // The service reference is set after DIDCommService::start().
-        #[cfg(feature = "didcomm")]
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
         let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::new("vta-main"));
 
         // Build the shared `AppState` once, via the single constructor
@@ -775,11 +780,11 @@ pub async fn run(
         let app_state = {
             let parts = AppStateParts {
                 telemetry: Some(Arc::clone(&telemetry)),
-                #[cfg(feature = "webvh")]
+                #[cfg(all(feature = "webvh", feature = "didcomm"))]
                 mediator_registry: Some(Arc::clone(&mediator_registry)),
-                #[cfg(feature = "webvh")]
+                #[cfg(all(feature = "webvh", feature = "didcomm"))]
                 drain_sweeper: Some(Arc::clone(&drain_sweeper)),
-                #[cfg(feature = "didcomm")]
+                #[cfg(any(feature = "didcomm", feature = "tsp"))]
                 didcomm_bridge: Some(didcomm_bridge.clone()),
                 #[cfg(feature = "rest")]
                 metrics_handle: metrics_handle.clone(), // installed once, before the loop
@@ -937,10 +942,15 @@ pub async fn run(
         // back into an `Err` after the threads are joined, so the exit status
         // still says "failed" for a systemd `Restart=on-failure` or anything else
         // that reads it.
-        #[cfg(feature = "didcomm")]
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
         let readiness_fatal = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        #[cfg(feature = "didcomm")]
-        if config.services.didcomm {
+        // Either advertised transport needs the mediator socket: TSP receive
+        // arrives on it (ADR 0005 — one websocket per DID) and TSP send is an
+        // HTTP post through the same ATM. Gating this on DIDComm alone is what
+        // made a TSP-only VTA impossible — it would have advertised `#tsp` and
+        // never connected to anything.
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        if config.services.didcomm || config.services.tsp {
             match (
                 &app_state.secrets_resolver,
                 &config.vta_did,
@@ -1101,15 +1111,15 @@ pub async fn run(
             }
         }
 
-        // Stop DIDComm messaging: cancel the inbound loop's shutdown token
+        // Stop mediator messaging: cancel the inbound loop's shutdown token
         // (also stops the `MessagingConnect` reconnect supervisor between
         // attempts). The delivery-layer background tasks (dispatcher, transport
         // forwarder, outbox drain loops) are detached — as in the VTC pilot —
         // and wind down as their `Arc<MessagingService>`/transport handles drop.
-        #[cfg(feature = "didcomm")]
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
         {
             didcomm_shutdown.cancel();
-            info!("DIDComm messaging stopped");
+            info!("mediator messaging stopped");
         }
 
         if any_panic {
@@ -1131,7 +1141,7 @@ pub async fn run(
 
         // Surface a `fail`-policy readiness timeout as a non-zero exit, now that
         // the threads are joined and the store is flushed.
-        #[cfg(feature = "didcomm")]
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
         if readiness_fatal.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(AppError::Internal(
                 "mediator self-readiness gate timed out with on_timeout = \"fail\"".into(),
@@ -1886,7 +1896,7 @@ fn decode_jwt_key(b64: &str) -> Result<JwtKeys, AppError> {
 ///
 /// All of it runs in a spawned task: nothing here may block `server::run`, which
 /// has to reach its shutdown/restart select for a signal to be honoured.
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 struct MessagingConnect {
     app_state: AppState,
     vta_did: String,
@@ -1906,7 +1916,7 @@ struct MessagingConnect {
     fatal_flag: Arc<std::sync::atomic::AtomicBool>,
 }
 
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 impl MessagingConnect {
     /// Gate, then run the connect/supervise/reconnect loop until shutdown, the
     /// configured horizon, or a `reconnect = false` single-shot failure.
@@ -2146,7 +2156,7 @@ impl MessagingConnect {
         // Register the config-loaded mediator in the listener registry so the
         // delegated step-up push (buffered through the registry) can reach
         // approvers on this mediator.
-        #[cfg(feature = "webvh")]
+        #[cfg(all(feature = "webvh", feature = "didcomm"))]
         app_state
             .mediator_registry
             .record_activate(crate::messaging::registry::MediatorBinding {
@@ -2188,7 +2198,7 @@ impl MessagingConnect {
 /// before the live listener starts. Each cleared message is logged; a batch that
 /// can't be fetched is logged loudly and stops the drain (so it can't spin).
 /// Returns how many were cleared. Never panics — a failure just skips the drain.
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 async fn drain_mediator_inbox(atm: &ATM, mediator_did: &str, vta_did: &str) -> usize {
     // A mediator-connected profile for REST pickup — added without live delivery
     // (`false`), so this never opens the websocket that's the thing wedging.
@@ -2260,7 +2270,7 @@ async fn drain_mediator_inbox(atm: &ATM, mediator_did: &str, vta_did: &str) -> u
 /// delete them because the mediator's owner check admits the message's `FROM`
 /// (sender), not only its `TO` (recipient). Best-effort; returns how many were
 /// cleared and never panics.
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
 async fn flush_mediator_outbox(atm: &ATM, mediator_did: &str, vta_did: &str) -> usize {
     use affinidi_tdk::messaging::messages::{DeleteMessageRequest, Folder};
 

@@ -998,7 +998,13 @@ pub async fn apply_inputs(
                 *portable,
                 *pre_rotation_count,
                 services,
-                /* add_mediator_service */ messaging.is_some(),
+                // `#vta-didcomm` is published only when this VTA actually
+                // speaks DIDComm. A mediator alone is no longer sufficient
+                // grounds: a TSP-only VTA configures one too (for `#tsp`),
+                // and advertising DIDComm off the back of it would publish a
+                // transport with no dispatcher behind it.
+                /* add_mediator_service */
+                messaging.is_some() && inputs.services.didcomm,
                 /* template */ None,
                 HashMap::new(),
                 /* is_vta_identity */ true,
@@ -1135,12 +1141,24 @@ pub async fn apply_inputs(
 fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Error>> {
     let mut errors: Vec<String> = Vec::new();
 
-    if matches!(inputs.messaging, MessagingInput::CreateMediator { .. }) && !inputs.services.didcomm
-    {
-        errors.push("messaging.kind = \"create_mediator\" requires services.didcomm = true".into());
+    // A mediator is configured *for* a transport, and either transport rides
+    // it — so what `[messaging]` requires is that one of them is enabled, not
+    // DIDComm specifically. Configuring a mediator no VTA transport uses is
+    // still refused: it would mint (or bind) one and advertise nothing.
+    let mediator_transport = inputs.services.didcomm || inputs.services.tsp;
+    if matches!(inputs.messaging, MessagingInput::CreateMediator { .. }) && !mediator_transport {
+        errors.push(
+            "messaging.kind = \"create_mediator\" requires services.didcomm = true or \
+             services.tsp = true — a mediator no transport rides is minted and never used"
+                .into(),
+        );
     }
-    if matches!(inputs.messaging, MessagingInput::Existing { .. }) && !inputs.services.didcomm {
-        errors.push("messaging.kind = \"existing\" requires services.didcomm = true".into());
+    if matches!(inputs.messaging, MessagingInput::Existing { .. }) && !mediator_transport {
+        errors.push(
+            "messaging.kind = \"existing\" requires services.didcomm = true or \
+             services.tsp = true"
+                .into(),
+        );
     }
     // REST requires a public URL — without it the VTA DID document
     // ends up with no `VTARest` service entry, leaving downstream
@@ -1155,21 +1173,12 @@ fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Erro
                 .into(),
         );
     }
-    // TSP advertises the **same** mediator as DIDComm (one dual-protocol
-    // mediator — tsp-enablement.md D8), so `services.tsp = true` without
-    // DIDComm would point the `#tsp` service at a mediator the VTA never
-    // configured. Require DIDComm when TSP is on. (TSP is usually enabled
-    // post-setup via `services tsp enable` once it's been verified; this rule
-    // guards the declarative `--from <toml>` path.)
-    if inputs.services.tsp && !inputs.services.didcomm {
-        errors.push(
-            "services.tsp = true requires services.didcomm = true — TSP advertises \
-             the same mediator as DIDComm. Set services.didcomm = true (and \
-             configure messaging), or leave TSP off here and enable it later with \
-             `services tsp enable`"
-                .into(),
-        );
-    }
+    // TSP no longer requires DIDComm. `[messaging]` is transport-neutral —
+    // both protocols arrive on the same mediator socket — and the DIDComm
+    // dispatcher is simply absent from a `--features tsp` build. What TSP
+    // requires is a *mediator*, since `#tsp` names one; without `[messaging]`
+    // the transport is enabled in config and no service entry is published,
+    // exactly as DIDComm has always degraded.
     // A binary built without the `tsp` feature has no TSP dispatcher (the
     // inbound half lives behind that flag), so `services.tsp = true` would
     // advertise `#tsp` — the *first* entry a peer matching on transport
@@ -3033,10 +3042,15 @@ mod tests {
         }
     }
 
+    // Only where TSP can be served: a build without the feature refuses
+    // `tsp = true` for that reason instead, asserted by its own test below.
+    #[cfg(feature = "tsp")]
     #[test]
-    fn services_tsp_without_didcomm_is_rejected() {
-        // TSP shares the DIDComm mediator, so it can't be advertised without
-        // DIDComm — the `--from <toml>` path must reject the combination.
+    fn services_tsp_without_didcomm_is_accepted() {
+        // The combination this change exists to permit: a VTA that speaks TSP
+        // and nothing else. It was refused on the theory that `#tsp` could only
+        // name the DIDComm mediator — `[messaging]` is transport-neutral now,
+        // and the DIDComm dispatcher is simply absent from such a build.
         let raw = r#"
             config_path = "/tmp/vta-test/config.toml"
             data_dir    = "/tmp/vta-test/data"
@@ -3048,14 +3062,14 @@ mod tests {
 
             [secrets]
             backend = "keyring"
+
+            [messaging]
+            kind = "existing"
+            did  = "did:webvh:mediator.example.com:mediator"
         "#;
         let inputs = parse(raw).expect("parses");
-        let err = validate_inputs(&inputs).expect_err("tsp without didcomm must be rejected");
-        assert!(
-            err.to_string()
-                .contains("services.tsp = true requires services.didcomm = true"),
-            "got: {err}"
-        );
+        validate_inputs(&inputs).expect("a TSP-only VTA is a valid setup");
+        assert!(inputs.services.tsp && !inputs.services.didcomm);
     }
 
     /// A `[services] tsp = true` + DIDComm setup file, whose fate depends
