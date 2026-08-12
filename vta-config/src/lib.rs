@@ -381,6 +381,23 @@ pub struct ServerConfig {
     /// Closes L2 from the May 2026 security review.
     #[serde(default)]
     pub trust_xff: bool,
+    /// Token replenishment interval for the unauth rate limiter, in **seconds
+    /// per token** — not requests per second. One new token every
+    /// `rate_limit_interval_secs`, so *lower is more permissive*. Default: 5.
+    ///
+    /// With the default `rate_limit_burst = 10`: 10 rapid requests, then one
+    /// every 5 s. Local dev that fires a bootstrap flow in a burst wants
+    /// `rate_limit_interval_secs = 1` and a larger `rate_limit_burst`.
+    ///
+    /// Zero is clamped to 1 at router build (`routes::apply_unauth_governor`);
+    /// the limiter cannot be turned off from config.
+    #[serde(default = "default_rate_limit_interval_secs")]
+    pub rate_limit_interval_secs: u64,
+    /// Burst capacity for the unauth rate limiter — how many requests can
+    /// arrive back-to-back before throttling starts. Default: 10. Zero is
+    /// clamped to 1.
+    #[serde(default = "default_rate_limit_burst")]
+    pub rate_limit_burst: u32,
 }
 
 fn default_host() -> String {
@@ -389,6 +406,14 @@ fn default_host() -> String {
 
 fn default_port() -> u16 {
     8100
+}
+
+fn default_rate_limit_interval_secs() -> u64 {
+    5
+}
+
+fn default_rate_limit_burst() -> u32 {
+    10
 }
 
 fn default_server_config() -> ServerConfig {
@@ -408,6 +433,8 @@ impl Default for ServerConfig {
             port: default_port(),
             cors_origins: Vec::new(),
             trust_xff: false,
+            rate_limit_interval_secs: default_rate_limit_interval_secs(),
+            rate_limit_burst: default_rate_limit_burst(),
         }
     }
 }

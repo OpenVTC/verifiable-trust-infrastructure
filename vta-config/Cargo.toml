@@ -2,7 +2,7 @@
 name = "vta-config"
 description = "VTA configuration types — the `AppConfig` TOML shape and its sub-configs, composing the vti-common and vti-secrets config types"
 readme = "README.md"
-version = "0.3.2"
+version = "0.3.3"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
