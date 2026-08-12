@@ -4,21 +4,26 @@ Deploy the Verifiable Trust Agent (VTA) inside an AWS Nitro Enclave with
 hardware-backed TEE attestation, KMS-based secret bootstrap, encrypted
 storage, and signed enclave images.
 
-> **Un-baked config.** Tenant config (`config.toml`) is **no longer
-> baked into the EIF**. The image is tenant-agnostic — one image / one PCR0 for
-> every tenant. At runtime the parent serves a config envelope
-> (`{ "version":1, "config_toml":"…", "integrity":null }`) over **vsock port
-> 5800**; `parent-proxy.sh` (or the Rust `enclave-proxy --config-envelope …`)
+> **Config baking is a build-time choice (`BAKE_CONFIG`, default = baked).**
+> By default `config.toml` **is baked into the EIF** — best for single-tenant /
+> self-hosted deploys: the config is committed to PCR0 and fully attested, and no
+> runtime config server is needed. Build with `--build-arg BAKE_CONFIG=false`
+> (or `VTA_BAKE_CONFIG=false ./build-vta.sh`) to ship **no** config, so **one
+> image / one PCR0 serves every tenant** — the multi-tenant / managed-fleet mode.
+> In that mode tenant values are delivered at runtime and **changing them no
+> longer changes PCR0**.
+>
+> **Un-baked delivery (BAKE_CONFIG=false).** At runtime the parent serves a config
+> envelope (`{ "version":1, "config_toml":"…", "integrity":null }`) over **vsock
+> port 5800**; `parent-proxy.sh` (or the Rust `enclave-proxy --config-envelope …`)
 > starts that server when a `config-envelope.json` (`$VTA_CONFIG_ENVELOPE`, a
 > file next to the script, or a conventional managed path
 > `/etc/vta-tee/config-envelope.json`) is present, and `enclave-entrypoint.sh`
 > fetches it (validating the envelope `version`) and writes `/etc/vta/config.toml`
-> before starting the VTA. Because tenant values are out of the image,
-> **changing them no longer changes PCR0** — only code / deps / Dockerfile
-> changes do. **Existing EIFs keep working** (the entrypoint uses a baked/mounted
-> `config.toml` when one is present); **rebuilt EIFs have no baked config and
-> require the envelope.** `build-vta.sh` emits `config-envelope.json` beside the
-> EIF; to make one by hand from a finalized `config.toml`:
+> before starting the VTA. Precedence in the entrypoint: a baked/mounted
+> `config.toml` wins → else fetch over vsock → else (opt-in) env-var default.
+> `build-vta.sh` emits `config-envelope.json` beside the EIF; to make one by hand
+> from a finalized `config.toml`:
 >
 > ```bash
 > jq -Rs '{version:1, config_toml:., integrity:null}' config.toml > config-envelope.json

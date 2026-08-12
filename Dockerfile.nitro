@@ -13,12 +13,24 @@
 # starts socat-based vsock proxies inside the enclave to bridge TCP<->vsock.
 # The parent EC2 instance runs parent-proxy.sh to bridge vsock<->internet.
 #
-# CACHING NOTE: the image is tenant-agnostic — NO config.toml is baked in
-# (tenant config arrives at runtime over vsock). Stage 1 copies the
-# workspace crates explicitly (never `COPY . .`) so deploy/ never enters the
-# compile layer, and the manifest list below covers ALL workspace members so the
-# dependency-cache warm-up build actually succeeds.
+# CONFIG MODES (BAKE_CONFIG build-arg):
+#   BAKE_CONFIG=true  (DEFAULT) — bake deploy/nitro/config.toml into the image.
+#       Best for single-tenant / self-hosted deploys: the config is committed to
+#       PCR0 and fully attested, and no runtime config server is needed.
+#   BAKE_CONFIG=false — ship NO config, so ONE image / ONE PCR0 serves every
+#       tenant (multi-tenant operators, e.g. a managed VTA fleet). The enclave
+#       fetches its tenant config over vsock at runtime; see
+#       deploy/nitro/enclave-entrypoint.sh.
+#
+# CACHING NOTE: Stage 1 copies the workspace crates explicitly (never `COPY . .`)
+# so deploy/ never enters the compile layer, and the manifest list below covers
+# ALL workspace members so the dependency-cache warm-up build actually succeeds.
 # =============================================================================
+
+# BAKE_CONFIG selects whether config.toml is baked into the final image (see
+# CONFIG MODES above). Declared before the first FROM so it can drive the config
+# selector stage below; re-declared inside the stages that consume it.
+ARG BAKE_CONFIG=true
 
 # ---------------------------------------------------------------------------
 # Stage 1: Build the VTA binary
@@ -185,6 +197,25 @@ RUN echo 'int __res_init(void) { return 0; }' > /tmp/res_stub.c && \
     gcc -shared -nostartfiles -o /tmp/libresolv_compat.so /tmp/res_stub.c
 
 # ---------------------------------------------------------------------------
+# Config selector: pick a source of `/out` for the runtime stage based on the
+# BAKE_CONFIG build-arg. This is the BuildKit-safe way to make the config COPY
+# conditional — the runtime stage always copies `/out/`, but its contents differ:
+#   - config-true:  /out/config.toml  → baked into the image (committed to PCR0)
+#   - config-false: /out/ is empty    → no config in the image (un-baked)
+# Both stages exist so `COPY --from=config-src /out/` always has a valid source.
+# ---------------------------------------------------------------------------
+FROM alpine:3.21 AS config-true
+RUN mkdir -p /out
+COPY deploy/nitro/config.toml /out/config.toml
+
+FROM alpine:3.21 AS config-false
+RUN mkdir -p /out
+
+# Re-declare so `config-${BAKE_CONFIG}` resolves; default keeps baked as default.
+ARG BAKE_CONFIG=true
+FROM config-${BAKE_CONFIG} AS config-src
+
+# ---------------------------------------------------------------------------
 # Stage 2: Minimal runtime image for the Nitro Enclave
 # ---------------------------------------------------------------------------
 # Alpine Linux: ~7 MB base vs ~180 MB for debian:bookworm-slim.
@@ -207,13 +238,18 @@ COPY --from=builder /tmp/libresolv_compat.so /usr/lib/libresolv_compat.so
 ENV LD_PRELOAD=/usr/lib/libresolv_compat.so
 
 # Copy the entrypoint script.
-# NOTE: tenant config is NOT baked into the image. The image is
-# generic — one image / one PCR0 for all tenants. The entrypoint fetches the
-# tenant config.toml from the parent over vsock (port 5800) at runtime; see
-# deploy/nitro/enclave-entrypoint.sh and docs. A config.toml may still be
-# mounted/baked for local dev (entrypoint uses it when present at $VTA_CONFIG_PATH).
+# CONFIG (see CONFIG MODES at the top): the config selector below copies
+# `/out/` from the chosen stage — a baked `config.toml` (BAKE_CONFIG=true,
+# default) or nothing (BAKE_CONFIG=false). When nothing is baked, the entrypoint
+# fetches the tenant config over vsock (port 5800) at runtime; a config.toml may
+# also be mounted for local dev (entrypoint uses it when present at
+# $VTA_CONFIG_PATH). See deploy/nitro/enclave-entrypoint.sh and docs.
 COPY deploy/nitro/enclave-entrypoint.sh /usr/local/bin/enclave-entrypoint.sh
 RUN chmod +x /usr/local/bin/enclave-entrypoint.sh
+
+# Baked config (or nothing) per BAKE_CONFIG — see the config selector stages.
+# `/out/` is always a valid source; it holds config.toml only when baking.
+COPY --from=config-src /out/ /etc/vta/
 
 # Create data directories
 RUN mkdir -p /var/lib/vta

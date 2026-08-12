@@ -66,6 +66,14 @@ done
 
 BUILD_DIR="${VTA_BUILD_DIR:-$REPO_ROOT/.deploy-nitro}"
 
+# Config mode (see Dockerfile.nitro "CONFIG MODES"):
+#   true  (DEFAULT) — bake config.toml into the image (single-tenant / self-host;
+#          config committed to PCR0, no runtime config server needed).
+#   false — ship no config so one image / one PCR0 serves every tenant; the
+#          enclave fetches its config over vsock at runtime (config-envelope.json
+#          is still emitted below for that path).
+BAKE_CONFIG="${VTA_BAKE_CONFIG:-true}"
+
 # =============================================================================
 # Step 1: Prerequisites
 # =============================================================================
@@ -339,6 +347,7 @@ cp "$CONFIG_PATH" "$SCRIPT_DIR/config.toml"
 
 docker build -f "$REPO_ROOT/Dockerfile.nitro" \
     --build-arg FEATURES="$FEATURES" \
+    --build-arg BAKE_CONFIG="$BAKE_CONFIG" \
     -t vta-nitro \
     "$REPO_ROOT"
 
@@ -429,6 +438,7 @@ cp "$CONFIG_PATH" "$SCRIPT_DIR/config.toml"
 info "Rebuilding Docker image..."
 docker build -f "$REPO_ROOT/Dockerfile.nitro" \
     --build-arg FEATURES="$FEATURES" \
+    --build-arg BAKE_CONFIG="$BAKE_CONFIG" \
     -t vta-nitro \
     "$REPO_ROOT"
 ok "Docker image rebuilt"
@@ -443,9 +453,10 @@ NEW_PCR0=$(echo "$BUILD_OUTPUT" | jq -r '.Measurements.PCR0')
 ok "EIF rebuilt"
 
 if [ "$NEW_PCR0" != "$PCR0" ]; then
-    # Tenant config is no longer baked into the EIF, so inserting the KMS ARN
-    # should NOT change PCR0. A change here means something else in the image
-    # moved (code/deps/Dockerfile) — update the KMS policy to match.
+    # PCR0 changed. With BAKE_CONFIG=true (default) the config is baked, so
+    # editing config.toml (e.g. inserting the KMS ARN) legitimately changes PCR0.
+    # With BAKE_CONFIG=false the config is NOT in the image, so a change here
+    # instead means code/deps/Dockerfile moved. Either way, update the KMS policy.
     info "PCR0 changed — updating KMS policy..."
     PCR0="$NEW_PCR0"
     echo "$PCR0" > "$BUILD_DIR/pcr0.txt"
