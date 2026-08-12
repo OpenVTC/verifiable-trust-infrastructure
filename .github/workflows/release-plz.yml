@@ -52,7 +52,11 @@ jobs:
         id: auth
 
       - name: Run release-plz
-        uses: release-plz/action@v0
+        # Pinned to a full version: release-plz/action does NOT publish a
+        # moving major tag, so `@v0` resolves to nothing and the job fails at
+        # "Set up job" before running a step. (actions/checkout@v6 works
+        # because that repo does publish v6 — the convention is not universal.)
+        uses: release-plz/action@v0.5.131
         with:
           command: release
         env:
@@ -91,7 +95,11 @@ jobs:
         uses: taiki-e/install-action@cargo-semver-checks
 
       - name: Run release-plz
-        uses: release-plz/action@v0
+        # Pinned to a full version: release-plz/action does NOT publish a
+        # moving major tag, so `@v0` resolves to nothing and the job fails at
+        # "Set up job" before running a step. (actions/checkout@v6 works
+        # because that repo does publish v6 — the convention is not universal.)
+        uses: release-plz/action@v0.5.131
         with:
           command: release-pr
         env:
