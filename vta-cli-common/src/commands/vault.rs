@@ -169,7 +169,7 @@ pub async fn cmd_vault_release(
     id: String,
     target: Option<Value>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut payload = json!({ "id": id });
+    let mut payload = json!({ "entryId": id });
     if let Some(t) = target {
         payload["target"] = t;
     }
