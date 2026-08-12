@@ -145,6 +145,16 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 # Config: baked-in / mounted config wins; otherwise fetch it over vsock.
 # ---------------------------------------------------------------------------
+# WHY UN-BAKED: so ONE enclave image (one PCR0) can be shared across every
+# tenant, instead of building and attesting a separate Docker image / EIF per
+# tenant. Tenant-specific values (key_arn, mediator_did, vta_did_template,
+# public_url, resolver_url) are therefore delivered at runtime rather than baked
+# in. The trade-off is deliberate and bounded: those values leave PCR0's cover,
+# but the properties that matter are still protected independently of this
+# channel — secret custody by KMS+attestation, TEE enforcement by the compiled-in
+# floor check (in PCR0), admin by the attested Mode B flow, and the whole config
+# by the attestation-digest anchor. See docs + the floor checks in vta-enclave.
+#
 # UN-BAKED CONFIG: the image carries no tenant config. The parent
 # serves a versioned envelope over vsock:${VSOCK_CONFIG_PORT}:
 #     { "version": 1, "config_toml": "…", "integrity": null }
