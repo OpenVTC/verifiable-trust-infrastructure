@@ -1,4 +1,4 @@
-### vta-service 0.14.35 — a VTA can speak TSP without DIDComm (#937)
+### vta-service 0.14.36 — a VTA can speak TSP without DIDComm (#937)
 
 `vta setup` refused TSP unless DIDComm was selected too, and said so as though it
 were a fact about TSP: "TSP shares the DIDComm mediator". It isn't — TSP is an
