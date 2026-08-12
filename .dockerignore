@@ -4,6 +4,9 @@ docs/
 *.md
 !README.md
 .claude/
+# CI definitions are not build inputs. Excluding them keeps an edit to a
+# workflow from invalidating the plain Dockerfile's `COPY . .` source layer.
+.github/
 # Keep enclave signing keys and Nitro runtime state out of the build context.
 # The Nitro build uses selective per-crate COPYs, but excluding these avoids
 # shipping private keys / large EIF artifacts to the Docker daemon.
