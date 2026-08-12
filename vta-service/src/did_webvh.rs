@@ -34,29 +34,9 @@ pub struct CreateDidWebvhArgs {
     pub did_log_file: Option<PathBuf>,
 }
 
-/// Resolve `path` against cwd and reject it if it escapes the working directory.
-fn safe_did_log_path(path: &std::path::Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let base = std::env::current_dir().map_err(|e| format!("cannot resolve cwd: {e}"))?;
-    let joined = base.join(path);
-    let canonical = joined.canonicalize().unwrap_or(joined);
-    if !canonical.starts_with(&base) {
-        return Err(format!(
-            "did-log-file path escapes the working directory: {}",
-            canonical.display()
-        )
-        .into());
-    }
-    Ok(canonical)
-}
-
 pub async fn run_create_did_webvh(
     args: CreateDidWebvhArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Validate early — before any store I/O.
-    if let Some(ref p) = args.did_log_file {
-        safe_did_log_path(p)?;
-    }
-
     let config = AppConfig::load(args.config_path)?;
     let store = Store::open(&config.store)?;
     let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
@@ -289,24 +269,30 @@ pub async fn run_create_did_webvh(
                 .default(default_file)
                 .interact_text()?;
 
-            let did_file_path = safe_did_log_path(std::path::Path::new(&did_file))?;
-            std::fs::write(&did_file_path, log_entry)?;
-            eprintln!("  DID log saved to: {}", did_file_path.display());
+            std::fs::write(&did_file, log_entry)
+                .map_err(|e| format!("failed to write did.jsonl to {did_file}: {e}"))?;
+            eprintln!("  DID log saved to: {did_file}");
             eprintln!("  Context '{}' updated with DID: {final_did}", args.context);
             eprintln!();
             eprintln!("  \x1b[2mTo self-host this DID, upload {did_file} to:");
             eprintln!("  {url_str}\x1b[0m");
         } else {
-            // Non-interactive: write to --did-log-file if specified
+            // Non-interactive (`--url`): stdout is reserved for the secrets
+            // bundle, so there's no prompt — `--did-log-file` is the only way
+            // to capture the log. Without it we just note where it belongs.
             if let Some(ref path) = args.did_log_file {
-                let canonical = safe_did_log_path(path)?;
-                std::fs::write(&canonical, log_entry).map_err(|e| {
-                    format!("failed to write did.jsonl to {}: {e}", canonical.display())
-                })?;
-                eprintln!("  DID log written to: {}", canonical.display());
+                std::fs::write(path, log_entry)
+                    .map_err(|e| format!("failed to write did.jsonl to {}: {e}", path.display()))?;
+                eprintln!("  DID log written to: {}", path.display());
             }
             eprintln!("  Context '{}' updated with DID: {final_did}", args.context);
-            eprintln!("  \x1b[2mDID log (did.jsonl) ready; self-host at: {url_str}\x1b[0m");
+            if args.did_log_file.is_none() {
+                eprintln!(
+                    "  \x1b[2mDID log (did.jsonl) ready; pass --did-log-file <path> to save it. Self-host at: {url_str}\x1b[0m"
+                );
+            } else {
+                eprintln!("  \x1b[2mSelf-host the DID log at: {url_str}\x1b[0m");
+            }
         }
     }
 
@@ -549,51 +535,82 @@ mod tests {
         assert_eq!(entry.allowed_contexts, vec!["agents".to_string()]);
     }
 
+    /// `--did-log-file` writes the `did.jsonl` the command would otherwise
+    /// only mention. The target is an **absolute path outside the working
+    /// directory** on purpose — that is the whole point of the flag (publish
+    /// into a checkout of an external host, e.g. GitLab Pages), and the
+    /// operator is the one supplying it.
+    ///
+    /// Same `config-seed` gate + hermetic tempdir config as the test above.
     #[tokio::test]
-    async fn did_log_file_rejects_traversal() {
+    async fn did_log_file_writes_the_log_to_the_given_path() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let config_path = dir.path().join("config.toml");
+
+        let seed_hex = hex::encode([9u8; 64]);
+        std::fs::write(
+            &config_path,
+            format!(
+                "[store]\ndata_dir = \"{}\"\n\n[secrets]\nseed = \"{seed_hex}\"\n",
+                data_dir.display()
+            ),
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(config_path.clone())).expect("load config");
+        let store = Store::open(&config.store).expect("open store");
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+        let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
+
+        save_seed_record(
+            &keys_ks,
+            &SeedRecord {
+                id: 0,
+                seed_hex: None,
+                seed_enc: None,
+                created_at: chrono::Utc::now(),
+                retired_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        set_active_seed_id(&keys_ks, 0).await.unwrap();
+        crate::contexts::create_context(&contexts_ks, "agents", "Agents")
+            .await
+            .unwrap();
+        store.persist().await.unwrap();
+        drop(keys_ks);
+        drop(contexts_ks);
+        drop(store);
+
+        // Absolute, outside cwd, into a directory the operator nominated.
+        let publish_dir = dir.path().join("pages");
+        std::fs::create_dir_all(&publish_dir).unwrap();
+        let log_path = publish_dir.join("did.jsonl");
+
         let args = CreateDidWebvhArgs {
-            config_path: None,
-            context: "x".into(),
-            label: None,
-            url: Some("https://example.com".into()),
+            config_path: Some(config_path.clone()),
+            context: "agents".to_string(),
+            label: Some("agent-1".to_string()),
+            url: Some("https://example.com/agents/agent-1".to_string()),
             export_secrets: false,
             admin: false,
-            did_log_file: Some(PathBuf::from("../etc/evil.jsonl")),
+            did_log_file: Some(log_path.clone()),
         };
-        let err = run_create_did_webvh(args).await.unwrap_err();
+        run_create_did_webvh(args).await.expect("create-did-webvh");
+
+        let written = std::fs::read_to_string(&log_path).expect("did.jsonl written");
+        assert!(!written.trim().is_empty(), "did.jsonl is not empty");
+
+        // It is the real log: the first line parses as JSON and carries the
+        // minted DID's version id.
+        let first = written.lines().next().expect("at least one log entry");
+        let entry: serde_json::Value = serde_json::from_str(first).expect("log entry is JSON");
         assert!(
-            err.to_string().contains("escapes the working directory"),
-            "expected traversal rejection, got: {err}"
+            entry.get("versionId").is_some(),
+            "log entry carries versionId, got: {entry}"
         );
-    }
-
-    #[test]
-    fn safe_path_rejects_dotdot() {
-        assert!(safe_did_log_path(std::path::Path::new("../evil.jsonl")).is_err());
-    }
-
-    #[test]
-    fn safe_path_rejects_nested_dotdot() {
-        assert!(safe_did_log_path(std::path::Path::new("sub/../../evil.jsonl")).is_err());
-    }
-
-    #[test]
-    fn safe_path_rejects_absolute_outside_cwd() {
-        assert!(safe_did_log_path(std::path::Path::new("/tmp/evil.jsonl")).is_err());
-    }
-
-    #[test]
-    fn safe_path_accepts_relative_in_cwd() {
-        assert!(safe_did_log_path(std::path::Path::new("out.jsonl")).is_ok());
-    }
-
-    #[test]
-    fn safe_path_accepts_subdir() {
-        assert!(safe_did_log_path(std::path::Path::new("output/did.jsonl")).is_ok());
-    }
-
-    #[test]
-    fn safe_path_accepts_dot_slash() {
-        assert!(safe_did_log_path(std::path::Path::new("./did.jsonl")).is_ok());
     }
 }
