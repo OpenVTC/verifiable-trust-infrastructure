@@ -1,4 +1,4 @@
-### vta-service — fix DID doc key mismatch in non-interactive create-did-webvh (#943)
+### vta-service — fix DID doc key mismatch in non-interactive create-did-webvh (#945)
 
 `vta create-did-webvh --url` derived keys twice (preview + operation),
 consuming different BIP-32 path indices. The DID document embedded one
