@@ -70,6 +70,12 @@ key_arn = "REPLACE_WITH_KMS_KEY_ARN"
 # Generate a did:key locally (e.g., via `pnm setup`) and paste it here.
 # The private key stays on your machine — it never touches the TEE or parent.
 #
+# UN-BAKED WARNING: on real Nitro hardware (`/dev/nsm` present) the enclave
+# REFUSES TO BOOT if this is set, because an un-baked config is authored by the
+# untrusted parent and a parent-supplied super-admin is not attested. Leave it
+# unset and use the attested sealed-bootstrap flow (Mode B, POST /bootstrap/request).
+# Setting admin_did here is only for baked/mounted local-dev configs (no /dev/nsm).
+#
 # If omitted, the VTA generates a random did:key and stores the credential
 # in the bootstrap keyspace (retrievable via GET /attestation/admin-credential
 # when REST is enabled).

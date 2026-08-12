@@ -18,6 +18,7 @@ use std::sync::Arc;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use clap::Parser;
+use sha2::{Digest, Sha384};
 use tracing::info;
 
 use vta_service::config::AppConfig;
@@ -145,21 +146,28 @@ async fn main() {
     eprintln!("Tracing initialized.");
     print_banner();
 
-    // ── Floor check: TEE enforcement (un-baked config hardening) ──
-    // The tenant config is delivered by the (untrusted) parent over vsock, so a
-    // served config could omit or weaken `[tee] mode` — and its default is
-    // `Optional`, which silently continues without TEE. On real Nitro hardware
-    // (`/dev/nsm` present) refuse to boot unless enforcement is `Required`, so a
-    // runtime-delivered config can never downgrade the enclave's security policy
-    // below the floor. This holds regardless of the (future) attestation anchor.
-    if std::path::Path::new("/dev/nsm").exists()
-        && !matches!(config.tee.mode, vta_service::config::TeeMode::Required)
-    {
-        tracing::error!(
-            "FATAL: /dev/nsm is present but [tee] mode = {:?} (not `required`). Refusing to \
-             boot — a runtime-delivered config must not weaken TEE enforcement.",
-            config.tee.mode
-        );
+    // Are we on real Nitro hardware? Drives every un-baked-config security floor
+    // and the attestation anchor below (all no-ops in simulated/dev, where the
+    // config is trusted local input rather than parent-delivered).
+    let on_nitro = std::path::Path::new("/dev/nsm").exists();
+
+    // ── Security floor for the runtime-delivered (un-baked) config ──
+    // The tenant config is authored by the untrusted parent, so on real Nitro
+    // hardware refuse to boot if it would (a) weaken `[tee] mode` below `required`
+    // (the default is `Optional`, which silently continues without TEE), or
+    // (b) set `[tee.kms] admin_did` (a parent-supplied super-admin is not
+    // attested). The attested path for admin is sealed-bootstrap Mode B. See
+    // `config_floor_violation` for the exact rules (unit-tested).
+    if let Some(violation) = config_floor_violation(
+        on_nitro,
+        &config.tee.mode,
+        config
+            .tee
+            .kms
+            .as_ref()
+            .and_then(|kms| kms.admin_did.as_deref()),
+    ) {
+        tracing::error!("FATAL: {violation}. Refusing to boot.");
         std::process::exit(1);
     }
 
@@ -327,6 +335,55 @@ async fn main() {
                 std::process::exit(1);
             }
         };
+
+        // ── Config attestation anchor (un-baked config hardening) ──
+        // The tenant config is delivered by the untrusted parent, so it is no
+        // longer committed to PCR0. Commit a SHA-384 digest of the exact config
+        // this enclave booted into an NSM attestation document (`user_data`). PCR0
+        // stays tenant-agnostic (one image / one PCR0), while a verifier who
+        // obtains this AWS-signed document can pin `(PCR0, config-digest)`.
+        //
+        // SCOPE: this only *produces* the signed evidence and logs it; it does not
+        // yet expose it to verifiers on demand. The log flows over the vsock-log
+        // channel to the (untrusted) parent, which can withhold it, and the empty
+        // nonce gives no freshness. An attested pull path (a REST endpoint that
+        // returns the current digest bound to a caller-supplied nonce) is the
+        // follow-up that makes the verifier story complete — see README.
+        //
+        // The digest is over the config *file bytes* (which is what is un-baked),
+        // not the effective config; the two allowed env overrides
+        // (VTA_LOG_LEVEL / VTA_LOG_FORMAT) are not reflected and are not security
+        // relevant. Additive and non-fatal: a failure here does not block boot
+        // (the KMS bootstrap already hard-requires attestation on real hardware).
+        if let Some(state) = tee_state.as_ref().filter(|_| on_nitro) {
+            match std::fs::read(&config_path) {
+                Ok(raw) => {
+                    let digest = Sha384::digest(&raw);
+                    let digest_b64 = BASE64.encode(digest);
+                    match state.provider.attest(digest.as_slice(), &[]) {
+                        Ok(report) => {
+                            info!(
+                                config_sha384_b64url = %digest_b64,
+                                "config attestation anchor — signed NSM document committing the config digest generated"
+                            );
+                            // Full multi-KB document at debug to keep boot logs lean.
+                            tracing::debug!(
+                                attestation_doc_b64 = %report.evidence,
+                                "config attestation document"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!("config attestation anchor failed (non-fatal): {e}")
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    "config attestation anchor skipped — could not read {} for digest: {e}",
+                    config_path.display()
+                ),
+            }
+        }
+
         tee_state.map(|state| TeeContext {
             state,
             mnemonic_guard,
@@ -359,6 +416,47 @@ async fn main() {
 
 // init_tracing is in vta_service::init_tracing (shared with all front-ends)
 
+/// Security floor for a runtime-delivered (un-baked) tenant config.
+///
+/// The config is authored by the untrusted parent, so on real Nitro hardware
+/// (`nsm_present`) we refuse configs that would weaken the enclave's security
+/// posture below the floor. Returns a human-readable violation message, or
+/// `None` when the config is acceptable. Off real hardware the config is trusted
+/// local/dev input, so nothing is enforced.
+///
+/// Rules (only when `nsm_present`):
+/// - `[tee] mode` must be `Required` (its default is `Optional`, which silently
+///   continues without TEE).
+/// - `[tee.kms] admin_did` must be unset — a parent-supplied super-admin is not
+///   attested. The attested path is sealed-bootstrap Mode B
+///   (`POST /bootstrap/request`).
+fn config_floor_violation(
+    nsm_present: bool,
+    mode: &vta_service::config::TeeMode,
+    admin_did: Option<&str>,
+) -> Option<String> {
+    use vta_service::config::TeeMode;
+
+    if !nsm_present {
+        return None;
+    }
+    if !matches!(mode, TeeMode::Required) {
+        return Some(format!(
+            "/dev/nsm is present but [tee] mode = {mode:?} (not `required`) — a runtime-delivered \
+             config must not weaken TEE enforcement"
+        ));
+    }
+    if admin_did.is_some() {
+        return Some(
+            "/dev/nsm is present and the delivered config sets [tee.kms] admin_did — a \
+             runtime-delivered admin_did is not attested and must not grant super-admin; leave it \
+             unset and use the attested sealed-bootstrap flow (Mode B: POST /bootstrap/request)"
+                .to_string(),
+        );
+    }
+    None
+}
+
 fn print_banner() {
     let cyan = "\x1b[36m";
     let magenta = "\x1b[35m";
@@ -379,4 +477,57 @@ fn print_banner() {
 "#,
         version = env!("CARGO_PKG_VERSION"),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::config_floor_violation;
+    use vta_service::config::TeeMode;
+
+    #[test]
+    fn no_enforcement_off_real_hardware() {
+        // Simulated/dev (no /dev/nsm): config is trusted local input — never blocked.
+        assert!(
+            config_floor_violation(false, &TeeMode::Optional, Some("did:key:zAdmin")).is_none()
+        );
+        assert!(config_floor_violation(false, &TeeMode::Simulated, None).is_none());
+    }
+
+    #[test]
+    fn required_mode_without_admin_is_accepted_on_nitro() {
+        assert!(config_floor_violation(true, &TeeMode::Required, None).is_none());
+    }
+
+    #[test]
+    fn weakened_mode_is_rejected_on_nitro() {
+        for mode in [TeeMode::Optional, TeeMode::Simulated] {
+            let v = config_floor_violation(true, &mode, None)
+                .expect("weakened mode must be rejected on real Nitro");
+            assert!(v.contains("mode"), "message should mention mode: {v}");
+        }
+    }
+
+    #[test]
+    fn admin_did_is_rejected_on_nitro_even_when_mode_required() {
+        let v = config_floor_violation(true, &TeeMode::Required, Some("did:key:zAdmin"))
+            .expect("a parent-supplied admin_did must be rejected on real Nitro");
+        assert!(
+            v.contains("admin_did"),
+            "message should mention admin_did: {v}"
+        );
+        assert!(
+            v.contains("Mode B"),
+            "message should point to the attested path: {v}"
+        );
+    }
+
+    #[test]
+    fn mode_floor_takes_precedence_over_admin_did() {
+        // Both violations present: the mode message is returned first.
+        let v = config_floor_violation(true, &TeeMode::Optional, Some("did:key:zAdmin")).unwrap();
+        assert!(
+            v.contains("mode"),
+            "mode violation should be reported first: {v}"
+        );
+    }
 }

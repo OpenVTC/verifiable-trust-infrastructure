@@ -9270,6 +9270,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "serde_json",
+ "sha2 0.11.0",
  "tokio",
  "tokio-vsock",
  "tracing",

@@ -34,6 +34,17 @@ storage, and signed enclave images.
 > **Enforcement floor:** on real Nitro hardware (`/dev/nsm` present) the enclave
 > **refuses to boot unless `[tee] mode = required`**, so a runtime-delivered
 > config can never downgrade TEE enforcement (the default `mode` is `optional`).
+> It also **refuses to boot if the delivered config sets `[tee.kms] admin_did`**:
+> a parent-supplied super-admin is not attested. Leave `admin_did` unset and use
+> the attested sealed-bootstrap flow (Mode B, `POST /bootstrap/request`) instead.
+>
+> **Config attestation anchor.** At boot the enclave commits a SHA-384 digest of
+> the delivered config into an NSM attestation document (`user_data`) and logs it.
+> PCR0 stays tenant-agnostic; the AWS-signed document lets a verifier who holds it
+> confirm which config the enclave booted. This currently only *produces* the
+> signed evidence (emitted to the log, which flows to the parent) — exposing it to
+> verifiers on demand, bound to a caller-supplied nonce via an attested REST
+> endpoint, is the follow-up that makes availability + freshness verifier-grade.
 >
 > **Multi-tenant isolation is now a KMS-policy requirement.** With `key_arn` no
 > longer baked, one PCR0 is shared across tenants and the parent supplies the
