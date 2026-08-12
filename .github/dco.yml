@@ -1,0 +1,22 @@
+# DCO configuration (github.com/cncf/dco2).
+#
+# Skip the sign-off requirement for commits that are BOTH authored by an
+# OpenVTC organisation member AND cryptographically signed.
+#
+# This exists for the Release PR. release-plz assigns versions and writes
+# changelogs in a commit it makes itself, and it has no option to add a
+# `Signed-off-by` trailer — the whole config schema was checked. DCO is the
+# only required status check on main, so without this every release would fail
+# it, and the workaround would be clicking override on the one PR that
+# publishes to crates.io.
+#
+# The release commit qualifies on both counts: it is authored by the
+# RELEASE_PLZ_TOKEN identity (an org member) and GitHub signs it, because
+# release-plz pushes through the API.
+#
+# WHAT THIS DOES NOT DO: contributors outside the organisation are unaffected
+# and still need `git commit -s`. The DCO attestation for members is instead
+# carried by their employment or contributor agreement — which is the case this
+# option exists for.
+require:
+  members: false

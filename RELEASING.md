@@ -149,7 +149,7 @@ changelog sections — there is no range for it to read commits from.
 |---|---|
 | `release-plz.toml` | what release-plz does; published set lives in the manifests |
 | `cliff.toml` | how commits become changelog entries |
-| `.github/workflows/release-plz.yml` | the Release PR + release jobs |
+| `.github/workflows/publish.yml` | the Release PR + release jobs |
 | `scripts/check-lockfile-self-pins.sh` | catches a stale registry self-pin in `Cargo.lock` |
 | CI `commit lint` | PR title must be a conventional commit |
 | CI `semver checks` | reports API breaks on the PR that causes them |

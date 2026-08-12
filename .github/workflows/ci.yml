@@ -9,6 +9,35 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+  # ── Build-artifact diet ──────────────────────────────────────────────────
+  #
+  # Applies to every job below. Both settings trade away things only a human
+  # at a debugger wants, and both are set HERE rather than in a `[profile.dev]`
+  # block so a local `cargo test` is completely unaffected.
+  #
+  # `debug = "line-tables-only"` keeps what CI actually reads — a panic
+  # backtrace still names the file and line — and drops the rest of the DWARF,
+  # which is the bulk of `target/`. Full `debug = 2` is what the Test job was
+  # linking when it died: `rustc-LLVM ERROR: IO failure on output stream: No
+  # space left on device`, then `ld terminated with signal 7 [Bus error]`,
+  # while linking the `vta` test binary with the whole AWS SDK stack behind
+  # `tee`. `debug = 0` would shrink it further and is the wrong trade: a
+  # backtrace with no line numbers turns a one-line CI diagnosis into a local
+  # repro.
+  #
+  # `CARGO_INCREMENTAL=0` because incremental compilation is a bet on a NEXT
+  # build in the same tree, and CI jobs are one-shot. The `incremental/`
+  # directory is pure cost here — twice over, since `target/` is cached, so
+  # the bloat is paid again as cache upload, download, and against the repo's
+  # 10 GB cache allowance.
+  #
+  # `test` is set alongside `dev`: `cargo test` compiles the crate under test
+  # with the `test` profile and its dependencies with `dev`, so setting only
+  # one leaves half the tree at full debuginfo.
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
 jobs:
   check:
     name: Check

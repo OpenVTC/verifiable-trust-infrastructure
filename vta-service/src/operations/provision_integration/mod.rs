@@ -471,11 +471,16 @@ pub async fn provision_integration(
                 label: Some(client_did.clone()),
                 portable: true,
                 add_mediator_service: false,
+                add_tsp_service: false,
                 additional_services: None,
                 pre_rotation_count: 0,
                 did_document: None,
                 did_log: None,
                 set_primary,
+                // Template rendering happens inside the operation, from the
+                // keys it derives — nothing out here needs the document
+                // first, so there is nothing to share.
+                pre_derived: None,
                 signing_key_id: None,
                 ka_key_id: None,
                 template: Some(template_name.clone()),

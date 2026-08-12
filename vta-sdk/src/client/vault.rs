@@ -219,7 +219,10 @@ impl VtaClient {
     /// `vault/release/0.1` — release a secret sealed to the caller. Requires the
     /// `FillRelease` capability. The response carries a `didcomm-authcrypt`
     /// `jwe`; open it with [`Self::open_sealed_secret`]. `payload` is the wire
-    /// request (entry `id` + optional `target`).
+    /// request (`entryId` + optional `target`).
+    ///
+    /// Prefer [`Self::vault_release_entry`] — it builds the body for you, so the
+    /// member name can't drift out of the schema.
     pub async fn vault_release(&self, payload: Value) -> Result<Value, VtaError> {
         self.dispatch_trust_task(
             trust_tasks::TASK_VAULT_RELEASE_0_1,
@@ -227,6 +230,34 @@ impl VtaClient {
             VAULT_TT_TIMEOUT,
         )
         .await
+    }
+
+    /// `vault/release/0.1` for the common case — release entry `entry_id`,
+    /// optionally scoped to `target`.
+    ///
+    /// The typed front door to [`Self::vault_release`]. That method takes an
+    /// opaque `Value`, so every caller re-derives the member names from prose
+    /// and a wrong one is invisible to the compiler — which is exactly how both
+    /// the CLI and the MCP bridge came to send `id` instead of `entryId`
+    /// (VTI #947), a payload the VTA can only reject as `malformedRequest`.
+    pub async fn vault_release_entry(
+        &self,
+        entry_id: &str,
+        target: Option<Value>,
+    ) -> Result<Value, VtaError> {
+        self.vault_release(Self::vault_release_body(entry_id, target))
+            .await
+    }
+
+    /// The wire body [`Self::vault_release_entry`] sends. Split out so it can be
+    /// asserted against the published `vault/release/0.1` schema without a live
+    /// transport — see this module's tests.
+    pub fn vault_release_body(entry_id: &str, target: Option<Value>) -> Value {
+        let mut payload = json!({ "entryId": entry_id });
+        if let Some(t) = target {
+            payload["target"] = t;
+        }
+        payload
     }
 
     /// `vault/proxy-login/0.1` — mint a session as the entry's principal.
@@ -413,5 +444,53 @@ impl VtaClient {
         }
         self.dispatch_trust_task(task, payload, VAULT_TT_TIMEOUT)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The published schema is the oracle, not a literal we typed twice: it is
+    /// `additionalProperties: false` with `entryId` required, so it rejects both
+    /// halves of the #947 defect — the missing member and the stray `id`.
+    fn assert_conforms(payload: &Value) {
+        let schema = trust_tasks_rs::schema_index::schema_for(trust_tasks::TASK_VAULT_RELEASE_0_1)
+            .expect("vault/release/0.1 must have a published schema");
+        trust_tasks_rs::validate::against_schema(schema, payload)
+            .expect("payload must conform to vault/release/0.1");
+    }
+
+    #[test]
+    fn release_body_uses_entry_id_not_id() {
+        let payload = VtaClient::vault_release_body("entry-1", None);
+        assert_eq!(payload["entryId"], json!("entry-1"));
+        assert!(
+            payload.get("id").is_none(),
+            "`id` is not a member of vault/release/0.1 — the VTA reads `entryId`"
+        );
+        assert_conforms(&payload);
+    }
+
+    #[test]
+    fn release_body_with_target_conforms() {
+        let payload = VtaClient::vault_release_body(
+            "entry-1",
+            Some(json!({ "kind": "web-origin", "origin": "https://example.com" })),
+        );
+        assert_eq!(payload["target"]["kind"], json!("web-origin"));
+        assert_conforms(&payload);
+    }
+
+    /// Guards the check itself: if the schema ever stopped rejecting unknown
+    /// members, the two tests above would pass on a body the VTA refuses.
+    #[test]
+    fn release_body_shaped_the_old_way_is_rejected() {
+        let schema = trust_tasks_rs::schema_index::schema_for(trust_tasks::TASK_VAULT_RELEASE_0_1)
+            .expect("vault/release/0.1 must have a published schema");
+        assert!(
+            trust_tasks_rs::validate::against_schema(schema, &json!({ "id": "entry-1" })).is_err(),
+            "the pre-#947 body must not validate"
+        );
     }
 }

@@ -159,7 +159,7 @@ vta-policy = { path = "../vta-policy", version = "0.2" }
 # extracted to its own crate and re-exported as crate::{webvh_store,
 # webvh_client, webvh_auth} behind this crate's `webvh` feature.
 vta-webvh = { path = "../vta-webvh", version = "0.1", optional = true }
-vta-sdk = { path = "../vta-sdk", version = "0.21", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup"] }
+vta-sdk = { path = "../vta-sdk", version = "0.22", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
 # Distinct from `webauthn-rs` (which drives the passkey *enrolment*
@@ -331,7 +331,16 @@ http-body-util = "0.1"
 # `tests/` get the shared `test_support::build_test_app` HTTP scaffolding
 # without each having to copy ~140 LoC of AppState-wiring boilerplate.
 # Production builds remain unaffected — this is dev-deps only.
-vta-service = { path = ".", features = ["test-support"] }
+#
+# `config-seed` is here for a different reason: the offline-CLI tests in
+# `src/did_webvh.rs` are gated `#[cfg(all(test, feature = "config-seed"))]`
+# because they drive a VTA whose seed comes from `[secrets] seed = …`, and
+# nothing in the workspace turned that feature on. CI runs plain
+# `cargo test --workspace`, so the whole module — including the
+# create-did-webvh regression tests — silently compiled out and never ran.
+# Nothing asserts the feature-absent behaviour (both `cfg(not(config-seed))`
+# sites are production fallbacks), so enabling it for tests costs no coverage.
+vta-service = { path = ".", features = ["test-support", "config-seed"] }
 # Test-only: the SDK REST `VtaClient` + provision-client (the URL-direct
 # `provision_admin_rotated_via_rest` + DI-signed REST auth) the `MockVta`
 # bootstrap→provision e2e tests drive (issues #406, DI-auth follow-up). Kept out
@@ -343,7 +352,7 @@ vta-service = { path = ".", features = ["test-support"] }
 # here rather than from `vta-sdk`'s own tests — the workspace patches `vta-sdk`
 # onto itself, so `-p vta-sdk --features test-loopback` leaves the built unit
 # Fresh and the feature never reaches the compiler.
-vta-sdk = { path = "../vta-sdk", version = "0.21", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.22", features = [
   "provision-client",
   "test-loopback",
 ] }

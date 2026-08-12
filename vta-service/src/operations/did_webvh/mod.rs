@@ -24,8 +24,8 @@ pub(crate) use auth_cache::{
 
 pub(crate) use concurrency::{RaceDetected, RecordSnapshot};
 
-pub(crate) use document::build_did_document_with_options;
 pub use document::{build_did_document, build_vta_did_document_with_sealed_transfer};
+pub(crate) use document::{build_did_document_with_options, with_tsp_service};
 pub use lifecycle::{get_did_webvh, list_dids_webvh};
 pub use register_server::{
     RegisterDidWithServerError, RegisterDidWithServerParams, RegisterDidWithServerResult,
@@ -358,6 +358,13 @@ pub struct CreateDidWebvhParams {
     pub label: Option<String>,
     pub portable: bool,
     pub add_mediator_service: bool,
+    /// Also publish a `#tsp` (`TSPTransport`) entry pointing at the same
+    /// mediator the DIDComm entry names.
+    ///
+    /// Ignored unless this VTA has `[services] tsp` on and a mediator
+    /// configured — advertising a transport the VTA's own stack does not
+    /// run is the failure this exists to prevent, not to spread.
+    pub add_tsp_service: bool,
     pub additional_services: Option<Vec<serde_json::Value>>,
     pub pre_rotation_count: u32,
     /// Client-provided DID Document template. Mutually exclusive with `did_log`
@@ -368,6 +375,22 @@ pub struct CreateDidWebvhParams {
     pub did_log: Option<String>,
     /// Whether to set this DID as the primary DID for the context.
     pub set_primary: bool,
+    /// Entity keys the caller already derived, used instead of deriving a
+    /// fresh pair.
+    ///
+    /// Exists for one case: a caller that must render the DID document
+    /// *before* calling this function — the offline CLI shows the operator a
+    /// preview to edit. Without this, that caller derives one pair for the
+    /// document and this function derives another for the store, because
+    /// `derive_entity_keys` allocates a fresh BIP-32 path index per call.
+    /// The DID then advertises keys the VTA cannot sign with, and nothing
+    /// notices until a verifier rejects a signature.
+    ///
+    /// In-process only — there is no wire field, and there must not be: a
+    /// remote caller supplying key material would invert the rule that the
+    /// VTA is the key generator. Use `signing_key_id`/`ka_key_id` to point
+    /// at keys this VTA already holds.
+    pub pre_derived: Option<keys::DerivedEntityKeys>,
     /// Use an existing key as the signing verification method.
     pub signing_key_id: Option<String>,
     /// Use an existing key as the key-agreement verification method.
@@ -404,10 +427,13 @@ impl From<CreateDidWebvhBody> for CreateDidWebvhParams {
             label: body.label,
             portable: body.portable.unwrap_or(true),
             add_mediator_service: body.add_mediator_service.unwrap_or(false),
+            add_tsp_service: body.add_tsp_service.unwrap_or(false),
             additional_services: body.additional_services,
             pre_rotation_count: body.pre_rotation_count.unwrap_or(0),
             did_document: body.did_document,
             did_log: body.did_log,
+            // No wire field by design — see the field docs.
+            pre_derived: None,
             set_primary: body.set_primary.unwrap_or(true),
             signing_key_id: body.signing_key_id,
             ka_key_id: body.ka_key_id,
@@ -768,7 +794,25 @@ pub async fn create_did_webvh(
     let user_specified_keys = params.signing_key_id.is_some();
 
     // Load or derive entity keys
-    let (derived, active_seed_id) = if let Some(ref signing_key_id) = params.signing_key_id {
+    let (derived, active_seed_id) = if let Some(mut pre) = params.pre_derived.take() {
+        // ── Caller-derived keys ─────────────────────────────────────
+        // The caller already allocated the path indices and built its
+        // document from these keys. Deriving again here would allocate a
+        // second pair and store keys the document does not name.
+        let active_seed_id = get_active_seed_id(keys_ks)
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+        // Same normalisation the derive branch applies — didwebvh-rs keys
+        // the signing secret by its did:key verification-method id.
+        let pub_mb = pre
+            .signing_secret
+            .get_public_keymultibase()
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        pre.signing_secret.id = format!("did:key:{pub_mb}#{pub_mb}");
+
+        (pre, Some(active_seed_id))
+    } else if let Some(ref signing_key_id) = params.signing_key_id {
         // ── User-specified keys ─────────────────────────────────────
         let (mut signing_secret, signing_pub, signing_record) = load_key_as_secret(
             keys_ks,
@@ -986,6 +1030,17 @@ pub async fn create_did_webvh(
         params.did_document = Some(rendered);
     }
 
+    // `#tsp` is appended here rather than inside the document builder because
+    // the builder is shared with the TEE bootstrap and the offline preview, and
+    // all three take `additional_services` as the extension point. The builder
+    // sorts `service[]` canonically (TSP > DIDComm > REST) once everything is
+    // appended, so position in this Vec does not matter.
+    let additional_services = with_tsp_service(
+        params.add_tsp_service,
+        config,
+        params.additional_services.take(),
+    );
+
     // Build DID document: use client-provided template or build internally
     let did_document = match params.did_document {
         Some(doc) => doc,
@@ -996,7 +1051,7 @@ pub async fn create_did_webvh(
                 config,
                 has_ka,
                 params.add_mediator_service,
-                &params.additional_services,
+                &additional_services,
             )
         }
         None if sealed_transfer.is_some() => build_vta_did_document_with_sealed_transfer(
@@ -1004,13 +1059,13 @@ pub async fn create_did_webvh(
             sealed_transfer.as_ref().unwrap(),
             config,
             params.add_mediator_service,
-            &params.additional_services,
+            &additional_services,
         ),
         None => build_did_document(
             &derived,
             config,
             params.add_mediator_service,
-            &params.additional_services,
+            &additional_services,
         ),
     };
 

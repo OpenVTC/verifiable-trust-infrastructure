@@ -1,5 +1,20 @@
 name: Release-plz
 
+# THE FILENAME OF THIS FILE IS LOAD-BEARING. Do not rename it.
+#
+# crates.io Trusted Publishing is configured per crate against a specific
+# repository + workflow FILENAME, and every crate here is registered against
+# `publish.yml`. Renaming this file to release-plz.yml made the OIDC exchange
+# fail before any release logic ran:
+#
+#   Failed to retrieve token from Cargo registry. Status: 400.
+#   The Trusted Publishing config ... does not match the workflow filename
+#   `release-plz.yml` in the JWT. Expected workflow filenames: `publish.yml` ...
+#
+# To rename it you must first update the Trusted Publisher config of every
+# published crate on crates.io. Not worth it — the name is ours to choose, the
+# registry's expectation is not.
+
 # Versioning, changelogs and publishing. Replaces the old publish.yml, which
 # fired on every push to main and published whatever versions were newly
 # present — making a version bump the release trigger, and therefore making

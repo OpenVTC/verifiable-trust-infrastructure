@@ -10,7 +10,11 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.21", features = ["client", "session", "sealed-transfer", "didcomm", "vp", "crypto-provider"] }
+# `acl-setup` makes `DIDCommSession::connect` set this client's mediator ACL to
+# accept-all on connect (`vta_sdk::acl_setup::set_client_acl_on_connection`).
+# Without it the MCP server's ACL is never configured and the mediator silently
+# drops message types it was not told to accept.
+vta-sdk = { path = "../vta-sdk", version = "0.22", features = ["client", "session", "sealed-transfer", "didcomm", "vp", "crypto-provider", "acl-setup"] }
 rmcp = { version = "1.7", features = ["server", "transport-io", "macros", "schemars"] }
 schemars = "1"
 tokio = { workspace = true }

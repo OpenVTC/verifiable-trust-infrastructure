@@ -404,7 +404,8 @@ async fn provision_over(
         .map_err(|e| ProvisionError::SetupKeyMalformed(e.to_string()))?;
     let vp = ask.to_builder().sign_with(&seed, setup_did).await?;
     let nonce = decode_nonce_b64url(&vp.nonce).map_err(ProvisionError::Armor)?;
-    let response = dispatch_provision_integration(client, vp, ask).await?;
+    let request = vp.to_signed_wire_value()?;
+    let response = dispatch_provision_integration(client, request, ask).await?;
     response_to_result(&seed, nonce, response)
 }
 
@@ -424,7 +425,8 @@ async fn provision_admin_rotation_over(
         .map_err(|e| ProvisionError::SetupKeyMalformed(e.to_string()))?;
     let vp = ask.to_builder().sign_with(&seed, setup_did).await?;
     let nonce = decode_nonce_b64url(&vp.nonce).map_err(ProvisionError::Armor)?;
-    let response = dispatch_provision_integration(client, vp, ask).await?;
+    let request = vp.to_signed_wire_value()?;
+    let response = dispatch_provision_integration(client, request, ask).await?;
     admin_rotation_response_to_reply(&seed, nonce, response)
 }
 
@@ -435,7 +437,7 @@ async fn provision_admin_rotation_over(
 #[cfg(feature = "tsp")]
 async fn dispatch_provision_integration(
     client: &crate::client::VtaClient,
-    request: crate::provision_integration::BootstrapRequest,
+    request: serde_json::Value,
     ask: &ProvisionAsk,
 ) -> Result<
     crate::provision_integration::http::ProvisionIntegrationResponse,

@@ -686,6 +686,16 @@ pub struct CreateDidWebvhRequest {
     pub label: Option<String>,
     pub portable: bool,
     pub add_mediator_service: bool,
+    /// Also publish a `#tsp` (`TSPTransport`) entry at the VTA's mediator.
+    /// See [`crate::protocols::did_management::create::CreateDidWebvhBody::add_tsp_service`]
+    /// for the gating rules and why this is not implied by
+    /// [`add_mediator_service`](Self::add_mediator_service).
+    ///
+    /// Skipped on the wire when `false`, so a request from a caller that
+    /// does not set it is byte-identical to one built before this field
+    /// existed — the same treatment `domain` got.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub add_tsp_service: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub additional_services: Option<Vec<serde_json::Value>>,
     pub pre_rotation_count: u32,

@@ -7,7 +7,9 @@ use vta_sdk::did_secrets::DidSecretsBundle;
 
 use crate::acl::{AclEntry, Role, store_acl_entry};
 use crate::config::AppConfig;
-use crate::operations::did_peer::{mint_did_peer_with_services, peer_secrets_to_entries};
+use crate::operations::did_peer::{
+    mediator_did_didcomm_service, mint_did_peer_with_services, peer_secrets_to_entries,
+};
 use crate::store::Store;
 
 pub struct CreateDidPeerArgs {
@@ -16,8 +18,16 @@ pub struct CreateDidPeerArgs {
     pub label: Option<String>,
     /// Mediator HTTP endpoint (e.g. `http://127.0.0.1:61881/mediator/v1`) used
     /// to build the did:peer's DIDComm + Authentication services so the agent
-    /// is reachable. The ws:// endpoint is derived from it.
-    pub mediator_url: String,
+    /// is reachable. The ws:// endpoint is derived from it. Produces a
+    /// **URL-style** DIDComm service. Mutually exclusive with `mediator_did`;
+    /// exactly one of the two must be set.
+    pub mediator_url: Option<String>,
+    /// Mediator DID (e.g. `did:webvh:…:mediator`). Produces a **DID-style**
+    /// DIDComm service (`serviceEndpoint.uri = <MEDIATOR_DID>`), matching how
+    /// the built-in `ai-agent` did:webvh template and the online
+    /// provision-integration path advertise DIDComm. Required for mediators
+    /// that route by DID. Mutually exclusive with `mediator_url`.
+    pub mediator_did: Option<String>,
     /// Emit the `DidSecretsBundle` JSON to stdout (the only thing on stdout).
     pub export_secrets: bool,
     /// Create an ACL admin entry for the new did:peer in the target context.
@@ -56,18 +66,17 @@ pub async fn run_create_did_peer(
 
     let label = args.label.as_deref().unwrap_or(&args.context);
 
-    // Build the did:peer's services from the mediator URL. This replicates
-    // `mediator-setup`'s `did_peer.rs::mediator_services`: a "dm"
-    // DIDCommMessaging service carrying the http + ws endpoints (accept
-    // ["didcomm/v2"]) plus an "Authentication" service at {url}/authenticate
-    // (id "#auth").
-    let services = mediator_services(&args.mediator_url)?;
+    // Build the did:peer's DIDComm services. Two mutually-exclusive shapes —
+    // see `select_services` for which to use when. Clap already enforces
+    // exactly-one at the CLI; this re-checks because `CreateDidPeerArgs` is
+    // also constructed directly by library callers and tests.
+    let services = select_services(args.mediator_did.as_deref(), args.mediator_url.as_deref())?;
 
     // did:peer key shape (Ed25519 #key-1 + X25519 #key-2) and the actual
     // did:peer:2 encoding live in the shared library construction
     // (`operations::did_peer::mint_did_peer_with_services`) so this offline
     // CLI and the online provision-integration path can't drift. Only the
-    // `services` differ (URL-style here; MEDIATOR_DID-style online).
+    // `services` differ (URL-style vs MEDIATOR_DID-style).
     let (did, secrets): (String, Vec<Secret>) = mint_did_peer_with_services(services)?;
 
     eprintln!("\x1b[1;32mCreated DID:\x1b[0m {did}");
@@ -122,6 +131,42 @@ pub async fn run_create_did_peer(
     }
 
     Ok(())
+}
+
+/// Pick the DIDComm service shape from the two mutually-exclusive mediator
+/// flags. Exactly one must be set.
+///
+/// * `mediator_did` → **DID-style** ([`mediator_did_didcomm_service`]):
+///   a `DIDCommMessaging` service whose `serviceEndpoint.uri` is the mediator's
+///   own DID. This is what the online provision-integration path and the
+///   built-in `ai-agent` did:webvh template emit, and what a DID-routing
+///   mediator requires: such a mediator treats a hop as locally-mediated only
+///   when the hop's DIDComm endpoint equals the mediator's DID. A URL endpoint
+///   is classified as a *remote* hop, so the mediator anonymously self-forwards
+///   the inbound reply to its own `/inbound`, which then rejects it with
+///   `e.p.authorization.did.session_mismatch` — the agent never receives a
+///   reply, observed as a DIDComm response timeout.
+/// * `mediator_url` → **URL-style** ([`mediator_services`]): the original shape,
+///   still correct for mediators that route by URL.
+///
+/// Sharing `mediator_did_didcomm_service` with the online path is deliberate —
+/// the offline CLI and the online provisioner cannot drift on service shape.
+fn select_services(
+    mediator_did: Option<&str>,
+    mediator_url: Option<&str>,
+) -> Result<Vec<PeerService>, Box<dyn std::error::Error>> {
+    match (mediator_did, mediator_url) {
+        (Some(_), Some(_)) => {
+            Err("--mediator-did and --mediator-url are mutually exclusive; pass exactly one".into())
+        }
+        (Some(did), None) => Ok(mediator_did_didcomm_service(
+            did,
+            vec!["didcomm/v2".into()],
+            vec![],
+        )),
+        (None, Some(url)) => mediator_services(url),
+        (None, None) => Err("one of --mediator-did or --mediator-url is required".into()),
+    }
 }
 
 /// Build the did:peer's services from the mediator HTTP endpoint.
@@ -194,6 +239,66 @@ mod tests {
     #[cfg(feature = "config-seed")]
     use crate::acl::get_acl_entry;
 
+    const MEDIATOR_DID: &str = "did:webvh:QmExample:mediator.example.com";
+
+    /// `--mediator-did` must produce the **DID-style** service: a single
+    /// `DIDCommMessaging` entry whose `serviceEndpoint.uri` is the mediator's
+    /// DID verbatim. A DID-routing mediator only treats a hop as
+    /// locally-mediated when that uri equals its own DID — a URL there makes it
+    /// self-forward and reject the reply, so this assertion is the whole point
+    /// of the flag.
+    #[test]
+    fn mediator_did_selects_the_did_style_didcomm_service() {
+        let services = select_services(Some(MEDIATOR_DID), None).expect("did-style services");
+
+        assert_eq!(services.len(), 1, "expected exactly one service");
+        assert_eq!(services[0].type_, "DIDCommMessaging");
+        match &services[0].endpoint {
+            PeerServiceEndpoint::Long(OneOrMany::One(ep)) => {
+                assert_eq!(
+                    ep.uri, MEDIATOR_DID,
+                    "endpoint uri must be the mediator DID"
+                );
+                assert_eq!(ep.accept, vec!["didcomm/v2".to_string()]);
+                assert!(ep.routing_keys.is_empty());
+            }
+            other => panic!("expected a single long-form endpoint, got {other:?}"),
+        }
+    }
+
+    /// `--mediator-url` keeps the original URL-style shape: a "dm" service
+    /// carrying http + ws, plus the `#auth` Authentication service. Guards
+    /// against the new flag changing the existing path.
+    #[test]
+    fn mediator_url_still_selects_the_url_style_services() {
+        let services = select_services(None, Some("http://127.0.0.1:61881/mediator/v1"))
+            .expect("url-style services");
+
+        assert_eq!(services.len(), 2);
+        assert_eq!(services[0].type_, "dm");
+        assert_eq!(services[1].type_, "Authentication");
+        assert_eq!(services[1].id.as_deref(), Some("#auth"));
+    }
+
+    /// The two flags are mutually exclusive and one is mandatory. Clap enforces
+    /// this at the CLI, but `CreateDidPeerArgs` is public to library callers, so
+    /// the runtime guard has to hold on its own.
+    #[test]
+    fn mediator_flags_require_exactly_one() {
+        let both = select_services(Some(MEDIATOR_DID), Some("http://127.0.0.1:61881"))
+            .expect_err("both flags must be rejected");
+        assert!(
+            both.to_string().contains("mutually exclusive"),
+            "unexpected message: {both}"
+        );
+
+        let neither = select_services(None, None).expect_err("neither flag must be rejected");
+        assert!(
+            neither.to_string().contains("required"),
+            "unexpected message: {neither}"
+        );
+    }
+
     /// `vta create-did-peer --context <ctx> --mediator-url <uri> --admin
     /// --export-secrets` must run fully non-interactive and, in one shot:
     ///   * mint a `did:peer:2...` (Ed25519 #key-1 + X25519 #key-2),
@@ -241,7 +346,8 @@ mod tests {
             config_path: Some(config_path.clone()),
             context: "agents".to_string(),
             label: Some("agent-1".to_string()),
-            mediator_url: "http://127.0.0.1:61881/mediator/v1".to_string(),
+            mediator_url: Some("http://127.0.0.1:61881/mediator/v1".to_string()),
+            mediator_did: None,
             export_secrets: true,
             admin: true,
         };

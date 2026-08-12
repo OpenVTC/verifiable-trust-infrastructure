@@ -423,6 +423,11 @@ pub async fn cmd_webvh_did_create_with_files(
         label,
         portable,
         add_mediator_service,
+        // No operator flag yet — the first consumer of the field is the SDK
+        // (a client minting a DID for a holder that reads TSP frames). Adding
+        // one here means another positional on an 18-argument helper plus a
+        // clap flag in both CLIs, which belongs in its own change.
+        add_tsp_service: false,
         additional_services,
         pre_rotation_count,
         did_document,

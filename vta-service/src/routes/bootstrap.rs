@@ -569,7 +569,17 @@ mod provision {
     pub struct ProvisionIntegrationRequestBody {
         /// The integration's VP-framed bootstrap request (signed by its
         /// ephemeral `client_did`).
-        pub request: BootstrapRequest,
+        ///
+        /// Held as raw JSON, **not** as a typed [`BootstrapRequest`]:
+        /// deserialising into the struct here would discard the very bytes
+        /// the holder's Data-Integrity proof covers, and the handler would
+        /// then verify against this crate's re-serialisation of them. The
+        /// typed view is what [`BootstrapRequest::verify_value`] returns
+        /// once the proof checks out. Same shape as the DIDComm and
+        /// Trust-Task bodies, which carry the request as `Value` for this
+        /// reason.
+        #[schema(value_type = Object)]
+        pub request: serde_json::Value,
         /// VTA context to provision into. **Optional** per the canonical
         /// Trust Task spec; omit to let the VTA infer from the caller's
         /// ACL grant or its own contexts state. See
@@ -672,9 +682,7 @@ mod provision {
         State(state): State<AppState>,
         Json(req): Json<ProvisionIntegrationRequestBody>,
     ) -> Result<Json<ProvisionIntegrationResponseBody>, AppError> {
-        let verified = req
-            .request
-            .verify()
+        let verified = BootstrapRequest::verify_value(req.request)
             .map_err(|e| AppError::Validation(format!("verify BootstrapRequest: {e}")))?;
 
         let assertion_mode = req.assertion.map(AssertionMode::from).unwrap_or_default();

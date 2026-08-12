@@ -1,0 +1,110 @@
+name: Docker
+
+# Both Dockerfiles are deployment artifacts, so they need a build that actually
+# runs — an unbuilt Dockerfile rots the moment a native dependency, feature
+# name, or toolchain version moves, and the failure then lands on whoever is
+# trying to deploy. The Nitro image is the sharper case: its failures surface at
+# `nitro-cli build-enclave` time or, worse, as a binary that will not start
+# inside an enclave you cannot shell into.
+#
+# Path-filtered rather than run on every PR: a cold release build in a container
+# takes tens of minutes, and the container-specific risks are all
+# manifest/toolchain-shaped. Ordinary source changes are already covered by the
+# `Check` / `Test` jobs in ci.yml, which compile the same crates.
+on:
+  push:
+    branches: [main, nightly]
+    # Duplicated below rather than shared via a YAML anchor: the Actions
+    # workflow parser does not support anchors/aliases.
+    paths:
+      - "Dockerfile"
+      - "Dockerfile.nitro"
+      - ".dockerignore"
+      - "deploy/nitro/**"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/docker.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - "Dockerfile.nitro"
+      - ".dockerignore"
+      - "deploy/nitro/**"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/docker.yml"
+
+jobs:
+  image:
+    name: Docker image (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    # A cold release build of the workspace runs ~15 min for the non-TEE image;
+    # the enclave build pulls the whole AWS SDK / TEE stack on top. The cap is
+    # there to kill a hang, not to bound the normal build.
+    timeout-minutes: 90
+    strategy:
+      # Report both images independently — knowing only the enclave build broke
+      # is most of the diagnosis.
+      fail-fast: false
+      matrix:
+        include:
+          - name: non-TEE
+            file: Dockerfile
+            tag: vta:ci
+            # `vta` declares `version` in its clap command; `vta-enclave` does
+            # not, so only this one can be smoke-tested with --version.
+            binary: /usr/local/bin/vta
+            expect_non_root: true
+          - name: nitro
+            file: Dockerfile.nitro
+            tag: vta-nitro:ci
+            binary: /usr/local/bin/vta-enclave
+            # The enclave entrypoint needs root for `ip link set lo up` and the
+            # socat vsock proxies; Nitro provides hardware isolation instead of
+            # a user boundary. Asserting non-root here would be wrong.
+            expect_non_root: false
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Deliberately NO build cache — neither `type=gha` nor actions/cache.
+      # GitHub's Actions cache is a single ~10 GB allowance shared across the
+      # whole repo, and a Rust dependency layer is multiple GB. ci.yml already
+      # documents what happens when one fat cache lands in it: it evicted every
+      # other job's cache, and the jobs that then restored a foreign tree ran
+      # the runner out of disk. Path-filtering this job is the cheaper lever —
+      # it makes the build rare rather than making it fast.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          push: false
+          load: true
+          tags: ${{ matrix.tag }}
+
+      # Proves more than "the build exited 0": running the binary in the runtime
+      # stage exercises dynamic linking. For the non-TEE image that covers
+      # libdbus-1-3 / ca-certificates in debian-slim. For the enclave image it
+      # covers the far more fragile glibc-on-Alpine path — gcompat plus the
+      # LD_PRELOAD'd __res_init stub — which otherwise fails first inside an
+      # enclave with no shell.
+      #
+      # --entrypoint is required for the Nitro image, whose ENTRYPOINT is the
+      # vsock-proxy setup script rather than the binary.
+      - name: Smoke-test the runtime image
+        run: |
+          docker run --rm --entrypoint ${{ matrix.binary }} ${{ matrix.tag }} --help > /dev/null
+          echo "binary starts and links cleanly"
+
+      - name: Assert the image does not run as root
+        if: matrix.expect_non_root
+        run: |
+          uid="$(docker run --rm --entrypoint id ${{ matrix.tag }} -u)"
+          if [ "$uid" = "0" ]; then
+            echo "::error::image runs as root (uid 0); expected the unprivileged 'vta' user"
+            exit 1
+          fi
+          echo "image runs as uid $uid"

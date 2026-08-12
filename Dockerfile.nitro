@@ -22,10 +22,36 @@
 #       fetches its tenant config over vsock at runtime; see
 #       deploy/nitro/enclave-entrypoint.sh.
 #
-# CACHING NOTE: Stage 1 copies the workspace crates explicitly (never `COPY . .`)
-# so deploy/ never enters the compile layer, and the manifest list below covers
-# ALL workspace members so the dependency-cache warm-up build actually succeeds.
+# CACHING, two separate mechanisms — both load-bearing:
+#
+#  1. Dependencies are cached with cargo-chef. `prepare` distils the workspace
+#     into a recipe.json of just the dependency graph; `cook` builds that. The
+#     expensive layer is keyed on the recipe, so it survives every source edit
+#     and is rebuilt only when a dependency actually moves. This replaces the
+#     older manifests-plus-dummy-sources trick, which hand-maintained the
+#     workspace member list three times over — including one copy that had to
+#     get each crate's target kind right (bin vs lib vs both) — and warmed the
+#     cache under `|| true`, so getting it wrong was silent: you got a
+#     full-from-scratch dependency rebuild on every build with nothing saying
+#     why. Adding a crate to the workspace no longer requires an edit there.
+#
+#  2. config.toml is copied ONLY in Stage 3 (runtime), so editing
+#     deploy/nitro/config.toml re-layers just the tiny Alpine stage and does
+#     NOT invalidate the Rust build. This is why Stage 2 still copies the
+#     workspace crates explicitly instead of `COPY . .` — that one list is
+#     deliberate, and the reason it cannot be dropped. (`COPY --exclude=deploy`
+#     would express it directly, but needs Dockerfile syntax 1.19, i.e. pulling
+#     a frontend image from Docker Hub at build time. Not worth a new network
+#     dependency and a new variable in layer construction for an image whose
+#     PCR measurements are attestation-critical.)
+#     The planner in Stage 1 may `COPY . .` freely: deploy/ does not affect
+#     recipe.json, so the byte-identical recipe keeps Stage 2's cook layer warm.
 # =============================================================================
+
+ARG RUST_VERSION=1.95
+# Pinned: cargo-chef's recipe format is tied to its version, and an unpinned
+# `cargo install` would silently change the dependency-cache key across builds.
+ARG CARGO_CHEF_VERSION=0.1.78
 
 # BAKE_CONFIG selects whether config.toml is baked into the final image (see
 # CONFIG MODES above). Declared before the first FROM so it can drive the config
@@ -33,100 +59,29 @@
 ARG BAKE_CONFIG=true
 
 # ---------------------------------------------------------------------------
-# Stage 1: Build the VTA binary
+# Stage 0: toolchain + cargo-chef (shared base for planner and builder)
 # ---------------------------------------------------------------------------
-FROM rust:1.95-bookworm AS builder
+FROM rust:${RUST_VERSION}-bookworm AS chef
+ARG CARGO_CHEF_VERSION
+RUN cargo install cargo-chef --locked --version ${CARGO_CHEF_VERSION}
+WORKDIR /build
+
+# ---------------------------------------------------------------------------
+# Stage 1: plan — reduce the workspace to its dependency graph
+# ---------------------------------------------------------------------------
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ---------------------------------------------------------------------------
+# Stage 2: Build the VTA enclave binary
+# ---------------------------------------------------------------------------
+FROM chef AS builder
 
 # Install build dependencies (dbus-1 is required by the keyring crate's build script)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libdbus-1-dev pkg-config && \
     rm -rf /var/lib/apt/lists/*
-
-WORKDIR /build
-
-# Cache dependency builds: copy manifests first, create dummy sources, build deps.
-# This must list EVERY workspace member from the root Cargo.toml [workspace].members
-# or `cargo build` fails workspace resolution (and the `|| true` below silently
-# swallows it, giving you a full-from-scratch dep rebuild every time).
-COPY Cargo.toml Cargo.lock ./
-COPY cnm-cli/Cargo.toml cnm-cli/Cargo.toml
-COPY didcomm-test/Cargo.toml didcomm-test/Cargo.toml
-COPY pnm-cli/Cargo.toml pnm-cli/Cargo.toml
-COPY tests/e2e/Cargo.toml tests/e2e/Cargo.toml
-COPY vta-cli-common/Cargo.toml vta-cli-common/Cargo.toml
-COPY vta-config/Cargo.toml vta-config/Cargo.toml
-COPY vta-keyspaces/Cargo.toml vta-keyspaces/Cargo.toml
-COPY vta-audit/Cargo.toml vta-audit/Cargo.toml
-COPY vta-backup/Cargo.toml vta-backup/Cargo.toml
-COPY vta-keys/Cargo.toml vta-keys/Cargo.toml
-COPY vta-policy/Cargo.toml vta-policy/Cargo.toml
-COPY vta-mcp/Cargo.toml vta-mcp/Cargo.toml
-COPY vta-mobile-core/Cargo.toml vta-mobile-core/Cargo.toml
-COPY vta-sdk/Cargo.toml vta-sdk/Cargo.toml
-COPY vta-support/Cargo.toml vta-support/Cargo.toml
-COPY vta-tee/Cargo.toml vta-tee/Cargo.toml
-COPY vta-sweepers/Cargo.toml vta-sweepers/Cargo.toml
-COPY vta-vault/Cargo.toml vta-vault/Cargo.toml
-COPY vta-webvh/Cargo.toml vta-webvh/Cargo.toml
-COPY vta-service/Cargo.toml vta-service/Cargo.toml
-COPY vta-enclave/Cargo.toml vta-enclave/Cargo.toml
-COPY vtc-client/Cargo.toml vtc-client/Cargo.toml
-COPY vtc-service/Cargo.toml vtc-service/Cargo.toml
-COPY vti-common/Cargo.toml vti-common/Cargo.toml
-COPY vti-secrets/Cargo.toml vti-secrets/Cargo.toml
-COPY vti-webauthn/Cargo.toml vti-webauthn/Cargo.toml
-
-# Create dummy source files so cargo can resolve + dep-build the workspace.
-# Target kind (bin vs lib) must match each crate's manifest:
-#   bins  (src/main.rs):  cnm-cli, didcomm-test, pnm-cli, vta-mcp, vta-enclave
-#   libs  (src/lib.rs):   vta-cli-common, vta-config, vta-keyspaces, vta-audit,
-#                         vta-backup, vta-keys, vta-policy, vta-sdk, vta-support,
-#                         vta-tee, vta-sweepers, vta-vault, vta-webvh, vtc-client,
-#                         vti-common, vti-secrets, vti-webauthn
-#   both:                 vta-service, vtc-service
-#   lib + custom bin:     vta-mobile-core (uniffi-bindgen)
-#   stub lib:             tests/e2e (autobins=false + no src until the real
-#                         COPY below, so a stub lib.rs is needed here purely to
-#                         satisfy workspace resolution during the warm-up build)
-RUN mkdir -p \
-      cnm-cli/src didcomm-test/src pnm-cli/src tests/e2e/src \
-      vta-cli-common/src vta-config/src vta-keyspaces/src vta-audit/src \
-      vta-backup/src vta-keys/src vta-policy/src vta-mcp/src \
-      vta-mobile-core/src vta-mobile-core/src/bin \
-      vta-sdk/src vta-support/src vta-tee/src vta-sweepers/src \
-      vta-vault/src vta-webvh/src \
-      vta-service/src vta-enclave/src \
-      vtc-client/src vtc-service/src \
-      vti-common/src vti-secrets/src vti-webauthn/src && \
-    echo "fn main() {}"       > cnm-cli/src/main.rs && \
-    echo "fn main() {}"       > didcomm-test/src/main.rs && \
-    echo "fn main() {}"       > pnm-cli/src/main.rs && \
-    echo "pub fn dummy() {}"  > tests/e2e/src/lib.rs && \
-    echo "fn main() {}"       > vta-mcp/src/main.rs && \
-    echo "fn main() {}"       > vta-enclave/src/main.rs && \
-    echo "pub fn dummy() {}"  > vta-cli-common/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vta-config/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vta-keyspaces/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vta-audit/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vta-backup/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vta-keys/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vta-policy/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vta-sdk/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vta-support/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vta-tee/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vta-sweepers/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vta-vault/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vta-webvh/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vtc-client/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vti-common/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vti-secrets/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vti-webauthn/src/lib.rs && \
-    echo "pub fn dummy() {}"  > vta-service/src/lib.rs && \
-    echo "fn main() {}"       > vta-service/src/main.rs && \
-    echo "pub fn dummy() {}"  > vtc-service/src/lib.rs && \
-    echo "fn main() {}"       > vtc-service/src/main.rs && \
-    echo "pub fn dummy() {}"  > vta-mobile-core/src/lib.rs && \
-    echo "fn main() {}"       > vta-mobile-core/src/bin/uniffi-bindgen.rs
 
 # Feature flags for the VTA enclave build.
 # Override with: docker build --build-arg FEATURES="didcomm,vsock-store" ...
@@ -141,15 +96,21 @@ RUN mkdir -p \
 # or aws-secrets features.
 ARG FEATURES="rest,didcomm,vsock-store,vsock-log"
 
-# Build dependencies only (cached unless Cargo.toml, Cargo.lock or features change)
-RUN cargo build --release --package vta-enclave \
-    --no-default-features --features ${FEATURES} \
-    2>/dev/null || true
+# Dependency layer. No `--locked` here: cook builds from the recipe rather than
+# the real manifests, and the flag buys nothing for a warm-up whose output is
+# discarded. The real build below is locked, which is where it matters.
+COPY --from=planner /build/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json \
+        --package vta-enclave \
+        --no-default-features --features ${FEATURES}
 
-# Copy actual source code — every workspace member EXCEPT deploy/ (whose
-# config.toml is baked later in Stage 2). Never use `COPY . .` here: that would
-# pull deploy/nitro/config.toml into this layer and make every config edit
-# trigger a full Rust recompile.
+# Real sources — every workspace member EXCEPT deploy/, whose config.toml is
+# baked in Stage 3. See the CACHING note at the top: `COPY . .` here would pull
+# deploy/nitro/config.toml into this layer and make every config edit trigger a
+# Rust rebuild. A member missing from this list keeps cargo-chef's skeleton
+# stub instead of its real source, which fails the build below rather than
+# silently producing a broken binary.
+COPY Cargo.toml Cargo.lock ./
 COPY cnm-cli/ cnm-cli/
 COPY didcomm-test/ didcomm-test/
 COPY pnm-cli/ pnm-cli/
@@ -177,18 +138,10 @@ COPY vti-common/ vti-common/
 COPY vti-secrets/ vti-secrets/
 COPY vti-webauthn/ vti-webauthn/
 
-# Touch source files to invalidate the dummy build cache so the real crates
-# (not the dummy stubs) get compiled.
-RUN find cnm-cli didcomm-test pnm-cli tests vta-cli-common vta-config \
-        vta-keyspaces vta-audit vta-backup vta-keys vta-policy vta-mcp \
-        vta-mobile-core vta-sdk vta-support vta-tee vta-sweepers vta-vault \
-        vta-webvh vta-service vta-enclave vtc-client vtc-service \
-        vti-common vti-secrets vti-webauthn \
-        -name '*.rs' -exec touch {} +
-
-# Build the VTA enclave binary with selected feature flags
-RUN cargo build --release --package vta-enclave \
-    --no-default-features --features ${FEATURES}
+# Build the VTA enclave binary with selected feature flags. `--locked` so the
+# image cannot silently resolve a dependency set other than the one CI tested.
+RUN cargo build --release --locked --package vta-enclave \
+        --no-default-features --features ${FEATURES}
 
 # Build a tiny stub for __res_init — an obsolete glibc resolver function
 # that musl/Alpine don't provide. Returning 0 (success) is safe; modern
@@ -196,6 +149,7 @@ RUN cargo build --release --package vta-enclave \
 RUN echo 'int __res_init(void) { return 0; }' > /tmp/res_stub.c && \
     gcc -shared -nostartfiles -o /tmp/libresolv_compat.so /tmp/res_stub.c
 
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Config selector: pick a source of `/out` for the runtime stage based on the
 # BAKE_CONFIG build-arg. This is the BuildKit-safe way to make the config COPY
@@ -216,7 +170,7 @@ ARG BAKE_CONFIG=true
 FROM config-${BAKE_CONFIG} AS config-src
 
 # ---------------------------------------------------------------------------
-# Stage 2: Minimal runtime image for the Nitro Enclave
+# Stage 3: Minimal runtime image for the Nitro Enclave
 # ---------------------------------------------------------------------------
 # Alpine Linux: ~7 MB base vs ~180 MB for debian:bookworm-slim.
 # Busybox provides `ip` (replacing iproute2) and `sed` natively.

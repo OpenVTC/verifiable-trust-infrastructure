@@ -1779,11 +1779,20 @@ async fn create_simple_webvh_did(
         label: Some(label.to_string()),
         portable,
         add_mediator_service,
+        // The setup path builds its own `#tsp` entry into
+        // `additional_services` (`build_vta_additional_services`), which is
+        // where the REST entry comes from too. Asking for a second one here
+        // would be redundant — and `with_tsp_service` would decline it anyway,
+        // since a caller-supplied `TSPTransport` wins.
+        add_tsp_service: false,
         additional_services,
         pre_rotation_count,
         did_document: advanced.did_document,
         did_log: advanced.did_log,
         set_primary: true,
+        // The wizard passes a template name, not a pre-rendered document,
+        // so the operation derives and renders in one place.
+        pre_derived: None,
         signing_key_id: advanced.signing_key_id,
         ka_key_id: advanced.ka_key_id,
         template,

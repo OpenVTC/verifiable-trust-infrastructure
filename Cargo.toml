@@ -372,46 +372,40 @@ needless_pass_by_value = "allow"
 too_many_arguments = "allow"
 type_complexity = "allow"
 
-# Make the workspace copy of `vta-sdk` the ONLY one in the graph.
+# There is deliberately no `[patch.crates-io]` here any more.
 #
-# A transitive dev-dependency pulls our own crate back in from crates.io —
+# One used to live at this spot, forcing the workspace copy of `vta-sdk` to be
+# the only one in the graph. A transitive dev-dependency pulled our own crate
+# back in from crates.io —
 #
 #   vtc-service [dev-dependencies]
 #     -> affinidi-messaging-test-mediator
 #       -> affinidi-messaging-mediator
 #         -> vta-sdk   (registry, NOT the workspace path copy)
 #
-# so without this, Cargo.lock carries two `vta-sdk` nodes: the path copy at the
-# local version and a registry copy pinned at whatever was current when that
-# dependency was last resolved. That second node is a standing hazard. It goes
-# stale the instant we publish, `cargo publish --locked` verifies dependents
-# against it, and a dependent therefore gets built against the PREVIOUS
-# release's source — silently, because the workspace's own path-dep build stays
-# green throughout. That is how pnm-cli 0.11.2 was verified against vta-sdk
-# 0.19.11 minutes after 0.19.12 shipped, and sat unpublished for three releases.
+# — so Cargo.lock carried two `vta-sdk` nodes, and the registry one went stale
+# the instant we published. `cargo publish --locked` verifies dependents against
+# it, so a dependent got built against the PREVIOUS release's source, silently,
+# while the workspace's own path-dep build stayed green. That is how pnm-cli
+# 0.11.2 was verified against vta-sdk 0.19.11 minutes after 0.19.12 shipped, and
+# sat unpublished for three releases.
 #
-# Refreshing the pin after each publish was the previous fix, and it can only
-# happen in the publish job (the version does not exist until then), which means
-# committing to a protected branch from CI — blocked by the org ruleset, so the
-# refresh PR could not be opened and main kept going stale. Seven releases in a
-# row ended that way.
+# The patch deleted that second node rather than chasing it — but only while the
+# workspace copy satisfied the mediator's requirement on `vta-sdk`. Under 0.x
+# semver a minor bump does not, so the patch silently stopped applying and the
+# node came back, at 0.20 (#797), 0.21 (#887) and 0.22 (#950). Each time the fix
+# was an upstream release widening a requirement, which buys one version of
+# headroom and leaves the cycle in place.
 #
-# Patching removes the second node instead of chasing it. Note the patch is
-# workspace-local: `cargo publish`'s packaged verification build does not see it
-# and resolves `vta-sdk` from the registry, picking the newest published
-# version — which, in a release run, is the one published moments earlier in the
-# same loop. So the property the self-pin was trying to guarantee now holds by
-# construction.
+# affinidi/affinidi-tdk-rs#703 removed the last hop instead. `vta-sdk` is now
+# optional in `affinidi-messaging-mediator` (0.18.13+) behind a default-on `vta`
+# feature, and `affinidi-messaging-test-mediator` already depends on that crate
+# with `default-features = false`, so the chain above no longer reaches
+# `vta-sdk` at all. Nothing pulls a registry copy in, so there is nothing to
+# patch out.
 #
-# Trade-off worth knowing: the published `affinidi-messaging-mediator` now
-# compiles against our local `vta-sdk` rather than the published one. A
-# `vta-sdk` change that breaks it surfaces here immediately instead of after a
-# release — but it is a combination that does not exist in the wild, so a
-# breaking change within `0.19.x` shows up as a confusing build failure in a
-# third-party crate.
-#
-# One entry per crate that gets pulled back in. `scripts/check-lockfile-self-pins.sh`
-# is what tells you a new one has appeared: it now passes with "nothing to
-# check", and that is the expected steady state.
-[patch.crates-io]
-vta-sdk = { path = "vta-sdk" }
+# `scripts/check-lockfile-self-pins.sh` stays. Its job is to notice a NEW
+# self-pin — some other dev-dependency chain reaching one of our crates. If it
+# ever reports one, the fix is the same choice we faced here: patch it (fast,
+# and it will break again on the next minor bump) or cut the dependency edge
+# upstream (slower, permanent).

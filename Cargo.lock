@@ -332,9 +332,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator"
-version = "0.18.10"
+version = "0.18.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a270daf049da285cea52202013ee44fddde28b02ef2cde9b6f76564aaa88cc4"
+checksum = "607115f65cb92828b4998cf0c692c14e22dfd9f4f17c3a685f27d9d16a5ebc0c"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-common",
@@ -392,7 +392,6 @@ dependencies = [
  "trust-tasks-rs",
  "url",
  "uuid",
- "vta-sdk",
 ]
 
 [[package]]
@@ -2401,7 +2400,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.11.14"
+version = "0.11.16"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "clap",
@@ -2922,7 +2921,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.3",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -4587,7 +4586,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -6261,7 +6260,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pnm-cli"
-version = "0.11.21"
+version = "0.12.0"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -6453,7 +6452,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.43",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -6492,7 +6491,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -9226,7 +9225,7 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.10.28"
+version = "0.10.29"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -9384,7 +9383,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.21.21"
+version = "0.22.0"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -9668,7 +9667,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-client"
-version = "0.3.1"
+version = "0.3.3"
 dependencies = [
  "chrono",
  "reqwest",
@@ -9765,7 +9764,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.37"
+version = "0.11.38"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",
@@ -9838,7 +9837,7 @@ dependencies = [
 
 [[package]]
 name = "vti-secrets"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "aws-config",
  "aws-sdk-secretsmanager",
