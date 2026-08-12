@@ -888,7 +888,10 @@ unwrap (drops RUSTSEC-2023-0071 exposure); don't reintroduce `rsa`.
 ## Commit hygiene
 
 - Run `cargo fmt` before committing.
-- All commits must be DCO-signed (`git commit -s`).
+- All commits must be DCO-signed (`git commit -s`). `.github/dco.yml` exempts
+  commits that are both authored by an org member and cryptographically signed
+  — that exists for release-plz's release commit, which cannot carry a
+  `Signed-off-by` trailer. Sign off anyway; don't rely on the exemption.
 - Don't bypass hooks (`--no-verify`), don't skip signatures, don't amend
   published commits.
 
