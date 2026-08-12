@@ -38,6 +38,7 @@ VSOCK_MEDIATOR_PORT="${VSOCK_MEDIATOR_PORT:-5200}"    # Outbound mediator (VTA �
 VSOCK_HTTPS_PORT="${VSOCK_HTTPS_PORT:-5300}"           # Outbound HTTPS (VTA → vsock)
 VSOCK_IMDS_PORT="${VSOCK_IMDS_PORT:-5400}"             # Outbound IMDS (AWS credentials)
 VSOCK_RESOLVER_PORT="${VSOCK_RESOLVER_PORT:-5600}"     # Outbound DID resolver (WebSocket)
+VSOCK_CONFIG_PORT="${VSOCK_CONFIG_PORT:-5800}"         # Inbound config envelope (parent → VTA)
 
 VTA_PORT="${VTA_PORT:-8100}"
 LOCAL_MEDIATOR_PORT="${LOCAL_MEDIATOR_PORT:-4443}"     # VTA connects here for mediator
@@ -142,20 +143,108 @@ cleanup() {
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# Config: use the baked-in config, or generate a default if missing
+# Config: baked-in / mounted config wins; otherwise fetch it over vsock.
 # ---------------------------------------------------------------------------
+# UN-BAKED CONFIG: the image carries no tenant config. The parent
+# serves a versioned envelope over vsock:${VSOCK_CONFIG_PORT}:
+#     { "version": 1, "config_toml": "…", "integrity": null }
+# We connect, read it, and write config_toml to $CONFIG_PATH before starting the
+# VTA. A pre-existing config at $CONFIG_PATH (mounted/baked for local dev) is used
+# as-is and short-circuits the fetch.
 CONFIG_PATH="${VTA_CONFIG_PATH:-/etc/vta/config.toml}"
 
+# Envelope wire version this entrypoint understands. The parent stamps a
+# `version` on the envelope; we refuse anything else so a future breaking
+# envelope shape fails loudly instead of being mis-parsed.
+SUPPORTED_CONFIG_ENVELOPE_VERSION="${SUPPORTED_CONFIG_ENVELOPE_VERSION:-1}"
+
+# Fail-closed by default: in production the tenant config MUST arrive over vsock.
+# Set VTA_ALLOW_DEFAULT_CONFIG=true ONLY for local/dev runs to permit the
+# env-var-derived fallback config below.
+ALLOW_DEFAULT_CONFIG="${VTA_ALLOW_DEFAULT_CONFIG:-false}"
+
+# Hard cap on the envelope read from the (untrusted) parent. The enclave rootfs
+# is RAM carved from its fixed allocation, so an unbounded read is a
+# memory-exhaustion vector — mirror the service's 1 MB request-body cap.
+MAX_CONFIG_ENVELOPE_BYTES="${MAX_CONFIG_ENVELOPE_BYTES:-1048576}"
+# Per-attempt connect + overall read timeouts, so a parent that accepts the
+# connection and then hangs cannot block boot forever (the retry loop must
+# actually advance — the "give up after ~60s" guarantee depends on this).
+CONFIG_FETCH_CONNECT_TIMEOUT="${CONFIG_FETCH_CONNECT_TIMEOUT:-5}"
+CONFIG_FETCH_READ_TIMEOUT="${CONFIG_FETCH_READ_TIMEOUT:-10}"
+
+fetch_config_over_vsock() {
+    # Retry with bounded backoff: on a cold boot the enclave and the parent's
+    # config server start concurrently, so a single attempt could race ahead of
+    # the parent binding vsock:${VSOCK_CONFIG_PORT}. Give up after ~60s.
+    # Return: 0 = config written, 1 = unreachable after retries, 2 = unsupported version.
+    envelope_tmp="$(mktemp)"
+    attempt=1
+    max_attempts=30
+    while [ "$attempt" -le "$max_attempts" ]; do
+        # Bounded read from an untrusted source: connect-timeout guards a parent
+        # that never accepts; the outer `timeout` guards one that accepts then
+        # hangs; `head -c` caps the bytes pulled into enclave RAM.
+        if timeout "${CONFIG_FETCH_READ_TIMEOUT}" socat -u \
+                "VSOCK-CONNECT:${PARENT_CID}:${VSOCK_CONFIG_PORT},connect-timeout=${CONFIG_FETCH_CONNECT_TIMEOUT}" - 2>/dev/null \
+                | head -c "${MAX_CONFIG_ENVELOPE_BYTES}" > "$envelope_tmp" \
+            && [ -s "$envelope_tmp" ] \
+            && jq -e '.config_toml' "$envelope_tmp" >/dev/null 2>&1; then
+            # Reject an envelope whose wire version we do not understand rather
+            # than blindly consuming `.config_toml` from an incompatible shape.
+            version="$(jq -r '.version // "missing"' "$envelope_tmp" 2>/dev/null)"
+            if [ "$version" != "$SUPPORTED_CONFIG_ENVELOPE_VERSION" ]; then
+                rm -f "$envelope_tmp"
+                echo "FATAL: config envelope version '${version}' is unsupported (this enclave speaks v${SUPPORTED_CONFIG_ENVELOPE_VERSION})" >&2
+                return 2
+            fi
+            mkdir -p "$(dirname "$CONFIG_PATH")"
+            jq -r '.config_toml' "$envelope_tmp" > "$CONFIG_PATH"
+            rm -f "$envelope_tmp"
+            echo "Fetched tenant config over vsock (attempt ${attempt}) → $CONFIG_PATH"
+            return 0
+        fi
+        echo "config server not ready on vsock:${VSOCK_CONFIG_PORT} (attempt ${attempt}/${max_attempts}); retrying in 2s..."
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+    rm -f "$envelope_tmp"
+    return 1
+}
+
+fetch_rc=0
 if [ -f "$CONFIG_PATH" ]; then
-    echo "Using baked-in config at $CONFIG_PATH"
+    echo "Using existing config at $CONFIG_PATH"
 else
-    # Determine mediator URL: if set externally, point through our local proxy
+    fetch_config_over_vsock
+    fetch_rc=$?
+fi
+
+if [ ! -f "$CONFIG_PATH" ] && [ "$fetch_rc" -ne 0 ]; then
+    if [ "$fetch_rc" -eq 2 ]; then
+        # Version mismatch is a hard, non-recoverable error — never fall through
+        # to a default config that would silently mask a broken deploy.
+        echo "FATAL: refusing to start with an unsupported config envelope version" >&2
+        exit 1
+    elif [ "$ALLOW_DEFAULT_CONFIG" != "true" ]; then
+        # Fail-closed: production always delivers config over vsock. Booting a TEE
+        # VTA with an env-var-derived default here would mask a config-delivery
+        # failure, so we exit non-zero instead.
+        echo "FATAL: no config at $CONFIG_PATH and vsock fetch failed after retries." >&2
+        echo "       Tenant config must be delivered over vsock:${VSOCK_CONFIG_PORT}." >&2
+        echo "       For local/dev only, set VTA_ALLOW_DEFAULT_CONFIG=true to allow an env-var fallback." >&2
+        exit 1
+    fi
+
+    # Opt-in local/dev fallback: generate a minimal config from env vars so a run
+    # without a parent config server still boots. NEVER enabled in production.
     MEDIATOR_URL="${VTA_MEDIATOR_URL:-}"
     MEDIATOR_DID="${VTA_MEDIATOR_DID:-}"
 
-    echo "Generating default enclave config at $CONFIG_PATH"
+    echo "VTA_ALLOW_DEFAULT_CONFIG=true — generating dev fallback config at $CONFIG_PATH"
+    mkdir -p "$(dirname "$CONFIG_PATH")"
     cat > "$CONFIG_PATH" <<TOML
-# VTA Configuration — Nitro Enclave (auto-generated)
+# VTA Configuration — Nitro Enclave (auto-generated fallback)
 
 [services]
 rest = true

@@ -13,12 +13,11 @@
 # starts socat-based vsock proxies inside the enclave to bridge TCP<->vsock.
 # The parent EC2 instance runs parent-proxy.sh to bridge vsock<->internet.
 #
-# CACHING NOTE: config.toml is copied ONLY in Stage 2 (runtime), so editing
-# deploy/nitro/config.toml re-layers just the tiny Alpine stage and does NOT
-# invalidate the Rust build. Stage 1 copies the workspace crates explicitly
-# (never `COPY . .`) so deploy/ never enters the compile layer, and the
-# manifest list below covers ALL workspace members so the dependency-cache
-# warm-up build actually succeeds.
+# CACHING NOTE: the image is tenant-agnostic — NO config.toml is baked in
+# (tenant config arrives at runtime over vsock). Stage 1 copies the
+# workspace crates explicitly (never `COPY . .`) so deploy/ never enters the
+# compile layer, and the manifest list below covers ALL workspace members so the
+# dependency-cache warm-up build actually succeeds.
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -196,6 +195,7 @@ FROM alpine:3.21
 RUN apk add --no-cache \
         ca-certificates \
         socat \
+        jq \
         gcompat \
         libgcc \
         libc6-compat \
@@ -206,12 +206,14 @@ COPY --from=builder /build/target/release/vta-enclave /usr/local/bin/vta-enclave
 COPY --from=builder /tmp/libresolv_compat.so /usr/lib/libresolv_compat.so
 ENV LD_PRELOAD=/usr/lib/libresolv_compat.so
 
-# Copy the entrypoint script and config.
-# config.toml is baked HERE (Stage 2) on purpose: editing it re-layers only
-# this tiny Alpine stage, never the Rust build in Stage 1.
+# Copy the entrypoint script.
+# NOTE: tenant config is NOT baked into the image. The image is
+# generic — one image / one PCR0 for all tenants. The entrypoint fetches the
+# tenant config.toml from the parent over vsock (port 5800) at runtime; see
+# deploy/nitro/enclave-entrypoint.sh and docs. A config.toml may still be
+# mounted/baked for local dev (entrypoint uses it when present at $VTA_CONFIG_PATH).
 COPY deploy/nitro/enclave-entrypoint.sh /usr/local/bin/enclave-entrypoint.sh
 RUN chmod +x /usr/local/bin/enclave-entrypoint.sh
-COPY deploy/nitro/config.toml /etc/vta/config.toml
 
 # Create data directories
 RUN mkdir -p /var/lib/vta

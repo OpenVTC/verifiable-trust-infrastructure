@@ -4,6 +4,44 @@ Deploy the Verifiable Trust Agent (VTA) inside an AWS Nitro Enclave with
 hardware-backed TEE attestation, KMS-based secret bootstrap, encrypted
 storage, and signed enclave images.
 
+> **Un-baked config.** Tenant config (`config.toml`) is **no longer
+> baked into the EIF**. The image is tenant-agnostic — one image / one PCR0 for
+> every tenant. At runtime the parent serves a config envelope
+> (`{ "version":1, "config_toml":"…", "integrity":null }`) over **vsock port
+> 5800**; `parent-proxy.sh` (or the Rust `enclave-proxy --config-envelope …`)
+> starts that server when a `config-envelope.json` (`$VTA_CONFIG_ENVELOPE`, a
+> file next to the script, or a conventional managed path
+> `/etc/vta-tee/config-envelope.json`) is present, and `enclave-entrypoint.sh`
+> fetches it (validating the envelope `version`) and writes `/etc/vta/config.toml`
+> before starting the VTA. Because tenant values are out of the image,
+> **changing them no longer changes PCR0** — only code / deps / Dockerfile
+> changes do. **Existing EIFs keep working** (the entrypoint uses a baked/mounted
+> `config.toml` when one is present); **rebuilt EIFs have no baked config and
+> require the envelope.** `build-vta.sh` emits `config-envelope.json` beside the
+> EIF; to make one by hand from a finalized `config.toml`:
+>
+> ```bash
+> jq -Rs '{version:1, config_toml:., integrity:null}' config.toml > config-envelope.json
+> ```
+>
+> **Fail-closed:** in production a failed vsock fetch aborts the enclave (it does
+> **not** silently boot a default config). The env-var fallback is opt-in via
+> `VTA_ALLOW_DEFAULT_CONFIG=true` for local/dev only. Exactly one process may own
+> `vsock:5800` — `parent-proxy.sh`/`enclave-proxy` for the standalone workflow,
+> or an orchestrated deployment's own config server (e.g. a systemd socat unit) —
+> never both.
+>
+> **Enforcement floor:** on real Nitro hardware (`/dev/nsm` present) the enclave
+> **refuses to boot unless `[tee] mode = required`**, so a runtime-delivered
+> config can never downgrade TEE enforcement (the default `mode` is `optional`).
+>
+> **Multi-tenant isolation is now a KMS-policy requirement.** With `key_arn` no
+> longer baked, one PCR0 is shared across tenants and the parent supplies the
+> key ARN — so `kms:RecipientAttestation:PCR0` alone no longer isolates tenants.
+> **Each tenant's KMS key policy MUST additionally constrain the calling
+> principal** (the parent instance role / account), not just PCR0. Otherwise any
+> enclave satisfying the shared PCR0 could reach another tenant's key.
+
 ## Build and deployment modes
 
 There are three scripts in `deploy/nitro/`, each with a different intended
@@ -146,7 +184,7 @@ both first and subsequent boots** — no rebuild cycle for identity creation.
 │  │  mediator_did = "did:web:mediator.example.com"                │    │
 │  └─────────────────────────────────────────────────────────────┘    │
 │                                                                      │
-│  Config is baked into the EIF → determines PCR0                      │
+│  Tenant config served over vsock at runtime → NOT part of PCR0       │
 └──────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -669,7 +707,8 @@ enclave image.
 ### 4d: Update Config — Deployment Inputs
 
 Edit `deploy/nitro/config.toml` with your deployment-specific values.
-These are the inputs that get baked into the EIF:
+These are the tenant inputs the parent serves to the enclave at runtime over
+vsock (they are no longer baked into the EIF):
 
 ```bash
 nano deploy/nitro/config.toml
@@ -733,9 +772,12 @@ mediator_host = "mediator.example.com"
 
 ### 4e: Rebuild the Enclave Image with Updated Config
 
-The config is baked into the EIF, so any config change requires a rebuild.
-This also generates a new PCR0 (image hash) which must be updated in the
-KMS key policy.
+With un-baked config a **tenant** config change (KMS ARN, mediator
+DID, admin DID, did:webvh template, public URL) does **not** require an image
+rebuild and does **not** change PCR0 — update the config envelope the parent
+serves over vsock:5800 and restart the enclave. Only code / dependency /
+Dockerfile changes rebuild the image and change PCR0 (which must then be updated
+in the KMS key policy). *(Legacy baked-config note below.)*
 
 **Use the same `docker build` command from your chosen profile in Step 2.**
 If you chose Profile B (Full API), the rebuild cycle is:
@@ -814,8 +856,8 @@ The proxy is a Rust binary that auto-reads the mediator DID and KMS region
 from `config.toml` and auto-detects the enclave CID.
 
 **Important:** The proxy needs the **finalized** `config.toml` — the same
-version baked into the EIF (with the real KMS ARN, mediator DID, etc.).
-A repo checkout on the EC2 instance may have stale values (e.g., `PLACEHOLDER`
+values served to the enclave over vsock (with the real KMS ARN, mediator DID,
+etc.). A repo checkout on the EC2 instance may have stale values (e.g., `PLACEHOLDER`
 for the KMS ARN). There are two ways to provide the config:
 
 **Option A: Copy the finalized config from the build machine** (recommended)
@@ -1249,18 +1291,20 @@ nitro-cli run-enclave --eif-path vta.eif --cpu-count 1 --memory 512 --debug-mode
 
 ## Upgrading the Enclave Image
 
-Every time you rebuild the Docker image or change config baked into the EIF,
-the PCR0 (image hash) changes. The KMS policy must be updated to allow the
-new image to decrypt the existing secrets.
+Every time you rebuild the Docker image, the PCR0 (image hash) changes. The
+KMS policy must be updated to allow the new image to decrypt the existing
+secrets. (Tenant config changes do **not** rebuild the image — see below.)
 
 ### What triggers a PCR0 change
 
 Any of these require a KMS policy update:
 - Code changes in the VTA (Rust source)
 - Dependency updates (Cargo.lock changes)
-- Config changes (config.toml baked into the EIF)
 - Dockerfile changes (base image, packages, build args)
 - Feature flag changes
+
+Note: **tenant config changes no longer trigger a PCR0 change** —
+tenant config is delivered at runtime over vsock, not baked into the EIF.
 
 **PCR8 does NOT change** unless you regenerate the signing key.
 

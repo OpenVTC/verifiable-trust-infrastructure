@@ -2,8 +2,15 @@
 # VTA Configuration — AWS Nitro Enclave
 # =============================================================================
 #
-# This file is baked into the Enclave Image File (EIF) at docker build time.
-# Changing any value requires rebuilding the EIF (which changes PCR0).
+# UN-BAKED: this file is NO LONGER copied into the Enclave Image
+# File (EIF). The image is tenant-agnostic (one image / one PCR0 for all
+# tenants). At runtime the parent serves a config envelope
+# ({ "version":1, "config_toml":"…", "integrity":null }) over vsock port 5800;
+# the enclave entrypoint fetches it and writes /etc/vta/config.toml before start.
+#
+# This file remains the canonical TEMPLATE for those values and is still usable
+# as a mounted/baked config for LOCAL / DEV runs (the entrypoint uses an existing
+# /etc/vta/config.toml as-is, short-circuiting the vsock fetch).
 #
 # QUICK START — You only need to set TWO values:
 #   1. key_arn       — Your KMS key ARN (in [tee.kms])
