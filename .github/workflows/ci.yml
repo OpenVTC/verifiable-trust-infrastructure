@@ -189,41 +189,71 @@ jobs:
         with:
           command: check advisories bans sources licenses
 
-  release-guards:
-    # Fail a PR that edits a published crate's source without bumping its
-    # version. The publish workflow SKIPS any crate whose version is already
-    # on crates.io, so an unbumped source edit leaves the registry holding
-    # stale code — and the next crate published against it fails its
-    # registry-resolved verify build. That is exactly how vti-common 0.11.2
-    # and vtc-service 0.11.0 went stale and kept Publish red, while the
-    # path-dep workspace build stayed green and hid it. See the script header.
+  commit-lint:
+    # The changelog is generated from commit messages, so the message IS the
+    # user-facing artefact. A squash merge makes the PR TITLE the commit
+    # subject, which is why the title is what gets linted.
     #
-    # PR-only: the guard diffs against the PR base, which a push to main has
-    # no meaningful equivalent of.
-    name: release guards
+    # Not a style rule: a subject git-cliff cannot parse lands under "Other" in
+    # the changelog of a published crate, where an external consumer reads it.
+    name: commit lint
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      - name: Conventional-commit PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          # type(optional scope)(optional !): subject
+          if printf '%s' "$TITLE" \
+            | grep -qE '^(feat|fix|docs|test|ci|build|perf|refactor|chore|security)(\([a-z0-9._/-]+\))?!?: .+'; then
+            echo "ok: $TITLE"
+            exit 0
+          fi
+          echo "::error title=PR title is not a conventional commit::$TITLE"
+          cat <<'EOF'
+          The PR title becomes the squash-merge commit subject, and the changelog
+          of every published crate is generated from those subjects.
+
+            <type>(<optional scope>): <subject>
+
+          type: feat fix docs test ci build perf refactor chore security
+          Append ! for a breaking change, e.g. feat(sdk)!: ...
+
+          Examples from this repo:
+            feat(tsp): a VTA can speak TSP without DIDComm
+            fix(did-webvh): write the DID log where the operator asked
+          EOF
+          exit 1
+
+  semver-checks:
+    # Compare each published crate's public API against the version on
+    # crates.io. release-plz runs this too when it builds the Release PR, but
+    # by then the change has already merged — here the author still has it in
+    # hand.
+    #
+    # It reports; it does not fail the build. A breaking change is allowed in
+    # this workspace (every crate is 0.x); what matters is that it is KNOWN, so
+    # the release moves the compatibility field instead of shipping it as a
+    # patch. release-plz enforces that automatically from the same signal.
+    name: semver checks
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
       - uses: actions/checkout@v6
         with:
-          # Full history so the guard can diff against, and read manifests
-          # from, the PR's base commit.
           fetch-depth: 0
-      - name: Version-bump guard for changed publishable crates
-        run: bash scripts/check-version-bumps.sh "${{ github.event.pull_request.base.sha }}"
 
-      - name: Changelog guard for bumped publishable crates
-        env:
-          # Lets the guard check that a fragment this PR adds actually names
-          # this PR — in its filename and its heading. Unset locally, where
-          # there is no PR to name, and the check is skipped.
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          # The `release` label is the escape hatch for a release PR that edits
-          # CHANGELOG.md without collating fragments (stamping a version
-          # heading, correcting a shipped entry). A collation PR needs no label:
-          # deleting the fragments it folds in is how the guard recognises it.
-          ALLOW_CHANGELOG_EDIT: ${{ contains(github.event.pull_request.labels.*.name, 'release') && '1' || '0' }}
-        run: bash scripts/check-changelogs.sh "${{ github.event.pull_request.base.sha }}"
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-semver-checks
+
+      - name: Check published crates for API breaks
+        run: cargo semver-checks --workspace
 
   lockfile-self-pins:
     # Sibling guard to release-guards: the version bump can be correct and the
