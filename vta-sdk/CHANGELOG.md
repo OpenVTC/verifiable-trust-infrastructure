@@ -2,6 +2,51 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.22.0...vta-sdk-v0.23.0) — 2026-08-12
+
+
+### Added
+
+- **did-webvh**: Let a minted DID advertise TSP at the VTA's mediator ([#959](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/959))
+
+A VTA-minted DID could never advertise TSP, whatever the VTA's own config
+  said. `add_mediator_service` publishes the VTA's mediator as a
+  `DIDCommMessaging` service and nothing else, so a caller wanting `#tsp`
+  had to hand-build the service entry and pass it through
+  `additional_services` — which means knowing the mediator DID, the one
+  thing `add_mediator_service` exists so a caller does not have to know.
+  Nobody did, so every persona-shaped identity is DIDComm-only by
+  construction, and the both-ends transport rule can never resolve to TSP
+  for one. TSP could be enabled end to end and the intersection would still
+  be DIDComm.
+
+  Surfaced by OpenVTC #211, where a join failed at the mediator and the
+  applicant persona's document turned out to carry exactly one service
+  entry.
+
+  Adds `add_tsp_service` to the create-DID wire, honoured by
+  `with_tsp_service` in `did_webvh/document.rs`. The entry points at the
+  same mediator the DIDComm entry names — TSP advertises a mediator DID,
+  not a transport URL (D8) — using the fragment and type the setup path and
+  the runtime `services tsp enable` patcher already emit, so a document
+  minted here, minted at setup, or patched later are the same shape.
+
+  Two gates, neither redundant. The caller's flag is opt-in and
+  deliberately not implied by `add_mediator_service`: a DID advertising a
+  transport its holder cannot decode is unreachable over that transport,
+  and only the caller knows whether the client behind the DID reads TSP
+  frames. Ours is `[services] tsp` plus a configured mediator: a VTA whose
+  own stack does not run TSP must not mint documents claiming it does,
+  which is the failure this prevents rather than spreads. A caller-supplied
+  `TSPTransport` entry wins over the injected one — matched on the service
+  `type`, never the `#id` fragment.
+
+  Additive on the wire in both directions: `skip_serializing_if` on the
+  request and `Option` on the body, so an unset field serialises exactly as
+  before and a VTA that predates it ignores the key.
+
+
+
 ## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.21.21...vta-sdk-v0.22.0) — 2026-08-12
 
 

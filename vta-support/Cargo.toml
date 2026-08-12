@@ -25,7 +25,7 @@ vta-config = { path = "../vta-config", version = "0.3" }
 # does not exist and the tarball fails to compile. That is what broke the
 # publish run for 0.2.0.
 vti-common = { path = "../vti-common", version = "0.11", features = ["encryption"] }
-vta-sdk = { path = "../vta-sdk", version = "0.22", features = ["sealed-transfer"] }
+vta-sdk = { path = "../vta-sdk", version = "0.23", features = ["sealed-transfer"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

@@ -29,7 +29,7 @@ webvh = ["dep:reqwest", "vta-sdk/client"]
 [dependencies]
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
 vti-common = { path = "../vti-common", version = "0.11", features = ["encryption"] }
-vta-sdk = { path = "../vta-sdk", version = "0.22", features = ["didcomm", "sealed-transfer"] }
+vta-sdk = { path = "../vta-sdk", version = "0.23", features = ["didcomm", "sealed-transfer"] }
 affinidi-crypto = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }
 affinidi-data-integrity = { workspace = true }
