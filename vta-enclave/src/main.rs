@@ -145,6 +145,24 @@ async fn main() {
     eprintln!("Tracing initialized.");
     print_banner();
 
+    // ── Floor check: TEE enforcement (un-baked config hardening) ──
+    // The tenant config is delivered by the (untrusted) parent over vsock, so a
+    // served config could omit or weaken `[tee] mode` — and its default is
+    // `Optional`, which silently continues without TEE. On real Nitro hardware
+    // (`/dev/nsm` present) refuse to boot unless enforcement is `Required`, so a
+    // runtime-delivered config can never downgrade the enclave's security policy
+    // below the floor. This holds regardless of the (future) attestation anchor.
+    if std::path::Path::new("/dev/nsm").exists()
+        && !matches!(config.tee.mode, vta_service::config::TeeMode::Required)
+    {
+        tracing::error!(
+            "FATAL: /dev/nsm is present but [tee] mode = {:?} (not `required`). Refusing to \
+             boot — a runtime-delivered config must not weaken TEE enforcement.",
+            config.tee.mode
+        );
+        std::process::exit(1);
+    }
+
     // `[hardened] enabled = true` is silently ignored by this binary — the enclave
     // derives its storage-encryption key and JWT signing key from the TEE KMS
     // bootstrap above, not from the HKDF seed path that `hardened_bootstrap` uses.
