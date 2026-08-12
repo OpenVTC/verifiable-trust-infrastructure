@@ -332,9 +332,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator"
-version = "0.18.12"
+version = "0.18.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d132fa1d916270b24e432004fe4fb33544b874889ee5b72078f6d178125a094e"
+checksum = "607115f65cb92828b4998cf0c692c14e22dfd9f4f17c3a685f27d9d16a5ebc0c"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-common",
@@ -392,7 +392,6 @@ dependencies = [
  "trust-tasks-rs",
  "url",
  "uuid",
- "vta-sdk",
 ]
 
 [[package]]
@@ -2922,7 +2921,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.3",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -4587,7 +4586,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -6453,7 +6452,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.43",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -6492,7 +6491,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
