@@ -245,11 +245,11 @@ impl VtaMcp {
         &self,
         Parameters(p): Parameters<VaultReleaseParams>,
     ) -> Result<CallToolResult, McpError> {
-        let mut payload = serde_json::json!({ "id": p.id });
-        if let Some(t) = p.target {
-            payload["target"] = t;
-        }
-        let response = self.client().vault_release(payload).await.map_err(to_mcp)?;
+        let response = self
+            .client()
+            .vault_release_entry(&p.id, p.target)
+            .await
+            .map_err(to_mcp)?;
         match response
             .get("sealedSecret")
             .and_then(|s| s.get("jwe"))

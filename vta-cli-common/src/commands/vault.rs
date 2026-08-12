@@ -169,11 +169,7 @@ pub async fn cmd_vault_release(
     id: String,
     target: Option<Value>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut payload = json!({ "entryId": id });
-    if let Some(t) = target {
-        payload["target"] = t;
-    }
-    let response = client.vault_release(payload).await?;
+    let response = client.vault_release_entry(&id, target).await?;
 
     // The released secret rides in a `didcomm-authcrypt` envelope; open it with
     // the caller's keys. Walk the documented shape
