@@ -306,7 +306,8 @@ vta keys rotate-seed [--mnemonic <phrase>]
 
 # DID creation (offline, no server required)
 vta create-did-key    --context <id> [--admin] [--label <text>]
-vta create-did-webvh  --context <id> [--label <text>]
+vta create-did-webvh  --context <id> [--label <text>] [--url <url>]
+                      [--did-log-file <path>] [--export-secrets] [--admin]
 
 # Sealed-transfer bootstrap (consumer side — cold-start hosts that don't
 # have pnm installed). Mints an ephemeral did:key, persists the seed
