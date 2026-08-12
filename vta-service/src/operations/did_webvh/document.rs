@@ -14,6 +14,72 @@ use serde_json::json;
 
 use crate::config::AppConfig;
 use crate::keys::{self};
+use crate::operations::protocol::document::{TSP_SERVICE_FRAGMENT, TSP_SERVICE_TYPE};
+
+/// Append a `#tsp` (`TSPTransport`) entry to `additional` when the caller asked
+/// for one **and** this VTA can actually carry TSP.
+///
+/// TSP advertises the *same* mediator as DIDComm (tsp-enablement.md D8), so the
+/// endpoint is that mediator's DID — the transport URL lives in the mediator's
+/// own document. Same fragment and type the setup path and the runtime `services
+/// tsp enable` patcher emit, so a document minted here, one minted at setup, and
+/// one patched later are the same shape.
+///
+/// Both gates matter and neither is redundant:
+///
+/// - **`add_tsp_service`** is the caller's. A DID advertising a transport its
+///   *holder* cannot decode is unreachable over that transport, and only the
+///   caller knows whether the client behind this DID reads TSP frames. That is
+///   why this is opt-in rather than implied by `add_mediator_service`.
+/// - **`services.tsp` + a configured mediator** is ours. Publishing `#tsp` from
+///   a VTA whose own stack does not run TSP would mint the exact defect this
+///   whole change exists to stop, one document at a time.
+///
+/// A caller that already hand-built a `TSPTransport` entry keeps theirs — two
+/// `#tsp` services would be a malformed document, and theirs is the more
+/// specific intent.
+pub(crate) fn with_tsp_service(
+    add_tsp_service: bool,
+    config: &AppConfig,
+    additional: Option<Vec<serde_json::Value>>,
+) -> Option<Vec<serde_json::Value>> {
+    if !add_tsp_service || !config.services.tsp {
+        return additional;
+    }
+    let Some(mediator_did) = config
+        .messaging
+        .as_ref()
+        .map(|m| m.mediator_did.trim())
+        .filter(|did| !did.is_empty())
+    else {
+        return additional;
+    };
+
+    let mut services = additional.unwrap_or_default();
+    if services.iter().any(is_tsp_service) {
+        return Some(services);
+    }
+    services.push(json!({
+        "id": format!("{{DID}}{TSP_SERVICE_FRAGMENT}"),
+        "type": TSP_SERVICE_TYPE,
+        "serviceEndpoint": mediator_did,
+    }));
+    Some(services)
+}
+
+/// Whether a service entry advertises TSP. Matched on the service `type`, never
+/// the `#id` fragment — the fragment is an arbitrary label (the OWF reference
+/// implementation writes `#tsp-transport` where we write `#tsp`). DID-Core
+/// permits `type` to be a string or an array of them.
+fn is_tsp_service(service: &serde_json::Value) -> bool {
+    match service.get("type") {
+        Some(serde_json::Value::String(t)) => t == TSP_SERVICE_TYPE,
+        Some(serde_json::Value::Array(types)) => {
+            types.iter().any(|t| t.as_str() == Some(TSP_SERVICE_TYPE))
+        }
+        _ => false,
+    }
+}
 
 /// Build a DID document with the given keys.
 ///
@@ -254,5 +320,98 @@ mod tests {
             .map(|s| s["type"].as_str().unwrap())
             .collect();
         assert_eq!(types, ["TSPTransport", "DIDCommMessaging", "VTARest"]);
+    }
+
+    const MEDIATOR: &str = "did:webvh:mediator.example.com:mediator";
+
+    /// A VTA config with a mediator and `services.tsp` set as asked.
+    fn config_with(tsp: bool, mediator: Option<&str>) -> crate::config::AppConfig {
+        let mut config = crate::test_support::test_app_config(std::path::PathBuf::from("/tmp/x"));
+        config.services.tsp = tsp;
+        config.messaging = mediator.map(|did| MessagingConfig {
+            mediator_url: "https://mediator.example.com".into(),
+            mediator_did: did.into(),
+            mediator_host: None,
+            setup_acl: false,
+            drain_inbox_on_start: false,
+        });
+        config
+    }
+
+    fn tsp_endpoints(services: &Option<Vec<serde_json::Value>>) -> Vec<&str> {
+        services
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|s| super::is_tsp_service(s))
+            .map(|s| s["serviceEndpoint"].as_str().unwrap())
+            .collect()
+    }
+
+    /// The point of the field: a minted DID can now advertise the same mediator
+    /// for TSP that it already advertises for DIDComm, so a peer's both-ends
+    /// transport match can actually land on TSP.
+    #[test]
+    fn tsp_is_added_at_the_didcomm_mediator_when_asked() {
+        let out = with_tsp_service(true, &config_with(true, Some(MEDIATOR)), None);
+        assert_eq!(tsp_endpoints(&out), [MEDIATOR]);
+    }
+
+    /// Opt-in: the flag off mints exactly what it did before this field existed.
+    #[test]
+    fn tsp_is_absent_unless_the_caller_asks() {
+        let out = with_tsp_service(false, &config_with(true, Some(MEDIATOR)), None);
+        assert!(out.is_none());
+    }
+
+    /// The gate that stops this change spreading the defect it was written for:
+    /// a VTA not running TSP must not mint documents claiming it does, however
+    /// insistently the caller asks.
+    #[test]
+    fn a_vta_without_tsp_enabled_never_advertises_it() {
+        let out = with_tsp_service(true, &config_with(false, Some(MEDIATOR)), None);
+        assert!(out.is_none(), "services.tsp = false must veto the entry");
+    }
+
+    /// TSP advertises a *mediator*, so with no mediator configured there is
+    /// nothing to point at — and an endpoint-less `#tsp` is worse than none.
+    #[test]
+    fn no_mediator_means_no_tsp_entry() {
+        let out = with_tsp_service(true, &config_with(true, None), None);
+        assert!(out.is_none());
+    }
+
+    /// A caller who hand-built their own `TSPTransport` keeps it: two `#tsp`
+    /// services would be a malformed document. Matched on `type`, so the OWF
+    /// reference spelling of the fragment is recognised too.
+    #[test]
+    fn a_caller_supplied_tsp_service_is_not_duplicated() {
+        let caller = json!({
+            "id": "{DID}#tsp-transport",
+            "type": "TSPTransport",
+            "serviceEndpoint": "did:webvh:other.example:mediator",
+        });
+        let out = with_tsp_service(true, &config_with(true, Some(MEDIATOR)), Some(vec![caller]));
+        assert_eq!(
+            tsp_endpoints(&out),
+            ["did:webvh:other.example:mediator"],
+            "the caller's entry must survive, and must be the only one"
+        );
+    }
+
+    /// Existing entries are preserved alongside the injected one — this appends,
+    /// it does not replace.
+    #[test]
+    fn other_additional_services_are_preserved() {
+        let rest = json!({
+            "id": "{DID}#vta-rest",
+            "type": "VTARest",
+            "serviceEndpoint": "https://vta.example.com",
+        });
+        let out = with_tsp_service(true, &config_with(true, Some(MEDIATOR)), Some(vec![rest]))
+            .expect("services");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0]["type"], "VTARest");
+        assert_eq!(tsp_endpoints(&Some(out)), [MEDIATOR]);
     }
 }

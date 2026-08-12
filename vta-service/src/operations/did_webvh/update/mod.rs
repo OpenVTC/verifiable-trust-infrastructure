@@ -739,6 +739,7 @@ mod pre_rotation_e2e_tests {
                 label: Some("e2e".into()),
                 portable: true,
                 add_mediator_service: false,
+                add_tsp_service: false,
                 additional_services: None,
                 pre_rotation_count,
                 did_document: None,

@@ -126,6 +126,25 @@ pub struct CreateDidWebvhBody {
         alias = "add_mediator_service"
     )]
     pub add_mediator_service: Option<bool>,
+    /// Publish a `#tsp` (`TSPTransport`) service pointing at the VTA's
+    /// mediator, alongside the DIDComm entry
+    /// [`add_mediator_service`](Self::add_mediator_service) adds. TSP
+    /// advertises the same mediator as DIDComm, so the endpoint is that
+    /// mediator's DID — the transport URL lives in the mediator's own
+    /// document.
+    ///
+    /// Honoured only when the VTA itself has TSP enabled (`[services] tsp`)
+    /// and a mediator is configured; absent or `false` mints exactly what
+    /// it did before. **Opt-in, and deliberately not implied by
+    /// `add_mediator_service`**: a DID advertising a transport its holder
+    /// cannot decode is unreachable over that transport, and only the
+    /// caller knows whether the client behind this DID reads TSP frames.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "add_tsp_service"
+    )]
+    pub add_tsp_service: Option<bool>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

@@ -553,6 +553,7 @@ pub async fn cmd_context_provision(
             label: Some(id.to_string()),
             portable: opts.portable,
             add_mediator_service: opts.add_mediator_service,
+            add_tsp_service: false,
             additional_services: None,
             pre_rotation_count: opts.pre_rotation_count,
             did_document: None,

@@ -178,6 +178,7 @@ pub async fn run_create_did(
         label,
         portable,
         add_mediator_service: mediator_service,
+        add_tsp_service: false,
         additional_services,
         pre_rotation_count: pre_rotation.unwrap_or(0),
         did_document: None,

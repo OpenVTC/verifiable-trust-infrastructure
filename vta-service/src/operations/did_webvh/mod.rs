@@ -24,8 +24,8 @@ pub(crate) use auth_cache::{
 
 pub(crate) use concurrency::{RaceDetected, RecordSnapshot};
 
-pub(crate) use document::build_did_document_with_options;
 pub use document::{build_did_document, build_vta_did_document_with_sealed_transfer};
+pub(crate) use document::{build_did_document_with_options, with_tsp_service};
 pub use lifecycle::{get_did_webvh, list_dids_webvh};
 pub use register_server::{
     RegisterDidWithServerError, RegisterDidWithServerParams, RegisterDidWithServerResult,
@@ -358,6 +358,13 @@ pub struct CreateDidWebvhParams {
     pub label: Option<String>,
     pub portable: bool,
     pub add_mediator_service: bool,
+    /// Also publish a `#tsp` (`TSPTransport`) entry pointing at the same
+    /// mediator the DIDComm entry names.
+    ///
+    /// Ignored unless this VTA has `[services] tsp` on and a mediator
+    /// configured — advertising a transport the VTA's own stack does not
+    /// run is the failure this exists to prevent, not to spread.
+    pub add_tsp_service: bool,
     pub additional_services: Option<Vec<serde_json::Value>>,
     pub pre_rotation_count: u32,
     /// Client-provided DID Document template. Mutually exclusive with `did_log`
@@ -420,6 +427,7 @@ impl From<CreateDidWebvhBody> for CreateDidWebvhParams {
             label: body.label,
             portable: body.portable.unwrap_or(true),
             add_mediator_service: body.add_mediator_service.unwrap_or(false),
+            add_tsp_service: body.add_tsp_service.unwrap_or(false),
             additional_services: body.additional_services,
             pre_rotation_count: body.pre_rotation_count.unwrap_or(0),
             did_document: body.did_document,
@@ -1022,6 +1030,17 @@ pub async fn create_did_webvh(
         params.did_document = Some(rendered);
     }
 
+    // `#tsp` is appended here rather than inside the document builder because
+    // the builder is shared with the TEE bootstrap and the offline preview, and
+    // all three take `additional_services` as the extension point. The builder
+    // sorts `service[]` canonically (TSP > DIDComm > REST) once everything is
+    // appended, so position in this Vec does not matter.
+    let additional_services = with_tsp_service(
+        params.add_tsp_service,
+        config,
+        params.additional_services.take(),
+    );
+
     // Build DID document: use client-provided template or build internally
     let did_document = match params.did_document {
         Some(doc) => doc,
@@ -1032,7 +1051,7 @@ pub async fn create_did_webvh(
                 config,
                 has_ka,
                 params.add_mediator_service,
-                &params.additional_services,
+                &additional_services,
             )
         }
         None if sealed_transfer.is_some() => build_vta_did_document_with_sealed_transfer(
@@ -1040,13 +1059,13 @@ pub async fn create_did_webvh(
             sealed_transfer.as_ref().unwrap(),
             config,
             params.add_mediator_service,
-            &params.additional_services,
+            &additional_services,
         ),
         None => build_did_document(
             &derived,
             config,
             params.add_mediator_service,
-            &params.additional_services,
+            &additional_services,
         ),
     };
 

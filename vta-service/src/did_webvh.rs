@@ -156,6 +156,7 @@ pub async fn run_create_did_webvh(
         // absent, but say so here too: the flag reads as a claim about what
         // this VTA can serve.
         add_mediator_service: !interactive && config.messaging.is_some(),
+        add_tsp_service: false,
         additional_services: None,
         pre_rotation_count,
         did_document,
@@ -916,6 +917,7 @@ mod tests {
                 label: Some("test".to_string()),
                 portable: true,
                 add_mediator_service: false,
+                add_tsp_service: false,
                 additional_services: None,
                 pre_rotation_count: 1,
                 did_document: Some(did_document),
