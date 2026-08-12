@@ -1,5 +1,7 @@
 target/
-.git/
+# NOTE: do not add `.git/` here. git never tracks it, so the entry is inert
+# for git — but release-plz copies the worktree honouring these rules, and
+# excluding `.git` made the copy "not a git repository" (#941).
 **data/
 **config.toml
 !deploy/**/config.toml
