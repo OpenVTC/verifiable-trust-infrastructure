@@ -368,6 +368,22 @@ pub struct CreateDidWebvhParams {
     pub did_log: Option<String>,
     /// Whether to set this DID as the primary DID for the context.
     pub set_primary: bool,
+    /// Entity keys the caller already derived, used instead of deriving a
+    /// fresh pair.
+    ///
+    /// Exists for one case: a caller that must render the DID document
+    /// *before* calling this function — the offline CLI shows the operator a
+    /// preview to edit. Without this, that caller derives one pair for the
+    /// document and this function derives another for the store, because
+    /// `derive_entity_keys` allocates a fresh BIP-32 path index per call.
+    /// The DID then advertises keys the VTA cannot sign with, and nothing
+    /// notices until a verifier rejects a signature.
+    ///
+    /// In-process only — there is no wire field, and there must not be: a
+    /// remote caller supplying key material would invert the rule that the
+    /// VTA is the key generator. Use `signing_key_id`/`ka_key_id` to point
+    /// at keys this VTA already holds.
+    pub pre_derived: Option<keys::DerivedEntityKeys>,
     /// Use an existing key as the signing verification method.
     pub signing_key_id: Option<String>,
     /// Use an existing key as the key-agreement verification method.
@@ -408,6 +424,8 @@ impl From<CreateDidWebvhBody> for CreateDidWebvhParams {
             pre_rotation_count: body.pre_rotation_count.unwrap_or(0),
             did_document: body.did_document,
             did_log: body.did_log,
+            // No wire field by design — see the field docs.
+            pre_derived: None,
             set_primary: body.set_primary.unwrap_or(true),
             signing_key_id: body.signing_key_id,
             ka_key_id: body.ka_key_id,
@@ -768,7 +786,25 @@ pub async fn create_did_webvh(
     let user_specified_keys = params.signing_key_id.is_some();
 
     // Load or derive entity keys
-    let (derived, active_seed_id) = if let Some(ref signing_key_id) = params.signing_key_id {
+    let (derived, active_seed_id) = if let Some(mut pre) = params.pre_derived.take() {
+        // ── Caller-derived keys ─────────────────────────────────────
+        // The caller already allocated the path indices and built its
+        // document from these keys. Deriving again here would allocate a
+        // second pair and store keys the document does not name.
+        let active_seed_id = get_active_seed_id(keys_ks)
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+        // Same normalisation the derive branch applies — didwebvh-rs keys
+        // the signing secret by its did:key verification-method id.
+        let pub_mb = pre
+            .signing_secret
+            .get_public_keymultibase()
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        pre.signing_secret.id = format!("did:key:{pub_mb}#{pub_mb}");
+
+        (pre, Some(active_seed_id))
+    } else if let Some(ref signing_key_id) = params.signing_key_id {
         // ── User-specified keys ─────────────────────────────────────
         let (mut signing_secret, signing_pub, signing_record) = load_key_as_secret(
             keys_ks,

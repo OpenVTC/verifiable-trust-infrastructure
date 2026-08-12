@@ -1784,6 +1784,9 @@ async fn create_simple_webvh_did(
         did_document: advanced.did_document,
         did_log: advanced.did_log,
         set_primary: true,
+        // The wizard passes a template name, not a pre-rendered document,
+        // so the operation derives and renders in one place.
+        pre_derived: None,
         signing_key_id: advanced.signing_key_id,
         ka_key_id: advanced.ka_key_id,
         template,

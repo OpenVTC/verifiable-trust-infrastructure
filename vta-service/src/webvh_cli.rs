@@ -183,6 +183,8 @@ pub async fn run_create_did(
         did_document: None,
         did_log: None,
         set_primary: true,
+        // Online CLI: no local preview to keep in step with.
+        pre_derived: None,
         signing_key_id: None,
         ka_key_id: None,
         template: None,

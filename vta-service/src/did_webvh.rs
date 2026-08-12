@@ -98,20 +98,18 @@ pub async fn run_create_did_webvh(
     .map_err(|e| format!("{e}"))?;
 
     // In non-interactive mode, the operation derives keys and builds the
-    // document itself. In interactive mode, we derive a preview for the user
-    // to inspect/edit before passing it to the operation.
-    //
-    // KNOWN LIMITATION (interactive only): the preview derivation allocates
-    // its own BIP-32 path indices, and the operation allocates another pair
-    // when it derives the keys it actually stores. The document the operator
-    // sees and edits therefore carries different keys from the ones the store
-    // serves — the same mismatch this change fixes for `--url`. Fixing it
-    // means the two sides sharing one derivation, which is a larger change to
-    // `CreateDidWebvhParams` than belongs here.
-    let did_document = if interactive {
-        Some(build_interactive_did_document(&seed, &ctx.base_path, label, &config, &keys_ks).await?)
+    // document itself. In interactive mode we must render a document *first*,
+    // for the operator to inspect and edit — so the keys have to be derived
+    // out here, and then handed to the operation via `pre_derived` so it uses
+    // the same pair rather than allocating a second one. Deriving on both
+    // sides is what made the DID advertise keys the store could not sign
+    // with; `derive_entity_keys` allocates a fresh path index per call.
+    let (did_document, pre_derived) = if interactive {
+        let (doc, derived) =
+            build_interactive_did_document(&seed, &ctx.base_path, label, &config, &keys_ks).await?;
+        (Some(doc), Some(derived))
     } else {
-        None
+        (None, None)
     };
 
     // Portability (interactive prompt; non-interactive uses the prompt default).
@@ -163,6 +161,7 @@ pub async fn run_create_did_webvh(
         did_document,
         did_log: None,
         set_primary: true,
+        pre_derived,
         signing_key_id: None,
         ka_key_id: None,
         template: None,
@@ -334,15 +333,20 @@ pub async fn run_create_did_webvh(
     Ok(())
 }
 
-/// Interactive DID document builder: derives preview keys, prompts for
+/// Interactive DID document builder: derives the entity keys, prompts for
 /// service endpoints, displays the document, and offers editor access.
+///
+/// Returns the document **and the keys it was built from**. The caller must
+/// hand those keys to the operation (`CreateDidWebvhParams::pre_derived`) —
+/// letting it derive its own pair would store keys this document does not
+/// name, which is precisely the mismatch the non-interactive path had.
 async fn build_interactive_did_document(
     seed: &[u8],
     base_path: &str,
     label: &str,
     config: &AppConfig,
     keys_ks: &vti_common::store::KeyspaceHandle,
-) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+) -> Result<(serde_json::Value, crate::keys::DerivedEntityKeys), Box<dyn std::error::Error>> {
     let derived = crate::keys::derive_entity_keys(
         seed,
         base_path,
@@ -394,7 +398,7 @@ async fn build_interactive_did_document(
         doc = edit_did_document(doc)?;
     }
 
-    Ok(doc)
+    Ok((doc, derived))
 }
 
 fn edit_did_document(
@@ -639,16 +643,13 @@ mod tests {
         );
     }
 
-    /// Stand up a config + seeded store + context, run a non-interactive
-    /// `create-did-webvh`, and return the loaded config alongside the first
-    /// `did.jsonl` log entry.
-    ///
-    /// `mediator_did` adds a `[messaging]` section — the switch that decides
-    /// whether the minted DID advertises a DIDComm service.
-    async fn run_non_interactive_create(
+    /// Write a config + open a seeded store with one context, ready for a
+    /// `create-did-webvh`. `mediator_did` adds a `[messaging]` section — the
+    /// switch that decides whether the minted DID advertises DIDComm.
+    async fn setup_seeded_store(
         dir: &tempfile::TempDir,
         mediator_did: Option<&str>,
-    ) -> (AppConfig, serde_json::Value) {
+    ) -> (AppConfig, std::path::PathBuf) {
         let data_dir = dir.path().join("data");
         std::fs::create_dir_all(&data_dir).unwrap();
         let config_path = dir.path().join("config.toml");
@@ -692,6 +693,20 @@ mod tests {
         drop(contexts_ks);
         drop(store);
 
+        (config, config_path)
+    }
+
+    /// Stand up a config + seeded store + context, run a non-interactive
+    /// `create-did-webvh`, and return the loaded config alongside the first
+    /// `did.jsonl` log entry.
+    ///
+    /// `mediator_did` adds a `[messaging]` section — the switch that decides
+    /// whether the minted DID advertises a DIDComm service.
+    async fn run_non_interactive_create(
+        dir: &tempfile::TempDir,
+        mediator_did: Option<&str>,
+    ) -> (AppConfig, serde_json::Value) {
+        let (config, config_path) = setup_seeded_store(dir, mediator_did).await;
         // Create DID non-interactively with --did-log-file
         let log_path = dir.path().join("did.jsonl");
         let args = CreateDidWebvhArgs {
@@ -818,6 +833,136 @@ mod tests {
         assert!(
             endpoint.contains(MEDIATOR_DID),
             "the DIDComm service must route via the configured mediator DID, got {didcomm}"
+        );
+    }
+
+    /// A caller that renders the DID document itself must get a DID whose
+    /// stored keys are the ones its document names.
+    ///
+    /// This is the interactive path in miniature. That path cannot be driven
+    /// from a test — it blocks on `dialoguer` prompts — so this exercises the
+    /// mechanism underneath it: derive once out here (as
+    /// `build_interactive_did_document` does), build a document from those
+    /// keys, and hand both to the operation. Before `pre_derived`, the
+    /// operation ignored the caller's derivation and allocated its own path
+    /// indices, so the document advertised `n, n+1` while the store held
+    /// `n+2, n+3` — a DID that cannot sign for the keys it publishes.
+    #[tokio::test]
+    async fn caller_rendered_document_names_the_keys_the_store_holds() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (config, _config_path) = setup_seeded_store(&dir, None).await;
+
+        let store = Store::open(&config.store).expect("open store");
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+        let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
+        let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
+        let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
+        let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+        let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES).unwrap();
+        let seed_store = create_seed_store(&config).unwrap();
+
+        let ctx = crate::contexts::get_context(&contexts_ks, "test-ctx")
+            .await
+            .unwrap()
+            .expect("context");
+        let seed = crate::keys::seeds::load_seed_bytes(&keys_ks, &*seed_store, Some(0))
+            .await
+            .expect("load seed");
+
+        // Derive once, exactly as the interactive preview does, and build the
+        // document from that pair.
+        let derived = crate::keys::derive_entity_keys(
+            &seed,
+            &ctx.base_path,
+            "test signing key",
+            "test key-agreement key",
+            &keys_ks,
+        )
+        .await
+        .expect("derive");
+        let preview_signing_pub = derived.signing_pub.clone();
+        let did_document =
+            operations::did_webvh::build_did_document(&derived, &config, false, &None);
+
+        let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .unwrap();
+        let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
+            Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
+        let auth_locks = operations::did_webvh::WebvhAuthLocks::new();
+        let deps = operations::did_webvh::CreateDidWebvhDeps {
+            keys_ks: &keys_ks,
+            imported_ks: &imported_ks,
+            contexts_ks: &contexts_ks,
+            webvh_ks: &webvh_ks,
+            did_templates_ks: &did_templates_ks,
+            audit_ks: &audit_ks,
+            seed_store: &*seed_store,
+            config: &config,
+            did_resolver: &did_resolver,
+            didcomm_bridge: &no_bridge,
+            auth_locks: &auth_locks,
+        };
+
+        let result = operations::did_webvh::create_did_webvh(
+            &deps,
+            &cli_super_admin(),
+            CreateDidWebvhParams {
+                context_id: "test-ctx".to_string(),
+                server_id: None,
+                url: Some("https://example.com/test".to_string()),
+                path_mode: WebvhPathMode::default(),
+                domain: None,
+                label: Some("test".to_string()),
+                portable: true,
+                add_mediator_service: false,
+                additional_services: None,
+                pre_rotation_count: 1,
+                did_document: Some(did_document),
+                did_log: None,
+                set_primary: true,
+                pre_derived: Some(derived),
+                signing_key_id: None,
+                ka_key_id: None,
+                template: None,
+                template_context: None,
+                template_vars: std::collections::HashMap::new(),
+                is_vta_identity: false,
+            },
+            "test",
+        )
+        .await
+        .expect("create_did_webvh");
+
+        // What the store will serve for `#key-0`.
+        let secret = crate::operations::keys::get_key_secret(
+            &keys_ks,
+            &imported_ks,
+            &Arc::from(create_seed_store(&config).unwrap()),
+            &audit_ks,
+            &cli_super_admin(),
+            &format!("{}#key-0", result.did),
+            "test",
+        )
+        .await
+        .expect("fetch key secret");
+        let secret_bytes =
+            multibase::decode(&secret.private_key_multibase).expect("decode secret multibase");
+        let signing_key =
+            ed25519_dalek::SigningKey::from_bytes(secret_bytes.1[2..].try_into().unwrap());
+        let store_pub_mb = multibase::encode(
+            multibase::Base::Base58Btc,
+            [
+                &[0xed, 0x01][..],
+                &signing_key.verifying_key().to_bytes()[..],
+            ]
+            .concat(),
+        );
+
+        assert_eq!(
+            store_pub_mb, preview_signing_pub,
+            "the store must hold the key the caller's document names — if this \
+             fails, the operation re-derived and allocated a second path index"
         );
     }
 
