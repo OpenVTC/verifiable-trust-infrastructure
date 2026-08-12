@@ -7,8 +7,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::BootstrapRequest;
-
 /// Request body. Used by both transports — REST clients serialize and
 /// the DIDComm provision-integration handler (`vta-service`) deserializes.
 #[derive(Debug, Serialize, Deserialize)]
@@ -18,7 +16,20 @@ pub struct ProvisionIntegrationRequest {
     /// The integration's VP-framed bootstrap request (signed by its
     /// ephemeral `client_did`). The caller sends it unverified — the
     /// server verifies on intake.
-    pub request: BootstrapRequest,
+    ///
+    /// Raw JSON, **not** a typed [`BootstrapRequest`](super::BootstrapRequest).
+    /// A relayer is
+    /// usually not the holder — the air-gap flow exists precisely so it
+    /// isn't — so this field routinely carries a document some other
+    /// process signed. Holding it typed meant serialising this struct
+    /// re-rendered that document with this crate's casing, and the
+    /// maintainer verified bytes the holder never signed. Build it from
+    /// [`to_signed_wire_value`](super::BootstrapRequest::to_signed_wire_value)
+    /// when this process did
+    /// the signing, or pass the received JSON through untouched when it
+    /// didn't.
+    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
+    pub request: serde_json::Value,
     /// VTA context to provision into.
     ///
     /// **Optional** per the canonical Trust Task spec

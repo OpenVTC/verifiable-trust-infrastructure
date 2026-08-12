@@ -33,7 +33,8 @@ use crate::protocols::provision_integration_management::{
     ProvisionSpecVersion, request_body_for_version, result_uri_for,
 };
 
-use super::BootstrapRequest;
+use serde_json::Value;
+
 use super::http::{AssertionMode, ProvisionIntegrationRequest, ProvisionIntegrationResponse};
 
 /// Default DIDComm round-trip timeout (seconds). Generous so the VTA
@@ -76,9 +77,14 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// lowerCamelCase (`vcValiditySeconds` / `createContext` / `didSigned`) under
 /// the `0.2` URI. The signed VP carried in `request` is left byte-identical
 /// either way — its casing is the holder's, and the VTA dual-accepts both.
+/// That is why `request` is a raw [`Value`] and not a typed
+/// [`BootstrapRequest`](super::BootstrapRequest): the claim above was
+/// false while this took the
+/// struct, because serialising it re-rendered the holder's document in
+/// this crate's casing.
 pub async fn provision_integration_didcomm(
     session: &DIDCommSession,
-    request: BootstrapRequest,
+    request: Value,
     context: Option<String>,
     assertion: Option<AssertionMode>,
     vc_validity_seconds: Option<i64>,
