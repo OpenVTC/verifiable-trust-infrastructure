@@ -100,6 +100,14 @@ pub async fn run_create_did_webvh(
     // In non-interactive mode, the operation derives keys and builds the
     // document itself. In interactive mode, we derive a preview for the user
     // to inspect/edit before passing it to the operation.
+    //
+    // KNOWN LIMITATION (interactive only): the preview derivation allocates
+    // its own BIP-32 path indices, and the operation allocates another pair
+    // when it derives the keys it actually stores. The document the operator
+    // sees and edits therefore carries different keys from the ones the store
+    // serves — the same mismatch this change fixes for `--url`. Fixing it
+    // means the two sides sharing one derivation, which is a larger change to
+    // `CreateDidWebvhParams` than belongs here.
     let did_document = if interactive {
         Some(build_interactive_did_document(&seed, &ctx.base_path, label, &config, &keys_ks).await?)
     } else {
@@ -141,7 +149,15 @@ pub async fn run_create_did_webvh(
         domain: None,
         label: Some(label.to_string()),
         portable,
-        add_mediator_service: false, // handled via did_document template
+        // Interactive builds the service into the document it passes (and
+        // the operator may have edited it), so the operation must not add a
+        // second one. Non-interactive passes no document, so the operation
+        // is the only thing that can advertise the mediator — without this,
+        // `--url` mints a DID with no `service` entry at all, which no peer
+        // can route to. `build_did_document` no-ops when `[messaging]` is
+        // absent, but say so here too: the flag reads as a claim about what
+        // this VTA can serve.
+        add_mediator_service: !interactive && config.messaging.is_some(),
         additional_services: None,
         pre_rotation_count,
         did_document,
@@ -623,24 +639,28 @@ mod tests {
         );
     }
 
-    /// The DID document's `publicKeyMultibase` must match the key the VTA
-    /// serves via `get_key_secret`. This is the bug that caused the
-    /// "double-allocate path counter" mismatch: derivation happened twice
-    /// (once for preview, once in the operation), consuming different indices.
-    /// After the fix, non-interactive mode derives once — the document and
-    /// the store agree.
-    #[tokio::test]
-    async fn non_interactive_did_doc_key_matches_stored_key() {
-        let dir = tempfile::TempDir::new().expect("tempdir");
+    /// Stand up a config + seeded store + context, run a non-interactive
+    /// `create-did-webvh`, and return the loaded config alongside the first
+    /// `did.jsonl` log entry.
+    ///
+    /// `mediator_did` adds a `[messaging]` section — the switch that decides
+    /// whether the minted DID advertises a DIDComm service.
+    async fn run_non_interactive_create(
+        dir: &tempfile::TempDir,
+        mediator_did: Option<&str>,
+    ) -> (AppConfig, serde_json::Value) {
         let data_dir = dir.path().join("data");
         std::fs::create_dir_all(&data_dir).unwrap();
         let config_path = dir.path().join("config.toml");
 
         let seed_hex = hex::encode([42u8; 64]);
+        let messaging = mediator_did
+            .map(|did| format!("\n[messaging]\nmediator_did = \"{did}\"\n"))
+            .unwrap_or_default();
         std::fs::write(
             &config_path,
             format!(
-                "[store]\ndata_dir = \"{}\"\n\n[secrets]\nseed = \"{seed_hex}\"\n",
+                "[store]\ndata_dir = \"{}\"\n\n[secrets]\nseed = \"{seed_hex}\"\n{messaging}",
                 data_dir.display()
             ),
         )
@@ -685,10 +705,24 @@ mod tests {
         };
         run_create_did_webvh(args).await.expect("create-did-webvh");
 
-        // Extract the public key from the DID document
         let content = std::fs::read_to_string(&log_path).expect("did.jsonl");
         let entry: serde_json::Value =
             serde_json::from_str(content.lines().next().unwrap()).unwrap();
+        (config, entry)
+    }
+
+    /// The DID document's `publicKeyMultibase` must match the key the VTA
+    /// serves via `get_key_secret`. This is the bug that caused the
+    /// "double-allocate path counter" mismatch: derivation happened twice
+    /// (once for preview, once in the operation), consuming different indices.
+    /// After the fix, non-interactive mode derives once — the document and
+    /// the store agree.
+    #[tokio::test]
+    async fn non_interactive_did_doc_key_matches_stored_key() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (config, entry) = run_non_interactive_create(&dir, None).await;
+
+        // Extract the public key from the DID document
         let state = entry.get("state").expect("state field");
         let vms = state
             .get("verificationMethod")
@@ -748,6 +782,65 @@ mod tests {
             doc_pubkey, store_pubkey,
             "DID doc key must match stored key — if this fails, the path \
              counter was double-allocated (preview + operation derived separately)"
+        );
+    }
+
+    /// A DID minted with `--url` must still advertise the mediator when
+    /// `[messaging]` is configured.
+    ///
+    /// The pre-fix CLI built the service into a preview document it handed to
+    /// the operation. Dropping that document to fix the key mismatch also
+    /// dropped the only thing advertising DIDComm, and nothing caught it: the
+    /// service array had no coverage. A DID that advertises no transport has
+    /// an empty protocol intersection with every peer, so nothing can route
+    /// to it — the failure surfaces far from here, as an unreachable DID.
+    #[tokio::test]
+    async fn non_interactive_did_doc_advertises_the_mediator() {
+        const MEDIATOR_DID: &str = "did:key:z6MkiSEhwSnqRMjfsZnfoqCkVsao8SYaBwQ2HREh6F91R5wL";
+
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (_config, entry) = run_non_interactive_create(&dir, Some(MEDIATOR_DID)).await;
+
+        let services = entry
+            .get("state")
+            .and_then(|s| s.get("service"))
+            .and_then(|v| v.as_array())
+            .expect("DID doc must carry a service array when [messaging] is set");
+
+        let didcomm = services
+            .iter()
+            .find(|s| s.get("type").and_then(|t| t.as_str()) == Some("DIDCommMessaging"))
+            .expect("a DIDCommMessaging service must be advertised");
+
+        // Matched on `type`, not on the `#id` fragment — the fragment is an
+        // arbitrary label, and this assertion should not pin one.
+        let endpoint = serde_json::to_string(didcomm).expect("serialize service");
+        assert!(
+            endpoint.contains(MEDIATOR_DID),
+            "the DIDComm service must route via the configured mediator DID, got {didcomm}"
+        );
+    }
+
+    /// The same DID, minted with no `[messaging]` configured, must advertise
+    /// no DIDComm service — the VTA cannot serve a transport it has no
+    /// mediator for, and advertising one fails two layers down.
+    #[tokio::test]
+    async fn non_interactive_did_doc_omits_didcomm_without_messaging() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (_config, entry) = run_non_interactive_create(&dir, None).await;
+
+        let has_didcomm = entry
+            .get("state")
+            .and_then(|s| s.get("service"))
+            .and_then(|v| v.as_array())
+            .is_some_and(|services| {
+                services
+                    .iter()
+                    .any(|s| s.get("type").and_then(|t| t.as_str()) == Some("DIDCommMessaging"))
+            });
+        assert!(
+            !has_didcomm,
+            "no [messaging] configured, so nothing should advertise DIDComm"
         );
     }
 }
