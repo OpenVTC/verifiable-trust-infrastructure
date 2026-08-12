@@ -4,7 +4,11 @@ description = "Background TTL sweepers for the VTA's core keyspaces — ACL gran
 readme = "README.md"
 version = "0.1.0"
 edition.workspace = true
-publish.workspace = true
+# Internal to this workspace — consumed through path dependencies only, never
+# from crates.io. It was published by inheritance from `[workspace.package]`
+# rather than by decision; the audit in #938 found no external consumer. See
+# RELEASING.md ("What gets published").
+publish = false
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true

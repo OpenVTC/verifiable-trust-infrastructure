@@ -61,46 +61,36 @@ Before submitting a pull request:
 - [ ] `cargo fmt --check` shows no formatting issues
 - [ ] New public functions have `///` doc comments
 - [ ] Security-sensitive changes include tests (auth, ACL, crypto)
-- [ ] Changelog fragment added for user-facing changes — `changelog.d/<PR-number>-<slug>.md`, **not** an edit to `CHANGELOG.md` (see [Changelog](#changelog))
+- [ ] PR title is a conventional commit — it becomes the changelog entry (see [Changelog](#changelog))
+- [ ] No `version = ` edits in any `Cargo.toml` — the Release PR assigns versions (see [RELEASING.md](RELEASING.md))
 - [ ] Commits are signed off (DCO: `git commit -s`)
 
 ## Changelog
 
-**Add a file, don't edit `CHANGELOG.md`.** Every PR used to insert its entry at
-the same anchor in that one file, so any two open PRs conflicted — structurally,
-every time, with the same mechanical "keep both" resolution. Two PRs adding two
-different files never conflict.
+**You do not write a changelog entry. You write a good commit message.**
 
-Create `changelog.d/<PR-number>-<slug>.md` containing the `###` block you would
-otherwise have pasted into `CHANGELOG.md`:
+The changelog of every published crate is generated from conventional commits
+when a release is cut. A squash merge makes the **PR title** the commit subject,
+so that is what CI lints:
 
-```markdown
-### vta-sdk 0.21.21 / vta-service 0.14.34 — one line on what changed (#934)
-
-Prose explaining what changed and why, in the same voice as the rest of
-`CHANGELOG.md`. Bullets per crate when several are involved.
+```
+feat(tsp): a VTA can speak TSP without DIDComm
+fix(did-webvh): write the DID log where the operator asked
+feat(sdk)!: rename the transport selector      <- ! marks a breaking change
 ```
 
-- The heading must name **every crate you bumped, with its new version** —
-  `scripts/check-changelogs.sh` matches `<crate> <version>` as whole tokens and
-  fails a bump with no entry.
-- You won't know the PR number until the PR exists, so push, open the PR, then
-  add the fragment in a second commit. Don't guess the number: CI checks that
-  the fragment names *your* PR, in the filename and in the `###` heading, and a
-  guessed number that loses the race points readers at someone else's work
-  forever once it's collated.
-- **CI fails a PR that edits `CHANGELOG.md`.** That is the whole point — the
-  shared file is what conflicts. The release collation is exempt (it deletes the
-  fragments it folds in, which is how the guard recognises it); anything else
-  that must touch the file needs the `release` label.
-- No version bump? A fragment is optional, but add one anyway for anything an
-  operator or a sibling repo would want to know — release-process changes, CI
-  contracts, docs restructures.
-- At release, `scripts/collate-changelog.sh` folds every fragment into
-  `## Unreleased` and deletes them: one commit, one author, nothing to conflict
-  with.
+Types: `feat` `fix` `docs` `test` `ci` `build` `perf` `refactor` `chore`
+`security`. Scope is optional.
 
-Full convention, including why: [`changelog.d/README.md`](changelog.d/README.md).
+**The body matters.** It is included in the changelog verbatim — the explanation
+you write for reviewers is the same text a consumer of the crate reads. Write it
+as you would want to read it six months later.
+
+**Never edit a `version = ` field.** Versions are assigned by the Release PR
+release-plz maintains, not by you. See [RELEASING.md](RELEASING.md).
+
+> `changelog.d/` fragments are gone. They existed so two PRs would not conflict
+> in `CHANGELOG.md`; generating from commits removes the shared file entirely.
 
 ## Coding Guidelines
 

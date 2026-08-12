@@ -1,0 +1,77 @@
+# git-cliff — turns conventional commits into changelog entries.
+#
+# Read by release-plz when it builds the Release PR (see release-plz.toml).
+# The commit message is the changelog entry, which is why PR titles are linted:
+# a squash merge makes the PR title the commit subject, and that subject is what
+# a consumer of these crates reads.
+#
+# The body is included, not just the subject. Commits in this repo carry real
+# explanation — what changed, why, and what it breaks — and throwing that away
+# in favour of a one-line summary would make the changelog worse than the git
+# history it is generated from.
+
+[changelog]
+header = """
+# Changelog
+
+Notable changes to the published crates. Generated from conventional commits by
+[git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+"""
+
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}]({{ release_link }}) — {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## Unreleased
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}\
+{{ commit.message | upper_first }}\
+{% if commit.body %}
+
+{{ commit.body | indent(prefix="  ") }}
+{% endif %}\
+{% endfor %}
+{% endfor %}\n
+"""
+
+trim = true
+
+[git]
+conventional_commits = true
+# A commit that is not conventional still appears, rather than vanishing from
+# the record. `filter_commits = true` would silently drop it, and a changelog
+# that quietly omits changes is worse than an untidy one.
+filter_unconventional = false
+split_commits = false
+protect_breaking_commits = true
+
+commit_parsers = [
+  # The release commits release-plz itself makes carry no product change.
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^chore\\(deps\\)", skip = true },
+  { message = "^Merge (branch|pull request)", skip = true },
+
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^perf", group = "Performance" },
+  { message = "^security", group = "Security" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", skip = true },
+  { message = "^ci", group = "Build & CI" },
+  { message = "^build", group = "Build & CI" },
+  { message = "^chore", skip = true },
+
+  # Anything else still lands somewhere visible.
+  { message = ".*", group = "Other" },
+]
+
+filter_commits = false
+# No `tag_pattern`: release-plz decides which commits belong to which crate
+# release and drives git-cliff per package. A pattern here would second-guess it.
+topo_order = false
+sort_commits = "newest"

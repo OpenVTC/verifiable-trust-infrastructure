@@ -6,7 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-publish.workspace = true
+# Internal to this workspace — consumed through path dependencies only, never
+# from crates.io. It was published by inheritance from `[workspace.package]`
+# rather than by decision; the audit in #938 found no external consumer. See
+# RELEASING.md ("What gets published").
+publish = false
 description = "DID-VM-resolved WebAuthn assertion verifier for the Verifiable Trust Infrastructure."
 readme = "README.md"
 

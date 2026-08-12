@@ -1,0 +1,40 @@
+# release-plz — versioning, changelogs and publishing for this workspace.
+#
+# The model: merge PRs to main freely. release-plz watches main and keeps a
+# single "Release PR" up to date with the version bumps and changelog entries
+# those merges imply. Merging THAT PR is the release — it tags each crate and
+# publishes to crates.io. Nothing else publishes.
+#
+# So merging a feature PR never releases anything, and a release is a reviewable
+# diff rather than a side effect. See RELEASING.md.
+#
+# WHAT GETS PUBLISHED is decided in each crate's Cargo.toml, not here: 7 crates
+# have `publish` inherited from `[workspace.package]`, and the other 14 set
+# `publish = false` with a comment saying why. release-plz honours that — it
+# still updates an unpublished crate's version and dependency requirements (so
+# the workspace stays coherent when a published dependency bumps), it just never
+# uploads it. Keeping the decision in the manifests means `cargo` and
+# release-plz cannot disagree about it.
+
+[workspace]
+# Changelog entries come from conventional commits via git-cliff. There are no
+# changelog fragment files any more: the commit message IS the entry, so there
+# is nothing for two concurrent PRs to conflict over.
+changelog_config = "cliff.toml"
+
+# Compare each crate's public API against its published version and force a
+# compatibility-breaking bump when it actually broke — rather than trusting an
+# author to notice. This is the check the old hand-rolled flow could not make.
+semver_check = true
+
+# One GitHub Release per published crate, carrying that crate's changelog
+# section. This is what an external consumer lands on from crates.io.
+git_release_enable = true
+
+# Label the Release PR so it is obvious in the queue and easy to filter.
+pr_labels = ["release"]
+
+# Publishing runs `cargo publish` per crate in dependency order. vtc-service
+# used to need `--no-verify` here because its build.rs npm-builds an admin UI
+# and cargo rejects a build.rs that modifies the source tree — that special
+# case is gone with `publish = false` on that crate.

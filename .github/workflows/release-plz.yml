@@ -1,0 +1,111 @@
+name: Release-plz
+
+# Versioning, changelogs and publishing. Replaces the old publish.yml, which
+# fired on every push to main and published whatever versions were newly
+# present — making a version bump the release trigger, and therefore making
+# every feature PR a release decision taken days before it merged.
+#
+# Now: merge PRs freely. `release-pr` keeps a single Release PR up to date with
+# the bumps and changelog entries those merges imply. Merging THAT PR is the
+# release — `release` then tags each crate and publishes it. See RELEASING.md.
+#
+# Which crates publish is decided in the manifests (`publish = false` on the 14
+# internal ones), not here.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release-plz-release:
+    # Runs on every push to main, but only *does* anything when a crate's
+    # version is not yet on crates.io — which in practice means immediately
+    # after the Release PR merges. An ordinary feature merge is a no-op.
+    name: Release-plz release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+      # OIDC token exchange with crates.io. Trusted Publishing means no
+      # long-lived registry token is stored in this repo; crates.io mints a
+      # short-lived one per run after verifying the workflow's identity.
+      # See docs/05-design-notes/trusted-publishing.md.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history + tags: release-plz diffs each crate against the
+          # commit its last release was tagged at.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Authenticate to crates.io (Trusted Publishing)
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Run release-plz
+        uses: release-plz/action@v0
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  release-plz-pr:
+    name: Release-plz PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      # Deliberately only on this job. Serialising the release job could skip a
+      # release; serialising PR updates just coalesces them.
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # release-plz compares each crate's public API against its published
+      # version and forces a compatibility-breaking bump when it actually
+      # broke. Without this binary present release-plz logs "cargo-semver-checks
+      # not installed, skipping semver check" and silently falls back to
+      # guessing from commit messages — which is the failure this exists to
+      # prevent, and it is only a warning, so nothing goes red.
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@cargo-semver-checks
+
+      - name: Run release-plz
+        uses: release-plz/action@v0
+        with:
+          command: release-pr
+        env:
+          # A PAT or GitHub App token, falling back to the default token.
+          #
+          # THE FALLBACK SHIPS A RELEASE NOBODY TESTED. GitHub suppresses
+          # workflow runs for events authored by GITHUB_TOKEN, so with the
+          # default token the Release PR opens with no CI on it. Only DCO is a
+          # required check here, so it would still be *mergeable* — which is
+          # the dangerous part: the one commit that publishes to crates.io
+          # would be the one commit CI never built. The repo has hit the same
+          # suppression before, on the self-pin refresh PR (#706/#711/#714/#720).
+          #
+          # Set RELEASE_PLZ_TOKEN to a PAT (contents + pull-requests write) or
+          # a GitHub App token. Until then, close-and-reopen the Release PR to
+          # trigger CI before merging it.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}

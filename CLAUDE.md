@@ -864,8 +864,21 @@ These are load-bearing — know they exist before adjusting nearby code.
 
 ## Versioning & publishing (workspace-specific)
 
-When bumping crate versions in this Rust workspace, always check and bump
-dependent sub-crate versions too. Use `major.minor` version pinning (not
+**Never edit a `version = ` field in a feature PR.** Versions are assigned by
+the Release PR that release-plz maintains; merging that PR is what publishes.
+Merging a feature PR publishes nothing. See [`RELEASING.md`](RELEASING.md).
+
+**Only 7 of 21 crates publish** — `vta-sdk`, `vti-common`, `vti-secrets`,
+`vta-cli-common`, `vtc-client`, `pnm-cli`, `cnm-cli`. The other 14 set
+`publish = false` in their own manifest: an audit in #938 found zero external
+reverse-dependencies and no sibling repo consuming them. Before adding a crate
+back to the published set, check that everything it depends on is published too
+— crates.io requires the whole closure, which is what previously forced twelve
+internal subsystem crates onto the registry behind `vta-service`.
+
+release-plz handles the dependent ripple: a breaking bump moves a crate's
+compatibility range, so every dependent's `version = "0.y"` requirement is
+updated in the same PR. Use `major.minor` version pinning (not
 `major.minor.patch`) for internal dependencies. Exception: crypto deps
 (`ed25519-dalek`, `hpke`, `jsonwebtoken`, `aes-gcm`, `aws-lc-rs`) should
 pin to a minimum patch to avoid silent regressions when a CVE lands.
@@ -879,32 +892,24 @@ unwrap (drops RUSTSEC-2023-0071 exposure); don't reintroduce `rsa`.
 - Don't bypass hooks (`--no-verify`), don't skip signatures, don't amend
   published commits.
 
-## Changelog: write a fragment, never edit `CHANGELOG.md`
+## Changelog: write a commit message, not a file
 
-**A feature PR must not touch `CHANGELOG.md`.** Add
-`changelog.d/<PR-number>-<slug>.md` containing the `###` block you would
-otherwise have pasted in. Every PR used to insert at the same anchor (the first
-line under `## Unreleased`), so any two concurrent PRs conflicted — structurally,
-every time, with the same mechanical "keep both" resolution. Two PRs adding two
-different files never conflict.
+**A PR adds no changelog file and edits no version.** The changelog of every
+published crate is generated from conventional commits by git-cliff when
+release-plz builds the Release PR. A squash merge makes the PR title the commit
+subject, so the title is the entry — CI lints it.
 
-- **Heading**: `### <crate> <version> [/ <crate> <version> …] — <summary> (#PR)`.
-  Name every crate you bumped, with its **new** version — `check-changelogs.sh`
-  matches `<crate> <version>` as whole tokens and fails a bump with no entry.
-- **At release**: `scripts/collate-changelog.sh` folds the fragments into
-  `## Unreleased` (newest PR first, verbatim) and deletes them. One commit, one
-  author, nothing to conflict with. `--check` for a dry run.
-- **Full convention**: `changelog.d/README.md`.
+- **Title**: `<type>(<scope>): <subject>`, `!` for a breaking change. Types:
+  `feat` `fix` `docs` `test` `ci` `build` `perf` `refactor` `chore` `security`.
+- **Body**: included in the changelog verbatim. Write the explanation there.
+- **Never** edit `version = ` in a `Cargo.toml`.
 
-Editing `CHANGELOG.md` directly still *passes* the guard — the collated file is a
-legitimate place for an entry to live — so nothing stops you mechanically. Don't:
-it recreates the conflict for every other open PR.
-
-Note this does **not** solve version-number collisions. Two open PRs both bumping
-the same crate still conflict in `Cargo.toml`, and whichever merges second ships a
-version whose changelog claims both changes. Versions are still claimed at
-authoring time, so when a queue builds up, give the next number to whichever PR is
-closest to merge and rebase the others.
+`changelog.d/` fragments, `check-changelogs.sh`, `collate-changelog.sh` and the
+per-PR version bump were all removed in #938. Fragments existed so two PRs would
+not conflict in `CHANGELOG.md`; generating from commits removes the shared file,
+so there is nothing left to conflict over. `CHANGELOG.md` at the root is frozen
+as the pre-#938 history — current entries live in each published crate's own
+`CHANGELOG.md`.
 
 ## General
 

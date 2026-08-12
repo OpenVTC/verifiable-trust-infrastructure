@@ -2,21 +2,17 @@
 
 Released versions are recorded below, newest first.
 
-> **Looking for what changed recently? This file is not the whole picture.**
+> **This file is frozen.** It records everything released up to the adoption of
+> [release-plz](https://release-plz.dev) in #938.
 >
-> Each PR records its entry as its own file under
-> [`changelog.d/`](changelog.d/) — one per PR, named `<PR-number>-<slug>.md` —
-> because two PRs editing a shared section here conflicted every single time.
-> Those fragments are folded into `## Unreleased` below when a release is cut
-> (`scripts/collate-changelog.sh`), so between releases this file lags that
-> directory **by design**.
+> Current entries live in each published crate's own `CHANGELOG.md`
+> (`vta-sdk/CHANGELOG.md`, `vti-common/CHANGELOG.md`, …), generated from
+> conventional commits when a release is cut. The `changelog.d/` fragment
+> directory is gone.
 >
-> To see everything not yet released, read both: the `## Unreleased` section
-> below, then `changelog.d/`. `scripts/collate-changelog.sh --check` lists the
-> pending fragments without changing anything.
->
-> Writing one: see [`changelog.d/README.md`](changelog.d/README.md). Do **not**
-> add your entry to this file — that is what the fragments exist to avoid.
+> Writing an entry: you don't. Write a conventional-commit PR title and a real
+> commit body — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog) and
+> [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
