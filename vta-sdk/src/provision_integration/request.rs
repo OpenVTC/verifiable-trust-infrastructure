@@ -1390,6 +1390,92 @@ mod tests {
         );
     }
 
+    /// Build a `provision/integration/0.1`-shape VP — the mirror image of
+    /// [`build_valid_camelcase_vp`]. `ask.type` is PascalCase
+    /// (`TemplateBootstrap`), signed over that exact wire form.
+    ///
+    /// This is what any holder on vta-sdk < 0.21.11 emits, which as of
+    /// this writing includes shipped integrations (did-hosting
+    /// `VTI-Cypress-RC-1` pins 0.21.9). The casing flip landed in #917;
+    /// the fixture there covered the 0.2 direction only, so nothing
+    /// tested the far commoner case of an *older* holder meeting a
+    /// current maintainer — which is how the offline `vta bootstrap
+    /// provision-integration` surface stayed broken.
+    async fn build_valid_pascalcase_vp() -> (Value, String) {
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+
+        let (seed, client_did) = sample_client_did(0xD1);
+        let vm_id = did_key_to_vm(&client_did).expect("vm id");
+        let mut signer = Secret::generate_ed25519(Some(&vm_id), Some(&seed));
+        signer.id = vm_id;
+
+        let now = Utc::now();
+        let mut doc = serde_json::json!({
+            "@context": [VC_V2_CONTEXT_URL, BOOTSTRAP_CONTEXT_URL],
+            "type": ["VerifiablePresentation", "BootstrapRequest"],
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "holder": client_did,
+            "nonce": B64URL.encode([0xD1u8; 16]),
+            "validUntil": rfc3339(now + Duration::hours(1)),
+            "label": "v0.1-pascalcase-fixture",
+            // 0.1 wire form: PascalCase tag, inside the signed VP.
+            "ask": {
+                "type": "TemplateBootstrap",
+                "template": {
+                    "name": "didcomm-mediator",
+                    "vars": { "URL": "https://mediator.example.com" }
+                }
+            }
+        });
+
+        let sign_options = SignOptions::new()
+            .with_proof_purpose("authentication")
+            .with_created(now);
+        let proof = DataIntegrityProof::sign(&doc, &signer, sign_options)
+            .await
+            .expect("sign PascalCase VP");
+        doc.as_object_mut()
+            .unwrap()
+            .insert("proof".into(), serde_json::to_value(&proof).unwrap());
+        (doc, client_did)
+    }
+
+    #[tokio::test]
+    async fn verify_value_accepts_v0_1_pascalcase_ask() {
+        // A 0.1 holder signs `ask.type` as PascalCase. Verifying over the
+        // wire bytes must accept it, and the typed view must normalise to
+        // the same variant downstream logic already handles.
+        let (doc, holder) = build_valid_pascalcase_vp().await;
+        let verified = BootstrapRequest::verify_value(doc).expect("0.1 PascalCase VP verifies");
+        assert_eq!(verified.holder(), holder);
+        assert!(matches!(verified.ask(), BootstrapAsk::TemplateBootstrap(_)));
+    }
+
+    #[tokio::test]
+    async fn verify_reserialises_and_so_rejects_a_v0_1_pascalcase_holder() {
+        // Pins *why* no surface receiving a request from elsewhere may
+        // call `verify()`: it re-serialises the typed struct, re-emitting
+        // `ask.type` as this crate's 0.2 `templateBootstrap`, and then
+        // checks that against a signature made over `TemplateBootstrap`.
+        //
+        // The failure is indistinguishable from a forgery — `BadProof`,
+        // "signature invalid for cryptosuite EddsaJcs2022" — which is
+        // what makes it expensive to diagnose in the field. If this test
+        // ever starts passing `verify()`, the casing divergence is gone
+        // and this whole hazard can be revisited; until then, treat a
+        // `verify()` call on received bytes as a bug.
+        let (doc, _) = build_valid_pascalcase_vp().await;
+        let typed: BootstrapRequest = serde_json::from_value(doc.clone()).expect("parse 0.1 VP");
+        let err = typed.verify().unwrap_err();
+        assert!(
+            matches!(err, ProvisionIntegrationError::BadProof(_)),
+            "re-serialising a 0.1 holder's VP must break its proof, got {err:?}"
+        );
+        // …and the same bytes verify fine through the as-received path.
+        BootstrapRequest::verify_value(doc).expect("as-received path verifies");
+    }
+
     #[tokio::test]
     async fn verify_rejects_holder_mutation() {
         let (mut vp, _) = build_valid_vp().await;

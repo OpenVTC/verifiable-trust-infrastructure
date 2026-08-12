@@ -3238,6 +3238,96 @@ async fn provision_integration_rejects_tampered_vp() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+/// Sign a `provision/integration/0.1`-shape VP: `ask.type` PascalCase
+/// (`TemplateBootstrap`), signed over that exact wire form.
+///
+/// Built as raw JSON rather than through `BootstrapRequest::sign`,
+/// because vta-sdk ≥ 0.21.11 emits the 0.2 camelCase tag — the whole
+/// point here is to reproduce a holder that predates that flip, which
+/// shipped integrations still are.
+#[cfg(feature = "webvh")]
+async fn sign_pascalcase_bootstrap_request() -> Value {
+    use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+    use affinidi_secrets_resolver::secrets::Secret;
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+    use vta_sdk::provision_integration::{BOOTSTRAP_CONTEXT_URL, VC_V2_CONTEXT_URL};
+
+    let (seed_box, pub_bytes) = vta_sdk::sealed_transfer::generate_ed25519_keypair();
+    let client_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&pub_bytes);
+    let mb = client_did
+        .strip_prefix("did:key:")
+        .expect("did:key prefix")
+        .to_string();
+    let vm_id = format!("{client_did}#{mb}");
+    let mut signer = Secret::generate_ed25519(Some(&vm_id), Some(&seed_box));
+    signer.id = vm_id;
+
+    let now = chrono::Utc::now();
+    let mut doc = json!({
+        "@context": [VC_V2_CONTEXT_URL, BOOTSTRAP_CONTEXT_URL],
+        "type": ["VerifiablePresentation", "BootstrapRequest"],
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "holder": client_did,
+        "nonce": B64URL.encode([0xA1u8; 16]),
+        "validUntil": (now + chrono::Duration::hours(1)).to_rfc3339(),
+        "label": "v0.1-pascalcase-rest-test",
+        "ask": {
+            "type": "TemplateBootstrap",
+            "contextHint": "prod-mediator",
+            "template": {
+                "name": "didcomm-mediator",
+                "vars": { "URL": "https://mediator.example.com" }
+            }
+        }
+    });
+
+    let proof = DataIntegrityProof::sign(
+        &doc,
+        &signer,
+        SignOptions::new()
+            .with_proof_purpose("authentication")
+            .with_created(now),
+    )
+    .await
+    .expect("sign PascalCase VP");
+    doc.as_object_mut()
+        .unwrap()
+        .insert("proof".into(), serde_json::to_value(&proof).unwrap());
+    doc
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn provision_integration_accepts_a_v0_1_pascalcase_holder() {
+    // A holder on vta-sdk < 0.21.11 signs `ask.type` as PascalCase. The
+    // route must verify the proof against the bytes as posted; if it
+    // instead re-serialises the typed struct it re-emits the 0.2
+    // `templateBootstrap` tag and the holder's own valid signature is
+    // rejected as a forgery.
+    //
+    // Asserted as the absence of a *proof* failure rather than a 200:
+    // provisioning proper needs template + context state this fixture
+    // app doesn't stand up, so it legitimately fails further in. What
+    // must never come back is "signature invalid".
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx
+        .auth_token("did:key:z6MkAdmin", "admin", vec!["prod-mediator".into()])
+        .await;
+    let body = json!({
+        "request": sign_pascalcase_bootstrap_request().await,
+        "context": "prod-mediator",
+    });
+    let (_status, err) = app
+        .request(post_auth("/bootstrap/provision-integration", &token, body))
+        .await;
+    let err = err.to_string();
+    assert!(
+        !err.contains("signature invalid") && !err.contains("verify BootstrapRequest"),
+        "0.1-cased holder must clear proof verification, got {err}"
+    );
+}
+
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn provision_integration_rejects_unknown_field_in_body() {
