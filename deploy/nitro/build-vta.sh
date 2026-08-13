@@ -526,7 +526,8 @@ cat > "$MANIFEST" <<JSON
   "pcr8": "$PCR8",
   "enclave_cpu": $ENCLAVE_CPU,
   "enclave_mem_mib": $ENCLAVE_MEM,
-  "mediator_did": "$MEDIATOR_DID"
+  "mediator_did": "$MEDIATOR_DID",
+  "bake_config": $BAKE_CONFIG
 }
 JSON
 ok "Manifest written: $MANIFEST"
@@ -556,6 +557,18 @@ fi
 echo "    - pcr0.txt, pcr8.txt"
 echo "    - manifest.json"
 echo ""
-echo "  Next: ship the bundle to the parent EC2 instance and run:"
-echo "    ./deploy/nitro/deploy-enclave.sh --bundle <path-to-bundle>"
+if [ "$BAKE_CONFIG" = "false" ]; then
+    echo "  Next (fleet / un-baked): render a per-tenant overlay, then deploy WITH it."
+    echo "  The bundle ships NO rendered overlay, and the fleet EIF fails closed without"
+    echo "  one, so deploy-enclave.sh requires the rendered file:"
+    echo "    deploy/nitro/render-tenant-overlay.sh --key-arn $KEY_ARN \\"
+    echo "      --mediator-did <did> --anchor-table-name <table> \\"
+    echo "      --vta-did-template <tmpl> > <bundle>/tenant-overlay.json"
+    echo "    ./deploy/nitro/deploy-enclave.sh --bundle <path-to-bundle>"
+    echo "  (or pass it explicitly: deploy-enclave.sh --bundle <path> \\"
+    echo "     --config-envelope <path-to>/tenant-overlay.json)"
+else
+    echo "  Next: ship the bundle to the parent EC2 instance and run:"
+    echo "    ./deploy/nitro/deploy-enclave.sh --bundle <path-to-bundle>"
+fi
 echo ""

@@ -40,6 +40,9 @@ pub(crate) struct SyntheticQuote {
     pub pcr0: Vec<u8>,
     pub pcr8: Vec<u8>,
     pub module_id: String,
+    /// Nonce embedded in the quote (for the config-report path); `None` for the
+    /// sealed-bootstrap builders that don't bind a nonce.
+    pub nonce: Option<Vec<u8>>,
 }
 
 impl SyntheticQuote {
@@ -53,16 +56,22 @@ impl SyntheticQuote {
 
 /// Build a valid synthetic quote committing to `user_data`.
 pub(crate) fn build(user_data: Vec<u8>) -> SyntheticQuote {
-    build_inner(user_data, true)
+    build_inner(user_data, None, true)
+}
+
+/// Build a valid synthetic quote committing to `user_data` AND binding `nonce`
+/// — the shape the `/attestation/config-report` endpoint emits.
+pub(crate) fn build_with_nonce(user_data: Vec<u8>, nonce: Vec<u8>) -> SyntheticQuote {
+    build_inner(user_data, Some(nonce), true)
 }
 
 /// Build a synthetic quote whose COSE signature is invalid (signed over a
 /// different payload than the one carried), to exercise the signature path.
 pub(crate) fn build_with_bad_signature(user_data: Vec<u8>) -> SyntheticQuote {
-    build_inner(user_data, false)
+    build_inner(user_data, None, false)
 }
 
-fn build_inner(user_data: Vec<u8>, good_signature: bool) -> SyntheticQuote {
+fn build_inner(user_data: Vec<u8>, nonce: Option<Vec<u8>>, good_signature: bool) -> SyntheticQuote {
     let chain = nitro_attest::builder::chain(); // [root, l1, l2, l3, leaf]
     let der: Vec<Vec<u8>> = chain
         .iter()
@@ -93,7 +102,7 @@ fn build_inner(user_data: Vec<u8>, good_signature: bool) -> SyntheticQuote {
         leaf_der,
         cabundle,
         Some(user_data),
-        None,
+        nonce.clone(),
         None,
     );
     let payload = doc.to_binary();
@@ -137,6 +146,7 @@ fn build_inner(user_data: Vec<u8>, good_signature: bool) -> SyntheticQuote {
         pcr0,
         pcr8,
         module_id,
+        nonce,
     }
 }
 
@@ -342,6 +352,114 @@ mod tests {
             ),
             Err(crate::attestation::AttestationVerifyError::UserDataMismatch)
         ));
+    }
+
+    // --- config-report verifier (issue: un-baked config attestation gate) -----
+
+    #[test]
+    fn verify_config_attestation_with_end_to_end() {
+        use crate::attestation::{
+            ConfigAttestationVerifyError, verify_config_attestation_with,
+        };
+
+        // The endpoint commits the 48-byte SHA-384 config digest as user_data
+        // and binds the caller's nonce.
+        let digest = vec![0x5au8; 48];
+        let nonce = b"caller-nonce-1234".to_vec();
+        let q = build_with_nonce(digest.clone(), nonce.clone());
+        let evidence = B64STD.encode(&q.bytes);
+
+        // Happy path: correct digest, nonce, and PCR pins all verify.
+        let verified = verify_config_attestation_with(
+            &evidence,
+            &digest,
+            &nonce,
+            Some(&hex_lower(&q.pcr0)),
+            Some(&hex_lower(&q.pcr8)),
+            &q.verifier(),
+        )
+        .expect("config attestation verifies end-to-end");
+        assert_eq!(verified.config_digest_sha384, digest);
+        assert_eq!(verified.nonce, nonce);
+        assert_eq!(verified.pcr0_hex, hex_lower(&q.pcr0));
+        assert_eq!(verified.pcr8_hex, hex_lower(&q.pcr8));
+
+        // A different expected digest → the signed user_data no longer matches,
+        // so a parent running a *different* config is caught.
+        let other_digest = vec![0x5bu8; 48];
+        assert!(matches!(
+            verify_config_attestation_with(
+                &evidence,
+                &other_digest,
+                &nonce,
+                None,
+                None,
+                &q.verifier()
+            ),
+            Err(ConfigAttestationVerifyError::ConfigDigestMismatch)
+        ));
+
+        // A stale/replayed nonce is rejected (freshness).
+        assert!(matches!(
+            verify_config_attestation_with(
+                &evidence,
+                &digest,
+                b"different-nonce",
+                None,
+                None,
+                &q.verifier()
+            ),
+            Err(ConfigAttestationVerifyError::NonceMismatch)
+        ));
+
+        // A wrong image pin (PCR0) is rejected even though the quote is genuine.
+        assert!(matches!(
+            verify_config_attestation_with(
+                &evidence,
+                &digest,
+                &nonce,
+                Some("deadbeef"),
+                None,
+                &q.verifier()
+            ),
+            Err(ConfigAttestationVerifyError::Pcr(_))
+        ));
+
+        // A non-48-byte expected digest is a caller bug, caught early.
+        assert!(matches!(
+            verify_config_attestation_with(
+                &evidence,
+                &digest[..16],
+                &nonce,
+                None,
+                None,
+                &q.verifier()
+            ),
+            Err(ConfigAttestationVerifyError::ExpectedDigestLen(16))
+        ));
+    }
+
+    #[test]
+    fn verify_config_attestation_rejects_synthetic_chain_under_aws_anchor() {
+        use crate::attestation::{
+            ConfigAttestationVerifyError, verify_config_attestation_with,
+        };
+        // The production anchor must reject a synthetic-root quote — the property
+        // that stops a fabricated config report from ever verifying.
+        let digest = vec![0x11u8; 48];
+        let nonce = b"n".to_vec();
+        let q = build_with_nonce(digest.clone(), nonce.clone());
+        let evidence = B64STD.encode(&q.bytes);
+        let err = verify_config_attestation_with(
+            &evidence,
+            &digest,
+            &nonce,
+            None,
+            None,
+            &NitroVerifier::aws_production(q.valid_now),
+        )
+        .expect_err("synthetic root must not verify under the AWS anchor");
+        assert!(matches!(err, ConfigAttestationVerifyError::QuoteInvalid(_)));
     }
 
     /// Full accept-path byte-parity against upstream on a **real** AWS-signed

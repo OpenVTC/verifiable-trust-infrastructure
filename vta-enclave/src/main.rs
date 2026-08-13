@@ -420,12 +420,15 @@ async fn main() {
         // stays tenant-agnostic (one image / one PCR0), while a verifier who
         // obtains this AWS-signed document can pin `(PCR0, config-digest)`.
         //
-        // SCOPE: this only *produces* the signed evidence and logs it; it does not
-        // yet expose it to verifiers on demand. The log flows over the vsock-log
-        // channel to the (untrusted) parent, which can withhold it, and the empty
-        // nonce gives no freshness. An attested pull path (a REST endpoint that
-        // returns the current digest bound to a caller-supplied nonce) is the
-        // follow-up that makes the verifier story complete — see README.
+        // SCOPE: this boot-time anchor only *produces* signed evidence and logs
+        // it — the log flows over the vsock-log channel to the (untrusted)
+        // parent, which can withhold it, and the empty nonce gives no freshness.
+        // The on-demand, nonce-bound pull path that completes the verifier story
+        // now exists: `POST /attestation/config-report` returns the current
+        // digest bound to a caller-supplied nonce (see
+        // `vta_service::operations::attestation::generate_config_attestation` and
+        // the "config-report" section of README). This anchor is retained as a
+        // best-effort boot record; verifiers should use the pull endpoint.
         //
         // The digest is over the EFFECTIVE config captured earlier in
         // `config.effective_config_digest` — after overlay apply AND after DID

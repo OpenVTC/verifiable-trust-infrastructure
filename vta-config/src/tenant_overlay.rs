@@ -22,11 +22,19 @@ use serde::Deserialize;
 /// (over `vsock:5800`). Anything not named here CANNOT reach the enclave's
 /// config — [`serde(deny_unknown_fields)`] makes an unrecognized key a hard
 /// parse error, not a silently-ignored one.
+///
+/// Note what is **absent on purpose**: there is no `vta_did` field. The VTA's
+/// own identity is *provisioned*, not merely *named*: the enclave derives the
+/// signing / key-agreement / sealed-transfer keys (BIP-32 from the sealed seed),
+/// builds and signs the `did:webvh` document, and only then adopts the DID —
+/// see [`vta_did_template`](TenantKmsOverlay::vta_did_template) and ADR-0109.
+/// Accepting a bare DID string would install an identity with **no key
+/// records**, so the overlay only carries the template the enclave provisions
+/// from; the resulting DID becomes the authoritative stored identity and later
+/// boots restore it from the encrypted store.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TenantConfigOverlay {
-    #[serde(default)]
-    pub vta_did: Option<String>,
     #[serde(default)]
     pub vta_name: Option<String>,
     #[serde(default)]
@@ -216,9 +224,6 @@ pub fn apply_tenant_overlay(
     base: &mut crate::AppConfig,
     overlay: TenantConfigOverlay,
 ) -> Result<(), TenantOverlayError> {
-    if let Some(v) = overlay.vta_did {
-        base.vta_did = Some(v);
-    }
     if let Some(v) = overlay.vta_name {
         base.vta_name = Some(v);
     }
@@ -336,6 +341,10 @@ mod tests {
             r#"{"resolver_url":"http://evil"}"#,
             r#"{"storage_key_salt":"x"}"#,
             r#"{"messaging":{"mediator_did":"did:x","setup_acl":true}}"#,
+            // A bare, keyless DID string is NOT identity provisioning (ADR-0109):
+            // the enclave provisions from `vta_did_template`, so `vta_did` is not
+            // an overlay field and must be rejected structurally.
+            r#"{"vta_did":"did:webvh:scid:acme.example.com:vta"}"#,
         ];
         for p in poison {
             assert!(
@@ -349,7 +358,6 @@ mod tests {
     fn overlay_accepts_the_allowlisted_fields() {
         let ok = format!(
             r#"{{"vta_name":"acme","public_url":"https://vta.acme.example.com",
-                 "vta_did":"did:webvh:scid:acme.example.com:vta",
                  "tee_kms":{{"key_arn":"{GOOD_ARN}",
                              "vta_did_template":"did:webvh:{{SCID}}:acme.example.com:vta",
                              "anchor_table_name":"vta-rollback-anchor-acme",

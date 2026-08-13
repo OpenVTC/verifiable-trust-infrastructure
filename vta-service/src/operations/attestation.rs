@@ -110,9 +110,15 @@ pub async fn get_cached_report(
 /// bound for freshness. Unlike the boot-time log anchor, this is obtainable on
 /// demand and cannot be forged or replayed by the parent.
 #[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigAttestationReport {
-    /// SHA-384 of the config file bytes, base64 (standard). Also committed as the
-    /// attestation `user_data`, so a verifier checks it against the signed doc.
+    /// SHA-384 of the **effective** (post-overlay) config, base64 (standard).
+    /// This is NOT a hash of the raw `config.toml`/overlay file bytes: it is
+    /// SHA-384 over a canonical, secret-free JSON view of the booted `AppConfig`
+    /// (see `vta_config::AppConfig::compute_config_attestation_digest`). Also
+    /// committed as the attestation `user_data`, so a verifier checks it against
+    /// the signed doc — reproduce it with that same helper, not by hashing a
+    /// file by hand.
     pub config_digest_sha384: String,
     /// The caller's nonce (hex), echoed; bound into the attestation for freshness.
     pub nonce: String,

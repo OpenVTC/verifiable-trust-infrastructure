@@ -20,7 +20,6 @@
 #     --key-arn arn:aws:kms:us-east-1:1122...:key/abcd \
 #     --mediator-did did:webvh:...:mediator \
 #     [--vta-did-template 'did:webvh:{SCID}:acme.example.com:vta'] \
-#     [--vta-did did:webvh:...:vta] \
 #     [--vta-name acme] \
 #     [--public-url https://vta.acme.example.com] \
 #     [--mediator-url wss://mediator.example.com] \
@@ -34,7 +33,6 @@ KEY_ARN=""
 MEDIATOR_DID=""
 MEDIATOR_URL=""
 VTA_DID_TEMPLATE=""
-VTA_DID=""
 VTA_NAME=""
 PUBLIC_URL=""
 ANCHOR_TABLE_NAME=""
@@ -48,7 +46,6 @@ while [ $# -gt 0 ]; do
         --mediator-did)                         MEDIATOR_DID="$2"; shift 2 ;;
         --mediator-url)                         MEDIATOR_URL="$2"; shift 2 ;;
         --vta-did-template)                     VTA_DID_TEMPLATE="$2"; shift 2 ;;
-        --vta-did)                              VTA_DID="$2"; shift 2 ;;
         --vta-name)                             VTA_NAME="$2"; shift 2 ;;
         --public-url)                           PUBLIC_URL="$2"; shift 2 ;;
         --anchor-table-name)                    ANCHOR_TABLE_NAME="$2"; shift 2 ;;
@@ -81,7 +78,6 @@ jq -n \
     --arg mediator_did "$MEDIATOR_DID" \
     --arg mediator_url "$MEDIATOR_URL" \
     --arg vta_did_template "$VTA_DID_TEMPLATE" \
-    --arg vta_did "$VTA_DID" \
     --arg vta_name "$VTA_NAME" \
     --arg public_url "$PUBLIC_URL" \
     --arg anchor_table_name "$ANCHOR_TABLE_NAME" \
@@ -93,7 +89,6 @@ jq -n \
       version: 1,
       overlay: (
         {}
-        | put("vta_did"; $vta_did)
         | put("vta_name"; $vta_name)
         | put("public_url"; $public_url)
         | . + { tee_kms: (

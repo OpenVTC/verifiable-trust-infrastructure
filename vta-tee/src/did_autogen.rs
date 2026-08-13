@@ -95,12 +95,17 @@ pub async fn maybe_generate_vta_did(
     }
 
     // No stored identity yet.
-    // First boot with an explicit DID (from the baked config or the tenant
-    // overlay): persist it now so it becomes the authoritative stored identity.
-    // A later boot then restores THIS DID from the store, and the store-precedence
-    // check above rejects any *different* parent-supplied DID. Without persisting,
-    // a fresh direct `vta_did` could be accepted on every boot — defeating
-    // "first-boot only; on restore the store wins" (design note §3.6).
+    // First boot with an explicit DID from a *baked* self-host config: persist it
+    // now so it becomes the authoritative stored identity. A later boot then
+    // restores THIS DID from the store, and the store-precedence check above
+    // rejects any *different* supplied DID.
+    //
+    // NOTE: the fleet tenant overlay deliberately CANNOT carry a `vta_did` (see
+    // `vta_config::tenant_overlay::TenantConfigOverlay` and ADR-0109) — an
+    // untrusted parent must not be able to install a bare, keyless identity. A
+    // fleet enclave provisions its identity from `vta_did_template` below, which
+    // derives the key records. This branch therefore only applies to a trusted,
+    // baked/self-host `config.vta_did`.
     if let Some(direct) = config.vta_did.clone() {
         let inserted = keys_ks
             .insert_raw_if_absent(VTA_DID_STORE_KEY, direct.as_bytes().to_vec())

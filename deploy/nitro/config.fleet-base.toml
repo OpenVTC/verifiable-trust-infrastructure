@@ -13,7 +13,9 @@
 # from the parent over vsock:5800 and OVERWRITES them in-process:
 #   - tee.kms.key_arn            (validated against tee.allowed_kms_accounts)
 #   - tee.kms.region             (derived from key_arn)
-#   - tee.kms.vta_did_template   (or vta_did) — first boot only
+#   - tee.kms.vta_did_template   — first boot only (the enclave provisions its
+#                                  own did:webvh identity from this template;
+#                                  a bare vta_did is NOT overlay-settable)
 #   - messaging.mediator_did / mediator_url
 #   - public_url, vta_name
 # See docs/05-design-notes/tenant-config-allowlist.md.

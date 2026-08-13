@@ -171,10 +171,15 @@ ok "Config: $CONFIG_PATH"
 
 # Read manifest if present
 MANIFEST="${BUNDLE_DIR:+$BUNDLE_DIR/manifest.json}"
+# Bake mode as recorded by build-vta.sh: "true" (baked/self-host), "false"
+# (fleet/un-baked — REQUIRES a runtime overlay), or "" when we cannot determine
+# it (no manifest, e.g. a raw --eif/--config deploy or an older bundle).
+BAKE_CONFIG_MODE=""
 if [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ]; then
     ok "Manifest: $MANIFEST"
     [ -z "$CPU_OVERRIDE" ] && CPU_OVERRIDE=$(jq -r '.enclave_cpu // empty' "$MANIFEST")
     [ -z "$MEM_OVERRIDE" ] && MEM_OVERRIDE=$(jq -r '.enclave_mem_mib // empty' "$MANIFEST")
+    BAKE_CONFIG_MODE=$(jq -r '.bake_config | if type=="boolean" then tostring else "" end' "$MANIFEST" 2>/dev/null || echo "")
 fi
 
 ENCLAVE_CPU="${CPU_OVERRIDE:-${VTA_ENCLAVE_CPU:-1}}"
@@ -300,10 +305,34 @@ if [ -f "${CONFIG_ENVELOPE_PATH:-}" ]; then
         warn "use the fleet-base placeholder region/mediator and block the enclave's egress."
     fi
 else
-    warn "No tenant overlay found — a fleet (un-baked) EIF will fail to boot."
-    warn "Render one from the build's tenant-overlay-template.json, e.g.:"
-    warn "  deploy/nitro/render-tenant-overlay.sh --key-arn <arn> --mediator-did <did> \\"
-    warn "    --anchor-table-name <table> --vta-did-template <tmpl> > tenant-overlay.json"
+    # No rendered overlay present. What that means depends on the build's bake
+    # mode (recorded in the manifest):
+    #   - fleet (bake_config=false): the EIF bakes ONLY a placeholder base and
+    #     fails closed without the tenant overlay — deploying would start the
+    #     proxy/enclave only to have the enclave exhaust its overlay retries and
+    #     exit. Terminate now, before touching the proxy or the enclave.
+    #   - baked (bake_config=true): the tenant config is in the EIF; no overlay
+    #     is expected. Proceed (no vsock:5800 config server needed).
+    #   - unknown (no manifest / older bundle): we cannot tell — warn only.
+    if [ "$BAKE_CONFIG_MODE" = "false" ]; then
+        err "No tenant overlay found, but the manifest says this is a FLEET"
+        err "(BAKE_CONFIG=false) build. The enclave bakes only a placeholder base"
+        err "and will fail to boot without a rendered overlay — refusing to start"
+        err "the proxy/enclave. Render one from the build's tenant-overlay-template.json:"
+        err "  deploy/nitro/render-tenant-overlay.sh --key-arn <arn> --mediator-did <did> \\"
+        err "    --anchor-table-name <table> --vta-did-template <tmpl> > tenant-overlay.json"
+        err "then re-run with --bundle <dir> (containing tenant-overlay.json) or"
+        err "--config-envelope <path-to>/tenant-overlay.json."
+        exit 1
+    elif [ "$BAKE_CONFIG_MODE" = "true" ]; then
+        ok "Baked (self-host) build — tenant config is in the EIF; no runtime overlay needed."
+    else
+        warn "No tenant overlay found, and the bundle's bake mode is unknown"
+        warn "(no manifest / older bundle). A fleet (un-baked) EIF will fail to boot"
+        warn "without one; a baked EIF is fine. Render one if this is a fleet build:"
+        warn "  deploy/nitro/render-tenant-overlay.sh --key-arn <arn> --mediator-did <did> \\"
+        warn "    --anchor-table-name <table> --vta-did-template <tmpl> > tenant-overlay.json"
+    fi
 fi
 
 # Signature of the effective routing. If it changed since the running proxy was

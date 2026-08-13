@@ -237,6 +237,174 @@ fn check_pcr(which: u8, expected: Option<&str>, actual: &str) -> Result<(), PcrM
     Ok(())
 }
 
+/// Extract PCR `idx` from a verified quote as lowercase hex, treating an
+/// all-zero (unset) PCR as absent — the same semantics as
+/// [`verify_nitro_quote_with`].
+fn pcr_hex(parsed: &ParsedNitroQuote, idx: usize) -> String {
+    parsed
+        .pcrs
+        .get(&idx)
+        .filter(|v| v.iter().any(|b| *b != 0))
+        .map(|v| hex_lower(v))
+        .unwrap_or_default()
+}
+
+/// A verified `POST /attestation/config-report` response: the enclave really is
+/// running the config whose digest the caller expected, the evidence is a
+/// genuine Nitro quote, and the caller's nonce was bound for freshness.
+#[derive(Debug, Clone)]
+pub struct VerifiedConfigAttestation {
+    /// Issuing NSM module id.
+    pub module_id: String,
+    /// PCR0 — enclave image measurement — lowercase hex.
+    pub pcr0_hex: String,
+    /// PCR8 — signing certificate measurement — lowercase hex.
+    pub pcr8_hex: String,
+    /// The 48-byte SHA-384 config digest committed as (and verified against)
+    /// the attestation `user_data` — identical to `expected_config_digest`.
+    pub config_digest_sha384: Vec<u8>,
+    /// The nonce the quote committed to (equals the caller's `expected_nonce`).
+    pub nonce: Vec<u8>,
+}
+
+/// Verification failure for a [`verify_config_attestation`] call. Every variant
+/// is fail-closed — a report that trips any check must NOT be trusted.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigAttestationVerifyError {
+    /// The caller passed an `expected_config_digest` that is not 48 bytes — a
+    /// SHA-384 digest is always 48 bytes, so this is a caller bug, caught early.
+    #[error("expected config digest must be 48 bytes (SHA-384), got {0}")]
+    ExpectedDigestLen(usize),
+    /// The `evidence` field was not valid base64.
+    #[error("evidence base64 decode: {0}")]
+    Base64(String),
+    /// The evidence failed Nitro verification (chain to root / signature /
+    /// validity window). Wraps the underlying [`NitroVerifyError`] as a string.
+    #[error("attestation quote invalid: {0}")]
+    QuoteInvalid(String),
+    /// The quote carried no `user_data`, so it commits to no config digest.
+    #[error("attestation quote is missing user_data (no committed config digest)")]
+    MissingUserData,
+    /// The committed digest (`user_data`) did not equal the expected config
+    /// digest — the enclave is running a *different* config than the caller
+    /// expected (e.g. a `tee.kms.key_arn` the parent controls).
+    #[error("config digest mismatch — quote commits to a different config than expected")]
+    ConfigDigestMismatch,
+    /// The quote carried no `nonce`, so freshness cannot be established.
+    #[error("attestation quote is missing a nonce (cannot prove freshness)")]
+    MissingNonce,
+    /// The committed nonce did not equal the caller's — the report may be a
+    /// replay of an earlier attestation.
+    #[error("nonce mismatch — quote does not commit to this caller's nonce")]
+    NonceMismatch,
+    /// A pinned PCR (image / signing cert) did not match the expected value.
+    #[error(transparent)]
+    Pcr(#[from] PcrMismatch),
+}
+
+/// Verify a `POST /attestation/config-report` response against the production
+/// AWS Nitro root at the current wall clock.
+///
+/// This is the consumer-side of the mandatory onboarding gate: before trusting
+/// an un-baked (fleet) VTA instance a tenant/verifier MUST confirm which config
+/// it actually booted. Pass the raw `evidence` (base64 COSE_Sign1) and the
+/// `nonce` you sent, plus the config digest and PCRs you expect. On success the
+/// returned [`VerifiedConfigAttestation`] proves (1) the evidence chains to the
+/// AWS Nitro root, (2) `PCR0`/`PCR8` match the pins you supplied, (3) the bound
+/// nonce equals yours, and (4) the signed `user_data` equals your expected
+/// config digest — in particular that `tee.kms.key_arn` is the tenant's own key.
+///
+/// **Computing `expected_config_digest_sha384`.** It is the SHA-384 over a
+/// canonical, secret-free JSON view of the *effective* (post-overlay) config —
+/// **not** the raw TOML/overlay bytes. Reproduce it with
+/// `vta_config::AppConfig::compute_config_attestation_digest` on the base config
+/// plus the tenant overlay, rather than hashing a file by hand.
+///
+/// For deterministic tests / an injected trust anchor, use
+/// [`verify_config_attestation_with`].
+pub fn verify_config_attestation(
+    evidence_b64: &str,
+    expected_config_digest_sha384: &[u8],
+    expected_nonce: &[u8],
+    expect_pcr0: Option<&str>,
+    expect_pcr8: Option<&str>,
+) -> Result<VerifiedConfigAttestation, ConfigAttestationVerifyError> {
+    verify_config_attestation_with(
+        evidence_b64,
+        expected_config_digest_sha384,
+        expected_nonce,
+        expect_pcr0,
+        expect_pcr8,
+        &NitroVerifier::aws_production(OffsetDateTime::now_utc()),
+    )
+}
+
+/// As [`verify_config_attestation`], but with an explicit [`NitroVerifier`] so
+/// the trust anchor and clock can be injected (issue #449). The base64 decode,
+/// `user_data`/digest binding, nonce freshness check, and PCR extraction are
+/// identical to the production path — only the chain anchor + validity clock
+/// come from `verifier`.
+pub fn verify_config_attestation_with(
+    evidence_b64: &str,
+    expected_config_digest_sha384: &[u8],
+    expected_nonce: &[u8],
+    expect_pcr0: Option<&str>,
+    expect_pcr8: Option<&str>,
+    verifier: &NitroVerifier,
+) -> Result<VerifiedConfigAttestation, ConfigAttestationVerifyError> {
+    // A SHA-384 digest is always 48 bytes; a wrong length is a caller bug and
+    // would otherwise silently never match — fail closed, early, with context.
+    if expected_config_digest_sha384.len() != 48 {
+        return Err(ConfigAttestationVerifyError::ExpectedDigestLen(
+            expected_config_digest_sha384.len(),
+        ));
+    }
+
+    let quote_bytes = B64STD
+        .decode(evidence_b64)
+        .map_err(|e| ConfigAttestationVerifyError::Base64(e.to_string()))?;
+
+    let parsed = verifier
+        .verify(&quote_bytes)
+        .map_err(|e| ConfigAttestationVerifyError::QuoteInvalid(format!("{e:?}")))?;
+
+    // (4) The committed config digest lives in the SIGNED user_data, so it is
+    // attested, not merely asserted by the (untrusted) parent.
+    let user_data = parsed
+        .user_data
+        .as_deref()
+        .ok_or(ConfigAttestationVerifyError::MissingUserData)?;
+    if user_data != expected_config_digest_sha384 {
+        return Err(ConfigAttestationVerifyError::ConfigDigestMismatch);
+    }
+
+    // (3) Freshness: the enclave bound the caller's nonce into the quote.
+    let nonce = parsed
+        .nonce
+        .as_deref()
+        .ok_or(ConfigAttestationVerifyError::MissingNonce)?;
+    if nonce != expected_nonce {
+        return Err(ConfigAttestationVerifyError::NonceMismatch);
+    }
+
+    // (2) Pin the image / signing-cert measurements (reuses the same check as
+    // the sealed-bootstrap path).
+    let attest = VerifiedAttestation {
+        module_id: parsed.module_id.clone(),
+        pcr0_hex: pcr_hex(&parsed, 0),
+        pcr8_hex: pcr_hex(&parsed, 8),
+    };
+    attest.check_pcrs(expect_pcr0, expect_pcr8)?;
+
+    Ok(VerifiedConfigAttestation {
+        module_id: attest.module_id,
+        pcr0_hex: attest.pcr0_hex,
+        pcr8_hex: attest.pcr8_hex,
+        config_digest_sha384: user_data.to_vec(),
+        nonce: nonce.to_vec(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     //! Negative-path tests for [`verify_nitro_assertion`] and
