@@ -454,50 +454,86 @@ In the VTC's `config.toml`:
 
 ```toml
 [registry]
-url = "https://trust-registry.example.org"
+did = "did:webvh:Qm…:webvh.example:trust-registry"
 health_probe_interval_seconds = 60
 http_timeout_seconds = 5
 rtbf_batch_window_hours = 24
+# url = "https://trust-registry.example.org"   # optional — see below
 ```
 
-Deliberately omit `did` for now — see the caveat below.
+**`did` is the address; `url` is optional.** The VTC resolves the
+registry's DID, reads its advertised services, and uses the
+highest-preference transport both sides speak (TSP > DIDComm >
+REST, matched on service `type`, never on the `#id` fragment).
+Everything runs over that transport: membership sync
+(`registry/record/{put,delete,query}/0.1`), recognition queries,
+the health probe, and the git-trust capability hooks.
 
-- `url` unset → registry features no-op and `registry_status`
-  reads `degraded`.
-- `did` unset → membership hooks are not spawned.
+- `did` set → the messaging client. `url`, if also set, becomes
+  its REST arm — used only if the registry advertises `TRQPRest`
+  and no messaging transport.
+- `url` alone → the HTTP-only client. TRQP queries work; record
+  writes do not (the registry exposes writes over Trust Tasks
+  only), so membership never syncs.
+- Neither → registry features no-op, `registry_status` reads
+  `degraded`.
+- No overlap between the two documents' advertised transports →
+  a typed `NoMatchingProtocol` naming what each side offers. The
+  VTC never silently downgrades past what the registry
+  advertises.
 - `degraded_threshold_seconds` appears in
   [trust-registry.md](trust-registry.md) but not in
   `RegistryConfig`. Setting it has no effect.
 
-The health probe is a `GET /.well-known/did.json` against `url`,
-so a passing stage 4 means the VTC will report the registry
-healthy.
+**The registry must authorise the VTC's DID.** Record writes
+require a Data-Integrity proof *and* a sender DID listed in the
+registry's `ADMIN_DIDS`. A VTC that is not listed gets
+`permissionDenied`, which is classified permanent — the syncer
+parks the job in `Failed` rather than retrying, which is what you
+want, but it means a missing entry shows up as failed jobs, not
+as a retry backlog. Add the VTC DID to the registry's admin list
+before expecting sync to work.
+
+### What the health probe now means
+
+The probe is a read-only `registry/record/query/0.1` round trip
+over the selected transport. It needs no proof and no admin ACL,
+so it works even on a registry that would refuse your writes —
+but unlike the old `GET /.well-known/did.json` it exercises the
+whole path the VTC depends on: mediator, transport, dispatcher,
+storage.
+
+Any correlated reply counts as healthy, **including a rejection**
+— the registry answered. Only silence is unhealthy. So a green
+`registry_status` now means "the registry is answering us on the
+transport we use", not "a URL returned 200".
 
 ---
 
 ## Known defects on this seam
 
-Tracked as **D6** in the networking remediation plan. Both change
-how you should read symptoms.
+**TSP framing differs between this workspace and the registry.**
+VTI sends bare Trust-Task document bytes over TSP; the registry
+implements the published `trust-tasks-tsp` binding, which wraps
+them in `{"type": ".../binding/tsp/0.1/envelope", "document": …}`
+and rejects a payload without it. The VTC therefore emits the
+envelope when talking to the registry and accepts either shape
+inbound. A peer that speaks neither convention shows up as a
+reply timeout, not a parse error — the frame is dropped at the
+far end.
 
-**DIDComm writes are not yet functional.**
-`UpstreamRegistryClient::publish_member` and `delete_member`
-return `RegistryError::Permanent` unconditionally — the DIDComm
-transport is still pending, and `with_atm` is never called. Every
-membership sync fails. Because `health()` only issues a `GET
-/.well-known/did.json`, **`registry_status` stays green while
-nothing syncs.** This is why stage 5 leaves `registry.did` unset:
-setting it today buys failing hooks and a misleading indicator.
-
-**The `recognized` field is a two-sided optionality mismatch.**
-The registry serialises `recognized` with
-`skip_serializing_if = Option::is_none`; the VTC's
-`RecognitionResponse` requires it. A 200 response omitting the
-field fails to parse, is misclassified as transient, and surfaces
-as `RegistryUnreachable` — so cross-community session mint returns
-**503 indefinitely instead of a clean 403**. Persistent 503s on
-cross-community mint are this, not a network fault. Absence must
-be treated restrictively rather than as transport failure.
+**Historical (fixed, but you may still read the symptom in old
+logs).** Tracked as **D6** in the networking remediation plan:
+`publish_member` / `delete_member` used to return
+`RegistryError::Permanent` unconditionally while `health()`
+probed only a static document, so `registry_status` stayed green
+while nothing synced. Both are now closed — writes go over Trust
+Tasks and health is a real round trip. The related `recognized`
+optionality mismatch (an omitted field parsed as a transport
+failure and surfaced as an indefinite 503 on cross-community
+mint) does not exist on the Trust-Task arm, which reads absence
+restrictively as "not recognised". It remains live on the
+HTTP-only (`url`-alone) path.
 
 ---
 
@@ -510,8 +546,11 @@ be treated restrictively rather than as transport failure.
 | Parse error on a valid credential file | mistyped URI scheme → treated as a literal |
 | Private ACL not enforced | `ACL_MODE` typo → silent `ExplicitDeny` |
 | Peers cannot reach the registry | `did:webvh` generated but never hosted |
-| VTC green, membership never syncs | DIDComm write defect above |
-| Cross-community mint 503s forever | `recognized` mismatch above |
+| Sync jobs go straight to `Failed`, never retried | VTC DID missing from the registry's `ADMIN_DIDS` → `permissionDenied` (permanent by design) |
+| Every registry call times out after 60s | reply never correlated: registry not running the Trust-Task listener, or a TSP framing mismatch (see above) |
+| `NoMatchingProtocol` at boot or on first sync | the two DID documents advertise no transport in common — add `DIDCommMessaging` (or `TSPTransport`) to whichever side lacks it |
+| `registry_status` degraded but the URL is up | expected: health now follows a Trust-Task round trip, not the URL |
+| Cross-community mint 503s forever | `recognized` mismatch — only on the `url`-alone HTTP path; set `registry.did` |
 | `bootstrap open` produced no file | `--out` omitted; the bundle is now spent, start over from `bootstrap request` |
 | Second `bootstrap open` fails | single-use secret already consumed by the first open |
 | Docker image ignores VTA settings | `vta` not compiled into the shipped image |

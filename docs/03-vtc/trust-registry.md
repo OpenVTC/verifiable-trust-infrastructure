@@ -39,6 +39,35 @@ The VTC uses **TRQP v2.0** (Trust Registry Query Protocol) via the
 `affinidi-trust-registry-rs` client (or any TRQP-compatible
 backend).
 
+## How the VTC reaches the registry
+
+The registry is addressed by **DID** (`registry.did`), not by URL.
+The VTC resolves that DID, reads the transports it advertises, and
+uses the highest-preference one both sides speak — TSP, then
+DIDComm, then REST — matched on the service `type`. Every
+interaction rides that transport as a canonical Trust Task:
+
+| Operation | Trust Task | Proof |
+|---|---|---|
+| Publish / update a member | `registry/record/put/0.1` | signed |
+| Remove a member (RTBF, departure) | `registry/record/delete/0.1` | signed |
+| Read a member's record | `registry/record/query/0.1` | none |
+| Recognition check | `registry/recognition/0.1` | none |
+| Health probe | `registry/record/query/0.1` (limit 1) | none |
+
+Writes are signed with the VTC's assertion key (`{vtc_did}#key-0`)
+— the same identity that mints VMC/VEC — and the registry must
+carry that DID in its admin list, or every write is
+`permissionDenied`.
+
+A send returning `Ok` is never treated as delivery. Each call
+registers a waiter keyed by the request document id, and completes
+only when the correlated reply arrives; silence is a retriable
+failure the syncer backs off on.
+
+`registry.url` remains as the REST arm for a registry that
+advertises `TRQPRest` and no messaging transport.
+
 ## Publication
 
 ```mermaid
@@ -188,33 +217,38 @@ sequenceDiagram
 ```toml
 # config.toml
 [registry]
-url = "https://trust-registry.example.org"
+did = "did:webvh:Qm…:webvh.example:trust-registry"
 http_timeout_seconds = 30
 health_probe_interval_seconds = 300       # 5 minutes; 0 disables
 rtbf_batch_window_hours = 24              # daily flush
 degraded_threshold_seconds = 3600         # status flips to degraded after 1h lag
+# url = "https://trust-registry.example.org"   # optional REST arm
 ```
 
-Setting `registry.url = ""` (or omitting it) disables registry
-features entirely — the daemon runs in "no-registry" mode,
+Configuring neither `did` nor `url` disables registry features
+entirely — the daemon runs in "no-registry" mode,
 `registry_status` reports `degraded`, and `cross_community_roles`
-short-circuits to deny-all.
+short-circuits to deny-all. Configuring `url` alone gives you TRQP
+queries without membership sync: record writes exist only as Trust
+Tasks, so they need a DID to address.
 
-## CLI quick reference
+## Operator surface
+
+There is **no `cnm registry` command** — an earlier version of this
+document listed one that was never built. What exists today:
 
 ```sh
-# Registry health
-cnm registry health
-cnm registry profile show     # community's registry record
-
-# Sync queue inspection
-cnm registry queue list
-cnm registry queue retry --id <job-id>
-cnm registry queue cancel --id <job-id>
-
-# Force a re-publish
-cnm registry refresh
+# Reconciler state: registry_status, queue_depth, failed_count,
+# oldest_pending_age_seconds, last_error, syncer liveness.
+curl -H "Authorization: Bearer $TOKEN" \
+  https://vtc.example.org/v1/health/diagnostics | jq .
 ```
+
+In the admin UI, the **Recognition** page shows the registry
+status and a per-DID recognition lookup, and the **Audit** page
+carries `RegistryStatusChanged` / `RegistrySyncSucceeded` /
+`RegistrySyncFailed`. Queue depth and failed-job counts are
+currently JSON-only.
 
 ## See also
 

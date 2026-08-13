@@ -344,7 +344,7 @@ impl TestVtcBuilder {
             sync_cursor_ks,
             hooks_queue_ks,
             hooks_cursor_ks,
-            capability_replies: crate::hooks::PendingReplies::new(),
+            pending_replies: crate::hooks::PendingReplies::new(),
             relationships_ks,
             relationships_by_did_ks,
             endorsement_types_ks,

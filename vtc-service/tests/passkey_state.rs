@@ -88,7 +88,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         sync_cursor_ks: sync_cursor_ks.clone(),
         hooks_queue_ks: hooks_queue_ks.clone(),
         hooks_cursor_ks: hooks_cursor_ks.clone(),
-        capability_replies: vtc_service::hooks::PendingReplies::new(),
+        pending_replies: vtc_service::hooks::PendingReplies::new(),
         relationships_ks: relationships_ks.clone(),
         relationships_by_did_ks: relationships_by_did_ks.clone(),
         endorsement_types_ks: endorsement_types_ks.clone(),

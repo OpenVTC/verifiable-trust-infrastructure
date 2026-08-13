@@ -72,6 +72,14 @@ pub struct VtcMessaging {
     /// the delivery layer's `send`. Same socket either way — the mediator permits
     /// one per DID.
     pub profile: Arc<ATMProfile>,
+    /// The mediator this socket is bound to.
+    ///
+    /// A TSP send is `send_routed(&profile, &[mediator, recipient], …)`, so an
+    /// outbound TSP caller that is not answering an inbound frame (which
+    /// carries the mediator with it) needs the first hop from somewhere. Kept
+    /// here rather than re-read from config so the routed hop is always the
+    /// mediator the socket is actually on.
+    pub mediator_did: String,
 }
 
 /// The VTC's signing + key-agreement verification-method ids, read from its
@@ -376,6 +384,7 @@ pub async fn run_didcomm_service(
         atm: atm.clone(),
         vtc_did: vtc_did.to_string(),
         profile: profile.clone(),
+        mediator_did: mediator_did.clone(),
     });
     #[cfg(feature = "tsp")]
     let tsp_messaging = messaging.clone();
@@ -536,6 +545,32 @@ fn tsp_sender(message: &affinidi_messaging_core::ReceivedMessage) -> Option<Stri
     message.sender.clone().filter(|_| message.verified)
 }
 
+/// Is this inbound TSP payload a **reply** to a task we sent, rather than a
+/// request addressed to us?
+///
+/// Accepts both wire shapes deliberately. This workspace sends Trust-Task
+/// document bytes bare over TSP (`vta_sdk::session::DIDCommSession::
+/// send_document`), while the published `trust-tasks-tsp` binding — which the
+/// trust registry implements — wraps them in
+/// `{"type": ".../binding/tsp/0.1/envelope", "document": …}`. Being liberal
+/// here costs nothing: the two shapes are unambiguous, and the alternative is
+/// a peer's replies silently falling through to the request dispatcher.
+///
+/// Returns `Some` only for a `#response` or `trust-task-error` carrying a
+/// `threadId` — a request never qualifies, so no inbound work is diverted.
+#[cfg(feature = "tsp")]
+fn tsp_reply_document(payload: &[u8]) -> Option<trust_tasks_rs::TrustTask<serde_json::Value>> {
+    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    let inner = match value.get("document") {
+        Some(document) => document.clone(),
+        None => value,
+    };
+    let doc: trust_tasks_rs::TrustTask<serde_json::Value> = serde_json::from_value(inner).ok()?;
+    doc.thread_id.as_ref()?;
+    let is_reply = doc.type_uri.is_response() || doc.type_uri.slug() == "trust-task-error";
+    is_reply.then_some(doc)
+}
+
 #[cfg(feature = "tsp")]
 async fn handle_tsp(
     inbound: Inbound,
@@ -547,6 +582,22 @@ async fn handle_tsp(
         warn!("inbound TSP frame has no cryptographically-verified sender VID — dropping");
         return;
     };
+
+    // A reply to a task *we* sent (a trust-registry record write, say) arrives
+    // on this socket like any other frame. Complete its waiter instead of
+    // dispatching it: the spine would answer a `#response` with an
+    // unsupported-type error, and the caller — which is waiting on a
+    // correlated reply, not on a send `Ok` — would time out and retry forever.
+    //
+    // The DIDComm arm gets this from its envelope branch in `dispatch`; TSP
+    // carries documents bare, so the check is here.
+    if let Some(doc) = tsp_reply_document(&inbound.message.payload) {
+        let thread_id = doc.thread_id.clone().unwrap_or_default();
+        if !state.pending_replies.complete(doc) {
+            debug!(%thread_id, sender = %sender_vid, "TSP reply had no waiter — dropping");
+        }
+        return;
+    }
 
     let ctx = JoinAuthCtx {
         transport: JoinTransport::Tsp,
@@ -615,7 +666,7 @@ async fn dispatch(inbound: Inbound, state: &AppState) -> Option<Reply> {
         if let Some((_thid, doc)) =
             vti_common::capability_client::parse_envelope_document(&msg.body)
         {
-            state.capability_replies.complete(doc);
+            state.pending_replies.complete(doc);
         }
         return None;
     }
@@ -1322,6 +1373,79 @@ pub(crate) fn parse_disposition(s: &str) -> Result<Disposition, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A `#response` must be recognised as a reply in **both** TSP wire
+    /// shapes: bare (what this workspace sends) and wrapped in the
+    /// `trust-tasks-tsp` binding envelope (what the trust registry sends).
+    /// Miss either and the reply falls through to the request dispatcher,
+    /// which answers it with an unsupported-type error while the caller waits
+    /// out its whole timeout.
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn a_tsp_reply_is_recognised_bare_and_enveloped() {
+        let doc = json!({
+            "id": "urn:uuid:reply",
+            "type": "https://trusttasks.org/spec/registry/record/put/0.1#response",
+            "threadId": "urn:uuid:request",
+            "payload": { "ok": true, "created": true },
+        });
+        let bare = serde_json::to_vec(&doc).unwrap();
+        assert_eq!(
+            tsp_reply_document(&bare).and_then(|d| d.thread_id),
+            Some("urn:uuid:request".to_string()),
+        );
+
+        let enveloped = serde_json::to_vec(&json!({
+            "type": "https://trusttasks.org/binding/tsp/0.1/envelope",
+            "document": doc,
+        }))
+        .unwrap();
+        assert_eq!(
+            tsp_reply_document(&enveloped).and_then(|d| d.thread_id),
+            Some("urn:uuid:request".to_string()),
+        );
+    }
+
+    /// The demux must divert replies and nothing else. A request — no
+    /// `threadId`, not a `#response` — has to reach the dispatcher, or every
+    /// inbound TSP Trust Task is silently dropped.
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn an_inbound_request_is_not_mistaken_for_a_reply() {
+        let request = serde_json::to_vec(&json!({
+            "id": "urn:uuid:req",
+            "type": "https://trusttasks.org/spec/vtc/join/submit/0.1",
+            "payload": {},
+        }))
+        .unwrap();
+        assert!(tsp_reply_document(&request).is_none());
+
+        // A `#response` without a thread to correlate on is not actionable
+        // either — completing a waiter needs the thread id.
+        let unthreaded = serde_json::to_vec(&json!({
+            "id": "urn:uuid:resp",
+            "type": "https://trusttasks.org/spec/registry/record/put/0.1#response",
+            "payload": { "ok": true },
+        }))
+        .unwrap();
+        assert!(tsp_reply_document(&unthreaded).is_none());
+    }
+
+    /// A `trust-task-error` is how the registry says "permission denied", and
+    /// it is a reply like any other: the waiter must be completed so the caller
+    /// classifies it, rather than left to time out as though nothing answered.
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn an_error_document_counts_as_a_reply() {
+        let error = serde_json::to_vec(&json!({
+            "id": "urn:uuid:err",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.1",
+            "threadId": "urn:uuid:request",
+            "payload": { "code": "permissionDenied" },
+        }))
+        .unwrap();
+        assert!(tsp_reply_document(&error).is_some());
+    }
 
     #[test]
     fn problem_report_details_extracts_code_comment_and_args() {

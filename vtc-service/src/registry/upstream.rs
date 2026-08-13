@@ -245,6 +245,10 @@ impl TrustRegistryClient for UpstreamRegistryClient {
             action: &'static str,
             resource: &'static str,
         }
+        // The same two constants the messaging client publishes records under
+        // (`super::RECOGNISE_ACTION` / `TRUST_GRAPH_RESOURCE`). A record is
+        // found only by its whole four-part key, so a divergence here would
+        // mean querying a tuple nothing was ever written to.
         #[derive(serde::Deserialize)]
         #[allow(dead_code)]
         struct RecognitionResponse {
@@ -262,8 +266,8 @@ impl TrustRegistryClient for UpstreamRegistryClient {
         let body = RecognitionRequest {
             entity_id: foreign_issuer_did,
             authority_id: authority,
-            action: "recognise",
-            resource: "trust-graph",
+            action: super::RECOGNISE_ACTION,
+            resource: super::TRUST_GRAPH_RESOURCE,
         };
         debug!(%url, entity = %foreign_issuer_did, authority = %authority, "trust-registry recognise");
         let resp = self
