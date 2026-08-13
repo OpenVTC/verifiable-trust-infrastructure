@@ -10,7 +10,8 @@ use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::tee::TeeState;
 use crate::tee::provider::StructuralCheckOutcome;
-use crate::tee::types::{AttestationReport, TeeStatus, TeeType};
+use crate::tee::types::{AttestationReport, TeeStatus};
+use vta_sdk::attestation_report::ConfigAttestationReport;
 
 /// Get the cached TEE detection status.
 pub fn get_tee_status(tee_state: &TeeState) -> TeeStatus {
@@ -99,49 +100,15 @@ pub async fn get_cached_report(
     generate_attestation_report(tee_state, config, &nonce).await
 }
 
-/// A fresh, nonce-bound attestation that commits to a digest of the config the
-/// enclave booted.
-///
-/// This is the pull path that makes the un-baked config **verifiable**: because
-/// the parent supplies `tee.kms.key_arn` (and the rest of the tenant config), a
-/// tenant/verifier must be able to confirm which config an instance is actually
-/// running before trusting it. The digest is committed as the attestation
-/// `user_data` (so it is signed, not merely asserted) and the caller's nonce is
-/// bound for freshness. Unlike the boot-time log anchor, this is obtainable on
-/// demand and cannot be forged or replayed by the parent.
-#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ConfigAttestationReport {
-    /// SHA-384 of the **effective** (post-overlay) config, base64 (standard).
-    /// This is NOT a hash of the raw `config.toml`/overlay file bytes: it is
-    /// SHA-384 over a canonical, secret-free JSON view of the booted `AppConfig`
-    /// (see `vta_config::AppConfig::compute_config_attestation_digest`). Also
-    /// committed as the attestation `user_data`, so a verifier checks it against
-    /// the signed doc — reproduce it with that same helper, not by hashing a
-    /// file by hand.
-    pub config_digest_sha384: String,
-    /// The canonical, secret-free config **view** the digest is the SHA-384 of,
-    /// base64 (standard) — the exact bytes the enclave hashed. A verifier hashes
-    /// this to reproduce (and thus authenticate) `configDigestSha384` /
-    /// `user_data` WITHOUT depending on `vta-config` or re-deriving the
-    /// enclave-generated `vta_did`, then inspects the now-authenticated view (in
-    /// particular that `tee.kms.key_arn` is its own key). See
-    /// `vta_sdk::attestation::verify_config_attestation`.
-    pub config_view: String,
-    /// The caller's nonce (hex), echoed; bound into the attestation for freshness.
-    pub nonce: String,
-    /// TEE platform that produced the evidence.
-    pub tee_type: TeeType,
-    /// Base64 attestation document (COSE_Sign1). A verifier MUST check: signature
-    /// chains to the vendor root, `PCR0` matches the pinned image, `nonce` equals
-    /// theirs, and `user_data` equals the SHA-384 of the config they expect (in
-    /// particular that `tee.kms.key_arn` is the tenant's own key).
-    pub evidence: String,
-    /// Unix seconds when generated.
-    pub generated_at: u64,
-}
-
 /// Generate a [`ConfigAttestationReport`] committing the booted config's digest.
+///
+/// The shared wire type lives in `vta_sdk::attestation_report` so the endpoint
+/// serializes exactly the type a consumer deserializes and verifies (via
+/// `ConfigAttestationReport::verify`). This is the pull path that makes the
+/// un-baked config verifiable: the enclave returns the canonical secret-free
+/// `config_view` it hashed, committed (as the digest) into the signed `user_data`
+/// and bound to the caller's nonce — obtainable on demand and, unlike the boot
+/// log, not forgeable or replayable by the parent.
 pub async fn generate_config_attestation(
     tee_state: &TeeState,
     config: &Arc<RwLock<AppConfig>>,
@@ -194,7 +161,9 @@ pub async fn generate_config_attestation(
         config_digest_sha384: BASE64.encode(&digest),
         config_view: BASE64.encode(&view),
         nonce: report.nonce,
-        tee_type: report.tee_type,
+        // Shared wire type is vta-tee-free, so serialize the platform as its
+        // snake_case string (identical to `TeeType`'s serde form, e.g. "nitro").
+        tee_type: report.tee_type.to_string(),
         evidence: report.evidence,
         generated_at: report.generated_at,
     })

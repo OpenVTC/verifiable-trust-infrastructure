@@ -363,7 +363,7 @@ mod tests {
 
         // The endpoint returns the canonical secret-free config VIEW and commits
         // SHA-384(view) as user_data. The verifier hashes the returned view and
-        // matches it against the signed user_data, then inspects tee.kms.key_arn.
+        // matches it against the signed user_data, then PINS tee.kms.key_arn.
         let key_arn = "arn:aws:kms:us-east-1:111122223333:key/abcd";
         let view = format!(r#"{{"tee":{{"kms":{{"key_arn":"{key_arn}"}}}}}}"#).into_bytes();
         let digest = Sha384::digest(&view).to_vec();
@@ -375,14 +375,14 @@ mod tests {
         let pcr8 = hex_lower(&q.pcr8);
 
         // Happy path: view→digest binding, nonce, PCR0/PCR8 pins, and the
-        // expected key_arn all verify.
+        // MANDATORY key_arn pin all verify.
         let verified = verify_config_attestation_with(
             &evidence,
             &view_b64,
             &nonce,
             &pcr0,
             Some(&pcr8),
-            Some(key_arn),
+            key_arn,
             &q.verifier(),
         )
         .expect("config attestation verifies end-to-end");
@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(verified.nonce(), nonce.as_slice());
         assert_eq!(verified.pcr0_hex(), pcr0);
         assert_eq!(verified.pcr8_hex(), pcr8);
-        assert_eq!(verified.key_arn(), Some(key_arn));
+        assert_eq!(verified.key_arn(), key_arn);
         assert_eq!(verified.config_view_json(), view.as_slice());
 
         // A tampered/mismatched view → SHA-384(view) no longer equals the signed
@@ -404,7 +404,7 @@ mod tests {
                 &nonce,
                 &pcr0,
                 None,
-                None,
+                key_arn,
                 &q.verifier()
             ),
             Err(ConfigAttestationVerifyError::ConfigViewDigestMismatch)
@@ -418,7 +418,7 @@ mod tests {
                 b"different-nonce",
                 &pcr0,
                 None,
-                None,
+                key_arn,
                 &q.verifier()
             ),
             Err(ConfigAttestationVerifyError::NonceMismatch)
@@ -432,14 +432,15 @@ mod tests {
                 &nonce,
                 "deadbeef",
                 None,
-                None,
+                key_arn,
                 &q.verifier()
             ),
             Err(ConfigAttestationVerifyError::Pcr(_))
         ));
 
         // An unexpected key_arn (parent bound the enclave to a key we did not
-        // approve) is rejected, even though the view is authentic.
+        // approve) is rejected, even though the view is authentic. This is the
+        // seed-exfiltration mitigation — and it is NOT skippable.
         assert!(matches!(
             verify_config_attestation_with(
                 &evidence,
@@ -447,11 +448,54 @@ mod tests {
                 &nonce,
                 &pcr0,
                 None,
-                Some("arn:aws:kms:us-east-1:111122223333:key/NOT-MINE"),
+                "arn:aws:kms:us-east-1:111122223333:key/NOT-MINE",
                 &q.verifier()
             ),
             Err(ConfigAttestationVerifyError::KeyArnMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn authenticate_does_not_approve_policy_but_exposes_the_view() {
+        use crate::attestation::authenticate_config_attestation_with;
+        use sha2::{Digest, Sha384};
+
+        // The weaker `authenticate_*` path proves the view is AUTHENTIC (chain +
+        // PCR0 + nonce + digest binding) WITHOUT pinning key_arn — so it must NOT
+        // be confusable with the verified onboarding result. It returns the
+        // parent-chosen key_arn for the caller to inspect/pin itself.
+        let parent_key = "arn:aws:kms:us-east-1:999988887777:key/parent-owned";
+        let view = format!(r#"{{"tee":{{"kms":{{"key_arn":"{parent_key}"}}}}}}"#).into_bytes();
+        let digest = Sha384::digest(&view).to_vec();
+        let nonce = b"n2".to_vec();
+        let q = build_with_nonce(digest, nonce.clone());
+
+        let authed = authenticate_config_attestation_with(
+            &B64STD.encode(&q.bytes),
+            &B64STD.encode(&view),
+            &nonce,
+            &hex_lower(&q.pcr0),
+            None,
+            &q.verifier(),
+        )
+        .expect("authenticate succeeds on a genuine (approved-image) quote");
+        // The authenticated view surfaces the parent's key so the caller can
+        // detect it — authentication alone does not endorse it.
+        assert_eq!(authed.key_arn(), Some(parent_key));
+        assert_eq!(authed.config_view_json(), view.as_slice());
+
+        // A wrong image pin still fails even on the authenticate-only path.
+        assert!(
+            authenticate_config_attestation_with(
+                &B64STD.encode(&q.bytes),
+                &B64STD.encode(&view),
+                &nonce,
+                "deadbeef",
+                None,
+                &q.verifier(),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -460,18 +504,19 @@ mod tests {
         use sha2::{Digest, Sha384};
         // The production anchor must reject a synthetic-root quote — the property
         // that stops a fabricated config report from ever verifying.
-        let view = br#"{"tee":{"kms":{"key_arn":"arn:aws:kms:us-east-1:111122223333:key/abcd"}}}"#;
-        let digest = Sha384::digest(view).to_vec();
+        let key_arn = "arn:aws:kms:us-east-1:111122223333:key/abcd";
+        let view = format!(r#"{{"tee":{{"kms":{{"key_arn":"{key_arn}"}}}}}}"#).into_bytes();
+        let digest = Sha384::digest(&view).to_vec();
         let nonce = b"n".to_vec();
         let q = build_with_nonce(digest, nonce.clone());
         let evidence = B64STD.encode(&q.bytes);
         let err = verify_config_attestation_with(
             &evidence,
-            &B64STD.encode(view),
+            &B64STD.encode(&view),
             &nonce,
             &hex_lower(&q.pcr0),
             None,
-            None,
+            key_arn,
             &NitroVerifier::aws_production(q.valid_now),
         )
         .expect_err("synthetic root must not verify under the AWS anchor");

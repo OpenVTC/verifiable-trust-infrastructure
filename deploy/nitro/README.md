@@ -101,30 +101,40 @@ storage, and signed enclave images.
 > `user_data`. The nonce is bound for freshness, so — unlike the boot log — the
 > parent **cannot forge or replay** the report (it can still drop the request or
 > response; availability stays under the parent, but a *stale/forged* report is
-> rejected). Verify with **`vta_sdk::attestation::verify_config_attestation`**
-> (feature `attest-verify`) — no `vta-config` dependency, no digest re-derivation:
+> rejected). Deserialize the shared wire type and verify it (feature
+> `attest-verify`) — no `vta-config` dependency, no digest re-derivation:
 >
 > ```rust
-> use vta_sdk::attestation::verify_config_attestation;
-> let verified = verify_config_attestation(
->     &resp.evidence,        // base64 COSE_Sign1 from the response
->     &resp.config_view,     // base64 canonical view from the response
->     &nonce,                // the exact nonce bytes you sent
->     &expected_pcr0,        // REQUIRED: pin the approved image measurement
->     Some(&expected_pcr8),  // optional: pin the signing-cert measurement
->     Some(&expected_key_arn), // enforce the tenant's own KMS key
+> use vta_sdk::attestation_report::ConfigAttestationReport;
+>
+> // The response is the shared wire type — deserialize it directly.
+> let resp: ConfigAttestationReport = serde_json::from_slice(&body)?;
+>
+> // Onboarding verify: pins the approved image AND the tenant's own KMS key.
+> // `expected_key_arn` is MANDATORY (see below).
+> let verified = resp.verify(
+>     &nonce,                  // the exact nonce bytes you sent
+>     &expected_pcr0,          // REQUIRED: pin the approved image measurement
+>     Some(&expected_pcr8),    // optional: pin the signing-cert measurement
+>     &expected_key_arn,       // REQUIRED: the tenant's own KMS key ARN
 > )?;
-> // On success: chain-to-root, PCR0 (+PCR8), nonce, view→digest binding, and
-> // key_arn are all verified. The SDK hashes `config_view` and checks it equals
-> // the signed `user_data`, so the returned view is authentic; it then enforces
-> // `tee.kms.key_arn`. Read further with `verified.config_view_json()`.
+> // On success: chain-to-root, PCR0 (+PCR8), nonce, view→digest binding, AND
+> // key_arn are all verified. Inspect any other tenant-sensitive fields
+> // (anchor table, mediator, public_url, vta_did_template) with
+> // `verified.config_view_json()` before trusting them.
 > ```
 >
-> PCR0 is **required** — verifying only "a genuine Nitro enclave signed this"
-> (without pinning the approved image) would let a malicious parent run a
-> *different* enclave image that echoes the expected view. The digest input is the
-> `configView` bytes themselves; you never re-derive them from base+overlay
-> (which cannot reproduce the enclave-generated `vta_did`).
+> **`expected_key_arn` is mandatory**, and mandatory PCR0 does **not** substitute
+> for it. Fleet mode runs one approved image (one PCR0) across tenants and accepts
+> tenant-specific runtime key ARNs, so an approved image can truthfully attest
+> that it booted with the *parent's* key. Because the enclave seals the first-boot
+> seed under `tee.kms.key_arn`, skipping the key check leaves the seed
+> exfiltratable by a parent that chose its own key. (If you only need to
+> *authenticate* the view without approving its policy — e.g. for investigation —
+> use `resp.authenticate(...)`, which returns the weaker
+> `AuthenticatedConfigAttestation` and forces you to inspect the key yourself.)
+> The digest input is the `configView` bytes themselves; you never re-derive them
+> from base+overlay (which cannot reproduce the enclave-generated `vta_did`).
 >
 > **Multi-tenant isolation is now a KMS-policy requirement.** With `key_arn` no
 > longer baked, one PCR0 is shared across tenants and the parent supplies the

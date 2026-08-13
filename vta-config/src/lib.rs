@@ -772,11 +772,18 @@ impl AppConfig {
     /// anchor and `POST /attestation/config-report` read that stored value so they
     /// commit to the same digest.
     ///
-    /// Secret and non-reproducible fields are cleared before hashing so a verifier
-    /// can reproduce the digest from the published base config + the tenant
-    /// overlay: `auth.jwt_signing_key` and the `[secrets]` seed are zeroed, and the
-    /// `#[serde(skip)]` fields (`config_path`, `unknown_keys`, this digest itself)
-    /// never serialize.
+    /// Secret and non-reproducible fields are cleared before hashing:
+    /// `auth.jwt_signing_key` and the `[secrets]` seed are zeroed, and the
+    /// `#[serde(skip)]` fields (`config_path`, `unknown_keys`, this digest, the
+    /// view) never serialize.
+    ///
+    /// A verifier does **not** re-derive this digest from base+overlay — after
+    /// in-enclave `vta_did` generation/restoration the effective config differs
+    /// from base+overlay, so that would never match. Instead the endpoint returns
+    /// the captured canonical view (see [`compute_config_attestation_view`]) and
+    /// the verifier hashes the decoded `configView` to reproduce this digest.
+    ///
+    /// [`compute_config_attestation_view`]: Self::compute_config_attestation_view
     pub fn compute_config_attestation_digest(&self) -> Result<Vec<u8>, AppError> {
         use sha2::{Digest, Sha384};
         Ok(Sha384::digest(self.compute_config_attestation_view()?).to_vec())

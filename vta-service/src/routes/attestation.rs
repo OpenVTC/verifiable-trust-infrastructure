@@ -7,10 +7,10 @@ use axum::response::Response;
 use crate::auth::SuperAdminAuth;
 use crate::error::{AppError, tee_attestation_error};
 use crate::operations;
-use crate::operations::attestation::ConfigAttestationReport;
 use crate::server::AppState;
 use crate::tee::mnemonic_guard::{MnemonicExportResponse, MnemonicExportStatus};
 use crate::tee::types::{AttestationReport, AttestationRequest, TeeStatus};
+use vta_sdk::attestation_report::ConfigAttestationReport;
 
 /// GET /attestation/status — TEE detection status (unauthenticated).
 #[utoipa::path(
