@@ -40,9 +40,6 @@ pub(crate) struct SyntheticQuote {
     pub pcr0: Vec<u8>,
     pub pcr8: Vec<u8>,
     pub module_id: String,
-    /// Nonce embedded in the quote (for the config-report path); `None` for the
-    /// sealed-bootstrap builders that don't bind a nonce.
-    pub nonce: Option<Vec<u8>>,
 }
 
 impl SyntheticQuote {
@@ -146,7 +143,6 @@ fn build_inner(user_data: Vec<u8>, nonce: Option<Vec<u8>>, good_signature: bool)
         pcr0,
         pcr8,
         module_id,
-        nonce,
     }
 }
 

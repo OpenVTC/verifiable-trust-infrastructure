@@ -93,6 +93,7 @@ impl std::error::Error for OverlayFetchError {}
 /// The parent's envelope. `integrity` is reserved (design note §3.4) — the
 /// config-digest attestation is the current verification mechanism.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ConfigEnvelope {
     version: u32,
     overlay: TenantConfigOverlay,
@@ -219,6 +220,15 @@ mod tests {
         // `admin_did` is not on the allowlist → deny_unknown_fields → parse error.
         let env =
             r#"{"version":1,"overlay":{"tee_kms":{"key_arn":"x","admin_did":"did:key:zEvil"}}}"#;
+        assert!(matches!(
+            parse_envelope(env.as_bytes()),
+            Err(OverlayFetchError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_envelope_with_unknown_field() {
+        let env = r#"{"version":1,"overlay":{},"unexpected":"value"}"#;
         assert!(matches!(
             parse_envelope(env.as_bytes()),
             Err(OverlayFetchError::Parse(_))

@@ -1315,6 +1315,34 @@ mod validate_tests {
             .expect("rest-without-public_url is advisory, not an error");
     }
 
+    #[test]
+    fn config_attestation_view_strips_secrets_and_capture_fields() {
+        let mut config = cfg("[auth]\njwt_signing_key = \"jwt-secret-sentinel\"\n\
+             [secrets]\nseed = \"seed-secret-sentinel\"\n");
+        config.effective_config_digest = Some(vec![0x11; 48]);
+        config.effective_config_view = Some(b"prior-view-sentinel".to_vec());
+
+        let bytes = config
+            .compute_config_attestation_view()
+            .expect("attestation view serializes");
+        let text = std::str::from_utf8(&bytes).expect("JSON is UTF-8");
+        assert!(!text.contains("jwt-secret-sentinel"));
+        assert!(!text.contains("seed-secret-sentinel"));
+        assert!(!text.contains("prior-view-sentinel"));
+
+        let view: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON view");
+        assert_eq!(
+            view.pointer("/auth/jwt_signing_key"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            view.pointer("/secrets/seed"),
+            Some(&serde_json::Value::Null)
+        );
+        assert!(view.get("effective_config_digest").is_none());
+        assert!(view.get("effective_config_view").is_none());
+    }
+
     /// Write `contents` to a `config.toml` in a fresh tempdir and run it
     /// through the real `AppConfig::load` path (the only path that populates
     /// `unknown_keys` — `toml::from_str` doesn't). Returns the loaded config;
