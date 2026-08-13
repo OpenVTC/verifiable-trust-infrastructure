@@ -125,11 +125,15 @@ pub async fn generate_config_attestation(
 
     // Commit the digest of the EFFECTIVE (post-overlay) config the enclave
     // booted. This is the digest captured at boot into
-    // `AppConfig::effective_config_digest` — after any tenant overlay was applied
-    // and before secrets were injected — so it reflects the tenant's real
-    // key_arn / mediator / anchor / public_url, and matches the boot-time
-    // attestation anchor exactly. We do NOT re-read config_path (which, in fleet
-    // mode, is only the baked placeholder base).
+    // `AppConfig::effective_config_digest` — after ALL effective-config mutations
+    // (tenant overlay applied, KMS-injected JWT signing key, DID
+    // reconciliation/generation, WebVH backfill, admin bootstrap) — so it reflects
+    // the tenant's real key_arn / mediator / anchor / public_url / DID, and matches
+    // the boot-time attestation anchor exactly. Capturing after secret injection is
+    // safe because `compute_config_attestation_view` strips the secret fields
+    // (JWT signing key, `[secrets]`) before serialization, so the view stays
+    // secret-free. We do NOT re-read config_path (which, in fleet mode, is only
+    // the baked placeholder base).
     let (digest, view) = {
         let cfg = config.read().await;
         let digest = cfg.effective_config_digest.clone().ok_or_else(|| {
