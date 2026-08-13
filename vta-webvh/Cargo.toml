@@ -2,7 +2,7 @@
 name = "vta-webvh"
 description = "WebVH hosting infrastructure for the VTA — the DID-record store, the HTTP client to a did:webvh hosting server, and its DID-auth handshake"
 readme = "README.md"
-version = "0.1.4"
+version = "0.1.5"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own

@@ -2,7 +2,7 @@
 name = "vta-backup"
 description = "VTA backup/restore subsystem — encrypted full-state export/import, the sealed backup-bundle store, and its TTL sweeper"
 readme = "README.md"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own

@@ -2,7 +2,7 @@
 name = "vta-keys"
 description = "VTA key management — master-seed storage, BIP-32 key derivation, key wrapping, and the seed-store backend selection"
 readme = "README.md"
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
