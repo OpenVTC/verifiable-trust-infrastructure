@@ -1412,9 +1412,12 @@ mod tests {
     #[cfg(feature = "tsp")]
     #[test]
     fn an_inbound_request_is_not_mistaken_for_a_reply() {
+        // A published request URI, deliberately: binding a `trusttasks.org/spec/`
+        // literal asserts the registry serves that task, and the canonical-task
+        // census checks every one of them — including the ones in tests.
         let request = serde_json::to_vec(&json!({
             "id": "urn:uuid:req",
-            "type": "https://trusttasks.org/spec/vtc/join/submit/0.1",
+            "type": "https://trusttasks.org/spec/registry/record/query/0.1",
             "payload": {},
         }))
         .unwrap();

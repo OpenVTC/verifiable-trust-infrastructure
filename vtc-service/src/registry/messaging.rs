@@ -162,7 +162,10 @@ impl MessagingRegistryClient {
         }
     }
 
-    #[cfg(test)]
+    /// Shorten the reply window. Test-only: the production window is a
+    /// deliberate 60s, and the silence case would otherwise take that long to
+    /// assert.
+    #[cfg(any(test, feature = "didcomm-harness"))]
     pub fn with_reply_timeout(mut self, timeout: Duration) -> Self {
         self.reply_timeout = timeout;
         self
@@ -646,12 +649,17 @@ mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
 
-    fn record_doc(slug: &str, payload: Value) -> TrustTask<Value> {
+    /// The `#response` to `request_type`.
+    ///
+    /// Built from the whole request URI rather than by interpolating a slug
+    /// into a `trusttasks.org/spec/…` template: the canonical-task census
+    /// scans source for `spec/` literals and asserts the registry publishes
+    /// each one, so a templated URI reads to it as a bound task named
+    /// `{slug}`.
+    fn record_doc(request_type: &str, payload: Value) -> TrustTask<Value> {
         TrustTask::new(
             "urn:uuid:reply".to_string(),
-            format!("https://trusttasks.org/spec/{slug}/0.1#response")
-                .parse()
-                .unwrap(),
+            format!("{request_type}#response").parse().unwrap(),
             payload,
         )
     }
@@ -706,12 +714,9 @@ mod tests {
 
     #[test]
     fn a_wrong_response_type_does_not_pass_as_success() {
-        let wrong = record_doc("registry/record/query", json!({ "records": [] }));
+        let wrong = record_doc(RECORD_QUERY, json!({ "records": [] }));
         assert!(classify(&wrong, "registry/record/put").is_err());
-        let right = record_doc(
-            "registry/record/put",
-            json!({ "ok": true, "created": true }),
-        );
+        let right = record_doc(RECORD_PUT, json!({ "ok": true, "created": true }));
         assert!(classify(&right, "registry/record/put").is_ok());
     }
 
