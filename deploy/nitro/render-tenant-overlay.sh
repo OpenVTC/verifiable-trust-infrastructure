@@ -59,8 +59,13 @@ while [ $# -gt 0 ]; do
 done
 
 command -v jq >/dev/null 2>&1 || die "jq is required"
-[ -n "$KEY_ARN" ]      || die "--key-arn is required"
-[ -n "$MEDIATOR_DID" ] || die "--mediator-did is required"
+[ -n "$KEY_ARN" ]           || die "--key-arn is required"
+# The fleet base bakes tee.kms.allow_anchor_init = true, so the enclave requires
+# an external anchor table (else it drops to manifest-only). Enforce it here too.
+[ -n "$ANCHOR_TABLE_NAME" ] || die "--anchor-table-name is required (fleet bakes allow_anchor_init=true)"
+# --mediator-did is optional: a REST-only fleet build has no mediator. When
+# omitted, no [messaging] block is emitted and the baked base's placeholder is
+# left untouched (REST-only enclaves ignore it).
 
 # Basic ARN shape check — the enclave re-validates (account allowlist + shape),
 # but fail early with a clear message rather than at enclave boot.
@@ -97,10 +102,10 @@ jq -n \
               | put("anchor_table_name"; $anchor_table_name)
               | put("anchor_writer_credential_ciphertext"; $anchor_writer_credential_ciphertext)
           ) }
-        | . + { messaging: (
+        | (if $mediator_did == "" then . else . + { messaging: (
               { mediator_did: $mediator_did }
               | put("mediator_url"; $mediator_url)
-          ) }
+          ) } end)
       ),
       integrity: null
     }

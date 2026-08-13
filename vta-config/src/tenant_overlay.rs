@@ -100,6 +100,11 @@ pub enum TenantOverlayError {
     /// the overlay nor the baked base provides the `anchor.table_name` the
     /// credential belongs to.
     AnchorWriterWithoutTable,
+    /// The baked config sets `tee.kms.allow_anchor_init = true` (so a fresh-store
+    /// boot may establish the anti-rollback manifest baseline) but no external
+    /// anchor `table_name` is configured — that would silently drop to
+    /// manifest-only protection. The overlay MUST supply `anchor_table_name`.
+    AnchorTableRequired,
 }
 
 impl std::fmt::Display for TenantOverlayError {
@@ -132,27 +137,52 @@ impl std::fmt::Display for TenantOverlayError {
                  no anchor table_name is available (neither in the overlay nor the \
                  baked base)"
             ),
+            Self::AnchorTableRequired => write!(
+                f,
+                "baked tee.kms.allow_anchor_init = true but no external anchor \
+                 table_name is configured — the tenant overlay must supply \
+                 anchor_table_name (else anti-rollback drops to manifest-only)"
+            ),
         }
     }
 }
 
 impl std::error::Error for TenantOverlayError {}
 
+/// Parse a KMS key ARN into `(region, account)`, enforcing the full shape:
+/// `arn:aws:kms:<region>:<12-digit-account>:key/<non-empty-id>`.
+///
+/// Rejects alias ARNs, empty region, non-12-digit or non-numeric accounts, and
+/// an empty key identifier.
+fn parse_kms_key_arn(key_arn: &str) -> Option<(&str, &str)> {
+    let parts: Vec<&str> = key_arn.splitn(6, ':').collect();
+    match parts.as_slice() {
+        ["arn", "aws", "kms", region, account, resource]
+            if !region.is_empty()
+                && is_aws_account_id(account)
+                && resource
+                    .strip_prefix("key/")
+                    .is_some_and(|id| !id.is_empty()) =>
+        {
+            Some((region, account))
+        }
+        _ => None,
+    }
+}
+
+/// True for a syntactically valid AWS account ID: exactly 12 ASCII digits.
+fn is_aws_account_id(s: &str) -> bool {
+    s.len() == 12 && s.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// Validate a KMS `key_arn` against the baked account allowlist.
 ///
-/// Fail-closed on every path: a malformed ARN, an empty allowlist, or an
-/// account not on the list all reject.
+/// Fail-closed on every path: a malformed ARN (bad shape, alias, non-12-digit
+/// account, or empty key id), an empty allowlist, or an account not on the list
+/// all reject.
 pub fn validate_key_arn(key_arn: &str, allowed: &[String]) -> Result<(), TenantOverlayError> {
-    // arn:aws:kms:<region>:<account>:key/<id>
-    let parts: Vec<&str> = key_arn.splitn(6, ':').collect();
-    let account = match parts.as_slice() {
-        ["arn", "aws", "kms", region, account, rest]
-            if !region.is_empty() && !account.is_empty() && rest.starts_with("key/") =>
-        {
-            *account
-        }
-        _ => return Err(TenantOverlayError::MalformedKeyArn(key_arn.to_string())),
-    };
+    let (_region, account) = parse_kms_key_arn(key_arn)
+        .ok_or_else(|| TenantOverlayError::MalformedKeyArn(key_arn.to_string()))?;
     if allowed.is_empty() {
         return Err(TenantOverlayError::NoAccountsAllowlisted);
     }
@@ -169,15 +199,9 @@ pub fn validate_key_arn(key_arn: &str, allowed: &[String]) -> Result<(), TenantO
 /// [`validate_key_arn`], but this re-validates the shape so it can be used
 /// standalone.
 pub fn region_from_arn(key_arn: &str) -> Result<String, TenantOverlayError> {
-    let parts: Vec<&str> = key_arn.splitn(6, ':').collect();
-    match parts.as_slice() {
-        ["arn", "aws", "kms", region, account, rest]
-            if !region.is_empty() && !account.is_empty() && rest.starts_with("key/") =>
-        {
-            Ok((*region).to_string())
-        }
-        _ => Err(TenantOverlayError::MalformedKeyArn(key_arn.to_string())),
-    }
+    parse_kms_key_arn(key_arn)
+        .map(|(region, _account)| region.to_string())
+        .ok_or_else(|| TenantOverlayError::MalformedKeyArn(key_arn.to_string()))
 }
 
 /// Apply a validated [`TenantConfigOverlay`] onto a baked base [`AppConfig`],
@@ -247,6 +271,15 @@ pub fn apply_tenant_overlay(
                     });
                 }
             }
+        }
+
+        // Fleet safety: if the baked policy allows establishing the anti-rollback
+        // manifest baseline on a fresh store (`allow_anchor_init = true`), an
+        // external anchor table MUST be configured — otherwise a fresh boot
+        // silently drops to manifest-only protection. Require the overlay to have
+        // supplied it. (Self-host/baked configs don't run this apply path.)
+        if kms.allow_anchor_init && kms.anchor.is_none() {
+            return Err(TenantOverlayError::AnchorTableRequired);
         }
     }
 
@@ -367,6 +400,9 @@ mod tests {
             "arn:aws:kms:us-east-1:111122223333:alias/foo",
             "arn:aws:kms::111122223333:key/abc", // empty region
             "arn:aws:kms:us-east-1::key/abc",    // empty account
+            "arn:aws:kms:us-east-1:111122223333:key/", // empty key id
+            "arn:aws:kms:us-east-1:12345:key/abc", // account not 12 digits
+            "arn:aws:kms:us-east-1:11112222333a:key/abc", // account non-numeric
             "",
         ] {
             assert!(
@@ -443,5 +479,90 @@ mod tests {
             apply_tenant_overlay(&mut base, overlay),
             Err(TenantOverlayError::BaseMissingKmsSection)
         );
+    }
+
+    #[cfg(feature = "tee")]
+    #[test]
+    fn apply_overlay_requires_anchor_when_allow_anchor_init_is_baked() {
+        // Fleet base bakes allow_anchor_init = true; an overlay with no anchor
+        // table must be rejected (would silently drop to manifest-only).
+        let base_toml = r#"
+            [tee]
+            allowed_kms_accounts = ["111122223333"]
+            [tee.kms]
+            region = "PLACEHOLDER"
+            key_arn = "PLACEHOLDER"
+            allow_anchor_init = true
+        "#;
+
+        let mut base: crate::AppConfig = toml::from_str(base_toml).unwrap();
+        let no_anchor: TenantConfigOverlay =
+            serde_json::from_str(&format!(r#"{{"tee_kms":{{"key_arn":"{GOOD_ARN}"}}}}"#)).unwrap();
+        assert_eq!(
+            apply_tenant_overlay(&mut base, no_anchor),
+            Err(TenantOverlayError::AnchorTableRequired)
+        );
+
+        // With an anchor table the overlay applies.
+        let mut base: crate::AppConfig = toml::from_str(base_toml).unwrap();
+        let with_anchor: TenantConfigOverlay = serde_json::from_str(&format!(
+            r#"{{"tee_kms":{{"key_arn":"{GOOD_ARN}","anchor_table_name":"vta-anchor-acme"}}}}"#
+        ))
+        .unwrap();
+        apply_tenant_overlay(&mut base, with_anchor).expect("apply with anchor succeeds");
+        assert_eq!(
+            base.tee
+                .kms
+                .as_ref()
+                .unwrap()
+                .anchor
+                .as_ref()
+                .unwrap()
+                .table_name,
+            "vta-anchor-acme"
+        );
+    }
+
+    #[cfg(feature = "tee")]
+    #[test]
+    fn effective_config_digest_reflects_overlay_key_arn() {
+        // The critical property (design-note attestation fix): the attestation
+        // digest must change with the tenant's key_arn, not stay pinned to the
+        // baked placeholder.
+        let base_toml = r#"
+            [tee]
+            allowed_kms_accounts = ["111122223333", "444455556666"]
+            [tee.kms]
+            region = "PLACEHOLDER"
+            key_arn = "PLACEHOLDER"
+        "#;
+        let mut a: crate::AppConfig = toml::from_str(base_toml).unwrap();
+        let mut b: crate::AppConfig = toml::from_str(base_toml).unwrap();
+        apply_tenant_overlay(
+            &mut a,
+            serde_json::from_str(
+                r#"{"tee_kms":{"key_arn":"arn:aws:kms:us-east-1:111122223333:key/aaaa"}}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        apply_tenant_overlay(
+            &mut b,
+            serde_json::from_str(
+                r#"{"tee_kms":{"key_arn":"arn:aws:kms:us-west-2:444455556666:key/bbbb"}}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let da = a.compute_config_attestation_digest().unwrap();
+        let db = b.compute_config_attestation_digest().unwrap();
+        assert_eq!(da.len(), 48, "SHA-384 is 48 bytes");
+        assert_ne!(
+            da, db,
+            "digest must differ when the tenant key_arn/region differs"
+        );
+        // Deterministic: same effective config → same digest.
+        assert_eq!(da, a.compute_config_attestation_digest().unwrap());
     }
 }

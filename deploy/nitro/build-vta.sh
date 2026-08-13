@@ -425,23 +425,25 @@ fi
 # =============================================================================
 step 10 "Rebuild with final config"
 
+ACCOUNT_BUILD_ARGS=()
 if [ "$BAKE_CONFIG" = "false" ]; then
     # ── FLEET (BAKE_CONFIG=false): do NOT bake tenant values ──
     # The image bakes config.fleet-base.toml (fleet policy + placeholders). Bake
-    # ONLY the account allowlist (PCR0-committed); the tenant key_arn / mediator /
-    # DID template are delivered at runtime as a typed overlay, never baked.
+    # ONLY the account allowlist (PCR0-committed), and do it via a Docker
+    # build-arg so the *tracked* template is never edited (reproducible: a second
+    # build for another account can't retain the first). The tenant key_arn /
+    # mediator / DID template are delivered at runtime as a typed overlay.
     ACCOUNT_ID="$(printf '%s\n' "$KEY_ARN" | cut -d: -f5)"
-    FLEET_BASE="$SCRIPT_DIR/config.fleet-base.toml"
-    sed -i.bak \
-        "s|allowed_kms_accounts = \[\"REPLACE_WITH_ALLOWED_ACCOUNT_ID\"\]|allowed_kms_accounts = [\"$ACCOUNT_ID\"]|" \
-        "$FLEET_BASE"
-    rm -f "$FLEET_BASE.bak"
-    ok "Fleet base tee.allowed_kms_accounts set to [\"$ACCOUNT_ID\"]"
+    # Passed to the config-false stage, which seds the placeholder in the copied
+    # /out/config.toml (never the source). Value is the JSON array *inner* text.
+    ACCOUNT_BUILD_ARGS=(--build-arg ALLOWED_KMS_ACCOUNTS="\"$ACCOUNT_ID\"")
+    ok "Fleet base tee.allowed_kms_accounts will be baked as [\"$ACCOUNT_ID\"] (build-arg)"
 
     # Emit a tenant OVERLAY TEMPLATE (the allowlisted wire shape — see
     # docs/05-design-notes/tenant-config-allowlist.md §3.4). A real per-tenant
     # overlay is produced by render-tenant-overlay.sh and served by
-    # deploy-enclave.sh over vsock:5800.
+    # deploy-enclave.sh over vsock:5800. anchor_table_name is REQUIRED (the fleet
+    # base bakes allow_anchor_init = true).
     OVERLAY_TEMPLATE_PATH="$BUILD_DIR/tenant-overlay-template.json"
     cat > "$OVERLAY_TEMPLATE_PATH" <<JSON
 {
@@ -451,7 +453,8 @@ if [ "$BAKE_CONFIG" = "false" ]; then
     "public_url": "https://vta.REPLACE.example.com",
     "tee_kms": {
       "key_arn": "$KEY_ARN",
-      "vta_did_template": "did:webvh:{SCID}:REPLACE.example.com:vta"
+      "vta_did_template": "did:webvh:{SCID}:REPLACE.example.com:vta",
+      "anchor_table_name": "REPLACE_vta_rollback_anchor_table"
     },
     "messaging": { "mediator_did": "REPLACE_mediator_did" }
   },
@@ -461,7 +464,8 @@ JSON
     ok "Tenant overlay TEMPLATE written: $OVERLAY_TEMPLATE_PATH"
     info "Render a per-tenant overlay, e.g.:"
     info "  deploy/nitro/render-tenant-overlay.sh --key-arn $KEY_ARN \\"
-    info "    --mediator-did <did> --vta-did-template <tmpl> > tenant-overlay.json"
+    info "    --mediator-did <did> --anchor-table-name <table> \\"
+    info "    --vta-did-template <tmpl> > tenant-overlay.json"
     info "Then serve it: deploy-enclave.sh --config-envelope tenant-overlay.json"
 else
     # ── SELF-HOST (BAKE_CONFIG=true): bake the tenant config into the EIF ──
@@ -475,6 +479,7 @@ info "Rebuilding Docker image..."
 docker build -f "$REPO_ROOT/Dockerfile.nitro" \
     --build-arg FEATURES="$FEATURES" \
     --build-arg BAKE_CONFIG="$BAKE_CONFIG" \
+    "${ACCOUNT_BUILD_ARGS[@]+"${ACCOUNT_BUILD_ARGS[@]}"}" \
     -t vta-nitro \
     "$REPO_ROOT"
 ok "Docker image rebuilt"

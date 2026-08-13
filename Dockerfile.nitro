@@ -188,6 +188,14 @@ COPY deploy/nitro/config.toml /out/config.toml
 FROM alpine:3.21 AS config-false
 RUN mkdir -p /out
 COPY deploy/nitro/config.fleet-base.toml /out/config.toml
+# Bake the PCR0-committed account allowlist from a build-arg into the COPIED file
+# (never the tracked source), so repeated builds for different accounts are
+# reproducible. Value is the JSON-array inner text, e.g. `"111122223333"` or
+# `"111122223333","444455556666"`. Empty leaves the placeholder (fail-closed).
+ARG ALLOWED_KMS_ACCOUNTS=""
+RUN if [ -n "${ALLOWED_KMS_ACCOUNTS}" ]; then \
+        sed -i "s|allowed_kms_accounts = \[\"REPLACE_WITH_ALLOWED_ACCOUNT_ID\"\]|allowed_kms_accounts = [${ALLOWED_KMS_ACCOUNTS}]|" /out/config.toml; \
+    fi
 
 # Re-declare so `config-${BAKE_CONFIG}` resolves; default keeps baked as default.
 ARG BAKE_CONFIG=true

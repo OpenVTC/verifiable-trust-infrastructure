@@ -1075,6 +1075,7 @@ pub async fn apply_inputs(
         resolver_url: inputs.resolver_url.clone(),
         config_path: inputs.config_path.clone(),
         unknown_keys: Vec::new(),
+        effective_config_digest: None,
     };
     config.save()?;
 
@@ -1642,6 +1643,7 @@ fn scratch_config_for_seed_store(
         resolver_url: None,
         config_path,
         unknown_keys: Vec::new(),
+        effective_config_digest: None,
     }
 }
 

@@ -95,9 +95,19 @@ pub async fn maybe_generate_vta_did(
     }
 
     // No stored identity yet.
-    // Guard: an explicit DID already in config.toml (first boot, nothing to
-    // generate — the store will hold it after this boot writes it).
-    if config.vta_did.is_some() {
+    // First boot with an explicit DID (from the baked config or the tenant
+    // overlay): persist it now so it becomes the authoritative stored identity.
+    // A later boot then restores THIS DID from the store, and the store-precedence
+    // check above rejects any *different* parent-supplied DID. Without persisting,
+    // a fresh direct `vta_did` could be accepted on every boot — defeating
+    // "first-boot only; on restore the store wins" (design note §3.6).
+    if let Some(direct) = config.vta_did.clone() {
+        let inserted = keys_ks
+            .insert_raw_if_absent(VTA_DID_STORE_KEY, direct.as_bytes().to_vec())
+            .await?;
+        if inserted {
+            info!(did = %direct, "persisted directly-supplied VTA DID as the first-boot identity");
+        }
         return Ok(());
     }
 

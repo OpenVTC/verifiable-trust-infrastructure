@@ -3,7 +3,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use sha2::{Digest, Sha384};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
@@ -143,16 +142,23 @@ pub async fn generate_config_attestation(
         ));
     }
 
-    // Digest the exact config file the enclave booted (`config_path` is the file
-    // `AppConfig::load` read), so this matches the boot-time attestation anchor.
-    let config_path = config.read().await.config_path.clone();
-    let bytes = tokio::fs::read(&config_path).await.map_err(|e| {
-        AppError::Internal(format!(
-            "failed to read config at {} for attestation digest: {e}",
-            config_path.display()
-        ))
-    })?;
-    let digest = Sha384::digest(&bytes);
+    // Commit the digest of the EFFECTIVE (post-overlay) config the enclave
+    // booted. This is the digest captured at boot into
+    // `AppConfig::effective_config_digest` — after any tenant overlay was applied
+    // and before secrets were injected — so it reflects the tenant's real
+    // key_arn / mediator / anchor / public_url, and matches the boot-time
+    // attestation anchor exactly. We do NOT re-read config_path (which, in fleet
+    // mode, is only the baked placeholder base).
+    let digest = {
+        let cfg = config.read().await;
+        cfg.effective_config_digest.clone().ok_or_else(|| {
+            AppError::Internal(
+                "no effective config digest was captured at boot — cannot produce a \
+                 config-report attestation (is this a TEE build?)"
+                    .to_string(),
+            )
+        })?
+    };
 
     debug!(
         nonce_len = nonce_bytes.len(),
@@ -163,7 +169,7 @@ pub async fn generate_config_attestation(
     let report = tee_state.provider.attest(digest.as_slice(), &nonce_bytes)?;
 
     Ok(ConfigAttestationReport {
-        config_digest_sha384: BASE64.encode(digest),
+        config_digest_sha384: BASE64.encode(&digest),
         nonce: report.nonce,
         tee_type: report.tee_type,
         evidence: report.evidence,
@@ -173,8 +179,9 @@ pub async fn generate_config_attestation(
 
 #[cfg(test)]
 mod tests {
-    use super::{BASE64, Digest, Sha384};
+    use super::BASE64;
     use base64::Engine;
+    use sha2::{Digest, Sha384};
 
     #[test]
     fn config_digest_is_deterministic_sha384_b64() {

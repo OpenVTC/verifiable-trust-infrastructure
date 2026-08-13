@@ -183,6 +183,15 @@ pub struct AppConfig {
     /// that boots fine today must keep booting (P0.9b).
     #[serde(skip)]
     pub unknown_keys: Vec<String>,
+    /// SHA-384 of the **effective** config, captured once after any runtime
+    /// tenant overlay is applied (un-baked/fleet mode). This is what the boot
+    /// attestation anchor and `POST /attestation/config-report` commit to — so
+    /// the attested digest reflects the tenant's real `key_arn` / mediator /
+    /// anchor / `public_url`, not the baked placeholder file. `None` until
+    /// [`AppConfig::compute_config_attestation_digest`] populates it (e.g. a
+    /// non-TEE build never sets it). `#[serde(skip)]` — never in the file.
+    #[serde(skip)]
+    pub effective_config_digest: Option<Vec<u8>>,
 }
 
 /// How the mediator self-readiness gate behaves when it times out.
@@ -743,6 +752,34 @@ pub enum TeeMode {
 }
 
 impl AppConfig {
+    /// Compute the SHA-384 digest of the **effective** config for attestation.
+    ///
+    /// Serializes a canonical, secret-free view of this config (JSON, in struct
+    /// field order) and hashes it. Call once after any tenant overlay is applied
+    /// and *before* runtime secrets (JWT signing key) are injected, then store the
+    /// result in [`Self::effective_config_digest`]; both the boot attestation
+    /// anchor and `POST /attestation/config-report` read that stored value so they
+    /// commit to the same digest.
+    ///
+    /// Secret and non-reproducible fields are cleared before hashing so a verifier
+    /// can reproduce the digest from the published base config + the tenant
+    /// overlay: `auth.jwt_signing_key` and the `[secrets]` seed are zeroed, and the
+    /// `#[serde(skip)]` fields (`config_path`, `unknown_keys`, this digest itself)
+    /// never serialize.
+    pub fn compute_config_attestation_digest(&self) -> Result<Vec<u8>, AppError> {
+        use sha2::{Digest, Sha384};
+        let mut view = self.clone();
+        view.auth.jwt_signing_key = None;
+        view.secrets = SecretsConfig::default();
+        view.effective_config_digest = None;
+        let bytes = serde_json::to_vec(&view).map_err(|e| {
+            AppError::Internal(format!(
+                "config attestation digest serialization failed: {e}"
+            ))
+        })?;
+        Ok(Sha384::digest(&bytes).to_vec())
+    }
+
     pub fn load(config_path: Option<PathBuf>) -> Result<Self, AppError> {
         let path = config_path
             .or_else(|| std::env::var("VTA_CONFIG_PATH").ok().map(PathBuf::from))

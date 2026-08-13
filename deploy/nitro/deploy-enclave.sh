@@ -44,6 +44,7 @@ INTERACTIVE=true
 BUNDLE_DIR="${VTA_BUNDLE_DIR:-}"
 EIF_PATH=""
 CONFIG_PATH=""
+CONFIG_ENVELOPE_PATH="${CONFIG_ENVELOPE_PATH:-}"
 PCR0_OVERRIDE=""
 PCR8_OVERRIDE=""
 CPU_OVERRIDE=""
@@ -55,6 +56,7 @@ while [ $# -gt 0 ]; do
         --bundle)          BUNDLE_DIR="$2"; shift 2 ;;
         --eif)             EIF_PATH="$2"; shift 2 ;;
         --config)          CONFIG_PATH="$2"; shift 2 ;;
+        --config-envelope) CONFIG_ENVELOPE_PATH="$2"; shift 2 ;;
         --pcr0)            PCR0_OVERRIDE="$2"; shift 2 ;;
         --pcr8)            PCR8_OVERRIDE="$2"; shift 2 ;;
         --cpu)             CPU_OVERRIDE="$2"; shift 2 ;;
@@ -274,11 +276,38 @@ else
     if [ -f "${CONFIG_ENVELOPE_PATH:-}" ]; then
         ok "Tenant overlay: $CONFIG_ENVELOPE_PATH (served over vsock:5800)"
         PROXY_ENVELOPE_ARGS=(--config-envelope "$CONFIG_ENVELOPE_PATH")
+
+        # Keep the PARENT proxy consistent with the tenant overlay. The enclave
+        # derives its KMS egress region from the overlay's key_arn and connects to
+        # the overlay's mediator, but the parent's config.toml is only the
+        # fleet-base placeholder. The proxy honours AWS_REGION / MEDIATOR_DID env
+        # vars with priority over config.toml, so derive them here. This drives
+        # ONLY the parent's egress routing/allowlist — it never influences the
+        # enclave's baked security policy (that comes from the attested overlay).
+        if command -v jq >/dev/null 2>&1; then
+            OVERLAY_KEY_ARN="$(jq -r '.overlay.tee_kms.key_arn // empty' "$CONFIG_ENVELOPE_PATH" 2>/dev/null || true)"
+            OVERLAY_MEDIATOR_DID="$(jq -r '.overlay.messaging.mediator_did // empty' "$CONFIG_ENVELOPE_PATH" 2>/dev/null || true)"
+            if [ -n "$OVERLAY_KEY_ARN" ]; then
+                OVERLAY_REGION="$(printf '%s\n' "$OVERLAY_KEY_ARN" | cut -d: -f4)"
+                if [ -n "$OVERLAY_REGION" ]; then
+                    export AWS_REGION="$OVERLAY_REGION"
+                    ok "Parent proxy KMS region from overlay: $AWS_REGION"
+                fi
+            fi
+            if [ -n "$OVERLAY_MEDIATOR_DID" ]; then
+                export MEDIATOR_DID="$OVERLAY_MEDIATOR_DID"
+                ok "Parent proxy mediator DID from overlay: $MEDIATOR_DID"
+            fi
+        else
+            warn "jq not found — cannot derive the parent proxy's region/mediator from the overlay."
+            warn "Set AWS_REGION and MEDIATOR_DID manually to match the overlay, or the parent may"
+            warn "use the fleet-base placeholder region/mediator and block the enclave's egress."
+        fi
     else
         warn "No tenant overlay found — a fleet (un-baked) EIF will fail to boot."
         warn "Render one from the build's tenant-overlay-template.json, e.g.:"
-        warn "  deploy/nitro/render-tenant-overlay.sh --key-arn <arn> \\"
-        warn "    --mediator-did <did> --vta-did-template <tmpl> > tenant-overlay.json"
+        warn "  deploy/nitro/render-tenant-overlay.sh --key-arn <arn> --mediator-did <did> \\"
+        warn "    --anchor-table-name <table> --vta-did-template <tmpl> > tenant-overlay.json"
     fi
     nohup "$PROXY_BIN" --config "$CONFIG_PATH" --enclave-cid 16 \
         ${PROXY_ENVELOPE_ARGS[@]+"${PROXY_ENVELOPE_ARGS[@]}"} \

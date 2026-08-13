@@ -41,17 +41,28 @@ embed_in_did = true
 allowed_kms_accounts = ["REPLACE_WITH_ALLOWED_ACCOUNT_ID"]
 
 # The tee.kms.allow_* break-glass flags all default to false and are intentionally
-# NOT set here: the overlay cannot carry them (deny_unknown_fields), and leaving
-# them at their compiled defaults keeps that guarantee under PCR0.
+# NOT set here EXCEPT allow_anchor_init: the overlay cannot carry any allow_* flag
+# (deny_unknown_fields), so leaving them at their compiled defaults keeps that
+# guarantee under PCR0.
+#
+# allow_anchor_init = true is baked so a genuinely FRESH-store enclave can
+# establish the anti-rollback integrity-manifest baseline on first boot (with it
+# false, boot_verify_and_install refuses on a store that has no manifest yet).
+# Because that would otherwise permit manifest-only protection, the tenant overlay
+# is REQUIRED to supply tee.kms.anchor.table_name (the external DynamoDB counter)
+# — apply_tenant_overlay rejects an overlay that omits it while allow_anchor_init
+# is true. See docs/05-design-notes/tee-anti-rollback-anchor.md.
 
 # ── KMS bootstrap (tenant-scoped — PLACEHOLDERS, overlay fills these) ─────────
 #
 # region + key_arn are required for the base config to parse; the overlay
 # overwrites them with the tenant's real values (key_arn validated against
-# tee.allowed_kms_accounts, region derived from the ARN).
+# tee.allowed_kms_accounts, region derived from the ARN). The overlay MUST also
+# supply anchor_table_name (see allow_anchor_init above).
 [tee.kms]
 region = "us-east-1"
 key_arn = "OVERLAY_PLACEHOLDER_KMS_KEY_ARN"
+allow_anchor_init = true
 
 # vta_did_template is delivered by the overlay on first boot:
 # vta_did_template = "did:webvh:{SCID}:example.com:vta"

@@ -18,7 +18,6 @@ use std::sync::Arc;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use clap::Parser;
-use sha2::{Digest, Sha384};
 use tracing::info;
 
 use vta_service::config::AppConfig;
@@ -190,6 +189,30 @@ async fn main() {
     let parent_delivered = overlay_applied;
     #[cfg(not(feature = "tenant-overlay"))]
     let parent_delivered = false;
+
+    // Snapshot the EFFECTIVE (post-overlay) config digest now, for attestation.
+    // Both the boot anchor below and POST /attestation/config-report commit to
+    // this value, so a verifier's `(PCR0, config-digest)` reflects the tenant's
+    // real key_arn / mediator / anchor / public_url — not the baked placeholder
+    // file. Computed before secrets/JWT injection and DID autogen, so it is
+    // secret-free and reproducible from the published base config + overlay.
+    let config = {
+        let mut config = config;
+        match config.compute_config_attestation_digest() {
+            Ok(d) => config.effective_config_digest = Some(d),
+            Err(e) if on_nitro => {
+                tracing::error!(
+                    "FATAL: could not compute effective config attestation digest: {e}. \
+                     Refusing to boot."
+                );
+                std::process::exit(1);
+            }
+            Err(e) => {
+                tracing::warn!("effective config attestation digest unavailable (non-Nitro): {e}")
+            }
+        }
+        config
+    };
 
     // ── Security floor for a parent-delivered (un-baked) config ──
     // The tenant config is authored by the untrusted parent, so on real Nitro
@@ -395,19 +418,15 @@ async fn main() {
         // returns the current digest bound to a caller-supplied nonce) is the
         // follow-up that makes the verifier story complete — see README.
         //
-        // The digest is over the config *file bytes* (which is what is un-baked),
-        // not the effective config; the two allowed env overrides
-        // (VTA_LOG_LEVEL / VTA_LOG_FORMAT) are not reflected and are not security
-        // relevant. Additive and non-fatal: a failure here does not block boot
-        // (the KMS bootstrap already hard-requires attestation on real hardware).
+        // The digest is over the EFFECTIVE (post-overlay) config captured earlier
+        // in `config.effective_config_digest` — i.e. it reflects the tenant's
+        // real key_arn / mediator / anchor / public_url, NOT the baked
+        // placeholder file. Secret-free (computed before JWT/seed injection).
+        // Additive and non-fatal: a failure here does not block boot (the KMS
+        // bootstrap already hard-requires attestation on real hardware).
         if let Some(state) = tee_state.as_ref().filter(|_| on_nitro) {
-            // Use the path AppConfig actually loaded (`config.config_path`), not a
-            // re-derived one, so the digest can't hash a different file than the
-            // one in effect. This is also the file POST /attestation/config-report
-            // digests, so the boot anchor and the pull endpoint agree.
-            match std::fs::read(&config.config_path) {
-                Ok(raw) => {
-                    let digest = Sha384::digest(&raw);
+            match config.effective_config_digest.as_ref() {
+                Some(digest) => {
                     let digest_b64 = BASE64.encode(digest);
                     match state.provider.attest(digest.as_slice(), &[]) {
                         Ok(report) => {
@@ -426,9 +445,8 @@ async fn main() {
                         }
                     }
                 }
-                Err(e) => tracing::warn!(
-                    "config attestation anchor skipped — could not read {} for digest: {e}",
-                    config.config_path.display()
+                None => tracing::warn!(
+                    "config attestation anchor skipped — no effective config digest was computed"
                 ),
             }
         }
