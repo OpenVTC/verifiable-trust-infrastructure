@@ -431,6 +431,22 @@ pub enum ConfigAttestationVerifyError {
     /// A pinned PCR (image / signing cert) did not match the expected value.
     #[error(transparent)]
     Pcr(#[from] PcrMismatch),
+    /// The response's outer `configDigestSha384` field was not valid base64.
+    /// (Only surfaced by the [`ConfigAttestationReport`] wire-form methods, which
+    /// cross-check the echoed metadata against the signed evidence.)
+    ///
+    /// [`ConfigAttestationReport`]: crate::attestation_report::ConfigAttestationReport
+    #[error("outer configDigestSha384 base64 decode: {0}")]
+    OuterDigestBase64(String),
+    /// The response's outer `configDigestSha384` did not equal the digest derived
+    /// from the signed evidence — the untrusted parent tampered with the echoed
+    /// metadata. Fail closed so a caller can never mistake it for verified data.
+    #[error("outer configDigestSha384 does not match the signed digest")]
+    OuterDigestMismatch,
+    /// The response's outer `nonce` did not equal the nonce bound into the signed
+    /// evidence — echoed metadata tampering, rejected for the same reason.
+    #[error("outer nonce does not match the signed nonce")]
+    OuterNonceMismatch,
 }
 
 /// Authenticate a `POST /attestation/config-report` response **without approving
@@ -619,6 +635,11 @@ impl crate::attestation_report::ConfigAttestationReport {
     /// clock): pin the approved image (`expected_pcr0`, optional `expected_pcr8`)
     /// and the tenant's KMS key (`expected_key_arn`, mandatory). See
     /// [`verify_config_attestation`].
+    ///
+    /// This ALSO cross-checks the echoed outer metadata (`configDigestSha384`,
+    /// `nonce`) against the values derived from the signed evidence, so an
+    /// untrusted parent cannot make those fields diverge from what was attested.
+    /// (`teeType` / `generatedAt` remain informational — see their field docs.)
     pub fn verify(
         &self,
         expected_nonce: &[u8],
@@ -626,33 +647,107 @@ impl crate::attestation_report::ConfigAttestationReport {
         expected_pcr8: Option<&str>,
         expected_key_arn: &str,
     ) -> Result<VerifiedConfigAttestation, ConfigAttestationVerifyError> {
-        verify_config_attestation(
+        self.verify_with(
+            expected_nonce,
+            expected_pcr0,
+            expected_pcr8,
+            expected_key_arn,
+            &NitroVerifier::aws_production(OffsetDateTime::now_utc()),
+        )
+    }
+
+    /// As [`verify`](Self::verify), but with an injectable [`NitroVerifier`]
+    /// (test/investigation trust-anchor + clock injection). Every check —
+    /// including the mandatory key pin and the outer-metadata cross-check — is
+    /// identical to the production path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_with(
+        &self,
+        expected_nonce: &[u8],
+        expected_pcr0: &str,
+        expected_pcr8: Option<&str>,
+        expected_key_arn: &str,
+        verifier: &NitroVerifier,
+    ) -> Result<VerifiedConfigAttestation, ConfigAttestationVerifyError> {
+        let verified = verify_config_attestation_with(
             &self.evidence,
             &self.config_view,
             expected_nonce,
             expected_pcr0,
             expected_pcr8,
             expected_key_arn,
-        )
+            verifier,
+        )?;
+        self.check_outer_metadata(verified.config_digest_sha384(), verified.nonce())?;
+        Ok(verified)
     }
 
     /// Authenticate this response WITHOUT approving its policy — returns the
     /// weaker [`AuthenticatedConfigAttestation`]. The caller MUST inspect/pin
     /// tenant-sensitive fields (at least `tee.kms.key_arn`) itself. See
     /// [`authenticate_config_attestation`].
+    ///
+    /// Like [`verify`](Self::verify), it cross-checks the echoed outer
+    /// `configDigestSha384` / `nonce` against the signed evidence.
     pub fn authenticate(
         &self,
         expected_nonce: &[u8],
         expected_pcr0: &str,
         expected_pcr8: Option<&str>,
     ) -> Result<AuthenticatedConfigAttestation, ConfigAttestationVerifyError> {
-        authenticate_config_attestation(
+        self.authenticate_with(
+            expected_nonce,
+            expected_pcr0,
+            expected_pcr8,
+            &NitroVerifier::aws_production(OffsetDateTime::now_utc()),
+        )
+    }
+
+    /// As [`authenticate`](Self::authenticate), but with an injectable
+    /// [`NitroVerifier`] (test/investigation trust-anchor + clock injection).
+    pub fn authenticate_with(
+        &self,
+        expected_nonce: &[u8],
+        expected_pcr0: &str,
+        expected_pcr8: Option<&str>,
+        verifier: &NitroVerifier,
+    ) -> Result<AuthenticatedConfigAttestation, ConfigAttestationVerifyError> {
+        let authenticated = authenticate_config_attestation_with(
             &self.evidence,
             &self.config_view,
             expected_nonce,
             expected_pcr0,
             expected_pcr8,
-        )
+            verifier,
+        )?;
+        self.check_outer_metadata(authenticated.config_digest_sha384(), authenticated.nonce())?;
+        Ok(authenticated)
+    }
+
+    /// Require the echoed outer `configDigestSha384` (base64) and `nonce` (hex) to
+    /// agree with the digest/nonce derived from the SIGNED evidence. Fail closed
+    /// so a caller that audits `resp` fields after a successful verify never reads
+    /// parent-tampered metadata as if it were authenticated.
+    fn check_outer_metadata(
+        &self,
+        signed_digest: &[u8],
+        signed_nonce: &[u8],
+    ) -> Result<(), ConfigAttestationVerifyError> {
+        let outer_digest = B64STD
+            .decode(&self.config_digest_sha384)
+            .map_err(|e| ConfigAttestationVerifyError::OuterDigestBase64(e.to_string()))?;
+        if outer_digest != signed_digest {
+            return Err(ConfigAttestationVerifyError::OuterDigestMismatch);
+        }
+        // Compare hex case-insensitively against the canonical lowercase encoding
+        // of the signed nonce (avoids a hex-decode dependency).
+        if !self
+            .nonce
+            .eq_ignore_ascii_case(&crate::hex::lower(signed_nonce))
+        {
+            return Err(ConfigAttestationVerifyError::OuterNonceMismatch);
+        }
+        Ok(())
     }
 }
 

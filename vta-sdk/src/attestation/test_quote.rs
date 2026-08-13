@@ -523,6 +523,52 @@ mod tests {
         assert!(matches!(err, ConfigAttestationVerifyError::QuoteInvalid(_)));
     }
 
+    #[test]
+    fn wire_report_verify_cross_checks_echoed_metadata() {
+        use crate::attestation::ConfigAttestationVerifyError;
+        use crate::attestation_report::ConfigAttestationReport;
+        use sha2::{Digest, Sha384};
+
+        let key_arn = "arn:aws:kms:us-east-1:111122223333:key/abcd";
+        let view = format!(r#"{{"tee":{{"kms":{{"key_arn":"{key_arn}"}}}}}}"#).into_bytes();
+        let digest = Sha384::digest(&view).to_vec();
+        let nonce = b"caller-nonce-1234".to_vec();
+        let q = build_with_nonce(digest.clone(), nonce.clone());
+        let pcr0 = hex_lower(&q.pcr0);
+
+        let good = |report_digest: String, report_nonce: String| ConfigAttestationReport {
+            config_digest_sha384: report_digest,
+            config_view: B64STD.encode(&view),
+            nonce: report_nonce,
+            tee_type: "nitro".into(),
+            evidence: B64STD.encode(&q.bytes),
+            generated_at: 0,
+        };
+
+        // Faithful outer metadata verifies through the wire-form method.
+        let report = good(B64STD.encode(&digest), hex_lower(&nonce));
+        let verified = report
+            .verify_with(&nonce, &pcr0, None, key_arn, &q.verifier())
+            .expect("faithful report verifies");
+        assert_eq!(verified.key_arn(), key_arn);
+        assert_eq!(verified.config_digest_sha384(), digest.as_slice());
+
+        // A parent that tampers the echoed digest is rejected even though the
+        // signed evidence is otherwise valid.
+        let tampered_digest = good(B64STD.encode([0u8; 48]), hex_lower(&nonce));
+        assert!(matches!(
+            tampered_digest.verify_with(&nonce, &pcr0, None, key_arn, &q.verifier()),
+            Err(ConfigAttestationVerifyError::OuterDigestMismatch)
+        ));
+
+        // A tampered echoed nonce is likewise rejected.
+        let tampered_nonce = good(B64STD.encode(&digest), hex_lower(b"other-nonce"));
+        assert!(matches!(
+            tampered_nonce.verify_with(&nonce, &pcr0, None, key_arn, &q.verifier()),
+            Err(ConfigAttestationVerifyError::OuterNonceMismatch)
+        ));
+    }
+
     /// Full accept-path byte-parity against upstream on a **real** AWS-signed
     /// quote. Synthetic quotes can't exercise this (they use a synthetic root
     /// upstream rejects by design), so it needs a captured fixture and is

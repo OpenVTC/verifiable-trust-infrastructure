@@ -102,7 +102,7 @@ pub mod attestation;
 /// Wire type for `POST /attestation/config-report`. Always compiled (serde only)
 /// so any consumer — or the service — can (de)serialize it without the heavier
 /// `attest-verify` verifier deps. The `verify`/`authenticate` methods that need
-/// the Nitro verifier are added in [`attestation`] under `attest-verify`.
+/// the Nitro verifier are added in the `attestation` module under `attest-verify`.
 pub mod attestation_report;
 #[cfg(feature = "client")]
 pub mod auth_di;

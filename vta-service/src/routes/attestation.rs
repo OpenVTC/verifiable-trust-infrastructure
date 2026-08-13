@@ -61,8 +61,12 @@ pub async fn generate_report(
 ///
 /// The verifiable pull path for the un-baked tenant config: the parent supplies
 /// `tee.kms.key_arn` and the rest, so a tenant/verifier calls this with a fresh
-/// nonce and checks the returned evidence (signature + PCR0 + nonce +
-/// `user_data == SHA-384(their expected config)`) before onboarding.
+/// nonce and verifies the returned `ConfigAttestationReport` — signature chains
+/// to the AWS Nitro root, `PCR0` matches the approved image, `nonce` is bound,
+/// and `user_data == SHA-384(configView)` authenticates the returned canonical
+/// view. The verifier then enforces its policy on that authenticated view (the
+/// tenant's expected `tee.kms.key_arn`) before onboarding. It does NOT re-derive
+/// an expected config from base+overlay.
 #[utoipa::path(
     post, path = "/attestation/config-report", tag = "attestation",
     request_body = AttestationRequest,

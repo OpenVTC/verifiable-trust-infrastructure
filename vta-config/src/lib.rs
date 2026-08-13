@@ -766,11 +766,14 @@ impl AppConfig {
     /// Compute the SHA-384 digest of the **effective** config for attestation.
     ///
     /// Serializes a canonical, secret-free view of this config (JSON, in struct
-    /// field order) and hashes it. Call once after any tenant overlay is applied
-    /// and *before* runtime secrets (JWT signing key) are injected, then store the
-    /// result in [`Self::effective_config_digest`]; both the boot attestation
-    /// anchor and `POST /attestation/config-report` read that stored value so they
-    /// commit to the same digest.
+    /// field order) and hashes it. Call once **after all effective-config
+    /// mutations** for this boot (tenant overlay applied, KMS-injected JWT signing
+    /// key, DID reconciliation/generation, webvh backfill, admin bootstrap), then
+    /// store the result in [`Self::effective_config_digest`]; both the boot
+    /// attestation anchor and `POST /attestation/config-report` read that stored
+    /// value so they commit to the same digest. Capturing after secret injection
+    /// is safe because the secret fields are removed from the canonical view
+    /// before serialization (below).
     ///
     /// Secret and non-reproducible fields are cleared before hashing:
     /// `auth.jwt_signing_key` and the `[secrets]` seed are zeroed, and the
