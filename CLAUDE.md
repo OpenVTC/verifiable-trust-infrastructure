@@ -868,13 +868,36 @@ These are load-bearing — know they exist before adjusting nearby code.
 the Release PR that release-plz maintains; merging that PR is what publishes.
 Merging a feature PR publishes nothing. See [`RELEASING.md`](RELEASING.md).
 
-**Only 7 of 21 crates publish** — `vta-sdk`, `vti-common`, `vti-secrets`,
-`vta-cli-common`, `vtc-client`, `pnm-cli`, `cnm-cli`. The other 14 set
-`publish = false` in their own manifest: an audit in #938 found zero external
-reverse-dependencies and no sibling repo consuming them. Before adding a crate
-back to the published set, check that everything it depends on is published too
-— crates.io requires the whole closure, which is what previously forced twelve
-internal subsystem crates onto the registry behind `vta-service`.
+**20 of 26 crates publish.** The six that do not — `vtc-service`,
+`vta-enclave`, `vta-mcp`, `vta-mobile-core`, `didcomm-test`, `vti-fuzz` — set
+`publish = false` in their own manifest, each with a comment saying why.
+
+The other 20 are `vta-sdk`, `vti-common`, `vti-secrets`, `vta-cli-common`,
+`vtc-client`, `pnm-cli`, `cnm-cli` — plus `vta-service` and its closure
+(`vta-audit`, `vta-backup`, `vta-config`, `vta-keys`, `vta-keyspaces`,
+`vta-policy`, `vta-support`, `vta-sweepers`, `vta-tee`, `vta-vault`,
+`vta-webvh`, `vti-webauthn`).
+
+**`vta-service` is published for one reason and it is not its own API:**
+`openvtc-core` dev-depends on it for `test_support::MockVta`, the in-process
+VTA the OpenVTC end-to-end tests run against. That harness boots the real
+service, so no client crate can stand in for it. #938 unpublished the crate on
+the finding that no external consumer existed; the audit missed that
+dev-dependency, and unpublishing did not merely freeze the crate — it **broke**
+it. `vti-common` re-exports `vta_sdk::acl::{ActScope, ApproveScope,
+ContextDirection}` as its own public API, so any graph combining `vti-common`
+with another `vta-sdk` consumer must resolve **one** `vta-sdk`. A frozen
+`vta-service` asking for `^0.21` beside a `vti-common` on `^0.23` gives two
+nodes and `expected vti_common::acl::ApproveScope, found
+vta_sdk::acl::ApproveScope`. Publishing keeps the requirements moving together.
+
+That is also the rule in general: **a re-export makes the re-exported crate's
+version part of your public API.** Before unpublishing anything, check for
+dev-dependencies, not just normal ones.
+
+Before adding a crate to the published set, check that everything it depends on
+is published too — crates.io requires the whole closure, which is what puts the
+twelve subsystem crates on the registry behind `vta-service`.
 
 release-plz handles the dependent ripple: a breaking bump moves a crate's
 compatibility range, so every dependent's `version = "0.y"` requirement is

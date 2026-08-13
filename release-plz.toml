@@ -8,8 +8,8 @@
 # So merging a feature PR never releases anything, and a release is a reviewable
 # diff rather than a side effect. See RELEASING.md.
 #
-# WHAT GETS PUBLISHED is decided in each crate's Cargo.toml, not here: 7 crates
-# have `publish` inherited from `[workspace.package]`, and the other 14 set
+# WHAT GETS PUBLISHED is decided in each crate's Cargo.toml, not here: 20 crates
+# have `publish` inherited from `[workspace.package]`, and the other 6 set
 # `publish = false` with a comment saying why. release-plz honours that — it
 # still updates an unpublished crate's version and dependency requirements (so
 # the workspace stays coherent when a published dependency bumps), it just never

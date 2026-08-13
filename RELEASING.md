@@ -44,8 +44,9 @@ files to add and nothing to collate.
 
 ## What gets published
 
-**7 of 21 crates.** The rest are internal to this workspace and set
-`publish = false` in their own `Cargo.toml`, each with a comment saying why.
+**20 of 26 crates.** The six that stay internal set `publish = false` in their
+own `Cargo.toml`, each with a comment saying why: `vtc-service`, `vta-enclave`,
+`vta-mcp`, `vta-mobile-core`, `didcomm-test`, `vti-fuzz`.
 
 | Published | Consumed by |
 |---|---|
@@ -55,18 +56,40 @@ files to add and nothing to collate.
 | `vta-cli-common` | enm |
 | `vtc-client` | enm |
 | `pnm-cli`, `cnm-cli` | operator binaries, `cargo install` |
+| `vta-service` | **openvtc-core**, as a dev-dependency — `test_support::MockVta` |
+| the twelve subsystem crates | nothing directly; they are `vta-service`'s closure |
 
-The other 14 — both services and the twelve subsystem crates carved out of
-`vta-service` in #780–#791 — had **zero external reverse-dependencies on
-crates.io and no sibling repo depending on them**. They were published by
-inheritance from `[workspace.package]`, never by decision.
+### Why `vta-service` publishes again
 
-This matters beyond tidiness: crates.io requires every dependency of a published
-crate to be published too, so `vta-service` being published was what forced all
-twelve subsystem crates to be published as well.
+#938 unpublished it, and its eleven-plus-one closure, on the finding that
+nothing external depended on them. The audit read normal dependencies;
+`openvtc-core` depends on `vta-service` as a **dev-dependency**, for
+`test_support::MockVta` — an in-process VTA its end-to-end tests run against.
+That harness boots the real service, so no client crate can substitute for it.
+
+Unpublishing did not just freeze the crate, it broke it. `vti-common`
+re-exports `vta_sdk::acl::{ActScope, ApproveScope, ContextDirection}` as its own
+public API, so **a re-export makes the re-exported crate's version part of your
+public API**: any graph combining `vti-common` with another `vta-sdk` consumer
+must resolve one `vta-sdk`. The frozen `vta-service` 0.14.37 asks for
+`vta-sdk ^0.21`; `vti-common` has since moved to `^0.23`. A downstream
+`cargo update` resolves both and `vta-service` fails to compile with
+
+```
+expected `vti_common::acl::ApproveScope`, found `vta_sdk::acl::ApproveScope`
+```
+
+at ten call sites. Publishing keeps every requirement in the set moving
+together, which is the only thing that makes the combination resolvable.
+
+The alternatives were worse: yanking the published copies breaks OpenVTC's
+tests with nothing to replace them, and leaving them up means shipping a crate
+on the registry that cannot be built.
 
 **Adding a crate to the published set** means setting `publish` back to the
 workspace default *and* checking that everything it depends on is published.
+**Removing one** means checking dev-dependencies too, in every sibling repo —
+that is the check #938 missed.
 
 ---
 
