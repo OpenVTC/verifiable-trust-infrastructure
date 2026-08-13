@@ -309,11 +309,13 @@ fi
 # Signature of the effective routing. If it changed since the running proxy was
 # started, the proxy must be restarted (its process env + egress allowlist are
 # fixed at launch; only the served envelope file is reread live).
-ROUTING_SIG="envelope=${CONFIG_ENVELOPE_PATH:-} region=${AWS_REGION:-} mediator=${MEDIATOR_DID:-}"
+ROUTING_SIG="$(proxy_routing_signature "${CONFIG_ENVELOPE_PATH:-}" "${AWS_REGION:-}" "${MEDIATOR_DID:-}")"
 ROUTING_SIG_FILE="$RUNTIME_DIR/proxy.routing"
 
 PROXY_NEEDS_START=1
-if pid_alive "$PROXY_PID_FILE"; then
+# Match on the proxy binary path so a recycled PID (stale pidfile) is treated as
+# dead rather than signalled.
+if pid_alive "$PROXY_PID_FILE" "$PROXY_BIN"; then
     PREV_SIG="$(cat "$ROUTING_SIG_FILE" 2>/dev/null || true)"
     if [ "$PREV_SIG" = "$ROUTING_SIG" ]; then
         ok "Enclave proxy already running (PID $(cat "$PROXY_PID_FILE")) with matching routing"

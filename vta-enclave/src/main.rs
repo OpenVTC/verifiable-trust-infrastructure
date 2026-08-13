@@ -427,12 +427,15 @@ async fn main() {
         // returns the current digest bound to a caller-supplied nonce) is the
         // follow-up that makes the verifier story complete — see README.
         //
-        // The digest is over the EFFECTIVE (post-overlay) config captured earlier
-        // in `config.effective_config_digest` — i.e. it reflects the tenant's
-        // real key_arn / mediator / anchor / public_url, NOT the baked
-        // placeholder file. Secret-free (computed before JWT/seed injection).
-        // Additive and non-fatal: a failure here does not block boot (the KMS
-        // bootstrap already hard-requires attestation on real hardware).
+        // The digest is over the EFFECTIVE config captured earlier in
+        // `config.effective_config_digest` — after overlay apply AND after DID
+        // reconciliation, so it reflects the tenant's real key_arn / mediator /
+        // anchor / public_url and the identity the VTA actually runs as, NOT the
+        // baked placeholder file. Secret-free: the digest helper strips the JWT
+        // signing key and `[secrets]`, so it is safe even though it is computed
+        // after secret injection. Additive and non-fatal: a failure here does not
+        // block boot (the KMS bootstrap already hard-requires attestation on real
+        // hardware).
         if let Some(state) = tee_state.as_ref().filter(|_| on_nitro) {
             match config.effective_config_digest.as_ref() {
                 Some(digest) => {
