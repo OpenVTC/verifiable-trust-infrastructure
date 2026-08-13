@@ -281,8 +281,34 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-semver-checks
 
+      # Excludes the twelve subsystem crates. They are on crates.io only
+      # because a published crate's whole dependency closure must be published
+      # and `vta-service` is published (for OpenVTC's `MockVta` harness — see
+      # RELEASING.md). Nothing consumes their APIs directly, here or outside.
+      #
+      # The exclusions are not cosmetic: this job builds rustdoc JSON for every
+      # crate twice, current and baseline. Including them took it from ~17
+      # minutes to over 35 — on every pull request in the repo, for a signal no
+      # consumer can act on. `release-plz.toml` carries the matching
+      # `semver_check = false` so the release decides bumps the same way.
+      #
+      # `vta-service` is NOT excluded: it has a real consumer, so a silent
+      # break there reaches somebody.
       - name: Check published crates for API breaks
-        run: cargo semver-checks --workspace
+        run: |
+          cargo semver-checks --workspace \
+            --exclude vta-audit \
+            --exclude vta-backup \
+            --exclude vta-config \
+            --exclude vta-keys \
+            --exclude vta-keyspaces \
+            --exclude vta-policy \
+            --exclude vta-support \
+            --exclude vta-sweepers \
+            --exclude vta-tee \
+            --exclude vta-vault \
+            --exclude vta-webvh \
+            --exclude vti-webauthn
 
   lockfile-self-pins:
     # Sibling guard to release-guards: the version bump can be correct and the

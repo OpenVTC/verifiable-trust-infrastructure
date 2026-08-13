@@ -4,11 +4,16 @@ description = "Shared mid-layer VTA services — trust-context storage, the seal
 readme = "README.md"
 version = "0.2.3"
 edition.workspace = true
-# Internal to this workspace — consumed through path dependencies only, never
-# from crates.io. It was published by inheritance from `[workspace.package]`
-# rather than by decision; the audit in #938 found no external consumer. See
-# RELEASING.md ("What gets published").
-publish = false
+# Published, because `vta-service` is — and a crate cannot go to crates.io
+# without its whole dependency closure there too. Not published for its own
+# sake: nothing outside this workspace is expected to depend on it directly.
+#
+# #938 set `publish = false` here on the finding that no external consumer
+# existed. That was wrong by one: `openvtc-core` dev-depends on `vta-service`
+# for `test_support::MockVta`, an in-process VTA the OpenVTC end-to-end tests
+# run against. See `vta-service/Cargo.toml` for what unpublishing it actually
+# broke. See RELEASING.md ("What gets published").
+publish.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true

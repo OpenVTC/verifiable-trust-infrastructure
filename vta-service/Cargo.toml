@@ -3,11 +3,31 @@ name = "vta-service"
 description = "Service for Verifiable Trust Agents operating in Verifiable Trust Communities"
 version = "0.14.37"
 edition.workspace = true
-# Internal to this workspace — consumed through path dependencies only, never
-# from crates.io. It was published by inheritance from `[workspace.package]`
-# rather than by decision; the audit in #938 found no external consumer. See
-# RELEASING.md ("What gets published").
-publish = false
+# Published for one reason: `openvtc-core` dev-depends on it for
+# `test_support::MockVta`, the in-process VTA its end-to-end tests run against.
+# That harness is this crate — it boots the real service — so it cannot be
+# hoisted into a client crate, and no published crate can stand in for it.
+#
+# #938 set `publish = false` here on the finding that no external consumer
+# existed. The audit missed that dev-dependency, and unpublishing did not merely
+# freeze the crate — it broke it. `vti-common` re-exports `vta_sdk::acl::{
+# ActScope, ApproveScope, ContextDirection}` as its own public API, so anything
+# combining `vti-common` with another `vta-sdk` consumer must resolve ONE
+# `vta-sdk`. The last published copy (0.14.37) asks for `vta-sdk ^0.21` while
+# `vti-common` has moved to `^0.23`; a downstream `cargo update` resolves both,
+# and `vta-service` then fails to compile with
+#
+#   expected `vti_common::acl::ApproveScope`, found `vta_sdk::acl::ApproveScope`
+#
+# at ten call sites. Publishing again is what keeps the set coherent: each
+# release moves this crate's requirements with its dependencies'.
+#
+# The cost is the closure — twelve subsystem crates go back to crates.io with
+# it, which is exactly what #938 set out to stop. Chosen deliberately over
+# yanking the published copies (which breaks OpenVTC's tests with no
+# replacement) or leaving a crate on the registry that cannot be built.
+# See RELEASING.md ("What gets published").
+publish.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 readme = "README.md"
