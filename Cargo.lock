@@ -9186,7 +9186,7 @@ dependencies = [
 
 [[package]]
 name = "vta-audit"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "tracing",
  "uuid",
@@ -9196,7 +9196,7 @@ dependencies = [
 
 [[package]]
 name = "vta-backup"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -9250,7 +9250,7 @@ dependencies = [
 
 [[package]]
 name = "vta-config"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "serde",
  "serde_ignored",
@@ -9279,7 +9279,7 @@ dependencies = [
 
 [[package]]
 name = "vta-keys"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -9312,7 +9312,7 @@ dependencies = [
 
 [[package]]
 name = "vta-keyspaces"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "vti-common",
 ]
@@ -9362,7 +9362,7 @@ dependencies = [
 
 [[package]]
 name = "vta-policy"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "hex",
  "multibase",
@@ -9445,7 +9445,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.14.37"
+version = "0.15.0"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -9547,7 +9547,7 @@ dependencies = [
 
 [[package]]
 name = "vta-support"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "chrono",
  "ed25519-dalek",
@@ -9567,7 +9567,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sweepers"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "serde_json",
@@ -9583,7 +9583,7 @@ dependencies = [
 
 [[package]]
 name = "vta-tee"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "aes 0.9.2",
  "aes-gcm",
@@ -9616,7 +9616,7 @@ dependencies = [
 
 [[package]]
 name = "vta-vault"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -9645,7 +9645,7 @@ dependencies = [
 
 [[package]]
 name = "vta-webvh"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "affinidi-tdk",
  "chrono",
@@ -9865,7 +9865,7 @@ dependencies = [
 
 [[package]]
 name = "vti-webauthn"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
