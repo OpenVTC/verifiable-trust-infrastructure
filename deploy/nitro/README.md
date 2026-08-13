@@ -84,40 +84,47 @@ storage, and signed enclave images.
 > > attestation and verify: (1) its signature chains to the AWS Nitro root,
 > > (2) `PCR0` matches the pinned image, (3) the bound `nonce` equals the one they
 > > sent, and (4) the committed config digest (`user_data`) matches the config
-> > they expect — in particular that `tee.kms.key_arn` is the tenant's own key,
-> > not one the parent controls.
+> > the enclave returned — in particular that `tee.kms.key_arn` is the tenant's own
+> > key, not one the parent controls.
 >
 > Use **`POST /attestation/config-report`** with a fresh caller nonce:
 >
 > ```bash
 > curl -s https://<vta>/attestation/config-report \
 >   -H 'content-type: application/json' -d '{"nonce":"<hex>"}'
-> # → { configDigestSha384, nonce, teeType, evidence (base64 COSE_Sign1), generatedAt }
+> # → { configDigestSha384, configView (base64), nonce, teeType,
+> #     evidence (base64 COSE_Sign1), generatedAt }
 > ```
 >
-> The digest is committed as the attestation `user_data` (signed, not merely
-> asserted) and the nonce is bound for freshness, so — unlike the boot log — the
-> parent can neither withhold nor replay it. Verify `evidence` with
-> **`vta_sdk::attestation::verify_config_attestation`** (feature `attest-verify`)
-> against the AWS Nitro root:
+> `configView` is the **canonical, secret-free view of the effective config the
+> enclave actually booted** — the exact bytes whose SHA-384 the enclave signed as
+> `user_data`. The nonce is bound for freshness, so — unlike the boot log — the
+> parent **cannot forge or replay** the report (it can still drop the request or
+> response; availability stays under the parent, but a *stale/forged* report is
+> rejected). Verify with **`vta_sdk::attestation::verify_config_attestation`**
+> (feature `attest-verify`) — no `vta-config` dependency, no digest re-derivation:
 >
 > ```rust
 > use vta_sdk::attestation::verify_config_attestation;
-> // `expected_digest` is the 48-byte SHA-384 of the EFFECTIVE (post-overlay)
-> // config — reproduce it with
-> // `vta_config::AppConfig::compute_config_attestation_digest` on the published
-> // base config + this tenant's overlay. It is NOT a hash of the config.toml /
-> // overlay file bytes.
 > let verified = verify_config_attestation(
 >     &resp.evidence,        // base64 COSE_Sign1 from the response
->     &expected_digest,      // 48-byte SHA-384 you expect
+>     &resp.config_view,     // base64 canonical view from the response
 >     &nonce,                // the exact nonce bytes you sent
->     Some(&expected_pcr0),  // pin the image measurement
->     Some(&expected_pcr8),  // pin the signing-cert measurement
+>     &expected_pcr0,        // REQUIRED: pin the approved image measurement
+>     Some(&expected_pcr8),  // optional: pin the signing-cert measurement
+>     Some(&expected_key_arn), // enforce the tenant's own KMS key
 > )?;
-> // On success: chain-to-root, PCR0/PCR8, nonce, and config-digest are all
-> // verified; `verified.config_digest_sha384` confirms tee.kms.key_arn is yours.
+> // On success: chain-to-root, PCR0 (+PCR8), nonce, view→digest binding, and
+> // key_arn are all verified. The SDK hashes `config_view` and checks it equals
+> // the signed `user_data`, so the returned view is authentic; it then enforces
+> // `tee.kms.key_arn`. Read further with `verified.config_view_json()`.
 > ```
+>
+> PCR0 is **required** — verifying only "a genuine Nitro enclave signed this"
+> (without pinning the approved image) would let a malicious parent run a
+> *different* enclave image that echoes the expected view. The digest input is the
+> `configView` bytes themselves; you never re-derive them from base+overlay
+> (which cannot reproduce the enclave-generated `vta_did`).
 >
 > **Multi-tenant isolation is now a KMS-policy requirement.** With `key_arn` no
 > longer baked, one PCR0 is shared across tenants and the parent supplies the

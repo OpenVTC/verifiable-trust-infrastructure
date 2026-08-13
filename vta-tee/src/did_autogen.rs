@@ -58,9 +58,11 @@ pub async fn maybe_generate_vta_did(
 ) -> Result<(), AppError> {
     // Open encrypted keyspaces up front. The persistent store is the
     // AUTHORITATIVE VTA identity, so it must be consulted BEFORE trusting any
-    // config/overlay-supplied `vta_did`: in un-baked TEE mode the parent sets
-    // that value at runtime, and it must never be able to redirect an
-    // already-established identity on a later boot.
+    // config-supplied `vta_did`. In un-baked (fleet) TEE mode the tenant overlay
+    // CANNOT carry a `vta_did` at all (see `TenantConfigOverlay`); the only
+    // source of a supplied `config.vta_did` is a trusted, baked self-host config.
+    // Consulting the store first still matters: a rebuild/restore must never let
+    // even a baked value redirect an already-established identity on a later boot.
     // See docs/05-design-notes/tenant-config-allowlist.md §3.6.
     let apply_enc = |ks: KeyspaceHandle| -> KeyspaceHandle {
         if let Some(key) = storage_encryption_key {
@@ -80,7 +82,7 @@ pub async fn maybe_generate_vta_did(
                 warn!(
                     stored = %stored,
                     supplied = %supplied,
-                    "config/overlay supplied a VTA DID that differs from the \
+                    "baked config supplied a VTA DID that differs from the \
                      established stored identity — ignoring the supplied value and \
                      keeping the stored DID (a later boot must not redirect an \
                      already-established identity)"

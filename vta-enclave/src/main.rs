@@ -381,25 +381,27 @@ async fn main() {
         tracing::warn!("admin credential bootstrap failed: {e}");
     }
 
-    // ── Snapshot the EFFECTIVE config digest for attestation ──
+    // ── Snapshot the EFFECTIVE config digest + view for attestation ──
     // Captured HERE — after overlay apply AND after DID reconciliation/generation
     // — so the attested digest matches the config the VTA actually runs as
     // (including the stored/generated `vta_did`), not a value the overlay proposed
     // that reconciliation then overrode. The helper strips the JWT signing key and
     // `[secrets]`, so it stays secret-free and reproducible even though this runs
     // after secret injection. Both the boot anchor below and
-    // POST /attestation/config-report read `effective_config_digest`.
-    match config.compute_config_attestation_digest() {
-        Ok(d) => config.effective_config_digest = Some(d),
+    // POST /attestation/config-report read `effective_config_digest`; the report
+    // also returns `effective_config_view` (the exact bytes hashed) so a verifier
+    // can authenticate the config without re-deriving the enclave-generated DID.
+    match config.capture_effective_config_attestation() {
+        Ok(()) => {}
         Err(e) if on_nitro => {
             tracing::error!(
-                "FATAL: could not compute effective config attestation digest: {e}. \
+                "FATAL: could not compute effective config attestation view: {e}. \
                  Refusing to boot."
             );
             std::process::exit(1);
         }
         Err(e) => {
-            tracing::warn!("effective config attestation digest unavailable (non-Nitro): {e}")
+            tracing::warn!("effective config attestation view unavailable (non-Nitro): {e}")
         }
     }
 

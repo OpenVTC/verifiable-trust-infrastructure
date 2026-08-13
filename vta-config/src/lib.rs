@@ -192,6 +192,17 @@ pub struct AppConfig {
     /// non-TEE build never sets it). `#[serde(skip)]` — never in the file.
     #[serde(skip)]
     pub effective_config_digest: Option<Vec<u8>>,
+    /// The canonical, secret-free JSON bytes the [`effective_config_digest`] is
+    /// the SHA-384 of — i.e. the exact input to the hash. Captured alongside the
+    /// digest at boot so `POST /attestation/config-report` can return it verbatim
+    /// to a verifier, who hashes it to reproduce (and thus authenticate) the
+    /// signed `user_data` WITHOUT re-deriving it from base+overlay (which cannot
+    /// reproduce the enclave-generated `vta_did`). `#[serde(skip)]` — never in
+    /// the file, and never inside the view of itself.
+    ///
+    /// [`effective_config_digest`]: Self::effective_config_digest
+    #[serde(skip)]
+    pub effective_config_view: Option<Vec<u8>>,
 }
 
 /// How the mediator self-readiness gate behaves when it times out.
@@ -768,16 +779,45 @@ impl AppConfig {
     /// never serialize.
     pub fn compute_config_attestation_digest(&self) -> Result<Vec<u8>, AppError> {
         use sha2::{Digest, Sha384};
+        Ok(Sha384::digest(self.compute_config_attestation_view()?).to_vec())
+    }
+
+    /// Build the canonical, secret-free JSON **bytes** that
+    /// [`compute_config_attestation_digest`] hashes.
+    ///
+    /// Returned verbatim by `POST /attestation/config-report` (base64) so a
+    /// consumer can authenticate the config without depending on this crate or
+    /// re-deriving the enclave-generated `vta_did`: hashing these bytes must equal
+    /// the signed `user_data`, after which the consumer may inspect the (now
+    /// authenticated) view — in particular that `tee.kms.key_arn` is its own key.
+    ///
+    /// [`compute_config_attestation_digest`]: Self::compute_config_attestation_digest
+    pub fn compute_config_attestation_view(&self) -> Result<Vec<u8>, AppError> {
         let mut view = self.clone();
         view.auth.jwt_signing_key = None;
         view.secrets = SecretsConfig::default();
         view.effective_config_digest = None;
-        let bytes = serde_json::to_vec(&view).map_err(|e| {
-            AppError::Internal(format!(
-                "config attestation digest serialization failed: {e}"
-            ))
-        })?;
-        Ok(Sha384::digest(&bytes).to_vec())
+        view.effective_config_view = None;
+        serde_json::to_vec(&view).map_err(|e| {
+            AppError::Internal(format!("config attestation view serialization failed: {e}"))
+        })
+    }
+
+    /// Capture the effective-config attestation snapshot into
+    /// [`effective_config_digest`] + [`effective_config_view`] in one shot.
+    ///
+    /// Call once at boot, after the tenant overlay is applied and the DID is
+    /// reconciled/generated, so both the boot anchor and the pull endpoint commit
+    /// to the same bytes.
+    ///
+    /// [`effective_config_digest`]: Self::effective_config_digest
+    /// [`effective_config_view`]: Self::effective_config_view
+    pub fn capture_effective_config_attestation(&mut self) -> Result<(), AppError> {
+        use sha2::{Digest, Sha384};
+        let view = self.compute_config_attestation_view()?;
+        self.effective_config_digest = Some(Sha384::digest(&view).to_vec());
+        self.effective_config_view = Some(view);
+        Ok(())
     }
 
     pub fn load(config_path: Option<PathBuf>) -> Result<Self, AppError> {

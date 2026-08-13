@@ -358,53 +358,65 @@ mod tests {
 
     #[test]
     fn verify_config_attestation_with_end_to_end() {
-        use crate::attestation::{
-            ConfigAttestationVerifyError, verify_config_attestation_with,
-        };
+        use crate::attestation::{ConfigAttestationVerifyError, verify_config_attestation_with};
+        use sha2::{Digest, Sha384};
 
-        // The endpoint commits the 48-byte SHA-384 config digest as user_data
-        // and binds the caller's nonce.
-        let digest = vec![0x5au8; 48];
+        // The endpoint returns the canonical secret-free config VIEW and commits
+        // SHA-384(view) as user_data. The verifier hashes the returned view and
+        // matches it against the signed user_data, then inspects tee.kms.key_arn.
+        let key_arn = "arn:aws:kms:us-east-1:111122223333:key/abcd";
+        let view = format!(r#"{{"tee":{{"kms":{{"key_arn":"{key_arn}"}}}}}}"#).into_bytes();
+        let digest = Sha384::digest(&view).to_vec();
         let nonce = b"caller-nonce-1234".to_vec();
         let q = build_with_nonce(digest.clone(), nonce.clone());
         let evidence = B64STD.encode(&q.bytes);
+        let view_b64 = B64STD.encode(&view);
+        let pcr0 = hex_lower(&q.pcr0);
+        let pcr8 = hex_lower(&q.pcr8);
 
-        // Happy path: correct digest, nonce, and PCR pins all verify.
+        // Happy path: view→digest binding, nonce, PCR0/PCR8 pins, and the
+        // expected key_arn all verify.
         let verified = verify_config_attestation_with(
             &evidence,
-            &digest,
+            &view_b64,
             &nonce,
-            Some(&hex_lower(&q.pcr0)),
-            Some(&hex_lower(&q.pcr8)),
+            &pcr0,
+            Some(&pcr8),
+            Some(key_arn),
             &q.verifier(),
         )
         .expect("config attestation verifies end-to-end");
-        assert_eq!(verified.config_digest_sha384, digest);
-        assert_eq!(verified.nonce, nonce);
-        assert_eq!(verified.pcr0_hex, hex_lower(&q.pcr0));
-        assert_eq!(verified.pcr8_hex, hex_lower(&q.pcr8));
+        assert_eq!(verified.config_digest_sha384(), digest.as_slice());
+        assert_eq!(verified.nonce(), nonce.as_slice());
+        assert_eq!(verified.pcr0_hex(), pcr0);
+        assert_eq!(verified.pcr8_hex(), pcr8);
+        assert_eq!(verified.key_arn(), Some(key_arn));
+        assert_eq!(verified.config_view_json(), view.as_slice());
 
-        // A different expected digest → the signed user_data no longer matches,
-        // so a parent running a *different* config is caught.
-        let other_digest = vec![0x5bu8; 48];
+        // A tampered/mismatched view → SHA-384(view) no longer equals the signed
+        // user_data, so a swapped config is caught.
+        let other_view =
+            br#"{"tee":{"kms":{"key_arn":"arn:aws:kms:us-east-1:111122223333:key/EVIL"}}}"#;
         assert!(matches!(
             verify_config_attestation_with(
                 &evidence,
-                &other_digest,
+                &B64STD.encode(other_view),
                 &nonce,
+                &pcr0,
                 None,
                 None,
                 &q.verifier()
             ),
-            Err(ConfigAttestationVerifyError::ConfigDigestMismatch)
+            Err(ConfigAttestationVerifyError::ConfigViewDigestMismatch)
         ));
 
         // A stale/replayed nonce is rejected (freshness).
         assert!(matches!(
             verify_config_attestation_with(
                 &evidence,
-                &digest,
+                &view_b64,
                 b"different-nonce",
+                &pcr0,
                 None,
                 None,
                 &q.verifier()
@@ -416,44 +428,48 @@ mod tests {
         assert!(matches!(
             verify_config_attestation_with(
                 &evidence,
-                &digest,
+                &view_b64,
                 &nonce,
-                Some("deadbeef"),
+                "deadbeef",
+                None,
                 None,
                 &q.verifier()
             ),
             Err(ConfigAttestationVerifyError::Pcr(_))
         ));
 
-        // A non-48-byte expected digest is a caller bug, caught early.
+        // An unexpected key_arn (parent bound the enclave to a key we did not
+        // approve) is rejected, even though the view is authentic.
         assert!(matches!(
             verify_config_attestation_with(
                 &evidence,
-                &digest[..16],
+                &view_b64,
                 &nonce,
+                &pcr0,
                 None,
-                None,
+                Some("arn:aws:kms:us-east-1:111122223333:key/NOT-MINE"),
                 &q.verifier()
             ),
-            Err(ConfigAttestationVerifyError::ExpectedDigestLen(16))
+            Err(ConfigAttestationVerifyError::KeyArnMismatch { .. })
         ));
     }
 
     #[test]
     fn verify_config_attestation_rejects_synthetic_chain_under_aws_anchor() {
-        use crate::attestation::{
-            ConfigAttestationVerifyError, verify_config_attestation_with,
-        };
+        use crate::attestation::{ConfigAttestationVerifyError, verify_config_attestation_with};
+        use sha2::{Digest, Sha384};
         // The production anchor must reject a synthetic-root quote — the property
         // that stops a fabricated config report from ever verifying.
-        let digest = vec![0x11u8; 48];
+        let view = br#"{"tee":{"kms":{"key_arn":"arn:aws:kms:us-east-1:111122223333:key/abcd"}}}"#;
+        let digest = Sha384::digest(view).to_vec();
         let nonce = b"n".to_vec();
-        let q = build_with_nonce(digest.clone(), nonce.clone());
+        let q = build_with_nonce(digest, nonce.clone());
         let evidence = B64STD.encode(&q.bytes);
         let err = verify_config_attestation_with(
             &evidence,
-            &digest,
+            &B64STD.encode(view),
             &nonce,
+            &hex_lower(&q.pcr0),
             None,
             None,
             &NitroVerifier::aws_production(q.valid_now),

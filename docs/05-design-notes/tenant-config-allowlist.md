@@ -155,8 +155,10 @@ New types in `vta-config` (or a new `vta-config::tenant_overlay` module):
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TenantConfigOverlay {
-    #[serde(default)]
-    pub vta_did: Option<String>,
+    // NOTE: there is deliberately NO `vta_did` here. The VTA's identity is
+    // provisioned from `vta_did_template` (keys are derived in-enclave and the
+    // did:webvh doc is signed); accepting a bare DID string would install an
+    // identity with no key records. See 3.6 and ADR-0109.
     #[serde(default)]
     pub vta_name: Option<String>,
     #[serde(default)]
@@ -209,7 +211,6 @@ function body, not implied by struct shape):
 pub fn apply_tenant_overlay(base: &mut AppConfig, overlay: TenantConfigOverlay)
     -> Result<(), TenantOverlayError>
 {
-    if let Some(v) = overlay.vta_did { base.vta_did = Some(v); }
     if let Some(v) = overlay.vta_name { base.vta_name = Some(v); }
     if let Some(v) = overlay.public_url { base.public_url = Some(v); }
     if let Some(kms_overlay) = overlay.tee_kms {
@@ -237,7 +238,7 @@ pub fn apply_tenant_overlay(base: &mut AppConfig, overlay: TenantConfigOverlay)
 |---|---|
 | `tee.mode = "required"` | `tee.kms.key_arn` (account+shape validated, §3.5) |
 | `tee.kms.allow_unattested_fallback = false` | `tee.kms.region` — **derived from key_arn**, not accepted separately |
-| `tee.kms.allow_fingerprint_init = false` | `tee.kms.vta_did_template` / `vta_did` (first-boot only, §3.6) |
+| `tee.kms.allow_fingerprint_init = false` | `tee.kms.vta_did_template` (first-boot only, §3.6; a bare `vta_did` is **not** overlay-settable) |
 | `tee.kms.allow_kms_reinit = false` | `messaging.mediator_did` |
 | `tee.kms.allow_unanchored = false` | `messaging.mediator_url` |
 | `tee.kms.allow_anchor_init = true` *(only if `anchor.table_name` also baked-required)* | `public_url` |
@@ -332,16 +333,18 @@ tenant-scoped key policies).
 
 ### 3.6 `vta_did` store-precedence fix (same slice, small)
 
-`vta-tee/src/did_autogen.rs::maybe_generate_vta_did` currently returns early
-on `config.vta_did.is_some()` **before** checking the store (line 60), so a
-directly-supplied `vta_did` (not routed through `vta_did_template`) never
-gets compared against an already-established stored identity. Fix: check the
-store first unconditionally; if the store holds a DID and the overlay/config
-supplies a *different* one, log a loud warning and prefer the store's value
-(never let a later boot silently redirect an already-established identity).
-Small, independent, but lands in the same PR slice as the overlay work since
-it's directly about the same "what may the parent redirect on a later boot"
-property, and `vta_did` is in the allowlist table above.
+`vta-tee/src/did_autogen.rs::maybe_generate_vta_did` must check the store
+**before** trusting any `config.vta_did`, so an already-established stored
+identity is never silently redirected on a later boot. Note that a bare
+`vta_did` is **not** overlay-settable (it was removed from `TenantConfigOverlay`
+— see 3.2/3.3 and ADR-0109): the VTA provisions its identity from
+`vta_did_template`, deriving the key records. The only source of a supplied
+`config.vta_did` is therefore a trusted, baked self-host config; the store still
+wins over even that on a rebuild/restore. Concretely: check the store first
+unconditionally; if the store holds a DID and a *different* one is supplied, log
+a loud warning and prefer the store's value. Small, independent, but lands in
+the same PR slice as the overlay work since it's about the same "what may
+survive across a later boot" property.
 
 ### 3.7 The floor becomes defense-in-depth, not the primary control
 

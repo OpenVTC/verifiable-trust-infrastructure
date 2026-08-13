@@ -120,6 +120,14 @@ pub struct ConfigAttestationReport {
     /// the signed doc — reproduce it with that same helper, not by hashing a
     /// file by hand.
     pub config_digest_sha384: String,
+    /// The canonical, secret-free config **view** the digest is the SHA-384 of,
+    /// base64 (standard) — the exact bytes the enclave hashed. A verifier hashes
+    /// this to reproduce (and thus authenticate) `configDigestSha384` /
+    /// `user_data` WITHOUT depending on `vta-config` or re-deriving the
+    /// enclave-generated `vta_did`, then inspects the now-authenticated view (in
+    /// particular that `tee.kms.key_arn` is its own key). See
+    /// `vta_sdk::attestation::verify_config_attestation`.
+    pub config_view: String,
     /// The caller's nonce (hex), echoed; bound into the attestation for freshness.
     pub nonce: String,
     /// TEE platform that produced the evidence.
@@ -155,15 +163,23 @@ pub async fn generate_config_attestation(
     // key_arn / mediator / anchor / public_url, and matches the boot-time
     // attestation anchor exactly. We do NOT re-read config_path (which, in fleet
     // mode, is only the baked placeholder base).
-    let digest = {
+    let (digest, view) = {
         let cfg = config.read().await;
-        cfg.effective_config_digest.clone().ok_or_else(|| {
+        let digest = cfg.effective_config_digest.clone().ok_or_else(|| {
             AppError::Internal(
                 "no effective config digest was captured at boot — cannot produce a \
                  config-report attestation (is this a TEE build?)"
                     .to_string(),
             )
-        })?
+        })?;
+        let view = cfg.effective_config_view.clone().ok_or_else(|| {
+            AppError::Internal(
+                "no effective config view was captured at boot — cannot produce a \
+                 config-report attestation (is this a TEE build?)"
+                    .to_string(),
+            )
+        })?;
+        (digest, view)
     };
 
     debug!(
@@ -176,6 +192,7 @@ pub async fn generate_config_attestation(
 
     Ok(ConfigAttestationReport {
         config_digest_sha384: BASE64.encode(&digest),
+        config_view: BASE64.encode(&view),
         nonce: report.nonce,
         tee_type: report.tee_type,
         evidence: report.evidence,
