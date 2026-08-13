@@ -224,7 +224,10 @@ impl<'a> ServiceOpDeps<'a> {
             drains_ks: &s.drains_ks,
             seed_store: &*s.seed_store,
             did_resolver,
+            #[cfg(any(feature = "didcomm", feature = "tsp"))]
             didcomm_bridge: &s.didcomm_bridge,
+            #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
+            didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
             telemetry: &s.telemetry,
             webvh_auth_locks: &s.webvh_auth_locks,
             #[cfg(feature = "didcomm")]
@@ -253,7 +256,10 @@ impl<'a> ServiceOpDeps<'a> {
             drains_ks: &s.drains_ks,
             seed_store: &*s.seed_store,
             did_resolver,
+            #[cfg(any(feature = "didcomm", feature = "tsp"))]
             didcomm_bridge: &s.didcomm_bridge,
+            #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
+            didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
             telemetry: &s.telemetry,
             webvh_auth_locks: &s.webvh_auth_locks,
             registry: &s.mediator_registry,

@@ -263,57 +263,79 @@ else
     ok "Enclave proxy built"
 fi
 
-if pid_alive "$PROXY_PID_FILE"; then
-    ok "Enclave proxy already running (PID $(cat "$PROXY_PID_FILE"))"
-else
-    rm -f "$PROXY_PID_FILE"
-    info "Starting enclave proxy in background..."
-    # Serve the typed tenant-overlay envelope over vsock when present. A fleet
-    # (un-baked) EIF bakes only a fleet-policy base and REQUIRES this overlay to
-    # fill the tenant-scoped fields; warn loudly if it is missing so the failure
-    # is obvious, not a 60 s enclave timeout.
-    PROXY_ENVELOPE_ARGS=()
-    if [ -f "${CONFIG_ENVELOPE_PATH:-}" ]; then
-        ok "Tenant overlay: $CONFIG_ENVELOPE_PATH (served over vsock:5800)"
-        PROXY_ENVELOPE_ARGS=(--config-envelope "$CONFIG_ENVELOPE_PATH")
+# Derive the parent proxy's overlay-driven routing (envelope + KMS region +
+# mediator) UP FRONT — before the "already running?" check — so a redeploy with a
+# different overlay restarts the proxy instead of leaving it on stale routing.
+# A fleet (un-baked) EIF bakes only a fleet-policy base and REQUIRES this overlay
+# to fill the tenant-scoped fields; warn loudly if it is missing.
+PROXY_ENVELOPE_ARGS=()
+if [ -f "${CONFIG_ENVELOPE_PATH:-}" ]; then
+    ok "Tenant overlay: $CONFIG_ENVELOPE_PATH (served over vsock:5800)"
+    PROXY_ENVELOPE_ARGS=(--config-envelope "$CONFIG_ENVELOPE_PATH")
 
-        # Keep the PARENT proxy consistent with the tenant overlay. The enclave
-        # derives its KMS egress region from the overlay's key_arn and connects to
-        # the overlay's mediator, but the parent's config.toml is only the
-        # fleet-base placeholder. The proxy honours AWS_REGION / MEDIATOR_DID env
-        # vars with priority over config.toml, so derive them here. This drives
-        # ONLY the parent's egress routing/allowlist — it never influences the
-        # enclave's baked security policy (that comes from the attested overlay).
-        if command -v jq >/dev/null 2>&1; then
-            OVERLAY_KEY_ARN="$(jq -r '.overlay.tee_kms.key_arn // empty' "$CONFIG_ENVELOPE_PATH" 2>/dev/null || true)"
-            OVERLAY_MEDIATOR_DID="$(jq -r '.overlay.messaging.mediator_did // empty' "$CONFIG_ENVELOPE_PATH" 2>/dev/null || true)"
-            if [ -n "$OVERLAY_KEY_ARN" ]; then
-                OVERLAY_REGION="$(printf '%s\n' "$OVERLAY_KEY_ARN" | cut -d: -f4)"
-                if [ -n "$OVERLAY_REGION" ]; then
-                    export AWS_REGION="$OVERLAY_REGION"
-                    ok "Parent proxy KMS region from overlay: $AWS_REGION"
-                fi
+    # Keep the PARENT proxy consistent with the tenant overlay. The enclave
+    # derives its KMS egress region from the overlay's key_arn and connects to
+    # the overlay's mediator, but the parent's config.toml is only the fleet-base
+    # placeholder. The proxy honours AWS_REGION / MEDIATOR_DID env vars with
+    # priority over config.toml, so derive them here. This drives ONLY the
+    # parent's egress routing/allowlist — it never influences the enclave's baked
+    # security policy (that comes from the attested overlay).
+    if command -v jq >/dev/null 2>&1; then
+        OVERLAY_KEY_ARN="$(jq -r '.overlay.tee_kms.key_arn // empty' "$CONFIG_ENVELOPE_PATH" 2>/dev/null || true)"
+        OVERLAY_MEDIATOR_DID="$(jq -r '.overlay.messaging.mediator_did // empty' "$CONFIG_ENVELOPE_PATH" 2>/dev/null || true)"
+        if [ -n "$OVERLAY_KEY_ARN" ]; then
+            OVERLAY_REGION="$(printf '%s\n' "$OVERLAY_KEY_ARN" | cut -d: -f4)"
+            if [ -n "$OVERLAY_REGION" ]; then
+                export AWS_REGION="$OVERLAY_REGION"
+                ok "Parent proxy KMS region from overlay: $AWS_REGION"
             fi
-            if [ -n "$OVERLAY_MEDIATOR_DID" ]; then
-                export MEDIATOR_DID="$OVERLAY_MEDIATOR_DID"
-                ok "Parent proxy mediator DID from overlay: $MEDIATOR_DID"
-            fi
-        else
-            warn "jq not found — cannot derive the parent proxy's region/mediator from the overlay."
-            warn "Set AWS_REGION and MEDIATOR_DID manually to match the overlay, or the parent may"
-            warn "use the fleet-base placeholder region/mediator and block the enclave's egress."
+        fi
+        if [ -n "$OVERLAY_MEDIATOR_DID" ]; then
+            export MEDIATOR_DID="$OVERLAY_MEDIATOR_DID"
+            ok "Parent proxy mediator DID from overlay: $MEDIATOR_DID"
         fi
     else
-        warn "No tenant overlay found — a fleet (un-baked) EIF will fail to boot."
-        warn "Render one from the build's tenant-overlay-template.json, e.g.:"
-        warn "  deploy/nitro/render-tenant-overlay.sh --key-arn <arn> --mediator-did <did> \\"
-        warn "    --anchor-table-name <table> --vta-did-template <tmpl> > tenant-overlay.json"
+        warn "jq not found — cannot derive the parent proxy's region/mediator from the overlay."
+        warn "Set AWS_REGION and MEDIATOR_DID manually to match the overlay, or the parent may"
+        warn "use the fleet-base placeholder region/mediator and block the enclave's egress."
     fi
+else
+    warn "No tenant overlay found — a fleet (un-baked) EIF will fail to boot."
+    warn "Render one from the build's tenant-overlay-template.json, e.g.:"
+    warn "  deploy/nitro/render-tenant-overlay.sh --key-arn <arn> --mediator-did <did> \\"
+    warn "    --anchor-table-name <table> --vta-did-template <tmpl> > tenant-overlay.json"
+fi
+
+# Signature of the effective routing. If it changed since the running proxy was
+# started, the proxy must be restarted (its process env + egress allowlist are
+# fixed at launch; only the served envelope file is reread live).
+ROUTING_SIG="envelope=${CONFIG_ENVELOPE_PATH:-} region=${AWS_REGION:-} mediator=${MEDIATOR_DID:-}"
+ROUTING_SIG_FILE="$RUNTIME_DIR/proxy.routing"
+
+PROXY_NEEDS_START=1
+if pid_alive "$PROXY_PID_FILE"; then
+    PREV_SIG="$(cat "$ROUTING_SIG_FILE" 2>/dev/null || true)"
+    if [ "$PREV_SIG" = "$ROUTING_SIG" ]; then
+        ok "Enclave proxy already running (PID $(cat "$PROXY_PID_FILE")) with matching routing"
+        PROXY_NEEDS_START=0
+    else
+        warn "Tenant overlay routing changed — restarting the enclave proxy"
+        warn "  was: ${PREV_SIG:-<none>}"
+        warn "  now: $ROUTING_SIG"
+        kill "$(cat "$PROXY_PID_FILE")" 2>/dev/null || true
+        sleep 1
+    fi
+fi
+
+if [ "$PROXY_NEEDS_START" -eq 1 ]; then
+    rm -f "$PROXY_PID_FILE"
+    info "Starting enclave proxy in background..."
     nohup "$PROXY_BIN" --config "$CONFIG_PATH" --enclave-cid 16 \
         ${PROXY_ENVELOPE_ARGS[@]+"${PROXY_ENVELOPE_ARGS[@]}"} \
         > "$PROXY_LOG" 2>&1 &
     PROXY_PID=$!
     echo "$PROXY_PID" > "$PROXY_PID_FILE"
+    printf '%s' "$ROUTING_SIG" > "$ROUTING_SIG_FILE"
     sleep 2
     if kill -0 "$PROXY_PID" 2>/dev/null; then
         ok "Enclave proxy started (PID $PROXY_PID, log: $PROXY_LOG)"

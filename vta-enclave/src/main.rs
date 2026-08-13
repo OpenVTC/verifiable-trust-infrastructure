@@ -190,30 +190,6 @@ async fn main() {
     #[cfg(not(feature = "tenant-overlay"))]
     let parent_delivered = false;
 
-    // Snapshot the EFFECTIVE (post-overlay) config digest now, for attestation.
-    // Both the boot anchor below and POST /attestation/config-report commit to
-    // this value, so a verifier's `(PCR0, config-digest)` reflects the tenant's
-    // real key_arn / mediator / anchor / public_url — not the baked placeholder
-    // file. Computed before secrets/JWT injection and DID autogen, so it is
-    // secret-free and reproducible from the published base config + overlay.
-    let config = {
-        let mut config = config;
-        match config.compute_config_attestation_digest() {
-            Ok(d) => config.effective_config_digest = Some(d),
-            Err(e) if on_nitro => {
-                tracing::error!(
-                    "FATAL: could not compute effective config attestation digest: {e}. \
-                     Refusing to boot."
-                );
-                std::process::exit(1);
-            }
-            Err(e) => {
-                tracing::warn!("effective config attestation digest unavailable (non-Nitro): {e}")
-            }
-        }
-        config
-    };
-
     // ── Security floor for a parent-delivered (un-baked) config ──
     // The tenant config is authored by the untrusted parent, so on real Nitro
     // hardware (and only for a parent-delivered source) refuse to boot if it would
@@ -358,7 +334,12 @@ async fn main() {
         }
     };
 
-    // ── Auto-generate DID identity on first boot ──
+    // ── Auto-generate / reconcile DID identity on first boot ──
+    // On real Nitro this is the authoritative identity step: a directly-supplied
+    // `vta_did` is persisted (first-boot), and on later boots the stored identity
+    // wins. A failure here means the enclave's identity is unknown/unpersisted, so
+    // it must NOT continue (it could otherwise run as a non-authoritative DID that
+    // changes next boot). Fail-closed on hardware; tolerate in dev/simulated.
     if let Err(e) = tee::did_autogen::maybe_generate_vta_did(
         &mut config,
         &*seed_store,
@@ -367,7 +348,13 @@ async fn main() {
     )
     .await
     {
-        tracing::warn!("VTA DID auto-generation failed: {e}");
+        if on_nitro {
+            tracing::error!(
+                "FATAL: VTA DID reconciliation/persistence failed: {e}. Refusing to boot."
+            );
+            std::process::exit(1);
+        }
+        tracing::warn!("VTA DID auto-generation failed (non-Nitro — continuing): {e}");
     }
 
     // ── Backfill the serverless did:webvh identity into the webvh keyspace ──
@@ -392,6 +379,28 @@ async fn main() {
         tee::admin_bootstrap::maybe_bootstrap_admin(&config, &store, storage_encryption_key).await
     {
         tracing::warn!("admin credential bootstrap failed: {e}");
+    }
+
+    // ── Snapshot the EFFECTIVE config digest for attestation ──
+    // Captured HERE — after overlay apply AND after DID reconciliation/generation
+    // — so the attested digest matches the config the VTA actually runs as
+    // (including the stored/generated `vta_did`), not a value the overlay proposed
+    // that reconciliation then overrode. The helper strips the JWT signing key and
+    // `[secrets]`, so it stays secret-free and reproducible even though this runs
+    // after secret injection. Both the boot anchor below and
+    // POST /attestation/config-report read `effective_config_digest`.
+    match config.compute_config_attestation_digest() {
+        Ok(d) => config.effective_config_digest = Some(d),
+        Err(e) if on_nitro => {
+            tracing::error!(
+                "FATAL: could not compute effective config attestation digest: {e}. \
+                 Refusing to boot."
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            tracing::warn!("effective config attestation digest unavailable (non-Nitro): {e}")
+        }
     }
 
     // ── Initialize TEE provider + build context ──

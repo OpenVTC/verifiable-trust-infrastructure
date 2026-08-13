@@ -143,7 +143,10 @@ impl From<&AppState> for ProvisionIntegrationDeps {
             seed_store: state.seed_store.clone(),
             config: state.config.clone(),
             did_resolver: state.did_resolver.clone(),
+            #[cfg(any(feature = "didcomm", feature = "tsp"))]
             didcomm_bridge: state.didcomm_bridge.clone(),
+            #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
+            didcomm_bridge: std::sync::Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder()),
             webvh_auth_locks: state.webvh_auth_locks.clone(),
         }
     }
