@@ -426,6 +426,20 @@ jobs:
           # minutes to this job.
           VTC_SKIP_ADMIN_UI_BUILD: "1"
 
+      # The VTC's trust-registry **send** path — the other direction from the
+      # test above, and the one with an extra failure mode: a registry write
+      # completes only when a correlated reply comes back through the inbound
+      # demux, which is a different code path from the send. A demux that drops
+      # the reply is indistinguishable from a registry that never answered
+      # (the call times out, the syncer backs off, the queue grows), so the
+      # round trip has to be exercised, not just the two halves. Same reasoning
+      # as the join tests: `didcomm-harness` is not a default feature, so
+      # `cargo test --workspace` never builds this.
+      - name: vtc-service trust-registry round trip over a real mediator
+        run: cargo test -p vtc-service --features didcomm-harness --test registry_didcomm
+        env:
+          VTC_SKIP_ADMIN_UI_BUILD: "1"
+
   enclave:
     # The Nitro enclave binary uses a TEE-only feature combo that the
     # default `check` job never touches. Linux-only because vsock-store

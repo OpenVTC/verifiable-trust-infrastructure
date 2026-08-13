@@ -97,7 +97,7 @@ pub struct AppState {
     pub hooks_cursor_ks: KeyspaceHandle,
     /// In-flight capability writes awaiting their DIDComm reply — shared
     /// between the hook relay's writer and the inbound demux.
-    pub capability_replies: crate::hooks::PendingReplies,
+    pub pending_replies: crate::hooks::PendingReplies,
     /// VRC trust-edge rows (Phase 4 M4.5). Primary keyspace.
     pub relationships_ks: KeyspaceHandle,
     /// VRC per-DID secondary index (Phase 4 M4.5). Keyed by
@@ -454,39 +454,7 @@ pub async fn run(
         );
     }
 
-    // M3.2: build the trust-registry client + run the boot
-    // health probe. When `registry.url` is unset, the client
-    // is `None` and `registry_health` stays Degraded. The
-    // periodic probe task is spawned later, after the audit
-    // writer is available.
     let registry_health = crate::registry::RegistryHealth::new();
-    let registry_client: Option<Arc<dyn crate::registry::TrustRegistryClient>> = match config
-        .registry
-        .url
-        .as_deref()
-    {
-        Some(url) => {
-            let cfg = crate::registry::upstream::UpstreamConfig {
-                base_url: url.to_string(),
-                http_timeout: std::time::Duration::from_secs(config.registry.http_timeout_seconds),
-                authority_did: config.vtc_did.clone(),
-            };
-            match crate::registry::UpstreamRegistryClient::new(cfg) {
-                Ok(c) => Some(Arc::new(c) as Arc<dyn crate::registry::TrustRegistryClient>),
-                Err(e) => {
-                    warn!(error = ?e, "failed to construct trust-registry client; running with registry features disabled");
-                    None
-                }
-            }
-        }
-        None => {
-            debug!(
-                "trust-registry url not configured — registry features disabled; \
-                     registry_status reads 'degraded'"
-            );
-            None
-        }
-    };
 
     // Initialize auth infrastructure. Pass the audit keyspaces in so
     // `init_auth` can derive the HMAC audit key from the same secret
@@ -557,6 +525,83 @@ pub async fn run(
         }
     };
 
+    // Build the trust-registry client. Two addressing modes, in preference
+    // order:
+    //
+    // - `registry.did` — the registry is a peer we reach over the transport
+    //   both DID documents advertise (TSP > DIDComm > REST). This is the
+    //   normal case: a registry is named by DID in the community's
+    //   `#trust-registry` referral, and a deployment need publish no URL at
+    //   all. `registry.url`, when also set, becomes the REST arm of that
+    //   client rather than a separate path.
+    // - `registry.url` alone — a registry that speaks only TRQP over HTTP.
+    //
+    // Neither ⇒ no client, registry features no-op, `registry_status` reads
+    // `degraded`. Constructed here rather than earlier because the messaging
+    // client needs the credential signer and DID resolver `init_auth` produces;
+    // the messaging handle itself arrives later, through the shared `OnceCell`.
+    let didcomm_cell: Arc<tokio::sync::OnceCell<Arc<crate::messaging::VtcMessaging>>> =
+        Arc::new(tokio::sync::OnceCell::new());
+    let pending_replies = crate::hooks::PendingReplies::new();
+    let http_arm = match config.registry.url.as_deref() {
+        Some(url) => {
+            let cfg = crate::registry::upstream::UpstreamConfig {
+                base_url: url.to_string(),
+                http_timeout: std::time::Duration::from_secs(config.registry.http_timeout_seconds),
+                authority_did: config.vtc_did.clone(),
+            };
+            match crate::registry::UpstreamRegistryClient::new(cfg) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    warn!(error = ?e, "failed to construct the HTTP trust-registry arm");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+    let registry_client: Option<Arc<dyn crate::registry::TrustRegistryClient>> =
+        match (config.registry.did.clone(), credential_signer.clone()) {
+            (Some(registry_did), Some(signer)) => {
+                info!(%registry_did, "trust registry addressed by DID over messaging");
+                Some(Arc::new(crate::registry::MessagingRegistryClient::new(
+                    registry_did,
+                    config.vtc_did.clone(),
+                    didcomm_cell.clone(),
+                    signer,
+                    pending_replies.clone(),
+                    did_resolver.clone(),
+                    http_arm,
+                ))
+                    as Arc<dyn crate::registry::TrustRegistryClient>)
+            }
+            // A registry DID without a credential signer would be able to build
+            // documents but not sign them, so every write would fail
+            // `proofRequired` at the registry. Refusing to construct the client
+            // is the honest outcome — `registry_status` reads degraded and the
+            // reason is in the log, rather than a queue that only fills up.
+            (Some(_), None) => {
+                warn!(
+                    "registry.did is set but the VTC has no credential signer — registry \
+                     features disabled until setup completes"
+                );
+                None
+            }
+            (None, _) => match http_arm {
+                Some(c) => {
+                    debug!("trust registry addressed by URL (REST only — no registry.did set)");
+                    Some(Arc::new(c) as Arc<dyn crate::registry::TrustRegistryClient>)
+                }
+                None => {
+                    debug!(
+                        "no trust registry configured (neither registry.did nor registry.url) — \
+                         registry features disabled; registry_status reads 'degraded'"
+                    );
+                    None
+                }
+            },
+        };
+
     // Bind TCP listener on the main thread for early port validation
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let std_listener = std::net::TcpListener::bind(&addr).map_err(AppError::Io)?;
@@ -610,7 +655,7 @@ pub async fn run(
         sync_cursor_ks,
         hooks_queue_ks,
         hooks_cursor_ks,
-        capability_replies: crate::hooks::PendingReplies::new(),
+        pending_replies: pending_replies.clone(),
         relationships_ks,
         relationships_by_did_ks,
         endorsement_types_ks,
@@ -638,7 +683,7 @@ pub async fn run(
         audit_writer,
         shutdown_tx: shutdown_tx.clone(),
         supervisor: detect_supervisor(),
-        didcomm: Arc::new(tokio::sync::OnceCell::new()),
+        didcomm: didcomm_cell,
     };
 
     // Heal missing AdminEntries: any DID with an Admin ACL grant +
@@ -855,7 +900,7 @@ pub async fn run(
             state.didcomm.clone(),
             signer,
             registry_did,
-            state.capability_replies.clone(),
+            state.pending_replies.clone(),
         ));
         let audit_ks = state.audit_ks.clone();
         let queue_ks = state.hooks_queue_ks.clone();

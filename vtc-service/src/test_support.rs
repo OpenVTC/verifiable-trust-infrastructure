@@ -344,7 +344,7 @@ impl TestVtcBuilder {
             sync_cursor_ks,
             hooks_queue_ks,
             hooks_cursor_ks,
-            capability_replies: crate::hooks::PendingReplies::new(),
+            pending_replies: crate::hooks::PendingReplies::new(),
             relationships_ks,
             relationships_by_did_ks,
             endorsement_types_ks,
@@ -755,6 +755,49 @@ mod didcomm_harness {
         (did, secrets)
     }
 
+    /// Mint a `did:peer:2` advertising a single `DIDCommMessaging` service at
+    /// `mediator_did`.
+    ///
+    /// The applicant's plain `generate_did_peer` is enough to *send* to the
+    /// VTC, because the VTC replies to the authcrypt sender it already has. A
+    /// peer the VTC has to reach on its own initiative is different: the
+    /// transport is chosen by reading that peer's document
+    /// (`ServiceCapabilities::from_did_document`), so a service-less `did:peer`
+    /// is a peer no matcher can route to — which is the honest behaviour, and
+    /// the reason this exists rather than a looser matcher.
+    ///
+    /// One service, so the identifier stays inside the 1000-byte limit every
+    /// stock `DIDCacheClient` applies before parsing (see
+    /// [`mint_dual_transport_did`] for what going over it costs).
+    fn mint_didcomm_peer(mediator_did: &str) -> (String, Vec<Secret>) {
+        use affinidi_tdk::dids::{
+            OneOrMany, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong,
+        };
+
+        let (did, secrets) = DID::generate_did_peer_with_services(
+            peer_key_roles(),
+            Some(vec![PeerService {
+                type_: "DIDCommMessaging".into(),
+                endpoint: PeerServiceEndpoint::Long(OneOrMany::One(PeerServiceEndpointLong {
+                    uri: mediator_did.to_string(),
+                    accept: vec![],
+                    routing_keys: vec![],
+                })),
+                id: None,
+            }]),
+        )
+        .expect("mint a DIDComm-advertising did:peer");
+
+        const MAX_DID_BYTES: usize = 1_000;
+        assert!(
+            did.len() < MAX_DID_BYTES,
+            "peer did:peer is {} bytes, over the {MAX_DID_BYTES}-byte stock resolver limit",
+            did.len(),
+        );
+
+        (did, secrets)
+    }
+
     /// Build an ATM whose secrets resolver holds `secrets` (a `did:peer`'s keys).
     async fn build_atm(secrets: &[Secret]) -> ATM {
         let tdk = TDKSharedState::new(TDKConfig::builder().build().expect("TDK config"))
@@ -883,6 +926,45 @@ mod didcomm_harness {
         /// manifest's DCQL via `vta_sdk::vp::build_vp_token`.
         pub fn holder_secret(&self) -> &Secret {
             &self.holder_secret
+        }
+
+        /// Await the next inbound Trust-Task envelope, whatever it is threaded
+        /// to, and return the **document** the VTC sent.
+        ///
+        /// The counterpart to [`request`](Self::request): that one drives the
+        /// VTC from a client, this one lets a peer receive what the VTC sends
+        /// *out* — the direction a trust registry sits in. `None` on timeout.
+        pub async fn next_trust_task(&self, timeout: Duration) -> Option<Value> {
+            self.recv_matching(
+                |r| r.typ == vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE,
+                timeout,
+            )
+            .await
+            .map(|r| r.body)
+        }
+
+        /// Send `document` back to `to` as a Trust-Task envelope.
+        ///
+        /// Correlation is by the document's own `threadId` (the VTC's inbound
+        /// demux reads it off the body, not the DIDComm envelope), so the
+        /// caller sets that field; the DIDComm `thid` is set to match for
+        /// consistency with what a real peer emits.
+        pub async fn send_trust_task(&self, to: &str, document: Value) {
+            let thid = document
+                .get("threadId")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let mut msg = Message::build(
+                format!("urn:uuid:{}", Uuid::new_v4()),
+                vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE.to_string(),
+                document,
+            )
+            .from(self.did.clone())
+            .to(to.to_string());
+            if let Some(thid) = thid {
+                msg = msg.thid(thid);
+            }
+            self.send(&msg.finalize(), to).await;
         }
 
         /// Send `body` as a `typ` DIDComm message to `vtc_did` (authcrypt,
@@ -1256,6 +1338,30 @@ mod didcomm_harness {
         /// The VTC's DIDComm identity — address join messages here.
         pub fn vtc_did(&self) -> &str {
             &self.vtc_did
+        }
+
+        /// Connect a second peer that stands in for a **trust registry**: a
+        /// `did:peer` advertising `DIDCommMessaging` at the shared mediator,
+        /// registered as a local account so it can open an inbound channel.
+        ///
+        /// Lazy rather than part of [`start`](Self::start) because every peer
+        /// costs a websocket, and the join suite has no registry in it.
+        ///
+        /// The caller owns the returned client's shutdown — [`shutdown`](Self::shutdown)
+        /// only knows about the applicant.
+        pub async fn connect_registry_peer(&self) -> TestJoinClient {
+            let (did, secrets) = mint_didcomm_peer(self.mediator.did());
+            self.mediator
+                .register_local_did(&did)
+                .await
+                .expect("register the registry peer as a local mediator account");
+            TestJoinClient::connect(
+                &secrets,
+                did,
+                self.mediator.did().to_string(),
+                generate_holder_secret(),
+            )
+            .await
         }
 
         /// The shared mediator's DID.

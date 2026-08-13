@@ -48,6 +48,7 @@
 
 pub mod client;
 pub mod health;
+pub mod messaging;
 pub mod model;
 pub mod policy;
 pub mod storage;
@@ -55,8 +56,23 @@ pub mod syncer;
 pub mod tail;
 pub mod upstream;
 
+/// The TRQP `action` every membership record and recognition query uses.
+///
+/// A record is only ever found by the **whole** four-part key
+/// (entity+authority+action+resource), so the tuple a member record is
+/// published under and the tuple `recognise()` queries with must be
+/// character-identical. Two constants, read by both the messaging client and
+/// the HTTP client, are what stop those drifting into a registry full of rows
+/// nobody looks up — a failure with no error anywhere.
+pub const RECOGNISE_ACTION: &str = "recognise";
+
+/// The TRQP `resource` scope for the community's recognition graph. See
+/// [`RECOGNISE_ACTION`].
+pub const TRUST_GRAPH_RESOURCE: &str = "trust-graph";
+
 pub use client::{MockRegistryClient, RegistryError, TrustRegistryClient};
 pub use health::{HealthStatus, RegistryHealth, SyncerHealth, SyncerHealthSnapshot};
+pub use messaging::MessagingRegistryClient;
 pub use model::{
     DEFAULT_MAX_ATTEMPTS, MAX_BACKOFF_SECONDS, RegistryRecord, RegistryStatus, SyncJob,
     SyncJobKind, SyncJobState, exponential_backoff_seconds,

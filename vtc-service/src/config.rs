@@ -248,19 +248,38 @@ pub enum PersonhoodFailMode {
 #[serde(rename_all = "snake_case")]
 pub struct RegistryConfig {
     /// Base URL of the upstream TRQP-compliant registry
-    /// (e.g. `https://registry.example.com`). When `None`,
-    /// registry features no-op — `registry_status` reads
-    /// `"degraded"`, sync is skipped.
+    /// (e.g. `https://registry.example.com`).
+    ///
+    /// **Optional, and no longer the primary address.** With [`Self::did`] set
+    /// this is the REST *arm* of the messaging client — used only when the
+    /// registry advertises `TRQPRest` and no messaging transport. On its own it
+    /// selects the HTTP-only client, which can answer TRQP queries but cannot
+    /// write records (the upstream exposes writes over Trust Tasks only).
+    ///
+    /// Neither `url` nor `did` ⇒ registry features no-op, `registry_status`
+    /// reads `"degraded"`, sync is skipped.
     #[serde(default)]
     pub url: Option<String>,
-    /// DID of the trust registry — the recipient of DIDComm capability
-    /// writes (`governance/capability/*`, `git-trust/*`). Required for the
-    /// membership hook relay; unset ⇒ hooks are not spawned.
+    /// DID of the trust registry.
+    ///
+    /// The primary address: the registry is reached over whichever transport
+    /// both DID documents advertise (TSP > DIDComm > REST, matched on service
+    /// `type`). Covers membership sync (`registry/record/{put,delete,query}`),
+    /// recognition queries, the health probe, and the git-trust /
+    /// `governance/capability/*` hook relay — so a registry that publishes a
+    /// DID and nothing else is fully usable.
+    ///
+    /// Unset ⇒ the hook relay is not spawned and the client falls back to
+    /// [`Self::url`], if set.
     #[serde(default)]
     pub did: Option<String>,
     /// Period (seconds) between background health probes.
     /// `0` disables the periodic probe (only boot-time probe
     /// runs). Default: 60s.
+    ///
+    /// Over messaging the probe is a read-only `registry/record/query` round
+    /// trip, so `registry_status` tracks whether the registry actually answers
+    /// — not merely whether a URL is up.
     #[serde(default = "default_health_probe_interval")]
     pub health_probe_interval_seconds: u64,
     /// Per-call HTTP timeout for registry operations (seconds).
