@@ -159,7 +159,7 @@ vta-policy = { path = "../vta-policy", version = "0.2" }
 # extracted to its own crate and re-exported as crate::{webvh_store,
 # webvh_client, webvh_auth} behind this crate's `webvh` feature.
 vta-webvh = { path = "../vta-webvh", version = "0.1", optional = true }
-vta-sdk = { path = "../vta-sdk", version = "0.22", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup"] }
+vta-sdk = { path = "../vta-sdk", version = "0.23", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
 # Distinct from `webauthn-rs` (which drives the passkey *enrolment*
@@ -352,7 +352,7 @@ vta-service = { path = ".", features = ["test-support", "config-seed"] }
 # here rather than from `vta-sdk`'s own tests — the workspace patches `vta-sdk`
 # onto itself, so `-p vta-sdk --features test-loopback` leaves the built unit
 # Fresh and the feature never reaches the compiler.
-vta-sdk = { path = "../vta-sdk", version = "0.22", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.23", features = [
   "provision-client",
   "test-loopback",
 ] }
