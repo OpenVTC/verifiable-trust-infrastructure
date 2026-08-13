@@ -606,14 +606,18 @@ fn build_tls_connector() -> Result<TlsConnector, Box<dyn std::error::Error>> {
 /// Serves the un-baked tenant config envelope to the enclave over vsock.
 ///
 /// The enclave connects on first boot, reads the envelope
-/// (`{ "version":1, "config_toml":"…", "integrity":null }`) and writes
-/// `/etc/vta/config.toml` before starting the VTA. The file is re-read per
-/// connection so a rotated envelope is picked up on the enclave's next boot,
-/// and each connection is served by its own task so the enclave can reconnect
-/// after a boot race or restart.
+/// (`{ "version":1, "overlay":{ … }, "integrity":null }` — a small, typed,
+/// allowlisted tenant overlay; see
+/// `docs/05-design-notes/tenant-config-allowlist.md` §3.4), parses + validates
+/// it in-process, and applies it onto the baked fleet-policy base config before
+/// starting the VTA. The file is re-read per connection so a rotated envelope is
+/// picked up on the enclave's next boot, and each connection is served by its
+/// own task so the enclave can reconnect after a boot race or restart.
 ///
-/// This is the parent side of the vsock config channel that replaces baking the
-/// config into the EIF; the shell equivalent is
+/// This side just streams the envelope bytes; it is shape-agnostic (it does not
+/// parse the JSON), so it is unchanged from the earlier whole-config envelope —
+/// only the file's contents differ (a small overlay, not a whole config.toml).
+/// The shell equivalent is
 /// `socat -U VSOCK-LISTEN:PORT,fork OPEN:envelope,rdonly` in `parent-proxy.sh`.
 pub async fn run_config_server(vsock_port: u32, envelope_path: std::path::PathBuf) {
     use tokio::io::AsyncWriteExt;

@@ -5,15 +5,19 @@
 # CONFIG BAKING IS A BUILD-TIME CHOICE (see Dockerfile.nitro "CONFIG MODES"):
 #   - BAKE_CONFIG=true  (DEFAULT) — THIS file is baked into the Enclave Image
 #     File (EIF) and committed to PCR0. Best for single-tenant / self-hosted
-#     deploys: fully attested, no runtime config server needed.
-#   - BAKE_CONFIG=false — this file is NOT copied into the image, so one image /
-#     one PCR0 serves every tenant. At runtime the parent serves a config
-#     envelope ({ "version":1, "config_toml":"…", "integrity":null }) over vsock
-#     port 5800; the entrypoint fetches it and writes /etc/vta/config.toml.
+#     deploys: fully attested, and the binary has no vsock config-fetch code.
+#   - BAKE_CONFIG=false — THIS file is NOT baked. Instead the image bakes
+#     config.fleet-base.toml (fleet policy + placeholders), so one image / one
+#     PCR0 serves every tenant. At runtime the parent serves a small typed
+#     tenant OVERLAY ({ "version":1, "overlay":{…}, "integrity":null }) over
+#     vsock:5800; the enclave parses it (deny_unknown_fields, an allowlist) and
+#     applies it onto the baked base. Only the tenant-scoped fields (key_arn,
+#     mediator_did, vta_did_template, public_url, vta_name) are overlay-settable;
+#     mode, admin_did, and every allow_* flag stay baked. See
+#     docs/05-design-notes/tenant-config-allowlist.md and render-tenant-overlay.sh.
 #
-# Either way this file is the canonical TEMPLATE for the values, and a
-# mounted/baked /etc/vta/config.toml is always used as-is when present
-# (short-circuiting the vsock fetch) — e.g. for LOCAL / DEV runs.
+# For BAKE_CONFIG=true this file is the canonical config, and a mounted/baked
+# /etc/vta/config.toml is always used as-is (e.g. for LOCAL / DEV runs).
 #
 # QUICK START — You only need to set TWO values:
 #   1. key_arn       — Your KMS key ARN (in [tee.kms])

@@ -68,10 +68,13 @@ BUILD_DIR="${VTA_BUILD_DIR:-$REPO_ROOT/.deploy-nitro}"
 
 # Config mode (see Dockerfile.nitro "CONFIG MODES"):
 #   true  (DEFAULT) — bake config.toml into the image (single-tenant / self-host;
-#          config committed to PCR0, no runtime config server needed).
-#   false — ship no config so one image / one PCR0 serves every tenant; the
-#          enclave fetches its config over vsock at runtime (config-envelope.json
-#          is still emitted below for that path).
+#          config committed to PCR0, no runtime overlay). The binary has no
+#          vsock config-fetch code.
+#   false — bake config.fleet-base.toml (fleet policy + placeholders) so one
+#          image / one PCR0 serves every tenant; the enclave fetches a typed,
+#          allowlisted tenant overlay over vsock:5800 at boot. This script emits
+#          a tenant-overlay-template.json for that path (a per-tenant file is
+#          produced by render-tenant-overlay.sh).
 BAKE_CONFIG="${VTA_BAKE_CONFIG:-true}"
 
 # =============================================================================
@@ -422,18 +425,51 @@ fi
 # =============================================================================
 step 10 "Rebuild with final config"
 
-sed -i.bak "s|key_arn = \"PLACEHOLDER\"|key_arn = \"$KEY_ARN\"|" "$CONFIG_PATH"
-rm -f "$CONFIG_PATH.bak"
-ok "Config updated with KMS key ARN"
+if [ "$BAKE_CONFIG" = "false" ]; then
+    # ── FLEET (BAKE_CONFIG=false): do NOT bake tenant values ──
+    # The image bakes config.fleet-base.toml (fleet policy + placeholders). Bake
+    # ONLY the account allowlist (PCR0-committed); the tenant key_arn / mediator /
+    # DID template are delivered at runtime as a typed overlay, never baked.
+    ACCOUNT_ID="$(printf '%s\n' "$KEY_ARN" | cut -d: -f5)"
+    FLEET_BASE="$SCRIPT_DIR/config.fleet-base.toml"
+    sed -i.bak \
+        "s|allowed_kms_accounts = \[\"REPLACE_WITH_ALLOWED_ACCOUNT_ID\"\]|allowed_kms_accounts = [\"$ACCOUNT_ID\"]|" \
+        "$FLEET_BASE"
+    rm -f "$FLEET_BASE.bak"
+    ok "Fleet base tee.allowed_kms_accounts set to [\"$ACCOUNT_ID\"]"
 
-# Emit the vsock config envelope (un-baked config). The tenant config is NOT
-# baked into the EIF; the parent serves this envelope to the enclave over vsock
-# at boot. `-Rs` slurps config.toml as a single JSON string into `.config_toml`.
-ENVELOPE_PATH="$BUILD_DIR/config-envelope.json"
-jq -Rs '{version: 1, config_toml: ., integrity: null}' "$CONFIG_PATH" > "$ENVELOPE_PATH"
-ok "Config envelope written: $ENVELOPE_PATH"
-
-cp "$CONFIG_PATH" "$SCRIPT_DIR/config.toml"
+    # Emit a tenant OVERLAY TEMPLATE (the allowlisted wire shape — see
+    # docs/05-design-notes/tenant-config-allowlist.md §3.4). A real per-tenant
+    # overlay is produced by render-tenant-overlay.sh and served by
+    # deploy-enclave.sh over vsock:5800.
+    OVERLAY_TEMPLATE_PATH="$BUILD_DIR/tenant-overlay-template.json"
+    cat > "$OVERLAY_TEMPLATE_PATH" <<JSON
+{
+  "version": 1,
+  "overlay": {
+    "vta_name": "REPLACE_tenant_short_name",
+    "public_url": "https://vta.REPLACE.example.com",
+    "tee_kms": {
+      "key_arn": "$KEY_ARN",
+      "vta_did_template": "did:webvh:{SCID}:REPLACE.example.com:vta"
+    },
+    "messaging": { "mediator_did": "REPLACE_mediator_did" }
+  },
+  "integrity": null
+}
+JSON
+    ok "Tenant overlay TEMPLATE written: $OVERLAY_TEMPLATE_PATH"
+    info "Render a per-tenant overlay, e.g.:"
+    info "  deploy/nitro/render-tenant-overlay.sh --key-arn $KEY_ARN \\"
+    info "    --mediator-did <did> --vta-did-template <tmpl> > tenant-overlay.json"
+    info "Then serve it: deploy-enclave.sh --config-envelope tenant-overlay.json"
+else
+    # ── SELF-HOST (BAKE_CONFIG=true): bake the tenant config into the EIF ──
+    sed -i.bak "s|key_arn = \"PLACEHOLDER\"|key_arn = \"$KEY_ARN\"|" "$CONFIG_PATH"
+    rm -f "$CONFIG_PATH.bak"
+    ok "Config updated with KMS key ARN"
+    cp "$CONFIG_PATH" "$SCRIPT_DIR/config.toml"
+fi
 
 info "Rebuilding Docker image..."
 docker build -f "$REPO_ROOT/Dockerfile.nitro" \
@@ -507,8 +543,11 @@ echo "  PCR8:       ${PCR8:0:32}..."
 echo ""
 echo -e "  ${GREEN}Bundle ready at: $BUILD_DIR/${NC}"
 echo "    - vta.eif"
-echo "    - config.toml"
-echo "    - config-envelope.json"
+if [ "$BAKE_CONFIG" = "false" ]; then
+    echo "    - tenant-overlay-template.json  (fleet: render per-tenant, serve over vsock)"
+else
+    echo "    - config.toml                   (baked into the EIF)"
+fi
 echo "    - pcr0.txt, pcr8.txt"
 echo "    - manifest.json"
 echo ""

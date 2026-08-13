@@ -6,6 +6,10 @@ pub mod kms_bootstrap;
 pub mod mnemonic_guard;
 pub mod provider;
 mod simulated;
+/// Fetch + apply the allowlisted tenant-config overlay over vsock. Only present
+/// in `BAKE_CONFIG=false` (fleet) builds. See design note §3.8.
+#[cfg(feature = "tenant-overlay")]
+pub mod tenant_overlay;
 pub mod types;
 
 // Platform-specific providers (compiled on all targets but only functional

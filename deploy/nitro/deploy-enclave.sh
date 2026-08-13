@@ -76,9 +76,17 @@ fi
 if [ -n "$BUNDLE_DIR" ]; then
     [ -z "$EIF_PATH" ]    && EIF_PATH="$BUNDLE_DIR/vta.eif"
     [ -z "$CONFIG_PATH" ] && CONFIG_PATH="$BUNDLE_DIR/config.toml"
-    # Un-baked config: the enclave fetches its tenant config from the parent
-    # proxy over vsock instead of a baked EIF. Served when present in the bundle.
-    [ -z "${CONFIG_ENVELOPE_PATH:-}" ] && CONFIG_ENVELOPE_PATH="$BUNDLE_DIR/config-envelope.json"
+    # Fleet (un-baked) EIF: the enclave fetches a typed, allowlisted tenant
+    # overlay from the parent over vsock:5800 and applies it onto its baked
+    # fleet-policy base. Serve the rendered per-tenant overlay when present;
+    # fall back to the legacy filename for older bundles.
+    if [ -z "${CONFIG_ENVELOPE_PATH:-}" ]; then
+        if [ -f "$BUNDLE_DIR/tenant-overlay.json" ]; then
+            CONFIG_ENVELOPE_PATH="$BUNDLE_DIR/tenant-overlay.json"
+        else
+            CONFIG_ENVELOPE_PATH="$BUNDLE_DIR/config-envelope.json"
+        fi
+    fi
 fi
 
 RUNTIME_DIR="${VTA_RUNTIME_DIR:-${BUNDLE_DIR:-$REPO_ROOT/.deploy-nitro}}"
@@ -258,17 +266,19 @@ if pid_alive "$PROXY_PID_FILE"; then
 else
     rm -f "$PROXY_PID_FILE"
     info "Starting enclave proxy in background..."
-    # Serve the un-baked tenant config envelope over vsock when present. A
-    # rebuilt (un-baked) EIF has no config inside and REQUIRES this; warn loudly
-    # if it is missing so the failure is obvious, not a 60 s enclave timeout.
+    # Serve the typed tenant-overlay envelope over vsock when present. A fleet
+    # (un-baked) EIF bakes only a fleet-policy base and REQUIRES this overlay to
+    # fill the tenant-scoped fields; warn loudly if it is missing so the failure
+    # is obvious, not a 60 s enclave timeout.
     PROXY_ENVELOPE_ARGS=()
     if [ -f "${CONFIG_ENVELOPE_PATH:-}" ]; then
-        ok "Config envelope: $CONFIG_ENVELOPE_PATH (served over vsock:5800)"
+        ok "Tenant overlay: $CONFIG_ENVELOPE_PATH (served over vsock:5800)"
         PROXY_ENVELOPE_ARGS=(--config-envelope "$CONFIG_ENVELOPE_PATH")
     else
-        warn "No config-envelope.json in bundle — an un-baked EIF will fail to boot."
-        warn "Generate it from config.toml:"
-        warn "  jq -Rs '{version:1, config_toml:., integrity:null}' config.toml > config-envelope.json"
+        warn "No tenant overlay found — a fleet (un-baked) EIF will fail to boot."
+        warn "Render one from the build's tenant-overlay-template.json, e.g.:"
+        warn "  deploy/nitro/render-tenant-overlay.sh --key-arn <arn> \\"
+        warn "    --mediator-did <did> --vta-did-template <tmpl> > tenant-overlay.json"
     fi
     nohup "$PROXY_BIN" --config "$CONFIG_PATH" --enclave-cid 16 \
         ${PROXY_ENVELOPE_ARGS[@]+"${PROXY_ENVELOPE_ARGS[@]}"} \

@@ -16,10 +16,14 @@
 # CONFIG MODES (BAKE_CONFIG build-arg):
 #   BAKE_CONFIG=true  (DEFAULT) — bake deploy/nitro/config.toml into the image.
 #       Best for single-tenant / self-hosted deploys: the config is committed to
-#       PCR0 and fully attested, and no runtime config server is needed.
-#   BAKE_CONFIG=false — ship NO config, so ONE image / ONE PCR0 serves every
-#       tenant (multi-tenant operators, e.g. a managed VTA fleet). The enclave
-#       fetches its tenant config over vsock at runtime; see
+#       PCR0 and fully attested, and the binary contains NO vsock config-fetch
+#       code (the `tenant-overlay` feature is not compiled in).
+#   BAKE_CONFIG=false — bake a fleet-policy BASE config with placeholders for the
+#       tenant-scoped fields, so ONE image / ONE PCR0 serves every tenant
+#       (multi-tenant operators, e.g. a managed VTA fleet). The binary is built
+#       with the `tenant-overlay` feature: at boot it fetches a typed,
+#       allowlisted overlay from the parent over vsock:5800 and applies it onto
+#       the baked base. See docs/05-design-notes/tenant-config-allowlist.md and
 #       deploy/nitro/enclave-entrypoint.sh.
 #
 # CACHING, two separate mechanisms — both load-bearing:
@@ -96,13 +100,22 @@ RUN apt-get update && \
 # or aws-secrets features.
 ARG FEATURES="rest,didcomm,vsock-store,vsock-log"
 
+# BAKE_CONFIG drives one Rust feature: the fleet build (`false`) compiles in the
+# `tenant-overlay` vsock config-fetch path; the baked build (`true`) does not, so
+# a self-host binary contains no config-fetch code at all. Re-declared here so
+# the builder stage can read the global ARG.
+ARG BAKE_CONFIG=true
+
+
 # Dependency layer. No `--locked` here: cook builds from the recipe rather than
 # the real manifests, and the flag buys nothing for a warm-up whose output is
 # discarded. The real build below is locked, which is where it matters.
 COPY --from=planner /build/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json \
+RUN EFFECTIVE_FEATURES="${FEATURES}"; \
+    if [ "${BAKE_CONFIG}" = "false" ]; then EFFECTIVE_FEATURES="${EFFECTIVE_FEATURES},tenant-overlay"; fi; \
+    cargo chef cook --release --recipe-path recipe.json \
         --package vta-enclave \
-        --no-default-features --features ${FEATURES}
+        --no-default-features --features "${EFFECTIVE_FEATURES}"
 
 # Real sources — every workspace member EXCEPT deploy/, whose config.toml is
 # baked in Stage 3. See the CACHING note at the top: `COPY . .` here would pull
@@ -140,8 +153,13 @@ COPY vti-webauthn/ vti-webauthn/
 
 # Build the VTA enclave binary with selected feature flags. `--locked` so the
 # image cannot silently resolve a dependency set other than the one CI tested.
-RUN cargo build --release --locked --package vta-enclave \
-        --no-default-features --features ${FEATURES}
+# `tenant-overlay` is appended for the fleet build (BAKE_CONFIG=false) so the
+# baked base config's placeholder fields are filled from the vsock overlay.
+RUN EFFECTIVE_FEATURES="${FEATURES}"; \
+    if [ "${BAKE_CONFIG}" = "false" ]; then EFFECTIVE_FEATURES="${EFFECTIVE_FEATURES},tenant-overlay"; fi; \
+    echo "Building vta-enclave (BAKE_CONFIG=${BAKE_CONFIG}) with features: ${EFFECTIVE_FEATURES}"; \
+    cargo build --release --locked --package vta-enclave \
+        --no-default-features --features "${EFFECTIVE_FEATURES}"
 
 # Build a tiny stub for __res_init — an obsolete glibc resolver function
 # that musl/Alpine don't provide. Returning 0 (success) is safe; modern
@@ -154,9 +172,14 @@ RUN echo 'int __res_init(void) { return 0; }' > /tmp/res_stub.c && \
 # Config selector: pick a source of `/out` for the runtime stage based on the
 # BAKE_CONFIG build-arg. This is the BuildKit-safe way to make the config COPY
 # conditional — the runtime stage always copies `/out/`, but its contents differ:
-#   - config-true:  /out/config.toml  → baked into the image (committed to PCR0)
-#   - config-false: /out/ is empty    → no config in the image (un-baked)
-# Both stages exist so `COPY --from=config-src /out/` always has a valid source.
+#   - config-true:  /out/config.toml = the full tenant config (committed to PCR0)
+#   - config-false: /out/config.toml = a fleet-policy BASE with placeholders for
+#                   the tenant-scoped fields; the enclave overlays the real
+#                   values at boot over vsock (see the tenant-overlay feature).
+# Both stages exist so `COPY --from=config-src /out/` always has a valid source,
+# and either way the runtime image ships a config.toml (the fleet base carries
+# the baked, PCR0-committed fleet policy: mode=required, allow_* defaults, and
+# tee.allowed_kms_accounts — none of which the overlay can weaken).
 # ---------------------------------------------------------------------------
 FROM alpine:3.21 AS config-true
 RUN mkdir -p /out
@@ -164,6 +187,7 @@ COPY deploy/nitro/config.toml /out/config.toml
 
 FROM alpine:3.21 AS config-false
 RUN mkdir -p /out
+COPY deploy/nitro/config.fleet-base.toml /out/config.toml
 
 # Re-declare so `config-${BAKE_CONFIG}` resolves; default keeps baked as default.
 ARG BAKE_CONFIG=true
@@ -193,11 +217,12 @@ ENV LD_PRELOAD=/usr/lib/libresolv_compat.so
 
 # Copy the entrypoint script.
 # CONFIG (see CONFIG MODES at the top): the config selector below copies
-# `/out/` from the chosen stage — a baked `config.toml` (BAKE_CONFIG=true,
-# default) or nothing (BAKE_CONFIG=false). When nothing is baked, the entrypoint
-# fetches the tenant config over vsock (port 5800) at runtime; a config.toml may
-# also be mounted for local dev (entrypoint uses it when present at
-# $VTA_CONFIG_PATH). See deploy/nitro/enclave-entrypoint.sh and docs.
+# `/out/config.toml` from the chosen stage — the full tenant config
+# (BAKE_CONFIG=true, default) or a fleet-policy base with placeholders
+# (BAKE_CONFIG=false). The entrypoint requires a config.toml to be present and
+# execs the VTA; in fleet mode the vta-enclave binary (built with the
+# `tenant-overlay` feature) fetches the tenant overlay over vsock (port 5800) and
+# applies it in-process. See deploy/nitro/enclave-entrypoint.sh and docs.
 COPY deploy/nitro/enclave-entrypoint.sh /usr/local/bin/enclave-entrypoint.sh
 RUN chmod +x /usr/local/bin/enclave-entrypoint.sh
 

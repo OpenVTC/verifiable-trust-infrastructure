@@ -1,0 +1,75 @@
+# =============================================================================
+# VTA Configuration — AWS Nitro Enclave, FLEET-POLICY BASE (BAKE_CONFIG=false)
+# =============================================================================
+#
+# This file is baked into the EIF (committed to PCR0) for the un-baked FLEET
+# build only. It carries the FLEET POLICY — the security-critical settings that
+# MUST stay under PCR0's cover and that the runtime tenant overlay is not allowed
+# to weaken: `tee.mode`, the `tee.kms.allow_*` break-glass defaults (all false),
+# and `tee.allowed_kms_accounts`.
+#
+# The tenant-scoped fields below are PLACEHOLDERS. At boot the vta-enclave binary
+# (built with the `tenant-overlay` feature) fetches a typed, allowlisted overlay
+# from the parent over vsock:5800 and OVERWRITES them in-process:
+#   - tee.kms.key_arn            (validated against tee.allowed_kms_accounts)
+#   - tee.kms.region             (derived from key_arn)
+#   - tee.kms.vta_did_template   (or vta_did) — first boot only
+#   - messaging.mediator_did / mediator_url
+#   - public_url, vta_name
+# See docs/05-design-notes/tenant-config-allowlist.md.
+#
+# NEVER put secrets here. NEVER set admin_did here — a fleet image serves many
+# tenants; super-admin is established per-tenant via the attested sealed-bootstrap
+# flow (Mode B, POST /bootstrap/request), and the overlay cannot carry admin_did.
+
+# ── Top-level settings (fleet policy, baked) ─────────────────────────────────
+
+# DID resolver — the resolver sidecar on the parent via vsock.
+resolver_url = "ws://127.0.0.1:4445/did/v1/ws"
+
+# ── TEE settings (fleet policy, baked — NOT overlay-settable) ─────────────────
+
+[tee]
+mode = "required"
+embed_in_did = true
+
+# AWS account IDs whose KMS key ARNs this image's tenant overlay may use.
+# Baked + PCR0-committed — the parent cannot extend this at runtime. Empty means
+# "no tenant may onboard" (fail closed). One image should generally span ONE
+# trust tier / account (see design note §3.5). The managed deploy (cdk) fills
+# this per image; REPLACE for a hand-built image.
+allowed_kms_accounts = ["REPLACE_WITH_ALLOWED_ACCOUNT_ID"]
+
+# The tee.kms.allow_* break-glass flags all default to false and are intentionally
+# NOT set here: the overlay cannot carry them (deny_unknown_fields), and leaving
+# them at their compiled defaults keeps that guarantee under PCR0.
+
+# ── KMS bootstrap (tenant-scoped — PLACEHOLDERS, overlay fills these) ─────────
+#
+# region + key_arn are required for the base config to parse; the overlay
+# overwrites them with the tenant's real values (key_arn validated against
+# tee.allowed_kms_accounts, region derived from the ARN).
+[tee.kms]
+region = "us-east-1"
+key_arn = "OVERLAY_PLACEHOLDER_KMS_KEY_ARN"
+
+# vta_did_template is delivered by the overlay on first boot:
+# vta_did_template = "did:webvh:{SCID}:example.com:vta"
+
+# ── DIDComm mediator (tenant-scoped — PLACEHOLDER, overlay fills this) ────────
+[messaging]
+mediator_did = "OVERLAY_PLACEHOLDER_MEDIATOR_DID"
+
+# ── Server / log / store (fleet policy, baked) ───────────────────────────────
+
+[server]
+host = "127.0.0.1"
+port = 8100
+
+[log]
+level = "info"
+format = "json"
+
+[store]
+data_dir = "/var/lib/vta/data"
+

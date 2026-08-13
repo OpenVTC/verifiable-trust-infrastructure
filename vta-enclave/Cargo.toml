@@ -28,10 +28,18 @@ tsp = ["vta-service/tsp"]
 webvh = ["vta-service/webvh"]
 vsock-store = ["vta-service/vsock-store"]
 vsock-log = ["dep:tokio-vsock"]
+# Fleet (`BAKE_CONFIG=false`) build: fetch + apply the allowlisted tenant-config
+# overlay over vsock at boot. Off by default, so a self-host/baked build's
+# binary contains no vsock config-fetch code. See design note §3.1/§3.8.
+tenant-overlay = ["dep:vta-tee", "vta-tee/tenant-overlay"]
 
 [dependencies]
 vta-service = { path = "../vta-service", version = "0.14", default-features = false, features = ["tee"] }
 vti-common = { path = "../vti-common", version = "0.11", features = ["encryption"] }
+# Direct dep only for the `tenant-overlay` fetch entry point; the rest of the
+# TEE bootstrap is reached through `vta_service::tee`. Optional so a baked build
+# links no overlay code.
+vta-tee = { path = "../vta-tee", version = "0.1", optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

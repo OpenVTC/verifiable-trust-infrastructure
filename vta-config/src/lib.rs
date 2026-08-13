@@ -11,6 +11,13 @@ pub use vti_common::config::{
 // and every `crate::config::SecretsConfig` reference are unchanged.
 pub use vti_secrets::{SecretBackend, SecretsConfig};
 
+/// Typed, allowlisted tenant-config overlay for un-baked TEE (`BAKE_CONFIG=false`)
+/// deployments. See `docs/05-design-notes/tenant-config-allowlist.md`.
+pub mod tenant_overlay;
+pub use tenant_overlay::{
+    TenantConfigOverlay, TenantKmsOverlay, TenantMessagingOverlay, TenantOverlayError,
+};
+
 /// Policy Decision Point configuration.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PolicyConfig {
@@ -464,6 +471,16 @@ pub struct TeeConfig {
     /// When `None`, all DID methods are accepted (less secure with parent-side resolver).
     #[serde(default)]
     pub allowed_did_methods: Option<Vec<String>>,
+    /// AWS account IDs this image's tenant overlay may hand a `tee.kms.key_arn`
+    /// from (un-baked fleet mode — see `crate::tenant_overlay` and
+    /// `docs/05-design-notes/tenant-config-allowlist.md` §3.5).
+    ///
+    /// Baked, PCR0-committed — the parent cannot extend this list at runtime.
+    /// **Empty means "no tenant overlay `key_arn` accepted"** (fail closed, not
+    /// "allow all"). Irrelevant for `BAKE_CONFIG=true`/self-host builds, which
+    /// never accept an overlay.
+    #[serde(default)]
+    pub allowed_kms_accounts: Vec<String>,
 }
 
 /// KMS configuration for TEE secret bootstrap.
@@ -573,8 +590,11 @@ pub struct TeeKmsConfig {
     /// enclave fails closed (a DoS, not an integrity breach). Setting this true
     /// lets it boot manifest-only when the counter is unreachable, or re-anchor
     /// the counter to the MAC-trusted local manifest when they diverge — for
-    /// incident recovery only. Safe to expose as config because TEE config is
-    /// baked into the measured EIF, so the parent can't flip it at runtime.
+    /// incident recovery only. Safe to leave as a config flag because the parent
+    /// cannot flip it at runtime: a baked config commits it to PCR0, and an
+    /// un-baked (fleet) config cannot carry it — the typed tenant overlay
+    /// (`tenant_overlay`, `deny_unknown_fields`) has no `allow_*` field, so there
+    /// is no channel for the parent to set it.
     #[serde(default)]
     pub allow_unanchored: bool,
 }
@@ -703,6 +723,7 @@ impl Default for TeeConfig {
             kms: None,
             storage_key_salt: default_storage_key_salt(),
             allowed_did_methods: None,
+            allowed_kms_accounts: Vec::new(),
         }
     }
 }

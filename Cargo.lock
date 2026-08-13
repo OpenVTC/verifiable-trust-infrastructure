@@ -9254,6 +9254,7 @@ version = "0.3.3"
 dependencies = [
  "serde",
  "serde_ignored",
+ "serde_json",
  "tempfile",
  "toml 1.1.4+spec-1.1.0",
  "tracing",
@@ -9275,6 +9276,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-service",
+ "vta-tee",
  "vti-common",
 ]
 
@@ -9605,6 +9607,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tokio",
+ "tokio-vsock",
  "tracing",
  "utoipa",
  "vta-config",

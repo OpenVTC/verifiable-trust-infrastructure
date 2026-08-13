@@ -13,35 +13,52 @@ storage, and signed enclave images.
 > In that mode tenant values are delivered at runtime and **changing them no
 > longer changes PCR0**.
 >
-> **Un-baked delivery (BAKE_CONFIG=false).** At runtime the parent serves a config
-> envelope (`{ "version":1, "config_toml":"…", "integrity":null }`) over **vsock
-> port 5800**; `parent-proxy.sh` (or the Rust `enclave-proxy --config-envelope …`)
-> starts that server when a `config-envelope.json` (`$VTA_CONFIG_ENVELOPE`, a
-> file next to the script, or a conventional managed path
-> `/etc/vta-tee/config-envelope.json`) is present, and `enclave-entrypoint.sh`
-> fetches it (validating the envelope `version`) and writes `/etc/vta/config.toml`
-> before starting the VTA. Precedence in the entrypoint: a baked/mounted
-> `config.toml` wins → else fetch over vsock → else (opt-in) env-var default.
-> `build-vta.sh` emits `config-envelope.json` beside the EIF; to make one by hand
-> from a finalized `config.toml`:
+> **Un-baked delivery (BAKE_CONFIG=false) — typed tenant overlay.** The fleet
+> image bakes `config.fleet-base.toml` (the PCR0-committed **fleet policy** plus
+> placeholders). At runtime the parent serves a small typed **overlay**
+> (`{ "version":1, "overlay":{…}, "integrity":null }`) over **vsock port 5800**;
+> `enclave-proxy --config-envelope …` (or `parent-proxy.sh`) starts that server
+> when a rendered overlay file is present. The `vta-enclave` binary — built with
+> the `tenant-overlay` feature for this mode — fetches the overlay, parses it into
+> a `#[serde(deny_unknown_fields)]` allowlist, validates it, and applies it onto
+> the baked base **in-process** before boot. The entrypoint no longer touches
+> config; the fetch/size-cap/timeout/validation all live in Rust
+> (`vta-tee::tenant_overlay`, unit-tested).
+>
+> **Only the tenant-scoped fields are overlay-settable** — `tee.kms.key_arn`
+> (validated against the baked `tee.allowed_kms_accounts`; region is derived from
+> the ARN), `tee.kms.vta_did_template`/`vta_did`, `messaging.mediator_did`/
+> `mediator_url`, `public_url`, `vta_name`, and the KMS-sealed anchor fields.
+> Everything else — `tee.mode`, every `allow_*` break-glass flag, `admin_did`,
+> `resolver_url`, `server.*`, `store.*`, `policy.*` — is baked and **structurally
+> cannot** be carried by the overlay type. Render a per-tenant overlay with:
 >
 > ```bash
-> jq -Rs '{version:1, config_toml:., integrity:null}' config.toml > config-envelope.json
+> deploy/nitro/render-tenant-overlay.sh \
+>   --key-arn arn:aws:kms:us-east-1:1122...:key/abcd \
+>   --mediator-did did:webvh:...:mediator \
+>   --vta-did-template 'did:webvh:{SCID}:acme.example.com:vta' > tenant-overlay.json
 > ```
 >
-> **Fail-closed:** in production a failed vsock fetch aborts the enclave (it does
-> **not** silently boot a default config). The env-var fallback is opt-in via
-> `VTA_ALLOW_DEFAULT_CONFIG=true` for local/dev only. Exactly one process may own
-> `vsock:5800` — `parent-proxy.sh`/`enclave-proxy` for the standalone workflow,
-> or an orchestrated deployment's own config server (e.g. a systemd socat unit) —
-> never both.
+> **`tee.allowed_kms_accounts` is a required fleet setting** (baked, PCR0-
+> committed): empty ⇒ **no tenant may onboard** (fail closed, not allow-all).
+> `build-vta.sh` fills it from the KMS key's account for you. This PCR0-anchored
+> allowlist is an **independent** gate that sits alongside — not instead of — each
+> tenant's KMS key policy scoping the calling principal (one image / one PCR0 is
+> shared across tenants, so key-policy isolation is still required).
 >
-> **Enforcement floor:** on real Nitro hardware (`/dev/nsm` present) the enclave
-> **refuses to boot unless `[tee] mode = required`**, so a runtime-delivered
-> config can never downgrade TEE enforcement (the default `mode` is `optional`).
-> It also **refuses to boot if the delivered config sets `[tee.kms] admin_did`**:
-> a parent-supplied super-admin is not attested. Leave `admin_did` unset and use
-> the attested sealed-bootstrap flow (Mode B, `POST /bootstrap/request`) instead.
+> **Fail-closed:** on real Nitro a failed overlay fetch/parse/validate **aborts
+> the boot** (it never falls through to the placeholder base). Exactly one process
+> may own `vsock:5800` — `parent-proxy.sh`/`enclave-proxy`, or an orchestrated
+> deployment's own config server — never both.
+>
+> **Enforcement floor (defense-in-depth):** on real Nitro hardware (`/dev/nsm`
+> present) the enclave still refuses to boot if a parent-influenced config would
+> weaken `[tee] mode` below `required`, omit `[tee.kms]`, or set `[tee.kms]
+> admin_did`. With the typed overlay those can no longer be *delivered* at all —
+> the floor now guards against a bug in the merge, not a malicious parent. Leave
+> `admin_did` unset and use the attested sealed-bootstrap flow (Mode B,
+> `POST /bootstrap/request`).
 >
 > **Config attestation anchor — and the verification step it REQUIRES.** Because
 > the parent supplies `tee.kms.key_arn`, on first boot the enclave generates its

@@ -151,13 +151,45 @@ async fn main() {
     // config is trusted local input rather than parent-delivered).
     let on_nitro = std::path::Path::new("/dev/nsm").exists();
 
-    // Config provenance (see enclave-entrypoint.sh, which is in PCR0 and sets
-    // this): only a parent-authored config (`vsock` / `default`) is untrusted; a
-    // `baked` config is committed to PCR0 (or a local-dev mount) and is trusted,
-    // so the floor must NOT reject e.g. a baked `admin_did`. Unset ⇒ treat as
-    // untrusted (fail-safe). This is what keeps the floor from contradicting the
-    // "a baked/mounted config.toml wins" precedence.
-    let parent_delivered = std::env::var("VTA_CONFIG_SOURCE").as_deref() != Ok("baked");
+    // ── Tenant-config overlay (un-baked fleet build only) ──
+    // In a `BAKE_CONFIG=false` build the image bakes a fleet-policy base config
+    // with placeholders; the tenant-scoped fields arrive at runtime as a typed,
+    // allowlisted overlay fetched over vsock:5800 and applied here, in place,
+    // BEFORE the floor check and BEFORE KMS bootstrap (which reads key_arn /
+    // region). `deny_unknown_fields` on the overlay makes any field outside the
+    // allowlist a hard parse error, so the parent cannot deliver `admin_did`,
+    // `mode`, or any `allow_*` flag. Fail-closed on real Nitro. See design note
+    // §3.1/§3.8. A `BAKE_CONFIG=true` (self-host) build does not compile this in.
+    #[cfg(feature = "tenant-overlay")]
+    let (config, overlay_applied) = {
+        let mut config = config;
+        match vta_tee::tenant_overlay::fetch_and_apply_overlay(&mut config).await {
+            Ok(()) => (config, true),
+            Err(e) if on_nitro => {
+                tracing::error!(
+                    "FATAL: tenant-config overlay fetch/apply failed: {e}. Refusing to boot."
+                );
+                std::process::exit(1);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "tenant-config overlay fetch/apply failed (not on Nitro — continuing with \
+                     the baked base config for local/dev): {e}"
+                );
+                (config, false)
+            }
+        }
+    };
+
+    // Config provenance for the security floor below. A parent-delivered
+    // (untrusted) config must face the floor; a fully-baked/mounted config is
+    // committed to PCR0 (or a trusted local mount) and is exempt.
+    // - fleet build: parent-influenced iff an overlay was actually applied.
+    // - self-host build (no overlay feature): the config is baked → trusted.
+    #[cfg(feature = "tenant-overlay")]
+    let parent_delivered = overlay_applied;
+    #[cfg(not(feature = "tenant-overlay"))]
+    let parent_delivered = false;
 
     // ── Security floor for a parent-delivered (un-baked) config ──
     // The tenant config is authored by the untrusted parent, so on real Nitro
