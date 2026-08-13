@@ -239,16 +239,45 @@ document listed one that was never built. What exists today:
 
 ```sh
 # Reconciler state: registry_status, queue_depth, failed_count,
-# oldest_pending_age_seconds, last_error, syncer liveness.
+# oldest_pending_age_seconds, last_error, syncer liveness, plus the
+# transport view below.
 curl -H "Authorization: Bearer $TOKEN" \
   https://vtc.example.org/v1/health/diagnostics | jq .
 ```
 
-In the admin UI, the **Recognition** page shows the registry
-status and a per-DID recognition lookup, and the **Audit** page
+Two transport fields on that payload answer "how are we actually
+talking to it?":
+
+```jsonc
+"registry_transport": {
+  "did": "did:webvh:…:trust-registry",
+  "advertised": ["tsp", "didcomm"],   // the registry's own DID document
+  "active": "tsp"                     // what the last call chose
+},
+"transports": [                        // this VTC's own document
+  { "protocol": "tsp",     "advertised": true,  "serviceable": true  },
+  { "protocol": "didcomm", "advertised": false, "serviceable": true  }
+]
+```
+
+`advertised` and `active` are separate on purpose. A registry that
+advertises only TSP while this VTC can answer only DIDComm is
+configured and unreachable at the same time, and a single
+"protocol" field would have to drop one of those two facts. When
+selection fails, `active` is absent and `error` carries the
+reason — `advertised` still shows what the peer offered, which is
+the half that tells you which side to fix.
+
+In the admin UI: the **Dashboard** names the live mediator
+protocols on its tile, adds a trust-registry tile (active
+protocol + status), lists the registry DID under Identity, and
+raises a "Transport advertisement" card when the document and the
+build disagree in either direction. The **Recognition** page
+shows the registry DID, what it advertises, what we are
+connecting over, and the last transport error. The **Audit** page
 carries `RegistryStatusChanged` / `RegistrySyncSucceeded` /
-`RegistrySyncFailed`. Queue depth and failed-job counts are
-currently JSON-only.
+`RegistrySyncFailed`. Queue depth and failed-job counts remain
+JSON-only.
 
 ## See also
 

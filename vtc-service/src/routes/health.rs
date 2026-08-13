@@ -111,6 +111,25 @@ pub struct DiagnosticsResponse {
     /// boot-time latch, per R6.2). `"disconnected"` when messaging is
     /// unconfigured.
     pub messaging_status: String,
+    /// How this VTC reaches its **trust registry**: its DID, the protocols the
+    /// registry's own document advertises, and the one the last call actually
+    /// chose. `None` when no registry is configured.
+    ///
+    /// Advertised and active are reported separately on purpose. A registry
+    /// that advertises TSP while this VTC can only answer DIDComm is
+    /// *configured* and *unreachable* at the same time, and one collapsed
+    /// "protocol" field cannot say so — it would have to pick one of the two
+    /// facts and drop the other.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registry_transport: Option<crate::registry::RegistryTransport>,
+    /// This VTC's **own** transports: per protocol, whether its DID document
+    /// advertises it and whether this build can serve it right now.
+    ///
+    /// The same view the unauthenticated community profile publishes, from the
+    /// same helper — an operator comparing the two should never see them
+    /// disagree. Empty when the VTC's DID could not be resolved, which is
+    /// "unknown", not "none advertised".
+    pub transports: Vec<crate::transport_capability::TransportStatus>,
 }
 
 #[utoipa::path(
@@ -179,6 +198,7 @@ pub async fn diagnostics(
 
     let config = state.config.read().await;
     let vta_did = config.vta_did.clone();
+    let config_vtc_did = config.vtc_did.clone();
     let (mediator_url, mediator_did) = config
         .messaging
         .as_ref()
@@ -193,6 +213,27 @@ pub async fn diagnostics(
         registry_status = %registry_status,
         "diagnostics queried"
     );
+
+    // How we reach the registry, straight off the live client — so this
+    // reflects the transport the last call actually used, not the one config
+    // implies.
+    let registry_transport = state.registry_client.as_ref().map(|c| c.transport());
+
+    // Our own advertised-versus-servable view, resolved from the document
+    // rather than config: the deployment that motivated this had `#tsp` added
+    // to its DID log long after the VTC last wrote its own mirror.
+    let transports = match crate::transport_capability::resolved_capabilities(
+        state.did_resolver.as_ref(),
+        config_vtc_did.as_deref().unwrap_or_default(),
+    )
+    .await
+    {
+        Some(caps) => crate::transport_capability::public_transport_view_for_build(
+            &caps,
+            messaging_status == "connected",
+        ),
+        None => Vec::new(),
+    };
 
     Ok(Json(DiagnosticsResponse {
         registry_status,
@@ -210,5 +251,7 @@ pub async fn diagnostics(
         syncer_running: syncer.running,
         syncer_restarts: syncer.restarts,
         messaging_status,
+        registry_transport,
+        transports,
     }))
 }

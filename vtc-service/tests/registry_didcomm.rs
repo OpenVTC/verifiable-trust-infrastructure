@@ -147,7 +147,49 @@ async fn a_member_record_reaches_the_registry_and_the_reply_completes_the_write(
     assert_eq!(stored["resource"], TRUST_GRAPH_RESOURCE);
     assert_eq!(stored["recognized"], true);
 
+    // What the diagnostics surface will report. It has to describe the call
+    // that just happened, not the configuration that implies it: the whole
+    // point of showing advertised *and* active is that an operator can tell a
+    // registry we are talking to from one we merely have a DID for.
+    let transport = client.transport();
+    assert_eq!(transport.did.as_deref(), Some(registry.did()));
+    assert_eq!(
+        transport.advertised,
+        vec!["didcomm".to_string()],
+        "the peer's did:peer advertises DIDComm and nothing else",
+    );
+    assert_eq!(
+        transport.active.as_deref(),
+        Some("didcomm"),
+        "the reported transport must be the one that carried the write",
+    );
+    assert_eq!(transport.error, None);
+
     registry.shutdown().await;
+    mock.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_failed_selection_is_visible_on_the_transport_snapshot() {
+    init_tracing();
+    let mock = MockVtcDidcomm::start().await;
+    // The applicant advertises no service block, so there is nothing to match.
+    let client = client_for(&mock, mock.client.did());
+
+    client.health().await.expect_err("no route to this peer");
+
+    // The snapshot has to carry *why*, not just the absence of a transport —
+    // "advertised nothing" is the actionable half, and it is the half a bare
+    // `active: none` would drop.
+    let transport = client.transport();
+    assert_eq!(transport.active, None);
+    assert!(transport.advertised.is_empty());
+    let error = transport.error.expect("the failure is recorded");
+    assert!(
+        error.contains("no transport protocol in common"),
+        "got {error}",
+    );
+
     mock.shutdown().await;
 }
 
