@@ -25,6 +25,9 @@ changelog_config = "cliff.toml"
 # Compare each crate's public API against its published version and force a
 # compatibility-breaking bump when it actually broke — rather than trusting an
 # author to notice. This is the check the old hand-rolled flow could not make.
+#
+# On by default, and switched OFF per-crate below for the twelve subsystem
+# crates. See that block for why.
 semver_check = true
 
 # One GitHub Release per published crate, carrying that crate's changelog
@@ -38,3 +41,73 @@ pr_labels = ["release"]
 # used to need `--no-verify` here because its build.rs npm-builds an admin UI
 # and cargo rejects a build.rs that modifies the source tree — that special
 # case is gone with `publish = false` on that crate.
+
+
+# ── semver checks: on where the API has a consumer ───────────────────────────
+#
+# The twelve subsystem crates are on crates.io for one reason: crates.io
+# requires a published crate's whole dependency closure to be published, and
+# `vta-service` is published (for OpenVTC's `MockVta` harness — see
+# RELEASING.md). Nothing depends on their APIs directly, in this workspace or
+# outside it; they are reached through `vta-service`, which re-exports them.
+#
+# Checking an API nobody consumes costs real time on EVERY pull request:
+# `cargo semver-checks --workspace` builds rustdoc JSON for each crate twice,
+# current and baseline. Adding these took the job from ~17 minutes to over 35.
+# That is a tax on every PR in the repo, paid for a signal no consumer can act
+# on.
+#
+# `vta-service` itself keeps the check: it has a real consumer
+# (`openvtc-core`'s dev-dependency), so a silent break there reaches somebody.
+# So do the seven crates with external consumers, via the workspace default.
+#
+# Bump size for these falls back to conventional commits, which is what it was
+# before they were ever published. If one of them grows a direct consumer,
+# delete its entry here.
+[[package]]
+name = "vta-audit"
+semver_check = false
+
+[[package]]
+name = "vta-backup"
+semver_check = false
+
+[[package]]
+name = "vta-config"
+semver_check = false
+
+[[package]]
+name = "vta-keys"
+semver_check = false
+
+[[package]]
+name = "vta-keyspaces"
+semver_check = false
+
+[[package]]
+name = "vta-policy"
+semver_check = false
+
+[[package]]
+name = "vta-support"
+semver_check = false
+
+[[package]]
+name = "vta-sweepers"
+semver_check = false
+
+[[package]]
+name = "vta-tee"
+semver_check = false
+
+[[package]]
+name = "vta-vault"
+semver_check = false
+
+[[package]]
+name = "vta-webvh"
+semver_check = false
+
+[[package]]
+name = "vti-webauthn"
+semver_check = false
