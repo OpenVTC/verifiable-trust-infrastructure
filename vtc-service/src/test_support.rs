@@ -1120,6 +1120,14 @@ mod didcomm_harness {
             // is the point.
             let mut poll_errors = 0usize;
             let mut last_error = String::new();
+            // Every frame this client saw while waiting, matched or not. The
+            // count is the discriminator the VMC-delivery flake (VTI#918) still
+            // lacks: the sender's outbox is now known to report `sent=2`, so
+            // either the awaited frame reached this socket (and something here
+            // failed to match it) or it did not (and the loss is at the
+            // mediator). "Nothing arrived" and "something arrived that I
+            // ignored" are indistinguishable without this.
+            let mut frames_seen = 0usize;
             while start.elapsed() < timeout {
                 let next = self
                     .atm
@@ -1131,6 +1139,7 @@ mod didcomm_harness {
                     last_error = e.to_string();
                 }
                 if let Ok(Some((msg, _meta))) = next {
+                    frames_seen += 1;
                     if is_error_reply(&msg.typ)
                         && self.panic_on_problem_report.load(Ordering::SeqCst)
                     {
@@ -1159,7 +1168,37 @@ mod didcomm_harness {
                      lost to the transport rather than never sent"
                 );
             }
+            // Always, not only on poll errors: a clean timeout is the failure
+            // mode under investigation, and this is the only record of what
+            // reached the socket during it.
+            tracing::warn!(
+                frames_seen,
+                poll_errors,
+                buffered = %self.inbox_summary().await,
+                ?timeout,
+                "timed out waiting for a matching message",
+            );
             None
+        }
+
+        /// One line describing everything sitting unmatched in this client's
+        /// inbox: `2 buffered: [type thid=…, type thid=none]`.
+        ///
+        /// Unmatched frames are buffered and, until now, never reported — so a
+        /// frame that *arrived* but failed the caller's predicate looked
+        /// exactly like one that never arrived. Those are a test bug and a
+        /// transport bug respectively, and the VMC-delivery flake has been
+        /// triaged twice without the evidence to tell them apart.
+        pub async fn inbox_summary(&self) -> String {
+            let inbox = self.inbox.lock().await;
+            if inbox.is_empty() {
+                return "0 buffered".to_string();
+            }
+            let entries: Vec<String> = inbox
+                .iter()
+                .map(|r| format!("{} thid={}", r.typ, r.thid.as_deref().unwrap_or("none"),))
+                .collect();
+            format!("{} buffered: [{}]", entries.len(), entries.join(", "))
         }
 
         async fn take_buffered<F: Fn(&Received) -> bool>(&self, pred: &F) -> Option<Received> {

@@ -1,0 +1,83 @@
+# Soak the `join_didcomm` VMC-delivery test to reproduce VTI#918 on demand.
+#
+# The flake ("admission credential 2/2 not delivered within 60s") has only ever
+# appeared on a GitHub runner. 30 local runs under CPU contention were green,
+# so a laptop does not reproduce what the runner does — which left triage
+# waiting for the flake to strike a random PR, roughly once a fortnight, and
+# each occurrence yielded one log and no way to test a hypothesis.
+#
+# This turns that around: run the test N times on the machine that does
+# reproduce it, and stop on the first failure with the full log. Manual
+# (`workflow_dispatch`) only — it is minutes of runner time per invocation and
+# has no business gating a PR.
+#
+# Read the failure with `docs/05-design-notes/` context; the discriminators as
+# of 2026-08-14 are:
+#   - `outbox drain pass sent=N` — N=1 means the loss is in the sender's
+#     outbox, N=2 means both frames left the VTC (this is what we observed).
+#   - the `inbox:` clause in the panic — non-empty means the frame reached the
+#     client and failed to match (a test bug); empty means it never arrived,
+#     leaving the mediator as the suspect.
+name: join_didcomm soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "How many times to run the test (stops at the first failure)"
+        required: false
+        default: "50"
+      log:
+        description: "RUST_LOG filter for the run"
+        required: false
+        default: "warn,lsm_tree=off,affinidi_messaging_delivery=debug"
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    name: Soak join_didcomm VMC delivery
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Built once, then executed in a loop: `cargo test` would re-check the
+      # workspace on every iteration and most of the wall-clock would be cargo,
+      # not the code under investigation.
+      - name: Build the test binary
+        run: cargo test -p vtc-service --features didcomm-harness --test join_didcomm --no-run
+        env:
+          VTC_SKIP_ADMIN_UI_BUILD: "1"
+
+      - name: Soak
+        env:
+          RUST_LOG: ${{ inputs.log }}
+          VTC_SKIP_ADMIN_UI_BUILD: "1"
+        run: |
+          set -uo pipefail
+          runs="${{ inputs.runs }}"
+          bin=$(cargo test -p vtc-service --features didcomm-harness --test join_didcomm \
+                  --no-run --message-format=json 2>/dev/null \
+                | jq -r 'select(.executable != null and (.target.name == "join_didcomm")) | .executable' \
+                | tail -1)
+          echo "test binary: $bin"
+          for i in $(seq 1 "$runs"); do
+            echo "::group::run $i/$runs"
+            if ! "$bin" --test-threads=1 --nocapture \
+                 didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_delivery; then
+              echo "::endgroup::"
+              echo "::error::reproduced on run $i of $runs — the log above carries the drain count and the inbox summary"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+          echo "no reproduction in $runs runs"
