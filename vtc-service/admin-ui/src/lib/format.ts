@@ -89,6 +89,30 @@ export function formatIso(iso: string): string {
 }
 
 /**
+ * Format an elapsed duration in seconds as a compact age (`45s`, `12m`,
+ * `3h 20m`, `2d 4h`).
+ *
+ * Used for staleness — "how long has the oldest sync job been waiting" — where
+ * the operator's question is scale, not precision: a queue 3 hours behind and
+ * one 3 hours and 12 minutes behind call for the same action. Seconds are shown
+ * only under a minute, where they are the whole signal.
+ */
+export function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "—";
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    const rem = minutes % 60;
+    return rem ? `${hours}h ${rem}m` : `${hours}h`;
+  }
+  const days = Math.floor(hours / 24);
+  const rem = hours % 24;
+  return rem ? `${days}d ${rem}h` : `${days}d`;
+}
+
+/**
  * Format a Unix-seconds epoch (i.e. `seconds since 1970-01-01 UTC`)
  * into the operator's locale-string. Used by session / ACL rows
  * that carry epochs rather than ISO strings.

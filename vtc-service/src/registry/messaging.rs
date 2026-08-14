@@ -260,10 +260,12 @@ impl MessagingRegistryClient {
         let theirs = ServiceCapabilities::from_did_document(&doc);
         let advertised = theirs.advertised();
         let ours = self.our_capabilities();
-        let matched = select_protocol(&ours, &theirs, &self.registry_did)
-            // No overlap is an operator-fixable configuration fault, not a
-            // blip: park the job rather than retrying it forever.
-            .map_err(|e| (RegistryError::Permanent(e.to_string()), advertised.clone()))?;
+        let matched = select_protocol(&ours, &theirs, &self.registry_did).map_err(|e| {
+            (
+                classify_no_match(&ours, &advertised, e.to_string()),
+                advertised.clone(),
+            )
+        })?;
         debug!(
             registry_did = %self.registry_did,
             protocol = %matched.protocol.as_str(),
@@ -458,6 +460,35 @@ impl MessagingRegistryClient {
     fn record_key(&self, member_did: &str) -> Result<(String, String), RegistryError> {
         Ok((member_did.to_string(), self.authority()?.to_string()))
     }
+}
+
+/// Is an empty transport intersection a configuration fault, or are we just not
+/// ready yet?
+///
+/// The distinction is load-bearing and was got wrong at first: at boot the
+/// registry client exists before the messaging listener has published its
+/// handle, so `our_capabilities` is momentarily **empty** and every peer looks
+/// like "no transport in common". Reported as `Permanent` — which is what an
+/// empty intersection normally means — that transient startup window would park
+/// the first sync jobs in `Failed`, where the syncer never retries them. The
+/// health probe recovered on its next tick and looked fine; the queue would not
+/// have.
+///
+/// So: if *we* can currently speak nothing, this is our own startup race and it
+/// is retriable. Only an intersection that is empty while we do have a
+/// transport available is the operator's configuration to fix.
+fn classify_no_match(
+    ours: &ServiceCapabilities,
+    theirs: &[Protocol],
+    detail: String,
+) -> RegistryError {
+    if ours.advertised().is_empty() {
+        return RegistryError::Transient(format!(
+            "no transport available yet to reach the trust registry (VTC messaging is still \
+             starting, and no REST arm is configured); the registry advertises {theirs:?}",
+        ));
+    }
+    RegistryError::Permanent(detail)
 }
 
 /// Wrap a document in the `trust-tasks-tsp` binding envelope.
@@ -871,6 +902,34 @@ mod tests {
             None,
             None,
         )
+    }
+
+    #[test]
+    fn not_being_ready_is_transient_but_a_real_mismatch_is_permanent() {
+        // The boot race: the registry client is built before the messaging
+        // listener publishes its handle, so for a moment we can speak nothing
+        // and every peer reads as "no transport in common". Permanent there
+        // would park the first sync jobs in `Failed`, which the syncer never
+        // retries — the health probe would recover on its next tick and the
+        // queue would stay broken.
+        let not_ready = ServiceCapabilities::default();
+        let err = classify_no_match(&not_ready, &[Protocol::Didcomm], "no overlap".into());
+        assert!(err.is_retriable(), "got {err:?}");
+        assert!(
+            err.to_string().contains("still \nstarting")
+                || err.to_string().contains("still starting"),
+            "the message should name the startup race: {err}",
+        );
+
+        // We can speak DIDComm and the peer offers only TSP: a genuine
+        // configuration fault, and retrying it forever would hide it behind an
+        // ever-growing queue.
+        let ready = ServiceCapabilities {
+            didcomm: Some("did:webvh:mediator".into()),
+            ..ServiceCapabilities::default()
+        };
+        let err = classify_no_match(&ready, &[Protocol::Tsp], "no overlap".into());
+        assert!(!err.is_retriable(), "got {err:?}");
     }
 
     #[test]

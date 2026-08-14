@@ -17,6 +17,7 @@ import {
 } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { CopyButton } from "@/components/CopyButton";
+import { formatDuration, formatIso } from "@/lib/format";
 
 /** Protocol names as the specs write them, not as the wire encodes them. */
 function protocolName(protocol: string): string {
@@ -36,9 +37,13 @@ export function Recognition() {
   const toast = useToast();
   const [did, setDid] = useState("");
 
+  // Polled, not fetched once: the queue below is the live picture of a
+  // background reconciler, and a snapshot frozen at page-load would show a
+  // drained queue as permanently stuck (or a stuck one as briefly busy).
   const diagnostics = useQuery({
     queryKey: ["diagnostics"],
     queryFn: fetchDiagnostics,
+    refetchInterval: 15_000,
   });
 
   const lookup = useMutation<RecognitionCheck, Error, string>({
@@ -47,6 +52,7 @@ export function Recognition() {
   });
 
   const result = lookup.data;
+  const oldestPending = diagnostics.data?.oldest_pending_age_seconds;
 
   return (
     <div className="page">
@@ -129,6 +135,107 @@ export function Recognition() {
       </section>
 
       <section className="card">
+        <h3>Membership sync</h3>
+        <p className="muted">
+          Member changes reach the registry through a durable queue with
+          exponential backoff. These counts are the only place a stalled
+          reconciler is visible — <code>registry_status</code> reports whether
+          the registry answers, not whether our writes are landing.
+        </p>
+        {diagnostics.isPending && <p className="muted">Loading…</p>}
+        {diagnostics.data && (
+          <>
+            <div className="stat-tiles">
+              <QueueTile
+                label="Pending"
+                value={diagnostics.data.queue_depth}
+                foot={
+                  oldestPending === undefined
+                    ? "nothing waiting"
+                    : `oldest ${formatDuration(oldestPending)}`
+                }
+                // A queue an hour behind is the spec's degraded SLI. Rising
+                // depth on its own is normal (a burst of joins drains); depth
+                // that stays *old* is the shape of a stuck reconciler.
+                tone={
+                  oldestPending !== undefined && oldestPending >= 3600
+                    ? "warn"
+                    : "neutral"
+                }
+              />
+              <QueueTile
+                label="Failed"
+                value={diagnostics.data.failed_count}
+                // Terminal rows: the syncer has given up on them, so unlike
+                // pending they will never clear on their own.
+                foot={
+                  diagnostics.data.failed_count > 0
+                    ? "given up — needs operator triage"
+                    : "none"
+                }
+                tone={diagnostics.data.failed_count > 0 ? "warn" : "ok"}
+              />
+              <QueueTile
+                label="RTBF batched"
+                value={diagnostics.data.rtbf_batched_count}
+                foot="held for the daily flush"
+              />
+              <QueueTile
+                label="Syncer"
+                value={
+                  !diagnostics.data.syncer_enabled
+                    ? "off"
+                    : diagnostics.data.syncer_running
+                      ? "running"
+                      : "stopped"
+                }
+                // Enabled but not running means the task is spawned and dead —
+                // mid-restart after a panic, or wedged. Rising restarts is the
+                // "keeps crashing" signal.
+                foot={
+                  !diagnostics.data.syncer_enabled
+                    ? "no registry configured"
+                    : diagnostics.data.syncer_restarts > 0
+                      ? `${diagnostics.data.syncer_restarts} restart${
+                          diagnostics.data.syncer_restarts === 1 ? "" : "s"
+                        }`
+                      : "no restarts"
+                }
+                tone={
+                  !diagnostics.data.syncer_enabled
+                    ? "neutral"
+                    : diagnostics.data.syncer_running &&
+                        diagnostics.data.syncer_restarts === 0
+                      ? "ok"
+                      : "warn"
+                }
+              />
+            </div>
+            <dl>
+              <dt>Last success</dt>
+              <dd>
+                {diagnostics.data.last_success_at
+                  ? formatIso(diagnostics.data.last_success_at)
+                  : "(never)"}
+              </dd>
+              <dt>Last failure</dt>
+              <dd>
+                {diagnostics.data.last_failure_at
+                  ? formatIso(diagnostics.data.last_failure_at)
+                  : "(none)"}
+              </dd>
+              {diagnostics.data.last_error && (
+                <>
+                  <dt>Last error</dt>
+                  <dd>{diagnostics.data.last_error}</dd>
+                </>
+              )}
+            </dl>
+          </>
+        )}
+      </section>
+
+      <section className="card">
         <h3>Check recognition</h3>
         <form
           onSubmit={(e) => {
@@ -190,6 +297,37 @@ export function Recognition() {
           </p>
         )}
       </section>
+    </div>
+  );
+}
+
+/**
+ * One queue counter. Deliberately the same visual language as the dashboard's
+ * `StatTile` — an operator reading "3 failed" here and a warn-toned tile there
+ * should not have to work out whether the two mean the same thing.
+ */
+function QueueTile({
+  label,
+  value,
+  foot,
+  tone = "neutral",
+}: {
+  label: string;
+  value: React.ReactNode;
+  foot?: string;
+  tone?: "ok" | "warn" | "neutral";
+}) {
+  return (
+    <div className="stat-tile">
+      <span className="stat-tile-label">{label}</span>
+      <span className="stat-tile-value">{value}</span>
+      {foot && (
+        <span
+          className={`stat-tile-foot${tone === "ok" ? " ok" : tone === "warn" ? " warn" : ""}`}
+        >
+          {foot}
+        </span>
+      )}
     </div>
   );
 }
