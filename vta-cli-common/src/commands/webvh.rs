@@ -88,13 +88,18 @@ pub async fn cmd_webvh_server_list(client: &VtaClient) -> Result<(), Box<dyn std
 
     let title = format!(" WebVH Servers ({}) ", resp.servers.len());
 
+    // Column order is ID, Name, DID, Created — as the header and the rows
+    // above build it. The widths were written against a different order (their
+    // own comments still said "DID, Label"), so the name column was handed the
+    // DID's flexing `Min(40)` and the DID was squeezed into 16 characters:
+    // every row read as a wide name beside an unusable `did:webvh:Qm0M8Cr`.
     let table = Table::new(
         rows,
         [
             Constraint::Length(16), // ID
-            Constraint::Min(40),    // DID
-            Constraint::Min(16),    // Label
-            Constraint::Length(18), // Created
+            Constraint::Min(16),    // Name
+            Constraint::Min(46),    // DID
+            Constraint::Length(16), // Created
         ],
     )
     .header(header)
@@ -442,6 +447,36 @@ pub async fn cmd_webvh_did_create_with_files(
     cmd_webvh_did_create(client, req).await
 }
 
+/// Header cells **and** column widths for `dids list`, returned together.
+///
+/// One function because the Name column is conditional and the two lists have
+/// to agree: a widths list shorter than the row is not padded, it *truncates* —
+/// ratatui lays out exactly as many columns as it has constraints. When the
+/// widths were built separately and nobody added the conditional Name entry,
+/// every width landed one column to the left (Name inherited the DID's flexing
+/// `Min`, the DID inherited Context's fixed 16) and `Created` fell off the
+/// right-hand end. The rendered table was a full-width name beside a DID cut to
+/// `did:webvh:Qm0M8Cr`, which is the one thing the column exists to show.
+///
+/// `Min(46)` for the DID because `shorten_did` abbreviates only the SCID and
+/// keeps the host and path in full; below that a `did:webvh` stops being
+/// copyable.
+fn did_list_columns(show_names: bool) -> (Vec<&'static str>, Vec<Constraint>) {
+    let mut headers = vec!["DID", "Context", "Server", "Portable", "Created"];
+    let mut constraints = vec![
+        Constraint::Min(46),    // DID
+        Constraint::Length(16), // Context
+        Constraint::Length(16), // Server
+        Constraint::Length(8),  // Portable
+        Constraint::Length(16), // Created
+    ];
+    if show_names {
+        headers.insert(0, NAME_HEADER);
+        constraints.insert(0, Constraint::Min(16));
+    }
+    (headers, constraints)
+}
+
 pub async fn cmd_webvh_did_list(
     client: &VtaClient,
     context_id: Option<&str>,
@@ -485,10 +520,7 @@ pub async fn cmd_webvh_did_list(
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
     let show_names = book.names_any(resp.dids.iter().map(|d| d.did.as_str()));
-    let mut header_cells = vec!["DID", "Context", "Server", "Portable", "Created"];
-    if show_names {
-        header_cells.insert(0, NAME_HEADER);
-    }
+    let (header_cells, constraints) = did_list_columns(show_names);
     let header = Row::new(header_cells).style(header_style).bottom_margin(1);
 
     let rows: Vec<Row> = resp
@@ -518,23 +550,14 @@ pub async fn cmd_webvh_did_list(
 
     let title = format!(" WebVH DIDs ({}) ", resp.dids.len());
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Min(40),    // DID
-            Constraint::Length(16), // Context
-            Constraint::Length(16), // Server
-            Constraint::Length(10), // Portable
-            Constraint::Length(18), // Created
-        ],
-    )
-    .header(header)
-    .column_spacing(2)
-    .block(
-        Block::bordered()
-            .title(title)
-            .border_style(Style::default().fg(Color::DarkGray)),
-    );
+    let table = Table::new(rows, constraints)
+        .header(header)
+        .column_spacing(2)
+        .block(
+            Block::bordered()
+                .title(title)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
 
     let height = resp.dids.len() as u16 + 4;
     print_widget(table, height);
@@ -609,4 +632,47 @@ pub async fn cmd_webvh_did_log(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The header and the widths must describe the same columns. They are
+    /// separate lists in ratatui, and a short widths list silently drops the
+    /// trailing columns while shifting every width onto the wrong one — which
+    /// is how `dids list` came to render a full-width name beside a truncated
+    /// DID, with `Created` missing altogether.
+    #[test]
+    fn did_list_headers_and_widths_describe_the_same_columns() {
+        for show_names in [false, true] {
+            let (headers, constraints) = did_list_columns(show_names);
+            assert_eq!(
+                headers.len(),
+                constraints.len(),
+                "header/width mismatch with show_names={show_names}"
+            );
+        }
+    }
+
+    /// The DID column is the flexing one, and it flexes from a width that can
+    /// still hold an abbreviated `did:webvh:…:<host>:<path>`. Pinned because
+    /// the failure mode is not a panic or a wrong value — it is a table that
+    /// renders, looks fine, and cannot be read.
+    #[test]
+    fn did_column_gets_the_width_a_webvh_did_needs() {
+        let (headers, constraints) = did_list_columns(true);
+        let did_at = headers
+            .iter()
+            .position(|h| *h == "DID")
+            .expect("DID column present");
+        assert_eq!(constraints[did_at], Constraint::Min(46));
+
+        // …and the name column must not be the one absorbing the spare width.
+        let name_at = headers
+            .iter()
+            .position(|h| *h == NAME_HEADER)
+            .expect("Name column present");
+        assert_eq!(constraints[name_at], Constraint::Min(16));
+    }
 }
