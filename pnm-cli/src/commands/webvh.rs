@@ -125,7 +125,74 @@ pub(crate) async fn run(
         WebvhCommands::DeleteDid { did } => webvh::cmd_webvh_did_delete(client, &did).await,
         WebvhCommands::DidLog { did, out } => webvh::cmd_webvh_did_log(client, &did, out).await,
         WebvhCommands::ListDomains { server } => cmd_list_domains(client, &server).await,
+        WebvhCommands::Reconcile { server } => cmd_reconcile(client, &server).await,
     }
+}
+
+/// Print the host/VTA diff for one hosting server.
+///
+/// The output is written to be read by someone who has just been told a DID
+/// they can see does not exist: it names the state, says what causes it, and
+/// gives the next command. A clean result says how many were checked rather
+/// than printing nothing — "no output" and "the listing failed" look identical
+/// otherwise, and this is a command people run precisely when they already
+/// distrust what they are seeing.
+async fn cmd_reconcile(
+    client: &VtaClient,
+    server_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let report = client.reconcile_webvh_server_dids(server_id).await?;
+
+    if report.host_only.is_empty() && report.local_only.is_empty() {
+        println!(
+            "`{server_id}` and this VTA agree on all {} DID(s).",
+            report.in_both
+        );
+        return Ok(());
+    }
+
+    if !report.host_only.is_empty() {
+        println!(
+            "On the host but NOT in this VTA — {} orphan(s):",
+            report.host_only.len()
+        );
+        for e in &report.host_only {
+            let did = e.did.as_deref().unwrap_or("(slot never published)");
+            let domain = e
+                .domain
+                .as_deref()
+                .map(|d| format!("  [{d}]"))
+                .unwrap_or_default();
+            let disabled = if e.disabled { "  (disabled)" } else { "" };
+            println!("  {:<20} {did}{domain}{disabled}", e.mnemonic);
+        }
+        println!(
+            "\n  This VTA holds no update key for these, so nothing can sign a new\n  \
+             version of them. That is what a delete leaves behind when the host\n  \
+             call fails. Remove them on the host, or re-create them here if the\n  \
+             DID is still wanted."
+        );
+    }
+
+    if !report.local_only.is_empty() {
+        if !report.host_only.is_empty() {
+            println!();
+        }
+        println!(
+            "In this VTA but NOT on the host — {}:",
+            report.local_only.len()
+        );
+        for e in &report.local_only {
+            println!("  {:<20} {}  (context {})", e.mnemonic, e.did, e.context_id);
+        }
+        println!(
+            "\n  Usually a create whose publish never reached the host. `pnm did-mgmt\n  \
+             dids register --did <did> --server {server_id}` re-publishes one."
+        );
+    }
+
+    println!("\nIn both: {}", report.in_both);
+    Ok(())
 }
 
 /// Fetch the server's `/api/me/domains` view and print it as a

@@ -68,6 +68,35 @@ impl VtaClient {
         .await
     }
 
+    /// Ask the VTA to compare a hosting server's DIDs against its own records.
+    ///
+    /// Read-only. The VTA is the only party that can answer it — the CLI has no
+    /// host credentials, and the host has no view of the VTA's records — which
+    /// is why this is a VTA task rather than something the caller assembles
+    /// from two listings.
+    pub async fn reconcile_webvh_server_dids(
+        &self,
+        server_id: &str,
+    ) -> Result<
+        crate::protocols::did_management::servers::ReconcileWebvhServerDidsResultBody,
+        VtaError,
+    > {
+        self.rpc_tt(
+            crate::trust_tasks::TASK_WEBVH_SERVERS_RECONCILE_0_1,
+            serde_json::json!({ "serverId": server_id }),
+            // Longer than the domains read beside it: this makes a listing call
+            // to the host and the host may be paging thousands of slots.
+            60,
+            |c, url| {
+                c.get(format!(
+                    "{url}/webvh/servers/{}/reconcile",
+                    encode_path_segment(server_id)
+                ))
+            },
+        )
+        .await
+    }
+
     pub async fn update_webvh_server(
         &self,
         id: &str,

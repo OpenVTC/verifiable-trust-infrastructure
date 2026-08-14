@@ -205,6 +205,160 @@ pub async fn list_webvh_server_domains(
     Ok(entries)
 }
 
+/// Compare what a hosting server holds for this VTA against what the VTA has
+/// records for, and report the two divergences.
+///
+/// Read-only. It repairs nothing on purpose: the two sides need opposite
+/// remedies — a host-only entry is a DID nobody can update any more and wants
+/// removing from the host, a local-only entry may be a publish worth retrying —
+/// and neither is safe to guess at from a list. Naming them is the whole job.
+///
+/// **Super-admin.** The host has no notion of VTA contexts, so its listing
+/// cannot be filtered the way `list_dids_webvh` filters local records by
+/// `has_context_access`. A context-scoped caller would see DIDs from contexts
+/// they cannot act in — and scoping the *result* instead would hide orphans
+/// from everyone, since an orphan has no local record and therefore no context
+/// to check. So the operation is unrestricted-admin only, like the other
+/// cross-context reads (`backup export`, `contexts create`).
+///
+/// **Matched on the host's slot identifier (`mnemonic`), not the DID.** A slot
+/// that was reserved but never published to has no DID at all, and it is
+/// exactly as orphaned as one that was.
+pub async fn reconcile_webvh_server_dids(
+    deps: &crate::operations::did_webvh::WebvhDeps<'_>,
+    auth: &AuthClaims,
+    vta_did: Option<&str>,
+    server_id: &str,
+) -> Result<vta_sdk::protocols::did_management::servers::ReconcileWebvhServerDidsResultBody, AppError>
+{
+    auth.require_super_admin()?;
+
+    let server = webvh_store::get_server(deps.webvh_ks, server_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;
+
+    let vta_did_value = vta_did.ok_or_else(|| {
+        AppError::Validation(
+            "VTA DID is not configured — complete `vta setup` before reconciling with a host."
+                .to_string(),
+        )
+    })?;
+
+    let identity = crate::operations::did_webvh::auth_cache::load_vta_webvh_signing_identity(
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.seed_store,
+        deps.audit_ks,
+        vta_did_value,
+    )
+    .await?;
+    let auth_ctx = crate::operations::did_webvh::auth_cache::AuthContext {
+        webvh_ks: deps.webvh_ks,
+        identity: &identity,
+        locks: deps.auth_locks,
+    };
+    let transport = crate::operations::did_webvh::WebvhTransport::from_server_authenticated(
+        &server,
+        deps.did_resolver,
+        deps.didcomm_bridge,
+        &auth_ctx,
+    )
+    .await?;
+
+    let hosted = match transport {
+        crate::operations::did_webvh::WebvhTransport::Rest(c) => {
+            c.list_dids_for_owner(vta_did_value).await?
+        }
+        crate::operations::did_webvh::WebvhTransport::DIDComm { .. } => {
+            // Refuse rather than answer "nothing to report". `/api/dids` is
+            // REST-only on the host, and an empty diff here would read as
+            // "checked, all clean" — the one wrong answer this operation can
+            // give, because it is the answer an operator stops looking after.
+            return Err(AppError::Validation(format!(
+                "server `{server_id}` is reachable over DIDComm only, and the host's DID \
+                 listing is REST-only — this VTA cannot reconcile against it. Register a \
+                 REST endpoint for the server to use this command."
+            )));
+        }
+    };
+
+    let all_local = webvh_store::list_dids(deps.webvh_ks).await?;
+    let report = diff_host_against_local(&hosted, &all_local, &server.id, server_id);
+
+    info!(
+        caller = %auth.did,
+        server_id = %server_id,
+        host_only = report.host_only.len(),
+        local_only = report.local_only.len(),
+        in_both = report.in_both,
+        "webvh server DIDs reconciled"
+    );
+
+    Ok(report)
+}
+
+/// The comparison itself, with the I/O lifted out so it can be tested.
+///
+/// `server_key` is the record's `server_id` (what the local side is filtered
+/// by); `server_label` is what goes in the report. They are the same value in
+/// practice — separate parameters only so the filter cannot silently read the
+/// caller's raw argument instead of the resolved server's id.
+fn diff_host_against_local(
+    hosted: &[crate::webvh_client::HostedDidEntry],
+    all_local: &[vta_sdk::webvh::WebvhDidRecord],
+    server_key: &str,
+    server_label: &str,
+) -> vta_sdk::protocols::did_management::servers::ReconcileWebvhServerDidsResultBody {
+    use vta_sdk::protocols::did_management::servers::{
+        HostOnlyDid, LocalOnlyDid, ReconcileWebvhServerDidsResultBody,
+    };
+
+    // Only records that claim to live on *this* server. `serverless` records
+    // name no host, so they are not missing from one — they were never on it.
+    let local: Vec<_> = all_local
+        .iter()
+        .filter(|r| r.server_id == server_key)
+        .collect();
+
+    let local_mnemonics: std::collections::HashSet<&str> =
+        local.iter().map(|r| r.mnemonic.as_str()).collect();
+    let host_mnemonics: std::collections::HashSet<&str> =
+        hosted.iter().map(|e| e.mnemonic.as_str()).collect();
+
+    let mut host_only: Vec<HostOnlyDid> = hosted
+        .iter()
+        .filter(|e| !local_mnemonics.contains(e.mnemonic.as_str()))
+        .map(|e| HostOnlyDid {
+            mnemonic: e.mnemonic.clone(),
+            did: e.did_id.clone(),
+            domain: e.domain.clone(),
+            disabled: e.disabled,
+        })
+        .collect();
+    let mut local_only: Vec<LocalOnlyDid> = local
+        .iter()
+        .filter(|r| !host_mnemonics.contains(r.mnemonic.as_str()))
+        .map(|r| LocalOnlyDid {
+            did: r.did.clone(),
+            mnemonic: r.mnemonic.clone(),
+            context_id: r.context_id.clone(),
+        })
+        .collect();
+    // Stable order so two runs are diffable and a scripted check can compare
+    // output between them.
+    host_only.sort_by(|a, b| a.mnemonic.cmp(&b.mnemonic));
+    local_only.sort_by(|a, b| a.mnemonic.cmp(&b.mnemonic));
+
+    let in_both = u32::try_from(hosted.len().saturating_sub(host_only.len())).unwrap_or(u32::MAX);
+
+    ReconcileWebvhServerDidsResultBody {
+        server_id: server_label.to_string(),
+        host_only,
+        local_only,
+        in_both,
+    }
+}
+
 pub async fn remove_webvh_server(
     webvh_ks: &KeyspaceHandle,
     auth: &AuthClaims,
@@ -249,4 +403,135 @@ pub(super) async fn validate_server_did(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod reconcile_tests {
+    use super::*;
+    use crate::webvh_client::HostedDidEntry;
+    use vta_sdk::webvh::WebvhDidRecord;
+
+    fn hosted(mnemonic: &str, did: Option<&str>) -> HostedDidEntry {
+        HostedDidEntry {
+            mnemonic: mnemonic.into(),
+            did_id: did.map(str::to_string),
+            domain: Some("webvh.example".into()),
+            disabled: false,
+            updated_at: 0,
+        }
+    }
+
+    fn local(mnemonic: &str, server_id: &str) -> WebvhDidRecord {
+        WebvhDidRecord {
+            did: format!("did:webvh:QmScid:webvh.example:{mnemonic}"),
+            server_id: server_id.into(),
+            mnemonic: mnemonic.into(),
+            scid: "QmScid".into(),
+            context_id: "ctx".into(),
+            portable: false,
+            log_entry_count: 1,
+            pre_rotation_count: 0,
+            next_fragment_id: 2,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn agreement_reports_a_count_and_no_divergence() {
+        let report = diff_host_against_local(
+            &[hosted(
+                "alpha",
+                Some("did:webvh:QmScid:webvh.example:alpha"),
+            )],
+            &[local("alpha", "prod")],
+            "prod",
+            "prod",
+        );
+        assert!(report.host_only.is_empty());
+        assert!(report.local_only.is_empty());
+        // Counted, not merely silent — "nothing to report" and "the listing
+        // failed" have to look different to the operator.
+        assert_eq!(report.in_both, 1);
+    }
+
+    /// The case this command exists for: the host serves a DID the VTA deleted.
+    #[test]
+    fn a_did_the_host_has_and_the_vta_does_not_is_an_orphan() {
+        let report = diff_host_against_local(
+            &[hosted(
+                "attract-case",
+                Some("did:webvh:Qmc33:webvh.example:attract-case"),
+            )],
+            &[],
+            "prod",
+            "prod",
+        );
+        assert_eq!(report.host_only.len(), 1);
+        assert_eq!(report.host_only[0].mnemonic, "attract-case");
+        assert_eq!(
+            report.host_only[0].did.as_deref(),
+            Some("did:webvh:Qmc33:webvh.example:attract-case")
+        );
+        assert_eq!(report.in_both, 0);
+    }
+
+    /// A slot reserved but never published to has no DID at all — and is
+    /// exactly as orphaned as one that was. Matching on the DID instead of the
+    /// host's slot identifier would drop these silently.
+    #[test]
+    fn a_never_published_slot_is_still_an_orphan() {
+        let report = diff_host_against_local(&[hosted("reserved", None)], &[], "prod", "prod");
+        assert_eq!(report.host_only.len(), 1);
+        assert!(report.host_only[0].did.is_none());
+    }
+
+    #[test]
+    fn a_did_the_vta_has_and_the_host_does_not_is_reported_the_other_way() {
+        let report = diff_host_against_local(&[], &[local("never-landed", "prod")], "prod", "prod");
+        assert_eq!(report.local_only.len(), 1);
+        assert_eq!(report.local_only[0].mnemonic, "never-landed");
+        assert_eq!(report.local_only[0].context_id, "ctx");
+        assert!(report.host_only.is_empty());
+    }
+
+    /// Records belonging to another server — or to no server — are not missing
+    /// from this one. Without the filter every serverless DID would be reported
+    /// as absent from a host it was never on, which is the kind of false alarm
+    /// that gets a diagnostic ignored.
+    #[test]
+    fn records_for_other_servers_are_not_reported_as_missing() {
+        let report = diff_host_against_local(
+            &[],
+            &[
+                local("elsewhere", "staging"),
+                local("local-only-did", "serverless"),
+            ],
+            "prod",
+            "prod",
+        );
+        assert!(report.local_only.is_empty());
+        assert!(report.host_only.is_empty());
+        assert_eq!(report.in_both, 0);
+    }
+
+    #[test]
+    fn output_order_is_stable_regardless_of_listing_order() {
+        let report = diff_host_against_local(
+            &[
+                hosted("zulu", None),
+                hosted("alpha", None),
+                hosted("mike", None),
+            ],
+            &[],
+            "prod",
+            "prod",
+        );
+        let order: Vec<&str> = report
+            .host_only
+            .iter()
+            .map(|e| e.mnemonic.as_str())
+            .collect();
+        assert_eq!(order, ["alpha", "mike", "zulu"]);
+    }
 }

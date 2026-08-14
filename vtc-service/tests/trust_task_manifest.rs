@@ -437,7 +437,7 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        36,
+        37,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
@@ -447,7 +447,14 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
          into webvh/servers/register. Phase D (#888) took the last eight: \
          keys/{list,create,get,rename,revoke,sign,derive-and-sign,\
          derive-and-sign-document} onto the canonical top-level keys/* family \
-         authored upstream in dtgwg-trust-tasks-tf#167",
+         authored upstream in dtgwg-trust-tasks-tf#167. \
+         UP one, 36 → 37: webvh/servers/dids/0.1 (host/VTA DID reconcile). Only \
+         the VTA can answer it — it holds the host credentials and the local \
+         records, and neither end can make the comparison alone. Its nearest \
+         sibling, webvh/servers/domains/0.1, shows the path out: it relays the \
+         same host's domain view and was authored upstream as \
+         dtgwg-trust-tasks-tf#171, which is why it is published and not counted \
+         here. Author this one the same way",
     ),
 ];
 

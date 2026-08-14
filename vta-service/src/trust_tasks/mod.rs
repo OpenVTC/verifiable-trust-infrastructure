@@ -256,6 +256,16 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     "https://trusttasks.org/spec/vta/webvh/servers/list/1.0",
     "https://trusttasks.org/spec/vta/webvh/servers/register/1.0",
     "https://trusttasks.org/spec/vta/webvh/servers/remove/1.0",
+    // Host/VTA DID reconcile. Added knowingly rather than found here: this
+    // list's own rule is "author the spec upstream, do not grow the list", and
+    // the answer for a genuinely new capability is that the spec comes later —
+    // it cannot come first from inside this repo. The disposition is **spec
+    // under `vta/`**, recorded in `registry-drift-triage.md` beside
+    // `servers/{list,register,remove}`, and for the same reason: the subject is
+    // the VTA's own view of a host it uses, which no `did-management/*` task
+    // describes. Nothing else here can answer it either — the operator holds no
+    // host credentials and the host holds no VTA records.
+    "https://trusttasks.org/spec/vta/webvh/servers/dids/0.1",
     "https://trusttasks.org/spec/vta/webvh/dids/list/1.0",
     "https://trusttasks.org/spec/vta/webvh/dids/create/1.0",
     "https://trusttasks.org/spec/vta/webvh/dids/get/1.0",
@@ -1023,6 +1033,11 @@ dispatch_table! {
         [ Mutating None false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_DOMAINS_0_1 => webvh::handle_servers_domains
+        [ None Metadata false ],
+    // Reads two listings and compares them — no side effects, same class as
+    // the domains read beside it.
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_RECONCILE_0_1 => webvh::handle_servers_reconcile
         [ None Metadata false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0 => webvh::handle_dids_list

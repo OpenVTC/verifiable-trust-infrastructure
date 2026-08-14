@@ -46,8 +46,9 @@ use vta_sdk::protocols::did_management::{
     get::GetDidWebvhBody,
     list::ListDidsWebvhBody,
     servers::{
-        ListWebvhServerDomainsBody, ListWebvhServersBody, RegisterDidWithServerBody,
-        RegisterDidWithServerResultBody, RegisterWebvhServerBody, RemoveWebvhServerBody,
+        ListWebvhServerDomainsBody, ListWebvhServersBody, ReconcileWebvhServerDidsBody,
+        RegisterDidWithServerBody, RegisterDidWithServerResultBody, RegisterWebvhServerBody,
+        RemoveWebvhServerBody,
     },
     update::{RotateDidWebvhKeysBody, UpdateDidWebvhBody},
 };
@@ -697,6 +698,41 @@ pub(super) struct UpdateDidWithDid {
 /// deliberately transparent — no second filter here, because narrowing a list
 /// the server already scoped would report fewer domains than the caller may
 /// actually use, and the caller has no way to tell that happened.
+/// `spec/vta/webvh/servers/dids/0.1` — diff a hosting server's DIDs against
+/// this VTA's records. Read-only; super-admin (the operation explains why).
+pub(super) async fn handle_servers_reconcile(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: ReconcileWebvhServerDidsBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let did_resolver = match state.did_resolver.as_ref() {
+        Some(r) => r,
+        None => {
+            return app_error_to_reject(
+                &doc,
+                AppError::Internal("DID resolver not available".into()),
+            );
+        }
+    };
+    let vta_did = state.config.read().await.vta_did.clone();
+    let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
+    match operations::did_webvh::reconcile_webvh_server_dids(
+        &deps,
+        auth,
+        vta_did.as_deref(),
+        &req.server_id,
+    )
+    .await
+    {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
 pub(super) async fn handle_servers_domains(
     state: &AppState,
     auth: &AuthClaims,
