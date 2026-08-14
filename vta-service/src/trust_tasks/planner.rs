@@ -106,7 +106,7 @@ async fn plan_webvh_update(
 
     let plan = did_webvh::plan_did_webvh_update(&deps, auth, &req.did, options)
         .await
-        .map_err(|e| AppError::Internal(format!("webvh update dry-run failed: {e}")))?;
+        .map_err(dry_run_error)?;
 
     Ok(TaskPlan {
         effects: plan.to_effects(),
@@ -120,6 +120,36 @@ async fn plan_webvh_update(
         subject_context: Some(plan.subject_context.clone()),
         requester_authorized: plan.requester_authorized,
     })
+}
+
+/// Map a dry-run failure onto the same typed [`AppError`] the *execute* path
+/// would raise for the same cause, keeping "this happened while planning" in
+/// the message.
+///
+/// Every failure here used to become `AppError::Internal`, which loses exactly
+/// the detail that makes one diagnosable — and loses it in the worst place. The
+/// planner runs on the consent path and only there, so this is the report an
+/// approver-gated update produces: a DID this VTA does not hold, a context the
+/// requester cannot act in, and a genuine signing bug all arrived as one opaque
+/// `internalError`, while the *ungated* execution of the very same task
+/// answered `taskFailed: did not found: …`. Routing through the existing
+/// `From<UpdateDidWebvhError>` makes plan and execute agree on the variant, so
+/// turning consent on can no longer make an error less legible than leaving it
+/// off.
+#[cfg(feature = "webvh")]
+fn dry_run_error(err: crate::operations::did_webvh::UpdateDidWebvhError) -> AppError {
+    // `From<UpdateDidWebvhError>` owns the variant choice (notably: NotFound
+    // and Forbidden both collapse to NotFound so a plan cannot be used to probe
+    // for DIDs in a context the caller can't see). Re-wrap in the same variant
+    // rather than matching on the source error, so that policy stays in one
+    // place and a new variant there needs no edit here.
+    let framed = |msg: String| format!("webvh update dry-run: {msg}");
+    match AppError::from(err) {
+        AppError::NotFound(m) => AppError::NotFound(framed(m)),
+        AppError::Conflict(m) => AppError::Conflict(framed(m)),
+        AppError::Validation(m) => AppError::Validation(framed(m)),
+        other => AppError::Internal(framed(other.to_string())),
+    }
 }
 
 /// Re-run the dry-run at execution and check the world has not moved under the
@@ -239,5 +269,50 @@ mod tests {
     fn a_pin_appearing_from_nowhere_is_refused() {
         let unplanned = TaskPlan::default();
         assert!(check_unchanged(Some(&pin("3-Qm")), &Guards::default(), &unplanned).is_err());
+    }
+
+    /// Planning an update for a DID this VTA does not hold is a `NotFound`, the
+    /// same answer the execute path gives. It used to be an `internalError`,
+    /// which meant turning consent *on* made the report strictly worse than
+    /// leaving it off: the ungated task said "did not found", the gated one
+    /// said "internal error" and named nothing.
+    #[cfg(feature = "webvh")]
+    #[test]
+    fn a_missing_did_plans_as_not_found() {
+        let err = dry_run_error(crate::operations::did_webvh::UpdateDidWebvhError::NotFound(
+            "SCID did:webvh:QmNope:example.com:agent not found".into(),
+        ));
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+        // The cause survives the reframing — that string is the whole
+        // diagnostic value of the error.
+        assert!(err.to_string().contains("QmNope"), "{err}");
+        assert!(err.to_string().contains("dry-run"), "{err}");
+    }
+
+    /// A context the requester cannot act in also plans as `NotFound`: the
+    /// `From<UpdateDidWebvhError>` mapping deliberately collapses Forbidden
+    /// into NotFound so a dry-run cannot be used to probe for DIDs in contexts
+    /// the caller cannot see. Re-wrapping must not undo that.
+    #[cfg(feature = "webvh")]
+    #[test]
+    fn a_forbidden_context_does_not_leak_through_the_plan() {
+        let err = dry_run_error(
+            crate::operations::did_webvh::UpdateDidWebvhError::Forbidden(
+                "not an admin of context `payroll`".into(),
+            ),
+        );
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    }
+
+    /// A genuine library/signing failure is still internal — the point of the
+    /// change is to stop flattening *everything* into that, not to stop using
+    /// it where it is right.
+    #[cfg(feature = "webvh")]
+    #[test]
+    fn a_library_failure_stays_internal() {
+        let err = dry_run_error(crate::operations::did_webvh::UpdateDidWebvhError::Library(
+            "chain validation: bad proof".into(),
+        ));
+        assert!(matches!(err, AppError::Internal(_)), "{err:?}");
     }
 }
