@@ -355,32 +355,42 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
         // on the 2026-08-14 failure — so the remaining question is whether the
         // frame reached this client at all.
         let buffered = mock.client.inbox_summary().await;
+        // Only on the failing path: the probe issues a delivery request, which
+        // would consume messages a healthy run's next assertion is waiting for.
+        let mediator = if pushed.is_none() {
+            mock.client.mediator_queue_report().await
+        } else {
+            String::new()
+        };
         let (typ, issue_body) = pushed.unwrap_or_else(|| {
             panic!(
                 "admission credential {}/2 not delivered over DIDComm within {:?} \
-                     ({} already received; inbox: {}). {}",
+                     ({} already received; inbox: {}; mediator: {}). {}",
                 i + 1,
                 CREDENTIAL_PUSH_TIMEOUT,
                 delivered.len(),
                 buffered,
+                mediator,
                 if i == 0 {
                     "Zero arrived, so the VTC most likely never sent: \
                          `deliver_credentials` attempts every credential, but its caller only \
                          `warn!`s — which is invisible here unless a tracing subscriber is \
                          installed (see RUST_LOG note at the top of this test)."
                 } else {
-                    // VTI#918. The sender is no longer a candidate: the
-                    // 2026-08-14 failure logged `outbox drain pass sent=2
-                    // retried=0 failed=0`, so both frames left the VTC.
-                    // What splits the two remaining suspects is the inbox
-                    // above — a non-empty inbox means the frame reached
-                    // this socket and the *matching* is wrong (a test bug);
-                    // an empty one means it never arrived, and the loss is
-                    // at the mediator.
-                    "The first arrived and the second did not. The sender is cleared \
-                         (`sent=2 failed=0` in the drain log), so read the inbox above: \
-                         non-empty ⇒ the frame arrived and did not match; empty ⇒ it never \
-                         reached this client, and the mediator is the remaining suspect."
+                    // VTI#918, reproduced 2026-08-14 (soak run 31769042608,
+                    // stream 6 iteration 31). Two suspects are already gone:
+                    // the sender logged `outbox drain pass sent=2 retried=0
+                    // failed=0`, and the client's inbox held only a
+                    // pickup-status heartbeat — no unmatched credential — so
+                    // the frame never reached the live stream. The `mediator:`
+                    // clause splits what is left.
+                    "The first arrived and the second did not. Sender cleared (`sent=2 \
+                         failed=0`) and no unmatched credential in the inbox, so read the \
+                         `mediator:` clause: `queued=0` ⇒ the mediator never held it and the \
+                         loss is at or before its queue; `queued>0`, or a delivery request that \
+                         returns the credential, ⇒ the mediator had it all along and the \
+                         live-stream path never yielded it — a delivery-mechanism bug, not a \
+                         loss."
                 }
             )
         });
