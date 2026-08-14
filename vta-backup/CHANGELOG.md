@@ -2,6 +2,19 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.1.7](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.1.6...vta-backup-v0.1.7) — 2026-08-14
+
+
+### Added
+
+- **nitro**: Un-bake tenant config, deliver to the enclave over vsock ([#939](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/939))
+
+* feat(nitro): un-bake tenant config, deliver to the enclave over vsock
+
+  The Nitro enclave image no longer bakes tenant config.toml into the EIF, so one image (one PCR0) serves every tenant. The entrypoint fetches a versioned config envelope from the parent over vsock:5800 (bounded connect/read timeouts, 1 MB size cap, version check), fails closed unless VTA_ALLOW_DEFAULT_CONFIG=true, and writes /etc/vta/config.toml before start. Adds jq to the runtime; documents the KMS-policy isolation requirement and the tee-mode enforcement floor.
+
+
+
 ## [0.1.6](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.1.5...vta-backup-v0.1.6) — 2026-08-13
 
 
