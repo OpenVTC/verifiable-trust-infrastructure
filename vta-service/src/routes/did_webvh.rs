@@ -128,6 +128,46 @@ pub async fn list_server_domains_handler(
     Ok(Json(result))
 }
 
+/// `GET /webvh/servers/:id/reconcile` — compare the hosting server's DIDs for
+/// this VTA against the VTA's own records, and report both divergences.
+/// Read-only; super-admin (see the operation for why it cannot be
+/// context-scoped). Authentication to the hosting server uses the VTA's own
+/// credentials, which is why the caller cannot do this themselves.
+#[utoipa::path(
+    get, path = "/webvh/servers/{id}/reconcile", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Server identifier")),
+    responses(
+        (status = 200, description = "Host/VTA divergences", body = vta_sdk::protocols::did_management::servers::ReconcileWebvhServerDidsResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an unrestricted admin"),
+        (status = 404, description = "Server not found"),
+    ),
+)]
+pub async fn reconcile_server_dids_handler(
+    auth: AuthClaims,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<
+    Json<vta_sdk::protocols::did_management::servers::ReconcileWebvhServerDidsResultBody>,
+    AppError,
+> {
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("DID resolver not available".into()))?;
+    let config = state.config.read().await;
+    let deps = operations::did_webvh::WebvhDeps::from_app_state(&state, did_resolver);
+    let result = operations::did_webvh::reconcile_webvh_server_dids(
+        &deps,
+        &auth,
+        config.vta_did.as_deref(),
+        &id,
+    )
+    .await?;
+    Ok(Json(result))
+}
+
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateServerRequest {
     pub label: Option<String>,

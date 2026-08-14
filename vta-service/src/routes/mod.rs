@@ -533,6 +533,7 @@ fn build_api_router(trust_xff: bool, interval_secs: u64, burst: u32) -> OpenApiR
             did_webvh::remove_server_handler
         ))
         .routes(routes!(did_webvh::list_server_domains_handler))
+        .routes(routes!(did_webvh::reconcile_server_dids_handler))
         .routes(routes!(
             did_webvh::list_dids_handler,
             did_webvh::create_did_handler

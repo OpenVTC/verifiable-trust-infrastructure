@@ -815,6 +815,55 @@ impl WebvhClient {
             .await
             .map_err(|e| AppError::Internal(format!("webvh-server response parse error: {e}")))
     }
+
+    /// GET /api/dids?owner=… — the DIDs this host holds for one owner.
+    ///
+    /// **`owner` is not optional here even though the endpoint allows it.** The
+    /// host answers an admin caller who names no owner with *every* DID on the
+    /// server (`did_ops::list_dids` short-circuits to `list_all_dids`), and a
+    /// VTA that administers its own host is exactly that caller. Reconciling
+    /// against an unscoped list would report every other tenant's DID as
+    /// missing locally, which is both wrong and alarming. Always pass the DID
+    /// whose records you mean.
+    pub async fn list_dids_for_owner(&self, owner: &str) -> Result<Vec<HostedDidEntry>, AppError> {
+        // Built through `Url` rather than `format!` so the owner DID is
+        // percent-encoded by something that knows the rules — a `did:webvh:`
+        // carries colons, and a path DID can carry characters that would
+        // silently truncate a hand-spliced query string.
+        let mut url = Url::parse(&format!("{}/api/dids", self.server_url))
+            .map_err(|e| AppError::Validation(format!("invalid webvh server URL: {e}")))?;
+        url.query_pairs_mut().append_pair("owner", owner);
+        let url = url.to_string();
+        info!(method = "GET", %url, owner, "webvh: sending via rest");
+        let req = self.with_auth(self.http.get(&url));
+        let resp = self.send(req, "GET /api/dids").await?;
+        resp.json()
+            .await
+            .map_err(|e| AppError::Internal(format!("webvh-server response parse error: {e}")))
+    }
+}
+
+/// One row of the host's DID list (`did_hosting_common::DidListEntry`).
+///
+/// Only the members the reconcile needs. The host's row carries resolve counts,
+/// service types and agent names too; deserialising them here would tie this
+/// struct to shape changes in fields nothing reads.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedDidEntry {
+    /// The host's path segment for this DID — its slot identifier, and what
+    /// `PUT /api/dids/{mnemonic}` addresses.
+    pub mnemonic: String,
+    /// The DID the host serves at that slot. `None` for a reserved slot that
+    /// has never been published to, which is why the reconcile keys on
+    /// `mnemonic` and treats this as descriptive.
+    #[serde(default)]
+    pub did_id: Option<String>,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub disabled: bool,
+    pub updated_at: u64,
 }
 
 #[derive(Debug, serde::Deserialize)]

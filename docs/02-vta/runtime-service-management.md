@@ -507,6 +507,61 @@ against the [`did-management/_shared/0.1/CONVENTIONS.md`](https://github.com/tru
 spec. `list-domains` against the same server tells you which
 values are currently legitimate.
 
+## Walkthrough: find DIDs the host and the VTA disagree about
+
+Use case: the hosting UI lists a DID your VTA has never heard of, or
+an edit fails with `did not found: SCID … not found` for a DID the
+host is visibly serving.
+
+```bash
+pnm did-mgmt dids reconcile --server primary
+```
+
+Read-only. It prints two lists:
+
+- **On the host but NOT in this VTA** — *orphans*. The host serves a
+  DID this VTA holds no update key for, so nothing can sign a new
+  version of it, and any delegated edit against it will fail at
+  signing no matter who asks. The usual cause is a delete whose
+  remote leg failed: `delete_did_webvh` calls the host first and, if
+  that call errors, logs `continuing local cleanup but DID is now
+  orphaned on the daemon` and removes the local record anyway. The
+  remedy is to remove it on the host — or re-create the DID here if
+  the identifier is still wanted.
+- **In this VTA but NOT on the host** — usually a create whose
+  publish never landed. `pnm did-mgmt dids register --did <did>
+  --server <id>` re-publishes one.
+
+It repairs nothing on purpose: the two divergences want opposite
+remedies, and neither is safe to infer from a list.
+
+### Why the VTA has to answer this
+
+Neither end can do it alone. The CLI holds no credentials for the
+hosting server; the host has no view of the VTA's records. The VTA
+holds both, so it authenticates to the host with its own credentials,
+asks for `GET /api/dids?owner=<its own DID>`, and compares.
+
+That `owner` parameter is not optional in practice. A VTA that
+administers its own host is an admin caller, and the host answers an
+admin who names no owner with *every* DID on the server — which would
+report every other tenant's DID as missing locally.
+
+### Requires an unrestricted admin
+
+The host has no notion of VTA contexts, so its listing cannot be
+filtered by `has_context_access` the way `dids list` filters local
+records. Scoping the result instead would hide orphans from everyone,
+since an orphan has no local record and therefore no context to check
+against. So the command is super-admin only, like `backup export`.
+
+### REST-registered servers only
+
+The host's DID listing is REST-only. Against a DIDComm-only
+registration the command refuses rather than returning an empty
+diff — "nothing to report" is the one wrong answer here, because it
+is the answer an operator stops looking after.
+
 ## Walkthrough: edit an existing DID document
 
 Use case: you want to add or remove a service entry, change a

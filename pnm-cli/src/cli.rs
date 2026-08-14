@@ -846,6 +846,23 @@ pub(crate) enum WebvhCommands {
         #[arg(long)]
         server: String,
     },
+    /// Compare a hosting server's DIDs against this VTA's records.
+    ///
+    /// Reports two divergences. **On the host but not here** is an
+    /// orphan: the host serves a DID this VTA has no key for, so no
+    /// update to it can ever be signed. It is what a delete leaves
+    /// behind when the host call fails — the local record goes
+    /// anyway. **Here but not on the host** is usually a create whose
+    /// publish never landed.
+    ///
+    /// Read-only: it repairs nothing, because the two want opposite
+    /// remedies. Requires an unrestricted admin — the host has no
+    /// view of contexts, so its listing cannot be context-scoped.
+    Reconcile {
+        /// Registered server id (from `pnm did-mgmt servers add`).
+        #[arg(long)]
+        server: String,
+    },
     /// List WebVH DIDs
     ListDids {
         /// FILTER: only show DIDs belonging to this context.
@@ -1194,6 +1211,23 @@ pub(crate) enum DidMgmtDidCommands {
         #[arg(long)]
         server: String,
     },
+    /// Compare a hosting server's DIDs against this VTA's records.
+    ///
+    /// Reports two divergences. **On the host but not here** is an
+    /// orphan: the host serves a DID this VTA has no key for, so no
+    /// update to it can ever be signed. It is what a delete leaves
+    /// behind when the host call fails — the local record goes
+    /// anyway. **Here but not on the host** is usually a create whose
+    /// publish never landed.
+    ///
+    /// Read-only: it repairs nothing, because the two want opposite
+    /// remedies. Requires an unrestricted admin — the host has no
+    /// view of contexts, so its listing cannot be context-scoped.
+    Reconcile {
+        /// Registered server id (from `pnm did-mgmt servers add`).
+        #[arg(long)]
+        server: String,
+    },
 }
 
 impl From<DidMgmtCommands> for WebvhCommands {
@@ -1298,6 +1332,7 @@ impl From<DidMgmtCommands> for WebvhCommands {
                 DidMgmtDidCommands::Delete { did } => WebvhCommands::DeleteDid { did },
                 DidMgmtDidCommands::GetLog { did, out } => WebvhCommands::DidLog { did, out },
                 DidMgmtDidCommands::ListDomains { server } => WebvhCommands::ListDomains { server },
+                DidMgmtDidCommands::Reconcile { server } => WebvhCommands::Reconcile { server },
             },
         }
     }

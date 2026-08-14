@@ -67,6 +67,73 @@ pub struct ListWebvhServerDomainsResultBody {
     pub default: Option<String>,
 }
 
+/// Request body for `vta/webvh/servers/dids/0.1` — compare the DIDs a hosting
+/// server holds for this VTA against the DIDs the VTA has records for.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ReconcileWebvhServerDidsBody {
+    #[serde(rename = "serverId", alias = "server_id")]
+    pub server_id: String,
+}
+
+/// The two-sided diff between a hosting server and this VTA.
+///
+/// Read-only, and deliberately so: the two divergences have opposite remedies
+/// (one needs a DID removed from a host, the other needs a publish or a local
+/// delete) and neither is safe to guess at. Naming them precisely is the whole
+/// job — the operator decides.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ReconcileWebvhServerDidsResultBody {
+    pub server_id: String,
+    /// Served by the host, unknown to this VTA — **orphans**. The usual cause
+    /// is a delete whose remote leg failed: `delete_did_webvh` calls the host
+    /// first and, when that call fails, drops the local record anyway
+    /// ("continuing local cleanup but DID is now orphaned on the daemon"). The
+    /// host keeps serving a DID whose controller has discarded its keys, so no
+    /// update to it can ever be signed again.
+    pub host_only: Vec<HostOnlyDid>,
+    /// Recorded here as hosted on this server, but the host does not have it.
+    /// A create whose publish never landed, or a DID removed on the host by
+    /// another admin.
+    pub local_only: Vec<LocalOnlyDid>,
+    /// How many the two agree on. Present so a clean result reads as "checked
+    /// 14, all matched" rather than an empty screen that could equally mean the
+    /// listing failed.
+    pub in_both: u32,
+}
+
+/// A DID the host serves that this VTA has no record of.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct HostOnlyDid {
+    /// The host's slot identifier — what `pnm did-mgmt` and the host's own API
+    /// address this DID by, and the only identifier a never-published slot has.
+    pub mnemonic: String,
+    /// The DID served at that slot, when the slot has been published to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    /// Whether the host has the slot disabled.
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+/// A DID this VTA records as hosted on the server, which the server does not
+/// have.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct LocalOnlyDid {
+    pub did: String,
+    /// The slot this VTA believes the DID occupies on the host.
+    pub mnemonic: String,
+    pub context_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
