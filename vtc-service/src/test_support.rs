@@ -1175,10 +1175,68 @@ mod didcomm_harness {
                 frames_seen,
                 poll_errors,
                 buffered = %self.inbox_summary().await,
+                mediator = %self.mediator_queue_report().await,
                 ?timeout,
                 "timed out waiting for a matching message",
             );
             None
+        }
+
+        /// Ask the mediator, at the moment of the timeout, what it is still
+        /// holding for this client — and then actually request delivery of it.
+        ///
+        /// This is the fork the VMC-delivery flake (VTI#918) has been narrowed
+        /// down to. The sender is cleared (`outbox drain pass sent=2 failed=0`)
+        /// and the client's inbox holds no unmatched credential, so the frame
+        /// did not reach the live stream. Two very different things look
+        /// identical from here:
+        ///
+        /// - `queued=0` — the mediator never held the message, or dropped it.
+        ///   The loss is at or before the mediator's queue.
+        /// - `queued>0`, and a delivery request returns the missing
+        ///   credential — the mediator had it all along and the **live-stream
+        ///   path** never yielded it. Not a loss at all: a delivery-mechanism
+        ///   bug, and the polling client is the wrong place to have been
+        ///   looking.
+        ///
+        /// Best-effort and bounded: this runs on a path that has already
+        /// failed, so it must add evidence without adding a second way to
+        /// hang. Any error is reported rather than propagated.
+        pub async fn mediator_queue_report(&self) -> String {
+            const PROBE: Duration = Duration::from_secs(5);
+
+            let status = match self
+                .atm
+                .message_pickup()
+                .send_status_request(&self.profile, true, Some(PROBE))
+                .await
+            {
+                Ok(Some(s)) => format!(
+                    "queued={} bytes={} live_delivery={} longest_waited={:?}",
+                    s.message_count, s.total_bytes, s.live_delivery, s.longest_waited_seconds,
+                ),
+                Ok(None) => "status request returned nothing".to_string(),
+                Err(e) => format!("status request failed: {e}"),
+            };
+
+            // Only pull if something is actually queued: an unconditional
+            // delivery request on a healthy run would consume messages a later
+            // assertion is waiting for.
+            let delivered = match self
+                .atm
+                .message_pickup()
+                .send_delivery_request(&self.profile, Some(10), true)
+                .await
+            {
+                Ok(messages) if messages.is_empty() => "delivery request: empty".to_string(),
+                Ok(messages) => {
+                    let types: Vec<&str> = messages.iter().map(|(m, _)| m.typ.as_str()).collect();
+                    format!("delivery request returned {}: {:?}", messages.len(), types)
+                }
+                Err(e) => format!("delivery request failed: {e}"),
+            };
+
+            format!("{status}; {delivered}")
         }
 
         /// One line describing everything sitting unmatched in this client's
