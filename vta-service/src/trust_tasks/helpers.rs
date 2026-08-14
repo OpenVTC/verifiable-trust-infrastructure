@@ -105,6 +105,14 @@ pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> Trus
             reason: message,
             details: None,
         },
+        // Hand the framework the *cause*, not the rendered error. Both
+        // `AppError::Internal` and `RejectReason::InternalError` render as
+        // "internal error: {…}", so passing the outer `Display` in put the
+        // prefix on twice and the operator dialog read "internal error:
+        // internal error: log entry has no update_keys". Every other arm above
+        // pairs a differently-worded reason with its variant, so only this one
+        // stutters — and only this one is fixed here.
+        AppError::Internal(cause) => RejectReason::InternalError { reason: cause },
         _ => RejectReason::InternalError { reason: message },
     };
     reject_with(doc, reason)
@@ -204,4 +212,55 @@ pub(super) fn body_parse_error_response(reason: &str) -> TrustTaskOutcome {
         extra: Default::default(),
     };
     error_response(err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn doc() -> TrustTask<Value> {
+        let uri: TypeUri = vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0
+            .parse()
+            .expect("update uri");
+        TrustTask::new("urn:uuid:test", uri, json!({}))
+    }
+
+    fn message_of(outcome: TrustTaskOutcome) -> String {
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("error doc parses");
+        doc["payload"]["message"]
+            .as_str()
+            .expect("payload carries a message")
+            .to_string()
+    }
+
+    /// The framework already says "internal error"; so does `AppError::Internal`.
+    /// Rendering the outer error into the reason put the prefix on twice, and the
+    /// operator's dialog read "internal error: internal error: log entry has no
+    /// update_keys". The cause is what the framework wants, not the rendering.
+    #[test]
+    fn an_internal_error_does_not_say_internal_error_twice() {
+        let message = message_of(app_error_to_reject(
+            &doc(),
+            AppError::Internal("log entry has no update_keys".into()),
+        ));
+        assert_eq!(message, "internal error: log entry has no update_keys");
+        assert!(
+            !message.contains("internal error: internal error"),
+            "{message}"
+        );
+    }
+
+    /// The other arms pair a differently-worded reject reason with the variant,
+    /// so their `Display` is not redundant and stays — a `NotFound` still reads
+    /// "task failed: not found: …", naming both the framework's verdict and ours.
+    /// Pinned so a future tidy-up does not strip the cause along with the stutter.
+    #[test]
+    fn a_not_found_keeps_the_cause_the_operator_needs() {
+        let message = message_of(app_error_to_reject(
+            &doc(),
+            AppError::NotFound("SCID QmNope not found".into()),
+        ));
+        assert!(message.contains("SCID QmNope not found"), "{message}");
+    }
 }
