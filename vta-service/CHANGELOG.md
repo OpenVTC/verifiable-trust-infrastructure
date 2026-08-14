@@ -2,6 +2,195 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.15.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.15.0...vta-service-v0.15.1) — 2026-08-14
+
+
+### Added
+
+- **webvh**: Find DIDs a host serves that this VTA has no record of ([#976](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/976))
+
+A DID can exist on a hosting server and nowhere in the VTA that owns it. The
+  delete path says so out loud: `delete_did_webvh` calls the host first and, when
+  that call fails, logs "continuing local cleanup but DID is now orphaned on the
+  daemon" and removes the local record anyway. The host keeps serving a DID whose
+  controller has discarded its keys, and nothing since then could tell you.
+
+  Found the hard way: the hosting UI listed a DID, a delegated edit against it was
+  refused with `did not found: SCID … not found`, and from the outside that reads
+  as lost keys rather than an orphan.
+
+      pnm did-mgmt dids reconcile --server primary
+
+  Read-only, and repairs nothing on purpose — a host-only entry wants removing at
+  the host, a local-only entry wants its publish retrying, and neither is safe to
+  infer from a list. Naming them is the job.
+
+  **Only the VTA can answer it.** The operator holds no credentials for the
+  hosting server; the host has no view of the VTA's records. So the VTA
+  authenticates with its own credentials, reads `GET /api/dids?owner=<its own
+  DID>`, and compares against its local records.
+
+  Three decisions worth the reviewer's attention:
+
+  - **`owner` is always sent**, though the endpoint allows omitting it. A VTA that
+    administers its own host *is* an admin caller, and the host answers an admin
+    who names no owner with every DID on the server — reporting every other
+    tenant's DID as missing locally.
+  - **Matched on the host's slot id, not the DID.** A slot reserved but never
+    published to has no DID at all and is exactly as orphaned as one that was.
+    Pinned by a test.
+  - **Super-admin, and DIDComm-only registrations are refused.** The host has no
+    notion of VTA contexts, so its listing cannot be filtered by
+    `has_context_access` the way `dids list` filters local records — and scoping
+    the *result* instead would hide orphans from everyone, since an orphan has no
+    local record to carry a context. The host's listing is REST-only, so against a
+    DIDComm-only server this errors rather than returning an empty diff: "nothing
+    to report" is the one wrong answer available, because it is the answer an
+    operator stops looking after.
+
+  ## The registry cost, stated plainly
+
+  This adds one URI — `vta/webvh/servers/dids/0.1` — that the published registry
+  has no spec for, so it lands on **both** drift registers: the per-family census
+  in `vtc-service` (spec/vta 36 → 37) and the per-URI
+  `UNSPECCED_DISPATCHED_URIS` in this crate, whose own rule reads "author the spec
+  upstream — growing the allowlist is the wrong fix".
+
+  It is added knowingly. The spec cannot come first from inside this repo: it
+  needs a PR to trustoverip/dtgwg-trust-tasks-tf and a `trust-tasks-rs` release
+  before the URI resolves, which is how every entry on that list arrived. The
+  disposition is **spec under `vta/`**, recorded in `registry-drift-triage.md`
+  beside `servers/{list,register,remove}` and for the same reason: the subject is
+  the VTA's own view of a host it uses, and `did-management/did/list/0.1` is the
+  host's listing rather than the comparison against local records. The nearest
+  sibling shows the way out — `servers/domains/0.1` relays the same host's domain
+  view, went upstream as dtgwg-trust-tasks-tf#171, and is on neither list as a
+  result.
+
+  The alternatives were weighed and are worse: a REST-only route is unreachable
+  from a TSP-transport CLI, and folding this onto `webvh/dids/list/1.0` makes a
+  local read do network I/O and grows a response shape most callers never want.
+
+  The `did-hosting-ui` half — the warning beside the delegated-edit button, and
+  the hint that names this command when the agent answers "not found" — is
+  affinidi/affinidi-webvh-service#163.
+
+
+
+### Fixed
+
+- **trust-tasks**: Stop emitting two versions of the framework error document ([#973](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/973))
+
+* fix(trust-tasks): stop emitting two versions of the framework error document
+
+  Both services routed their rejections through `TrustTask::reject_with`, which
+  stamps whatever version `trust-tasks-rs` emits — `trust-task-error/0.3` since
+  the framework's own 0.3 release. But each service also has one *unrouted* path,
+  for a body that never parsed into a Trust Task at all, and with no request
+  document to reject from it had to write the Type URI out by hand. Both wrote
+  `0.1`.
+
+  So a single service spoke two dialects, distinguished only by whether the
+  request happened to parse. That is a trap for exactly the consumer that pins a
+  version, and it is not hypothetical: a client enumerating `0.1`/`0.2` read every
+  `0.3` rejection as a **success**, because an unrecognised error document falls
+  through to the success branch and its payload is returned as the operation's
+  result (OpenVTC/vta-browser-plugin#115, affinidi/affinidi-webvh-service#160).
+  The version a service emits is wire contract; emitting two is worse than
+  emitting the wrong one, because whichever a consumer pins is right half the time.
+
+  `trust-tasks-rs` keeps `trust_task_error_type_uri()` `pub(crate)`, so the value
+  cannot be read from the framework. Each service now names it once, in
+  `framework_error_type_uri()` beside the unrouted builder, and a test compares
+  that against the Type URI a real `reject_with` produces. A framework bump now
+  fails a test instead of silently re-splitting the service in two. A second test
+  asserts the bytes on the wire carry it, not just the value we compute.
+
+  Test fixtures that stood in for a peer's rejection were built at `0.1` — a
+  version no peer on trust-tasks-rs 0.4 sends. They now use what a peer actually
+  emits. Those assertions pass either way (the matchers key on the slug, which is
+  the right way to match), but a suite that exercises a wire nobody speaks is how
+  the client-side version pin survived this long unnoticed.
+
+  Left alone deliberately: `vtc-service::messaging`'s `.unwrap_or(…/0.1)` default,
+  which labels an inbound document that carries no `type` at all. It is not an
+  emitted document, and every consumer of that label matches on the slug.
+
+- **webvh**: Sign with the update keys in force, not the ones the head restated ([#972](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/972))
+
+A DID whose most recent log entry did not restate `updateKeys` could not be
+  updated again. Every attempt died with
+
+      webvh library error: log entry has no update_keys — DID is deactivated or malformed
+
+  about a DID that was neither deactivated nor malformed, and the operator reads
+  that as lost keys. Nothing was lost. The keys were never consulted.
+
+  webvh parameters are a delta: an entry that omits `updateKeys` leaves the
+  previous entry's in force. `didwebvh-rs` models that as two fields —
+  `update_keys` is what the entry *declared* (`None` when it declared nothing) and
+  `active_update_keys` is the effective set validation carried forward
+  (`parameters/mod.rs`, the `None =>` arm: "If absent, keep current updateKeys").
+  Only the second answers "which key signs the next entry". The orchestrator read
+  the first, got an empty list, and handed it to `load_active_update_key`, whose
+  first line rejects an empty list — so the DID's real update key was never looked
+  up in the handle cache, never re-derived from the seed, never tried.
+
+  The head entry that triggers it is one this code writes itself: for a
+  metadata-only update with no pre-rotation, `set_update_keys` is `None` (nothing
+  forces a key reveal, and rotating on a no-op change would be wrong), so the
+  entry lands as `"parameters": {}`. One such update and the DID is permanently
+  un-updatable by this VTA. Found on a live hosting-server DID whose v3 was
+  exactly that; v1 declared the keys, v2 rotated them, v3 declared nothing.
+
+  `next_key_hashes` needs no equivalent change: the library inherits that one into
+  the field itself, so the pre-rotation path was always reading the effective set.
+  That is also why the failure looked so selective — a DID whose head happens to
+  restate its keys, which every document-changing update does, works fine.
+
+  Regression test drives the real sequence: create, metadata-only update, then
+  update again. It asserts the intermediate entry really does omit the parameter,
+  so it cannot pass for the wrong reason if the write path ever changes. Reverting
+  the one-line read reproduces the production error verbatim.
+
+- **cli**: Make `dids list` show the DID, and plan errors say what failed ([#967](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/967))
+
+Two unrelated fixes to the same delegated-update path, found chasing a
+  `webvh/dids/update` that failed after its consent gate passed.
+
+  **`pnm dids list` rendered a wide name beside an unreadable DID.** A
+  ratatui `Table` lays out exactly as many columns as it has width
+  constraints — a widths list shorter than the row is not padded, it
+  truncates. `dids list` builds its header and its rows with a conditional
+  Name column but built the widths without one, so every width landed a
+  column to the left: Name inherited the DID's flexing `Min`, the DID
+  inherited Context's fixed 16 (`did:webvh:Qm0M8Cr`, cut mid-SCID) and
+  `Created` fell off the right-hand end. The servers table above it had the
+  same shape of bug from the other direction — its widths were written
+  against a different column order, and their own comments still said so.
+
+  Header and widths are now returned together from `did_list_columns`, so
+  the two cannot drift, and the DID column starts at 46 columns: `shorten_did`
+  abbreviates only the SCID and keeps host and path in full, which is what
+  makes the value copyable.
+
+  **Every webvh dry-run failure became `internalError`.** The planner runs
+  on the consent path and only there, so that flattening applied to exactly
+  the report an approver-gated update produces: a DID the VTA does not hold,
+  a context the requester cannot act in, and a genuine signing bug all
+  arrived as one opaque internal error — while the *ungated* execution of
+  the very same task answered `taskFailed: did not found: …`. Turning
+  consent on made the diagnosis worse than leaving it off.
+
+  Dry-run failures now route through the existing
+  `From<UpdateDidWebvhError> for AppError`, so plan and execute answer with
+  the same variant for the same cause, with `webvh update dry-run:` framing
+  the message. The Forbidden-collapses-to-NotFound rule that stops a
+  dry-run being used to probe for DIDs in unseen contexts is preserved, and
+  pinned by a test.
+
+
+
 ## [0.15.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.14.37...vta-service-v0.15.0) — 2026-08-13
 
 
