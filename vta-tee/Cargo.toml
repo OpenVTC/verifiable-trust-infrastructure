@@ -2,7 +2,7 @@
 name = "vta-tee"
 description = "VTA TEE bootstrap — Nitro/SEV-SNP attestation providers, KMS attest/decrypt + storage-key derivation, the anchor MAC, and first-boot DID autogen"
 readme = "README.md"
-version = "0.1.6"
+version = "0.1.7"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
