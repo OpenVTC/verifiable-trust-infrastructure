@@ -3,6 +3,7 @@ import { ExternalLink } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
 import { fetchHealth, fetchBuildInfo, fetchDiagnostics } from "@/lib/api";
+import { formatDuration } from "@/lib/format";
 
 export function Dashboard() {
   const health = useQuery({ queryKey: ["health"], queryFn: fetchHealth });
@@ -23,6 +24,19 @@ export function Dashboard() {
   const vtaDid = diagnostics.data?.vta_did;
   const registry = diagnostics.data?.registry_transport;
   const registryStatus = diagnostics.data?.registry_status;
+
+  // The two queue states worth interrupting the dashboard for. Failed rows are
+  // terminal — the syncer has given up, so they never clear on their own — and
+  // a queue an hour behind is the spec's degraded SLI. Plain depth is not
+  // trouble: a burst of joins drains.
+  const failed = diagnostics.data?.failed_count ?? 0;
+  const oldestPending = diagnostics.data?.oldest_pending_age_seconds;
+  const queueTrouble =
+    failed > 0
+      ? `${failed} sync job${failed === 1 ? "" : "s"} failed`
+      : oldestPending !== undefined && oldestPending >= 3600
+        ? `sync ${formatDuration(oldestPending)} behind`
+        : undefined;
 
   // The messaging transports this VTC actually serves right now. "DIDComm
   // transport ready" was true of every deployment and told an operator
@@ -109,19 +123,25 @@ export function Dashboard() {
                   ? "Active"
                   : "Unreachable"
             }
+            // Queue trouble outranks the transport line. A registry we are
+            // happily connected to while jobs pile up unsent is the exact
+            // state the old green indicator hid, so when there is a backlog
+            // this tile says so instead of reporting the protocol.
             foot={
               registry.error
-                ? registry.error
-                : registry.active
-                  ? `${registryStatus ?? "unknown"} · advertises ${
-                      registry.advertised.length
-                        ? registry.advertised.map(protocolName).join(", ")
-                        : "nothing"
-                    }`
-                  : "no transport selected yet"
+                ? summarise(registry.error)
+                : queueTrouble
+                  ? queueTrouble
+                  : registry.active
+                    ? `${registryStatus ?? "unknown"} · advertises ${
+                        registry.advertised.length
+                          ? registry.advertised.map(protocolName).join(", ")
+                          : "nothing"
+                      }`
+                    : "no transport selected yet"
             }
             tone={
-              registry.error
+              registry.error || queueTrouble
                 ? "warn"
                 : registryStatus === "active"
                   ? "ok"
@@ -237,6 +257,19 @@ export function Dashboard() {
       )}
     </section>
   );
+}
+
+/**
+ * Trim a transport error to a tile-sized line.
+ *
+ * These errors quote both parties' advertised sets and a full `did:webvh`,
+ * which runs to five wrapped lines in a stat tile and pushes the rest of the
+ * dashboard down. The Recognition page shows the whole thing; here it only has
+ * to be recognisable.
+ */
+function summarise(error: string, max = 90): string {
+  const oneLine = error.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
 }
 
 /** Protocol names as the specs write them, not as the wire encodes them. */

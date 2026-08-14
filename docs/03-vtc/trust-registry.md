@@ -276,8 +276,25 @@ build disagree in either direction. The **Recognition** page
 shows the registry DID, what it advertises, what we are
 connecting over, and the last transport error. The **Audit** page
 carries `RegistryStatusChanged` / `RegistrySyncSucceeded` /
-`RegistrySyncFailed`. Queue depth and failed-job counts remain
-JSON-only.
+`RegistrySyncFailed`.
+
+### Reading the sync queue
+
+Recognition's **Membership sync** card is where a stalled
+reconciler becomes visible. It polls every 15s and shows:
+
+| Counter | What it means |
+|---|---|
+| **Pending** | Queued + in-flight jobs, with the age of the oldest *dispatchable* one. Depth alone is normal — a burst of joins drains. Depth that stays **old** is a stuck reconciler; ≥1h is the spec's degraded SLI. |
+| **Failed** | Terminal rows: `attempts > max_attempts`, or a `Permanent` error such as `permissionDenied`. **The syncer will not retry these** — they need operator triage, and they never clear on their own. |
+| **RTBF batched** | Deletions parked behind the daily flush window. Expected to be non-zero between flushes. |
+| **Syncer** | `running` / `stopped` / `off`, plus the panic-restart count. `enabled` but not `running` means the task is spawned and dead; a rising restart count is a "keeps crashing" signal. |
+
+Last success / last failure / last error sit underneath. The
+dashboard's trust-registry tile surfaces the two states worth
+interrupting for — any failed job, or a queue ≥1h behind — in
+place of the transport line, so a registry that answers while
+nothing is landing does not read as healthy.
 
 ## See also
 

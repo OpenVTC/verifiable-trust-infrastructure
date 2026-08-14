@@ -24,6 +24,7 @@
 
 #![cfg(feature = "didcomm-harness")]
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -164,6 +165,46 @@ async fn a_member_record_reaches_the_registry_and_the_reply_completes_the_write(
         "the reported transport must be the one that carried the write",
     );
     assert_eq!(transport.error, None);
+
+    registry.shutdown().await;
+    mock.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_boot_race_is_retriable_not_a_permanent_config_fault() {
+    init_tracing();
+    let mock = MockVtcDidcomm::start().await;
+    let registry = mock.connect_registry_peer().await;
+
+    // Exactly the boot ordering: the registry client is constructed before the
+    // messaging listener publishes its handle, so this one holds an empty cell
+    // while the peer is perfectly reachable. Everything else — resolver, peer,
+    // its advertised DIDComm service — is real.
+    let client = MessagingRegistryClient::new(
+        registry.did().to_string(),
+        Some(mock.vtc_did().to_string()),
+        Arc::new(tokio::sync::OnceCell::new()),
+        mock.vtc
+            .state
+            .credential_signer
+            .clone()
+            .expect("harness builds a credential signer"),
+        mock.vtc.state.pending_replies.clone(),
+        mock.vtc.state.did_resolver.clone(),
+        None,
+    );
+
+    let err = client
+        .health()
+        .await
+        .expect_err("nothing can be sent before messaging is up");
+    // The whole point: `Permanent` here parks the first sync jobs in `Failed`,
+    // which the syncer never retries. The health probe would recover on its
+    // next tick and the queue would stay broken — a failure that looks fixed.
+    assert!(
+        err.is_retriable(),
+        "the startup window must be retriable, got {err:?}",
+    );
 
     registry.shutdown().await;
     mock.shutdown().await;
