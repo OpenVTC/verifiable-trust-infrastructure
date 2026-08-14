@@ -1442,7 +1442,7 @@ mod tests {
     fn an_error_document_counts_as_a_reply() {
         let error = serde_json::to_vec(&json!({
             "id": "urn:uuid:err",
-            "type": "https://trusttasks.org/spec/trust-task-error/0.1",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.3",
             "threadId": "urn:uuid:request",
             "payload": { "code": "permissionDenied" },
         }))

@@ -780,7 +780,7 @@ mod tests {
     fn error_doc(code: &str) -> TrustTask<Value> {
         TrustTask::new(
             "urn:uuid:err".to_string(),
-            "https://trusttasks.org/spec/trust-task-error/0.1"
+            "https://trusttasks.org/spec/trust-task-error/0.3"
                 .parse()
                 .unwrap(),
             json!({ "code": code, "message": "nope" }),

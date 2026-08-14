@@ -183,7 +183,30 @@ pub(super) fn error_response(err_doc: ErrorResponse) -> TrustTaskOutcome {
     TrustTaskOutcome { status, body }
 }
 
-/// Build a `trust-task-error/0.1` document for a body-parse failure.
+/// The framework's error-document Type URI — the one `TrustTask::reject_with`
+/// stamps on every *routed* rejection this service emits.
+///
+/// Named here because `trust-tasks-rs` keeps `trust_task_error_type_uri()`
+/// `pub(crate)`, so the only unrouted path — where there is no request document
+/// to reject from — has to write the value out. It said `0.1` while every
+/// routed reject went out as `0.3` (the framework has emitted `0.3` since its
+/// own 0.3 release, for the §8.2 `inResponseTo` member that `0.2`'s
+/// `additionalProperties: false` payload schema cannot admit). One service
+/// emitting two versions is a trap for exactly the consumer that pins one of
+/// them, which is not hypothetical: a client matching `0.1`/`0.2` by
+/// enumeration read every `0.3` rejection as a *success*.
+///
+/// The constant is pinned by `unrouted_and_routed_errors_agree_on_the_type_uri`
+/// below, which compares it against a real `reject_with`. When the framework
+/// bumps the version, that test fails rather than this service silently
+/// speaking two dialects again.
+fn framework_error_type_uri() -> TypeUri {
+    "https://trusttasks.org/spec/trust-task-error/0.3"
+        .parse()
+        .expect("framework error Type URI parses")
+}
+
+/// Build a framework error document for a body-parse failure.
 /// Unrouted (no issuer / recipient) — the framework permits this on
 /// malformed-body failures since the producer can correlate on the
 /// response `id`.
@@ -192,9 +215,7 @@ pub(super) fn body_parse_error_response(reason: &str) -> TrustTaskOutcome {
         reason: format!("body did not parse as a Trust Task document: {reason}"),
     };
     let payload: ErrorPayload = reject.into();
-    let type_uri: TypeUri = "https://trusttasks.org/spec/trust-task-error/0.1"
-        .parse()
-        .expect("framework error Type URI parses");
+    let type_uri: TypeUri = framework_error_type_uri();
     let err = ErrorResponse {
         id: format!("urn:uuid:{}", Uuid::new_v4()),
         thread_id: None,
@@ -248,6 +269,39 @@ mod tests {
         assert!(
             !message.contains("internal error: internal error"),
             "{message}"
+        );
+    }
+
+    /// The unrouted body-parse error must claim the same document type as a
+    /// routed one. It cannot ask the framework — `trust_task_error_type_uri()`
+    /// is `pub(crate)` there — so it names the version, and this compares that
+    /// against what `reject_with` actually stamps. A framework bump fails here
+    /// instead of splitting this service into two dialects, which is how the
+    /// unrouted path came to say `0.1` while every routed reject said `0.3`.
+    #[test]
+    fn unrouted_and_routed_errors_agree_on_the_type_uri() {
+        let routed = doc().reject_with(
+            "urn:uuid:routed",
+            RejectReason::InternalError {
+                reason: "probe".into(),
+            },
+        );
+        assert_eq!(
+            framework_error_type_uri(),
+            routed.type_uri,
+            "the unrouted body-parse error names a different document type than \
+             the framework stamps on a routed rejection"
+        );
+    }
+
+    /// …and the bytes on the wire carry it, not just the value we compute.
+    #[test]
+    fn the_body_parse_error_goes_out_as_a_framework_error_document() {
+        let outcome = body_parse_error_response("not json");
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("error doc parses");
+        assert_eq!(
+            doc["type"].as_str().expect("type present"),
+            framework_error_type_uri().to_string()
         );
     }
 

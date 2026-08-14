@@ -475,7 +475,7 @@ mod tests {
         let spec = lookup_0_2("https://trusttasks.org/spec/device/list/0.2").unwrap();
         let doc = serde_json::json!({
             "id": "urn:uuid:2",
-            "type": "https://trusttasks.org/spec/trust-task-error/0.1",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.3",
             "payload": { "code": "permission_denied", "reason": "nope" }
         });
         let outcome = TrustTaskOutcome {
@@ -486,7 +486,7 @@ mod tests {
         let v: Value = serde_json::from_slice(&out.body).unwrap();
         assert_eq!(
             v["type"],
-            "https://trusttasks.org/spec/trust-task-error/0.1"
+            "https://trusttasks.org/spec/trust-task-error/0.3"
         );
         assert_eq!(v["payload"]["code"], "permission_denied");
     }

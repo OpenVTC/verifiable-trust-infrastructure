@@ -32,7 +32,7 @@
 //!
 //! Like the webvh-service dispatcher, we accept the body as
 //! `axum::body::Bytes` and parse to `TrustTask<Value>` by hand so a
-//! malformed body produces a `trust-task-error/0.1` document (per
+//! malformed body produces a `trust-task-error` document (per
 //! framework SPEC §8.5) instead of axum's plain-text 400 default.
 
 use axum::extract::State;
@@ -385,7 +385,7 @@ macro_rules! dispatch_table {
 /// each typed handler.
 ///
 /// Body is accepted as raw bytes so a parse failure surfaces as a
-/// `trust-task-error/0.1` document with `code: malformed_request`
+/// `trust-task-error` document with `code: malformed_request`
 /// rather than axum's text/plain default. The route mount caps body
 /// size separately (the workspace-wide 1 MB cap applies).
 pub async fn dispatch_trust_task(
