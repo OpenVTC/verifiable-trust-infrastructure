@@ -124,6 +124,50 @@ pub trait TrustRegistryClient: Send + Sync {
     /// graph mid-session loses access on the next mint /
     /// refresh, not when a TTL elapses.
     async fn recognise(&self, foreign_issuer_did: &str) -> Result<bool, RegistryError>;
+
+    /// How this client is reaching the registry, for operator diagnostics.
+    ///
+    /// Defaults to "nothing known", so a test double need not implement it.
+    fn transport(&self) -> RegistryTransport {
+        RegistryTransport::default()
+    }
+}
+
+/// How the VTC reaches its trust registry, as an operator sees it.
+///
+/// The two protocol fields answer different questions, and reporting only one
+/// of them is what made the old `registry_status` misleading:
+///
+/// - `advertised` — what the registry's **DID document** says it speaks. Read
+///   from the document, which is the authority (CLAUDE.md), so an operator can
+///   see the registry's own claim without resolving the DID by hand.
+/// - `active` — what the last selection actually **chose**, which is the
+///   highest-preference protocol present in both parties' documents. Empty
+///   until the first call; `error` says why if selection failed.
+///
+/// Advertised without active means the two sides have no transport in common,
+/// or nothing has tried yet — a distinction a single "protocol" field cannot
+/// express, and precisely the state that leaves a registry looking configured
+/// while nothing can reach it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+pub struct RegistryTransport {
+    /// The registry's DID, when it is addressed by one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub did: Option<String>,
+    /// The registry's REST base URL, when one is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Protocols the registry's DID document advertises, in preference order
+    /// (`tsp`, `didcomm`, `rest`). Empty when the DID has not been resolved
+    /// yet, or when the registry is addressed by URL alone.
+    pub advertised: Vec<String>,
+    /// The protocol the last selection chose. `None` before the first call, or
+    /// when selection failed — see `error`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active: Option<String>,
+    /// Why the last selection failed, if it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

@@ -70,7 +70,7 @@ pub const RECOGNISE_ACTION: &str = "recognise";
 /// [`RECOGNISE_ACTION`].
 pub const TRUST_GRAPH_RESOURCE: &str = "trust-graph";
 
-pub use client::{MockRegistryClient, RegistryError, TrustRegistryClient};
+pub use client::{MockRegistryClient, RegistryError, RegistryTransport, TrustRegistryClient};
 pub use health::{HealthStatus, RegistryHealth, SyncerHealth, SyncerHealthSnapshot};
 pub use messaging::MessagingRegistryClient;
 pub use model::{

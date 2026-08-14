@@ -16,6 +16,21 @@ import {
   type RecognitionCheck,
 } from "@/lib/api";
 import { useToast } from "@/lib/toast";
+import { CopyButton } from "@/components/CopyButton";
+
+/** Protocol names as the specs write them, not as the wire encodes them. */
+function protocolName(protocol: string): string {
+  switch (protocol) {
+    case "tsp":
+      return "TSP";
+    case "didcomm":
+      return "DIDComm";
+    case "rest":
+      return "REST";
+    default:
+      return protocol;
+  }
+}
 
 export function Recognition() {
   const toast = useToast();
@@ -56,6 +71,59 @@ export function Recognition() {
             <dd>
               <code>{diagnostics.data.registry_status}</code>
             </dd>
+            {diagnostics.data.registry_transport?.did && (
+              <>
+                <dt>Registry DID</dt>
+                <dd>
+                  <code>{diagnostics.data.registry_transport.did}</code>
+                  <CopyButton
+                    value={diagnostics.data.registry_transport.did}
+                    label="Copy trust registry DID"
+                    successMessage="Trust registry DID copied"
+                  />
+                </dd>
+              </>
+            )}
+            {diagnostics.data.registry_transport?.url && (
+              <>
+                <dt>Registry URL</dt>
+                <dd>
+                  <code>{diagnostics.data.registry_transport.url}</code>
+                </dd>
+              </>
+            )}
+            {diagnostics.data.registry_transport && (
+              <>
+                {/* Advertised is the registry's own claim, read from its DID
+                    document; active is what the last call chose. Shown apart
+                    because "advertises TSP, talking DIDComm" and "advertises
+                    TSP, nothing in common" are different problems. */}
+                <dt>Advertises</dt>
+                <dd>
+                  <code>
+                    {diagnostics.data.registry_transport.advertised.length
+                      ? diagnostics.data.registry_transport.advertised
+                          .map(protocolName)
+                          .join(", ")
+                      : "(not resolved)"}
+                  </code>
+                </dd>
+                <dt>Connecting over</dt>
+                <dd>
+                  <code>
+                    {diagnostics.data.registry_transport.active
+                      ? protocolName(diagnostics.data.registry_transport.active)
+                      : "(none selected)"}
+                  </code>
+                </dd>
+              </>
+            )}
+            {diagnostics.data.registry_transport?.error && (
+              <>
+                <dt>Last transport error</dt>
+                <dd>{diagnostics.data.registry_transport.error}</dd>
+              </>
+            )}
           </dl>
         )}
       </section>

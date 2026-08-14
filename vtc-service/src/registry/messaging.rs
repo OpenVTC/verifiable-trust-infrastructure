@@ -61,7 +61,7 @@
 //! published binding. We therefore emit the envelope and accept **either**
 //! shape inbound.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
@@ -81,7 +81,7 @@ use crate::credentials::LocalSigner;
 use crate::hooks::PendingReplies;
 use crate::messaging::VtcMessaging;
 
-use super::client::{RegistryError, TrustRegistryClient};
+use super::client::{RegistryError, RegistryTransport, TrustRegistryClient};
 use super::model::{RegistryRecord, RegistryStatus};
 use super::upstream::UpstreamRegistryClient;
 use super::{RECOGNISE_ACTION, TRUST_GRAPH_RESOURCE};
@@ -128,6 +128,17 @@ pub struct MessagingRegistryClient {
     reply_timeout: Duration,
     /// REST arm — present when `registry.url` is configured.
     http: Option<UpstreamRegistryClient>,
+    /// What the last transport selection saw and chose, for the diagnostics
+    /// surface.
+    ///
+    /// Written on every [`select`](Self::select) rather than cached at boot,
+    /// because the selection is itself per-call: a registry that adds `#tsp`
+    /// mid-life changes this without a restart, and an operator looking at the
+    /// page needs the answer for the call that just ran, not the one at boot.
+    ///
+    /// A `std::sync::RwLock` and not a tokio one on purpose — every critical
+    /// section here is a field assignment with no `await` inside it (R1.3).
+    transport: Arc<RwLock<RegistryTransport>>,
 }
 
 impl std::fmt::Debug for MessagingRegistryClient {
@@ -150,6 +161,11 @@ impl MessagingRegistryClient {
         did_resolver: Option<DIDCacheClient>,
         http: Option<UpstreamRegistryClient>,
     ) -> Self {
+        let transport = Arc::new(RwLock::new(RegistryTransport {
+            did: Some(registry_did.clone()),
+            url: http.as_ref().map(|c| c.base_url().to_string()),
+            ..RegistryTransport::default()
+        }));
         Self {
             registry_did,
             authority_did,
@@ -159,6 +175,7 @@ impl MessagingRegistryClient {
             did_resolver,
             reply_timeout: Duration::from_secs(DEFAULT_REPLY_TIMEOUT_SECONDS),
             http,
+            transport,
         }
     }
 
@@ -188,38 +205,90 @@ impl MessagingRegistryClient {
     /// `#tsp` mid-life should be reached over TSP on the next attempt, and the
     /// resolver's own cache keeps this cheap.
     async fn select(&self) -> Result<Protocol, RegistryError> {
+        match self.select_inner().await {
+            Ok((protocol, advertised)) => {
+                self.record_selection(advertised, Some(protocol), None);
+                Ok(protocol)
+            }
+            Err((e, advertised)) => {
+                // Record the failure *with* whatever we learned about the peer.
+                // "Advertised [tsp], active none, error: no transport in common"
+                // is a diagnosis; "unreachable" on its own is not.
+                self.record_selection(advertised, None, Some(e.to_string()));
+                Err(e)
+            }
+        }
+    }
+
+    /// [`select`](Self::select) without the bookkeeping. Returns the peer's
+    /// advertised set alongside either outcome so the failure path can report
+    /// it too.
+    async fn select_inner(
+        &self,
+    ) -> Result<(Protocol, Vec<Protocol>), (RegistryError, Vec<Protocol>)> {
         let Some(resolver) = self.did_resolver.as_ref() else {
             // No resolver configured: we cannot read the peer's document, and
             // guessing is exactly the failure mode CLAUDE.md forbids.
-            return Err(RegistryError::Permanent(
-                "no DID resolver configured — cannot read the trust registry's advertised \
-                 transports"
-                    .into(),
+            return Err((
+                RegistryError::Permanent(
+                    "no DID resolver configured — cannot read the trust registry's advertised \
+                     transports"
+                        .into(),
+                ),
+                Vec::new(),
             ));
         };
         let resolved = resolver.resolve(&self.registry_did).await.map_err(|e| {
             // Resolution failure is a network-shaped condition (the DID host or
             // the resolver sidecar is down), so it is retriable.
-            RegistryError::Unreachable(format!(
-                "could not resolve trust-registry DID {}: {e}",
-                self.registry_did
-            ))
+            (
+                RegistryError::Unreachable(format!(
+                    "could not resolve trust-registry DID {}: {e}",
+                    self.registry_did
+                )),
+                Vec::new(),
+            )
         })?;
         let doc = serde_json::to_value(&resolved.doc).map_err(|e| {
-            RegistryError::Transient(format!("could not read the registry's DID document: {e}"))
+            (
+                RegistryError::Transient(format!(
+                    "could not read the registry's DID document: {e}"
+                )),
+                Vec::new(),
+            )
         })?;
         let theirs = ServiceCapabilities::from_did_document(&doc);
+        let advertised = theirs.advertised();
         let ours = self.our_capabilities();
         let matched = select_protocol(&ours, &theirs, &self.registry_did)
             // No overlap is an operator-fixable configuration fault, not a
             // blip: park the job rather than retrying it forever.
-            .map_err(|e| RegistryError::Permanent(e.to_string()))?;
+            .map_err(|e| (RegistryError::Permanent(e.to_string()), advertised.clone()))?;
         debug!(
             registry_did = %self.registry_did,
             protocol = %matched.protocol.as_str(),
             "selected trust-registry transport",
         );
-        Ok(matched.protocol)
+        Ok((matched.protocol, advertised))
+    }
+
+    /// Publish what the last selection saw, for the diagnostics surface.
+    fn record_selection(
+        &self,
+        advertised: Vec<Protocol>,
+        active: Option<Protocol>,
+        error: Option<String>,
+    ) {
+        let mut slot = match self.transport.write() {
+            Ok(slot) => slot,
+            // A poisoned lock means a panic while holding it. Diagnostics are
+            // not worth propagating that into a registry call, so drop the
+            // update rather than unwrap.
+            Err(_) => return,
+        };
+        slot.advertised = advertised.iter().map(|p| p.as_str().to_string()).collect();
+        slot.active = active.map(|p| p.as_str().to_string());
+        slot.error = error;
     }
 
     /// What *this* VTC can speak to a peer, as a capability set.
@@ -597,6 +666,19 @@ impl TrustRegistryClient for MessagingRegistryClient {
         }
     }
 
+    fn transport(&self) -> RegistryTransport {
+        // A poisoned lock only happens if a writer panicked mid-update; report
+        // the address we were configured with rather than failing a diagnostics
+        // read over it.
+        self.transport
+            .read()
+            .map(|t| t.clone())
+            .unwrap_or_else(|_| RegistryTransport {
+                did: Some(self.registry_did.clone()),
+                ..RegistryTransport::default()
+            })
+    }
+
     async fn health(&self) -> Result<(), RegistryError> {
         match self.select().await? {
             Protocol::Rest => self.rest()?.health().await,
@@ -774,11 +856,12 @@ mod tests {
         assert_eq!(back.active_from.timestamp(), record.active_from.timestamp());
     }
 
-    #[test]
-    fn our_capabilities_offer_rest_only_with_a_url_and_messaging_only_when_up() {
-        let client = MessagingRegistryClient::new(
+    /// A client with no messaging, no resolver and no REST arm — enough to
+    /// exercise everything that happens before a transport is chosen.
+    fn client_with(authority_did: Option<&str>) -> MessagingRegistryClient {
+        MessagingRegistryClient::new(
             "did:webvh:registry".into(),
-            Some("did:webvh:vtc".into()),
+            authority_did.map(str::to_string),
             Arc::new(OnceCell::new()),
             Arc::new(LocalSigner::from_ed25519_seed(
                 "did:webvh:vtc".into(),
@@ -787,7 +870,53 @@ mod tests {
             PendingReplies::new(),
             None,
             None,
-        );
+        )
+    }
+
+    #[test]
+    fn the_transport_snapshot_carries_the_did_before_any_call() {
+        // The diagnostics surface must be able to name the registry from the
+        // moment it is configured. Waiting for the first successful call would
+        // leave the page blank in exactly the situation an operator opens it:
+        // nothing is working yet.
+        let client = client_with(None);
+        let snapshot = client.transport();
+        assert_eq!(snapshot.did.as_deref(), Some("did:webvh:registry"));
+        assert!(snapshot.advertised.is_empty());
+        assert_eq!(snapshot.active, None);
+    }
+
+    #[test]
+    fn a_failed_selection_records_the_peer_set_alongside_the_error() {
+        // "advertised [tsp], active none, error: no transport in common" is a
+        // diagnosis an operator can act on. Recording the error while dropping
+        // what the peer offered would leave them resolving the DID by hand to
+        // learn the half that matters.
+        let client = client_with(None);
+        client.record_selection(vec![Protocol::Tsp], None, Some("no overlap".into()));
+        let snapshot = client.transport();
+        assert_eq!(snapshot.advertised, vec!["tsp".to_string()]);
+        assert_eq!(snapshot.active, None);
+        assert_eq!(snapshot.error.as_deref(), Some("no overlap"));
+    }
+
+    #[test]
+    fn a_later_success_clears_the_earlier_error() {
+        // Selection is re-evaluated per call, so the snapshot has to be
+        // re-falsifiable in both directions (R6.2): a registry that adds the
+        // missing service must stop reading as broken without a restart.
+        let client = client_with(None);
+        client.record_selection(vec![], None, Some("no overlap".into()));
+        client.record_selection(vec![Protocol::Didcomm], Some(Protocol::Didcomm), None);
+        let snapshot = client.transport();
+        assert_eq!(snapshot.advertised, vec!["didcomm".to_string()]);
+        assert_eq!(snapshot.active.as_deref(), Some("didcomm"));
+        assert_eq!(snapshot.error, None);
+    }
+
+    #[test]
+    fn our_capabilities_offer_rest_only_with_a_url_and_messaging_only_when_up() {
+        let client = client_with(Some("did:webvh:vtc"));
         let caps = client.our_capabilities();
         // Messaging is not up (empty OnceCell) and no URL is configured, so we
         // can speak nothing — `select_protocol` will say so rather than the
@@ -799,18 +928,7 @@ mod tests {
     async fn every_call_refuses_before_setup() {
         // No `vtc_did` means no TRQP authority: writing a half-keyed record
         // would publish rows under an empty authority that nothing can query.
-        let client = MessagingRegistryClient::new(
-            "did:webvh:registry".into(),
-            None,
-            Arc::new(OnceCell::new()),
-            Arc::new(LocalSigner::from_ed25519_seed(
-                "did:webvh:vtc".into(),
-                &[7u8; 32],
-            )),
-            PendingReplies::new(),
-            None,
-            None,
-        );
+        let client = client_with(None);
         let err = client
             .delete_member("did:key:zMember")
             .await
@@ -823,19 +941,8 @@ mod tests {
     async fn a_write_is_transient_while_messaging_is_down() {
         // Messaging comes up after the client is built; a call in that window
         // must be retriable, not a permanent failure that parks the job.
-        let client = MessagingRegistryClient::new(
-            "did:webvh:registry".into(),
-            Some("did:webvh:vtc".into()),
-            Arc::new(OnceCell::new()),
-            Arc::new(LocalSigner::from_ed25519_seed(
-                "did:webvh:vtc".into(),
-                &[7u8; 32],
-            )),
-            PendingReplies::new(),
-            None,
-            None,
-        )
-        .with_reply_timeout(Duration::from_millis(50));
+        let client =
+            client_with(Some("did:webvh:vtc")).with_reply_timeout(Duration::from_millis(50));
         let err = client
             .round_trip(
                 RECORD_QUERY,

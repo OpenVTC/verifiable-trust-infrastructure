@@ -20,6 +20,34 @@ export interface HealthResponse {
 // trust-registry reconciler state plus the identity/mediator detail
 // that used to live on `/health`. The dashboard only needs the
 // identity fields; the rest are typed for future diagnostics views.
+/** One protocol's state on this VTC's own DID document. */
+export interface TransportStatus {
+  /** "tsp" | "didcomm" | "rest" */
+  protocol: string;
+  /** The DID document advertises it, so a resolving client will find it. */
+  advertised: boolean;
+  /** This build can answer on it right now (compiled in + live mediator). */
+  serviceable: boolean;
+  /** Mediator DID for TSP/DIDComm, base URL for REST. */
+  endpoint?: string;
+}
+
+/**
+ * How the VTC reaches its trust registry.
+ *
+ * `advertised` is the registry's own claim (read from its DID document);
+ * `active` is what the last call actually chose. They are separate because a
+ * registry can be configured and unreachable at once — advertising a transport
+ * this VTC cannot answer — and one merged field would have to drop half of it.
+ */
+export interface RegistryTransport {
+  did?: string;
+  url?: string;
+  advertised: string[];
+  active?: string;
+  error?: string;
+}
+
 export interface DiagnosticsResponse {
   registry_status: string;
   queue_depth: number;
@@ -35,6 +63,9 @@ export interface DiagnosticsResponse {
   syncer_enabled: boolean;
   syncer_running: boolean;
   syncer_restarts: number;
+  messaging_status?: string;
+  registry_transport?: RegistryTransport;
+  transports?: TransportStatus[];
 }
 
 export interface BuildInfo {

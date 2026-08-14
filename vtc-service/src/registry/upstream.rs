@@ -121,6 +121,13 @@ impl UpstreamRegistryClient {
         self
     }
 
+    /// The registry base URL this client posts to, normalised (no trailing
+    /// slash). Read by the messaging client, which carries this one as its
+    /// REST arm and reports the URL on the diagnostics surface.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     /// Classify a reqwest error into the workspace's error
     /// taxonomy. Connect / timeout / DNS errors are
     /// `Unreachable`; 5xx are `Transient`; 4xx are
@@ -304,6 +311,19 @@ impl TrustRegistryClient for UpstreamRegistryClient {
             .await
             .map_err(|e| RegistryError::Transient(format!("parse recognise response: {e}")))?;
         Ok(body.recognized)
+    }
+
+    fn transport(&self) -> super::client::RegistryTransport {
+        // URL-addressed: there is no DID to resolve, so nothing is "advertised"
+        // — we were told where to go. REST is active by construction, since
+        // this client has no other arm.
+        super::client::RegistryTransport {
+            did: None,
+            url: Some(self.base_url.clone()),
+            advertised: Vec::new(),
+            active: Some("rest".to_string()),
+            error: None,
+        }
     }
 
     async fn health(&self) -> Result<(), RegistryError> {

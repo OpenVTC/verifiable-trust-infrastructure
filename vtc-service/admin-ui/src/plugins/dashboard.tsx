@@ -21,6 +21,36 @@ export function Dashboard() {
   const status = health.data?.status;
   const mediatorDid = diagnostics.data?.mediator_did;
   const vtaDid = diagnostics.data?.vta_did;
+  const registry = diagnostics.data?.registry_transport;
+  const registryStatus = diagnostics.data?.registry_status;
+
+  // The messaging transports this VTC actually serves right now. "DIDComm
+  // transport ready" was true of every deployment and told an operator
+  // nothing: a VTC on TSP, or one advertising a transport its build cannot
+  // answer, read identically. Name the protocols instead.
+  const messaging = (diagnostics.data?.transports ?? []).filter(
+    (t) => t.protocol !== "rest",
+  );
+  const live = messaging.filter((t) => t.advertised && t.serviceable);
+  const advertisedOnly = messaging.filter((t) => t.advertised && !t.serviceable);
+  const servedOnly = messaging.filter((t) => !t.advertised && t.serviceable);
+
+  const mediatorFoot = !mediatorDid
+    ? "REST-only deployment"
+    : live.length
+      ? `${live.map((t) => protocolName(t.protocol)).join(" + ")} live`
+      : messaging.some((t) => t.advertised)
+        ? "advertised, not connected"
+        : "no messaging transport advertised";
+
+  // An advertised transport this build cannot answer is the failure that
+  // motivated the boot-time check: every conforming client picks it, and the
+  // more correct the client, the more certainly it fails.
+  const mediatorTone = !mediatorDid
+    ? "neutral"
+    : advertisedOnly.length || !live.length
+      ? "warn"
+      : "ok";
 
   return (
     <section className="page">
@@ -59,11 +89,75 @@ export function Dashboard() {
         />
         <StatTile
           label="Mediator"
-          value={mediatorDid ? "Configured" : "Not set"}
-          foot={mediatorDid ? "DIDComm transport ready" : "REST-only deployment"}
-          tone={mediatorDid ? "ok" : "neutral"}
+          value={
+            mediatorDid
+              ? live.length
+                ? live.map((t) => protocolName(t.protocol)).join(" · ")
+                : "Configured"
+              : "Not set"
+          }
+          foot={mediatorFoot}
+          tone={mediatorTone}
         />
+        {registry && (
+          <StatTile
+            label="Trust registry"
+            value={
+              registry.active
+                ? protocolName(registry.active)
+                : registryStatus === "active"
+                  ? "Active"
+                  : "Unreachable"
+            }
+            foot={
+              registry.error
+                ? registry.error
+                : registry.active
+                  ? `${registryStatus ?? "unknown"} · advertises ${
+                      registry.advertised.length
+                        ? registry.advertised.map(protocolName).join(", ")
+                        : "nothing"
+                    }`
+                  : "no transport selected yet"
+            }
+            tone={
+              registry.error
+                ? "warn"
+                : registryStatus === "active"
+                  ? "ok"
+                  : "warn"
+            }
+          />
+        )}
       </div>
+
+      {/* Advertised-but-unservable is worth its own line rather than a tone:
+          it is the one state where a *more* conforming client fails harder,
+          and the fix is a document change, not a restart. */}
+      {mediatorDid && (advertisedOnly.length > 0 || servedOnly.length > 0) && (
+        <section className="card">
+          <h3>Transport advertisement</h3>
+          {advertisedOnly.length > 0 && (
+            <p>
+              Advertised but not servable:{" "}
+              <strong>
+                {advertisedOnly.map((t) => protocolName(t.protocol)).join(", ")}
+              </strong>
+              . A client resolving this community's DID will choose it and fail.
+            </p>
+          )}
+          {servedOnly.length > 0 && (
+            <p className="muted">
+              Served but not advertised:{" "}
+              <strong>
+                {servedOnly.map((t) => protocolName(t.protocol)).join(", ")}
+              </strong>
+              . No client will choose it — add the service entry to the DID
+              document to start receiving that traffic.
+            </p>
+          )}
+        </section>
+      )}
 
       <section className="card">
         <h3>Identity</h3>
@@ -95,6 +189,32 @@ export function Dashboard() {
               successMessage="Mediator DID copied"
             />
           </dd>
+          {registry?.did && (
+            <>
+              <dt>Trust registry DID</dt>
+              <dd>
+                <code>{registry.did}</code>
+                <CopyButton
+                  value={registry.did}
+                  label="Copy trust registry DID"
+                  successMessage="Trust registry DID copied"
+                />
+              </dd>
+            </>
+          )}
+          {registry?.url && !registry.did && (
+            <>
+              <dt>Trust registry URL</dt>
+              <dd>
+                <code>{registry.url}</code>
+                <CopyButton
+                  value={registry.url}
+                  label="Copy trust registry URL"
+                  successMessage="Trust registry URL copied"
+                />
+              </dd>
+            </>
+          )}
           <dt>Health endpoint</dt>
           <dd>
             <a href="/health" target="_blank" rel="noreferrer">
@@ -117,6 +237,20 @@ export function Dashboard() {
       )}
     </section>
   );
+}
+
+/** Protocol names as the specs write them, not as the wire encodes them. */
+function protocolName(protocol: string): string {
+  switch (protocol) {
+    case "tsp":
+      return "TSP";
+    case "didcomm":
+      return "DIDComm";
+    case "rest":
+      return "REST";
+    default:
+      return protocol;
+  }
 }
 
 function StatTile({
