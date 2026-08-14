@@ -98,7 +98,8 @@ use vta_sdk::protocols::device_management::{
     WakeHandle,
 };
 use vta_sdk::protocols::did_management::servers::{
-    ListWebvhServerDomainsBody, ListWebvhServerDomainsResultBody, WebvhServerDomainEntry,
+    AgentOnlyDid, HostOnlyDid, ListWebvhServerDomainsBody, ListWebvhServerDomainsResultBody,
+    ReconcileWebvhServerDidsBody, ReconcileWebvhServerDidsResultBody, WebvhServerDomainEntry,
 };
 use vta_sdk::protocols::key_management::create::{
     CreateKeyBody, CreateKeyResponseBody, CreateKeyResultBody,
@@ -761,6 +762,51 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         created_at: Some("2026-03-01T00:00:00Z".into()),
                     }],
                     default: Some("did.example.com".into()),
+                })
+            ),
+        ),
+        // ─── webvh servers/reconcile (the host/VTA diff, #210) ───
+        //
+        // The witness earns its keep here more than most: this task's schema
+        // was authored in the same change as the handler, so nothing but this
+        // proves the two agree. Both divergence arrays are populated, and the
+        // `hostOnly` entry without a `did` is the reserved-but-never-published
+        // slot — the case the spec calls out and the one a DID-keyed
+        // implementation would drop.
+        (
+            uris::TASK_WEBVH_SERVERS_RECONCILE_0_1,
+            checked!(
+                specs::vta::webvh::servers::reconcile::v0_1::Payload,
+                specs::vta::webvh::servers::reconcile::v0_1::Response,
+                to_v(ReconcileWebvhServerDidsBody {
+                    server_id: "primary-host".into(),
+                }),
+                to_v(ReconcileWebvhServerDidsResultBody {
+                    server_id: "primary-host".into(),
+                    host_only: vec![
+                        HostOnlyDid {
+                            slot_id: "attract-case".into(),
+                            did: Some(
+                                "did:webvh:QmZ4rT9xK2mN8vB5cD1sA7wE3fH6jL0pQ:did.example.com:attract-case"
+                                    .into(),
+                            ),
+                            domain: Some("did.example.com".into()),
+                            disabled: false,
+                        },
+                        HostOnlyDid {
+                            slot_id: "quiet-harbour".into(),
+                            did: None,
+                            domain: None,
+                            disabled: false,
+                        },
+                    ],
+                    agent_only: vec![AgentOnlyDid {
+                        did: "did:webvh:QmY8nP3bV6xC1kM4hS9dF2gJ5tR7wL0zQ:did.example.com:never-landed"
+                            .into(),
+                        slot_id: "never-landed".into(),
+                        context_id: "production".into(),
+                    }],
+                    in_both: 14,
                 })
             ),
         ),

@@ -195,6 +195,12 @@ pub(crate) fn body_parse_error_response(reason: &str) -> TrustTaskOutcome {
         expires_at: None,
         payload,
         context: None,
+        // No ceremony, for the same reason as `parent_thread_id` above: SPEC
+        // §7.1 carries the member forward from the request so a rejection stays
+        // inside the enactment it belonged to, and here there is no request to
+        // carry it from — the body never parsed into one. The *routed* rejects
+        // get this right for free, because `reject_with` copies it.
+        ceremony: None,
         proof: None,
         extra: Default::default(),
     };
