@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use crate::config::AppConfig;
-use crate::error::AppError;
+use crate::error::{AppError, tee_attestation_error};
 use crate::tee::TeeState;
 use crate::tee::provider::StructuralCheckOutcome;
 use crate::tee::types::{AttestationReport, TeeStatus};
@@ -134,20 +134,24 @@ pub async fn generate_config_attestation(
     // (JWT signing key, `[secrets]`) before serialization, so the view stays
     // secret-free. We do NOT re-read config_path (which, in fleet mode, is only
     // the baked placeholder base).
+    //
+    // Absence is a *capability* answer, not an internal fault: only the enclave
+    // front-end (`vta-enclave`) calls `capture_effective_config_attestation`, so
+    // any other `tee`-feature build — the local daemon in simulated mode, for
+    // one — reaches here with `None` on every call, forever. That is a 503 (this
+    // build does not offer config attestation), never a 500.
     let (digest, view) = {
         let cfg = config.read().await;
         let digest = cfg.effective_config_digest.clone().ok_or_else(|| {
-            AppError::Internal(
-                "no effective config digest was captured at boot — cannot produce a \
-                 config-report attestation (is this a TEE build?)"
-                    .to_string(),
+            tee_attestation_error(
+                "config attestation is not available on this build — no effective \
+                 config digest was captured at boot (the enclave front-end captures it)",
             )
         })?;
         let view = cfg.effective_config_view.clone().ok_or_else(|| {
-            AppError::Internal(
-                "no effective config view was captured at boot — cannot produce a \
-                 config-report attestation (is this a TEE build?)"
-                    .to_string(),
+            tee_attestation_error(
+                "config attestation is not available on this build — no effective \
+                 config view was captured at boot (the enclave front-end captures it)",
             )
         })?;
         (digest, view)

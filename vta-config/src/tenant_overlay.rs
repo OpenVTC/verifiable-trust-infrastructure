@@ -113,6 +113,9 @@ pub enum TenantOverlayError {
     /// anchor `table_name` is configured — that would silently drop to
     /// manifest-only protection. The overlay MUST supply `anchor_table_name`.
     AnchorTableRequired,
+    /// The baked base has no `[messaging]` section and the overlay's `messaging`
+    /// block omits `mediator_did`, which is required to construct one.
+    MessagingMediatorDidRequired,
 }
 
 impl std::fmt::Display for TenantOverlayError {
@@ -150,6 +153,11 @@ impl std::fmt::Display for TenantOverlayError {
                 "baked tee.kms.allow_anchor_init = true but no external anchor \
                  table_name is configured — the tenant overlay must supply \
                  anchor_table_name (else anti-rollback drops to manifest-only)"
+            ),
+            Self::MessagingMediatorDidRequired => write!(
+                f,
+                "tenant overlay carries a messaging block and the baked base has \
+                 no [messaging] section — the overlay must supply mediator_did"
             ),
         }
     }
@@ -277,15 +285,6 @@ pub fn apply_tenant_overlay(
                 }
             }
         }
-
-        // Fleet safety: if the baked policy allows establishing the anti-rollback
-        // manifest baseline on a fresh store (`allow_anchor_init = true`), an
-        // external anchor table MUST be configured — otherwise a fresh boot
-        // silently drops to manifest-only protection. Require the overlay to have
-        // supplied it. (Self-host/baked configs don't run this apply path.)
-        if kms.allow_anchor_init && kms.anchor.is_none() {
-            return Err(TenantOverlayError::AnchorTableRequired);
-        }
     }
 
     if let Some(m) = overlay.messaging {
@@ -299,10 +298,16 @@ pub fn apply_tenant_overlay(
                 }
             }
             None => {
-                // `MessagingConfig` has no `Default` (mediator_did is required),
-                // so construct explicitly from the overlay + neutral defaults.
+                // `MessagingConfig` has no `Default` because `mediator_did` is
+                // required — so materialize it only when the overlay actually
+                // supplies one. Defaulting to `""` here would hand the service a
+                // structurally invalid DID and return `Ok`, which is the one
+                // fail-*open* path in this function.
+                let mediator_did = m
+                    .mediator_did
+                    .ok_or(TenantOverlayError::MessagingMediatorDidRequired)?;
                 base.messaging = Some(crate::MessagingConfig {
-                    mediator_did: m.mediator_did.unwrap_or_default(),
+                    mediator_did,
                     mediator_url: m.mediator_url.unwrap_or_default(),
                     mediator_host: None,
                     setup_acl: false,
@@ -310,6 +315,22 @@ pub fn apply_tenant_overlay(
                 });
             }
         }
+    }
+
+    // Fleet safety: if the baked policy allows establishing the anti-rollback
+    // manifest baseline on a fresh store (`allow_anchor_init = true`), an
+    // external anchor table MUST be configured — otherwise a fresh boot silently
+    // drops to manifest-only protection.
+    //
+    // Checked on EVERY apply, not just overlays that carry a `tee_kms` block: an
+    // overlay that simply omits `tee_kms` reaches the same degraded state, so
+    // scoping this to the `tee_kms` arm would make "send no KMS block" the way
+    // around it. (Self-host/baked configs don't run this apply path at all.)
+    if let Some(kms) = base.tee.kms.as_ref()
+        && kms.allow_anchor_init
+        && kms.anchor.is_none()
+    {
+        return Err(TenantOverlayError::AnchorTableRequired);
     }
 
     Ok(())
@@ -529,6 +550,78 @@ mod tests {
                 .table_name,
             "vta-anchor-acme"
         );
+    }
+
+    #[cfg(feature = "tee")]
+    #[test]
+    fn anchor_requirement_is_not_bypassable_by_omitting_the_tee_kms_block() {
+        // Regression: the allow_anchor_init guard used to live INSIDE the
+        // `if let Some(tee_kms)` arm, so an overlay that simply omitted the
+        // tee_kms block applied cleanly and left the enclave in exactly the
+        // degraded (manifest-only anti-rollback) state the guard exists to
+        // prevent — "send no KMS block" was the way around it.
+        let base_toml = r#"
+            [tee]
+            allowed_kms_accounts = ["111122223333"]
+            [tee.kms]
+            region = "us-east-1"
+            key_arn = "arn:aws:kms:us-east-1:111122223333:key/already-baked"
+            allow_anchor_init = true
+        "#;
+
+        // An empty overlay.
+        let mut base: crate::AppConfig = toml::from_str(base_toml).unwrap();
+        let empty: TenantConfigOverlay = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            apply_tenant_overlay(&mut base, empty),
+            Err(TenantOverlayError::AnchorTableRequired)
+        );
+
+        // An overlay that carries other fields but no tee_kms.
+        let mut base: crate::AppConfig = toml::from_str(base_toml).unwrap();
+        let no_kms: TenantConfigOverlay =
+            serde_json::from_str(r#"{"vta_name":"acme","public_url":"https://vta.acme.test"}"#)
+                .unwrap();
+        assert_eq!(
+            apply_tenant_overlay(&mut base, no_kms),
+            Err(TenantOverlayError::AnchorTableRequired)
+        );
+
+        // Same base, but the baked config already has an anchor → nothing to
+        // require, so a tee_kms-free overlay applies.
+        let with_baked_anchor = format!("{base_toml}\n[tee.kms.anchor]\ntable_name = \"baked\"\n");
+        let mut base: crate::AppConfig = toml::from_str(&with_baked_anchor).unwrap();
+        let empty: TenantConfigOverlay = serde_json::from_str("{}").unwrap();
+        apply_tenant_overlay(&mut base, empty)
+            .expect("no requirement to enforce when the base already has an anchor");
+    }
+
+    #[cfg(feature = "tee")]
+    #[test]
+    fn materializing_messaging_without_a_mediator_did_is_refused() {
+        // Regression: this arm used to `unwrap_or_default()`, writing
+        // `mediator_did = ""` — a structurally invalid DID — and returning Ok.
+        // It was the one fail-OPEN path in the function.
+        let mut base: crate::AppConfig = toml::from_str("").unwrap();
+        let url_only: TenantConfigOverlay =
+            serde_json::from_str(r#"{"messaging":{"mediator_url":"wss://mediator.test/ws"}}"#)
+                .unwrap();
+        assert_eq!(
+            apply_tenant_overlay(&mut base, url_only),
+            Err(TenantOverlayError::MessagingMediatorDidRequired)
+        );
+        assert!(base.messaging.is_none(), "fail-closed: nothing was written");
+
+        // With a mediator_did it materializes.
+        let mut base: crate::AppConfig = toml::from_str("").unwrap();
+        let full: TenantConfigOverlay = serde_json::from_str(
+            r#"{"messaging":{"mediator_did":"did:web:mediator.test","mediator_url":"wss://mediator.test/ws"}}"#,
+        )
+        .unwrap();
+        apply_tenant_overlay(&mut base, full).expect("apply succeeds");
+        let msg = base.messaging.as_ref().unwrap();
+        assert_eq!(msg.mediator_did, "did:web:mediator.test");
+        assert_eq!(msg.mediator_url, "wss://mediator.test/ws");
     }
 
     #[cfg(feature = "tee")]

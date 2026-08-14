@@ -374,6 +374,16 @@ jobs:
           cargo test -p vta-service --bin vta --features config-seed setup::interactive
           cargo test -p vta-service --bin vta --features config-seed,vault-secrets,k8s-secrets setup::interactive
 
+      # The fleet (`BAKE_CONFIG=false`) tenant-overlay path. `tenant-overlay` is
+      # not a default feature of `vta-tee` and nothing in the default workspace
+      # graph turns it on, so `cargo test --workspace` never even COMPILES
+      # `vta_tee::tenant_overlay` — the module that decides what an untrusted
+      # parent may hand a running enclave. Its envelope parsing, version gate,
+      # unknown-field rejection and fail-closed behaviour are exactly the checks
+      # that must not rot silently. Run them, don't just build them.
+      - name: vta-tee fleet tenant-overlay path
+        run: cargo test -p vta-tee --features tenant-overlay tenant_overlay
+
       # `transport-harness` is not a default feature, so `cargo test
       # --workspace` never compiles `MockVta::start_with_transports` — the
       # harness that exists so an *external* consumer can drive a Trust Task
@@ -425,6 +435,10 @@ jobs:
             ${{ runner.os }}-cargo-enclave-
 
       - run: cargo check -p vta-enclave --no-default-features --features rest,didcomm,vsock-store
+      # The fleet build. `tenant-overlay` pulls in a different module set (the
+      # vsock config fetch + apply), so a change that compiles for the baked
+      # build can still break the un-baked one.
+      - run: cargo check -p vta-enclave --no-default-features --features rest,didcomm,vsock-store,tenant-overlay
 
   mobile:
     # Cross-compile vta-mobile-core for the iOS + Android targets the app repos

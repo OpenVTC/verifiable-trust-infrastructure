@@ -627,8 +627,13 @@ pub async fn run_config_server(vsock_port: u32, envelope_path: std::path::PathBu
     let listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
         Ok(l) => l,
         Err(e) => {
-            error!("[config] failed to bind vsock:{vsock_port}: {e}");
-            return;
+            // Fatal, unlike the other channels. A fleet enclave cannot boot
+            // without this channel, so a proxy that stays alive with a dead
+            // config listener is strictly worse than no proxy: `deploy-enclave.sh`
+            // sees a live PID, reports success, and the only symptom is the
+            // enclave aborting after its overlay-fetch retries expire.
+            error!("[config] failed to bind vsock:{vsock_port}: {e} — exiting");
+            std::process::exit(1);
         }
     };
     info!("[config] listening on vsock:{vsock_port} → {}", envelope_path.display());

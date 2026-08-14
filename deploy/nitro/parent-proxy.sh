@@ -102,7 +102,11 @@ VSOCK_CONFIG_PORT="${VSOCK_CONFIG_PORT:-5800}"          # Inbound config envelop
 
 # Un-baked config: when this envelope file exists, serve it to the
 # enclave over vsock:${VSOCK_CONFIG_PORT}. It is a JSON envelope
-# ({ "version":1, "config_toml":"…", "integrity":null }) rendered off-box. Absent
+# ({ "version":1, "overlay":{…}, "integrity":null }) rendered off-box — the typed
+# tenant overlay, NOT a whole config; the enclave's `ConfigEnvelope` is
+# `deny_unknown_fields`, so the retired `config_toml` shape hard-fails the boot
+# with a parse error. Render it with `deploy/nitro/render-tenant-overlay.sh`.
+# Absent
 # → the enclave uses a baked/mounted config if one exists (existing EIFs); a
 # rebuilt EIF has no baked config and requires the envelope.
 #

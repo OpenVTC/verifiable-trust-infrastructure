@@ -44,7 +44,12 @@ const CONNECT_BASE_DELAY: Duration = Duration::from_millis(500);
 const CONNECT_MAX_DELAY: Duration = Duration::from_secs(3);
 /// Per-attempt connect timeout — guards a parent that never accepts.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// Overall read timeout — guards a parent that accepts then hangs.
+/// Overall read deadline, spanning the whole envelope — guards a parent that
+/// accepts then hangs *or* dribbles. A per-`read()` timeout does not: a parent
+/// sending one byte just inside every window never trips it, so the only bound
+/// left is [`MAX_ENVELOPE_BYTES`] (1 MiB ≈ 120 days at that rate) and the enclave
+/// hangs in `fetch_and_apply_overlay` instead of producing the fail-closed error
+/// the caller is written to act on.
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Failure fetching or applying the tenant-config overlay. Every variant is
@@ -95,6 +100,9 @@ impl std::error::Error for OverlayFetchError {}
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigEnvelope {
+    /// Declared so `deny_unknown_fields` still *requires* it here. The value is
+    /// read (and enforced) by `EnvelopeVersionProbe` before this type is parsed.
+    #[allow(dead_code)]
     version: u32,
     overlay: TenantConfigOverlay,
     #[serde(default)]
@@ -102,14 +110,32 @@ struct ConfigEnvelope {
     integrity: Option<serde_json::Value>,
 }
 
+/// Just the `version` field, read leniently (no `deny_unknown_fields`) so the
+/// version can be established *before* the strict typed parse — see
+/// [`parse_envelope`].
+#[derive(Debug, Deserialize)]
+struct EnvelopeVersionProbe {
+    version: u32,
+}
+
 /// Parse + version-check an envelope's bytes into the typed overlay. Split out
 /// from the I/O so it is unit-testable without a live vsock peer.
+///
+/// Version is checked **first**, via a lenient probe. Deserializing the strict
+/// [`ConfigEnvelope`] up front would make any future v2 envelope that adds an
+/// overlay field fail as `Parse("unknown field …")` rather than
+/// `UnsupportedVersion(2)` — both fail closed, but only the latter tells the
+/// operator what is actually wrong, which is the entire reason the envelope
+/// carries a version at all.
 fn parse_envelope(bytes: &[u8]) -> Result<TenantConfigOverlay, OverlayFetchError> {
+    let probe: EnvelopeVersionProbe =
+        serde_json::from_slice(bytes).map_err(|e| OverlayFetchError::Parse(e.to_string()))?;
+    if probe.version != SUPPORTED_ENVELOPE_VERSION {
+        return Err(OverlayFetchError::UnsupportedVersion(probe.version));
+    }
+
     let envelope: ConfigEnvelope =
         serde_json::from_slice(bytes).map_err(|e| OverlayFetchError::Parse(e.to_string()))?;
-    if envelope.version != SUPPORTED_ENVELOPE_VERSION {
-        return Err(OverlayFetchError::UnsupportedVersion(envelope.version));
-    }
     Ok(envelope.overlay)
 }
 
@@ -148,16 +174,30 @@ async fn connect_with_retry() -> Result<VsockStream, OverlayFetchError> {
     unreachable!("the loop returns on the final attempt")
 }
 
-/// Read the envelope bytes to EOF with a hard size cap and read timeout.
+/// Read the envelope bytes to EOF with a hard size cap and an overall deadline.
+///
+/// The timeout wraps the *whole* read, not each `read()` call — see
+/// [`READ_TIMEOUT`] for why the per-call form is not a bound at all against an
+/// untrusted parent.
 async fn read_envelope(stream: &mut VsockStream) -> Result<Vec<u8>, OverlayFetchError> {
+    match tokio::time::timeout(READ_TIMEOUT, read_envelope_to_eof(stream)).await {
+        Ok(result) => result,
+        Err(_) => Err(OverlayFetchError::Read(format!(
+            "envelope not fully received within {READ_TIMEOUT:?}"
+        ))),
+    }
+}
+
+/// The unbounded-in-time inner read. Only ever called under the
+/// [`read_envelope`] deadline.
+async fn read_envelope_to_eof(stream: &mut VsockStream) -> Result<Vec<u8>, OverlayFetchError> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
-        let n = match tokio::time::timeout(READ_TIMEOUT, stream.read(&mut chunk)).await {
-            Ok(Ok(n)) => n,
-            Ok(Err(e)) => return Err(OverlayFetchError::Read(e.to_string())),
-            Err(_) => return Err(OverlayFetchError::Read("read timed out".into())),
-        };
+        let n = stream
+            .read(&mut chunk)
+            .await
+            .map_err(|e| OverlayFetchError::Read(e.to_string()))?;
         if n == 0 {
             break; // EOF — parent finished and shut the connection.
         }
@@ -239,6 +279,44 @@ mod tests {
     fn rejects_malformed_json() {
         assert!(matches!(
             parse_envelope(b"not json"),
+            Err(OverlayFetchError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn a_future_version_reports_the_version_not_a_parse_error() {
+        // Regression: the strict `ConfigEnvelope` used to be deserialized before
+        // the version was checked, so any future envelope that adds an overlay
+        // field tripped `deny_unknown_fields` and surfaced as
+        // Parse("unknown field ...") — losing the only diagnostic the version
+        // field exists to provide. Both fail closed; only one is actionable.
+        let v2 =
+            r#"{"version":2,"overlay":{"vta_name":"acme","future_field":"x"},"integrity":null}"#;
+        assert!(
+            matches!(
+                parse_envelope(v2.as_bytes()),
+                Err(OverlayFetchError::UnsupportedVersion(2))
+            ),
+            "a v2 envelope must be reported as an unsupported version"
+        );
+
+        // A future top-level field gets the same treatment.
+        let v3 = r#"{"version":3,"overlay":{},"signature":"..."}"#;
+        assert!(matches!(
+            parse_envelope(v3.as_bytes()),
+            Err(OverlayFetchError::UnsupportedVersion(3))
+        ));
+
+        // A v1 envelope is still held to the strict shape.
+        let v1_unknown = r#"{"version":1,"overlay":{"future_field":"x"}}"#;
+        assert!(matches!(
+            parse_envelope(v1_unknown.as_bytes()),
+            Err(OverlayFetchError::Parse(_))
+        ));
+
+        // A missing version is a parse error, not a silent v1 assumption.
+        assert!(matches!(
+            parse_envelope(br#"{"overlay":{}}"#),
             Err(OverlayFetchError::Parse(_))
         ));
     }

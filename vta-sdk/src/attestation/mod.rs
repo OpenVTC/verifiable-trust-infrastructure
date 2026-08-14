@@ -237,6 +237,28 @@ fn check_pcr(which: u8, expected: Option<&str>, actual: &str) -> Result<(), PcrM
     Ok(())
 }
 
+/// Nitro PCRs are SHA-384 digests: 48 bytes → 96 hex characters.
+const NITRO_PCR_HEX_LEN: usize = 96;
+
+/// Reject a caller-supplied PCR pin that is not a well-formed Nitro PCR.
+///
+/// This is what makes `expected_pcr0: &str` (rather than `Option<&str>`) mean
+/// what it says. Without it an empty string is a *valid pin that matches a debug
+/// enclave*, because [`pcr_hex`] renders the all-zero PCRs of a debug-mode
+/// enclave as `""` — so `"" == ""` passes and the mandatory image gate is
+/// silently off. Anything that is not exactly 96 hex characters (after the same
+/// `0x`/whitespace/case normalization the comparison uses) fails closed here.
+fn validate_expected_pcr(which: u8, value: &str) -> Result<(), ConfigAttestationVerifyError> {
+    let normalized = normalize_pcr_hex(value);
+    if normalized.len() == NITRO_PCR_HEX_LEN && normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(());
+    }
+    Err(ConfigAttestationVerifyError::InvalidExpectedPcr {
+        which,
+        value: normalized,
+    })
+}
+
 /// Extract PCR `idx` from a verified quote as lowercase hex, treating an
 /// all-zero (unset) PCR as absent — the same semantics as
 /// [`verify_nitro_quote_with`].
@@ -431,6 +453,20 @@ pub enum ConfigAttestationVerifyError {
     /// A pinned PCR (image / signing cert) did not match the expected value.
     #[error(transparent)]
     Pcr(#[from] PcrMismatch),
+    /// The caller's PCR pin was not a well-formed Nitro PCR value (96 lowercase
+    /// hex characters — SHA-384).
+    ///
+    /// Rejected *before* comparison, because a Nitro **debug-mode** enclave
+    /// reports all-zero PCRs, which [`pcr_hex`] renders as the empty string. An
+    /// empty pin (an unset config/env value threaded straight through) would
+    /// otherwise compare equal to it, and a debug enclave — operator has console
+    /// access, no isolation — would satisfy the "mandatory" PCR0 gate while still
+    /// producing a genuinely AWS-root-signed document.
+    #[error(
+        "expected PCR{which} pin is not a well-formed Nitro PCR \
+         (96 hex chars, SHA-384): {value:?}"
+    )]
+    InvalidExpectedPcr { which: u8, value: String },
     /// The response's outer `configDigestSha384` field was not valid base64.
     /// (Only surfaced by the [`ConfigAttestationReport`] wire-form methods, which
     /// cross-check the echoed metadata against the signed evidence.)
@@ -492,6 +528,14 @@ pub fn authenticate_config_attestation_with(
     expected_pcr8: Option<&str>,
     verifier: &NitroVerifier,
 ) -> Result<AuthenticatedConfigAttestation, ConfigAttestationVerifyError> {
+    // (0) The pins themselves must be well-formed BEFORE anything is compared —
+    // an empty/garbage `expected_pcr0` would otherwise turn the mandatory image
+    // gate into a no-op against a debug-mode enclave (see `validate_expected_pcr`).
+    validate_expected_pcr(0, expected_pcr0)?;
+    if let Some(pcr8) = expected_pcr8 {
+        validate_expected_pcr(8, pcr8)?;
+    }
+
     let quote_bytes = B64STD
         .decode(evidence_b64)
         .map_err(|e| ConfigAttestationVerifyError::Base64(e.to_string()))?;

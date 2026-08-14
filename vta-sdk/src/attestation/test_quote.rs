@@ -421,12 +421,16 @@ mod tests {
         ));
 
         // A wrong image pin (PCR0) is rejected even though the quote is genuine.
+        // Well-formed but wrong, so this asserts on the comparison rather than
+        // the pin shape check (covered by
+        // `a_malformed_expected_pcr_pin_is_rejected_not_silently_matched`).
+        let wrong_pcr0 = "ee".repeat(48);
         assert!(matches!(
             verify_config_attestation_with(
                 &evidence,
                 &view_b64,
                 &nonce,
-                "deadbeef",
+                &wrong_pcr0,
                 None,
                 key_arn,
                 &q.verifier()
@@ -481,17 +485,121 @@ mod tests {
         assert_eq!(authed.config_view_json(), view.as_slice());
 
         // A wrong image pin still fails even on the authenticate-only path.
-        assert!(
+        // (Well-formed but wrong, so this exercises the comparison rather than
+        // the shape check added below.)
+        let wrong_pcr0 = "ee".repeat(48);
+        assert!(matches!(
             authenticate_config_attestation_with(
                 &B64STD.encode(&q.bytes),
                 &B64STD.encode(&view),
                 &nonce,
-                "deadbeef",
+                &wrong_pcr0,
                 None,
                 &q.verifier(),
-            )
-            .is_err()
-        );
+            ),
+            Err(crate::attestation::ConfigAttestationVerifyError::Pcr(_))
+        ));
+    }
+
+    #[test]
+    fn a_malformed_expected_pcr_pin_is_rejected_not_silently_matched() {
+        use crate::attestation::{
+            ConfigAttestationVerifyError, authenticate_config_attestation_with,
+            verify_config_attestation_with,
+        };
+        use sha2::{Digest, Sha384};
+
+        // `expected_pcr0: &str` (not `Option`) is how this API says the image pin
+        // is MANDATORY. An empty pin must therefore be a hard error, not a pin
+        // that happens to match nothing:
+        //
+        // A Nitro **debug-mode** enclave reports all-zero PCRs while still
+        // producing a genuinely AWS-root-signed document, and `pcr_hex` renders
+        // an all-zero PCR as "". So a caller whose pin came from an unset
+        // config/env value (`report.verify(&nonce, "", ...)`) would compare
+        // "" == "", pass the mandatory gate, and treat a debug enclave —
+        // operator has console access, no isolation — as an approved image.
+        let key_arn = "arn:aws:kms:us-east-1:111122223333:key/abcd";
+        let view = format!(r#"{{"tee":{{"kms":{{"key_arn":"{key_arn}"}}}}}}"#).into_bytes();
+        let digest = Sha384::digest(&view).to_vec();
+        let nonce = b"pin-shape-nonce".to_vec();
+        let q = build_with_nonce(digest, nonce.clone());
+        let evidence = B64STD.encode(&q.bytes);
+        let view_b64 = B64STD.encode(&view);
+        let good_pcr0 = hex_lower(&q.pcr0);
+        let good_pcr8 = hex_lower(&q.pcr8);
+
+        // Every malformed shape rejects, on BOTH entry points, and rejects as the
+        // typed shape error rather than a comparison mismatch.
+        for bad in [
+            "",
+            "   ",
+            "0x",
+            "deadbeef",
+            &"zz".repeat(48),
+            &"aa".repeat(47),
+        ] {
+            assert!(
+                matches!(
+                    verify_config_attestation_with(
+                        &evidence,
+                        &view_b64,
+                        &nonce,
+                        bad,
+                        None,
+                        key_arn,
+                        &q.verifier()
+                    ),
+                    Err(ConfigAttestationVerifyError::InvalidExpectedPcr { which: 0, .. })
+                ),
+                "verify must refuse the malformed PCR0 pin {bad:?}"
+            );
+            assert!(
+                matches!(
+                    authenticate_config_attestation_with(
+                        &evidence,
+                        &view_b64,
+                        &nonce,
+                        bad,
+                        None,
+                        &q.verifier()
+                    ),
+                    Err(ConfigAttestationVerifyError::InvalidExpectedPcr { which: 0, .. })
+                ),
+                "authenticate must refuse the malformed PCR0 pin {bad:?}"
+            );
+
+            // The optional PCR8 pin gets the same treatment when supplied — an
+            // empty Some("") would match an absent PCR8 for the same reason.
+            assert!(
+                matches!(
+                    verify_config_attestation_with(
+                        &evidence,
+                        &view_b64,
+                        &nonce,
+                        &good_pcr0,
+                        Some(bad),
+                        key_arn,
+                        &q.verifier()
+                    ),
+                    Err(ConfigAttestationVerifyError::InvalidExpectedPcr { which: 8, .. })
+                ),
+                "verify must refuse the malformed PCR8 pin {bad:?}"
+            );
+        }
+
+        // Sanity: the well-formed pins still verify, and normalization
+        // (0x prefix, uppercase, surrounding whitespace) is still accepted.
+        verify_config_attestation_with(
+            &evidence,
+            &view_b64,
+            &nonce,
+            &format!("  0x{}  ", good_pcr0.to_uppercase()),
+            Some(&good_pcr8),
+            key_arn,
+            &q.verifier(),
+        )
+        .expect("a well-formed pin still verifies after normalization");
     }
 
     #[test]

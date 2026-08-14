@@ -228,9 +228,31 @@ pub fn apply_tenant_overlay(base: &mut AppConfig, overlay: TenantConfigOverlay)
         if let Some(v) = m.mediator_did { msg.mediator_did = Some(v); }
         if let Some(v) = m.mediator_url { msg.mediator_url = Some(v); }
     }
+
+    // Post-conditions on the RESULT, not on the shape of the overlay — see below.
+    if base.tee.kms.as_ref().is_some_and(|k| k.allow_anchor_init && k.anchor.is_none()) {
+        return Err(TenantOverlayError::AnchorTableRequired);
+    }
     Ok(())
 }
 ```
+
+Two things the sketch above gets deliberately right, because the obvious
+version of each is fail-*open*:
+
+- **The `allow_anchor_init` post-condition runs on every apply, not inside the
+  `tee_kms` arm.** The state it guards against — `allow_anchor_init = true` with
+  no anchor table, i.e. a fresh boot silently dropping to manifest-only
+  anti-rollback — is reached just as easily by an overlay that *omits* `tee_kms`
+  as by one that carries it. Scoping the check to the `tee_kms` arm makes "send
+  no KMS block" the way around it. Guard the resulting config, not the input.
+- **Materializing an absent `[messaging]` requires `mediator_did`.** There is no
+  neutral default for it: an overlay carrying only `mediator_url` onto a base
+  with no `[messaging]` section must be
+  `TenantOverlayError::MessagingMediatorDidRequired`, not a config with
+  `mediator_did = ""`. Every other missing-required-field case here is a typed
+  error; defaulting this one would make it the single path that returns `Ok`
+  with a structurally invalid config.
 
 ### 3.3 Allowlist table (matches the proposal, both columns)
 

@@ -72,7 +72,7 @@ pub async fn generate_report(
     request_body = AttestationRequest,
     responses(
         (status = 200, description = "Fresh config attestation report", body = ConfigAttestationReport),
-        (status = 503, description = "TEE attestation not enabled"),
+        (status = 503, description = "TEE attestation not enabled, or this build captured no effective-config snapshot at boot (only the enclave front-end does)"),
     ),
 )]
 pub async fn config_report(

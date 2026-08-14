@@ -801,6 +801,30 @@ impl AppConfig {
     /// the signed `user_data`, after which the consumer may inspect the (now
     /// authenticated) view — in particular that `tee.kms.key_arn` is its own key.
     ///
+    /// ## Disclosure: this view is served to UNAUTHENTICATED callers
+    ///
+    /// `POST /attestation/config-report` has no auth gate by construction — the
+    /// verifier calls it *before* onboarding, so there is no credential to
+    /// present. Everything left in this view is therefore public to anyone who
+    /// can reach the VTA (rate-limited only), including `tee.kms.admin_did`, the
+    /// full `allow_*` break-glass posture, `tee.kms.anchor.table_name`,
+    /// `tee.storage_key_salt`, `resolver_url`, `store.data_dir`,
+    /// `credential_holder_did`, and `trusted_presentation_verifiers`.
+    ///
+    /// That is a deliberate trade, not an oversight. Those fields are precisely
+    /// what makes the attestation worth anything — a verifier that cannot see
+    /// the `allow_*` flags or the anchor table cannot tell an enclave with
+    /// break-glass off from one with it on — and each is either public by nature
+    /// (DIDs, URLs), useless without AWS credentials (the anchor table name), or
+    /// documented as not-secret (`storage_key_salt`, an HKDF salt over a
+    /// per-VTA high-entropy seed; see `hardened_bootstrap::generate_storage_key_salt`).
+    /// Narrowing the view weakens the gate; it does not harden it.
+    ///
+    /// What must never appear here is key material. Two fields are stripped
+    /// below for that reason, and **any new secret-bearing config field must be
+    /// added to that list** and to
+    /// `config_attestation_view_strips_secrets_and_capture_fields`.
+    ///
     /// [`compute_config_attestation_digest`]: Self::compute_config_attestation_digest
     pub fn compute_config_attestation_view(&self) -> Result<Vec<u8>, AppError> {
         let mut view = self.clone();

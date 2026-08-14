@@ -353,8 +353,32 @@ if pid_alive "$PROXY_PID_FILE" "$PROXY_BIN"; then
         warn "Tenant overlay routing changed — restarting the enclave proxy"
         warn "  was: ${PREV_SIG:-<none>}"
         warn "  now: $ROUTING_SIG"
-        kill "$(cat "$PROXY_PID_FILE")" 2>/dev/null || true
-        sleep 1
+        # Wait for the old proxy to actually exit before starting the new one.
+        # A fixed sleep is not enough: if the old process still holds
+        # vsock:5800, the new proxy's config listener fails to bind, the
+        # process stays alive (its other channels bound fine), `kill -0`
+        # below reports success — and the only symptom is the enclave
+        # exhausting its 30 overlay-fetch attempts and aborting the boot,
+        # with nothing on the parent side to say why.
+        OLD_PROXY_PID="$(cat "$PROXY_PID_FILE")"
+        kill "$OLD_PROXY_PID" 2>/dev/null || true
+        for _ in $(seq 1 100); do
+            kill -0 "$OLD_PROXY_PID" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$OLD_PROXY_PID" 2>/dev/null; then
+            warn "Proxy PID $OLD_PROXY_PID did not exit after SIGTERM — sending SIGKILL"
+            kill -9 "$OLD_PROXY_PID" 2>/dev/null || true
+            for _ in $(seq 1 50); do
+                kill -0 "$OLD_PROXY_PID" 2>/dev/null || break
+                sleep 0.1
+            done
+            if kill -0 "$OLD_PROXY_PID" 2>/dev/null; then
+                err "Proxy PID $OLD_PROXY_PID is still alive — refusing to start a"
+                err "second proxy that would fail to bind the config port."
+                exit 1
+            fi
+        fi
     fi
 fi
 
