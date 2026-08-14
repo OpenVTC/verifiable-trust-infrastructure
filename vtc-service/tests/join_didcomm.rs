@@ -347,29 +347,43 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
     //    ever distinguishing them. The index is the whole diagnostic.
     let mut delivered = Vec::new();
     for i in 0..2 {
-        let (typ, issue_body) = mock
-            .client
-            .next_pushed(CREDENTIAL_PUSH_TIMEOUT)
-            .await
-            .unwrap_or_else(|| {
-                panic!(
-                    "admission credential {}/2 not delivered over DIDComm within {:?} \
-                     ({} already received). {}",
-                    i + 1,
-                    CREDENTIAL_PUSH_TIMEOUT,
-                    delivered.len(),
-                    if i == 0 {
-                        "Zero arrived, so the VTC most likely never sent: \
-                         `deliver_credentials` returns on the first `?`, and its caller only \
+        let pushed = mock.client.next_pushed(CREDENTIAL_PUSH_TIMEOUT).await;
+        // Collected *before* the panic formats: what else reached this socket
+        // while we waited is the evidence that decides where the frame went,
+        // and a panic that omits it costs another CI cycle to learn nothing.
+        // The sender is already cleared — `outbox drain pass sent=2 failed=0`
+        // on the 2026-08-14 failure — so the remaining question is whether the
+        // frame reached this client at all.
+        let buffered = mock.client.inbox_summary().await;
+        let (typ, issue_body) = pushed.unwrap_or_else(|| {
+            panic!(
+                "admission credential {}/2 not delivered over DIDComm within {:?} \
+                     ({} already received; inbox: {}). {}",
+                i + 1,
+                CREDENTIAL_PUSH_TIMEOUT,
+                delivered.len(),
+                buffered,
+                if i == 0 {
+                    "Zero arrived, so the VTC most likely never sent: \
+                         `deliver_credentials` attempts every credential, but its caller only \
                          `warn!`s — which is invisible here unless a tracing subscriber is \
                          installed (see RUST_LOG note at the top of this test)."
-                    } else {
-                        "The first arrived and the second did not, so the VTC either failed on \
-                         the second `push_to_holder` (again warn-only) or the frame was lost \
-                         between the mediator and this client."
-                    }
-                )
-            });
+                } else {
+                    // VTI#918. The sender is no longer a candidate: the
+                    // 2026-08-14 failure logged `outbox drain pass sent=2
+                    // retried=0 failed=0`, so both frames left the VTC.
+                    // What splits the two remaining suspects is the inbox
+                    // above — a non-empty inbox means the frame reached
+                    // this socket and the *matching* is wrong (a test bug);
+                    // an empty one means it never arrived, and the loss is
+                    // at the mediator.
+                    "The first arrived and the second did not. The sender is cleared \
+                         (`sent=2 failed=0` in the drain log), so read the inbox above: \
+                         non-empty ⇒ the frame arrived and did not match; empty ⇒ it never \
+                         reached this client, and the mediator is the remaining suspect."
+                }
+            )
+        });
         assert_eq!(typ, CREDENTIAL_ISSUE_TYPE);
         let issue: IssueBody = serde_json::from_value(issue_body).expect("issue body");
         delivered.push(
