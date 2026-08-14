@@ -256,16 +256,19 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     "https://trusttasks.org/spec/vta/webvh/servers/list/1.0",
     "https://trusttasks.org/spec/vta/webvh/servers/register/1.0",
     "https://trusttasks.org/spec/vta/webvh/servers/remove/1.0",
-    // Host/VTA DID reconcile. Added knowingly rather than found here: this
-    // list's own rule is "author the spec upstream, do not grow the list", and
-    // the answer for a genuinely new capability is that the spec comes later —
-    // it cannot come first from inside this repo. The disposition is **spec
-    // under `vta/`**, recorded in `registry-drift-triage.md` beside
-    // `servers/{list,register,remove}`, and for the same reason: the subject is
-    // the VTA's own view of a host it uses, which no `did-management/*` task
-    // describes. Nothing else here can answer it either — the operator holds no
-    // host credentials and the host holds no VTA records.
-    "https://trusttasks.org/spec/vta/webvh/servers/dids/0.1",
+    // Host/VTA DID reconcile. Here for a *release*, not for a decision — this
+    // list's rule is "author the spec upstream, do not grow the list", and the
+    // spec was authored: it is merged as dtgwg-trust-tasks-tf#210 and ships in
+    // `trust-tasks-rs` 0.6.1. This workspace is on 0.4, so `schema_for` cannot
+    // resolve it yet.
+    //
+    // Delete this line when the workspace moves to 0.6.x — that is its own
+    // event, since 0.4 → 0.6 crosses two leading-component bumps and the whole
+    // `trust-tasks-{https,didcomm,proof,tsp,capability-client}` family moves
+    // together. The entry is stale-checked in the other direction too (this
+    // harness fails on an entry the registry *does* publish), so it cannot be
+    // forgotten once the bump lands.
+    "https://trusttasks.org/spec/vta/webvh/servers/reconcile/0.1",
     "https://trusttasks.org/spec/vta/webvh/dids/list/1.0",
     "https://trusttasks.org/spec/vta/webvh/dids/create/1.0",
     "https://trusttasks.org/spec/vta/webvh/dids/get/1.0",

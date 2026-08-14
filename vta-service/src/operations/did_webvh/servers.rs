@@ -221,9 +221,17 @@ pub async fn list_webvh_server_domains(
 /// to check. So the operation is unrestricted-admin only, like the other
 /// cross-context reads (`backup export`, `contexts create`).
 ///
-/// **Matched on the host's slot identifier (`mnemonic`), not the DID.** A slot
-/// that was reserved but never published to has no DID at all, and it is
-/// exactly as orphaned as one that was.
+/// **Matched on the host's slot identifier, not the DID.** A slot that was
+/// reserved but never published to has no DID at all, and it is exactly as
+/// orphaned as one that was.
+///
+/// That identifier is `mnemonic` in did-hosting's API and in
+/// `WebvhDidRecord`, and `slotId` on the wire — the rename happens at the
+/// boundary, in the `HostOnlyDid` / `AgentOnlyDid` construction below. The
+/// spec (`vta/webvh/servers/reconcile/0.1`, dtgwg-trust-tasks-tf#210) uses
+/// `slotId` because `mnemonic` already means a BIP-39 recovery phrase
+/// everywhere else in these deployments, and a published wire contract should
+/// not overload it.
 pub async fn reconcile_webvh_server_dids(
     deps: &crate::operations::did_webvh::WebvhDeps<'_>,
     auth: &AuthClaims,
@@ -289,7 +297,7 @@ pub async fn reconcile_webvh_server_dids(
         caller = %auth.did,
         server_id = %server_id,
         host_only = report.host_only.len(),
-        local_only = report.local_only.len(),
+        agent_only = report.agent_only.len(),
         in_both = report.in_both,
         "webvh server DIDs reconciled"
     );
@@ -310,7 +318,7 @@ fn diff_host_against_local(
     server_label: &str,
 ) -> vta_sdk::protocols::did_management::servers::ReconcileWebvhServerDidsResultBody {
     use vta_sdk::protocols::did_management::servers::{
-        HostOnlyDid, LocalOnlyDid, ReconcileWebvhServerDidsResultBody,
+        AgentOnlyDid, HostOnlyDid, ReconcileWebvhServerDidsResultBody,
     };
 
     // Only records that claim to live on *this* server. `serverless` records
@@ -320,41 +328,44 @@ fn diff_host_against_local(
         .filter(|r| r.server_id == server_key)
         .collect();
 
-    let local_mnemonics: std::collections::HashSet<&str> =
+    // Both sides key on the host's slot identifier, which each end spells
+    // `mnemonic` in its own type (`WebvhDidRecord`, `HostedDidEntry`); it
+    // becomes `slotId` only on the wire.
+    let local_slots: std::collections::HashSet<&str> =
         local.iter().map(|r| r.mnemonic.as_str()).collect();
-    let host_mnemonics: std::collections::HashSet<&str> =
+    let host_slots: std::collections::HashSet<&str> =
         hosted.iter().map(|e| e.mnemonic.as_str()).collect();
 
     let mut host_only: Vec<HostOnlyDid> = hosted
         .iter()
-        .filter(|e| !local_mnemonics.contains(e.mnemonic.as_str()))
+        .filter(|e| !local_slots.contains(e.mnemonic.as_str()))
         .map(|e| HostOnlyDid {
-            mnemonic: e.mnemonic.clone(),
+            slot_id: e.mnemonic.clone(),
             did: e.did_id.clone(),
             domain: e.domain.clone(),
             disabled: e.disabled,
         })
         .collect();
-    let mut local_only: Vec<LocalOnlyDid> = local
+    let mut agent_only: Vec<AgentOnlyDid> = local
         .iter()
-        .filter(|r| !host_mnemonics.contains(r.mnemonic.as_str()))
-        .map(|r| LocalOnlyDid {
+        .filter(|r| !host_slots.contains(r.mnemonic.as_str()))
+        .map(|r| AgentOnlyDid {
             did: r.did.clone(),
-            mnemonic: r.mnemonic.clone(),
+            slot_id: r.mnemonic.clone(),
             context_id: r.context_id.clone(),
         })
         .collect();
     // Stable order so two runs are diffable and a scripted check can compare
     // output between them.
-    host_only.sort_by(|a, b| a.mnemonic.cmp(&b.mnemonic));
-    local_only.sort_by(|a, b| a.mnemonic.cmp(&b.mnemonic));
+    host_only.sort_by(|a, b| a.slot_id.cmp(&b.slot_id));
+    agent_only.sort_by(|a, b| a.slot_id.cmp(&b.slot_id));
 
     let in_both = u32::try_from(hosted.len().saturating_sub(host_only.len())).unwrap_or(u32::MAX);
 
     ReconcileWebvhServerDidsResultBody {
         server_id: server_label.to_string(),
         host_only,
-        local_only,
+        agent_only,
         in_both,
     }
 }
@@ -449,7 +460,7 @@ mod reconcile_tests {
             "prod",
         );
         assert!(report.host_only.is_empty());
-        assert!(report.local_only.is_empty());
+        assert!(report.agent_only.is_empty());
         // Counted, not merely silent — "nothing to report" and "the listing
         // failed" have to look different to the operator.
         assert_eq!(report.in_both, 1);
@@ -468,7 +479,7 @@ mod reconcile_tests {
             "prod",
         );
         assert_eq!(report.host_only.len(), 1);
-        assert_eq!(report.host_only[0].mnemonic, "attract-case");
+        assert_eq!(report.host_only[0].slot_id, "attract-case");
         assert_eq!(
             report.host_only[0].did.as_deref(),
             Some("did:webvh:Qmc33:webvh.example:attract-case")
@@ -489,9 +500,9 @@ mod reconcile_tests {
     #[test]
     fn a_did_the_vta_has_and_the_host_does_not_is_reported_the_other_way() {
         let report = diff_host_against_local(&[], &[local("never-landed", "prod")], "prod", "prod");
-        assert_eq!(report.local_only.len(), 1);
-        assert_eq!(report.local_only[0].mnemonic, "never-landed");
-        assert_eq!(report.local_only[0].context_id, "ctx");
+        assert_eq!(report.agent_only.len(), 1);
+        assert_eq!(report.agent_only[0].slot_id, "never-landed");
+        assert_eq!(report.agent_only[0].context_id, "ctx");
         assert!(report.host_only.is_empty());
     }
 
@@ -510,7 +521,7 @@ mod reconcile_tests {
             "prod",
             "prod",
         );
-        assert!(report.local_only.is_empty());
+        assert!(report.agent_only.is_empty());
         assert!(report.host_only.is_empty());
         assert_eq!(report.in_both, 0);
     }
@@ -530,7 +541,7 @@ mod reconcile_tests {
         let order: Vec<&str> = report
             .host_only
             .iter()
-            .map(|e| e.mnemonic.as_str())
+            .map(|e| e.slot_id.as_str())
             .collect();
         assert_eq!(order, ["alpha", "mike", "zulu"]);
     }

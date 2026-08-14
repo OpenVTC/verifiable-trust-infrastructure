@@ -698,7 +698,7 @@ pub(super) struct UpdateDidWithDid {
 /// deliberately transparent — no second filter here, because narrowing a list
 /// the server already scoped would report fewer domains than the caller may
 /// actually use, and the caller has no way to tell that happened.
-/// `spec/vta/webvh/servers/dids/0.1` — diff a hosting server's DIDs against
+/// `spec/vta/webvh/servers/reconcile/0.1` — diff a hosting server's DIDs against
 /// this VTA's records. Read-only; super-admin (the operation explains why).
 pub(super) async fn handle_servers_reconcile(
     state: &AppState,
