@@ -875,11 +875,17 @@ fn tt_didcomm_reply(outcome: TrustTaskOutcome, thid: String) -> Option<Reply> {
             ));
         }
     };
+    // A reply document with no `type` at all is malformed; label it as the
+    // framework error document it will be treated as. Through the shared helper
+    // rather than a literal — this crate must name exactly one version of that
+    // URI, and the census test enforces it (`trust_task_manifest`'s
+    // `UNPUBLISHED_CANONICAL_OK` pins the family at one URI, so a second
+    // spelling here fails the build even though nothing on the wire changed).
     let typ = doc
         .get("type")
         .and_then(|t| t.as_str())
-        .unwrap_or("https://trusttasks.org/spec/trust-task-error/0.1")
-        .to_string();
+        .map(str::to_string)
+        .unwrap_or_else(|| crate::trust_tasks::framework_error_type_uri().to_string());
     Some(Reply {
         type_: typ,
         body: doc,
@@ -1442,7 +1448,7 @@ mod tests {
     fn an_error_document_counts_as_a_reply() {
         let error = serde_json::to_vec(&json!({
             "id": "urn:uuid:err",
-            "type": "https://trusttasks.org/spec/trust-task-error/0.1",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.3",
             "threadId": "urn:uuid:request",
             "payload": { "code": "permissionDenied" },
         }))

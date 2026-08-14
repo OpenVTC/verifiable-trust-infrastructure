@@ -48,6 +48,10 @@ use crate::join::{JoinSubmitOutcome, JoinTransport};
 use crate::server::AppState;
 
 pub(crate) use helpers::TrustTaskOutcome;
+// The one spelling of the framework error document's Type URI in this crate.
+// Re-exported so the messaging layer labels a type-less reply with the same
+// value the reject path emits, rather than a second literal.
+pub(crate) use helpers::framework_error_type_uri;
 use helpers::{
     app_error_to_reject, body_parse_error_response, parse_payload, reject_with, success_response,
     verdict_response, verify_trust_task_proof,
