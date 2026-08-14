@@ -728,33 +728,31 @@ pub async fn run(
         }
     }
 
-    // M3.2: boot-time health probe. Best-effort — daemon
-    // proceeds regardless. Subsequent periodic probes track
-    // the live state.
-    if let (Some(client), Some(vtc_did)) =
-        (state.registry_client.as_ref(), boot_cfg.vtc_did.clone())
-    {
-        match client.health().await {
-            Ok(()) => {
-                state
-                    .registry_health
-                    .record_success(state.audit_writer.as_ref(), &vtc_did)
-                    .await;
-                info!("trust-registry health probe passed at boot");
-            }
-            Err(e) => {
-                state
-                    .registry_health
-                    .record_failure(format!("{e}"), state.audit_writer.as_ref(), &vtc_did)
-                    .await;
-                warn!(error = %e, "trust-registry health probe failed at boot — running with registry_status=degraded");
-            }
-        }
-    }
-
-    // M3.2: periodic health probe. Each tick re-runs `health()`
-    // + updates `registry_health`. Configurable via
-    // `registry.health_probe_interval_seconds`; `0` disables.
+    // M3.2: health probes. The **boot** probe and the periodic one are the same
+    // task — the boot probe is simply its first iteration.
+    //
+    // It used to run inline, right here. That was not a race, it was a
+    // guaranteed failure: this is the startup path, and the DIDComm thread is
+    // not spawned until several hundred lines below, so a registry addressed by
+    // DID had no transport to reach when the probe ran. `our_capabilities` was
+    // empty, `select` returned "no transport available yet", and every boot of
+    // a messaging-addressed registry opened with
+    //
+    //     trust-registry health probe failed at boot — running with
+    //     registry_status=degraded
+    //
+    // which said nothing about the registry and everything about our own
+    // ordering. `classify_no_match` already carries a `Transient` arm written
+    // for exactly this window (so the first sync jobs are retried rather than
+    // parked in `Failed`) — that arm is a guard against the consequence; this is
+    // the cause.
+    //
+    // So the probe now waits for the messaging handle to be published before its
+    // first attempt. It stays off the startup path — `run` must reach its
+    // shutdown select for a signal to be honoured — so the wait happens inside
+    // the spawned task, is bounded, and is shutdown-aware. Boot probes when
+    // messaging is not configured at all (a REST-arm-only registry) are
+    // unaffected: there is nothing to wait for, so it probes immediately.
     let probe_interval_secs = boot_cfg.registry.health_probe_interval_seconds;
     // Skip the periodic probe entirely when `vtc_did` isn't yet set
     // (pre-setup). The previous `unwrap_or("did:key:vtc-unknown")`
@@ -763,18 +761,62 @@ pub async fn run(
     // setup" event from a misconfigured production daemon. The probe
     // has nothing useful to do until setup completes anyway.
     let probe_did_opt = boot_cfg.vtc_did.clone();
-    if registry_client.is_some() && probe_interval_secs > 0 && probe_did_opt.is_some() {
+    // Note the gate no longer includes `probe_interval_secs > 0`: disabling the
+    // *periodic* probe must not also delete the boot probe, which is the one
+    // that populates `registry_status` for an operator opening the dashboard.
+    if registry_client.is_some() && probe_did_opt.is_some() {
+        /// How long the first probe waits for the messaging listener to publish
+        /// its handle. Generous, because being late costs one delayed probe
+        /// while being early costs a guaranteed-wrong "degraded" at every boot.
+        const MESSAGING_WAIT: Duration = Duration::from_secs(30);
+        /// Poll interval while waiting for that handle.
+        const MESSAGING_POLL: Duration = Duration::from_millis(250);
+
         let probe_client = registry_client.clone().expect("checked is_some");
         let probe_health = registry_health.clone();
         let probe_audit = state.audit_writer.clone();
         let probe_did = probe_did_opt.clone().expect("checked is_some");
         let mut probe_shutdown = shutdown_rx.clone();
+        let probe_didcomm = state.didcomm.clone();
+        // Nothing to wait for when messaging is not configured — a registry
+        // reached over its REST arm is ready the moment the client exists.
+        let awaits_messaging = boot_cfg.messaging.is_some();
         tokio::spawn(async move {
-            let mut timer = tokio::time::interval(Duration::from_secs(probe_interval_secs));
+            if awaits_messaging {
+                match wait_for_handle(
+                    probe_didcomm.as_ref(),
+                    MESSAGING_WAIT,
+                    MESSAGING_POLL,
+                    &mut probe_shutdown,
+                )
+                .await
+                {
+                    HandleWait::Ready => {}
+                    // Probe anyway rather than staying silent: an operator needs
+                    // `registry_status` to reflect a real attempt, and
+                    // "messaging never came up" is itself the diagnosis.
+                    HandleWait::TimedOut => warn!(
+                        wait_secs = MESSAGING_WAIT.as_secs(),
+                        "VTC messaging did not publish its handle before the first \
+                         trust-registry health probe — probing anyway",
+                    ),
+                    HandleWait::ShuttingDown => {
+                        debug!(
+                            "trust-registry health probe task shutting down before its first \
+                             probe",
+                        );
+                        return;
+                    }
+                }
+            }
+
+            // `interval` fires its first tick immediately, so the boot probe is
+            // the first iteration of the same loop rather than a separate call
+            // site that can drift from it. A zero interval would panic the
+            // constructor, so clamp it and return after that first tick.
+            let mut timer = tokio::time::interval(Duration::from_secs(probe_interval_secs.max(1)));
             timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            // First tick fires immediately — skip so the
-            // periodic probe doesn't overlap the boot probe.
-            timer.tick().await;
+            let mut first = true;
             loop {
                 tokio::select! {
                     _ = timer.tick() => {
@@ -783,6 +825,9 @@ pub async fn run(
                                 probe_health
                                     .record_success(probe_audit.as_ref(), &probe_did)
                                     .await;
+                                if first {
+                                    info!("trust-registry health probe passed at boot");
+                                }
                             }
                             Err(e) => {
                                 probe_health
@@ -792,6 +837,23 @@ pub async fn run(
                                         &probe_did,
                                     )
                                     .await;
+                                if first {
+                                    warn!(
+                                        error = %e,
+                                        "trust-registry health probe failed at boot — running \
+                                         with registry_status=degraded",
+                                    );
+                                }
+                            }
+                        }
+                        if first {
+                            first = false;
+                            if probe_interval_secs == 0 {
+                                debug!(
+                                    "periodic trust-registry health probe disabled \
+                                     (health_probe_interval_seconds = 0) — boot probe only",
+                                );
+                                return;
                             }
                         }
                     }
@@ -1827,6 +1889,136 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => info!("received SIGINT"),
         () = terminate => info!("received SIGTERM"),
+    }
+}
+
+/// How a wait for a background task's published handle ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandleWait {
+    /// The handle was published; the caller can use it.
+    Ready,
+    /// The budget elapsed first. The caller decides whether to proceed anyway —
+    /// for the health probe, proceeding is right, because "it never came up" is
+    /// a real answer that belongs in `registry_status`.
+    TimedOut,
+    /// Shutdown was signalled while waiting; the caller must return.
+    ShuttingDown,
+}
+
+/// Wait for a [`OnceCell`](tokio::sync::OnceCell) to be filled, giving up after
+/// `wait` and abandoning immediately on shutdown.
+///
+/// Generic over the cell's contents purely so it is testable: the real caller
+/// passes the messaging handle, which cannot be constructed without a live ATM
+/// and mediator socket.
+///
+/// This exists because the trust-registry health probe used to run inline on the
+/// startup path, before the DIDComm thread was spawned — so a registry addressed
+/// by DID was probed with no transport available and every boot reported
+/// `degraded`. Polling rather than a notify keeps it decoupled from whatever
+/// fills the cell; the cost is bounded by `poll`, and this runs once per process.
+async fn wait_for_handle<T>(
+    cell: &tokio::sync::OnceCell<T>,
+    wait: Duration,
+    poll: Duration,
+    shutdown: &mut watch::Receiver<bool>,
+) -> HandleWait {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        if cell.get().is_some() {
+            return HandleWait::Ready;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return HandleWait::TimedOut;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(poll) => {}
+            _ = shutdown.changed() => return HandleWait::ShuttingDown,
+        }
+    }
+}
+
+#[cfg(test)]
+mod handle_wait_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn a_handle_published_while_waiting_is_picked_up() {
+        // The case the fix exists for: the probe starts before the messaging
+        // listener has published, and must proceed once it does.
+        let cell: Arc<tokio::sync::OnceCell<u8>> = Arc::new(tokio::sync::OnceCell::new());
+        let (_tx, mut rx) = watch::channel(false);
+        let filler = cell.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            let _ = filler.set(7);
+        });
+
+        let outcome = wait_for_handle(
+            cell.as_ref(),
+            Duration::from_secs(5),
+            Duration::from_millis(5),
+            &mut rx,
+        )
+        .await;
+        assert_eq!(outcome, HandleWait::Ready);
+    }
+
+    #[tokio::test]
+    async fn a_handle_that_never_arrives_times_out_rather_than_hanging() {
+        // Messaging misconfigured or the mediator unreachable: the probe must
+        // still run, so `registry_status` reflects a real attempt instead of
+        // staying blank forever.
+        let cell: tokio::sync::OnceCell<u8> = tokio::sync::OnceCell::new();
+        let (_tx, mut rx) = watch::channel(false);
+
+        let outcome = wait_for_handle(
+            &cell,
+            Duration::from_millis(40),
+            Duration::from_millis(5),
+            &mut rx,
+        )
+        .await;
+        assert_eq!(outcome, HandleWait::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_the_wait_abandons_it() {
+        // A stop signal must not be held for the full budget — `run` has to
+        // reach its shutdown select for the signal to be honoured.
+        let cell: tokio::sync::OnceCell<u8> = tokio::sync::OnceCell::new();
+        let (tx, mut rx) = watch::channel(false);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = tx.send(true);
+        });
+
+        let outcome = wait_for_handle(
+            &cell,
+            Duration::from_secs(30),
+            Duration::from_millis(5),
+            &mut rx,
+        )
+        .await;
+        assert_eq!(outcome, HandleWait::ShuttingDown);
+    }
+
+    #[tokio::test]
+    async fn an_already_published_handle_does_not_wait_at_all() {
+        let cell: tokio::sync::OnceCell<u8> = tokio::sync::OnceCell::new();
+        cell.set(1).expect("fresh cell");
+        let (_tx, mut rx) = watch::channel(false);
+
+        // A 30s budget would hang the test if the ready path slept.
+        let outcome = wait_for_handle(
+            &cell,
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+            &mut rx,
+        )
+        .await;
+        assert_eq!(outcome, HandleWait::Ready);
     }
 }
 
