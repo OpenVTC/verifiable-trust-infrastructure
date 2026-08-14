@@ -256,19 +256,6 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     "https://trusttasks.org/spec/vta/webvh/servers/list/1.0",
     "https://trusttasks.org/spec/vta/webvh/servers/register/1.0",
     "https://trusttasks.org/spec/vta/webvh/servers/remove/1.0",
-    // Host/VTA DID reconcile. Here for a *release*, not for a decision — this
-    // list's rule is "author the spec upstream, do not grow the list", and the
-    // spec was authored: it is merged as dtgwg-trust-tasks-tf#210 and ships in
-    // `trust-tasks-rs` 0.6.1. This workspace is on 0.4, so `schema_for` cannot
-    // resolve it yet.
-    //
-    // Delete this line when the workspace moves to 0.6.x — that is its own
-    // event, since 0.4 → 0.6 crosses two leading-component bumps and the whole
-    // `trust-tasks-{https,didcomm,proof,tsp,capability-client}` family moves
-    // together. The entry is stale-checked in the other direction too (this
-    // harness fails on an entry the registry *does* publish), so it cannot be
-    // forgotten once the bump lands.
-    "https://trusttasks.org/spec/vta/webvh/servers/reconcile/0.1",
     "https://trusttasks.org/spec/vta/webvh/dids/list/1.0",
     "https://trusttasks.org/spec/vta/webvh/dids/create/1.0",
     "https://trusttasks.org/spec/vta/webvh/dids/get/1.0",

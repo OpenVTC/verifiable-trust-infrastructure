@@ -437,7 +437,7 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        37,
+        36,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
@@ -448,15 +448,13 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
          keys/{list,create,get,rename,revoke,sign,derive-and-sign,\
          derive-and-sign-document} onto the canonical top-level keys/* family \
          authored upstream in dtgwg-trust-tasks-tf#167. \
-         UP one, 36 → 37: webvh/servers/reconcile/0.1 (host/VTA DID reconcile). \
-         Only the VTA can answer it — it holds the host credentials and the \
-         local records, and neither end can make the comparison alone. Counted \
-         here for a release, not a decision: the spec is authored and MERGED \
-         upstream as dtgwg-trust-tasks-tf#210, shipping in trust-tasks-rs \
-         0.6.1. It drops back to 36 when this workspace moves off \
-         trust-tasks-rs 0.4 — a separate workspace event, since the whole \
-         trust-tasks-* family moves together across two leading-component \
-         bumps",
+         webvh/servers/reconcile/0.1 went 36 → 37 → 36 inside a day: added \
+         with the host/VTA DID reconcile, specced upstream as \
+         dtgwg-trust-tasks-tf#210, and cleared here by the move to \
+         trust-tasks-rs 0.6.1. It is the first entry this list has gained and \
+         lost, and the round trip is the point — the number went up when a URI \
+         was bound ahead of its spec, and came back down when the registry \
+         served it. That is the whole mechanism working, not an exception to it",
     ),
 ];
 

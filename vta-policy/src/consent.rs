@@ -106,15 +106,23 @@ const MULTIHASH_SHA2_256_32: [u8; 2] = [0x12, 0x20];
 /// `digestMultibase` form W3C VCDM 2.0 defines and `did:webvh` uses.
 ///
 /// This replaced bare hex when the Trust Tasks registry moved `payloadDigest`
-/// to the shared `DigestMultibase` type (pattern `^[zumbfF][A-Za-z0-9+/=_-]+$`),
-/// which explicitly rules out "a bare hex string or a `sha-256:`-style prefix"
-/// as non-conforming. **This is a wire change, not a rendering change**: the
-/// digest is what an approver signs and what the requester's re-submit is
-/// matched against, so every party that computes one independently has to move
-/// together. See `docs/05-design-notes/approvals-convergence.md`.
+/// to the shared `DigestMultibase` type, which explicitly rules out "a bare hex
+/// string or a `sha-256:`-style prefix" as non-conforming. **This is a wire
+/// change, not a rendering change**: the digest is what an approver signs and
+/// what the requester's re-submit is matched against, so every party that
+/// computes one independently has to move together. See
+/// `docs/05-design-notes/approvals-convergence.md`.
 ///
 /// base58btc (`z`) for consistency with `did:key` and `did:webvh`, matching
 /// `vta_sdk::did_key::ed25519_multibase_pubkey`.
+///
+/// **That choice is now load-bearing rather than stylistic.** The type's
+/// accepted set narrowed in `trust-tasks-rs` 0.6.0 to the two headers W3C
+/// Controlled Identifiers 1.0 §2.4 normatively requires — `z` (base58btc) and
+/// `u` (base64url-no-pad) — with each alphabet enforced rather than assumed.
+/// The earlier pattern (`^[zumbfF]…`) also admitted base32/base16/base64pad,
+/// so a peer that had picked `b` or `f` would parse then and fail now. We were
+/// already on `z`; keep it, and do not "generalise" this to another header.
 fn encode_digest_multibase(digest: &[u8]) -> String {
     let mut buf = Vec::with_capacity(MULTIHASH_SHA2_256_32.len() + digest.len());
     buf.extend_from_slice(&MULTIHASH_SHA2_256_32);
