@@ -166,7 +166,7 @@ pub(crate) fn error_response(err_doc: ErrorResponse) -> TrustTaskOutcome {
 /// Pinned by `unrouted_and_routed_errors_agree_on_the_type_uri` below, which
 /// compares it against a real `reject_with`, so a framework bump fails a test
 /// rather than splitting this service into two dialects.
-fn framework_error_type_uri() -> TypeUri {
+pub(crate) fn framework_error_type_uri() -> TypeUri {
     "https://trusttasks.org/spec/trust-task-error/0.3"
         .parse()
         .expect("framework error Type URI parses")
@@ -226,10 +226,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A probe request to reject. Deliberately typed with a URI this crate
+    /// **already binds** (`acl/list/0.1`): `trust_task_manifest`'s census scans
+    /// this source tree for `trusttasks.org/spec/` literals and asserts every
+    /// one is served by the registry, so inventing a plausible-looking type
+    /// here — even in a test — adds a binding the registry has never published
+    /// and fails the build. Which is the census working: a URI written down is
+    /// a claim about what the registry serves, wherever it is written.
     fn doc() -> TrustTask<Value> {
-        let uri: TypeUri = "https://trusttasks.org/spec/vtc/join/request/0.1"
+        let uri: TypeUri = "https://trusttasks.org/spec/acl/list/0.1"
             .parse()
-            .expect("join uri");
+            .expect("acl/list Type URI parses");
         TrustTask::new("urn:uuid:test", uri, json!({}))
     }
 
