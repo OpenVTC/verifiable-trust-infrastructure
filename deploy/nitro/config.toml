@@ -2,8 +2,22 @@
 # VTA Configuration — AWS Nitro Enclave
 # =============================================================================
 #
-# This file is baked into the Enclave Image File (EIF) at docker build time.
-# Changing any value requires rebuilding the EIF (which changes PCR0).
+# CONFIG BAKING IS A BUILD-TIME CHOICE (see Dockerfile.nitro "CONFIG MODES"):
+#   - BAKE_CONFIG=true  (DEFAULT) — THIS file is baked into the Enclave Image
+#     File (EIF) and committed to PCR0. Best for single-tenant / self-hosted
+#     deploys: fully attested, and the binary has no vsock config-fetch code.
+#   - BAKE_CONFIG=false — THIS file is NOT baked. Instead the image bakes
+#     config.fleet-base.toml (fleet policy + placeholders), so one image / one
+#     PCR0 serves every tenant. At runtime the parent serves a small typed
+#     tenant OVERLAY ({ "version":1, "overlay":{…}, "integrity":null }) over
+#     vsock:5800; the enclave parses it (deny_unknown_fields, an allowlist) and
+#     applies it onto the baked base. Only the tenant-scoped fields (key_arn,
+#     mediator_did, vta_did_template, public_url, vta_name) are overlay-settable;
+#     mode, admin_did, and every allow_* flag stay baked. See
+#     docs/05-design-notes/tenant-config-allowlist.md and render-tenant-overlay.sh.
+#
+# For BAKE_CONFIG=true this file is the canonical config, and a mounted/baked
+# /etc/vta/config.toml is always used as-is (e.g. for LOCAL / DEV runs).
 #
 # QUICK START — You only need to set TWO values:
 #   1. key_arn       — Your KMS key ARN (in [tee.kms])
@@ -63,9 +77,16 @@ key_arn = "REPLACE_WITH_KMS_KEY_ARN"
 # Generate a did:key locally (e.g., via `pnm setup`) and paste it here.
 # The private key stays on your machine — it never touches the TEE or parent.
 #
-# If omitted, the VTA generates a random did:key and stores the credential
-# in the bootstrap keyspace (retrievable via GET /attestation/admin-credential
-# when REST is enabled).
+# PROVENANCE WARNING: the enclave refuses to boot with `admin_did` set **only
+# when this config was delivered by the untrusted parent over vsock** (an
+# un-baked config is not attested, so a parent-supplied super-admin can't be
+# trusted). A **baked/mounted** config is committed to PCR0 (or is local-dev
+# input), so `admin_did` is fine there. For the un-baked (vsock) path leave it
+# unset and use the attested sealed-bootstrap flow (Mode B, POST /bootstrap/request).
+#
+# If omitted, the VTA generates a random did:key and stores the credential in the
+# bootstrap keyspace; claim it via the attested `pnm bootstrap connect --vta-url
+# <URL>` flow (the old `GET /attestation/admin-credential` endpoint was retired).
 # admin_did = "did:key:z6Mk..."
 
 # Template for auto-generating the VTA's did:webvh identity on first boot.

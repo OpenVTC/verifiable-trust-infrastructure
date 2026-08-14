@@ -66,6 +66,17 @@ done
 
 BUILD_DIR="${VTA_BUILD_DIR:-$REPO_ROOT/.deploy-nitro}"
 
+# Config mode (see Dockerfile.nitro "CONFIG MODES"):
+#   true  (DEFAULT) — bake config.toml into the image (single-tenant / self-host;
+#          config committed to PCR0, no runtime overlay). The binary has no
+#          vsock config-fetch code.
+#   false — bake config.fleet-base.toml (fleet policy + placeholders) so one
+#          image / one PCR0 serves every tenant; the enclave fetches a typed,
+#          allowlisted tenant overlay over vsock:5800 at boot. This script emits
+#          a tenant-overlay-template.json for that path (a per-tenant file is
+#          produced by render-tenant-overlay.sh).
+BAKE_CONFIG="${VTA_BAKE_CONFIG:-true}"
+
 # =============================================================================
 # Step 1: Prerequisites
 # =============================================================================
@@ -339,6 +350,7 @@ cp "$CONFIG_PATH" "$SCRIPT_DIR/config.toml"
 
 docker build -f "$REPO_ROOT/Dockerfile.nitro" \
     --build-arg FEATURES="$FEATURES" \
+    --build-arg BAKE_CONFIG="$BAKE_CONFIG" \
     -t vta-nitro \
     "$REPO_ROOT"
 
@@ -413,15 +425,61 @@ fi
 # =============================================================================
 step 10 "Rebuild with final config"
 
-sed -i.bak "s|key_arn = \"PLACEHOLDER\"|key_arn = \"$KEY_ARN\"|" "$CONFIG_PATH"
-rm -f "$CONFIG_PATH.bak"
-ok "Config updated with KMS key ARN"
+ACCOUNT_BUILD_ARGS=()
+if [ "$BAKE_CONFIG" = "false" ]; then
+    # ── FLEET (BAKE_CONFIG=false): do NOT bake tenant values ──
+    # The image bakes config.fleet-base.toml (fleet policy + placeholders). Bake
+    # ONLY the account allowlist (PCR0-committed), and do it via a Docker
+    # build-arg so the *tracked* template is never edited (reproducible: a second
+    # build for another account can't retain the first). The tenant key_arn /
+    # mediator / DID template are delivered at runtime as a typed overlay.
+    ACCOUNT_ID="$(printf '%s\n' "$KEY_ARN" | cut -d: -f5)"
+    # Passed to the config-false stage, which seds the placeholder in the copied
+    # /out/config.toml (never the source). Value is the JSON array *inner* text.
+    ACCOUNT_BUILD_ARGS=(--build-arg ALLOWED_KMS_ACCOUNTS="\"$ACCOUNT_ID\"")
+    ok "Fleet base tee.allowed_kms_accounts will be baked as [\"$ACCOUNT_ID\"] (build-arg)"
 
-cp "$CONFIG_PATH" "$SCRIPT_DIR/config.toml"
+    # Emit a tenant OVERLAY TEMPLATE (the allowlisted wire shape — see
+    # docs/05-design-notes/tenant-config-allowlist.md §3.4). A real per-tenant
+    # overlay is produced by render-tenant-overlay.sh and served by
+    # deploy-enclave.sh over vsock:5800. anchor_table_name is REQUIRED (the fleet
+    # base bakes allow_anchor_init = true).
+    OVERLAY_TEMPLATE_PATH="$BUILD_DIR/tenant-overlay-template.json"
+    cat > "$OVERLAY_TEMPLATE_PATH" <<JSON
+{
+  "version": 1,
+  "overlay": {
+    "vta_name": "REPLACE_tenant_short_name",
+    "public_url": "https://vta.REPLACE.example.com",
+    "tee_kms": {
+      "key_arn": "$KEY_ARN",
+      "vta_did_template": "did:webvh:{SCID}:REPLACE.example.com:vta",
+      "anchor_table_name": "REPLACE_vta_rollback_anchor_table"
+    },
+    "messaging": { "mediator_did": "REPLACE_mediator_did" }
+  },
+  "integrity": null
+}
+JSON
+    ok "Tenant overlay TEMPLATE written: $OVERLAY_TEMPLATE_PATH"
+    info "Render a per-tenant overlay, e.g.:"
+    info "  deploy/nitro/render-tenant-overlay.sh --key-arn $KEY_ARN \\"
+    info "    --mediator-did <did> --anchor-table-name <table> \\"
+    info "    --vta-did-template <tmpl> > tenant-overlay.json"
+    info "Then serve it: deploy-enclave.sh --config-envelope tenant-overlay.json"
+else
+    # ── SELF-HOST (BAKE_CONFIG=true): bake the tenant config into the EIF ──
+    sed -i.bak "s|key_arn = \"PLACEHOLDER\"|key_arn = \"$KEY_ARN\"|" "$CONFIG_PATH"
+    rm -f "$CONFIG_PATH.bak"
+    ok "Config updated with KMS key ARN"
+    cp "$CONFIG_PATH" "$SCRIPT_DIR/config.toml"
+fi
 
 info "Rebuilding Docker image..."
 docker build -f "$REPO_ROOT/Dockerfile.nitro" \
     --build-arg FEATURES="$FEATURES" \
+    --build-arg BAKE_CONFIG="$BAKE_CONFIG" \
+    "${ACCOUNT_BUILD_ARGS[@]+"${ACCOUNT_BUILD_ARGS[@]}"}" \
     -t vta-nitro \
     "$REPO_ROOT"
 ok "Docker image rebuilt"
@@ -436,7 +494,11 @@ NEW_PCR0=$(echo "$BUILD_OUTPUT" | jq -r '.Measurements.PCR0')
 ok "EIF rebuilt"
 
 if [ "$NEW_PCR0" != "$PCR0" ]; then
-    info "PCR0 changed (config was baked in) — updating KMS policy..."
+    # PCR0 changed. With BAKE_CONFIG=true (default) the config is baked, so
+    # editing config.toml (e.g. inserting the KMS ARN) legitimately changes PCR0.
+    # With BAKE_CONFIG=false the config is NOT in the image, so a change here
+    # instead means code/deps/Dockerfile moved. Either way, update the KMS policy.
+    info "PCR0 changed — updating KMS policy..."
     PCR0="$NEW_PCR0"
     echo "$PCR0" > "$BUILD_DIR/pcr0.txt"
     bash "$SCRIPT_DIR/setup-kms-policy.sh" \
@@ -464,7 +526,8 @@ cat > "$MANIFEST" <<JSON
   "pcr8": "$PCR8",
   "enclave_cpu": $ENCLAVE_CPU,
   "enclave_mem_mib": $ENCLAVE_MEM,
-  "mediator_did": "$MEDIATOR_DID"
+  "mediator_did": "$MEDIATOR_DID",
+  "bake_config": $BAKE_CONFIG
 }
 JSON
 ok "Manifest written: $MANIFEST"
@@ -486,10 +549,26 @@ echo "  PCR8:       ${PCR8:0:32}..."
 echo ""
 echo -e "  ${GREEN}Bundle ready at: $BUILD_DIR/${NC}"
 echo "    - vta.eif"
-echo "    - config.toml"
+if [ "$BAKE_CONFIG" = "false" ]; then
+    echo "    - tenant-overlay-template.json  (fleet: render per-tenant, serve over vsock)"
+else
+    echo "    - config.toml                   (baked into the EIF)"
+fi
 echo "    - pcr0.txt, pcr8.txt"
 echo "    - manifest.json"
 echo ""
-echo "  Next: ship the bundle to the parent EC2 instance and run:"
-echo "    ./deploy/nitro/deploy-enclave.sh --bundle <path-to-bundle>"
+if [ "$BAKE_CONFIG" = "false" ]; then
+    echo "  Next (fleet / un-baked): render a per-tenant overlay, then deploy WITH it."
+    echo "  The bundle ships NO rendered overlay, and the fleet EIF fails closed without"
+    echo "  one, so deploy-enclave.sh requires the rendered file:"
+    echo "    deploy/nitro/render-tenant-overlay.sh --key-arn $KEY_ARN \\"
+    echo "      --mediator-did <did> --anchor-table-name <table> \\"
+    echo "      --vta-did-template <tmpl> > <bundle>/tenant-overlay.json"
+    echo "    ./deploy/nitro/deploy-enclave.sh --bundle <path-to-bundle>"
+    echo "  (or pass it explicitly: deploy-enclave.sh --bundle <path> \\"
+    echo "     --config-envelope <path-to>/tenant-overlay.json)"
+else
+    echo "  Next: ship the bundle to the parent EC2 instance and run:"
+    echo "    ./deploy/nitro/deploy-enclave.sh --bundle <path-to-bundle>"
+fi
 echo ""

@@ -11,6 +11,13 @@ pub use vti_common::config::{
 // and every `crate::config::SecretsConfig` reference are unchanged.
 pub use vti_secrets::{SecretBackend, SecretsConfig};
 
+/// Typed, allowlisted tenant-config overlay for un-baked TEE (`BAKE_CONFIG=false`)
+/// deployments. See `docs/05-design-notes/tenant-config-allowlist.md`.
+pub mod tenant_overlay;
+pub use tenant_overlay::{
+    TenantConfigOverlay, TenantKmsOverlay, TenantMessagingOverlay, TenantOverlayError,
+};
+
 /// Policy Decision Point configuration.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PolicyConfig {
@@ -176,6 +183,26 @@ pub struct AppConfig {
     /// that boots fine today must keep booting (P0.9b).
     #[serde(skip)]
     pub unknown_keys: Vec<String>,
+    /// SHA-384 of the **effective** config, captured once after any runtime
+    /// tenant overlay is applied (un-baked/fleet mode). This is what the boot
+    /// attestation anchor and `POST /attestation/config-report` commit to — so
+    /// the attested digest reflects the tenant's real `key_arn` / mediator /
+    /// anchor / `public_url`, not the baked placeholder file. `None` until
+    /// [`AppConfig::compute_config_attestation_digest`] populates it (e.g. a
+    /// non-TEE build never sets it). `#[serde(skip)]` — never in the file.
+    #[serde(skip)]
+    pub effective_config_digest: Option<Vec<u8>>,
+    /// The canonical, secret-free JSON bytes the [`effective_config_digest`] is
+    /// the SHA-384 of — i.e. the exact input to the hash. Captured alongside the
+    /// digest at boot so `POST /attestation/config-report` can return it verbatim
+    /// to a verifier, who hashes it to reproduce (and thus authenticate) the
+    /// signed `user_data` WITHOUT re-deriving it from base+overlay (which cannot
+    /// reproduce the enclave-generated `vta_did`). `#[serde(skip)]` — never in
+    /// the file, and never inside the view of itself.
+    ///
+    /// [`effective_config_digest`]: Self::effective_config_digest
+    #[serde(skip)]
+    pub effective_config_view: Option<Vec<u8>>,
 }
 
 /// How the mediator self-readiness gate behaves when it times out.
@@ -464,6 +491,16 @@ pub struct TeeConfig {
     /// When `None`, all DID methods are accepted (less secure with parent-side resolver).
     #[serde(default)]
     pub allowed_did_methods: Option<Vec<String>>,
+    /// AWS account IDs this image's tenant overlay may hand a `tee.kms.key_arn`
+    /// from (un-baked fleet mode — see `crate::tenant_overlay` and
+    /// `docs/05-design-notes/tenant-config-allowlist.md` §3.5).
+    ///
+    /// Baked, PCR0-committed — the parent cannot extend this list at runtime.
+    /// **Empty means "no tenant overlay `key_arn` accepted"** (fail closed, not
+    /// "allow all"). Irrelevant for `BAKE_CONFIG=true`/self-host builds, which
+    /// never accept an overlay.
+    #[serde(default)]
+    pub allowed_kms_accounts: Vec<String>,
 }
 
 /// KMS configuration for TEE secret bootstrap.
@@ -573,8 +610,11 @@ pub struct TeeKmsConfig {
     /// enclave fails closed (a DoS, not an integrity breach). Setting this true
     /// lets it boot manifest-only when the counter is unreachable, or re-anchor
     /// the counter to the MAC-trusted local manifest when they diverge — for
-    /// incident recovery only. Safe to expose as config because TEE config is
-    /// baked into the measured EIF, so the parent can't flip it at runtime.
+    /// incident recovery only. Safe to leave as a config flag because the parent
+    /// cannot flip it at runtime: a baked config commits it to PCR0, and an
+    /// un-baked (fleet) config cannot carry it — the typed tenant overlay
+    /// (`tenant_overlay`, `deny_unknown_fields`) has no `allow_*` field, so there
+    /// is no channel for the parent to set it.
     #[serde(default)]
     pub allow_unanchored: bool,
 }
@@ -703,6 +743,7 @@ impl Default for TeeConfig {
             kms: None,
             storage_key_salt: default_storage_key_salt(),
             allowed_did_methods: None,
+            allowed_kms_accounts: Vec::new(),
         }
     }
 }
@@ -722,6 +763,97 @@ pub enum TeeMode {
 }
 
 impl AppConfig {
+    /// Compute the SHA-384 digest of the **effective** config for attestation.
+    ///
+    /// Serializes a canonical, secret-free view of this config (JSON, in struct
+    /// field order) and hashes it. Call once **after all effective-config
+    /// mutations** for this boot (tenant overlay applied, KMS-injected JWT signing
+    /// key, DID reconciliation/generation, webvh backfill, admin bootstrap), then
+    /// store the result in [`Self::effective_config_digest`]; both the boot
+    /// attestation anchor and `POST /attestation/config-report` read that stored
+    /// value so they commit to the same digest. Capturing after secret injection
+    /// is safe because the secret fields are removed from the canonical view
+    /// before serialization (below).
+    ///
+    /// Secret and non-reproducible fields are cleared before hashing:
+    /// `auth.jwt_signing_key` and the `[secrets]` seed are zeroed, and the
+    /// `#[serde(skip)]` fields (`config_path`, `unknown_keys`, this digest, the
+    /// view) never serialize.
+    ///
+    /// A verifier does **not** re-derive this digest from base+overlay — after
+    /// in-enclave `vta_did` generation/restoration the effective config differs
+    /// from base+overlay, so that would never match. Instead the endpoint returns
+    /// the captured canonical view (see [`compute_config_attestation_view`]) and
+    /// the verifier hashes the decoded `configView` to reproduce this digest.
+    ///
+    /// [`compute_config_attestation_view`]: Self::compute_config_attestation_view
+    pub fn compute_config_attestation_digest(&self) -> Result<Vec<u8>, AppError> {
+        use sha2::{Digest, Sha384};
+        Ok(Sha384::digest(self.compute_config_attestation_view()?).to_vec())
+    }
+
+    /// Build the canonical, secret-free JSON **bytes** that
+    /// [`compute_config_attestation_digest`] hashes.
+    ///
+    /// Returned verbatim by `POST /attestation/config-report` (base64) so a
+    /// consumer can authenticate the config without depending on this crate or
+    /// re-deriving the enclave-generated `vta_did`: hashing these bytes must equal
+    /// the signed `user_data`, after which the consumer may inspect the (now
+    /// authenticated) view — in particular that `tee.kms.key_arn` is its own key.
+    ///
+    /// ## Disclosure: this view is served to UNAUTHENTICATED callers
+    ///
+    /// `POST /attestation/config-report` has no auth gate by construction — the
+    /// verifier calls it *before* onboarding, so there is no credential to
+    /// present. Everything left in this view is therefore public to anyone who
+    /// can reach the VTA (rate-limited only), including `tee.kms.admin_did`, the
+    /// full `allow_*` break-glass posture, `tee.kms.anchor.table_name`,
+    /// `tee.storage_key_salt`, `resolver_url`, `store.data_dir`,
+    /// `credential_holder_did`, and `trusted_presentation_verifiers`.
+    ///
+    /// That is a deliberate trade, not an oversight. Those fields are precisely
+    /// what makes the attestation worth anything — a verifier that cannot see
+    /// the `allow_*` flags or the anchor table cannot tell an enclave with
+    /// break-glass off from one with it on — and each is either public by nature
+    /// (DIDs, URLs), useless without AWS credentials (the anchor table name), or
+    /// documented as not-secret (`storage_key_salt`, an HKDF salt over a
+    /// per-VTA high-entropy seed; see `hardened_bootstrap::generate_storage_key_salt`).
+    /// Narrowing the view weakens the gate; it does not harden it.
+    ///
+    /// What must never appear here is key material. Two fields are stripped
+    /// below for that reason, and **any new secret-bearing config field must be
+    /// added to that list** and to
+    /// `config_attestation_view_strips_secrets_and_capture_fields`.
+    ///
+    /// [`compute_config_attestation_digest`]: Self::compute_config_attestation_digest
+    pub fn compute_config_attestation_view(&self) -> Result<Vec<u8>, AppError> {
+        let mut view = self.clone();
+        view.auth.jwt_signing_key = None;
+        view.secrets = SecretsConfig::default();
+        view.effective_config_digest = None;
+        view.effective_config_view = None;
+        serde_json::to_vec(&view).map_err(|e| {
+            AppError::Internal(format!("config attestation view serialization failed: {e}"))
+        })
+    }
+
+    /// Capture the effective-config attestation snapshot into
+    /// [`effective_config_digest`] + [`effective_config_view`] in one shot.
+    ///
+    /// Call once at boot, after the tenant overlay is applied and the DID is
+    /// reconciled/generated, so both the boot anchor and the pull endpoint commit
+    /// to the same bytes.
+    ///
+    /// [`effective_config_digest`]: Self::effective_config_digest
+    /// [`effective_config_view`]: Self::effective_config_view
+    pub fn capture_effective_config_attestation(&mut self) -> Result<(), AppError> {
+        use sha2::{Digest, Sha384};
+        let view = self.compute_config_attestation_view()?;
+        self.effective_config_digest = Some(Sha384::digest(&view).to_vec());
+        self.effective_config_view = Some(view);
+        Ok(())
+    }
+
     pub fn load(config_path: Option<PathBuf>) -> Result<Self, AppError> {
         let path = config_path
             .or_else(|| std::env::var("VTA_CONFIG_PATH").ok().map(PathBuf::from))
@@ -1205,6 +1337,34 @@ mod validate_tests {
         cfg("")
             .validate()
             .expect("rest-without-public_url is advisory, not an error");
+    }
+
+    #[test]
+    fn config_attestation_view_strips_secrets_and_capture_fields() {
+        let mut config = cfg("[auth]\njwt_signing_key = \"jwt-secret-sentinel\"\n\
+             [secrets]\nseed = \"seed-secret-sentinel\"\n");
+        config.effective_config_digest = Some(vec![0x11; 48]);
+        config.effective_config_view = Some(b"prior-view-sentinel".to_vec());
+
+        let bytes = config
+            .compute_config_attestation_view()
+            .expect("attestation view serializes");
+        let text = std::str::from_utf8(&bytes).expect("JSON is UTF-8");
+        assert!(!text.contains("jwt-secret-sentinel"));
+        assert!(!text.contains("seed-secret-sentinel"));
+        assert!(!text.contains("prior-view-sentinel"));
+
+        let view: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON view");
+        assert_eq!(
+            view.pointer("/auth/jwt_signing_key"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            view.pointer("/secrets/seed"),
+            Some(&serde_json::Value::Null)
+        );
+        assert!(view.get("effective_config_digest").is_none());
+        assert!(view.get("effective_config_view").is_none());
     }
 
     /// Write `contents` to a `config.toml` in a fresh tempdir and run it

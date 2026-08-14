@@ -13,7 +13,7 @@ use didwebvh_rs::create::{CreateDIDConfig, create_did};
 use didwebvh_rs::log_entry::LogEntryMethods;
 use didwebvh_rs::parameters::Parameters as WebVHParameters;
 use serde_json::json;
-use tracing::info;
+use tracing::{info, warn};
 
 use vta_config::AppConfig;
 use vta_keys as keys;
@@ -56,19 +56,14 @@ pub async fn maybe_generate_vta_did(
     store: &Store,
     storage_encryption_key: Option<[u8; 32]>,
 ) -> Result<(), AppError> {
-    // Guard: already configured in config.toml
-    if config.vta_did.is_some() {
-        return Ok(());
-    }
-
-    // Guard: no KMS config or no template
-    let kms_config = match &config.tee.kms {
-        Some(kms) if kms.vta_did_template.is_some() => kms.clone(),
-        _ => return Ok(()),
-    };
-    let template = kms_config.vta_did_template.as_ref().unwrap();
-
-    // Open encrypted keyspaces
+    // Open encrypted keyspaces up front. The persistent store is the
+    // AUTHORITATIVE VTA identity, so it must be consulted BEFORE trusting any
+    // config-supplied `vta_did`. In un-baked (fleet) TEE mode the tenant overlay
+    // CANNOT carry a `vta_did` at all (see `TenantConfigOverlay`); the only
+    // source of a supplied `config.vta_did` is a trusted, baked self-host config.
+    // Consulting the store first still matters: a rebuild/restore must never let
+    // even a baked value redirect an already-established identity on a later boot.
+    // See docs/05-design-notes/tenant-config-allowlist.md §3.6.
     let apply_enc = |ks: KeyspaceHandle| -> KeyspaceHandle {
         if let Some(key) = storage_encryption_key {
             ks.with_encryption(key)
@@ -77,19 +72,62 @@ pub async fn maybe_generate_vta_did(
         }
     };
     let keys_ks = apply_enc(store.keyspace(vta_keyspaces::KEYS)?);
-    let contexts_ks = apply_enc(store.keyspace(vta_keyspaces::CONTEXTS)?);
 
-    // Check if DID already exists in the store (subsequent boot)
+    // Store wins: an already-established identity is never silently redirected.
     if let Some(did_bytes) = keys_ks.get_raw(VTA_DID_STORE_KEY).await? {
-        let did = String::from_utf8(did_bytes)
+        let stored = String::from_utf8(did_bytes)
             .map_err(|e| AppError::Internal(format!("corrupt stored VTA DID: {e}")))?;
-        info!(did = %did, "restored VTA identity from encrypted store");
-        config.vta_did = Some(did);
+        match &config.vta_did {
+            Some(supplied) if supplied != &stored => {
+                warn!(
+                    stored = %stored,
+                    supplied = %supplied,
+                    "baked config supplied a VTA DID that differs from the \
+                     established stored identity — ignoring the supplied value and \
+                     keeping the stored DID (a later boot must not redirect an \
+                     already-established identity)"
+                );
+            }
+            _ => {
+                info!(did = %stored, "restored VTA identity from encrypted store");
+            }
+        }
+        config.vta_did = Some(stored);
         return Ok(());
     }
 
+    // No stored identity yet.
+    // First boot with an explicit DID from a *baked* self-host config: persist it
+    // now so it becomes the authoritative stored identity. A later boot then
+    // restores THIS DID from the store, and the store-precedence check above
+    // rejects any *different* supplied DID.
+    //
+    // NOTE: the fleet tenant overlay deliberately CANNOT carry a `vta_did` (see
+    // `vta_config::tenant_overlay::TenantConfigOverlay` and ADR-0109) — an
+    // untrusted parent must not be able to install a bare, keyless identity. A
+    // fleet enclave provisions its identity from `vta_did_template` below, which
+    // derives the key records. This branch therefore only applies to a trusted,
+    // baked/self-host `config.vta_did`.
+    if let Some(direct) = config.vta_did.clone() {
+        let inserted = keys_ks
+            .insert_raw_if_absent(VTA_DID_STORE_KEY, direct.as_bytes().to_vec())
+            .await?;
+        if inserted {
+            info!(did = %direct, "persisted directly-supplied VTA DID as the first-boot identity");
+        }
+        return Ok(());
+    }
+
+    // Guard: no KMS config or no template → nothing to generate.
+    let kms_config = match &config.tee.kms {
+        Some(kms) if kms.vta_did_template.is_some() => kms.clone(),
+        _ => return Ok(()),
+    };
+    let template = kms_config.vta_did_template.as_ref().unwrap();
+
     // First boot: generate the DID
     info!(template = %template, "auto-generating VTA did:webvh identity from template");
+    let contexts_ks = apply_enc(store.keyspace(vta_keyspaces::CONTEXTS)?);
 
     // Load seed
     let active_seed_id = get_active_seed_id(&keys_ks)

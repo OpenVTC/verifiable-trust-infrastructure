@@ -145,6 +145,76 @@ async fn main() {
     eprintln!("Tracing initialized.");
     print_banner();
 
+    // Are we on real Nitro hardware? Drives every un-baked-config security floor
+    // and the attestation anchor below (all no-ops in simulated/dev, where the
+    // config is trusted local input rather than parent-delivered).
+    let on_nitro = std::path::Path::new("/dev/nsm").exists();
+
+    // ── Tenant-config overlay (un-baked fleet build only) ──
+    // In a `BAKE_CONFIG=false` build the image bakes a fleet-policy base config
+    // with placeholders; the tenant-scoped fields arrive at runtime as a typed,
+    // allowlisted overlay fetched over vsock:5800 and applied here, in place,
+    // BEFORE the floor check and BEFORE KMS bootstrap (which reads key_arn /
+    // region). `deny_unknown_fields` on the overlay makes any field outside the
+    // allowlist a hard parse error, so the parent cannot deliver `admin_did`,
+    // `mode`, or any `allow_*` flag. Fail-closed on real Nitro. See design note
+    // §3.1/§3.8. A `BAKE_CONFIG=true` (self-host) build does not compile this in.
+    #[cfg(feature = "tenant-overlay")]
+    let (config, overlay_applied) = {
+        let mut config = config;
+        match vta_tee::tenant_overlay::fetch_and_apply_overlay(&mut config).await {
+            Ok(()) => (config, true),
+            Err(e) if on_nitro => {
+                tracing::error!(
+                    "FATAL: tenant-config overlay fetch/apply failed: {e}. Refusing to boot."
+                );
+                std::process::exit(1);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "tenant-config overlay fetch/apply failed (not on Nitro — continuing with \
+                     the baked base config for local/dev): {e}"
+                );
+                (config, false)
+            }
+        }
+    };
+
+    // Config provenance for the security floor below. A parent-delivered
+    // (untrusted) config must face the floor; a fully-baked/mounted config is
+    // committed to PCR0 (or a trusted local mount) and is exempt.
+    // - fleet build: parent-influenced iff an overlay was actually applied.
+    // - self-host build (no overlay feature): the config is baked → trusted.
+    #[cfg(feature = "tenant-overlay")]
+    let parent_delivered = overlay_applied;
+    #[cfg(not(feature = "tenant-overlay"))]
+    let parent_delivered = false;
+
+    // ── Security floor for a parent-delivered (un-baked) config ──
+    // The tenant config is authored by the untrusted parent, so on real Nitro
+    // hardware (and only for a parent-delivered source) refuse to boot if it would
+    // (a) weaken `[tee] mode` below `required` (the default is `Optional`, which
+    // silently continues without TEE), (b) omit `[tee.kms]` — which silently
+    // disables KMS bootstrap and lets the seed come from the parent-supplied
+    // `[secrets]` block (a full bypass of the property the floor protects), or
+    // (c) set `[tee.kms] admin_did` (a parent-supplied super-admin is not
+    // attested). The attested path for admin is sealed-bootstrap Mode B. See
+    // `config_floor_violation` for the exact rules (unit-tested).
+    if let Some(violation) = config_floor_violation(
+        on_nitro,
+        parent_delivered,
+        &config.tee.mode,
+        config.tee.kms.is_some(),
+        config
+            .tee
+            .kms
+            .as_ref()
+            .and_then(|kms| kms.admin_did.as_deref()),
+    ) {
+        tracing::error!("FATAL: {violation}. Refusing to boot.");
+        std::process::exit(1);
+    }
+
     // `[hardened] enabled = true` is silently ignored by this binary — the enclave
     // derives its storage-encryption key and JWT signing key from the TEE KMS
     // bootstrap above, not from the HKDF seed path that `hardened_bootstrap` uses.
@@ -264,7 +334,12 @@ async fn main() {
         }
     };
 
-    // ── Auto-generate DID identity on first boot ──
+    // ── Auto-generate / reconcile DID identity on first boot ──
+    // On real Nitro this is the authoritative identity step: a directly-supplied
+    // `vta_did` is persisted (first-boot), and on later boots the stored identity
+    // wins. A failure here means the enclave's identity is unknown/unpersisted, so
+    // it must NOT continue (it could otherwise run as a non-authoritative DID that
+    // changes next boot). Fail-closed on hardware; tolerate in dev/simulated.
     if let Err(e) = tee::did_autogen::maybe_generate_vta_did(
         &mut config,
         &*seed_store,
@@ -273,7 +348,13 @@ async fn main() {
     )
     .await
     {
-        tracing::warn!("VTA DID auto-generation failed: {e}");
+        if on_nitro {
+            tracing::error!(
+                "FATAL: VTA DID reconciliation/persistence failed: {e}. Refusing to boot."
+            );
+            std::process::exit(1);
+        }
+        tracing::warn!("VTA DID auto-generation failed (non-Nitro — continuing): {e}");
     }
 
     // ── Backfill the serverless did:webvh identity into the webvh keyspace ──
@@ -300,6 +381,30 @@ async fn main() {
         tracing::warn!("admin credential bootstrap failed: {e}");
     }
 
+    // ── Snapshot the EFFECTIVE config digest + view for attestation ──
+    // Captured HERE — after overlay apply AND after DID reconciliation/generation
+    // — so the attested digest matches the config the VTA actually runs as
+    // (including the stored/generated `vta_did`), not a value the overlay proposed
+    // that reconciliation then overrode. The helper strips the JWT signing key and
+    // `[secrets]`, so it stays secret-free and reproducible even though this runs
+    // after secret injection. Both the boot anchor below and
+    // POST /attestation/config-report read `effective_config_digest`; the report
+    // also returns `effective_config_view` (the exact bytes hashed) so a verifier
+    // can authenticate the config without re-deriving the enclave-generated DID.
+    match config.capture_effective_config_attestation() {
+        Ok(()) => {}
+        Err(e) if on_nitro => {
+            tracing::error!(
+                "FATAL: could not compute effective config attestation view: {e}. \
+                 Refusing to boot."
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            tracing::warn!("effective config attestation view unavailable (non-Nitro): {e}")
+        }
+    }
+
     // ── Initialize TEE provider + build context ──
     let tee_context = {
         let tee_state = match tee::init_tee(&config.tee) {
@@ -309,6 +414,60 @@ async fn main() {
                 std::process::exit(1);
             }
         };
+
+        // ── Config attestation anchor (un-baked config hardening) ──
+        // The tenant config is delivered by the untrusted parent, so it is no
+        // longer committed to PCR0. Commit a SHA-384 digest of the exact config
+        // this enclave booted into an NSM attestation document (`user_data`). PCR0
+        // stays tenant-agnostic (one image / one PCR0), while a verifier who
+        // obtains this AWS-signed document can pin `(PCR0, config-digest)`.
+        //
+        // SCOPE: this boot-time anchor only *produces* signed evidence and logs
+        // it — the log flows over the vsock-log channel to the (untrusted)
+        // parent, which can withhold it, and the empty nonce gives no freshness.
+        // The on-demand, nonce-bound pull path that completes the verifier story
+        // now exists: `POST /attestation/config-report` returns the current
+        // digest bound to a caller-supplied nonce (see
+        // `vta_service::operations::attestation::generate_config_attestation` and
+        // the "config-report" section of README). This anchor is retained as a
+        // best-effort boot record; verifiers should use the pull endpoint.
+        //
+        // The digest is over the EFFECTIVE config captured earlier in
+        // `config.effective_config_digest` — after overlay apply AND after DID
+        // reconciliation, so it reflects the tenant's real key_arn / mediator /
+        // anchor / public_url and the identity the VTA actually runs as, NOT the
+        // baked placeholder file. Secret-free: the digest helper strips the JWT
+        // signing key and `[secrets]`, so it is safe even though it is computed
+        // after secret injection. Additive and non-fatal: a failure here does not
+        // block boot (the KMS bootstrap already hard-requires attestation on real
+        // hardware).
+        if let Some(state) = tee_state.as_ref().filter(|_| on_nitro) {
+            match config.effective_config_digest.as_ref() {
+                Some(digest) => {
+                    let digest_b64 = BASE64.encode(digest);
+                    match state.provider.attest(digest.as_slice(), &[]) {
+                        Ok(report) => {
+                            info!(
+                                config_sha384_b64url = %digest_b64,
+                                "config attestation anchor — signed NSM document committing the config digest generated; a tenant/verifier MUST check (PCR0, config-digest), incl. that key_arn is theirs, before onboarding (see deploy/nitro/README.md)"
+                            );
+                            // Full multi-KB document at debug to keep boot logs lean.
+                            tracing::debug!(
+                                attestation_doc_b64 = %report.evidence,
+                                "config attestation document"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!("config attestation anchor failed (non-fatal): {e}")
+                        }
+                    }
+                }
+                None => tracing::warn!(
+                    "config attestation anchor skipped — no effective config digest was computed"
+                ),
+            }
+        }
+
         tee_state.map(|state| TeeContext {
             state,
             mnemonic_guard,
@@ -341,6 +500,66 @@ async fn main() {
 
 // init_tracing is in vta_service::init_tracing (shared with all front-ends)
 
+/// Security floor for a runtime-delivered (un-baked) tenant config.
+///
+/// Only a parent-authored config is untrusted: the floor applies when
+/// `nsm_present` (real Nitro) **and** `parent_delivered` (config came over vsock
+/// / env-fallback, not baked into the PCR0-measured image). A baked/mounted
+/// config is trusted (in PCR0 when baked), so it is never blocked here — that is
+/// what keeps this consistent with the "a baked config.toml wins" precedence.
+/// Returns a human-readable violation message, or `None` when acceptable.
+///
+/// Rules (only when `nsm_present && parent_delivered`):
+/// - `[tee] mode` must be `Required` (its default is `Optional`, which silently
+///   continues without TEE).
+/// - `[tee.kms]` must be present (`kms_present`) — without it the enclave skips
+///   KMS bootstrap and takes its seed from the parent-supplied `[secrets]` block,
+///   a full bypass of `mode = required`.
+/// - `[tee.kms] admin_did` must be unset — a parent-supplied super-admin is not
+///   attested. The attested path is sealed-bootstrap Mode B
+///   (`POST /bootstrap/request`).
+fn config_floor_violation(
+    nsm_present: bool,
+    parent_delivered: bool,
+    mode: &vta_service::config::TeeMode,
+    kms_present: bool,
+    admin_did: Option<&str>,
+) -> Option<String> {
+    use vta_service::config::TeeMode;
+
+    if !nsm_present || !parent_delivered {
+        return None;
+    }
+    if !matches!(mode, TeeMode::Required) {
+        return Some(format!(
+            "/dev/nsm is present but [tee] mode = {mode:?} (not `required`) — a runtime-delivered \
+             config must not weaken TEE enforcement"
+        ));
+    }
+    if !kms_present {
+        // Without `[tee.kms]` the enclave skips KMS bootstrap entirely: the seed
+        // comes from the parent-supplied `[secrets]` block, the store is local
+        // (not vsock), the env-override lockdown turns off, and the admin
+        // carve-out stays open. `mode = "required"` without `[tee.kms]` is
+        // therefore a silent bypass — refuse it.
+        return Some(
+            "/dev/nsm is present and [tee] mode = required but [tee.kms] is absent — the enclave \
+             would skip KMS bootstrap and take its seed from the parent-supplied [secrets] block. \
+             A runtime-delivered config must include [tee.kms] (region + key_arn)"
+                .to_string(),
+        );
+    }
+    if admin_did.is_some() {
+        return Some(
+            "/dev/nsm is present and the delivered config sets [tee.kms] admin_did — a \
+             runtime-delivered admin_did is not attested and must not grant super-admin; leave it \
+             unset and use the attested sealed-bootstrap flow (Mode B: POST /bootstrap/request)"
+                .to_string(),
+        );
+    }
+    None
+}
+
 fn print_banner() {
     let cyan = "\x1b[36m";
     let magenta = "\x1b[35m";
@@ -361,4 +580,119 @@ fn print_banner() {
 "#,
         version = env!("CARGO_PKG_VERSION"),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::config_floor_violation;
+    use vta_service::config::TeeMode;
+
+    #[test]
+    fn no_enforcement_off_real_hardware() {
+        // Simulated/dev (no /dev/nsm): config is trusted local input — never blocked.
+        assert!(
+            config_floor_violation(
+                false,
+                true,
+                &TeeMode::Optional,
+                false,
+                Some("did:key:zAdmin")
+            )
+            .is_none()
+        );
+        assert!(config_floor_violation(false, true, &TeeMode::Simulated, false, None).is_none());
+    }
+
+    #[test]
+    fn baked_config_is_never_blocked_on_nitro() {
+        // A baked/mounted config is in PCR0 (trusted). Even a weak mode / admin_did
+        // must NOT be rejected here — it is attested, and the floor is only for
+        // parent-delivered configs.
+        assert!(
+            config_floor_violation(
+                true,
+                false,
+                &TeeMode::Optional,
+                false,
+                Some("did:key:zAdmin")
+            )
+            .is_none()
+        );
+        assert!(config_floor_violation(true, false, &TeeMode::Required, true, None).is_none());
+    }
+
+    #[test]
+    fn required_mode_with_kms_and_no_admin_is_accepted_on_nitro() {
+        assert!(config_floor_violation(true, true, &TeeMode::Required, true, None).is_none());
+    }
+
+    #[test]
+    fn weakened_mode_is_rejected_on_nitro() {
+        for mode in [TeeMode::Optional, TeeMode::Simulated] {
+            let v = config_floor_violation(true, true, &mode, true, None)
+                .expect("weakened mode must be rejected on real Nitro");
+            assert!(v.contains("mode"), "message should mention mode: {v}");
+        }
+    }
+
+    #[test]
+    fn missing_tee_kms_is_rejected_on_nitro_even_when_mode_required() {
+        // mode = required but [tee.kms] absent must NOT pass — it silently
+        // disables KMS bootstrap (seed from parent [secrets]).
+        let v = config_floor_violation(true, true, &TeeMode::Required, false, None)
+            .expect("mode=required with [tee.kms] absent must be rejected on real Nitro");
+        assert!(
+            v.contains("[tee.kms]"),
+            "message should mention [tee.kms]: {v}"
+        );
+    }
+
+    #[test]
+    fn admin_did_is_rejected_on_nitro_even_when_mode_required() {
+        let v =
+            config_floor_violation(true, true, &TeeMode::Required, true, Some("did:key:zAdmin"))
+                .expect("a parent-supplied admin_did must be rejected on real Nitro");
+        assert!(
+            v.contains("admin_did"),
+            "message should mention admin_did: {v}"
+        );
+        assert!(
+            v.contains("Mode B"),
+            "message should point to the attested path: {v}"
+        );
+    }
+
+    #[test]
+    fn mode_floor_takes_precedence() {
+        // Multiple violations present: the mode message is returned first.
+        let v = config_floor_violation(
+            true,
+            true,
+            &TeeMode::Optional,
+            false,
+            Some("did:key:zAdmin"),
+        )
+        .unwrap();
+        assert!(
+            v.contains("mode"),
+            "mode violation should be reported first: {v}"
+        );
+    }
+
+    #[test]
+    fn missing_kms_takes_precedence_over_admin_did() {
+        // kms-absent is checked before admin_did (admin_did lives under kms anyway).
+        let v = config_floor_violation(
+            true,
+            true,
+            &TeeMode::Required,
+            false,
+            Some("did:key:zAdmin"),
+        )
+        .unwrap();
+        assert!(
+            v.contains("[tee.kms]"),
+            "missing-kms should be reported before admin_did: {v}"
+        );
+    }
 }

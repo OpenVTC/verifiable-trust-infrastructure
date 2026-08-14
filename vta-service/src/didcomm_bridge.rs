@@ -122,6 +122,18 @@ impl DIDCommBridge {
         Self::new("")
     }
 
+    /// A process-wide placeholder bridge for builds that never send DIDComm
+    /// (e.g. a REST-only enclave, where `AppState.didcomm_bridge` is compiled
+    /// out). Returns a `'static` reference so it can satisfy operation-context
+    /// fields that otherwise borrow `&AppState.didcomm_bridge`. Sending via it
+    /// errors, exactly like any other placeholder.
+    #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
+    pub fn placeholder_ref() -> &'static Arc<DIDCommBridge> {
+        static PLACEHOLDER: std::sync::LazyLock<Arc<DIDCommBridge>> =
+            std::sync::LazyLock::new(|| Arc::new(DIDCommBridge::placeholder()));
+        &PLACEHOLDER
+    }
+
     /// Publish the live delivery-layer wiring, replacing any previous session's.
     /// Called from `server::MessagingConnect` after each successful mediator
     /// connect.

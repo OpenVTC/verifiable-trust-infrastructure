@@ -10,6 +10,7 @@ use crate::operations;
 use crate::server::AppState;
 use crate::tee::mnemonic_guard::{MnemonicExportResponse, MnemonicExportStatus};
 use crate::tee::types::{AttestationReport, AttestationRequest, TeeStatus};
+use vta_sdk::attestation_report::ConfigAttestationReport;
 
 /// GET /attestation/status — TEE detection status (unauthenticated).
 #[utoipa::path(
@@ -55,6 +56,41 @@ pub async fn generate_report(
     Ok(Json(response))
 }
 
+/// POST /attestation/config-report — Fresh, nonce-bound attestation committing a
+/// digest of the config this enclave booted (unauthenticated).
+///
+/// The verifiable pull path for the un-baked tenant config: the parent supplies
+/// `tee.kms.key_arn` and the rest, so a tenant/verifier calls this with a fresh
+/// nonce and verifies the returned `ConfigAttestationReport` — signature chains
+/// to the AWS Nitro root, `PCR0` matches the approved image, `nonce` is bound,
+/// and `user_data == SHA-384(configView)` authenticates the returned canonical
+/// view. The verifier then enforces its policy on that authenticated view (the
+/// tenant's expected `tee.kms.key_arn`) before onboarding. It does NOT re-derive
+/// an expected config from base+overlay.
+#[utoipa::path(
+    post, path = "/attestation/config-report", tag = "attestation",
+    request_body = AttestationRequest,
+    responses(
+        (status = 200, description = "Fresh config attestation report", body = ConfigAttestationReport),
+        (status = 503, description = "TEE attestation not enabled, or this build captured no effective-config snapshot at boot (only the enclave front-end does)"),
+    ),
+)]
+pub async fn config_report(
+    State(state): State<AppState>,
+    Json(body): Json<AttestationRequest>,
+) -> Result<Json<ConfigAttestationReport>, AppError> {
+    let tee_state = state
+        .tee
+        .as_ref()
+        .map(|tc| &tc.state)
+        .ok_or_else(|| tee_attestation_error("TEE attestation is not enabled on this VTA"))?;
+
+    let response =
+        operations::attestation::generate_config_attestation(tee_state, &state.config, &body.nonce)
+            .await?;
+
+    Ok(Json(response))
+}
 /// GET /attestation/report — Return a cached attestation report (unauthenticated).
 #[utoipa::path(
     get, path = "/attestation/report", tag = "attestation",

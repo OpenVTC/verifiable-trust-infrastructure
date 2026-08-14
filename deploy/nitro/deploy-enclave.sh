@@ -44,6 +44,7 @@ INTERACTIVE=true
 BUNDLE_DIR="${VTA_BUNDLE_DIR:-}"
 EIF_PATH=""
 CONFIG_PATH=""
+CONFIG_ENVELOPE_PATH="${CONFIG_ENVELOPE_PATH:-}"
 PCR0_OVERRIDE=""
 PCR8_OVERRIDE=""
 CPU_OVERRIDE=""
@@ -55,6 +56,7 @@ while [ $# -gt 0 ]; do
         --bundle)          BUNDLE_DIR="$2"; shift 2 ;;
         --eif)             EIF_PATH="$2"; shift 2 ;;
         --config)          CONFIG_PATH="$2"; shift 2 ;;
+        --config-envelope) CONFIG_ENVELOPE_PATH="$2"; shift 2 ;;
         --pcr0)            PCR0_OVERRIDE="$2"; shift 2 ;;
         --pcr8)            PCR8_OVERRIDE="$2"; shift 2 ;;
         --cpu)             CPU_OVERRIDE="$2"; shift 2 ;;
@@ -76,6 +78,17 @@ fi
 if [ -n "$BUNDLE_DIR" ]; then
     [ -z "$EIF_PATH" ]    && EIF_PATH="$BUNDLE_DIR/vta.eif"
     [ -z "$CONFIG_PATH" ] && CONFIG_PATH="$BUNDLE_DIR/config.toml"
+    # Fleet (un-baked) EIF: the enclave fetches a typed, allowlisted tenant
+    # overlay from the parent over vsock:5800 and applies it onto its baked
+    # fleet-policy base. Serve the rendered per-tenant overlay when present;
+    # fall back to the legacy filename for older bundles.
+    if [ -z "${CONFIG_ENVELOPE_PATH:-}" ]; then
+        if [ -f "$BUNDLE_DIR/tenant-overlay.json" ]; then
+            CONFIG_ENVELOPE_PATH="$BUNDLE_DIR/tenant-overlay.json"
+        else
+            CONFIG_ENVELOPE_PATH="$BUNDLE_DIR/config-envelope.json"
+        fi
+    fi
 fi
 
 RUNTIME_DIR="${VTA_RUNTIME_DIR:-${BUNDLE_DIR:-$REPO_ROOT/.deploy-nitro}}"
@@ -158,10 +171,15 @@ ok "Config: $CONFIG_PATH"
 
 # Read manifest if present
 MANIFEST="${BUNDLE_DIR:+$BUNDLE_DIR/manifest.json}"
+# Bake mode as recorded by build-vta.sh: "true" (baked/self-host), "false"
+# (fleet/un-baked — REQUIRES a runtime overlay), or "" when we cannot determine
+# it (no manifest, e.g. a raw --eif/--config deploy or an older bundle).
+BAKE_CONFIG_MODE=""
 if [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ]; then
     ok "Manifest: $MANIFEST"
     [ -z "$CPU_OVERRIDE" ] && CPU_OVERRIDE=$(jq -r '.enclave_cpu // empty' "$MANIFEST")
     [ -z "$MEM_OVERRIDE" ] && MEM_OVERRIDE=$(jq -r '.enclave_mem_mib // empty' "$MANIFEST")
+    BAKE_CONFIG_MODE=$(jq -r '.bake_config | if type=="boolean" then tostring else "" end' "$MANIFEST" 2>/dev/null || echo "")
 fi
 
 ENCLAVE_CPU="${CPU_OVERRIDE:-${VTA_ENCLAVE_CPU:-1}}"
@@ -250,15 +268,129 @@ else
     ok "Enclave proxy built"
 fi
 
-if pid_alive "$PROXY_PID_FILE"; then
-    ok "Enclave proxy already running (PID $(cat "$PROXY_PID_FILE"))"
+# Derive the parent proxy's overlay-driven routing (envelope + KMS region +
+# mediator) UP FRONT — before the "already running?" check — so a redeploy with a
+# different overlay restarts the proxy instead of leaving it on stale routing.
+# A fleet (un-baked) EIF bakes only a fleet-policy base and REQUIRES this overlay
+# to fill the tenant-scoped fields; warn loudly if it is missing.
+PROXY_ENVELOPE_ARGS=()
+if [ -f "${CONFIG_ENVELOPE_PATH:-}" ]; then
+    ok "Tenant overlay: $CONFIG_ENVELOPE_PATH (served over vsock:5800)"
+    PROXY_ENVELOPE_ARGS=(--config-envelope "$CONFIG_ENVELOPE_PATH")
+
+    # Keep the PARENT proxy consistent with the tenant overlay. The enclave
+    # derives its KMS egress region from the overlay's key_arn and connects to
+    # the overlay's mediator, but the parent's config.toml is only the fleet-base
+    # placeholder. The proxy honours AWS_REGION / MEDIATOR_DID env vars with
+    # priority over config.toml, so derive them here. This drives ONLY the
+    # parent's egress routing/allowlist — it never influences the enclave's baked
+    # security policy (that comes from the attested overlay).
+    if command -v jq >/dev/null 2>&1; then
+        OVERLAY_KEY_ARN="$(jq -r '.overlay.tee_kms.key_arn // empty' "$CONFIG_ENVELOPE_PATH" 2>/dev/null || true)"
+        OVERLAY_MEDIATOR_DID="$(jq -r '.overlay.messaging.mediator_did // empty' "$CONFIG_ENVELOPE_PATH" 2>/dev/null || true)"
+        if [ -n "$OVERLAY_KEY_ARN" ]; then
+            OVERLAY_REGION="$(printf '%s\n' "$OVERLAY_KEY_ARN" | cut -d: -f4)"
+            if [ -n "$OVERLAY_REGION" ]; then
+                export AWS_REGION="$OVERLAY_REGION"
+                ok "Parent proxy KMS region from overlay: $AWS_REGION"
+            fi
+        fi
+        if [ -n "$OVERLAY_MEDIATOR_DID" ]; then
+            export MEDIATOR_DID="$OVERLAY_MEDIATOR_DID"
+            ok "Parent proxy mediator DID from overlay: $MEDIATOR_DID"
+        fi
+    else
+        warn "jq not found — cannot derive the parent proxy's region/mediator from the overlay."
+        warn "Set AWS_REGION and MEDIATOR_DID manually to match the overlay, or the parent may"
+        warn "use the fleet-base placeholder region/mediator and block the enclave's egress."
+    fi
 else
+    # No rendered overlay present. What that means depends on the build's bake
+    # mode (recorded in the manifest):
+    #   - fleet (bake_config=false): the EIF bakes ONLY a placeholder base and
+    #     fails closed without the tenant overlay — deploying would start the
+    #     proxy/enclave only to have the enclave exhaust its overlay retries and
+    #     exit. Terminate now, before touching the proxy or the enclave.
+    #   - baked (bake_config=true): the tenant config is in the EIF; no overlay
+    #     is expected. Proceed (no vsock:5800 config server needed).
+    #   - unknown (no manifest / older bundle): we cannot tell — warn only.
+    if [ "$BAKE_CONFIG_MODE" = "false" ]; then
+        err "No tenant overlay found, but the manifest says this is a FLEET"
+        err "(BAKE_CONFIG=false) build. The enclave bakes only a placeholder base"
+        err "and will fail to boot without a rendered overlay — refusing to start"
+        err "the proxy/enclave. Render one from the build's tenant-overlay-template.json:"
+        err "  deploy/nitro/render-tenant-overlay.sh --key-arn <arn> --mediator-did <did> \\"
+        err "    --anchor-table-name <table> --vta-did-template <tmpl> > tenant-overlay.json"
+        err "then re-run with --bundle <dir> (containing tenant-overlay.json) or"
+        err "--config-envelope <path-to>/tenant-overlay.json."
+        exit 1
+    elif [ "$BAKE_CONFIG_MODE" = "true" ]; then
+        ok "Baked (self-host) build — tenant config is in the EIF; no runtime overlay needed."
+    else
+        warn "No tenant overlay found, and the bundle's bake mode is unknown"
+        warn "(no manifest / older bundle). A fleet (un-baked) EIF will fail to boot"
+        warn "without one; a baked EIF is fine. Render one if this is a fleet build:"
+        warn "  deploy/nitro/render-tenant-overlay.sh --key-arn <arn> --mediator-did <did> \\"
+        warn "    --anchor-table-name <table> --vta-did-template <tmpl> > tenant-overlay.json"
+    fi
+fi
+
+# Signature of the effective routing. If it changed since the running proxy was
+# started, the proxy must be restarted (its process env + egress allowlist are
+# fixed at launch; only the served envelope file is reread live).
+ROUTING_SIG="$(proxy_routing_signature "${CONFIG_ENVELOPE_PATH:-}" "${AWS_REGION:-}" "${MEDIATOR_DID:-}")"
+ROUTING_SIG_FILE="$RUNTIME_DIR/proxy.routing"
+
+PROXY_NEEDS_START=1
+# Match on the proxy binary path so a recycled PID (stale pidfile) is treated as
+# dead rather than signalled.
+if pid_alive "$PROXY_PID_FILE" "$PROXY_BIN"; then
+    PREV_SIG="$(cat "$ROUTING_SIG_FILE" 2>/dev/null || true)"
+    if [ "$PREV_SIG" = "$ROUTING_SIG" ]; then
+        ok "Enclave proxy already running (PID $(cat "$PROXY_PID_FILE")) with matching routing"
+        PROXY_NEEDS_START=0
+    else
+        warn "Tenant overlay routing changed — restarting the enclave proxy"
+        warn "  was: ${PREV_SIG:-<none>}"
+        warn "  now: $ROUTING_SIG"
+        # Wait for the old proxy to actually exit before starting the new one.
+        # A fixed sleep is not enough: if the old process still holds
+        # vsock:5800, the new proxy's config listener fails to bind, the
+        # process stays alive (its other channels bound fine), `kill -0`
+        # below reports success — and the only symptom is the enclave
+        # exhausting its 30 overlay-fetch attempts and aborting the boot,
+        # with nothing on the parent side to say why.
+        OLD_PROXY_PID="$(cat "$PROXY_PID_FILE")"
+        kill "$OLD_PROXY_PID" 2>/dev/null || true
+        for _ in $(seq 1 100); do
+            kill -0 "$OLD_PROXY_PID" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$OLD_PROXY_PID" 2>/dev/null; then
+            warn "Proxy PID $OLD_PROXY_PID did not exit after SIGTERM — sending SIGKILL"
+            kill -9 "$OLD_PROXY_PID" 2>/dev/null || true
+            for _ in $(seq 1 50); do
+                kill -0 "$OLD_PROXY_PID" 2>/dev/null || break
+                sleep 0.1
+            done
+            if kill -0 "$OLD_PROXY_PID" 2>/dev/null; then
+                err "Proxy PID $OLD_PROXY_PID is still alive — refusing to start a"
+                err "second proxy that would fail to bind the config port."
+                exit 1
+            fi
+        fi
+    fi
+fi
+
+if [ "$PROXY_NEEDS_START" -eq 1 ]; then
     rm -f "$PROXY_PID_FILE"
     info "Starting enclave proxy in background..."
     nohup "$PROXY_BIN" --config "$CONFIG_PATH" --enclave-cid 16 \
+        ${PROXY_ENVELOPE_ARGS[@]+"${PROXY_ENVELOPE_ARGS[@]}"} \
         > "$PROXY_LOG" 2>&1 &
     PROXY_PID=$!
     echo "$PROXY_PID" > "$PROXY_PID_FILE"
+    printf '%s' "$ROUTING_SIG" > "$ROUTING_SIG_FILE"
     sleep 2
     if kill -0 "$PROXY_PID" 2>/dev/null; then
         ok "Enclave proxy started (PID $PROXY_PID, log: $PROXY_LOG)"

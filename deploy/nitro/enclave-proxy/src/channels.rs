@@ -599,6 +599,87 @@ fn build_tls_connector() -> Result<TlsConnector, Box<dyn std::error::Error>> {
     Ok(TlsConnector::from(Arc::new(config)))
 }
 
+// ---------------------------------------------------------------------------
+// [0] Config: vsock → file (parent → enclave un-baked config envelope)
+// ---------------------------------------------------------------------------
+
+/// Serves the un-baked tenant config envelope to the enclave over vsock.
+///
+/// The enclave connects on first boot, reads the envelope
+/// (`{ "version":1, "overlay":{ … }, "integrity":null }` — a small, typed,
+/// allowlisted tenant overlay; see
+/// `docs/05-design-notes/tenant-config-allowlist.md` §3.4), parses + validates
+/// it in-process, and applies it onto the baked fleet-policy base config before
+/// starting the VTA. The file is re-read per connection so a rotated envelope is
+/// picked up on the enclave's next boot, and each connection is served by its
+/// own task so the enclave can reconnect after a boot race or restart.
+///
+/// This side just streams the envelope bytes; it is shape-agnostic (it does not
+/// parse the JSON), so it is unchanged from the earlier whole-config envelope —
+/// only the file's contents differ (a small overlay, not a whole config.toml).
+/// The shell equivalent is
+/// `socat -U VSOCK-LISTEN:PORT,fork OPEN:envelope,rdonly` in `parent-proxy.sh`.
+pub async fn run_config_server(vsock_port: u32, envelope_path: std::path::PathBuf) {
+    use tokio::io::AsyncWriteExt;
+
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+
+    let listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
+        Ok(l) => l,
+        Err(e) => {
+            // Fatal, unlike the other channels. A fleet enclave cannot boot
+            // without this channel, so a proxy that stays alive with a dead
+            // config listener is strictly worse than no proxy: `deploy-enclave.sh`
+            // sees a live PID, reports success, and the only symptom is the
+            // enclave aborting after its overlay-fetch retries expire.
+            error!("[config] failed to bind vsock:{vsock_port}: {e} — exiting");
+            std::process::exit(1);
+        }
+    };
+    info!("[config] listening on vsock:{vsock_port} → {}", envelope_path.display());
+
+    loop {
+        let (mut vsock_stream, peer) = match listener.accept().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("[config] accept error: {e}");
+                continue;
+            }
+        };
+
+        let permit = match semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                warn!("[config] connection limit reached, rejecting vsock peer {peer:?}");
+                drop(vsock_stream);
+                continue;
+            }
+        };
+        debug!("[config] connection from vsock peer {peer:?}");
+
+        let path = envelope_path.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            // Re-read per connection (tiny boot-time file) so a rotated envelope
+            // is served on the enclave's next boot.
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    if let Err(e) = vsock_stream.write_all(&bytes).await {
+                        debug!("[config] write to vsock peer {peer:?} failed: {e}");
+                    }
+                    // Fully-qualified: VsockStream also has an inherent
+                    // `shutdown(Shutdown)`; we want the async AsyncWriteExt one.
+                    let _ = AsyncWriteExt::shutdown(&mut vsock_stream).await;
+                    debug!("[config] served {} bytes to vsock peer {peer:?}", bytes.len());
+                }
+                Err(e) => {
+                    error!("[config] failed to read envelope {}: {e}", path.display());
+                }
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

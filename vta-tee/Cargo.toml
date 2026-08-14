@@ -19,6 +19,13 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Fleet (`BAKE_CONFIG=false`) builds only: compile in the vsock tenant-config
+# overlay fetch/apply path (`tenant_overlay` module). Off by default so a
+# self-host/baked build's binary contains no vsock config-fetch code. See
+# docs/05-design-notes/tenant-config-allowlist.md §3.1/§3.8.
+tenant-overlay = ["dep:tokio-vsock"]
+
 [dependencies]
 vti-common = { path = "../vti-common", version = "0.11", features = ["encryption", "openapi"] }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
@@ -46,4 +53,7 @@ chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
+# Only pulled in by the `tenant-overlay` feature (fleet builds) for the vsock
+# config-envelope fetch.
+tokio-vsock = { workspace = true, optional = true }

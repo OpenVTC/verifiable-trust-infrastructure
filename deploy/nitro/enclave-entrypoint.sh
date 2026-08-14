@@ -142,68 +142,34 @@ cleanup() {
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# Config: use the baked-in config, or generate a default if missing
+# Config: the image bakes config.toml at $CONFIG_PATH.
 # ---------------------------------------------------------------------------
+# WHY UN-BAKED (fleet): so ONE enclave image (one PCR0) can be shared across
+# every tenant, instead of building and attesting a separate EIF per tenant.
+#
+#   BAKE_CONFIG=true  (self-host, default): config.toml is fully baked into the
+#     EIF (committed to PCR0). Nothing to fetch; the binary has no vsock
+#     config-fetch code path at all.
+#   BAKE_CONFIG=false (fleet): config.toml is a baked fleet-policy BASE with
+#     placeholders for the tenant-scoped fields (key_arn, mediator_did,
+#     vta_did_template, public_url, …). The vta-enclave binary (built with the
+#     `tenant-overlay` feature) fetches a typed, allowlisted overlay from the
+#     parent over vsock:5800 and applies it IN-PROCESS before it reads those
+#     fields. The entrypoint no longer touches config — the fetch/parse/apply,
+#     size-cap, timeouts, and deny_unknown_fields validation all live in Rust
+#     (auditable + unit-tested). See
+#     docs/05-design-notes/tenant-config-allowlist.md §3.8.
+#
+# Either way a config.toml MUST be present: refuse to boot without one rather
+# than silently start with a wrong/empty config (fail-closed).
 CONFIG_PATH="${VTA_CONFIG_PATH:-/etc/vta/config.toml}"
 
-if [ -f "$CONFIG_PATH" ]; then
-    echo "Using baked-in config at $CONFIG_PATH"
-else
-    # Determine mediator URL: if set externally, point through our local proxy
-    MEDIATOR_URL="${VTA_MEDIATOR_URL:-}"
-    MEDIATOR_DID="${VTA_MEDIATOR_DID:-}"
-
-    echo "Generating default enclave config at $CONFIG_PATH"
-    cat > "$CONFIG_PATH" <<TOML
-# VTA Configuration — Nitro Enclave (auto-generated)
-
-[services]
-rest = true
-didcomm = true
-
-[server]
-host = "127.0.0.1"
-port = ${VTA_PORT}
-
-[log]
-level = "info"
-format = "json"
-
-[store]
-data_dir = "/var/lib/vta/data"
-
-[tee]
-mode = "required"
-embed_in_did = true
-attestation_cache_ttl = 300
-
-[secrets]
-# Set VTA_SECRETS_SEED env var
-
-[auth]
-# Set VTA_AUTH_JWT_SIGNING_KEY env var
-TOML
-
-    # Add messaging section if mediator is configured
-    if [ -n "$MEDIATOR_URL" ] && [ -n "$MEDIATOR_DID" ]; then
-        # The TDK resolves mediator_did to discover the WebSocket endpoint,
-        # then routes the connection through HTTPS_PROXY (set below) which
-        # tunnels via vsock to the parent's HTTPS CONNECT proxy.
-        cat >> "$CONFIG_PATH" <<TOML
-
-[messaging]
-mediator_url = "${MEDIATOR_URL}"
-mediator_did = "${MEDIATOR_DID}"
-TOML
-        echo "DIDComm enabled: mediator=${MEDIATOR_URL} (WebSocket proxied via HTTPS_PROXY)"
-    else
-        echo "WARNING: VTA_MEDIATOR_URL / VTA_MEDIATOR_DID not set — DIDComm disabled"
-        # Disable DIDComm if no mediator configured
-        sed -i 's/didcomm = true/didcomm = false/' "$CONFIG_PATH"
-    fi
-
-    echo "Config written to $CONFIG_PATH"
+if [ ! -f "$CONFIG_PATH" ]; then
+    echo "FATAL: no config at $CONFIG_PATH — the enclave image must bake a config.toml" >&2
+    echo "       (self-host: the full config; fleet: a fleet-policy base with placeholders)." >&2
+    exit 1
 fi
+echo "Using config at $CONFIG_PATH"
 
 # ---------------------------------------------------------------------------
 # Start VTA
@@ -212,9 +178,14 @@ echo ""
 echo "Starting VTA on 127.0.0.1:${VTA_PORT} (TEE mode: required)"
 echo ""
 
-# Run VTA (not exec, so we can capture crash output)
-vta-enclave --config "$CONFIG_PATH" 2>&1
-VTA_EXIT=$?
+# Run VTA (not exec, so we can capture crash output). Call in an `if` so `set -eu`
+# does not abort on a non-zero exit before we log it and keep the console alive
+# (the new config-floor hard-exits make a crashed/rejected boot common).
+if vta-enclave --config "$CONFIG_PATH" 2>&1; then
+    VTA_EXIT=0
+else
+    VTA_EXIT=$?
+fi
 echo "VTA exited with code ${VTA_EXIT}"
 # Keep the enclave alive briefly so console output can be read
 sleep 10

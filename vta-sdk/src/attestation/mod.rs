@@ -15,7 +15,7 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64STD;
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha384};
 use time::OffsetDateTime;
 
 use crate::sealed_transfer::{AssertionProof, AttestationQuoteAssertion, ProducerAssertion};
@@ -235,6 +235,564 @@ fn check_pcr(which: u8, expected: Option<&str>, actual: &str) -> Result<(), PcrM
         });
     }
     Ok(())
+}
+
+/// Nitro PCRs are SHA-384 digests: 48 bytes → 96 hex characters.
+const NITRO_PCR_HEX_LEN: usize = 96;
+
+/// Reject a caller-supplied PCR pin that is not a well-formed Nitro PCR.
+///
+/// This is what makes `expected_pcr0: &str` (rather than `Option<&str>`) mean
+/// what it says. Without it an empty string is a *valid pin that matches a debug
+/// enclave*, because [`pcr_hex`] renders the all-zero PCRs of a debug-mode
+/// enclave as `""` — so `"" == ""` passes and the mandatory image gate is
+/// silently off. Anything that is not exactly 96 hex characters (after the same
+/// `0x`/whitespace/case normalization the comparison uses) fails closed here.
+fn validate_expected_pcr(which: u8, value: &str) -> Result<(), ConfigAttestationVerifyError> {
+    let normalized = normalize_pcr_hex(value);
+    if normalized.len() == NITRO_PCR_HEX_LEN && normalized.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(());
+    }
+    Err(ConfigAttestationVerifyError::InvalidExpectedPcr {
+        which,
+        value: normalized,
+    })
+}
+
+/// Extract PCR `idx` from a verified quote as lowercase hex, treating an
+/// all-zero (unset) PCR as absent — the same semantics as
+/// [`verify_nitro_quote_with`].
+fn pcr_hex(parsed: &ParsedNitroQuote, idx: usize) -> String {
+    parsed
+        .pcrs
+        .get(&idx)
+        .filter(|v| v.iter().any(|b| *b != 0))
+        .map(|v| hex_lower(v))
+        .unwrap_or_default()
+}
+
+/// An **authenticated** `POST /attestation/config-report` response: the evidence
+/// chains to the Nitro root, the approved image (PCR0, and optionally PCR8)
+/// produced it, the caller's nonce was bound for freshness, and the returned
+/// `configView` is the exact config the enclave hashed
+/// (`SHA-384(configView) == user_data`).
+///
+/// This is deliberately *weaker* than [`VerifiedConfigAttestation`]: it proves
+/// the view is AUTHENTIC but does **not** approve its policy. The view still
+/// carries parent-controlled security/operational fields — `tee.kms.key_arn`,
+/// `tee.kms.anchor.table_name` / `writer_credential_ciphertext`,
+/// `tee.kms.vta_did_template`, mediator DID/URL, `public_url`. A caller that
+/// onboards/trusts an instance MUST pin the fields that matter for its threat
+/// model — at minimum `tee.kms.key_arn`, via [`verify_config_attestation`] (which
+/// returns the stronger [`VerifiedConfigAttestation`]); inspect anything else via
+/// [`config_view_json`](Self::config_view_json).
+///
+/// Typestate: private fields, no public constructor — only obtainable through
+/// [`authenticate_config_attestation`] / its `_with` variant.
+#[derive(Debug, Clone)]
+pub struct AuthenticatedConfigAttestation {
+    module_id: String,
+    pcr0_hex: String,
+    pcr8_hex: String,
+    config_digest_sha384: Vec<u8>,
+    nonce: Vec<u8>,
+    config_view_json: Vec<u8>,
+    key_arn: Option<String>,
+}
+
+impl AuthenticatedConfigAttestation {
+    /// Issuing NSM module id.
+    pub fn module_id(&self) -> &str {
+        &self.module_id
+    }
+    /// PCR0 — enclave image measurement — lowercase hex (matches the pin).
+    pub fn pcr0_hex(&self) -> &str {
+        &self.pcr0_hex
+    }
+    /// PCR8 — signing certificate measurement — lowercase hex.
+    pub fn pcr8_hex(&self) -> &str {
+        &self.pcr8_hex
+    }
+    /// The 48-byte SHA-384 config digest committed as (and verified against) the
+    /// attestation `user_data` — equals `SHA-384(config_view_json())`.
+    pub fn config_digest_sha384(&self) -> &[u8] {
+        &self.config_digest_sha384
+    }
+    /// The nonce the quote committed to (equals the caller's `expected_nonce`).
+    pub fn nonce(&self) -> &[u8] {
+        &self.nonce
+    }
+    /// The authenticated canonical config view (secret-free JSON bytes) whose
+    /// hash matched the signed `user_data`. Inspect this for any tenant-sensitive
+    /// field beyond `key_arn` that your threat model needs to pin.
+    pub fn config_view_json(&self) -> &[u8] {
+        &self.config_view_json
+    }
+    /// The `tee.kms.key_arn` read from the authenticated view, if present. NOTE:
+    /// this is only *authenticated*, not *approved* — compare it to your expected
+    /// ARN, or use [`verify_config_attestation`], which does that for you.
+    pub fn key_arn(&self) -> Option<&str> {
+        self.key_arn.as_deref()
+    }
+}
+
+/// A **verified** config-report: everything [`AuthenticatedConfigAttestation`]
+/// proves, PLUS the attested `tee.kms.key_arn` equals the caller's expected key.
+///
+/// This is the type the mandatory onboarding gate requires. It proves the
+/// approved image (PCR0) booted with the tenant's OWN KMS key — closing the
+/// seed-exfiltration path where a parent seals the first-boot seed under a key it
+/// controls. Note it does not, by itself, approve the OTHER parent-controlled
+/// fields in the view (anchor, mediator, `vta_did_template`, `public_url`); pin
+/// those via [`config_view_json`](AuthenticatedConfigAttestation::config_view_json)
+/// if your threat model needs them.
+///
+/// Typestate: private fields, no public constructor — only obtainable through
+/// [`verify_config_attestation`] / its `_with` variant, which enforce the key pin.
+#[derive(Debug, Clone)]
+pub struct VerifiedConfigAttestation {
+    authenticated: AuthenticatedConfigAttestation,
+    key_arn: String,
+}
+
+impl VerifiedConfigAttestation {
+    /// The underlying authenticated attestation (all of its accessors apply).
+    pub fn authenticated(&self) -> &AuthenticatedConfigAttestation {
+        &self.authenticated
+    }
+    /// Issuing NSM module id.
+    pub fn module_id(&self) -> &str {
+        self.authenticated.module_id()
+    }
+    /// PCR0 — enclave image measurement — lowercase hex (matches the pin).
+    pub fn pcr0_hex(&self) -> &str {
+        self.authenticated.pcr0_hex()
+    }
+    /// PCR8 — signing certificate measurement — lowercase hex.
+    pub fn pcr8_hex(&self) -> &str {
+        self.authenticated.pcr8_hex()
+    }
+    /// The 48-byte SHA-384 config digest (equals `SHA-384(config_view_json())`).
+    pub fn config_digest_sha384(&self) -> &[u8] {
+        self.authenticated.config_digest_sha384()
+    }
+    /// The nonce the quote committed to (equals the caller's `expected_nonce`).
+    pub fn nonce(&self) -> &[u8] {
+        self.authenticated.nonce()
+    }
+    /// The authenticated canonical config view (secret-free JSON bytes).
+    pub fn config_view_json(&self) -> &[u8] {
+        self.authenticated.config_view_json()
+    }
+    /// The APPROVED `tee.kms.key_arn` — verified to equal the caller's expected key.
+    pub fn key_arn(&self) -> &str {
+        &self.key_arn
+    }
+}
+
+/// Minimal, lenient probe used to read the security-relevant fields out of the
+/// (authenticated) config view without depending on `vta-config`'s full
+/// `AppConfig` schema. All fields optional so any config-view shape deserializes.
+#[derive(serde::Deserialize)]
+struct ConfigViewProbe {
+    #[serde(default)]
+    tee: Option<TeeProbe>,
+}
+#[derive(serde::Deserialize)]
+struct TeeProbe {
+    #[serde(default)]
+    kms: Option<KmsProbe>,
+}
+#[derive(serde::Deserialize)]
+struct KmsProbe {
+    #[serde(default)]
+    key_arn: Option<String>,
+}
+
+/// Verification failure for a [`verify_config_attestation`] /
+/// [`authenticate_config_attestation`] call. Every variant is fail-closed — a
+/// report that trips any check must NOT be trusted.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigAttestationVerifyError {
+    /// The `evidence` field was not valid base64.
+    #[error("evidence base64 decode: {0}")]
+    Base64(String),
+    /// The `configView` field was not valid base64.
+    #[error("configView base64 decode: {0}")]
+    ConfigViewBase64(String),
+    /// The evidence failed Nitro verification (chain to root / signature /
+    /// validity window). Wraps the underlying [`NitroVerifyError`] as a string.
+    #[error("attestation quote invalid: {0}")]
+    QuoteInvalid(String),
+    /// The quote carried no `user_data`, so it commits to no config digest.
+    #[error("attestation quote is missing user_data (no committed config digest)")]
+    MissingUserData,
+    /// `SHA-384(configView)` did not equal the signed `user_data` — the returned
+    /// view is not the config the enclave attested (a tampering/mismatch attempt).
+    #[error("config view digest mismatch — SHA-384(configView) != signed user_data")]
+    ConfigViewDigestMismatch,
+    /// The (authenticated) config view could not be parsed to enforce expected
+    /// security fields.
+    #[error("config view parse: {0}")]
+    ConfigViewParse(String),
+    /// The attested `tee.kms.key_arn` did not equal the caller's expected key —
+    /// the enclave is bound to a KMS key the caller did not approve (e.g. one the
+    /// parent controls, enabling first-boot seed exfiltration).
+    #[error("key_arn mismatch — attested {actual:?}, expected {expected:?}")]
+    KeyArnMismatch {
+        expected: String,
+        actual: Option<String>,
+    },
+    /// The quote carried no `nonce`, so freshness cannot be established.
+    #[error("attestation quote is missing a nonce (cannot prove freshness)")]
+    MissingNonce,
+    /// The committed nonce did not equal the caller's — the report may be a
+    /// replay of an earlier attestation.
+    #[error("nonce mismatch — quote does not commit to this caller's nonce")]
+    NonceMismatch,
+    /// A pinned PCR (image / signing cert) did not match the expected value.
+    #[error(transparent)]
+    Pcr(#[from] PcrMismatch),
+    /// The caller's PCR pin was not a well-formed Nitro PCR value (96 lowercase
+    /// hex characters — SHA-384).
+    ///
+    /// Rejected *before* comparison, because a Nitro **debug-mode** enclave
+    /// reports all-zero PCRs, which [`pcr_hex`] renders as the empty string. An
+    /// empty pin (an unset config/env value threaded straight through) would
+    /// otherwise compare equal to it, and a debug enclave — operator has console
+    /// access, no isolation — would satisfy the "mandatory" PCR0 gate while still
+    /// producing a genuinely AWS-root-signed document.
+    #[error(
+        "expected PCR{which} pin is not a well-formed Nitro PCR \
+         (96 hex chars, SHA-384): {value:?}"
+    )]
+    InvalidExpectedPcr { which: u8, value: String },
+    /// The response's outer `configDigestSha384` field was not valid base64.
+    /// (Only surfaced by the [`ConfigAttestationReport`] wire-form methods, which
+    /// cross-check the echoed metadata against the signed evidence.)
+    ///
+    /// [`ConfigAttestationReport`]: crate::attestation_report::ConfigAttestationReport
+    #[error("outer configDigestSha384 base64 decode: {0}")]
+    OuterDigestBase64(String),
+    /// The response's outer `configDigestSha384` did not equal the digest derived
+    /// from the signed evidence — the untrusted parent tampered with the echoed
+    /// metadata. Fail closed so a caller can never mistake it for verified data.
+    #[error("outer configDigestSha384 does not match the signed digest")]
+    OuterDigestMismatch,
+    /// The response's outer `nonce` did not equal the nonce bound into the signed
+    /// evidence — echoed metadata tampering, rejected for the same reason.
+    #[error("outer nonce does not match the signed nonce")]
+    OuterNonceMismatch,
+}
+
+/// Authenticate a `POST /attestation/config-report` response **without approving
+/// its policy**, against the production AWS Nitro root at the current wall clock.
+///
+/// On success the returned [`AuthenticatedConfigAttestation`] proves:
+///  1. the evidence chains to the AWS Nitro root;
+///  2. `PCR0` matches the **required** `expected_pcr0` pin (and `PCR8` the
+///     optional one) — the *approved* image signed it;
+///  3. the bound nonce equals `expected_nonce` (freshness); and
+///  4. `SHA-384(config_view_b64)` equals the signed `user_data`, so the returned
+///     view is the exact config the enclave attested.
+///
+/// It does **not** check `tee.kms.key_arn` or any other policy field — the caller
+/// must inspect the authenticated view itself. For the onboarding gate use
+/// [`verify_config_attestation`], which additionally pins the tenant's KMS key
+/// and returns the stronger [`VerifiedConfigAttestation`].
+pub fn authenticate_config_attestation(
+    evidence_b64: &str,
+    config_view_b64: &str,
+    expected_nonce: &[u8],
+    expected_pcr0: &str,
+    expected_pcr8: Option<&str>,
+) -> Result<AuthenticatedConfigAttestation, ConfigAttestationVerifyError> {
+    authenticate_config_attestation_with(
+        evidence_b64,
+        config_view_b64,
+        expected_nonce,
+        expected_pcr0,
+        expected_pcr8,
+        &NitroVerifier::aws_production(OffsetDateTime::now_utc()),
+    )
+}
+
+/// As [`authenticate_config_attestation`], but with an explicit [`NitroVerifier`]
+/// so the trust anchor and clock can be injected (issue #449). Injecting the
+/// anchor is a test/investigation lever only; it does not weaken any check.
+pub fn authenticate_config_attestation_with(
+    evidence_b64: &str,
+    config_view_b64: &str,
+    expected_nonce: &[u8],
+    expected_pcr0: &str,
+    expected_pcr8: Option<&str>,
+    verifier: &NitroVerifier,
+) -> Result<AuthenticatedConfigAttestation, ConfigAttestationVerifyError> {
+    // (0) The pins themselves must be well-formed BEFORE anything is compared —
+    // an empty/garbage `expected_pcr0` would otherwise turn the mandatory image
+    // gate into a no-op against a debug-mode enclave (see `validate_expected_pcr`).
+    validate_expected_pcr(0, expected_pcr0)?;
+    if let Some(pcr8) = expected_pcr8 {
+        validate_expected_pcr(8, pcr8)?;
+    }
+
+    let quote_bytes = B64STD
+        .decode(evidence_b64)
+        .map_err(|e| ConfigAttestationVerifyError::Base64(e.to_string()))?;
+    let config_view = B64STD
+        .decode(config_view_b64)
+        .map_err(|e| ConfigAttestationVerifyError::ConfigViewBase64(e.to_string()))?;
+
+    let parsed = verifier
+        .verify(&quote_bytes)
+        .map_err(|e| ConfigAttestationVerifyError::QuoteInvalid(format!("{e:?}")))?;
+
+    // (4) The SIGNED user_data must be SHA-384 of the returned view, so the view
+    // is authenticated (not merely asserted by the untrusted parent).
+    let user_data = parsed
+        .user_data
+        .as_deref()
+        .ok_or(ConfigAttestationVerifyError::MissingUserData)?;
+    let view_digest = Sha384::digest(&config_view);
+    if user_data != view_digest.as_slice() {
+        return Err(ConfigAttestationVerifyError::ConfigViewDigestMismatch);
+    }
+
+    // (3) Freshness: the enclave bound the caller's nonce into the quote.
+    let nonce = parsed
+        .nonce
+        .as_deref()
+        .ok_or(ConfigAttestationVerifyError::MissingNonce)?;
+    if nonce != expected_nonce {
+        return Err(ConfigAttestationVerifyError::NonceMismatch);
+    }
+
+    // (2) Pin the image (PCR0 REQUIRED) and optionally the signing cert (PCR8).
+    let attest = VerifiedAttestation {
+        module_id: parsed.module_id.clone(),
+        pcr0_hex: pcr_hex(&parsed, 0),
+        pcr8_hex: pcr_hex(&parsed, 8),
+    };
+    attest.check_pcrs(Some(expected_pcr0), expected_pcr8)?;
+
+    // Read (but do NOT enforce) the security-critical `tee.kms.key_arn` from the
+    // now-authenticated view, so the caller can inspect it.
+    let probe: ConfigViewProbe = serde_json::from_slice(&config_view)
+        .map_err(|e| ConfigAttestationVerifyError::ConfigViewParse(e.to_string()))?;
+    let key_arn = probe.tee.and_then(|t| t.kms).and_then(|k| k.key_arn);
+
+    Ok(AuthenticatedConfigAttestation {
+        module_id: attest.module_id,
+        pcr0_hex: attest.pcr0_hex,
+        pcr8_hex: attest.pcr8_hex,
+        config_digest_sha384: user_data.to_vec(),
+        nonce: nonce.to_vec(),
+        config_view_json: config_view,
+        key_arn,
+    })
+}
+
+/// Verify a `POST /attestation/config-report` response for **onboarding** against
+/// the production AWS Nitro root at the current wall clock.
+///
+/// This is the consumer-side of the mandatory onboarding gate. In addition to
+/// everything [`authenticate_config_attestation`] checks (chain-to-root, required
+/// PCR0/optional PCR8, nonce, `SHA-384(configView) == user_data`), it pins the
+/// tenant's KMS key: the authenticated view's `tee.kms.key_arn` MUST equal
+/// `expected_key_arn`.
+///
+/// `expected_key_arn` is **mandatory**, and mandatory PCR0 does not substitute
+/// for it: fleet mode runs one approved image (one PCR0) across tenants and
+/// accepts tenant-specific runtime key ARNs, so an approved image can truthfully
+/// attest that it booted with the *parent's* key. Because the enclave seals the
+/// first-boot seed under `key_arn`, skipping this check leaves the seed
+/// exfiltratable by a parent that chose its own key.
+///
+/// **No `vta-config` dependency, no digest re-derivation.** The enclave returns
+/// the canonical secret-free view it hashed (`configView`); the caller passes it
+/// straight through. This is why the flow works on fleet first boot, where the
+/// enclave-generated `vta_did` cannot be reproduced from base+overlay.
+///
+/// For deterministic tests / an injected trust anchor, use
+/// [`verify_config_attestation_with`] (which keeps the key pin mandatory).
+pub fn verify_config_attestation(
+    evidence_b64: &str,
+    config_view_b64: &str,
+    expected_nonce: &[u8],
+    expected_pcr0: &str,
+    expected_pcr8: Option<&str>,
+    expected_key_arn: &str,
+) -> Result<VerifiedConfigAttestation, ConfigAttestationVerifyError> {
+    verify_config_attestation_with(
+        evidence_b64,
+        config_view_b64,
+        expected_nonce,
+        expected_pcr0,
+        expected_pcr8,
+        expected_key_arn,
+        &NitroVerifier::aws_production(OffsetDateTime::now_utc()),
+    )
+}
+
+/// As [`verify_config_attestation`], but with an explicit [`NitroVerifier`] so
+/// the trust anchor and clock can be injected (issue #449). Injecting the anchor
+/// is a test/investigation lever only — the security-policy check (mandatory
+/// `expected_key_arn` pin) is NOT optional here either.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_config_attestation_with(
+    evidence_b64: &str,
+    config_view_b64: &str,
+    expected_nonce: &[u8],
+    expected_pcr0: &str,
+    expected_pcr8: Option<&str>,
+    expected_key_arn: &str,
+    verifier: &NitroVerifier,
+) -> Result<VerifiedConfigAttestation, ConfigAttestationVerifyError> {
+    let authenticated = authenticate_config_attestation_with(
+        evidence_b64,
+        config_view_b64,
+        expected_nonce,
+        expected_pcr0,
+        expected_pcr8,
+        verifier,
+    )?;
+
+    // (5) Pin the tenant's KMS key — the decisive onboarding check.
+    match authenticated.key_arn.as_deref() {
+        Some(actual) if actual == expected_key_arn => {}
+        actual => {
+            return Err(ConfigAttestationVerifyError::KeyArnMismatch {
+                expected: expected_key_arn.to_string(),
+                actual: actual.map(|s| s.to_string()),
+            });
+        }
+    }
+
+    Ok(VerifiedConfigAttestation {
+        key_arn: expected_key_arn.to_string(),
+        authenticated,
+    })
+}
+
+impl crate::attestation_report::ConfigAttestationReport {
+    /// Verify this response for **onboarding** (production AWS Nitro root, current
+    /// clock): pin the approved image (`expected_pcr0`, optional `expected_pcr8`)
+    /// and the tenant's KMS key (`expected_key_arn`, mandatory). See
+    /// [`verify_config_attestation`].
+    ///
+    /// This ALSO cross-checks the echoed outer metadata (`configDigestSha384`,
+    /// `nonce`) against the values derived from the signed evidence, so an
+    /// untrusted parent cannot make those fields diverge from what was attested.
+    /// (`teeType` / `generatedAt` remain informational — see their field docs.)
+    pub fn verify(
+        &self,
+        expected_nonce: &[u8],
+        expected_pcr0: &str,
+        expected_pcr8: Option<&str>,
+        expected_key_arn: &str,
+    ) -> Result<VerifiedConfigAttestation, ConfigAttestationVerifyError> {
+        self.verify_with(
+            expected_nonce,
+            expected_pcr0,
+            expected_pcr8,
+            expected_key_arn,
+            &NitroVerifier::aws_production(OffsetDateTime::now_utc()),
+        )
+    }
+
+    /// As [`verify`](Self::verify), but with an injectable [`NitroVerifier`]
+    /// (test/investigation trust-anchor + clock injection). Every check —
+    /// including the mandatory key pin and the outer-metadata cross-check — is
+    /// identical to the production path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_with(
+        &self,
+        expected_nonce: &[u8],
+        expected_pcr0: &str,
+        expected_pcr8: Option<&str>,
+        expected_key_arn: &str,
+        verifier: &NitroVerifier,
+    ) -> Result<VerifiedConfigAttestation, ConfigAttestationVerifyError> {
+        let verified = verify_config_attestation_with(
+            &self.evidence,
+            &self.config_view,
+            expected_nonce,
+            expected_pcr0,
+            expected_pcr8,
+            expected_key_arn,
+            verifier,
+        )?;
+        self.check_outer_metadata(verified.config_digest_sha384(), verified.nonce())?;
+        Ok(verified)
+    }
+
+    /// Authenticate this response WITHOUT approving its policy — returns the
+    /// weaker [`AuthenticatedConfigAttestation`]. The caller MUST inspect/pin
+    /// tenant-sensitive fields (at least `tee.kms.key_arn`) itself. See
+    /// [`authenticate_config_attestation`].
+    ///
+    /// Like [`verify`](Self::verify), it cross-checks the echoed outer
+    /// `configDigestSha384` / `nonce` against the signed evidence.
+    pub fn authenticate(
+        &self,
+        expected_nonce: &[u8],
+        expected_pcr0: &str,
+        expected_pcr8: Option<&str>,
+    ) -> Result<AuthenticatedConfigAttestation, ConfigAttestationVerifyError> {
+        self.authenticate_with(
+            expected_nonce,
+            expected_pcr0,
+            expected_pcr8,
+            &NitroVerifier::aws_production(OffsetDateTime::now_utc()),
+        )
+    }
+
+    /// As [`authenticate`](Self::authenticate), but with an injectable
+    /// [`NitroVerifier`] (test/investigation trust-anchor + clock injection).
+    pub fn authenticate_with(
+        &self,
+        expected_nonce: &[u8],
+        expected_pcr0: &str,
+        expected_pcr8: Option<&str>,
+        verifier: &NitroVerifier,
+    ) -> Result<AuthenticatedConfigAttestation, ConfigAttestationVerifyError> {
+        let authenticated = authenticate_config_attestation_with(
+            &self.evidence,
+            &self.config_view,
+            expected_nonce,
+            expected_pcr0,
+            expected_pcr8,
+            verifier,
+        )?;
+        self.check_outer_metadata(authenticated.config_digest_sha384(), authenticated.nonce())?;
+        Ok(authenticated)
+    }
+
+    /// Require the echoed outer `configDigestSha384` (base64) and `nonce` (hex) to
+    /// agree with the digest/nonce derived from the SIGNED evidence. Fail closed
+    /// so a caller that audits `resp` fields after a successful verify never reads
+    /// parent-tampered metadata as if it were authenticated.
+    fn check_outer_metadata(
+        &self,
+        signed_digest: &[u8],
+        signed_nonce: &[u8],
+    ) -> Result<(), ConfigAttestationVerifyError> {
+        let outer_digest = B64STD
+            .decode(&self.config_digest_sha384)
+            .map_err(|e| ConfigAttestationVerifyError::OuterDigestBase64(e.to_string()))?;
+        if outer_digest != signed_digest {
+            return Err(ConfigAttestationVerifyError::OuterDigestMismatch);
+        }
+        // Compare hex case-insensitively against the canonical lowercase encoding
+        // of the signed nonce (avoids a hex-decode dependency).
+        if !self
+            .nonce
+            .eq_ignore_ascii_case(&crate::hex::lower(signed_nonce))
+        {
+            return Err(ConfigAttestationVerifyError::OuterNonceMismatch);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

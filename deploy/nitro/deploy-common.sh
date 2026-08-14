@@ -58,10 +58,40 @@ ask_yn() {
 # Return 0 if the pid stored in $1 is still alive.
 pid_alive() {
     local pidfile="$1"
+    # Optional PID-reuse guard: a substring the live process's command line must
+    # contain to be accepted as "ours". Without it, a stale PID file whose PID has
+    # been recycled to an unrelated process would look alive (and could be
+    # signalled). Callers managing a long-lived daemon should pass it.
+    local match="${2:-}"
     [ -f "$pidfile" ] || return 1
     local pid
     pid=$(cat "$pidfile" 2>/dev/null || true)
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    if [ -n "$match" ]; then
+        local cmd=""
+        if [ -r "/proc/$pid/cmdline" ]; then
+            # Linux: argv is NUL-separated; render to spaces for matching.
+            cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+        else
+            # macOS / no procfs: fall back to ps.
+            cmd=$(ps -p "$pid" -o command= 2>/dev/null || true)
+        fi
+        case "$cmd" in
+            *"$match"*) : ;;
+            *) return 1 ;;  # PID reused by an unrelated process — treat as dead.
+        esac
+    fi
+    return 0
+}
+
+# Compose the parent-proxy routing signature from the effective envelope path,
+# KMS region, and mediator DID. Recorded when the proxy starts; a change in any
+# field on a later deploy means the running proxy is on stale routing and must be
+# restarted (its process env + egress allowlist are fixed at launch). Kept as a
+# pure function so it can be unit-tested (see deploy-common.test.sh).
+proxy_routing_signature() {
+    printf 'envelope=%s region=%s mediator=%s' "${1:-}" "${2:-}" "${3:-}"
 }
 
 # ---------------------------------------------------------------------------

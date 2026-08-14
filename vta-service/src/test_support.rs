@@ -141,6 +141,8 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         hardened: Default::default(),
         config_path: PathBuf::new(),
         unknown_keys: Vec::new(),
+        effective_config_digest: None,
+        effective_config_view: None,
     }
 }
 

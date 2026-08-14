@@ -136,8 +136,18 @@ impl ProxyConfig {
     /// Automatically extracts hostnames from the mediator DID so the
     /// enclave's TDK can resolve the DID via the HTTPS proxy.
     pub fn build_allowlist(&self) -> Vec<(String, u16)> {
+        // AWS service endpoints the enclave always needs, derived from the tenant
+        // KMS region:
+        //   - kms.<region>       — attestation-gated secret bootstrap (seed/JWT).
+        //   - dynamodb.<region>  — the anti-rollback anchor counter. The anchor is
+        //     fail-closed: the enclave's first strongly-consistent GetItem (and the
+        //     first-boot PutItem / conditional UpdateItem) must reach DynamoDB, or
+        //     VTA startup aborts. This lives here (not in each deployment's extra
+        //     hosts) because the DynamoDB anchor is VTI's own internal egress
+        //     dependency and the region is already derived from the overlay ARN.
         let mut hosts = vec![
             (format!("kms.{}.amazonaws.com", self.kms_region), 443),
+            (format!("dynamodb.{}.amazonaws.com", self.kms_region), 443),
         ];
 
         // Add manual mediator host if set
@@ -189,3 +199,52 @@ fn parse_host_port(s: &str) -> (String, u16) {
     }
     (s.to_string(), 443)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// A minimal ProxyConfig for allowlist tests: a region, no mediator, no extras.
+    fn proxy_config(kms_region: &str) -> ProxyConfig {
+        ProxyConfig {
+            mediator_did: None,
+            mediator_host_override: None,
+            mediator_port_override: None,
+            kms_region: kms_region.to_string(),
+            enclave_cid: 16,
+            listen_port: 8080,
+            vsock_inbound_port: 5100,
+            vsock_mediator_port: 5200,
+            vsock_https_port: 5300,
+            vsock_imds_port: 5400,
+            allowlist_hosts: Vec::new(),
+            vsock_storage_port: 5500,
+            storage_data_dir: PathBuf::from("/tmp/vta-store"),
+        }
+    }
+
+    #[test]
+    fn allowlist_contains_kms_and_dynamodb_for_the_kms_region() {
+        let allow = proxy_config("ap-southeast-1").build_allowlist();
+        assert!(
+            allow.contains(&("kms.ap-southeast-1.amazonaws.com".to_string(), 443)),
+            "KMS endpoint must be allowlisted: {allow:?}"
+        );
+        // The anti-rollback anchor (DynamoDB) is fail-closed; without this the
+        // enclave's GetItem/PutItem/UpdateItem are blocked with HTTP 403 and boot
+        // aborts.
+        assert!(
+            allow.contains(&("dynamodb.ap-southeast-1.amazonaws.com".to_string(), 443)),
+            "DynamoDB anchor endpoint must be allowlisted: {allow:?}"
+        );
+    }
+
+    #[test]
+    fn allowlist_endpoints_track_the_derived_kms_region() {
+        let allow = proxy_config("us-east-1").build_allowlist();
+        assert!(allow.contains(&("kms.us-east-1.amazonaws.com".to_string(), 443)));
+        assert!(allow.contains(&("dynamodb.us-east-1.amazonaws.com".to_string(), 443)));
+    }
+}
+

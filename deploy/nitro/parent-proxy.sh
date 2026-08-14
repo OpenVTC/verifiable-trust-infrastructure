@@ -98,6 +98,36 @@ VSOCK_INBOUND_PORT="${VSOCK_INBOUND_PORT:-5100}"      # Inbound REST
 VSOCK_MEDIATOR_PORT="${VSOCK_MEDIATOR_PORT:-5200}"     # Outbound mediator
 VSOCK_HTTPS_PORT="${VSOCK_HTTPS_PORT:-5300}"            # Outbound HTTPS
 VSOCK_RESOLVER_PORT="${VSOCK_RESOLVER_PORT:-5600}"      # Outbound DID resolver
+VSOCK_CONFIG_PORT="${VSOCK_CONFIG_PORT:-5800}"          # Inbound config envelope (parent → enclave)
+
+# Un-baked config: when this envelope file exists, serve it to the
+# enclave over vsock:${VSOCK_CONFIG_PORT}. It is a JSON envelope
+# ({ "version":1, "overlay":{…}, "integrity":null }) rendered off-box — the typed
+# tenant overlay, NOT a whole config; the enclave's `ConfigEnvelope` is
+# `deny_unknown_fields`, so the retired `config_toml` shape hard-fails the boot
+# with a parse error. Render it with `deploy/nitro/render-tenant-overlay.sh`.
+# Absent
+# → the enclave uses a baked/mounted config if one exists (existing EIFs); a
+# rebuilt EIF has no baked config and requires the envelope.
+#
+# SINGLE OWNER of vsock:${VSOCK_CONFIG_PORT}: exactly one process may serve the
+# config port. This script is the owner for the *standalone / manual*
+# parent-proxy workflow. An orchestrated deployment may instead run its own
+# config server (e.g. a systemd socat unit) and NOT invoke this script, so the
+# two never bind ${VSOCK_CONFIG_PORT} at once. If you ever run both on the same
+# host you will get an "address in use" bind conflict — don't.
+#
+# Envelope location (first match wins): $VTA_CONFIG_ENVELOPE, then a file next to
+# this script, then a conventional managed path. Keeping the managed path here
+# lets this script serve the same envelope an external provisioner writes.
+MANAGED_CONFIG_ENVELOPE="/etc/vta-tee/config-envelope.json"
+if [ -n "${VTA_CONFIG_ENVELOPE:-}" ]; then
+    CONFIG_ENVELOPE="${VTA_CONFIG_ENVELOPE}"
+elif [ -f "${SCRIPT_DIR}/config-envelope.json" ]; then
+    CONFIG_ENVELOPE="${SCRIPT_DIR}/config-envelope.json"
+else
+    CONFIG_ENVELOPE="${MANAGED_CONFIG_ENVELOPE}"
+fi
 
 LISTEN_PORT="${LISTEN_PORT:-8443}"                      # External REST API port
 MEDIATOR_PORT="${MEDIATOR_PORT:-443}"                   # Mediator WSS port
@@ -166,6 +196,25 @@ echo "Starting inbound proxy: TCP:${LISTEN_PORT} → vsock CID ${ENCLAVE_CID}:${
 socat TCP-LISTEN:${LISTEN_PORT},reuseaddr,fork \
     VSOCK-CONNECT:${ENCLAVE_CID}:${VSOCK_INBOUND_PORT} &
 PIDS+=($!)
+
+# ---------------------------------------------------------------------------
+# [0] CONFIG: serve the un-baked config envelope → vsock → Enclave
+# ---------------------------------------------------------------------------
+# The enclave connects to vsock:${VSOCK_CONFIG_PORT} on first boot, reads this
+# envelope, and writes /etc/vta/config.toml before starting the VTA. `fork` lets
+# it reconnect after a boot race/restart. Only started when an envelope exists.
+if [ -f "${CONFIG_ENVELOPE}" ]; then
+    echo "Starting config server:  vsock:${VSOCK_CONFIG_PORT} → ${CONFIG_ENVELOPE}"
+    # `-U` streams the file (ADDR2) to the connection (ADDR1); OPEN…,rdonly reads
+    # the envelope with no shell (vs SYSTEM:"cat …", which spawns /bin/sh per
+    # connection with the path interpolated into the command string).
+    socat -U VSOCK-LISTEN:${VSOCK_CONFIG_PORT},reuseaddr,fork \
+        OPEN:"${CONFIG_ENVELOPE}",rdonly &
+    PIDS+=($!)
+else
+    echo "SKIP config server — no envelope at ${CONFIG_ENVELOPE}"
+    echo "     (enclave will use a baked/mounted config, or set VTA_CONFIG_ENVELOPE)"
+fi
 
 # ---------------------------------------------------------------------------
 # [2] OUTBOUND: Enclave DIDComm → vsock → Mediator WebSocket

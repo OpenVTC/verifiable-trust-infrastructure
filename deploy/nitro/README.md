@@ -4,6 +4,145 @@ Deploy the Verifiable Trust Agent (VTA) inside an AWS Nitro Enclave with
 hardware-backed TEE attestation, KMS-based secret bootstrap, encrypted
 storage, and signed enclave images.
 
+> **Config baking is a build-time choice (`BAKE_CONFIG`, default = baked).**
+> By default `config.toml` **is baked into the EIF** — best for single-tenant /
+> self-hosted deploys: the config is committed to PCR0 and fully attested, and no
+> runtime config server is needed. Build with `--build-arg BAKE_CONFIG=false`
+> (or `VTA_BAKE_CONFIG=false ./build-vta.sh`) to bake only
+> `config.fleet-base.toml` (the PCR0-committed **fleet policy** + placeholders)
+> and ship **no tenant-specific config**, so **one image / one PCR0 serves every
+> tenant** — the multi-tenant / managed-fleet mode. In that mode tenant values
+> are delivered at runtime (base-plus-overlay) and **changing them no longer
+> changes PCR0**.
+>
+> **Un-baked delivery (BAKE_CONFIG=false) — typed tenant overlay.** The fleet
+> image bakes `config.fleet-base.toml` (the PCR0-committed **fleet policy** plus
+> placeholders). At runtime the parent serves a small typed **overlay**
+> (`{ "version":1, "overlay":{…}, "integrity":null }`) over **vsock port 5800**;
+> `enclave-proxy --config-envelope …` (or `parent-proxy.sh`) starts that server
+> when a rendered overlay file is present. The `vta-enclave` binary — built with
+> the `tenant-overlay` feature for this mode — fetches the overlay, parses it into
+> a `#[serde(deny_unknown_fields)]` allowlist, validates it, and applies it onto
+> the baked base **in-process** before boot. The entrypoint no longer touches
+> config; the fetch/size-cap/timeout/validation all live in Rust
+> (`vta-tee::tenant_overlay`, unit-tested).
+>
+> **Only the tenant-scoped fields are overlay-settable** — `tee.kms.key_arn`
+> (validated against the baked `tee.allowed_kms_accounts`; region is derived from
+> the ARN), `tee.kms.vta_did_template`, `messaging.mediator_did`/
+> `mediator_url`, `public_url`, `vta_name`, and the KMS-sealed anchor fields.
+> Everything else — `tee.mode`, every `allow_*` break-glass flag, `admin_did`,
+> `resolver_url`, `server.*`, `store.*`, `policy.*`, **and a bare `vta_did`** — is
+> baked or provisioned in-enclave and **structurally cannot** be carried by the
+> overlay type. (The VTA's own identity is *provisioned* from
+> `vta_did_template` — the enclave derives the keys and signs the `did:webvh`
+> document; a bare DID string with no key records is not accepted. See ADR-0109.)
+> Render a per-tenant overlay with:
+>
+> ```bash
+> deploy/nitro/render-tenant-overlay.sh \
+>   --key-arn arn:aws:kms:us-east-1:1122...:key/abcd \
+>   --mediator-did did:webvh:...:mediator \
+>   --vta-did-template 'did:webvh:{SCID}:acme.example.com:vta' > tenant-overlay.json
+> ```
+>
+> **`tee.allowed_kms_accounts` is a required fleet setting** (baked, PCR0-
+> committed): empty ⇒ **no tenant may onboard** (fail closed, not allow-all).
+> `build-vta.sh` fills it from the KMS key's account for you. This PCR0-anchored
+> allowlist is an **independent** gate that sits alongside — not instead of — each
+> tenant's KMS key policy scoping the calling principal (one image / one PCR0 is
+> shared across tenants, so key-policy isolation is still required).
+>
+> **Fail-closed:** on real Nitro a failed overlay fetch/parse/validate **aborts
+> the boot** (it never falls through to the placeholder base). Exactly one process
+> may own `vsock:5800` — `parent-proxy.sh`/`enclave-proxy`, or an orchestrated
+> deployment's own config server — never both.
+>
+> **Enforcement floor (defense-in-depth):** on real Nitro hardware (`/dev/nsm`
+> present) the enclave still refuses to boot if a parent-influenced config would
+> weaken `[tee] mode` below `required`, omit `[tee.kms]`, or set `[tee.kms]
+> admin_did`. With the typed overlay those can no longer be *delivered* at all —
+> the floor now guards against a bug in the merge, not a malicious parent. Leave
+> `admin_did` unset and use the attested sealed-bootstrap flow (Mode B,
+> `POST /bootstrap/request`).
+>
+> **Config attestation anchor — and the verification step it REQUIRES.** Because
+> the parent supplies `tee.kms.key_arn`, on first boot the enclave generates its
+> seed and encrypts it under whatever key the config named; if that key is one the
+> parent controls, the seed is recoverable off-box. The mitigation is the anchor:
+> at boot the enclave commits a SHA-384 digest of the delivered config into an NSM
+> attestation document (`user_data`) and logs it. PCR0 stays tenant-agnostic, and
+> the AWS-signed document proves which config (hence which `key_arn`) the enclave
+> booted.
+>
+> **This is a required verification step, and there is a pull endpoint for it.**
+> The boot-time anchor only *produces* signed evidence (log-only, empty nonce) —
+> so verification is a **mandatory onboarding gate**, not an automatic property:
+>
+> > Before onboarding a tenant / trusting a VTA instance, the tenant (or an
+> > independent verifier — NOT the parent operator) MUST obtain a fresh config
+> > attestation and verify: (1) its signature chains to the AWS Nitro root,
+> > (2) `PCR0` matches the pinned image, (3) the bound `nonce` equals the one they
+> > sent, and (4) the committed config digest (`user_data`) matches the config
+> > the enclave returned — in particular that `tee.kms.key_arn` is the tenant's own
+> > key, not one the parent controls.
+>
+> Use **`POST /attestation/config-report`** with a fresh caller nonce:
+>
+> ```bash
+> curl -s https://<vta>/attestation/config-report \
+>   -H 'content-type: application/json' -d '{"nonce":"<hex>"}'
+> # → { configDigestSha384, configView (base64), nonce, teeType,
+> #     evidence (base64 COSE_Sign1), generatedAt }
+> ```
+>
+> `configView` is the **canonical, secret-free view of the effective config the
+> enclave actually booted** — the exact bytes whose SHA-384 the enclave signed as
+> `user_data`. The nonce is bound for freshness, so — unlike the boot log — the
+> parent **cannot forge or replay** the report (it can still drop the request or
+> response; availability stays under the parent, but a *stale/forged* report is
+> rejected). Deserialize the shared wire type and verify it (feature
+> `attest-verify`) — no `vta-config` dependency, no digest re-derivation:
+>
+> ```rust
+> use vta_sdk::attestation_report::ConfigAttestationReport;
+>
+> // The response is the shared wire type — deserialize it directly.
+> let resp: ConfigAttestationReport = serde_json::from_slice(&body)?;
+>
+> // Onboarding verify: pins the approved image AND the tenant's own KMS key.
+> // `expected_key_arn` is MANDATORY (see below).
+> let verified = resp.verify(
+>     &nonce,                  // the exact nonce bytes you sent
+>     &expected_pcr0,          // REQUIRED: pin the approved image measurement
+>     Some(&expected_pcr8),    // optional: pin the signing-cert measurement
+>     &expected_key_arn,       // REQUIRED: the tenant's own KMS key ARN
+> )?;
+> // On success: chain-to-root, PCR0 (+PCR8), nonce, view→digest binding, AND
+> // key_arn are all verified. Inspect any other tenant-sensitive fields
+> // (anchor table, mediator, public_url, vta_did_template) with
+> // `verified.config_view_json()` before trusting them.
+> ```
+>
+> **`expected_key_arn` is mandatory**, and mandatory PCR0 does **not** substitute
+> for it. Fleet mode runs one approved image (one PCR0) across tenants and accepts
+> tenant-specific runtime key ARNs, so an approved image can truthfully attest
+> that it booted with the *parent's* key. Because the enclave seals the first-boot
+> seed under `tee.kms.key_arn`, skipping the key check leaves the seed
+> exfiltratable by a parent that chose its own key. (If you only need to
+> *authenticate* the view without approving its policy — e.g. for investigation —
+> use `resp.authenticate(...)`, which returns the weaker
+> `AuthenticatedConfigAttestation` and forces you to inspect the key yourself.)
+> The digest input is the `configView` bytes themselves; you never re-derive them
+> from base+overlay (which cannot reproduce the enclave-generated `vta_did`).
+>
+> **Multi-tenant isolation is now a KMS-policy requirement.** With `key_arn` no
+> longer baked, one PCR0 is shared across tenants and the parent supplies the
+> key ARN — so `kms:RecipientAttestation:PCR0` alone no longer isolates tenants.
+> **Each tenant's KMS key policy MUST additionally constrain the calling
+> principal** (the parent instance role / account), not just PCR0. Otherwise any
+> enclave satisfying the shared PCR0 could reach another tenant's key.
+
 ## Build and deployment modes
 
 There are three scripts in `deploy/nitro/`, each with a different intended
@@ -146,7 +285,7 @@ both first and subsequent boots** — no rebuild cycle for identity creation.
 │  │  mediator_did = "did:web:mediator.example.com"                │    │
 │  └─────────────────────────────────────────────────────────────┘    │
 │                                                                      │
-│  Config is baked into the EIF → determines PCR0                      │
+│  Tenant config served over vsock at runtime → NOT part of PCR0       │
 └──────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -668,12 +807,34 @@ enclave image.
 
 ### 4d: Update Config — Deployment Inputs
 
-Edit `deploy/nitro/config.toml` with your deployment-specific values.
-These are the inputs that get baked into the EIF:
+How you supply the deployment-specific values below depends on the build mode
+you chose in Step 2 (`BAKE_CONFIG`, default = baked):
+
+- **Self-host / baked (`BAKE_CONFIG=true`, default):** edit
+  `deploy/nitro/config.toml`. These values are **baked into the EIF** and
+  committed to PCR0, so changing them requires an image rebuild + KMS-policy
+  update (see *4e — Self-host* below).
+- **Fleet / un-baked (`BAKE_CONFIG=false`):** do **not** edit `config.toml` for
+  tenant values — the image bakes only `config.fleet-base.toml`. Instead render a
+  per-tenant `tenant-overlay.json` (below) that the parent serves at runtime over
+  vsock:5800. Only the allowlisted fields can be set; **`admin_did` and every
+  `allow_*` flag are structurally rejected by the overlay** (admin is established
+  per-tenant via the attested sealed-bootstrap flow, not the config channel).
 
 ```bash
+# Self-host (baked): edit the baked config
 nano deploy/nitro/config.toml
+
+# Fleet (un-baked): render the runtime overlay instead (never admin_did)
+deploy/nitro/render-tenant-overlay.sh \
+  --key-arn arn:aws:kms:us-east-1:123456789012:key/abc-def-456 \
+  --mediator-did did:web:mediator.example.com \
+  --anchor-table-name vta-rollback-anchor-acme \
+  --vta-did-template 'did:webvh:{SCID}:example.com:vta' > tenant-overlay.json
 ```
+
+The field descriptions below name the `config.toml` keys (baked mode); for fleet
+the equivalent overlay flags are shown by `render-tenant-overlay.sh --help`.
 
 **1. KMS key ARN** (required — from Step 4c):
 
@@ -731,17 +892,20 @@ mediator_did = "did:web:mediator.example.com"
 mediator_host = "mediator.example.com"
 ```
 
-### 4e: Rebuild the Enclave Image with Updated Config
+### 4e: Apply the Updated Config
 
-The config is baked into the EIF, so any config change requires a rebuild.
-This also generates a new PCR0 (image hash) which must be updated in the
-KMS key policy.
+The procedure differs by build mode. Pick the one matching your Step-2 choice —
+they are mutually exclusive.
 
-**Use the same `docker build` command from your chosen profile in Step 2.**
-If you chose Profile B (Full API), the rebuild cycle is:
+#### 4e (Self-host / baked, `BAKE_CONFIG=true`)
+
+The tenant config is baked into the EIF, so **every config or code change**
+rebuilds the image and changes PCR0 (which must then be updated in the KMS key
+policy). The `Dockerfile.nitro` default is `BAKE_CONFIG=true`, so the plain
+`docker build` below bakes `config.toml`:
 
 ```bash
-# 1. Rebuild the Docker image with the SAME profile as Step 2
+# 1. Rebuild the Docker image with the SAME profile as Step 2 (config is baked)
 #    Profile A (Hardened):       --build-arg FEATURES="didcomm,vsock-store,vsock-log"
 #    Profile B (Full API):       --build-arg FEATURES="rest,didcomm,vsock-store,vsock-log"
 #    Profile C (REST only):      --build-arg FEATURES="rest,vsock-store,vsock-log"
@@ -768,8 +932,29 @@ nitro-cli build-enclave \
 
 **Every config or code change follows this cycle:** edit → docker build
 (same profile) → nitro build-enclave → update KMS policy with new PCR0.
-This is by design — the PCR0 pin ensures nobody can tamper with the config
+This is by design — the PCR0 pin ensures nobody can tamper with the baked config
 after build.
+
+#### 4e (Fleet / un-baked, `BAKE_CONFIG=false`)
+
+Tenant values are **not** in the image, so a tenant config change (KMS ARN,
+mediator DID, did:webvh template, public URL, vta_name) does **not** rebuild the
+image and does **not** change PCR0. Instead:
+
+```bash
+# 1. Re-render the overlay with the new values (never admin_did — it is rejected)
+deploy/nitro/render-tenant-overlay.sh --key-arn <arn> --mediator-did <did> \
+    --anchor-table-name <table> --vta-did-template <tmpl> > tenant-overlay.json
+
+# 2. Serve the new overlay and restart the enclave (deploy-enclave.sh restarts
+#    the parent proxy when the overlay routing changes)
+./deploy/nitro/deploy-enclave.sh --bundle <bundle-dir>   # with tenant-overlay.json present
+```
+
+Only code / dependency / Dockerfile changes rebuild the fleet image and change
+PCR0 (which must then be updated in the KMS key policy, exactly as in the
+self-host cycle above). Rebuild with `--build-arg BAKE_CONFIG=false` so tenant
+values stay un-baked and the overlay client is compiled in.
 
 **First boot is auto-detected.** On first deployment, the ciphertext files
 don't exist yet, so the VTA generates new secrets inside the TEE and encrypts
@@ -814,8 +999,8 @@ The proxy is a Rust binary that auto-reads the mediator DID and KMS region
 from `config.toml` and auto-detects the enclave CID.
 
 **Important:** The proxy needs the **finalized** `config.toml` — the same
-version baked into the EIF (with the real KMS ARN, mediator DID, etc.).
-A repo checkout on the EC2 instance may have stale values (e.g., `PLACEHOLDER`
+values served to the enclave over vsock (with the real KMS ARN, mediator DID,
+etc.). A repo checkout on the EC2 instance may have stale values (e.g., `PLACEHOLDER`
 for the KMS ARN). There are two ways to provide the config:
 
 **Option A: Copy the finalized config from the build machine** (recommended)
@@ -1249,18 +1434,20 @@ nitro-cli run-enclave --eif-path vta.eif --cpu-count 1 --memory 512 --debug-mode
 
 ## Upgrading the Enclave Image
 
-Every time you rebuild the Docker image or change config baked into the EIF,
-the PCR0 (image hash) changes. The KMS policy must be updated to allow the
-new image to decrypt the existing secrets.
+Every time you rebuild the Docker image, the PCR0 (image hash) changes. The
+KMS policy must be updated to allow the new image to decrypt the existing
+secrets. (Tenant config changes do **not** rebuild the image — see below.)
 
 ### What triggers a PCR0 change
 
 Any of these require a KMS policy update:
 - Code changes in the VTA (Rust source)
 - Dependency updates (Cargo.lock changes)
-- Config changes (config.toml baked into the EIF)
 - Dockerfile changes (base image, packages, build args)
 - Feature flag changes
+
+Note: **tenant config changes no longer trigger a PCR0 change** —
+tenant config is delivered at runtime over vsock, not baked into the EIF.
 
 **PCR8 does NOT change** unless you regenerate the signing key.
 

@@ -439,12 +439,19 @@ All five resolved in review; the design below is final and P0.2a is unblocked.
    seal; out of phase 1.
 4. **Break-glass posture** → **single `allow_unanchored` boot flag** (default
    false, loudly warned), mirroring `allow_unattested_fallback` /
-   `allow_kms_reinit` / `allow_fingerprint_init`. Acceptable because TEE config
-   is **baked into the measured EIF** and the KMS-lock gate blocks env overrides
-   when KMS is active, so the parent cannot flip it at runtime — doing so needs
-   an EIF rebuild that changes PCRs, after which KMS refuses to decrypt. A
-   signed-recovery-token ceremony is a possible future hardening, not a
-   phase-1 requirement.
+   `allow_kms_reinit` / `allow_fingerprint_init`. Safe to leave as a config flag
+   because the parent cannot flip it at runtime: for a **baked** config it is
+   committed to the measured EIF (PCR0), and for an **un-baked (fleet)** config
+   it is **not overlay-settable** — the typed tenant overlay
+   (`deny_unknown_fields`, see
+   `docs/05-design-notes/tenant-config-allowlist.md`) physically cannot carry
+   `allow_unanchored` (or any other `allow_*` flag), so the parent has no channel
+   to set it. Either way, changing it needs an EIF rebuild that changes PCRs,
+   after which KMS refuses to decrypt. (Earlier drafts justified this solely by
+   "TEE config is baked into the measured EIF"; that stopped being universally
+   true when un-baked mode landed — the allowlist is what restores the guarantee
+   for the fleet path.) A signed-recovery-token ceremony is a possible future
+   hardening, not a phase-1 requirement.
 5. **Cross-account anchor (Option C)** → **future P0.2e**, documented as the
    max-assurance / multi-tenant upgrade, out of Phase-0 scope (not ruled out).
    Option B meets the stated threat under the existing AWS-account trust root.

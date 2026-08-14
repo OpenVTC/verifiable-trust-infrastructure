@@ -66,6 +66,16 @@ pub struct Cli {
     #[arg(long, default_value_t = 5700)]
     vsock_logs: u32,
 
+    /// Vsock port for serving the un-baked config envelope (parent → enclave)
+    #[arg(long, default_value_t = 5800)]
+    vsock_config: u32,
+
+    /// Path to the config envelope JSON served over --vsock-config. When set and
+    /// the file exists, the enclave fetches its tenant config here at boot
+    /// instead of using a baked/mounted config (un-baked image; see docs).
+    #[arg(long)]
+    config_envelope: Option<PathBuf>,
+
     /// Local port where affinidi-did-resolver-cache-server sidecar listens
     #[arg(long, default_value_t = 8080)]
     resolver_port: u16,
@@ -157,6 +167,10 @@ async fn main() {
     eprintln!("  [5] Storage:           vsock:{} → {} (fjall)", config.vsock_storage_port, config.storage_data_dir.display());
     eprintln!("  [6] DID Resolver:      vsock:{} → localhost:{} (sidecar)", cli.vsock_resolver, cli.resolver_port);
     eprintln!("  [7] Enclave Logs:      vsock:{} → stdout (prefixed [vta])", cli.vsock_logs);
+    match cli.config_envelope {
+        Some(ref p) => eprintln!("  [0] Config:            vsock:{} → {} (un-baked config envelope)", cli.vsock_config, p.display()),
+        None => eprintln!("  [0] Config:            DISABLED (no --config-envelope; enclave uses baked/mounted config)"),
+    }
     eprintln!();
     eprintln!("  Test:");
     eprintln!("    curl http://localhost:{}/health", config.listen_port);
@@ -207,6 +221,20 @@ async fn main() {
 
     let log_receiver = tokio::spawn(channels::run_log_receiver(cli.vsock_logs));
 
+    // [0] Config server (un-baked config): serve the envelope over vsock when a
+    // path is supplied and the file exists. Absent → the enclave uses a
+    // baked/mounted config (backward compatible).
+    let config_server = match cli.config_envelope.clone() {
+        Some(path) if path.exists() => {
+            Some(tokio::spawn(channels::run_config_server(cli.vsock_config, path)))
+        }
+        Some(path) => {
+            warn!("--config-envelope {} does not exist — not serving config over vsock:{}", path.display(), cli.vsock_config);
+            None
+        }
+        None => None,
+    };
+
     info!("all proxy channels started — press Ctrl+C to stop");
 
     // Wait for shutdown signal
@@ -223,4 +251,7 @@ async fn main() {
     storage.abort();
     resolver_bridge.abort();
     log_receiver.abort();
+    if let Some(c) = config_server {
+        c.abort();
+    }
 }

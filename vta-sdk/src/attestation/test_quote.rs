@@ -53,16 +53,22 @@ impl SyntheticQuote {
 
 /// Build a valid synthetic quote committing to `user_data`.
 pub(crate) fn build(user_data: Vec<u8>) -> SyntheticQuote {
-    build_inner(user_data, true)
+    build_inner(user_data, None, true)
+}
+
+/// Build a valid synthetic quote committing to `user_data` AND binding `nonce`
+/// — the shape the `/attestation/config-report` endpoint emits.
+pub(crate) fn build_with_nonce(user_data: Vec<u8>, nonce: Vec<u8>) -> SyntheticQuote {
+    build_inner(user_data, Some(nonce), true)
 }
 
 /// Build a synthetic quote whose COSE signature is invalid (signed over a
 /// different payload than the one carried), to exercise the signature path.
 pub(crate) fn build_with_bad_signature(user_data: Vec<u8>) -> SyntheticQuote {
-    build_inner(user_data, false)
+    build_inner(user_data, None, false)
 }
 
-fn build_inner(user_data: Vec<u8>, good_signature: bool) -> SyntheticQuote {
+fn build_inner(user_data: Vec<u8>, nonce: Option<Vec<u8>>, good_signature: bool) -> SyntheticQuote {
     let chain = nitro_attest::builder::chain(); // [root, l1, l2, l3, leaf]
     let der: Vec<Vec<u8>> = chain
         .iter()
@@ -93,7 +99,7 @@ fn build_inner(user_data: Vec<u8>, good_signature: bool) -> SyntheticQuote {
         leaf_der,
         cabundle,
         Some(user_data),
-        None,
+        nonce.clone(),
         None,
     );
     let payload = doc.to_binary();
@@ -341,6 +347,329 @@ mod tests {
                 &q.verifier()
             ),
             Err(crate::attestation::AttestationVerifyError::UserDataMismatch)
+        ));
+    }
+
+    // --- config-report verifier (issue: un-baked config attestation gate) -----
+
+    #[test]
+    fn verify_config_attestation_with_end_to_end() {
+        use crate::attestation::{ConfigAttestationVerifyError, verify_config_attestation_with};
+        use sha2::{Digest, Sha384};
+
+        // The endpoint returns the canonical secret-free config VIEW and commits
+        // SHA-384(view) as user_data. The verifier hashes the returned view and
+        // matches it against the signed user_data, then PINS tee.kms.key_arn.
+        let key_arn = "arn:aws:kms:us-east-1:111122223333:key/abcd";
+        let view = format!(r#"{{"tee":{{"kms":{{"key_arn":"{key_arn}"}}}}}}"#).into_bytes();
+        let digest = Sha384::digest(&view).to_vec();
+        let nonce = b"caller-nonce-1234".to_vec();
+        let q = build_with_nonce(digest.clone(), nonce.clone());
+        let evidence = B64STD.encode(&q.bytes);
+        let view_b64 = B64STD.encode(&view);
+        let pcr0 = hex_lower(&q.pcr0);
+        let pcr8 = hex_lower(&q.pcr8);
+
+        // Happy path: view→digest binding, nonce, PCR0/PCR8 pins, and the
+        // MANDATORY key_arn pin all verify.
+        let verified = verify_config_attestation_with(
+            &evidence,
+            &view_b64,
+            &nonce,
+            &pcr0,
+            Some(&pcr8),
+            key_arn,
+            &q.verifier(),
+        )
+        .expect("config attestation verifies end-to-end");
+        assert_eq!(verified.config_digest_sha384(), digest.as_slice());
+        assert_eq!(verified.nonce(), nonce.as_slice());
+        assert_eq!(verified.pcr0_hex(), pcr0);
+        assert_eq!(verified.pcr8_hex(), pcr8);
+        assert_eq!(verified.key_arn(), key_arn);
+        assert_eq!(verified.config_view_json(), view.as_slice());
+
+        // A tampered/mismatched view → SHA-384(view) no longer equals the signed
+        // user_data, so a swapped config is caught.
+        let other_view =
+            br#"{"tee":{"kms":{"key_arn":"arn:aws:kms:us-east-1:111122223333:key/EVIL"}}}"#;
+        assert!(matches!(
+            verify_config_attestation_with(
+                &evidence,
+                &B64STD.encode(other_view),
+                &nonce,
+                &pcr0,
+                None,
+                key_arn,
+                &q.verifier()
+            ),
+            Err(ConfigAttestationVerifyError::ConfigViewDigestMismatch)
+        ));
+
+        // A stale/replayed nonce is rejected (freshness).
+        assert!(matches!(
+            verify_config_attestation_with(
+                &evidence,
+                &view_b64,
+                b"different-nonce",
+                &pcr0,
+                None,
+                key_arn,
+                &q.verifier()
+            ),
+            Err(ConfigAttestationVerifyError::NonceMismatch)
+        ));
+
+        // A wrong image pin (PCR0) is rejected even though the quote is genuine.
+        // Well-formed but wrong, so this asserts on the comparison rather than
+        // the pin shape check (covered by
+        // `a_malformed_expected_pcr_pin_is_rejected_not_silently_matched`).
+        let wrong_pcr0 = "ee".repeat(48);
+        assert!(matches!(
+            verify_config_attestation_with(
+                &evidence,
+                &view_b64,
+                &nonce,
+                &wrong_pcr0,
+                None,
+                key_arn,
+                &q.verifier()
+            ),
+            Err(ConfigAttestationVerifyError::Pcr(_))
+        ));
+
+        // An unexpected key_arn (parent bound the enclave to a key we did not
+        // approve) is rejected, even though the view is authentic. This is the
+        // seed-exfiltration mitigation — and it is NOT skippable.
+        assert!(matches!(
+            verify_config_attestation_with(
+                &evidence,
+                &view_b64,
+                &nonce,
+                &pcr0,
+                None,
+                "arn:aws:kms:us-east-1:111122223333:key/NOT-MINE",
+                &q.verifier()
+            ),
+            Err(ConfigAttestationVerifyError::KeyArnMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn authenticate_does_not_approve_policy_but_exposes_the_view() {
+        use crate::attestation::authenticate_config_attestation_with;
+        use sha2::{Digest, Sha384};
+
+        // The weaker `authenticate_*` path proves the view is AUTHENTIC (chain +
+        // PCR0 + nonce + digest binding) WITHOUT pinning key_arn — so it must NOT
+        // be confusable with the verified onboarding result. It returns the
+        // parent-chosen key_arn for the caller to inspect/pin itself.
+        let parent_key = "arn:aws:kms:us-east-1:999988887777:key/parent-owned";
+        let view = format!(r#"{{"tee":{{"kms":{{"key_arn":"{parent_key}"}}}}}}"#).into_bytes();
+        let digest = Sha384::digest(&view).to_vec();
+        let nonce = b"n2".to_vec();
+        let q = build_with_nonce(digest, nonce.clone());
+
+        let authed = authenticate_config_attestation_with(
+            &B64STD.encode(&q.bytes),
+            &B64STD.encode(&view),
+            &nonce,
+            &hex_lower(&q.pcr0),
+            None,
+            &q.verifier(),
+        )
+        .expect("authenticate succeeds on a genuine (approved-image) quote");
+        // The authenticated view surfaces the parent's key so the caller can
+        // detect it — authentication alone does not endorse it.
+        assert_eq!(authed.key_arn(), Some(parent_key));
+        assert_eq!(authed.config_view_json(), view.as_slice());
+
+        // A wrong image pin still fails even on the authenticate-only path.
+        // (Well-formed but wrong, so this exercises the comparison rather than
+        // the shape check added below.)
+        let wrong_pcr0 = "ee".repeat(48);
+        assert!(matches!(
+            authenticate_config_attestation_with(
+                &B64STD.encode(&q.bytes),
+                &B64STD.encode(&view),
+                &nonce,
+                &wrong_pcr0,
+                None,
+                &q.verifier(),
+            ),
+            Err(crate::attestation::ConfigAttestationVerifyError::Pcr(_))
+        ));
+    }
+
+    #[test]
+    fn a_malformed_expected_pcr_pin_is_rejected_not_silently_matched() {
+        use crate::attestation::{
+            ConfigAttestationVerifyError, authenticate_config_attestation_with,
+            verify_config_attestation_with,
+        };
+        use sha2::{Digest, Sha384};
+
+        // `expected_pcr0: &str` (not `Option`) is how this API says the image pin
+        // is MANDATORY. An empty pin must therefore be a hard error, not a pin
+        // that happens to match nothing:
+        //
+        // A Nitro **debug-mode** enclave reports all-zero PCRs while still
+        // producing a genuinely AWS-root-signed document, and `pcr_hex` renders
+        // an all-zero PCR as "". So a caller whose pin came from an unset
+        // config/env value (`report.verify(&nonce, "", ...)`) would compare
+        // "" == "", pass the mandatory gate, and treat a debug enclave —
+        // operator has console access, no isolation — as an approved image.
+        let key_arn = "arn:aws:kms:us-east-1:111122223333:key/abcd";
+        let view = format!(r#"{{"tee":{{"kms":{{"key_arn":"{key_arn}"}}}}}}"#).into_bytes();
+        let digest = Sha384::digest(&view).to_vec();
+        let nonce = b"pin-shape-nonce".to_vec();
+        let q = build_with_nonce(digest, nonce.clone());
+        let evidence = B64STD.encode(&q.bytes);
+        let view_b64 = B64STD.encode(&view);
+        let good_pcr0 = hex_lower(&q.pcr0);
+        let good_pcr8 = hex_lower(&q.pcr8);
+
+        // Every malformed shape rejects, on BOTH entry points, and rejects as the
+        // typed shape error rather than a comparison mismatch.
+        for bad in [
+            "",
+            "   ",
+            "0x",
+            "deadbeef",
+            &"zz".repeat(48),
+            &"aa".repeat(47),
+        ] {
+            assert!(
+                matches!(
+                    verify_config_attestation_with(
+                        &evidence,
+                        &view_b64,
+                        &nonce,
+                        bad,
+                        None,
+                        key_arn,
+                        &q.verifier()
+                    ),
+                    Err(ConfigAttestationVerifyError::InvalidExpectedPcr { which: 0, .. })
+                ),
+                "verify must refuse the malformed PCR0 pin {bad:?}"
+            );
+            assert!(
+                matches!(
+                    authenticate_config_attestation_with(
+                        &evidence,
+                        &view_b64,
+                        &nonce,
+                        bad,
+                        None,
+                        &q.verifier()
+                    ),
+                    Err(ConfigAttestationVerifyError::InvalidExpectedPcr { which: 0, .. })
+                ),
+                "authenticate must refuse the malformed PCR0 pin {bad:?}"
+            );
+
+            // The optional PCR8 pin gets the same treatment when supplied — an
+            // empty Some("") would match an absent PCR8 for the same reason.
+            assert!(
+                matches!(
+                    verify_config_attestation_with(
+                        &evidence,
+                        &view_b64,
+                        &nonce,
+                        &good_pcr0,
+                        Some(bad),
+                        key_arn,
+                        &q.verifier()
+                    ),
+                    Err(ConfigAttestationVerifyError::InvalidExpectedPcr { which: 8, .. })
+                ),
+                "verify must refuse the malformed PCR8 pin {bad:?}"
+            );
+        }
+
+        // Sanity: the well-formed pins still verify, and normalization
+        // (0x prefix, uppercase, surrounding whitespace) is still accepted.
+        verify_config_attestation_with(
+            &evidence,
+            &view_b64,
+            &nonce,
+            &format!("  0x{}  ", good_pcr0.to_uppercase()),
+            Some(&good_pcr8),
+            key_arn,
+            &q.verifier(),
+        )
+        .expect("a well-formed pin still verifies after normalization");
+    }
+
+    #[test]
+    fn verify_config_attestation_rejects_synthetic_chain_under_aws_anchor() {
+        use crate::attestation::{ConfigAttestationVerifyError, verify_config_attestation_with};
+        use sha2::{Digest, Sha384};
+        // The production anchor must reject a synthetic-root quote — the property
+        // that stops a fabricated config report from ever verifying.
+        let key_arn = "arn:aws:kms:us-east-1:111122223333:key/abcd";
+        let view = format!(r#"{{"tee":{{"kms":{{"key_arn":"{key_arn}"}}}}}}"#).into_bytes();
+        let digest = Sha384::digest(&view).to_vec();
+        let nonce = b"n".to_vec();
+        let q = build_with_nonce(digest, nonce.clone());
+        let evidence = B64STD.encode(&q.bytes);
+        let err = verify_config_attestation_with(
+            &evidence,
+            &B64STD.encode(&view),
+            &nonce,
+            &hex_lower(&q.pcr0),
+            None,
+            key_arn,
+            &NitroVerifier::aws_production(q.valid_now),
+        )
+        .expect_err("synthetic root must not verify under the AWS anchor");
+        assert!(matches!(err, ConfigAttestationVerifyError::QuoteInvalid(_)));
+    }
+
+    #[test]
+    fn wire_report_verify_cross_checks_echoed_metadata() {
+        use crate::attestation::ConfigAttestationVerifyError;
+        use crate::attestation_report::ConfigAttestationReport;
+        use sha2::{Digest, Sha384};
+
+        let key_arn = "arn:aws:kms:us-east-1:111122223333:key/abcd";
+        let view = format!(r#"{{"tee":{{"kms":{{"key_arn":"{key_arn}"}}}}}}"#).into_bytes();
+        let digest = Sha384::digest(&view).to_vec();
+        let nonce = b"caller-nonce-1234".to_vec();
+        let q = build_with_nonce(digest.clone(), nonce.clone());
+        let pcr0 = hex_lower(&q.pcr0);
+
+        let good = |report_digest: String, report_nonce: String| ConfigAttestationReport {
+            config_digest_sha384: report_digest,
+            config_view: B64STD.encode(&view),
+            nonce: report_nonce,
+            tee_type: "nitro".into(),
+            evidence: B64STD.encode(&q.bytes),
+            generated_at: 0,
+        };
+
+        // Faithful outer metadata verifies through the wire-form method.
+        let report = good(B64STD.encode(&digest), hex_lower(&nonce));
+        let verified = report
+            .verify_with(&nonce, &pcr0, None, key_arn, &q.verifier())
+            .expect("faithful report verifies");
+        assert_eq!(verified.key_arn(), key_arn);
+        assert_eq!(verified.config_digest_sha384(), digest.as_slice());
+
+        // A parent that tampers the echoed digest is rejected even though the
+        // signed evidence is otherwise valid.
+        let tampered_digest = good(B64STD.encode([0u8; 48]), hex_lower(&nonce));
+        assert!(matches!(
+            tampered_digest.verify_with(&nonce, &pcr0, None, key_arn, &q.verifier()),
+            Err(ConfigAttestationVerifyError::OuterDigestMismatch)
+        ));
+
+        // A tampered echoed nonce is likewise rejected.
+        let tampered_nonce = good(B64STD.encode(&digest), hex_lower(b"other-nonce"));
+        assert!(matches!(
+            tampered_nonce.verify_with(&nonce, &pcr0, None, key_arn, &q.verifier()),
+            Err(ConfigAttestationVerifyError::OuterNonceMismatch)
         ));
     }
 

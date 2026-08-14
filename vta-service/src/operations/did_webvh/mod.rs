@@ -129,7 +129,10 @@ impl<'a> WebvhDeps<'a> {
             audit_ks: &s.audit_ks,
             seed_store: &*s.seed_store,
             did_resolver,
+            #[cfg(any(feature = "didcomm", feature = "tsp"))]
             didcomm_bridge: &s.didcomm_bridge,
+            #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
+            didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
             auth_locks: &s.webvh_auth_locks,
         }
     }
@@ -149,7 +152,10 @@ impl<'a> WebvhDeps<'a> {
             audit_ks: &s.audit_ks,
             seed_store: &*s.seed_store,
             did_resolver,
+            #[cfg(any(feature = "didcomm", feature = "tsp"))]
             didcomm_bridge: &s.didcomm_bridge,
+            #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
+            didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
             auth_locks: &s.webvh_auth_locks,
         }
     }
@@ -209,7 +215,10 @@ impl<'a> CreateDidWebvhDeps<'a> {
             seed_store: &*s.seed_store,
             config,
             did_resolver,
+            #[cfg(any(feature = "didcomm", feature = "tsp"))]
             didcomm_bridge: &s.didcomm_bridge,
+            #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
+            didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
             auth_locks: &s.webvh_auth_locks,
         }
     }
@@ -232,7 +241,10 @@ impl<'a> CreateDidWebvhDeps<'a> {
             seed_store: &*s.seed_store,
             config,
             did_resolver,
+            #[cfg(any(feature = "didcomm", feature = "tsp"))]
             didcomm_bridge: &s.didcomm_bridge,
+            #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
+            didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
             auth_locks: &s.webvh_auth_locks,
         }
     }
