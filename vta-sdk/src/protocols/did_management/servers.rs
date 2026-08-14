@@ -67,7 +67,7 @@ pub struct ListWebvhServerDomainsResultBody {
     pub default: Option<String>,
 }
 
-/// Request body for `vta/webvh/servers/dids/0.1` — compare the DIDs a hosting
+/// Request body for `vta/webvh/servers/reconcile/0.1` — compare the DIDs a hosting
 /// server holds for this VTA against the DIDs the VTA has records for.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -97,7 +97,7 @@ pub struct ReconcileWebvhServerDidsResultBody {
     /// Recorded here as hosted on this server, but the host does not have it.
     /// A create whose publish never landed, or a DID removed on the host by
     /// another admin.
-    pub local_only: Vec<LocalOnlyDid>,
+    pub agent_only: Vec<AgentOnlyDid>,
     /// How many the two agree on. Present so a clean result reads as "checked
     /// 14, all matched" rather than an empty screen that could equally mean the
     /// listing failed.
@@ -111,7 +111,7 @@ pub struct ReconcileWebvhServerDidsResultBody {
 pub struct HostOnlyDid {
     /// The host's slot identifier — what `pnm did-mgmt` and the host's own API
     /// address this DID by, and the only identifier a never-published slot has.
-    pub mnemonic: String,
+    pub slot_id: String,
     /// The DID served at that slot, when the slot has been published to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub did: Option<String>,
@@ -127,10 +127,10 @@ pub struct HostOnlyDid {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct LocalOnlyDid {
+pub struct AgentOnlyDid {
     pub did: String,
     /// The slot this VTA believes the DID occupies on the host.
-    pub mnemonic: String,
+    pub slot_id: String,
     pub context_id: String,
 }
 

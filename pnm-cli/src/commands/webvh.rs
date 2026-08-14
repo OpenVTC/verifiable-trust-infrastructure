@@ -143,7 +143,7 @@ async fn cmd_reconcile(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let report = client.reconcile_webvh_server_dids(server_id).await?;
 
-    if report.host_only.is_empty() && report.local_only.is_empty() {
+    if report.host_only.is_empty() && report.agent_only.is_empty() {
         println!(
             "`{server_id}` and this VTA agree on all {} DID(s).",
             report.in_both
@@ -164,7 +164,7 @@ async fn cmd_reconcile(
                 .map(|d| format!("  [{d}]"))
                 .unwrap_or_default();
             let disabled = if e.disabled { "  (disabled)" } else { "" };
-            println!("  {:<20} {did}{domain}{disabled}", e.mnemonic);
+            println!("  {:<20} {did}{domain}{disabled}", e.slot_id);
         }
         println!(
             "\n  This VTA holds no update key for these, so nothing can sign a new\n  \
@@ -174,16 +174,16 @@ async fn cmd_reconcile(
         );
     }
 
-    if !report.local_only.is_empty() {
+    if !report.agent_only.is_empty() {
         if !report.host_only.is_empty() {
             println!();
         }
         println!(
             "In this VTA but NOT on the host — {}:",
-            report.local_only.len()
+            report.agent_only.len()
         );
-        for e in &report.local_only {
-            println!("  {:<20} {}  (context {})", e.mnemonic, e.did, e.context_id);
+        for e in &report.agent_only {
+            println!("  {:<20} {}  (context {})", e.slot_id, e.did, e.context_id);
         }
         println!(
             "\n  Usually a create whose publish never reached the host. `pnm did-mgmt\n  \

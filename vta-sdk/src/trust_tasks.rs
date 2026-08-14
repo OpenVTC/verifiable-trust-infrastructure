@@ -305,7 +305,7 @@ pub const TASK_KEYS_SHOW_0_1: &str = "https://trusttasks.org/spec/keys/show/0.1"
 /// server and relays its caller-scoped view; the response items are the
 /// canonical `did-management` `DomainEntry`, unfiltered.
 /// Payload: [`crate::protocols::did_management::servers::ListWebvhServerDomainsBody`].
-/// `vta/webvh/servers/dids/0.1` — ask the VTA to compare the DIDs a hosting
+/// `vta/webvh/servers/reconcile/0.1` — ask the VTA to compare the DIDs a hosting
 /// server holds for it against its own records, and report the divergences.
 ///
 /// The VTA is the only party that can answer this: it holds the host
@@ -314,7 +314,7 @@ pub const TASK_KEYS_SHOW_0_1: &str = "https://trusttasks.org/spec/keys/show/0.1"
 /// remedies.
 /// Payload: [`crate::protocols::did_management::servers::ReconcileWebvhServerDidsBody`].
 pub const TASK_WEBVH_SERVERS_RECONCILE_0_1: &str =
-    "https://trusttasks.org/spec/vta/webvh/servers/dids/0.1";
+    "https://trusttasks.org/spec/vta/webvh/servers/reconcile/0.1";
 
 pub const TASK_WEBVH_SERVERS_DOMAINS_0_1: &str =
     "https://trusttasks.org/spec/vta/webvh/servers/domains/0.1";

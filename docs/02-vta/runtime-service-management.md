@@ -535,6 +535,14 @@ Read-only. It prints two lists:
 It repairs nothing on purpose: the two divergences want opposite
 remedies, and neither is safe to infer from a list.
 
+Entries are keyed by the host's **slot id** — the identifier its own
+management API addresses, present from reservation onward. A slot the
+host reserved but never published to has no DID at all and is exactly
+as unreconciled as one that was, so matching on DIDs would hide them.
+(did-hosting spells this `mnemonic` in its API; the Trust Task calls it
+`slotId`, because `mnemonic` already means a BIP-39 recovery phrase
+elsewhere in these deployments.)
+
 ### Why the VTA has to answer this
 
 Neither end can do it alone. The CLI holds no credentials for the
@@ -561,6 +569,15 @@ The host's DID listing is REST-only. Against a DIDComm-only
 registration the command refuses rather than returning an empty
 diff — "nothing to report" is the one wrong answer here, because it
 is the answer an operator stops looking after.
+
+### The wire contract
+
+`vta/webvh/servers/reconcile/0.1`, specified upstream at
+[dtgwg-trust-tasks-tf#210](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/210)
+and shipping in `trust-tasks-rs` 0.6.1. Everything above — slot-keyed
+matching, the required `inBoth` count, the refusal to answer an
+unobtainable listing with an empty diff — is normative there, not just
+this implementation's behaviour.
 
 ## Walkthrough: edit an existing DID document
 
