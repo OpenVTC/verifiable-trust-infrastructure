@@ -1128,6 +1128,16 @@ mod didcomm_harness {
             // mediator). "Nothing arrived" and "something arrived that I
             // ignored" are indistinguishable without this.
             let mut frames_seen = 0usize;
+            // How long the live stream may stay quiet before we go and ask the
+            // mediator what it is holding.
+            //
+            // Tuned by measurement, not taste: at 10s this suite went from 6.3s
+            // to 9.2s because a contended-but-healthy wait crosses that line and
+            // pays for a status round trip it never needs. At 20s a healthy run
+            // never sweeps at all, while the 60s credential assertion still gets
+            // two attempts — enough to recover, since one sweep is sufficient.
+            const SWEEP_AFTER: Duration = Duration::from_secs(20);
+            let mut last_sweep = tokio::time::Instant::now();
             while start.elapsed() < timeout {
                 let next = self
                     .atm
@@ -1157,6 +1167,25 @@ mod didcomm_harness {
                         return Some(r);
                     }
                     self.inbox.lock().await.push_back(r);
+                }
+
+                // Live delivery is not sufficient on its own: a message that
+                // arrives while the mediator does not consider this socket live
+                // is stored and never streamed, so a client that only reads the
+                // live stream waits out its whole timeout while the message sits
+                // in its inbox. That is the root cause of VTI#918 — fixed in
+                // affinidi-messaging-mediator 0.18.16, which redelivers on
+                // live-delivery activation — but a client cannot assume every
+                // mediator it meets carries that fix.
+                //
+                // So: after a quiet spell, ask for the queue directly. Anything
+                // returned goes through the same match/buffer path as a streamed
+                // frame, and is acked so a later sweep does not re-fetch it.
+                if last_sweep.elapsed() >= SWEEP_AFTER {
+                    last_sweep = tokio::time::Instant::now();
+                    if let Some(found) = self.sweep_queue(&pred).await {
+                        return Some(found);
+                    }
                 }
             }
             if poll_errors > 0 {
@@ -1257,6 +1286,93 @@ mod didcomm_harness {
                 .map(|r| format!("{} thid={}", r.typ, r.thid.as_deref().unwrap_or("none"),))
                 .collect();
             format!("{} buffered: [{}]", entries.len(), entries.join(", "))
+        }
+
+        /// Pull whatever the mediator has queued for this client, match it
+        /// against `pred`, and buffer the rest.
+        ///
+        /// The counterpart to the live stream, and the reason a client is not
+        /// at the mercy of one: `send_delivery_request` returns messages the
+        /// mediator holds regardless of whether it ever streamed them. Fetched
+        /// messages are acked with `send_messages_received` so the queue
+        /// actually drains — without that, every later sweep re-fetches the
+        /// same messages and buffers duplicates. Same fetch-then-ack shape as
+        /// the VTA's boot drain (`vta_service::server::drain_mediator_inbox`).
+        ///
+        /// Best-effort: a failure here means the sweep found nothing this time,
+        /// not that the wait should end. The caller keeps polling.
+        async fn sweep_queue<F: Fn(&Received) -> bool>(&self, pred: &F) -> Option<Received> {
+            // Ask before fetching. A `send_delivery_request` with
+            // `wait_for_response` waits on a reply even when the queue is
+            // empty, which is the common case on a healthy run — doing it
+            // unconditionally every sweep doubled this suite's wall time
+            // (6s → 12s) without ever finding a message. The status request is
+            // the cheap question, and `message_count` answers it exactly.
+            match self
+                .atm
+                .message_pickup()
+                .send_status_request(&self.profile, true, Some(Duration::from_secs(2)))
+                .await
+            {
+                Ok(Some(status)) if status.message_count == 0 => return None,
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::debug!(error = %e, "queue status request failed; skipping this sweep");
+                    return None;
+                }
+            }
+
+            let queued = match self
+                .atm
+                .message_pickup()
+                .send_delivery_request(&self.profile, Some(10), true)
+                .await
+            {
+                Ok(messages) if messages.is_empty() => return None,
+                Ok(messages) => messages,
+                Err(e) => {
+                    tracing::debug!(error = %e, "queue sweep failed; continuing on the live stream");
+                    return None;
+                }
+            };
+
+            tracing::warn!(
+                count = queued.len(),
+                "the mediator was holding messages the live stream never delivered; \
+                 swept them from the queue",
+            );
+
+            let ids: Vec<String> = queued.iter().map(|(msg, _)| msg.id.clone()).collect();
+            if let Err(e) = self
+                .atm
+                .message_pickup()
+                .send_messages_received(&self.profile, &ids, true)
+                .await
+            {
+                // Not fatal: the messages are in hand. Un-acked ones simply
+                // come back on the next sweep and are deduplicated by the
+                // caller's own matching.
+                tracing::debug!(error = %e, "could not ack swept messages");
+            }
+
+            let mut found = None;
+            for (msg, _meta) in queued {
+                let r = Received {
+                    thid: msg.thid.clone(),
+                    typ: msg.typ.clone(),
+                    body: msg.body.clone(),
+                };
+                // First match wins; everything else is buffered, exactly as the
+                // live-stream path does — so a sweep that pulls several
+                // messages does not discard the ones this caller isn't waiting
+                // for.
+                if found.is_none() && pred(&r) {
+                    found = Some(r);
+                } else {
+                    self.inbox.lock().await.push_back(r);
+                }
+            }
+            found
         }
 
         async fn take_buffered<F: Fn(&Received) -> bool>(&self, pred: &F) -> Option<Received> {
