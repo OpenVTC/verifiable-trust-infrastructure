@@ -11,6 +11,20 @@
 # (`workflow_dispatch`) only — it is minutes of runner time per invocation and
 # has no business gating a PR.
 #
+# ## Contention is the point, and the first version missed it
+#
+# Run 31768314189 was 50/50 green at **2.45s per iteration** — faster than the
+# ~6s a developer laptop takes, because the loop had the whole runner to
+# itself. Real CI runs this test inside `cargo test --workspace`, sharing two
+# cores with every other test binary, where the same test takes ~23s. A 60s
+# delivery bound is comfortable at 2.45s and marginal at 23s, so the isolated
+# loop was exercising the code path with the one variable that matters — load —
+# turned off.
+#
+# Hence `parallel`: several streams of the test at once, each spinning its own
+# embedded mediator, VTC and websockets. That is what a runner mid-`--workspace`
+# looks like, and it multiplies iterations per minute as a side effect.
+#
 # Read the failure with `docs/05-design-notes/` context; the discriminators as
 # of 2026-08-14 are:
 #   - `outbox drain pass sent=N` — N=1 means the loss is in the sender's
@@ -24,9 +38,13 @@ on:
   workflow_dispatch:
     inputs:
       runs:
-        description: "How many times to run the test (stops at the first failure)"
+        description: "Iterations per stream (stops at the first failure)"
         required: false
-        default: "50"
+        default: "40"
+      parallel:
+        description: "Concurrent streams — this is what recreates CI contention"
+        required: false
+        default: "4"
       log:
         description: "RUST_LOG filter for the run"
         required: false
@@ -65,19 +83,51 @@ jobs:
         run: |
           set -uo pipefail
           runs="${{ inputs.runs }}"
+          streams="${{ inputs.parallel }}"
           bin=$(cargo test -p vtc-service --features didcomm-harness --test join_didcomm \
                   --no-run --message-format=json 2>/dev/null \
                 | jq -r 'select(.executable != null and (.target.name == "join_didcomm")) | .executable' \
                 | tail -1)
           echo "test binary: $bin"
-          for i in $(seq 1 "$runs"); do
-            echo "::group::run $i/$runs"
-            if ! "$bin" --test-threads=1 --nocapture \
-                 didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_delivery; then
-              echo "::endgroup::"
-              echo "::error::reproduced on run $i of $runs — the log above carries the drain count and the inbox summary"
-              exit 1
-            fi
-            echo "::endgroup::"
+          echo "soaking: $streams concurrent streams x $runs iterations = $((streams * runs)) runs"
+          nproc
+
+          workdir=$(mktemp -d)
+          # Each stream loops independently and writes its own log. The first
+          # failure anywhere stops every stream: the log of the run that failed
+          # is the artefact, and letting the rest continue would bury it.
+          stream() {
+            local id=$1
+            for i in $(seq 1 "$runs"); do
+              if [ -f "$workdir/stop" ]; then return 0; fi
+              if ! "$bin" --test-threads=1 --nocapture \
+                   didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_delivery \
+                   > "$workdir/stream-$id.log" 2>&1; then
+                echo "$id $i" > "$workdir/stop"
+                return 1
+              fi
+            done
+            return 0
+          }
+
+          pids=()
+          for s in $(seq 1 "$streams"); do
+            stream "$s" &
+            pids+=($!)
           done
-          echo "no reproduction in $runs runs"
+
+          failed=0
+          for pid in "${pids[@]}"; do
+            wait "$pid" || failed=1
+          done
+
+          if [ "$failed" -eq 1 ] && [ -f "$workdir/stop" ]; then
+            read -r sid iter < "$workdir/stop"
+            echo "::group::failing run — stream $sid, iteration $iter"
+            cat "$workdir/stream-$sid.log"
+            echo "::endgroup::"
+            echo "::error::reproduced on stream $sid iteration $iter. Read two things in the log above: the \`outbox drain pass sent=\` count (sender), and the \`inbox:\` clause in the panic (non-empty ⇒ arrived but unmatched; empty ⇒ never arrived, mediator is the suspect)."
+            exit 1
+          fi
+
+          echo "no reproduction in $((streams * runs)) runs across $streams streams"
