@@ -2189,6 +2189,108 @@ mod pre_rotation_e2e_tests {
         );
     }
 
+    /// A metadata-only update leaves a head entry with **no** `updateKeys`, and
+    /// the DID must still be updatable afterwards.
+    ///
+    /// The regression, seen in production on a hosting-server DID: webvh
+    /// parameters are a delta, so that head inherits its update key from an
+    /// earlier entry — but the orchestrator read `validated_parameters.update_keys`
+    /// (what the entry *declared*, `None` here) instead of `active_update_keys`
+    /// (what validation carried forward). The empty list short-circuits
+    /// `load_active_update_key` before it looks up anything, so the DID became
+    /// permanently un-updatable and said "log entry has no update_keys — DID is
+    /// deactivated or malformed" about a DID that was neither deactivated nor
+    /// malformed. It reads as lost keys; the keys were never consulted.
+    ///
+    /// Two updates in sequence is the whole test — the first writes the head the
+    /// second has to read.
+    #[tokio::test]
+    async fn update_succeeds_after_a_metadata_only_entry_that_omits_update_keys() {
+        let (ts, seed_store) = setup("ctx-inherit").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-inherit",
+            0,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+
+        // v2: metadata only. No document, no pre-rotation, so nothing forces an
+        // update-key reveal and the entry lands with `updateKeys` absent.
+        update_did_webvh(
+            &deps,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                ttl: Some(600),
+                ..Default::default()
+            },
+            None,
+            "test",
+        )
+        .await
+        .expect("metadata-only update");
+        sleep(VERSION_TIME_GAP).await;
+
+        // Precondition: the head really does omit the parameter. Without this the
+        // test could pass for the wrong reason if the write path ever starts
+        // restating keys on a metadata-only entry.
+        let log = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+            .await
+            .expect("get_did_log")
+            .expect("log present");
+        let head = log
+            .lines()
+            .rfind(|l| !l.trim().is_empty())
+            .expect("head entry");
+        let head_json: serde_json::Value = serde_json::from_str(head).expect("head parses");
+        assert!(
+            head_json["parameters"].get("updateKeys").is_none(),
+            "the metadata-only entry should not restate updateKeys — got {}",
+            head_json["parameters"]
+        );
+
+        // v3: the update that used to fail. It has to sign with the key the head
+        // inherited rather than the one it declared, because it declared none.
+        let result = update_did_webvh(
+            &deps,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "v3")),
+                ..Default::default()
+            },
+            None,
+            "test",
+        )
+        .await
+        .expect("update on a DID whose head inherited its update keys");
+
+        assert!(result.new_version_id.starts_with("3-"));
+        assert_chain_validates(&ts, &did).await;
+
+        // And the inherited key is what stayed in force through v2 — i.e. the
+        // signer was the genesis key, not something re-minted along the way.
+        let (in_force, _) = committed_params(&ts, &did).await;
+        assert_eq!(
+            in_force.len(),
+            1,
+            "one update key in force across the inherit step"
+        );
+    }
+
     /// Read back the update keys and pre-rotation commitments actually in force
     /// after the last entry.
     ///

@@ -694,11 +694,30 @@ async fn run_update(
     }
 
     let last_params = last_state.validated_parameters.clone();
-    let last_update_keys: Vec<Multibase> = last_params
-        .update_keys
-        .as_ref()
-        .map(|arc| (**arc).clone())
-        .unwrap_or_default();
+    // `active_update_keys`, NOT `update_keys`. The two are different things and
+    // reading the wrong one bricks the DID.
+    //
+    // webvh parameters are a delta: an entry that does not restate `updateKeys`
+    // leaves the previous entry's in force. `didwebvh-rs` models that with two
+    // fields — `update_keys` is what *this entry declared* (`None` when it
+    // declared nothing) and `active_update_keys` is the effective set that
+    // validation carried forward (`parameters/mod.rs`, the `None =>` arm:
+    // "If absent, keep current updateKeys"). Only the second answers "which key
+    // signs the next entry", which is the question here.
+    //
+    // Reading `update_keys` therefore returned an empty list for every DID whose
+    // head entry omitted the parameter — which is exactly what this function
+    // writes for a metadata-only update (`set_update_keys` is `None` unless a new
+    // document or pre-rotation forces a reveal, so the entry lands as
+    // `"parameters": {}`). The DID was then permanently un-updatable: the empty
+    // list short-circuits `load_active_update_key` before it looks anything up,
+    // and reports "log entry has no update_keys — DID is deactivated or
+    // malformed" about a DID that is neither. The operator reads that as lost
+    // keys. The keys were never consulted.
+    //
+    // `next_key_hashes` needs no equivalent care: the library inherits it into
+    // the field itself, so `last_params.next_key_hashes` is already effective.
+    let last_update_keys: Vec<Multibase> = (*last_params.active_update_keys).clone();
     // Owned snapshot of the prior state. Taken here because `state` is moved
     // into the update config below, which ends `last_state`'s borrow — and a
     // plan needs the before-picture after that point.
