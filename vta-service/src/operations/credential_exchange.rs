@@ -1144,12 +1144,14 @@ fn dcql_format(format: &CredentialFormat) -> Option<&'static str> {
     match format {
         CredentialFormat::SdJwtVc => Some("dc+sd-jwt"),
         CredentialFormat::EddsaJcs2022 => Some("ldp_vc"),
-        // `MsoMdoc` is deliberately `None` even though the DCQL token is
-        // exactly the variant's serde tag. Returning `Some` here would let a
-        // stored mdoc past the guard in `candidate_from_stored`, which then
-        // cannot build a `CandidateCredential` — it has no way to decode
-        // `IssuerSigned` from CBOR (no codec in affinidi-mdoc 0.2.5). Keeping
-        // the two consistent means an mdoc is skipped, never half-matched.
+        // `MsoMdoc` stays `None` even though the DCQL token is exactly the
+        // variant's serde tag, and even though the body is now decodable
+        // (affinidi-mdoc 0.2.6). Admitting it here without a `present_single`
+        // arm trips `formats_admitted_for_dcql_are_all_presentable`, and that
+        // guard is right: a matched-but-unpresentable credential bails the
+        // *entire* `vp_token`, not just itself. Presenting an mdoc needs
+        // `DeviceResponse::to_cbor_bytes` (0.2.7), so matching and presentation
+        // land together in a follow-up rather than separately.
         CredentialFormat::MsoMdoc
         | CredentialFormat::Bbs2023
         | CredentialFormat::Zkp

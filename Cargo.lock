@@ -259,6 +259,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "affinidi-mdoc"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d30e7a1c8678393a0114d11f4418af6e894021add84f4656a1679f4670fcd910"
+dependencies = [
+ "aes-gcm",
+ "ciborium",
+ "ciborium-io",
+ "coset 0.3.8",
+ "hex",
+ "hkdf 0.12.4",
+ "hmac 0.12.1",
+ "p256 0.14.0",
+ "rand 0.9.5",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "time",
+ "tracing",
+]
+
+[[package]]
 name = "affinidi-meeting-place"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9627,6 +9651,7 @@ dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
+ "affinidi-mdoc",
  "affinidi-sd-jwt",
  "affinidi-sd-jwt-vc",
  "affinidi-secrets-resolver",
@@ -9634,12 +9659,14 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "coset 0.3.8",
  "ed25519-dalek",
  "multibase",
  "reqwest",
  "serde",
  "serde_json",
  "tempfile",
+ "time",
  "tokio",
  "tracing",
  "uuid",
