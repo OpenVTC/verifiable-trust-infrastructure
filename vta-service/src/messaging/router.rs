@@ -74,6 +74,9 @@ pub struct VtaState {
     pub did_templates_ks: KeyspaceHandle,
     pub audit_ks: KeyspaceHandle,
     pub imported_ks: KeyspaceHandle,
+    /// Non-extractable internal signing keys, mirrored from `AppState` so the
+    /// DIDComm signing oracle reaches the same keys the REST one does.
+    pub internal_ks: KeyspaceHandle,
     /// Persistent runtime state for service enable/disable
     /// (`operations::protocol::runtime_state`). Mirrored from `AppState`.
     pub service_state_ks: KeyspaceHandle,
@@ -185,6 +188,7 @@ impl From<&AppState> for VtaState {
             did_templates_ks: state.did_templates_ks.clone(),
             audit_ks: state.audit_ks.clone(),
             imported_ks: state.imported_ks.clone(),
+            internal_ks: state.internal_ks.clone(),
             service_state_ks: state.service_state_ks.clone(),
             #[cfg(feature = "webvh")]
             webvh_ks: state.webvh_ks.clone(),

@@ -1,5 +1,6 @@
 pub mod derivation;
 pub mod imported;
+pub mod internal;
 pub mod paths;
 pub mod seed_store;
 pub mod seeds;

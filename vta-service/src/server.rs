@@ -78,6 +78,10 @@ pub struct AppState {
     pub did_templates_ks: KeyspaceHandle,
     pub audit_ks: KeyspaceHandle,
     pub imported_ks: KeyspaceHandle,
+    /// Non-extractable internal signing keys. Separate from `imported_ks`
+    /// because that keyspace wraps under a seed-derived KEK; these must have
+    /// no path back to the mnemonic.
+    pub internal_ks: KeyspaceHandle,
     pub cache_ks: KeyspaceHandle,
     /// Vault — third-party credentials the holder has stored on this VTA.
     /// M1 reads only; upsert/delete/sync/release land in M2+. Encrypted at
@@ -301,6 +305,7 @@ pub async fn build_app_state(
     let did_templates_ks = apply_encryption(store.keyspace(crate::keyspaces::DID_TEMPLATES)?);
     let audit_ks = apply_encryption(store.keyspace(crate::keyspaces::AUDIT)?);
     let imported_ks = apply_encryption(store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?);
+    let internal_ks = apply_encryption(store.keyspace(crate::keyspaces::INTERNAL_KEYS)?);
     let cache_ks = apply_encryption(store.keyspace(crate::keyspaces::CACHE)?);
     let vault_ks = apply_encryption(store.keyspace(crate::keyspaces::VAULT)?);
     // Persistent runtime state for service enable/disable. Encrypted because
@@ -381,6 +386,7 @@ pub async fn build_app_state(
         did_templates_ks,
         audit_ks,
         imported_ks,
+        internal_ks,
         cache_ks,
         vault_ks,
         service_state_ks,

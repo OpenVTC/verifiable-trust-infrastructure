@@ -350,11 +350,13 @@ didcomm_handler!(
     key_management::create::CreateKeyBody,
     |s, auth, body| operations::keys::create_key(
         &s.keys_ks,
+        &s.internal_ks,
         &s.contexts_ks,
         &s.seed_store,
         &s.audit_ks,
         &auth,
         operations::keys::CreateKeyParams {
+            internal: body.internal.unwrap_or(false),
             key_type: body.key_type,
             derivation_path: if body.derivation_path.is_empty() {
                 None
@@ -459,6 +461,7 @@ didcomm_handler!(
         operations::keys::sign_payload(
             &s.keys_ks,
             &s.imported_ks,
+            &s.internal_ks,
             &s.contexts_ks,
             &s.acl_ks,
             &s.seed_store,

@@ -8,6 +8,7 @@ use vta_sdk::prelude::*;
 
 use crate::render::{is_full_display, print_full_entry, print_full_list_title, print_widget};
 
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_key_create(
     client: &VtaClient,
     key_type: &str,
@@ -15,6 +16,8 @@ pub async fn cmd_key_create(
     mnemonic: Option<String>,
     label: Option<String>,
     context_id: Option<String>,
+    internal: bool,
+    yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let key_type = match key_type {
         "ed25519" => KeyType::Ed25519,
@@ -26,7 +29,49 @@ pub async fn cmd_key_create(
             );
         }
     };
+    // An internal key is the one thing this CLI can create that cannot be
+    // undone by any later command, restored from the mnemonic, or recovered
+    // from a backup. Say so plainly, and require the operator to type the
+    // consequence rather than mash `y` — a habitual yes/no prompt is not
+    // proportionate to a permanent, silent loss of signing ability.
+    if internal {
+        eprintln!();
+        eprintln!("  ⚠  You are about to create a NON-RECOVERABLE internal key.");
+        eprintln!();
+        eprintln!("     • Its material is generated from the system CSPRNG and is NOT");
+        eprintln!("       derived from your BIP-39 seed. Your 24-word mnemonic will NOT");
+        eprintln!("       recover it.");
+        eprintln!("     • It is excluded from `pnm backup export`. A restored VTA will");
+        eprintln!("       NOT have it.");
+        eprintln!("     • It can never be exported — not by you, not by an admin, not");
+        eprintln!("       under internal authority. The VTA will only sign with it.");
+        eprintln!("     • If this VTA's storage is lost, every signature this key was");
+        eprintln!("       the sole authority for becomes unproducible, permanently.");
+        eprintln!();
+        eprintln!("     It CANNOT be used to sign did:webvh log entries, precisely");
+        eprintln!("     because losing it would freeze that DID forever. It CAN be a");
+        eprintln!("     signing verificationMethod inside a DID document.");
+        eprintln!();
+
+        if !yes {
+            eprint!("     Type 'i understand this key cannot be recovered' to continue: ");
+            use std::io::{BufRead, Write};
+            std::io::stderr().flush().ok();
+            let mut line = String::new();
+            std::io::stdin().lock().read_line(&mut line)?;
+            if !line
+                .trim()
+                .eq_ignore_ascii_case("i understand this key cannot be recovered")
+            {
+                return Err("aborted: confirmation phrase not matched".into());
+            }
+        }
+    }
+
     let mut req = CreateKeyRequest::new(key_type);
+    if internal {
+        req.internal = Some(true);
+    }
     if let Some(p) = derivation_path {
         req = req.derivation_path(p);
     }
@@ -46,6 +91,12 @@ pub async fn cmd_key_create(
     println!("  Derivation Path: {}", resp.derivation_path);
     println!("  Public Key:      {}", resp.public_key);
     println!("  Status:          {}", resp.status);
+    if resp.origin == vta_sdk::keys::KeyOrigin::Internal {
+        println!();
+        println!("  ⚠  This is an internal key. It cannot be exported, is excluded from");
+        println!("     backups, and cannot be recovered from your mnemonic. If this VTA's");
+        println!("     storage is lost, this key is gone.");
+    }
     if let Some(label) = &resp.label {
         println!("  Label:           {label}");
     }

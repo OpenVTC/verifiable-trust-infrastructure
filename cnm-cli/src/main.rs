@@ -650,6 +650,18 @@ enum KeyCommands {
         /// Application context ID
         #[arg(long)]
         context_id: Option<String>,
+        /// Create a NON-RECOVERABLE internal key.
+        ///
+        /// Generated from the system CSPRNG, NOT derived from your BIP-39 seed,
+        /// excluded from backups, and never exported by any surface — the VTA
+        /// will only ever sign with it. If this VTA's storage is lost the key is
+        /// gone permanently. Cannot sign did:webvh log entries; may be a signing
+        /// verificationMethod inside a DID document.
+        #[arg(long)]
+        internal: bool,
+        /// Skip the internal-key confirmation prompt (automation only).
+        #[arg(long)]
+        yes: bool,
     },
     /// Get a key by ID
     Get {
@@ -1312,6 +1324,8 @@ async fn main() {
                 mnemonic,
                 label,
                 context_id,
+                internal,
+                yes,
             } => {
                 keys::cmd_key_create(
                     &client,
@@ -1320,6 +1334,8 @@ async fn main() {
                     mnemonic,
                     label,
                     context_id,
+                    internal,
+                    yes,
                 )
                 .await
             }

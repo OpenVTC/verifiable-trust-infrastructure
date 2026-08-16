@@ -20,6 +20,13 @@ pub struct CreateKeyBody {
     pub label: Option<String>,
     #[serde(default, alias = "context_id", skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
+    /// Mint a **non-extractable internal key** rather than a derived one.
+    ///
+    /// Absent or `false` keeps today's behaviour exactly. `true` mints a key
+    /// from the system CSPRNG that is never exported, never backed up, and
+    /// **cannot be recovered** — see `vta_keys::internal`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub internal: Option<bool>,
 }
 
 // Manual Debug — `mnemonic` is the BIP-39 phrase that recovers the
@@ -108,6 +115,7 @@ mod null_member_tests {
     fn an_unset_member_is_absent_from_the_wire_not_null() {
         // What `create_key` builds for a plain, unlabelled, uncontexted key.
         let minimal = CreateKeyBody {
+            internal: None,
             key_type: KeyType::Ed25519,
             derivation_path: String::new(),
             mnemonic: None,
@@ -127,6 +135,7 @@ mod null_member_tests {
     #[test]
     fn a_set_member_still_serialises() {
         let labelled = CreateKeyBody {
+            internal: None,
             key_type: KeyType::Ed25519,
             derivation_path: "m/26'/2'/0'/1'".into(),
             mnemonic: None,

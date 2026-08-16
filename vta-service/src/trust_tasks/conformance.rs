@@ -836,6 +836,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::keys::create::v0_1::Payload,
                 specs::keys::create::v0_1::Response,
                 to_v(CreateKeyBody {
+                    internal: None,
                     key_type: KeyType::Ed25519,
                     derivation_path: "m/26'/2'/0'/1'".into(),
                     mnemonic: None,
