@@ -6770,6 +6770,7 @@ dependencies = [
  "ring",
  "rustls-pki-types",
  "time",
+ "x509-parser 0.16.0",
  "yasna",
 ]
 
@@ -9662,6 +9663,7 @@ dependencies = [
  "coset 0.3.8",
  "ed25519-dalek",
  "multibase",
+ "rcgen",
  "reqwest",
  "serde",
  "serde_json",
@@ -9673,6 +9675,7 @@ dependencies = [
  "vta-keyspaces",
  "vta-sdk",
  "vti-common",
+ "x509-parser 0.18.1",
 ]
 
 [[package]]
@@ -9826,6 +9829,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-vsock",
+ "toml 1.1.4+spec-1.1.0",
  "tower",
  "tracing",
  "trust-tasks-capability-client",
@@ -10524,6 +10528,7 @@ dependencies = [
  "lazy_static",
  "nom",
  "oid-registry 0.7.1",
+ "ring",
  "rusticata-macros",
  "thiserror 1.0.69",
  "time",
@@ -10554,6 +10559,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202"
 dependencies = [
  "asn1-rs 0.7.2",
+ "aws-lc-rs",
  "data-encoding",
  "der-parser 10.0.0",
  "lazy_static",

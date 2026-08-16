@@ -54,6 +54,7 @@ pub mod bbs;
 pub mod consent;
 pub mod di_verify;
 pub mod index;
+pub mod mdoc_trust;
 pub mod mint;
 pub mod model;
 pub mod present;

@@ -115,6 +115,8 @@ url = { workspace = true, optional = true }
 dialoguer = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Parses the config fixtures in the VaultConfig tests.
+toml = { workspace = true }
 tempfile = "3"
 # `base64` is now in the main `[dependencies]` (audit envelope encodes
 # 32-byte hashes as base64url strings).

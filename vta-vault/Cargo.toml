@@ -44,6 +44,7 @@ affinidi-sd-jwt-vc = { workspace = true }
 # digests, validityInfo) and the CBOR codec that makes a stored body readable.
 affinidi-mdoc = { workspace = true }
 coset = { workspace = true }
+x509-parser = { workspace = true }
 time = { workspace = true }
 affinidi-status-list = { workspace = true }
 affinidi-did-resolver-cache-sdk = { workspace = true }
@@ -60,5 +61,7 @@ tracing = { workspace = true }
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Generates the IACA -> Document Signer chains the mdoc trust tests need.
+rcgen = { version = "0.13", features = ["x509-parser"] }
 tokio = { workspace = true }
 tempfile = "3"

@@ -129,6 +129,12 @@ affinidi-mdoc = { version = "0.2.6", default-features = false, features = ["es25
 # transitive is how a version bump elsewhere breaks an unrelated crate.
 coset = "0.3"
 time = "0.3"
+# X.509 for the mdoc IACA trust path. `verify-aws` rather than the default
+# `verify` feature: that one pulls `ring`, which currently only reaches this
+# workspace through a dev-dependency, while `aws-lc-rs` is already a real
+# dependency (it replaced `rsa` for KMS CMS unwrap in 0.5). Same crypto, no new
+# production tree.
+x509-parser = { version = "0.18", features = ["verify-aws"] }
 affinidi-openid4vci = "0.2"
 affinidi-secrets-resolver = "0.5"
 # Reliable messaging delivery layer (durable outbox + drain + §5a confirmation)
