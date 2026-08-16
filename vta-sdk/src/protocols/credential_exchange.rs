@@ -227,6 +227,7 @@ mod tests {
         }))
         .unwrap();
         let body = QueryBody {
+            oid4vp_session: None,
             dcql_query: dcql,
             nonce: "n-123".into(),
             purpose: "join the Acme community".into(),
