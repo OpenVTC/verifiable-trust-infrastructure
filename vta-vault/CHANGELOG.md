@@ -2,6 +2,53 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.2.0...vta-vault-v0.3.0) — 2026-08-16
+
+
+### Added
+
+- **vta-service**: Present ISO mdoc credentials over OID4VP ([#993](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/993))
+
+* feat(vta-service)!: present ISO mdoc credentials over OID4VP
+
+  Completes mdoc support. A VTA could receive, verify and store an mdoc; it could
+  not present one. This is the last piece, and it needed three things the other
+  formats do not.
+
+  An OID4VP session on the query wire. An mdoc's holder binding is a DeviceAuth
+  signature over an ISO 18013-7 SessionTranscript, whose handover is
+  [clientId, responseUri, nonce, mdocGeneratedNonce]. Two of those exist only in
+  an OID4VP exchange, so a verifier that wants an mdoc supplies them; QueryBody
+  gains an optional oid4vp_session carrying OID4VP's own field names, so a
+  verifier can copy them out of its authorization request unrenamed.
+
+  Absent, an mdoc is not offered at all rather than offered unbound. A DeviceAuth
+  over invented handover values verifies nowhere and, worse, looks bound. The gate
+  lives in match_held so matchable and presentable stay the same set: a
+  matched-but-unpresentable credential bails the entire vp_token, not just itself,
+  taking every other credential the verifier legitimately asked for with it. A
+  mutation removing the gate fails the test that pins this.
+
+  Holder identity that is key-shaped. ConsentGrant.holder_did becomes
+  HolderIdentity::{Subject, DeviceKey}: every other format names a subject DID,
+  while an mdoc names a device key discovered at receive. Both resolve to a
+  did:key because ConsentRecord::verify_proof binds the proof's
+  verificationMethod to the data subject — the variant records provenance that
+  would otherwise be silently lost, not a different kind of value.
+
+  A P-256 consent receipt. The device key signs its own receipt under
+  ecdsa-jcs-2019 (affinidi-data-integrity 0.7.10), where every other format uses
+  eddsa-jcs-2022. Signing the receipt with some other key would break the
+  verificationMethod binding above; that is why the cryptosuite was added upstream
+  rather than worked around here.
+
+  Presentation itself is not a present_single arm: an mdoc vp_token entry is
+  base64url CBOR of a DeviceResponse, not a W3C VP object, so present_mdoc sits
+  beside it. Selective disclosure is by omission — only the [namespace, element]
+  paths the query asked for are included.
+
+
+
 ## [0.2.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.1.4...vta-vault-v0.2.0) — 2026-08-16
 
 
