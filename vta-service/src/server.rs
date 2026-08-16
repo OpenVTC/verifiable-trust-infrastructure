@@ -109,6 +109,13 @@ pub struct AppState {
     pub backup_blob_dir: std::path::PathBuf,
     #[cfg(feature = "webvh")]
     pub webvh_ks: KeyspaceHandle,
+    /// IACA roots this VTA accepts as ISO 18013-5 mdoc issuers, parsed once at
+    /// boot from `[vault] mdoc_iaca_trust_anchors`.
+    ///
+    /// Empty unless configured, and the resolver fails closed on empty — mdoc
+    /// is the one credential format whose issuer is not a resolvable DID, so
+    /// there is no safe default to fall back to.
+    pub mdoc_trust: Arc<vta_vault::mdoc_trust::IacaTrustAnchors>,
     /// In-flight WebAuthn registration state for the
     /// passkey-as-verificationMethod enrolment ceremony. Holds
     /// `PasskeyRegistration` keyed by ceremony id; consumed (taken)
@@ -271,6 +278,14 @@ pub async fn build_app_state(
     restart_tx: watch::Sender<bool>,
     parts: AppStateParts,
 ) -> Result<AppState, AppError> {
+    // Parse the configured IACA roots once, here, so a malformed certificate
+    // fails the boot rather than surfacing as a puzzling rejection on the first
+    // mdoc that arrives. Empty is legal and means "this VTA accepts no mdoc
+    // issuers" — the resolver fails closed on it.
+    let mdoc_trust = Arc::new(vta_vault::mdoc_trust::IacaTrustAnchors::from_pem(
+        &config.vault.mdoc_iaca_trust_anchors,
+    )?);
+
     let apply_encryption = |ks: KeyspaceHandle| -> KeyspaceHandle {
         if let Some(key) = storage_encryption_key {
             ks.with_encryption(key)
@@ -394,6 +409,7 @@ pub async fn build_app_state(
         webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
         telemetry,
         wrapping_cache: crate::keys::wrapping::WrappingKeyCache::new(),
+        mdoc_trust,
         config: Arc::new(RwLock::new(config)),
         seed_store,
         did_resolver: auth.did_resolver.clone(),

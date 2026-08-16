@@ -1008,6 +1008,13 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
 
     let policy_ks = store.keyspace(crate::keyspaces::POLICY).unwrap();
     let state = crate::server::AppState {
+        // Empty by default: a test VTA trusts no mdoc issuer until one is
+        // configured, matching the fail-closed production default. A test that
+        // needs mdoc receive builds its own anchors and swaps this out.
+        mdoc_trust: std::sync::Arc::new(
+            vta_vault::mdoc_trust::IacaTrustAnchors::from_pem(&[])
+                .expect("an empty anchor set always parses"),
+        ),
         keys_ks: keys_ks.clone(),
         sessions_ks: sessions_ks.clone(),
         acl_ks: acl_ks.clone(),
