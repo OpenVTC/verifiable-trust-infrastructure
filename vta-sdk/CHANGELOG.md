@@ -2,6 +2,50 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.23.3...vta-sdk-v0.24.0) — 2026-08-16
+
+
+### Added
+
+- **vtc**: Let an applicant poll a join without knowing its request id ([#985](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/985))
+
+The status poll exists so an applicant can find out what became of a join
+  the community never volunteered an answer for. It could not be used for
+  that.
+
+  The id it takes is the *community's*, minted here on submit and learned by
+  the applicant from the first correlated reply. An applicant that never
+  received that reply — the exact failure the poll is meant to recover from
+  — holds only the id of the document it sent, which this VTC has never
+  heard of, and gets `not found` for it. So the poll worked whenever it was
+  not needed and failed whenever it was.
+
+  Downstream the two recovery paths shared the blind spot and failed
+  together: OpenVTC gates polling on having a confirmed id, and its other
+  recovery (collecting stored mail) is empty once the mail has been acked
+  and deleted. The record then sits Pending forever with no way back —
+  OpenVTC/openvtc#221, where the only fix was hand-editing a config file.
+
+  `requestId` is now optional. Omitted, it means "what is my open request?",
+  and the community resolves it from the authenticated applicant. That is
+  safe and unambiguous for the same reason the dedup on submit is: at most
+  one request per applicant is open at a time, and the applicant is already
+  proven by the authcrypt sender over DIDComm/TSP. No new auth surface, no
+  new route, no new domain tag — the id simply stops being the only way to
+  name a request.
+
+  The response has always carried `requestId`, so one id-less poll also
+  repairs the applicant's record and every later poll can quote it. That is
+  what turns this from a query into a recovery.
+
+  `find_open_request` is now `pub(crate)`: it was the dedup's private
+  helper, and it is the same invariant both callers rely on.
+
+  REST keeps requiring the id — it is a path segment there, and the stranded
+  case is a messaging one. Worth revisiting if a REST applicant ever hits it.
+
+
+
 ## [0.23.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.23.2...vta-sdk-v0.23.3) — 2026-08-14
 
 

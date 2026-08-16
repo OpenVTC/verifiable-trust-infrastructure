@@ -2,7 +2,7 @@
 name = "vta-cli-common"
 description = "Shared CLI command handlers and rendering helpers for VTA CLIs"
 readme = "README.md"
-version = "0.10.31"
+version = "0.10.32"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -18,7 +18,7 @@ agent-names = ["vta-sdk/agent-names"]
 [dependencies]
 # `time` for the consent loop's bounded wait between polls.
 tokio = { workspace = true, features = ["time"] }
-vta-sdk = { path = "../vta-sdk", version = "0.23", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.24", features = [
   "client",
   "sealed-transfer",
   "provision-integration",
