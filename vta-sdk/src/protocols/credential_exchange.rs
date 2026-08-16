@@ -99,6 +99,38 @@ pub struct QueryBody {
     /// The verifier's stated reason for the request — shown to the holder
     /// (purpose binding). Never optional.
     pub purpose: String,
+    /// OID4VP session context, required only to present an **ISO mdoc**.
+    ///
+    /// An mdoc's holder binding is a `DeviceAuth` signature over a
+    /// `SessionTranscript`, and ISO 18013-7 defines that transcript's handover
+    /// as `[clientId, responseUri, nonce, mdocGeneratedNonce]`. Two of those
+    /// four have no meaning in a Trust-Task exchange, so a verifier that wants
+    /// an mdoc has to supply them — they are the OID4VP session it is really
+    /// running, which this envelope otherwise knows nothing about.
+    ///
+    /// **Absent means mdoc credentials are not offered at all**, rather than
+    /// offered without holder binding. A `DeviceAuth` signed over invented
+    /// handover values would verify nowhere; worse, it would *look* bound.
+    /// Every other format ignores this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oid4vp_session: Option<Oid4vpSession>,
+}
+
+/// The OID4VP session an mdoc presentation is bound to (ISO 18013-7 §B.4.4).
+///
+/// Field names are OID4VP's own, like the rest of this envelope — deliberately
+/// not this workspace's camelCase convention, because a verifier copying values
+/// out of its OID4VP authorization request should not have to rename them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Oid4vpSession {
+    /// The verifier's OID4VP `client_id`.
+    pub client_id: String,
+    /// The verifier's OID4VP `response_uri`.
+    pub response_uri: String,
+    /// The verifier-generated nonce ISO 18013-7 adds to the handover, distinct
+    /// from [`QueryBody::nonce`]: both appear in the transcript, and collapsing
+    /// them would silently weaken the binding.
+    pub mdoc_generated_nonce: String,
 }
 
 /// `present/0.1` — holder → verifier. The OID4VP `vp_token` carrying the

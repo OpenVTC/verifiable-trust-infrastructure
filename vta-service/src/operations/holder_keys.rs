@@ -21,7 +21,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey};
 use serde_json::Value;
 use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::auth::AuthClaims;
 use crate::keys::seed_store::SeedStore;
@@ -289,4 +289,99 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
     }
+}
+
+/// The signing material for presenting an **ISO mdoc**.
+///
+/// Separate from [`HolderKeys`] because an mdoc's holder is a *key*, not a DID:
+/// there is no subject to resolve, and the two things that must be signed are
+/// different from every other format's.
+#[derive(Debug)]
+pub struct MdocHolderKeys {
+    /// The `did:key` the device key resolves to. Names the consent receipt's
+    /// `dpv:hasDataSubject`, which must be the DID whose key signs it —
+    /// `ConsentRecord::verify_proof` binds the two.
+    pub device_did: String,
+    /// P-256 secret, in Data-Integrity form, for signing the consent receipt
+    /// under `ecdsa-jcs-2019`.
+    pub consent_secret: Secret,
+    /// The same key as raw SEC1 bytes, for the COSE_Sign1 `DeviceAuth` that
+    /// binds the presentation to the verifier's session.
+    pub device_private: Zeroizing<Vec<u8>>,
+}
+
+/// Resolve the VTA-managed **mdoc device key** named by `key_id`, gated by the
+/// caller's ACL exactly as [`resolve_holder_keys`] is.
+///
+/// `key_id` comes off the stored credential's `MDOC_DEVICE_KEY_TAG`, recorded at
+/// receive — an mdoc carries no subject DID to look one up from, and #990
+/// refuses at receive any mdoc whose device key this VTA does not hold, so a
+/// stored one always resolves here.
+pub async fn resolve_mdoc_device_keys(
+    keys_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    auth: &AuthClaims,
+    key_id: &str,
+) -> Result<MdocHolderKeys, AppError> {
+    let record: KeyRecord = keys_ks
+        .get(crate::keys::store_key(key_id))
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "mdoc device key `{key_id}` is not managed by this VTA"
+            ))
+        })?;
+
+    if record.key_type != KeyType::P256 {
+        return Err(AppError::Validation(format!(
+            "mdoc device key `{key_id}` is {:?}, but ISO 18013-5 device keys are P-256",
+            record.key_type
+        )));
+    }
+    if record.status != KeyStatus::Active {
+        return Err(AppError::Validation(format!(
+            "mdoc device key `{key_id}` is not active"
+        )));
+    }
+    if record.origin != KeyOrigin::Derived {
+        return Err(AppError::Validation(
+            "imported mdoc device keys are not supported for presentation yet".into(),
+        ));
+    }
+
+    // ── Privilege boundary: only sign with a key in an authorised context. ──
+    // Same gate as `resolve_holder_keys`; without it a caller could present
+    // another context's mdoc by naming its device key.
+    match &record.context_id {
+        Some(ctx) => auth.require_context(ctx)?,
+        None => auth.require_super_admin()?,
+    }
+
+    let mut seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
+        .await
+        .map_err(|e| AppError::Internal(format!("seed load: {e}")))?;
+    let bip32 = ExtendedSigningKey::from_seed(&seed)
+        .map_err(|e| AppError::Internal(format!("BIP-32 root key: {e}")))?;
+    seed.zeroize();
+
+    let p256_secret =
+        vta_keys::derivation::Bip32Extension::derive_p256(&bip32, &record.derivation_path)?;
+    let device_private = Zeroizing::new(p256_secret.secret_key.to_bytes().to_vec());
+
+    // The device key's canonical `did:key`, so the receipt has a subject that
+    // resolves to the key that signed it.
+    let device_did = format!("did:key:{}", record.public_key);
+    let vm = format!("{device_did}#{}", record.public_key);
+
+    let consent_secret = Secret::from_multibase(
+        &vta_keys::encode_private_multibase(&KeyType::P256, &device_private),
+        Some(&vm),
+    )
+    .map_err(|e| AppError::Internal(format!("build P-256 consent secret: {e}")))?;
+
+    Ok(MdocHolderKeys {
+        device_did,
+        consent_secret,
+        device_private,
+    })
 }

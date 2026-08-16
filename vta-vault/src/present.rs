@@ -603,7 +603,7 @@ mod tests {
         valid_until: DateTime<Utc>,
     ) -> ConsentGrant<'a> {
         ConsentGrant {
-            holder_did,
+            holder: crate::consent::HolderIdentity::Subject(holder_did),
             credential_id,
             verifier_did,
             purpose: "join the Acme community",

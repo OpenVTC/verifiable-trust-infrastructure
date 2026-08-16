@@ -287,10 +287,38 @@ impl ConsentRecord {
 /// device / plugin gathers these; the VTA constructs, signs, and stores the
 /// record.
 #[derive(Debug, Clone)]
+pub enum HolderIdentity<'a> {
+    /// The credential's own subject `did:key` — Data-Integrity and SD-JWT-VC,
+    /// where the credential names its holder.
+    Subject(&'a str),
+    /// A `did:key` derived from an **mdoc's MSO `deviceKey`**.
+    ///
+    /// An mdoc names no holder: it binds to a *key*, and the VTA discovers
+    /// which key at receive (`MDOC_DEVICE_KEY_TAG`). The `did:key` here is that
+    /// device key's canonical form, minted so the receipt has a verifiable
+    /// subject — not an identifier the credential ever carried. Keeping it a
+    /// distinct variant stops that distinction being quietly lost.
+    DeviceKey(&'a str),
+}
+
+impl<'a> HolderIdentity<'a> {
+    /// The `did:key` this identity resolves to — what the receipt records.
+    pub fn did(&self) -> &'a str {
+        match self {
+            Self::Subject(did) | Self::DeviceKey(did) => did,
+        }
+    }
+}
+
 pub struct ConsentGrant<'a> {
-    /// The holder DID — `dpv:hasDataSubject`. Must be a `did:key` (the holder
-    /// key signs the receipt).
-    pub holder_did: &'a str,
+    /// Who the receipt names as `dpv:hasDataSubject`, and why.
+    ///
+    /// Always resolves to a `did:key`: the holder key signs the receipt, and
+    /// [`ConsentRecord::verify_proof`] binds the proof's `verificationMethod`
+    /// to the data subject, so a subject that does not resolve to the signing
+    /// key would make the receipt unverifiable. The variant records where that
+    /// identity came from, which is not the same for every format.
+    pub holder: HolderIdentity<'a>,
     /// The **specific held credential** this consent is *about* — its local
     /// vault id (`dct:source`). Consent is per-credential (§13): the record
     /// only authorizes disclosing claims of *this* credential. The capture
@@ -313,7 +341,7 @@ pub struct ConsentGrant<'a> {
 /// with the holder key (`holder_key`, a VTA-managed `Secret`), and persisted
 /// under `consent:<id>`. Returns the stored, signed record.
 ///
-/// `holder_key`'s verification method must be under `grant.holder_did` — the
+/// `holder_key`'s verification method must be under `grant.holder.did()` — the
 /// signed proof's `verificationMethod` is what [`verify_proof`] binds to the
 /// `dataSubject`.
 ///
@@ -323,9 +351,9 @@ pub async fn create(
     grant: &ConsentGrant<'_>,
     holder_key: &Secret,
 ) -> Result<ConsentRecord, AppError> {
-    if grant.holder_did.trim().is_empty() {
+    if grant.holder.did().trim().is_empty() {
         return Err(AppError::Validation(
-            "consent holder_did must be non-empty".into(),
+            "consent holder identity must resolve to a non-empty did:key".into(),
         ));
     }
     if grant.verifier_did.trim().is_empty() {
@@ -353,7 +381,7 @@ pub async fn create(
         type_: RecordType::ConsentRecord,
         identifier: id.clone(),
         conforms_to: CONFORMS_TO.to_string(),
-        data_subject: grant.holder_did.to_string(),
+        data_subject: grant.holder.did().to_string(),
         process: ConsentProcess {
             type_: ProcessType::Process,
             purpose: grant.purpose.to_string(),
@@ -565,7 +593,7 @@ mod tests {
         valid_until: DateTime<Utc>,
     ) -> ConsentGrant<'a> {
         ConsentGrant {
-            holder_did: holder,
+            holder: HolderIdentity::Subject(holder),
             credential_id: "cred-under-test",
             verifier_did: verifier,
             purpose: "join the Acme community",
@@ -707,7 +735,7 @@ mod tests {
         let valid_until = now + Duration::hours(1);
 
         let g = ConsentGrant {
-            holder_did: &holder,
+            holder: HolderIdentity::Subject(&holder),
             credential_id: "cred-A",
             verifier_did: verifier,
             purpose: "join the Acme community",
@@ -741,7 +769,7 @@ mod tests {
         let (_dir, _store, vault) = fresh_vault();
         let (holder, key) = holder_identity([10u8; 32]);
         let g = ConsentGrant {
-            holder_did: &holder,
+            holder: HolderIdentity::Subject(&holder),
             credential_id: "",
             verifier_did: "did:web:acme-verifier.example",
             purpose: "join",

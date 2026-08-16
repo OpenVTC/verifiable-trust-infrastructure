@@ -37,16 +37,19 @@ use std::sync::Arc;
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_openid4vp::{CandidateCredential, ClaimPathSegment, DcqlQuery, Oid4vpError};
 use affinidi_secrets_resolver::secrets::Secret;
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
+use vta_sdk::protocols::credential_exchange::Oid4vpSession;
 use vta_sdk::protocols::credential_exchange::{IssueBody, PresentBody, QueryBody, RequestBody};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
 use crate::auth::AuthClaims;
 use crate::keys::seed_store::SeedStore;
-use crate::operations::holder_keys::resolve_holder_keys;
+use crate::operations::holder_keys::{resolve_holder_keys, resolve_mdoc_device_keys};
 use crate::vault::consent::{self, ConsentGrant};
 use crate::vault::model::{CredentialFormat, StoredCredential};
 use crate::vault::query::CredentialQuery as VaultQuery;
@@ -384,6 +387,7 @@ pub struct HeldMatch {
 pub fn match_held(
     query: &DcqlQuery,
     held: &[StoredCredential],
+    can_bind_mdoc: bool,
 ) -> Result<Vec<HeldMatch>, AppError> {
     query
         .validate()
@@ -391,6 +395,15 @@ pub fn match_held(
 
     let mut candidates = Vec::with_capacity(held.len());
     for stored in held {
+        // Keep *matchable* and *presentable* the same set. An mdoc can only be
+        // presented with a `DeviceAuth` bound to an OID4VP session transcript;
+        // without that session it is unpresentable, so it must not become a
+        // candidate either. Offering it would let it match and then fail in
+        // `present_single`, bailing the entire `vp_token` — including every
+        // other credential the verifier legitimately asked for.
+        if stored.format == CredentialFormat::MsoMdoc && !can_bind_mdoc {
+            continue;
+        }
         if let Some(candidate) = candidate_from_stored(stored)? {
             candidates.push(candidate);
         }
@@ -457,10 +470,52 @@ fn candidate_from_stored(
             })?;
             (vc, None, true)
         }
+        CredentialFormat::MsoMdoc => {
+            // Structure-only decode; this credential was verified at receive.
+            // What matters is that the claims tree and `doctype` come from the
+            // **signed** MSO rather than any outer member — the codec
+            // guarantees that.
+            let issued =
+                affinidi_mdoc::IssuerSigned::from_cbor_bytes(&stored.body).map_err(|e| {
+                    AppError::Validation(format!(
+                        "credential `{}` is not a decodable mdoc: {e}",
+                        stored.id
+                    ))
+                })?;
+
+            // DCQL addresses an mdoc claim as [namespace, elementIdentifier]
+            // (OpenID4VP §6.4.1), so the tree is namespace → {element → value},
+            // not the flat object the JSON formats use.
+            let mut claims = serde_json::Map::new();
+            for (ns, items) in &issued.namespaces {
+                let mut elements = serde_json::Map::new();
+                for item in items {
+                    elements.insert(
+                        item.inner.element_identifier.clone(),
+                        affinidi_mdoc::cbor_to_json(&item.inner.element_value),
+                    );
+                }
+                claims.insert(ns.clone(), Value::Object(elements));
+            }
+
+            // An mdoc always proves holder binding through the MSO's mandatory
+            // `deviceKey`, unlike SD-JWT-VC's optional `cnf` — and #990 refuses
+            // at receive any mdoc whose device key this VTA does not hold, so a
+            // stored one is always presentable in that respect.
+            (Value::Object(claims), None, true)
+        }
         // Unreachable: `dcql_format` returned `Some` only for the arms above.
-        CredentialFormat::MsoMdoc | CredentialFormat::Zkp | CredentialFormat::Other(_) => {
+        CredentialFormat::Zkp | CredentialFormat::Other(_) => {
             return Ok(None);
         }
+    };
+
+    // `doctype` is the mdoc counterpart of `vct`: DCQL narrows an `mso_mdoc`
+    // query with `meta.doctype_value`, and a candidate leaving it `None`
+    // silently fails to match every doctype-qualified query.
+    let doctype = match stored.format {
+        CredentialFormat::MsoMdoc => stored.types.first().cloned(),
+        _ => None,
     };
 
     Ok(Some(CandidateCredential {
@@ -468,7 +523,7 @@ fn candidate_from_stored(
         format: format.to_string(),
         claims,
         vct,
-        doctype: None,
+        doctype,
         supports_holder_binding,
     }))
 }
@@ -481,9 +536,10 @@ fn candidate_from_stored(
 pub async fn match_vault(
     vault: &KeyspaceHandle,
     query: &DcqlQuery,
+    session: Option<&Oid4vpSession>,
 ) -> Result<Vec<HeldMatch>, AppError> {
     let held = gather_for_query(vault, query).await?;
-    match_held(query, &held)
+    match_held(query, &held, session.is_some())
 }
 
 /// Collect held credentials whose `type` / `vct` index matches a discriminator
@@ -545,6 +601,13 @@ fn meta_type_values(meta: Option<&serde_json::Map<String, Value>>) -> Vec<String
         if let Some(array) = meta.get(key).and_then(Value::as_array) {
             out.extend(array.iter().filter_map(|v| v.as_str().map(str::to_string)));
         }
+    }
+    // mdoc discriminates on `doctype_value` — a single string, not an array.
+    // `receive_mdoc` stores the MSO's docType as the credential's only `type`,
+    // so it lands in the same index the other formats are gathered from and
+    // needs no second lookup path.
+    if let Some(doctype) = meta.get("doctype_value").and_then(Value::as_str) {
+        out.push(doctype.to_string());
     }
     out
 }
@@ -612,6 +675,79 @@ async fn present_single(
     }
 }
 
+/// Present an **ISO mdoc** as an OID4VP `vp_token` entry: base64url-no-pad CBOR
+/// of a `DeviceResponse`, **not** a W3C VP object like every other format here.
+///
+/// The holder binding is a `DeviceAuth` COSE_Sign1 over the ISO 18013-7 session
+/// transcript, which is why this needs an [`Oid4vpSession`] the other formats
+/// have no use for: two of the transcript's four handover members (`client_id`,
+/// `response_uri`) exist only in an OID4VP exchange. A transcript built from
+/// invented values would produce a signature no verifier can reconstruct — and,
+/// worse, one that *looks* like holder binding.
+#[allow(clippy::too_many_arguments)]
+async fn present_mdoc(
+    stored: &StoredCredential,
+    disclosed_paths: &[Vec<String>],
+    device_private: &[u8],
+    session: &Oid4vpSession,
+    nonce: &str,
+) -> Result<Value, AppError> {
+    use affinidi_mdoc::es256_cose::Es256CoseSigner;
+
+    let issued = affinidi_mdoc::IssuerSigned::from_cbor_bytes(&stored.body).map_err(|e| {
+        AppError::Validation(format!(
+            "stored mdoc `{}` no longer decodes: {e}",
+            stored.id
+        ))
+    })?;
+
+    // DCQL claim paths for an mdoc are [namespace, elementIdentifier], so the
+    // disclosure set is grouped by namespace rather than being a flat claim
+    // list. Anything the query did not ask for is simply not included — that
+    // omission *is* the selective disclosure.
+    let mut requested: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for path in disclosed_paths {
+        if let [namespace, element] = path.as_slice() {
+            requested
+                .entry(namespace.clone())
+                .or_default()
+                .push(element.clone());
+        }
+    }
+    if requested.is_empty() {
+        return Err(AppError::Validation(format!(
+            "no [namespace, element] claim path matched mdoc `{}`",
+            stored.id
+        )));
+    }
+
+    let transcript = affinidi_mdoc::SessionTranscript::new_oid4vp(
+        &session.client_id,
+        &session.response_uri,
+        nonce,
+        &session.mdoc_generated_nonce,
+    );
+
+    let signer = Es256CoseSigner::from_bytes(device_private)
+        .map_err(|e| AppError::Internal(format!("mdoc device signer: {e}")))?;
+
+    let response = affinidi_mdoc::DeviceResponse::create_with_device_auth(
+        &issued,
+        &requested,
+        &transcript,
+        &signer,
+        None,
+    )
+    .map_err(|e| AppError::Internal(format!("build mdoc DeviceResponse: {e}")))?;
+
+    let bytes = response
+        .to_cbor_bytes()
+        .map_err(|e| AppError::Internal(format!("encode mdoc DeviceResponse: {e}")))?;
+
+    Ok(Value::String(URL_SAFE_NO_PAD.encode(bytes)))
+}
+
 /// Present **every** credential that satisfied the query, building the OID4VP
 /// DCQL `vp_token`: a JSON object keyed by DCQL `credential_query_id`. Each match
 /// is presented under its own ACL-gated holder key and its own freshly-minted,
@@ -643,48 +779,104 @@ async fn present_matched_set(
             .ok_or_else(|| {
                 AppError::Internal(format!("matched credential `{}` is gone", m.credential_id))
             })?;
-        let subject = stored.subject_did.as_deref().ok_or_else(|| {
-            AppError::Validation("matched credential has no subject DID to present".into())
-        })?;
-
-        // ACL-gated holder key for this credential's subject — resolved per match
-        // so credentials in different contexts each present under the right key.
-        let keys = resolve_holder_keys(keys_ks, seed_store, auth, subject).await?;
-
         // The claims the query asks to disclose — the leaf of each disclosed path.
         let claims: Vec<String> = m
             .disclosed_paths
             .iter()
             .filter_map(|path| path.last().cloned())
             .collect();
+        let valid_until = now + chrono::Duration::minutes(5);
 
-        let consent = consent::create(
-            vault,
-            &ConsentGrant {
-                holder_did: subject,
-                credential_id: &m.credential_id,
+        // Holder identity is format-shaped, not universal. Every other format
+        // names its holder as a subject DID; an mdoc names a device *key*, so
+        // the two resolve their signing material differently and sign the
+        // consent receipt under different cryptosuites (eddsa-jcs-2022 vs
+        // ecdsa-jcs-2019). The receipt's subject must be the DID whose key
+        // signs it either way — `verify_proof` binds the two.
+        let presentation = if stored.format == CredentialFormat::MsoMdoc {
+            let device_key_id = stored
+                .tags
+                .get(vta_vault::model::MDOC_DEVICE_KEY_TAG)
+                .ok_or_else(|| {
+                    AppError::Internal(format!(
+                        "stored mdoc `{}` has no device-key binding; it predates the \
+                         binding recorded at receive and cannot be presented",
+                        stored.id
+                    ))
+                })?;
+            let keys = resolve_mdoc_device_keys(keys_ks, seed_store, auth, device_key_id).await?;
+
+            let consent = consent::create(
+                vault,
+                &ConsentGrant {
+                    holder: vta_vault::consent::HolderIdentity::DeviceKey(&keys.device_did),
+                    credential_id: &m.credential_id,
+                    verifier_did,
+                    purpose: &query.purpose,
+                    claims,
+                    valid_until,
+                },
+                &keys.consent_secret,
+            )
+            .await?;
+            let _ = &consent;
+
+            // Unwrap is safe: `match_held` only admits an mdoc candidate when
+            // the session is present, so a matched mdoc always has one.
+            let session = query.oid4vp_session.as_ref().ok_or_else(|| {
+                AppError::Internal(
+                    "an mdoc matched without an OID4VP session — the match gate and the \
+                     present path disagree"
+                        .into(),
+                )
+            })?;
+
+            present_mdoc(
+                &stored,
+                &m.disclosed_paths,
+                &keys.device_private,
+                session,
+                &query.nonce,
+            )
+            .await?
+        } else {
+            let subject = stored.subject_did.as_deref().ok_or_else(|| {
+                AppError::Validation("matched credential has no subject DID to present".into())
+            })?;
+
+            // ACL-gated holder key for this credential's subject — resolved per
+            // match so credentials in different contexts each present under the
+            // right key.
+            let keys = resolve_holder_keys(keys_ks, seed_store, auth, subject).await?;
+
+            let consent = consent::create(
+                vault,
+                &ConsentGrant {
+                    holder: vta_vault::consent::HolderIdentity::Subject(subject),
+                    credential_id: &m.credential_id,
+                    verifier_did,
+                    purpose: &query.purpose,
+                    claims,
+                    valid_until,
+                },
+                &keys.consent_secret,
+            )
+            .await?;
+
+            present_single(
+                vault,
+                &stored,
+                &consent.identifier,
+                &keys.signer,
+                &keys.consent_secret,
+                &query.nonce,
                 verifier_did,
-                purpose: &query.purpose,
-                claims,
-                valid_until: now + chrono::Duration::minutes(5),
-            },
-            &keys.consent_secret,
-        )
-        .await?;
-
-        let presentation = present_single(
-            vault,
-            &stored,
-            &consent.identifier,
-            &keys.signer,
-            &keys.consent_secret,
-            &query.nonce,
-            verifier_did,
-            now.timestamp() as u64,
-            status_resolver,
-            now,
-        )
-        .await?;
+                now.timestamp() as u64,
+                status_resolver,
+                now,
+            )
+            .await?
+        };
 
         grouped
             .entry(m.credential_query_id.clone())
@@ -792,7 +984,7 @@ pub async fn present_query(
     status_resolver: Option<&dyn crate::vault::status::StatusListResolver>,
     now: DateTime<Utc>,
 ) -> Result<PresentOutcome, AppError> {
-    let mut matched = match_vault(vault, &query.dcql_query).await?;
+    let mut matched = match_vault(vault, &query.dcql_query, query.oid4vp_session.as_ref()).await?;
     if matched.is_empty() {
         return Err(AppError::NotFound(
             "no held credential satisfies the verifier's query".to_string(),
@@ -1077,7 +1269,12 @@ pub async fn approve_pending_presentation(
 
     // Re-match the stored query (robust to vault changes since the deferral) and
     // present every match, each under its own holder key + freshly-minted consent.
-    let matched = match_vault(vault, &record.query.dcql_query).await?;
+    let matched = match_vault(
+        vault,
+        &record.query.dcql_query,
+        record.query.oid4vp_session.as_ref(),
+    )
+    .await?;
     if matched.is_empty() {
         return Err(AppError::NotFound(
             "no held credential satisfies the deferred query".to_string(),
@@ -1144,18 +1341,8 @@ fn dcql_format(format: &CredentialFormat) -> Option<&'static str> {
     match format {
         CredentialFormat::SdJwtVc => Some("dc+sd-jwt"),
         CredentialFormat::EddsaJcs2022 => Some("ldp_vc"),
-        // `MsoMdoc` stays `None` even though the DCQL token is exactly the
-        // variant's serde tag, and even though the body is now decodable
-        // (affinidi-mdoc 0.2.6). Admitting it here without a `present_single`
-        // arm trips `formats_admitted_for_dcql_are_all_presentable`, and that
-        // guard is right: a matched-but-unpresentable credential bails the
-        // *entire* `vp_token`, not just itself. Presenting an mdoc needs
-        // `DeviceResponse::to_cbor_bytes` (0.2.7), so matching and presentation
-        // land together in a follow-up rather than separately.
-        CredentialFormat::MsoMdoc
-        | CredentialFormat::Bbs2023
-        | CredentialFormat::Zkp
-        | CredentialFormat::Other(_) => None,
+        CredentialFormat::MsoMdoc => Some("mso_mdoc"),
+        CredentialFormat::Bbs2023 | CredentialFormat::Zkp | CredentialFormat::Other(_) => None,
     }
 }
 
@@ -1191,11 +1378,17 @@ mod tests {
             CredentialFormat::MsoMdoc,
             CredentialFormat::Other("vendor-thing".into()),
         ];
-        // The set `present_single` can actually render today.
+        // The set the present path can actually render today. `MsoMdoc` is
+        // rendered by `present_mdoc` rather than `present_single`, and only
+        // when an OID4VP session is present — which `match_held` enforces by
+        // refusing to make it a candidate otherwise, so the two sets still
+        // coincide at the point that matters.
         fn present_single_can_render(f: &CredentialFormat) -> bool {
             matches!(
                 f,
-                CredentialFormat::SdJwtVc | CredentialFormat::EddsaJcs2022
+                CredentialFormat::SdJwtVc
+                    | CredentialFormat::EddsaJcs2022
+                    | CredentialFormat::MsoMdoc
             )
         }
         for f in &all {
@@ -1254,7 +1447,7 @@ mod tests {
         // holder_fixture stores exactly one membership credential (unscoped).
         // Bind it to context "staff", whose policy permits only a *different*
         // verifier.
-        let existing = match_vault(&vault, &membership_query().dcql_query)
+        let existing = match_vault(&vault, &membership_query().dcql_query, None)
             .await
             .unwrap();
         assert_eq!(existing.len(), 1, "fixture stores exactly one credential");
@@ -1738,7 +1931,7 @@ mod tests {
         }))
         .unwrap();
 
-        let matches = match_held(&query, std::slice::from_ref(&stored)).expect("match");
+        let matches = match_held(&query, std::slice::from_ref(&stored), true).expect("match");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].credential_query_id, "membership");
         assert_eq!(matches[0].credential_id, stored.id);
@@ -1762,7 +1955,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(match_held(&query, &[stored]).unwrap().is_empty());
+        assert!(match_held(&query, &[stored], true).unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1783,7 +1976,7 @@ mod tests {
         .unwrap();
 
         // Skipped → no candidates → no match, but Ok (not Err).
-        assert!(match_held(&query, &[zkp]).unwrap().is_empty());
+        assert!(match_held(&query, &[zkp], true).unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1801,7 +1994,9 @@ mod tests {
         }))
         .unwrap();
 
-        let matches = match_vault(&vault, &query).await.expect("match vault");
+        let matches = match_vault(&vault, &query, None)
+            .await
+            .expect("match vault");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].credential_id, stored.id);
         assert_eq!(
@@ -1822,7 +2017,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(match_vault(&vault, &query).await.unwrap().is_empty());
+        assert!(match_vault(&vault, &query, None).await.unwrap().is_empty());
     }
 
     // ── present_for_query (task 3.5c) ──
@@ -1864,7 +2059,7 @@ mod tests {
         let rec = create_consent(
             &vault,
             &ConsentGrant {
-                holder_did: &subject_did,
+                holder: vta_vault::consent::HolderIdentity::Subject(&subject_did),
                 credential_id: &stored.id,
                 verifier_did: verifier,
                 purpose: "join the Acme community",
@@ -1962,7 +2157,7 @@ mod tests {
         let rec = create_consent(
             &vault,
             &ConsentGrant {
-                holder_did: &subject_did,
+                holder: vta_vault::consent::HolderIdentity::Subject(&subject_did),
                 credential_id: "di-membership",
                 verifier_did: verifier,
                 purpose: "join the Acme community",
@@ -2007,6 +2202,7 @@ mod tests {
 
     fn membership_query() -> QueryBody {
         QueryBody {
+            oid4vp_session: None,
             dcql_query: DcqlQuery::from_json(&json!({
                 "credentials": [{
                     "id": "membership",
@@ -2213,6 +2409,7 @@ mod tests {
         // A single query asking for BOTH credentials (the join shape: membership
         // + the invitation/evidence).
         let query = QueryBody {
+            oid4vp_session: None,
             dcql_query: DcqlQuery::from_json(&json!({
                 "credentials": [
                     {
@@ -2696,5 +2893,117 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+    }
+    // ── mdoc: the match gate and the present path must agree ─────────
+
+    /// Build a stored mdoc with a device-key binding, as `receive_mdoc` would.
+    fn stored_mdoc(doc_type: &str) -> StoredCredential {
+        use affinidi_mdoc::es256_cose::Es256CoseSigner;
+        use affinidi_mdoc::mso::ValidityInfo;
+
+        let signer = Es256CoseSigner::generate();
+        let issued = affinidi_mdoc::MdocBuilder::new(doc_type)
+            .validity(ValidityInfo {
+                signed: "2026-01-01T00:00:00Z".into(),
+                valid_from: "2026-01-01T00:00:00Z".into(),
+                valid_until: "2036-01-01T00:00:00Z".into(),
+            })
+            .add_json_attribute(
+                affinidi_mdoc::EIDAS_PID_NAMESPACE,
+                "family_name",
+                &json!("Gore"),
+            )
+            .build(&signer)
+            .unwrap();
+
+        StoredCredential {
+            id: "cred-mdoc".into(),
+            format: CredentialFormat::MsoMdoc,
+            types: vec![doc_type.to_string()],
+            schema_id: None,
+            community_did: None,
+            context_id: None,
+            subject_did: None,
+            issuer_did: None,
+            purpose: None,
+            status: vta_vault::model::CredentialStatus::Valid,
+            valid_from: None,
+            valid_until: None,
+            received_at: Utc::now().to_rfc3339(),
+            source: None,
+            tags: std::collections::BTreeMap::from([(
+                vta_vault::model::MDOC_DEVICE_KEY_TAG.to_string(),
+                "key-device-1".to_string(),
+            )]),
+            body: issued.to_cbor_bytes().unwrap(),
+            lifecycle: vti_common::vault::VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
+        }
+    }
+
+    fn mdoc_query(doc_type: &str) -> DcqlQuery {
+        DcqlQuery::from_json(&json!({
+            "credentials": [{
+                "id": "pid",
+                "format": "mso_mdoc",
+                "meta": { "doctype_value": doc_type },
+                "claims": [{ "path": [affinidi_mdoc::EIDAS_PID_NAMESPACE, "family_name"] }]
+            }]
+        }))
+        .expect("valid DCQL")
+    }
+
+    /// The invariant this whole design turns on: without an OID4VP session
+    /// there is no transcript to bind `DeviceAuth` to, so an mdoc must not even
+    /// become a candidate. If it matched here it would fail in the present
+    /// path and bail the **entire** `vp_token` — including every other
+    /// credential the verifier legitimately asked for.
+    #[test]
+    fn an_mdoc_does_not_match_without_an_oid4vp_session() {
+        let doc_type = "eu.europa.ec.eudi.pid.1";
+        let stored = stored_mdoc(doc_type);
+
+        let without =
+            match_held(&mdoc_query(doc_type), std::slice::from_ref(&stored), false).unwrap();
+        assert!(
+            without.is_empty(),
+            "an mdoc must not match when no session can bind its DeviceAuth"
+        );
+
+        let with = match_held(&mdoc_query(doc_type), std::slice::from_ref(&stored), true).unwrap();
+        assert_eq!(
+            with.len(),
+            1,
+            "the same mdoc must match once a session is available — otherwise the \
+             gate is just breaking mdoc support"
+        );
+    }
+
+    /// DCQL addresses an mdoc claim as [namespace, elementIdentifier], not as a
+    /// flat name. A candidate built with a flat claims tree matches nothing, and
+    /// the failure looks like "the holder doesn't have it".
+    #[test]
+    fn an_mdoc_candidate_exposes_claims_by_namespace_and_carries_its_doctype() {
+        let doc_type = "eu.europa.ec.eudi.pid.1";
+        let stored = stored_mdoc(doc_type);
+        let candidate = candidate_from_stored(&stored).unwrap().expect("candidate");
+
+        assert_eq!(candidate.format, "mso_mdoc");
+        assert_eq!(
+            candidate.doctype.as_deref(),
+            Some(doc_type),
+            "a candidate without a doctype fails every doctype-qualified query"
+        );
+        assert!(
+            candidate.supports_holder_binding,
+            "an mdoc always has a deviceKey"
+        );
+        let ns = candidate
+            .claims
+            .get(affinidi_mdoc::EIDAS_PID_NAMESPACE)
+            .expect("claims are keyed by namespace");
+        assert_eq!(ns.get("family_name"), Some(&json!("Gore")));
     }
 }
