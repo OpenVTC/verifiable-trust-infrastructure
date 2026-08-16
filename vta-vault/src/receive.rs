@@ -430,6 +430,18 @@ pub async fn receive(
              + Circom/Groth16 verifier not yet wired)"
                 .to_string(),
         )),
+        // Blocked upstream, not here. Verifying an mdoc means decoding
+        // `IssuerSigned` from CBOR, checking `issuerAuth` (COSE_Sign1),
+        // recomputing `valueDigests` and checking `validityInfo` — every
+        // primitive for which `affinidi-mdoc` already has, except the wire
+        // codec: `IssuerSigned` derives only `Debug, Clone`, so there is no
+        // supported way to turn `body` into one. Reject explicitly rather
+        // than storing an mdoc we could never re-read.
+        CredentialFormat::MsoMdoc => Err(AppError::Validation(
+            "mdoc receive is not yet supported: affinidi-mdoc exposes no CBOR codec \
+             for IssuerSigned, so the credential body cannot be decoded or verified"
+                .to_string(),
+        )),
         CredentialFormat::Other(tag) => Err(AppError::Validation(format!(
             "unsupported credential format `{tag}`"
         ))),
@@ -986,6 +998,25 @@ mod tests {
             matches!(&zkp_err, AppError::Validation(m) if m.contains("ZKP")),
             "{zkp_err:?}"
         );
+        // mdoc is refused rather than stored: there is no codec to decode
+        // `IssuerSigned` from the body, so it could never be re-read or
+        // presented. The error names the upstream gap so an operator hitting
+        // it is not left guessing whether they mis-tagged the credential.
+        let mdoc_err = receive(
+            &vault,
+            "c4",
+            &CredentialFormat::MsoMdoc,
+            &vc,
+            None,
+            None,
+            Utc::now(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&mdoc_err, AppError::Validation(m) if m.contains("affinidi-mdoc")),
+            "error should name the missing codec, got {mdoc_err:?}"
+        );
     }
 
     #[test]
@@ -996,5 +1027,28 @@ mod tests {
         assert_eq!(json, "\"zkp\"");
         let back: CredentialFormat = serde_json::from_str(&json).unwrap();
         assert_eq!(back, CredentialFormat::Zkp);
+    }
+
+    /// The mdoc tag is `mso_mdoc` — underscore, matching OpenID4VP's
+    /// `CredentialQuery.format` — and NOT the `rename_all` kebab-case
+    /// `mso-mdoc` the enum would otherwise produce. Storage and protocol must
+    /// spell it identically or a DCQL selector silently matches nothing, so
+    /// pin the exact bytes rather than only the round-trip.
+    #[test]
+    fn mso_mdoc_format_tag_is_the_openid4vp_spelling() {
+        let json = serde_json::to_string(&CredentialFormat::MsoMdoc).unwrap();
+        assert_eq!(json, "\"mso_mdoc\"", "must match the OID4VP format token");
+        let back: CredentialFormat = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, CredentialFormat::MsoMdoc);
+    }
+
+    /// Before this variant existed an mdoc deserialised into the
+    /// `Other("mso_mdoc")` escape hatch. It must now land on the real variant,
+    /// or every downstream `match` treats a known format as unknown.
+    #[test]
+    fn mso_mdoc_no_longer_falls_into_the_other_escape_hatch() {
+        let parsed: CredentialFormat = serde_json::from_str("\"mso_mdoc\"").unwrap();
+        assert_eq!(parsed, CredentialFormat::MsoMdoc);
+        assert_ne!(parsed, CredentialFormat::Other("mso_mdoc".to_string()));
     }
 }
