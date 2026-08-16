@@ -378,6 +378,118 @@ pub async fn receive_di_vc(
     Ok(cred)
 }
 
+/// Receive an ISO/IEC 18013-5 **mdoc** into the vault: verify, map, and store.
+///
+/// `body` is the CBOR `IssuerSigned` wire form. `issuer_pub` is the **caller-
+/// resolved** Document Signer public key (SEC1, P-256) — deliberately the same
+/// shape as [`receive_di_vc`]'s issuer key, and for the same reason: resolving
+/// *which* key to trust is a policy decision that belongs to the wire layer,
+/// not to the verifier.
+///
+/// That seam matters more here than for DI. **mdoc anchors issuer trust in an
+/// X.509 chain** (`x5chain`, COSE header label 33, rooted in an IACA), while
+/// this stack is DID-rooted end to end. Taking a resolved key here keeps that
+/// unresolved question — configured trust-anchor set, trust-registry mapping,
+/// or `did:x509` — out of the storage layer instead of quietly settling it.
+///
+/// Verifies three things, rejecting-without-storing on any failure, per
+/// ISO 18013-5 §9.3.1:
+/// 1. **`issuerAuth`** — the COSE_Sign1 over the MSO, against `issuer_pub`.
+/// 2. **Digests** — every disclosed item against the MSO's `valueDigests`. A
+///    valid signature over an MSO whose digests do not match the items is a
+///    tampered credential.
+/// 3. **`validityInfo`** — `now` inside `[validFrom, validUntil]`.
+///
+/// ES256 only. ISO 18013-5 and the EUDI profiles mandate it, and it is what the
+/// VTA already has via [`vta_sdk::keys::KeyType::P256`], so no new curve enters
+/// the graph. A credential signed with any other algorithm is refused by name
+/// rather than silently mis-verified.
+pub async fn receive_mdoc(
+    vault: &KeyspaceHandle,
+    id: &str,
+    body: &[u8],
+    issuer_pub: &[u8],
+    source: Provenance,
+    now: DateTime<Utc>,
+) -> Result<StoredCredential, AppError> {
+    if id.trim().is_empty() {
+        return Err(AppError::Validation(
+            "credential id must be non-empty".to_string(),
+        ));
+    }
+
+    // Parse. This is structure only — nothing is trusted yet.
+    let issued = affinidi_mdoc::IssuerSigned::from_cbor_bytes(body)
+        .map_err(|e| AppError::Validation(format!("mdoc body is not a valid IssuerSigned: {e}")))?;
+
+    // Refuse an unexpected algorithm before touching the signature, mirroring
+    // the SD-JWT path's `alg` check.
+    let alg = issued.issuer_auth.protected.header.alg.clone();
+    let expected = coset::RegisteredLabelWithPrivate::Assigned(coset::iana::Algorithm::ES256);
+    if alg.as_ref() != Some(&expected) {
+        return Err(AppError::Validation(format!(
+            "mdoc issuerAuth must be ES256 (ISO 18013-5 / EUDI); got {alg:?}"
+        )));
+    }
+
+    // 1. issuerAuth signature, against the caller-resolved Document Signer key.
+    let verifier = affinidi_mdoc::es256_cose::Es256CoseVerifier::from_bytes(issuer_pub)
+        .map_err(|e| AppError::Validation(format!("invalid mdoc issuer key: {e}")))?;
+    let mso = issued
+        .verify_issuer_auth(&verifier)
+        .map_err(|e| AppError::Validation(format!("mdoc issuerAuth did not verify: {e}")))?;
+
+    // 2. Digests. A good signature over an MSO whose digests do not match the
+    //    items means the items were swapped after signing.
+    if !issued
+        .verify_digests()
+        .map_err(|e| AppError::Validation(format!("mdoc digest check failed: {e}")))?
+    {
+        return Err(AppError::Validation(
+            "mdoc item digests do not match the signed MSO".to_string(),
+        ));
+    }
+
+    // 3. Temporal validity.
+    let now_odt = time::OffsetDateTime::from_unix_timestamp(now.timestamp())
+        .map_err(|e| AppError::Internal(format!("clock conversion: {e}")))?;
+    mso.validity_info
+        .check(now_odt)
+        .map_err(|e| AppError::Validation(format!("mdoc is not currently valid: {e}")))?;
+
+    // Map. `docType` is the credential's type — taken from the *signed* MSO,
+    // never from the outer map (the codec guarantees this).
+    let cred = StoredCredential {
+        id: id.to_string(),
+        format: CredentialFormat::MsoMdoc,
+        types: vec![mso.doc_type.clone()],
+        schema_id: None,
+        community_did: None,
+        context_id: None,
+        // An mdoc binds to the holder through the MSO's `deviceKey`, not a
+        // subject DID, and carries no issuer DID — its issuer identity is the
+        // X.509 chain. Leaving both `None` is truthful; inventing a DID here
+        // would put an unverifiable identifier into a secondary index.
+        subject_did: None,
+        issuer_did: None,
+        purpose: Some(CredentialPurpose::Other(mso.doc_type.clone())),
+        status: CredentialStatus::Valid,
+        valid_from: Some(mso.validity_info.valid_from.clone()),
+        valid_until: Some(mso.validity_info.valid_until.clone()),
+        received_at: now.to_rfc3339(),
+        source,
+        tags: std::collections::BTreeMap::new(),
+        body: body.to_vec(),
+        lifecycle: vti_common::vault::VaultStatus::Active,
+        archived_at: None,
+        deleted_at: None,
+        grace_until: None,
+    };
+
+    storage::put(vault, &cred).await?;
+    Ok(cred)
+}
+
 /// Format-dispatching receive — the vault's single entry point for storing an
 /// incoming credential of any format (spec D4).
 ///
@@ -430,18 +542,14 @@ pub async fn receive(
              + Circom/Groth16 verifier not yet wired)"
                 .to_string(),
         )),
-        // Blocked upstream, not here. Verifying an mdoc means decoding
-        // `IssuerSigned` from CBOR, checking `issuerAuth` (COSE_Sign1),
-        // recomputing `valueDigests` and checking `validityInfo` — every
-        // primitive for which `affinidi-mdoc` already has, except the wire
-        // codec: `IssuerSigned` derives only `Debug, Clone`, so there is no
-        // supported way to turn `body` into one. Reject explicitly rather
-        // than storing an mdoc we could never re-read.
-        CredentialFormat::MsoMdoc => Err(AppError::Validation(
-            "mdoc receive is not yet supported: affinidi-mdoc exposes no CBOR codec \
-             for IssuerSigned, so the credential body cannot be decoded or verified"
-                .to_string(),
-        )),
+        CredentialFormat::MsoMdoc => {
+            let pubkey = issuer_pub.ok_or_else(|| {
+                AppError::Validation(
+                    "an mdoc needs a caller-resolved Document Signer key (SEC1 P-256)".to_string(),
+                )
+            })?;
+            receive_mdoc(vault, id, body, pubkey, source, now).await
+        }
         CredentialFormat::Other(tag) => Err(AppError::Validation(format!(
             "unsupported credential format `{tag}`"
         ))),
@@ -998,10 +1106,9 @@ mod tests {
             matches!(&zkp_err, AppError::Validation(m) if m.contains("ZKP")),
             "{zkp_err:?}"
         );
-        // mdoc is refused rather than stored: there is no codec to decode
-        // `IssuerSigned` from the body, so it could never be re-read or
-        // presented. The error names the upstream gap so an operator hitting
-        // it is not left guessing whether they mis-tagged the credential.
+        // mdoc, like DI, needs a caller-resolved issuer key — for mdoc that is
+        // the Document Signer's P-256 key, since issuer trust there is an X.509
+        // chain rather than a resolvable DID.
         let mdoc_err = receive(
             &vault,
             "c4",
@@ -1014,8 +1121,8 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(&mdoc_err, AppError::Validation(m) if m.contains("affinidi-mdoc")),
-            "error should name the missing codec, got {mdoc_err:?}"
+            matches!(&mdoc_err, AppError::Validation(m) if m.contains("Document Signer")),
+            "error should name the missing issuer key, got {mdoc_err:?}"
         );
     }
 
@@ -1050,5 +1157,171 @@ mod tests {
         let parsed: CredentialFormat = serde_json::from_str("\"mso_mdoc\"").unwrap();
         assert_eq!(parsed, CredentialFormat::MsoMdoc);
         assert_ne!(parsed, CredentialFormat::Other("mso_mdoc".to_string()));
+    }
+    // ── mdoc receive ──────────────────────────────────────────────────
+
+    /// Build a signed mdoc plus its Document Signer public key.
+    fn test_mdoc() -> (Vec<u8>, Vec<u8>) {
+        use affinidi_mdoc::es256_cose::Es256CoseSigner;
+        use affinidi_mdoc::mso::ValidityInfo;
+
+        let signer = Es256CoseSigner::generate();
+        let issued = affinidi_mdoc::MdocBuilder::new("eu.europa.ec.eudi.pid.1")
+            .validity(ValidityInfo {
+                signed: "2026-01-01T00:00:00Z".into(),
+                valid_from: "2026-01-01T00:00:00Z".into(),
+                valid_until: "2036-01-01T00:00:00Z".into(),
+            })
+            .add_json_attribute(
+                affinidi_mdoc::EIDAS_PID_NAMESPACE,
+                "family_name",
+                &serde_json::json!("Gore"),
+            )
+            .build(&signer)
+            .unwrap();
+        (issued.to_cbor_bytes().unwrap(), signer.public_key_bytes())
+    }
+
+    #[tokio::test]
+    async fn mdoc_receive_verifies_and_stores() {
+        let (_tmp, _store, vault) = fresh_vault();
+        let (body, issuer_pub) = test_mdoc();
+
+        let cred = receive(
+            &vault,
+            "m1",
+            &CredentialFormat::MsoMdoc,
+            &body,
+            Some(&issuer_pub),
+            None,
+            Utc::now(),
+        )
+        .await
+        .expect("a well-formed mdoc should store");
+
+        assert_eq!(cred.format, CredentialFormat::MsoMdoc);
+        // docType comes from the signed MSO, and becomes the credential type.
+        assert_eq!(cred.types, vec!["eu.europa.ec.eudi.pid.1"]);
+        // No subject/issuer DID: an mdoc binds via the MSO deviceKey and its
+        // issuer identity is an X.509 chain. Inventing either would put an
+        // unverifiable identifier into a secondary index.
+        assert!(cred.subject_did.is_none());
+        assert!(cred.issuer_did.is_none());
+        assert_eq!(cred.body, body, "the body is stored verbatim");
+    }
+
+    #[tokio::test]
+    async fn mdoc_receive_rejects_a_wrong_issuer_key() {
+        use affinidi_mdoc::es256_cose::Es256CoseSigner;
+        let (_tmp, _store, vault) = fresh_vault();
+        let (body, _) = test_mdoc();
+        let attacker = Es256CoseSigner::generate().public_key_bytes();
+
+        let err = receive(
+            &vault,
+            "m2",
+            &CredentialFormat::MsoMdoc,
+            &body,
+            Some(&attacker),
+            None,
+            Utc::now(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("issuerAuth")),
+            "{err:?}"
+        );
+    }
+
+    /// Reject-before-store: a failed verification must leave nothing behind.
+    #[tokio::test]
+    async fn mdoc_receive_stores_nothing_when_verification_fails() {
+        use affinidi_mdoc::es256_cose::Es256CoseSigner;
+        let (_tmp, _store, vault) = fresh_vault();
+        let (body, _) = test_mdoc();
+        let attacker = Es256CoseSigner::generate().public_key_bytes();
+
+        let _ = receive(
+            &vault,
+            "m3",
+            &CredentialFormat::MsoMdoc,
+            &body,
+            Some(&attacker),
+            None,
+            Utc::now(),
+        )
+        .await;
+
+        assert!(
+            storage::get(&vault, "m3").await.unwrap().is_none(),
+            "a rejected mdoc must not be stored"
+        );
+    }
+
+    /// An expired credential is refused even though its signature is perfectly
+    /// good — ISO 18013-5 §9.3.1 requires the validityInfo check separately.
+    #[tokio::test]
+    async fn mdoc_receive_rejects_an_expired_credential() {
+        let (_tmp, _store, vault) = fresh_vault();
+        let (body, issuer_pub) = test_mdoc();
+        let long_after = "2040-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+
+        let err = receive(
+            &vault,
+            "m4",
+            &CredentialFormat::MsoMdoc,
+            &body,
+            Some(&issuer_pub),
+            None,
+            long_after,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("not currently valid")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mdoc_receive_requires_an_issuer_key() {
+        let (_tmp, _store, vault) = fresh_vault();
+        let (body, _) = test_mdoc();
+        let err = receive(
+            &vault,
+            "m5",
+            &CredentialFormat::MsoMdoc,
+            &body,
+            None,
+            None,
+            Utc::now(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("Document Signer")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mdoc_receive_rejects_a_body_that_is_not_an_mdoc() {
+        let (_tmp, _store, vault) = fresh_vault();
+        let err = receive(
+            &vault,
+            "m6",
+            &CredentialFormat::MsoMdoc,
+            b"not cbor at all",
+            Some(&[0u8; 65]),
+            None,
+            Utc::now(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("IssuerSigned")),
+            "{err:?}"
+        );
     }
 }
