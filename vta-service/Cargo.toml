@@ -223,6 +223,9 @@ affinidi-bbs = { workspace = true, optional = true }
 # DCQL matcher — the holder runs a verifier's DCQL query over held credentials
 # (`credential-exchange/query`, task 3.5). Same crate vta-sdk's QueryBody uses.
 affinidi-openid4vp = { workspace = true }
+# ISO 18013-5 mdoc — the receive handler decodes an inbound IssuerSigned to read
+# its x5chain before asking the trust store which issuer key to demand.
+affinidi-mdoc = { workspace = true }
 # OID4VCI offer/request types + wallet builders — the holder `offer → request`
 # leg (task 3.2). Same crate vta-sdk's OfferBody / RequestBody use.
 affinidi-openid4vci = { workspace = true }

@@ -17,6 +17,8 @@
 //!   presentation. Not-found is conflated with permission-denied to deny
 //!   enumeration.
 
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -65,7 +67,23 @@ fn require_cap(
 struct ReceiveBody {
     /// The credential to store — a Data-Integrity W3C VC (object form, with its
     /// own `proof`).
-    credential: Value,
+    ///
+    /// Optional only so a binary format can arrive via [`Self::credential_base64`]
+    /// instead. Exactly one of the two must be present; a body carrying neither,
+    /// or both, is rejected. Existing clients send this field alone and are
+    /// unaffected.
+    #[serde(default)]
+    credential: Option<Value>,
+    /// A binary credential, base64url-no-pad. Required when `format` names a
+    /// binary format (today: `mso_mdoc`, CBOR `IssuerSigned`), which cannot be
+    /// carried as JSON.
+    #[serde(default)]
+    credential_base64: Option<String>,
+    /// Wire format tag. Absent means a Data-Integrity W3C VC — the shape every
+    /// existing client sends — so omitting it keeps the current behaviour
+    /// exactly.
+    #[serde(default)]
+    format: Option<String>,
     /// Optional explicit storage id; defaults to the VC's top-level `id`, else a
     /// fresh `urn:uuid`.
     #[serde(default)]
@@ -122,8 +140,6 @@ pub(super) async fn handle_receive(
         Err(resp) => return resp,
     };
 
-    let id = resolve_storage_id(req.id, &req.credential);
-
     // Resolve the custody context (which context owns the credential, governing
     // its disclosure via ContextPolicy).
     let custody_context = match resolve_custody_context(auth, req.context_id) {
@@ -131,45 +147,150 @@ pub(super) async fn handle_receive(
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
-    // Resolve the issuer's signing key from the credential's DID (did:key
-    // locally, did:webvh / did:web via the cache) — the data plane verifies the
-    // proof against it.
-    let issuer_pub = match di_verify::resolve_di_issuer_key(
-        state.did_resolver.as_ref(),
-        &req.credential,
-    )
-    .await
-    {
-        Ok(k) => k,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
+    let now = Utc::now();
+    let provenance = Some("vault/credentials/receive/0.1".to_string());
 
-    let body = match serde_json::to_vec(&req.credential) {
-        Ok(b) => b,
-        Err(e) => {
+    // Two wire shapes, one per credential family. The format tag decides;
+    // absent means Data-Integrity, which is what every existing client sends.
+    let mut stored = match req.format.as_deref() {
+        None | Some("ldp_vc") => {
+            let Some(credential) = req.credential else {
+                return reject_with(
+                    &doc,
+                    RejectReason::MalformedRequest {
+                        reason: "a Data-Integrity credential must be supplied as `credential`"
+                            .to_string(),
+                    },
+                );
+            };
+            if req.credential_base64.is_some() {
+                return reject_with(
+                    &doc,
+                    RejectReason::MalformedRequest {
+                        reason: "supply exactly one of `credential` or `credentialBase64`"
+                            .to_string(),
+                    },
+                );
+            }
+
+            let id = resolve_storage_id(req.id, &credential);
+
+            // Resolve the issuer's signing key from the credential's DID
+            // (did:key locally, did:webvh / did:web via the cache) — the data
+            // plane verifies the proof against it.
+            let issuer_pub =
+                match di_verify::resolve_di_issuer_key(state.did_resolver.as_ref(), &credential)
+                    .await
+                {
+                    Ok(k) => k,
+                    Err(e) => return app_error_to_reject(&doc, e),
+                };
+
+            let body = match serde_json::to_vec(&credential) {
+                Ok(b) => b,
+                Err(e) => {
+                    return reject_with(
+                        &doc,
+                        RejectReason::MalformedRequest {
+                            reason: format!("credential serialise: {e}"),
+                        },
+                    );
+                }
+            };
+
+            match receive::receive_di_vc(&state.vault_ks, &id, &body, &issuer_pub, provenance, now)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => return app_error_to_reject(&doc, e),
+            }
+        }
+
+        // ISO 18013-5 mdoc. The issuer is an X.509 Document Signer rather than
+        // a resolvable DID, so the key comes from the configured IACA anchors
+        // instead of the resolver — the one place the two families genuinely
+        // diverge.
+        Some("mso_mdoc") => {
+            let Some(b64) = req.credential_base64 else {
+                return reject_with(
+                    &doc,
+                    RejectReason::MalformedRequest {
+                        reason: "an mdoc must be supplied as `credentialBase64` (CBOR \
+                                 IssuerSigned), not `credential`"
+                            .to_string(),
+                    },
+                );
+            };
+            if req.credential.is_some() {
+                return reject_with(
+                    &doc,
+                    RejectReason::MalformedRequest {
+                        reason: "supply exactly one of `credential` or `credentialBase64`"
+                            .to_string(),
+                    },
+                );
+            }
+
+            let body = match URL_SAFE_NO_PAD.decode(b64.as_bytes()) {
+                Ok(b) => b,
+                Err(e) => {
+                    return reject_with(
+                        &doc,
+                        RejectReason::MalformedRequest {
+                            reason: format!("`credentialBase64` is not base64url-no-pad: {e}"),
+                        },
+                    );
+                }
+            };
+
+            // Parse before trusting: the x5chain has to be read out of the
+            // credential to find out which issuer key to demand.
+            let issued = match affinidi_mdoc::IssuerSigned::from_cbor_bytes(&body) {
+                Ok(i) => i,
+                Err(e) => {
+                    return reject_with(
+                        &doc,
+                        RejectReason::MalformedRequest {
+                            reason: format!("not a decodable mdoc IssuerSigned: {e}"),
+                        },
+                    );
+                }
+            };
+
+            let issuer_pub = match state
+                .mdoc_trust
+                .resolve_issuer_key(&issued.issuer_auth, now)
+            {
+                Ok(k) => k,
+                Err(e) => return app_error_to_reject(&doc, e),
+            };
+
+            // An mdoc has no `id` of its own to fall back on, so an explicit id
+            // or a fresh urn:uuid it is.
+            let id = req
+                .id
+                .unwrap_or_else(|| format!("urn:uuid:{}", Uuid::new_v4()));
+
+            match receive::receive_mdoc(&state.vault_ks, &id, &body, &issuer_pub, provenance, now)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => return app_error_to_reject(&doc, e),
+            }
+        }
+
+        Some(other) => {
             return reject_with(
                 &doc,
                 RejectReason::MalformedRequest {
-                    reason: format!("credential serialise: {e}"),
+                    reason: format!(
+                        "unsupported credential format `{other}` (expected `ldp_vc` or \
+                         `mso_mdoc`)"
+                    ),
                 },
             );
         }
     };
-
-    let mut stored = match receive::receive_di_vc(
-        &state.vault_ks,
-        &id,
-        &body,
-        &issuer_pub,
-        Some("vault/credentials/receive/0.1".to_string()),
-        Utc::now(),
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
-
     // Persist the custody binding (receive_di_vc stores it unscoped). Only an
     // extra write when a context was resolved.
     if custody_context.is_some() {
@@ -832,5 +953,68 @@ mod tests {
         let without: ReceiveBody =
             serde_json::from_value(json!({ "credential": {"id": "x"} })).unwrap();
         assert_eq!(without.id, None);
+    }
+}
+
+#[cfg(test)]
+mod receive_body_wire_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The back-compatibility guarantee this change rests on: a body from an
+    /// existing client — `credential` alone, no `format` — must still
+    /// deserialize and still route to the Data-Integrity path. If this breaks,
+    /// every deployed wallet breaks with it.
+    #[test]
+    fn a_pre_existing_body_still_deserializes_and_stays_on_the_di_path() {
+        let body: ReceiveBody = serde_json::from_value(json!({
+            "credential": {"id": "urn:uuid:abc", "type": ["VerifiableCredential"]},
+            "id": "urn:uuid:abc"
+        }))
+        .expect("an existing client body must still parse");
+
+        assert!(body.credential.is_some());
+        assert!(body.credential_base64.is_none());
+        assert!(
+            body.format.is_none(),
+            "absent format must stay absent — it is what selects the DI path"
+        );
+    }
+
+    /// camelCase on the wire, per R3.1. A snake_case `credential_base64` must
+    /// NOT bind, or a client that guesses wrong silently sends nothing.
+    #[test]
+    fn the_binary_field_is_camel_case_on_the_wire() {
+        let ok: ReceiveBody = serde_json::from_value(json!({
+            "credentialBase64": "AAAA",
+            "format": "mso_mdoc"
+        }))
+        .expect("camelCase parses");
+        assert_eq!(ok.credential_base64.as_deref(), Some("AAAA"));
+
+        let wrong: ReceiveBody = serde_json::from_value(json!({
+            "credential_base64": "AAAA",
+            "format": "mso_mdoc"
+        }))
+        .expect("unknown fields are ignored today");
+        assert!(
+            wrong.credential_base64.is_none(),
+            "snake_case must not bind — the wire contract is camelCase"
+        );
+    }
+
+    /// `mso_mdoc` is the OpenID4VP spelling and the `CredentialFormat` serde
+    /// tag. Pin it here too: this is the third place it has to agree.
+    #[test]
+    fn the_mdoc_format_tag_matches_the_stored_credential_format() {
+        let body: ReceiveBody =
+            serde_json::from_value(json!({"credentialBase64": "AA", "format": "mso_mdoc"}))
+                .unwrap();
+        let stored = serde_json::to_string(&vta_vault::model::CredentialFormat::MsoMdoc).unwrap();
+        assert_eq!(
+            format!("\"{}\"", body.format.unwrap()),
+            stored,
+            "the wire format tag and the stored format tag must be the same token"
+        );
     }
 }
