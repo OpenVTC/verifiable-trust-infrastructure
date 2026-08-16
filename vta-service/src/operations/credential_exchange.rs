@@ -458,7 +458,9 @@ fn candidate_from_stored(
             (vc, None, true)
         }
         // Unreachable: `dcql_format` returned `Some` only for the arms above.
-        CredentialFormat::Zkp | CredentialFormat::Other(_) => return Ok(None),
+        CredentialFormat::MsoMdoc | CredentialFormat::Zkp | CredentialFormat::Other(_) => {
+            return Ok(None);
+        }
     };
 
     Ok(Some(CandidateCredential {
@@ -1142,7 +1144,16 @@ fn dcql_format(format: &CredentialFormat) -> Option<&'static str> {
     match format {
         CredentialFormat::SdJwtVc => Some("dc+sd-jwt"),
         CredentialFormat::EddsaJcs2022 => Some("ldp_vc"),
-        CredentialFormat::Bbs2023 | CredentialFormat::Zkp | CredentialFormat::Other(_) => None,
+        // `MsoMdoc` is deliberately `None` even though the DCQL token is
+        // exactly the variant's serde tag. Returning `Some` here would let a
+        // stored mdoc past the guard in `candidate_from_stored`, which then
+        // cannot build a `CandidateCredential` — it has no way to decode
+        // `IssuerSigned` from CBOR (no codec in affinidi-mdoc 0.2.5). Keeping
+        // the two consistent means an mdoc is skipped, never half-matched.
+        CredentialFormat::MsoMdoc
+        | CredentialFormat::Bbs2023
+        | CredentialFormat::Zkp
+        | CredentialFormat::Other(_) => None,
     }
 }
 
@@ -1175,6 +1186,7 @@ mod tests {
             CredentialFormat::EddsaJcs2022,
             CredentialFormat::Bbs2023,
             CredentialFormat::Zkp,
+            CredentialFormat::MsoMdoc,
             CredentialFormat::Other("vendor-thing".into()),
         ];
         // The set `present_single` can actually render today.

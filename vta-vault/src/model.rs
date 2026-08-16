@@ -52,6 +52,24 @@ pub enum CredentialFormat {
     EddsaJcs2022,
     /// IETF SD-JWT-VC.
     SdJwtVc,
+    /// ISO/IEC 18013-5 mdoc (`IssuerSigned`, CBOR). One of the two credential
+    /// formats eIDAS 2.0 mandates, alongside [`Self::SdJwtVc`].
+    ///
+    /// The tag is spelled `mso_mdoc` — **not** the `rename_all` kebab-case
+    /// `mso-mdoc` — because it is the same token OpenID4VP and OpenID4VCI use
+    /// on the wire (`CredentialQuery.format`). One spelling across storage and
+    /// protocol means [`crate::…`] callers never translate between them.
+    ///
+    /// **Storage identity only, for now.** Receive, DCQL matching, and
+    /// presentation all need to decode `IssuerSigned` from CBOR, and
+    /// `affinidi-mdoc` 0.2.5 ships no wire codec for it (`IssuerSigned` and
+    /// `DeviceResponse` are `#[derive(Debug, Clone)]` with no `Serialize` /
+    /// `Deserialize` and no `to_cbor_bytes` / `from_cbor_bytes`). Giving the
+    /// format a name here is what lets a stored mdoc be *identified* rather
+    /// than landing in [`Self::Other`]; the paths that must parse the body
+    /// return an explicit not-yet-supported error naming that gap.
+    #[serde(rename = "mso_mdoc")]
+    MsoMdoc,
     /// Forward-compatibility escape hatch — carries the raw tag verbatim so
     /// an unknown format round-trips losslessly.
     #[serde(untagged)]
