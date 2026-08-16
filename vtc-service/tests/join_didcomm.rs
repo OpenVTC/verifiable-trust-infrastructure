@@ -302,12 +302,41 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
             .request(
                 &vtc_did,
                 JOIN_REQUEST_STATUS_TYPE,
-                serde_json::to_value(JoinRequestStatusBody { request_id }).unwrap(),
+                serde_json::to_value(JoinRequestStatusBody {
+                    request_id: Some(request_id),
+                })
+                .unwrap(),
             )
             .await,
     ))
     .expect("status response");
     assert_eq!(status.status, "pending");
+
+    // 4b. The same poll with **no** request id — "what is my open request?".
+    //
+    // This is the only form available to an applicant whose first correlated
+    // reply was lost: the id it would otherwise quote is the community's, learned
+    // from that reply, so it holds nothing this VTC recognises. Requiring the id
+    // made the poll unusable in precisely the case it exists for.
+    //
+    // The response must name the id, because that is what repairs the
+    // applicant's record and makes every later poll possible.
+    let recovered: JoinRequestStatusResponseBody = serde_json::from_value(response_payload(
+        mock.client
+            .request(
+                &vtc_did,
+                JOIN_REQUEST_STATUS_TYPE,
+                serde_json::to_value(JoinRequestStatusBody { request_id: None }).unwrap(),
+            )
+            .await,
+    ))
+    .expect("id-less status response");
+    assert_eq!(
+        recovered.request_id, request_id,
+        "the community must name the request id it minted — an applicant that \
+         cannot learn it stays unable to poll forever"
+    );
+    assert_eq!(recovered.status, "pending");
 
     // 5. Admin approves over REST — the real ceremony admits the applicant,
     //    issues the VMC + role VEC, and pushes them to the applicant's wallet
