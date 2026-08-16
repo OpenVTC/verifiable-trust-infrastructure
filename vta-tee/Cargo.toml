@@ -2,7 +2,7 @@
 name = "vta-tee"
 description = "VTA TEE bootstrap — Nitro/SEV-SNP attestation providers, KMS attest/decrypt + storage-key derivation, the anchor MAC, and first-boot DID autogen"
 readme = "README.md"
-version = "0.1.7"
+version = "0.1.8"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -27,7 +27,7 @@ repository.workspace = true
 tenant-overlay = ["dep:tokio-vsock"]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.11", features = ["encryption", "openapi"] }
+vti-common = { path = "../vti-common", version = "0.12", features = ["encryption", "openapi"] }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
 vta-config = { path = "../vta-config", version = "0.3", features = ["tee"] }
 vta-keys = { path = "../vta-keys", version = "0.2" }
