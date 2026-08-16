@@ -88,7 +88,50 @@ pub async fn status_inner(
             "applicantDid does not match the join request applicant".into(),
         ));
     }
+    project_status(id, req)
+}
 
+/// Resolve the applicant's **open** request without being told its id.
+///
+/// The id an applicant polls with is the community's, minted here on submit and
+/// learned from the first correlated reply. An applicant whose reply was lost
+/// therefore holds only the id of the document it sent — which this VTC has
+/// never heard of — and cannot name its request at all. That made
+/// [`status_inner`] unusable in precisely the situation it exists for: a join
+/// whose answer went missing.
+///
+/// The applicant is already authenticated (authcrypt sender over DIDComm/TSP),
+/// and the submit dedup allows at most one open request per applicant, so
+/// "my open request" is both safe to ask and unambiguous to answer. The response
+/// carries `request_id`, so one id-less poll also repairs the applicant's record
+/// for every poll after it.
+///
+/// `NotFound` when nothing is open: either the applicant never reached us — in
+/// which case re-submitting is the move, not polling — or the request already
+/// settled and was retained past its window.
+pub async fn status_by_applicant(
+    state: &AppState,
+    applicant_did: String,
+) -> Result<JoinRequestStatusResponseBody, AppError> {
+    let id = crate::join::orchestrate::find_open_request(&state.join_requests_ks, &applicant_did)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!(
+                "no open join request for applicant {applicant_did}"
+            ))
+        })?;
+    let req = get_join_request(&state.join_requests_ks, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("join request not found: {id}")))?;
+    project_status(id, req)
+}
+
+/// Shared projection of a stored request into the applicant-facing response.
+/// Only non-sensitive lifecycle fields (never the stored VP).
+fn project_status(
+    id: Uuid,
+    req: crate::join::JoinRequest,
+) -> Result<JoinRequestStatusResponseBody, AppError> {
     // Project the outstanding requirements only for a Deferred request
     // (a `request_more` verdict the daemon persisted on `policy_decision`).
     let (needs, presentation_definition) = if req.status == JoinStatus::Deferred {

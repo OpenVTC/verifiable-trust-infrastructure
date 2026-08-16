@@ -146,11 +146,28 @@ pub const JOIN_REQUEST_STATUS_RESPONSE_TYPE: &str =
 
 /// Body of the status message (DIDComm). Over REST the `{id}` is the
 /// path segment; over DIDComm it travels here.
+///
+/// `request_id` is **optional**: omit it to ask "what is my open request?"
+/// and the community resolves it from the authenticated applicant.
+///
+/// That is not a convenience. The id an applicant polls with is the
+/// community's, minted on submit and learned from the first correlated
+/// reply — so an applicant whose reply was lost holds only its own
+/// placeholder and cannot name the request at all. Requiring the id made
+/// this poll unusable in exactly the case it exists for: a join whose
+/// answer went missing. The response always carries `request_id`, so one
+/// id-less poll also repairs the applicant's record for every poll after.
+///
+/// At most one request per applicant is open at a time (the submit
+/// dedup), so "my open request" is unambiguous.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct JoinRequestStatusBody {
-    pub request_id: Uuid,
+    /// The community's request id, when the applicant knows it. `None`
+    /// asks the community to resolve the applicant's open request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<Uuid>,
 }
 
 /// Status response: the request's lifecycle, plus (when `deferred`) what

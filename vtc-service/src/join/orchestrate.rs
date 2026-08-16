@@ -615,9 +615,14 @@ fn canonical_payload(
     .map_err(|e| AppError::Internal(format!("canonical payload serialize: {e}")))
 }
 
-/// Find an applicant's open (Pending/Deferred) join request, if any. Used to
-/// dedup / cap open requests per applicant (P0.13).
-async fn find_open_request(
+/// Find an applicant's open (Pending/Deferred) join request, if any.
+///
+/// Two callers, both relying on the same invariant that at most one is open per
+/// applicant: the submit dedup that establishes it (P0.13), and the id-less
+/// status poll (`status_by_applicant`), which is only well-defined because of
+/// it — an applicant that has lost the community's request id can ask about
+/// "my open request" and get exactly one answer.
+pub(crate) async fn find_open_request(
     ks: &vti_common::store::KeyspaceHandle,
     applicant_did: &str,
 ) -> Result<Option<Uuid>, AppError> {

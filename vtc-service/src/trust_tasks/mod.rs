@@ -315,14 +315,31 @@ async fn handle_status(
         Err(reject) => return reject,
     };
 
-    match crate::routes::join_requests::status::status_inner(
-        state,
-        body.request_id,
-        applicant_did,
-        None,
-    )
-    .await
-    {
+    // No `requestId` means "what is my open request?" — the applicant is already
+    // authenticated by the authcrypt sender, and at most one request per
+    // applicant is open (the submit dedup), so the community can resolve it.
+    //
+    // This is the only form of the poll available to an applicant whose first
+    // correlated reply was lost: the id it would otherwise quote is the
+    // community's, learned from that reply, so it holds nothing this VTC
+    // recognises. The response carries `requestId`, so answering once also
+    // repairs the applicant's record for every later poll.
+    let result = match body.request_id {
+        Some(request_id) => {
+            crate::routes::join_requests::status::status_inner(
+                state,
+                request_id,
+                applicant_did,
+                None,
+            )
+            .await
+        }
+        None => {
+            crate::routes::join_requests::status::status_by_applicant(state, applicant_did).await
+        }
+    };
+
+    match result {
         Ok(resp) => success_response(&doc, resp),
         Err(e) => app_error_to_reject(&doc, &e),
     }
