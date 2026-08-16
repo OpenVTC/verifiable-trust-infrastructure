@@ -1164,6 +1164,43 @@ pub async fn derive_and_sign_document(
     })
 }
 
+/// Find a VTA key by its multibase public key.
+///
+/// Used by the mdoc receive path to answer "do we hold the private half of this
+/// credential's MSO `deviceKey`?". A linear scan of the key records: the
+/// keyspace is indexed by key id, not by public key, and adding a reverse index
+/// for one caller on the receive path is not worth the write amplification on
+/// every mint.
+///
+/// Deliberately takes no `AuthClaims` — it answers a factual question about the
+/// keyspace, not an authorization one. The **caller** must gate on the returned
+/// record's `context_id`, because binding a credential to a key in a context the
+/// caller cannot act in would be a cross-tenant escape.
+pub async fn find_key_by_public_multibase(
+    keys_ks: &KeyspaceHandle,
+    public_key: &str,
+) -> Result<Option<KeyRecord>, AppError> {
+    for (raw_key, value) in keys_ks.prefix_iter_raw("key:").await? {
+        // Skip (don't abort on) a corrupt row, matching `list_keys`: one bad
+        // record must not make every lookup fail.
+        let record: KeyRecord = match serde_json::from_slice(&value) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    key = %String::from_utf8_lossy(&raw_key),
+                    error = %e,
+                    "skipping undeserializable key record during public-key lookup"
+                );
+                continue;
+            }
+        };
+        if record.public_key == public_key {
+            return Ok(Some(record));
+        }
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -25,6 +25,16 @@
 use serde::{Deserialize, Serialize};
 use vti_common::vault::{LifecycleError, VaultStatus, default_active};
 
+/// Reserved [`StoredCredential::tags`] key naming the VTA key whose public half
+/// is the mdoc's MSO `deviceKey` — the key that must sign `DeviceAuth` when this
+/// credential is presented.
+///
+/// Recorded at receive because an mdoc's holder binding is a **key**, not a DID:
+/// there is nothing in the stored envelope that would otherwise say which of the
+/// VTA's keys can speak for it. Without this, a held mdoc could never be
+/// presented with holder binding, and nothing would have noticed at receive time.
+pub const MDOC_DEVICE_KEY_TAG: &str = "mdoc:deviceKeyId";
+
 /// Reserved [`StoredCredential::tags`] key holding the BBS pseudonym holder
 /// link secret (`prover_nym`), base64url-no-pad. See [`StoredCredential::tags`].
 pub const BBS_PROVER_NYM_TAG: &str = "bbs:prover_nym";

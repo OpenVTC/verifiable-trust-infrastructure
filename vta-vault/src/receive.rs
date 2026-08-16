@@ -400,6 +400,15 @@ pub async fn receive_di_vc(
 ///    tampered credential.
 /// 3. **`validityInfo`** — `now` inside `[validFrom, validUntil]`.
 ///
+/// `device_key_id` names the VTA key whose public half is the MSO's
+/// `deviceKey` — the caller resolves it, because matching a COSE_Key against
+/// the VTA's own keyspace is above this layer. It is recorded on the stored
+/// envelope so presentation can find the key that must sign `DeviceAuth`.
+/// Refusing an mdoc whose device key the VTA does not hold is the point: such a
+/// credential could be stored but never presented with holder binding, and the
+/// failure would otherwise surface much later, at presentation, with nothing
+/// pointing at the cause.
+///
 /// ES256 only. ISO 18013-5 and the EUDI profiles mandate it, and it is what the
 /// VTA already has via [`vta_sdk::keys::KeyType::P256`], so no new curve enters
 /// the graph. A credential signed with any other algorithm is refused by name
@@ -409,6 +418,7 @@ pub async fn receive_mdoc(
     id: &str,
     body: &[u8],
     issuer_pub: &[u8],
+    device_key_id: &str,
     source: Provenance,
     now: DateTime<Utc>,
 ) -> Result<StoredCredential, AppError> {
@@ -478,7 +488,12 @@ pub async fn receive_mdoc(
         valid_until: Some(mso.validity_info.valid_until.clone()),
         received_at: now.to_rfc3339(),
         source,
-        tags: std::collections::BTreeMap::new(),
+        // The holder-binding key, recorded now because nothing else in the
+        // stored envelope says which VTA key can speak for this credential.
+        tags: std::collections::BTreeMap::from([(
+            super::model::MDOC_DEVICE_KEY_TAG.to_string(),
+            device_key_id.to_string(),
+        )]),
         body: body.to_vec(),
         lifecycle: vti_common::vault::VaultStatus::Active,
         archived_at: None,
@@ -542,14 +557,15 @@ pub async fn receive(
              + Circom/Groth16 verifier not yet wired)"
                 .to_string(),
         )),
-        CredentialFormat::MsoMdoc => {
-            let pubkey = issuer_pub.ok_or_else(|| {
-                AppError::Validation(
-                    "an mdoc needs a caller-resolved Document Signer key (SEC1 P-256)".to_string(),
-                )
-            })?;
-            receive_mdoc(vault, id, body, pubkey, source, now).await
-        }
+        // Not reachable through this entry point: an mdoc needs a
+        // caller-resolved Document Signer key *and* the VTA key id holding its
+        // MSO deviceKey. This signature can carry the first but not the second,
+        // and guessing the binding is exactly what must not happen.
+        CredentialFormat::MsoMdoc => Err(AppError::Validation(
+            "receive an mdoc through `receive_mdoc`, which takes the device-key binding \
+             this format-agnostic entry point cannot supply"
+                .to_string(),
+        )),
         CredentialFormat::Other(tag) => Err(AppError::Validation(format!(
             "unsupported credential format `{tag}`"
         ))),
@@ -1106,9 +1122,9 @@ mod tests {
             matches!(&zkp_err, AppError::Validation(m) if m.contains("ZKP")),
             "{zkp_err:?}"
         );
-        // mdoc, like DI, needs a caller-resolved issuer key — for mdoc that is
-        // the Document Signer's P-256 key, since issuer trust there is an X.509
-        // chain rather than a resolvable DID.
+        // mdoc is deliberately unreachable through the format-dispatching entry
+        // point: it needs the device-key binding, which this signature cannot
+        // carry. Guessing that binding is exactly what must not happen.
         let mdoc_err = receive(
             &vault,
             "c4",
@@ -1121,8 +1137,8 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(&mdoc_err, AppError::Validation(m) if m.contains("Document Signer")),
-            "error should name the missing issuer key, got {mdoc_err:?}"
+            matches!(&mdoc_err, AppError::Validation(m) if m.contains("receive_mdoc")),
+            "error should point at the right entry point, got {mdoc_err:?}"
         );
     }
 
@@ -1160,7 +1176,8 @@ mod tests {
     }
     // ── mdoc receive ──────────────────────────────────────────────────
 
-    /// Build a signed mdoc plus its Document Signer public key.
+    /// Build a signed mdoc plus its Document Signer public key. The MSO carries
+    /// a generated P-256 device key, returned so a test can assert the binding.
     fn test_mdoc() -> (Vec<u8>, Vec<u8>) {
         use affinidi_mdoc::es256_cose::Es256CoseSigner;
         use affinidi_mdoc::mso::ValidityInfo;
@@ -1187,12 +1204,12 @@ mod tests {
         let (_tmp, _store, vault) = fresh_vault();
         let (body, issuer_pub) = test_mdoc();
 
-        let cred = receive(
+        let cred = receive_mdoc(
             &vault,
             "m1",
-            &CredentialFormat::MsoMdoc,
             &body,
-            Some(&issuer_pub),
+            &issuer_pub,
+            "key-device-1",
             None,
             Utc::now(),
         )
@@ -1217,12 +1234,12 @@ mod tests {
         let (body, _) = test_mdoc();
         let attacker = Es256CoseSigner::generate().public_key_bytes();
 
-        let err = receive(
+        let err = receive_mdoc(
             &vault,
             "m2",
-            &CredentialFormat::MsoMdoc,
             &body,
-            Some(&attacker),
+            &attacker,
+            "key-device-1",
             None,
             Utc::now(),
         )
@@ -1242,12 +1259,12 @@ mod tests {
         let (body, _) = test_mdoc();
         let attacker = Es256CoseSigner::generate().public_key_bytes();
 
-        let _ = receive(
+        let _ = receive_mdoc(
             &vault,
             "m3",
-            &CredentialFormat::MsoMdoc,
             &body,
-            Some(&attacker),
+            &attacker,
+            "key-device-1",
             None,
             Utc::now(),
         )
@@ -1267,12 +1284,12 @@ mod tests {
         let (body, issuer_pub) = test_mdoc();
         let long_after = "2040-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
 
-        let err = receive(
+        let err = receive_mdoc(
             &vault,
             "m4",
-            &CredentialFormat::MsoMdoc,
             &body,
-            Some(&issuer_pub),
+            &issuer_pub,
+            "key-device",
             None,
             long_after,
         )
@@ -1284,36 +1301,42 @@ mod tests {
         );
     }
 
+    /// The device-key binding is recorded on the stored envelope. Without it
+    /// nothing downstream could know which VTA key may sign `DeviceAuth`, and
+    /// the credential would be unpresentable with no trace of why.
     #[tokio::test]
-    async fn mdoc_receive_requires_an_issuer_key() {
+    async fn mdoc_receive_records_the_device_key_binding() {
         let (_tmp, _store, vault) = fresh_vault();
-        let (body, _) = test_mdoc();
-        let err = receive(
+        let (body, issuer_pub) = test_mdoc();
+
+        let cred = receive_mdoc(
             &vault,
             "m5",
-            &CredentialFormat::MsoMdoc,
             &body,
-            None,
+            &issuer_pub,
+            "key-device-42",
             None,
             Utc::now(),
         )
         .await
-        .unwrap_err();
-        assert!(
-            matches!(&err, AppError::Validation(m) if m.contains("Document Signer")),
-            "{err:?}"
+        .expect("stores");
+
+        assert_eq!(
+            cred.tags.get(super::super::model::MDOC_DEVICE_KEY_TAG),
+            Some(&"key-device-42".to_string()),
+            "the binding must survive onto the stored envelope"
         );
     }
 
     #[tokio::test]
     async fn mdoc_receive_rejects_a_body_that_is_not_an_mdoc() {
         let (_tmp, _store, vault) = fresh_vault();
-        let err = receive(
+        let err = receive_mdoc(
             &vault,
             "m6",
-            &CredentialFormat::MsoMdoc,
             b"not cbor at all",
-            Some(&[0u8; 65]),
+            &[0u8; 65],
+            "key-device-1",
             None,
             Utc::now(),
         )
