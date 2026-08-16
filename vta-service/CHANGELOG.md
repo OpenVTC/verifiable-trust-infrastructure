@@ -2,6 +2,75 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.15.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.15.3...vta-service-v0.15.4) — 2026-08-16
+
+
+### Added
+
+- **vta-vault**: Verify and store ISO mdoc credentials on receive ([#986](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/986))
+
+#984 gave mdoc a CredentialFormat identity but receive still refused it, because
+  affinidi-mdoc had no way to turn a stored body back into an IssuerSigned. 0.2.6
+  added that codec, so receive can now do the real work.
+
+  Verifies three things per ISO 18013-5 S9.3.1, rejecting-without-storing on any
+  failure: the issuerAuth COSE_Sign1 over the MSO, every item digest against the
+  MSO valueDigests (a good signature over an MSO whose digests do not match means
+  the items were swapped after signing), and the validityInfo window.
+
+  issuer_pub is the caller-resolved Document Signer key — deliberately the same
+  shape as the DI path's issuer key, and for the same reason: deciding *which*
+  key to trust is policy that belongs to the wire layer. That seam matters more
+  here, because mdoc anchors issuer trust in an X.509 chain (x5chain, COSE label
+  33, rooted in an IACA) while this stack is DID-rooted end to end. Taking a
+  resolved key keeps that unresolved question out of the storage layer instead of
+  quietly settling it.
+
+  ES256 only, checked explicitly before the signature so a mismatched algorithm
+  is refused by name rather than failing as an opaque bad signature. ISO 18013-5
+  and the EUDI profiles mandate ES256, which the VTA already has via
+  KeyType::P256, so no new curve enters the graph.
+
+  subject_did and issuer_did are left None: an mdoc binds to its holder through
+  the MSO deviceKey, not a subject DID, and carries no issuer DID. Inventing
+  either would put an unverifiable identifier into a secondary index.
+
+  coset and time are declared as direct dependencies rather than used
+  transitively through affinidi-mdoc — the receive path names their types, and
+  depending on a transitive is how an unrelated version bump breaks a crate.
+
+  DCQL matching and presentation are deliberately NOT in this change. dcql_format
+  still returns None for mdoc: admitting it without a present_single arm trips
+  formats_admitted_for_dcql_are_all_presentable, and that guard is right — a
+  matched-but-unpresentable credential bails the entire vp_token, not just itself.
+  Presenting an mdoc needs DeviceResponse::to_cbor_bytes (affinidi-mdoc 0.2.7,
+  under review as affinidi/affinidi-tdk-rs#712), so matching and presentation land
+  together in a follow-up.
+
+- **vta-vault**: Give ISO mdoc a first-class CredentialFormat identity ([#984](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/984))
+
+An mdoc arriving at the credential vault previously deserialised into the
+  `Other(String)` escape hatch, so every downstream `match` treated one of
+  the two eIDAS-mandated credential formats as an unknown vendor tag.
+
+  Adds `CredentialFormat::MsoMdoc`, tagged `mso_mdoc` — the OpenID4VP
+  `CredentialQuery.format` spelling, explicitly renamed rather than taking
+  the enum's kebab-case `mso-mdoc`, so storage and protocol agree on one
+  token. A test pins the exact bytes, not just the round-trip.
+
+  Receive refuses an mdoc rather than storing a body it cannot re-read, and
+  `dcql_format` returns `None` for it, keeping the existing matchable-implies-
+  presentable invariant true. Both carry the reason: affinidi-mdoc 0.2.5 has
+  no CBOR codec for `IssuerSigned` (it derives only Debug + Clone, with no
+  Serialize/Deserialize and no to/from_cbor_bytes), so the body cannot be
+  decoded, verified, or re-encoded for presentation. Wiring receive, DCQL
+  matching and presentation is blocked on that codec landing upstream.
+
+  The invariant guard in credential_exchange enumerates formats by hand, so
+  MsoMdoc is added there too — otherwise a new variant is silently uncovered.
+
+
+
 ## [0.15.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.15.2...vta-service-v0.15.3) — 2026-08-14
 
 
