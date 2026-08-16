@@ -264,6 +264,54 @@ fn extract_leaf_certificate(issuer_auth: &coset::CoseSign1) -> Result<Vec<u8>, A
     }
 }
 
+/// Extract the MSO `deviceKey` as a **compressed SEC1 point** (33 bytes).
+///
+/// This is the holder-binding key an mdoc is issued to: only its private half
+/// can sign `DeviceAuth`, so a VTA that does not hold it can never present the
+/// credential with holder binding. Returning the compressed encoding is
+/// deliberate — it is the form the VTA stores its own P-256 public keys in
+/// (`to_encoded_point(true)` + multicodec `p256-pub`), so the caller can compare
+/// without re-deriving either side.
+///
+/// Lives here rather than in the caller because it reads mdoc internals; the
+/// *matching* stays with the caller, which is the layer that can see the VTA's
+/// keyspace.
+pub fn mdoc_device_key_sec1(
+    mso: &affinidi_mdoc::MobileSecurityObject,
+) -> Result<Vec<u8>, AppError> {
+    let cose =
+        affinidi_mdoc::CoseKey::from_cbor_value(&mso.device_key_info.device_key).map_err(|e| {
+            AppError::Validation(format!("mdoc deviceKey is not a valid COSE_Key: {e}"))
+        })?;
+
+    if !matches!(cose.crv, affinidi_mdoc::Curve::P256) {
+        return Err(AppError::Validation(format!(
+            "mdoc deviceKey must be P-256 (ISO 18013-5 / EUDI); got {:?}",
+            cose.crv
+        )));
+    }
+
+    let x = &cose.x;
+    let y = cose
+        .y
+        .as_ref()
+        .ok_or_else(|| AppError::Validation("mdoc deviceKey has no Y coordinate".to_string()))?;
+    if x.len() != 32 || y.len() != 32 {
+        return Err(AppError::Validation(format!(
+            "mdoc deviceKey coordinates must be 32 bytes each; got x={} y={}",
+            x.len(),
+            y.len()
+        )));
+    }
+
+    // SEC1 compressed: 0x02 for an even Y, 0x03 for odd, then X.
+    let prefix = if y[31] & 1 == 0 { 0x02u8 } else { 0x03u8 };
+    let mut point = Vec::with_capacity(33);
+    point.push(prefix);
+    point.extend_from_slice(x);
+    Ok(point)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

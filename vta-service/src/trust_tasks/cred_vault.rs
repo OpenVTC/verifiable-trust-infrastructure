@@ -265,14 +265,63 @@ pub(super) async fn handle_receive(
                 Err(e) => return app_error_to_reject(&doc, e),
             };
 
+            // Holder binding. An mdoc is issued to a specific device key, and
+            // only its private half can sign DeviceAuth — so a credential whose
+            // device key this VTA does not hold could be stored but never
+            // presented. Resolve it now and refuse if we cannot, rather than
+            // letting the failure surface at presentation with nothing pointing
+            // at the cause.
+            let device_point = match vta_vault::mdoc_trust::mdoc_device_key_sec1(&issued.mso) {
+                Ok(p) => p,
+                Err(e) => return app_error_to_reject(&doc, e),
+            };
+            let device_mb =
+                vta_keys::encode_public_multibase(&vta_sdk::keys::KeyType::P256, &device_point);
+            let device_key = match crate::operations::keys::find_key_by_public_multibase(
+                &state.keys_ks,
+                &device_mb,
+            )
+            .await
+            {
+                Ok(Some(k)) => k,
+                Ok(None) => {
+                    return reject_with(
+                        &doc,
+                        RejectReason::MalformedRequest {
+                            reason: "this VTA does not hold the mdoc's MSO deviceKey, so the \
+                                     credential could never be presented with holder binding"
+                                .to_string(),
+                        },
+                    );
+                }
+                Err(e) => return app_error_to_reject(&doc, e),
+            };
+
+            // Context gate on the *key*, not just the credential: binding an
+            // mdoc to a key in a context the caller cannot act in would let one
+            // tenant park a credential on another tenant's key.
+            if let Some(ctx) = device_key.context_id.as_deref()
+                && let Err(e) = auth.require_context(ctx)
+            {
+                return app_error_to_reject(&doc, e);
+            }
+
             // An mdoc has no `id` of its own to fall back on, so an explicit id
             // or a fresh urn:uuid it is.
             let id = req
                 .id
                 .unwrap_or_else(|| format!("urn:uuid:{}", Uuid::new_v4()));
 
-            match receive::receive_mdoc(&state.vault_ks, &id, &body, &issuer_pub, provenance, now)
-                .await
+            match receive::receive_mdoc(
+                &state.vault_ks,
+                &id,
+                &body,
+                &issuer_pub,
+                &device_key.key_id,
+                provenance,
+                now,
+            )
+            .await
             {
                 Ok(s) => s,
                 Err(e) => return app_error_to_reject(&doc, e),
