@@ -159,6 +159,23 @@ pub struct VaultConfig {
     /// bypasses the window entirely.
     #[serde(default = "default_vault_grace_days")]
     pub grace_days: u32,
+
+    /// PEM-encoded **IACA root certificates** this VTA accepts as mdoc issuers
+    /// (ISO/IEC 18013-5). Each entry may hold several `CERTIFICATE` blocks, so
+    /// a Member State trusted-list bundle can be pasted as one value.
+    ///
+    /// Inline PEM rather than file paths, for two reasons: an enclave has no
+    /// convenient filesystem to read them from, and inline values are covered
+    /// by the effective-config digest that boot attestation commits to — so a
+    /// verifier can see *which issuers a TEE VTA was trusting* at the time it
+    /// was attested. A path would leave that outside the measurement.
+    ///
+    /// **Empty means mdoc receive is unavailable, not "trust anything".** The
+    /// resolver fails closed on an empty anchor set. mdoc is the one credential
+    /// format here whose issuer is not a resolvable DID, so there is no safe
+    /// default to fall back to.
+    #[serde(default)]
+    pub mdoc_iaca_trust_anchors: Vec<String>,
 }
 
 fn default_vault_grace_days() -> u32 {
@@ -169,6 +186,7 @@ impl Default for VaultConfig {
     fn default() -> Self {
         Self {
             grace_days: default_vault_grace_days(),
+            mdoc_iaca_trust_anchors: Vec::new(),
         }
     }
 }
@@ -325,5 +343,36 @@ mod tests {
         let cfg: AuthConfig =
             serde_json::from_str(r#"{ "jwt_signing_key": null }"#).expect("loads");
         assert_eq!(cfg.access_token_expiry, default_access_token_expiry());
+    }
+}
+
+#[cfg(test)]
+mod mdoc_trust_anchor_config_tests {
+    use super::*;
+
+    /// The field must default to empty, so an existing config that predates it
+    /// still loads. Combined with the resolver failing closed, that means an
+    /// upgrade neither breaks a deployment nor silently starts trusting mdocs.
+    #[test]
+    fn trust_anchors_default_to_empty_and_an_old_config_still_loads() {
+        let cfg: VaultConfig = toml::from_str("grace_days = 30").expect("legacy config loads");
+        assert_eq!(cfg.grace_days, 30);
+        assert!(
+            cfg.mdoc_iaca_trust_anchors.is_empty(),
+            "absent means no mdoc issuer is trusted, not a permissive default"
+        );
+    }
+
+    #[test]
+    fn trust_anchors_round_trip_through_toml() {
+        let cfg: VaultConfig = toml::from_str(
+            r#"
+            grace_days = 7
+            mdoc_iaca_trust_anchors = ["-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"]
+            "#,
+        )
+        .expect("config with anchors loads");
+        assert_eq!(cfg.mdoc_iaca_trust_anchors.len(), 1);
+        assert!(cfg.mdoc_iaca_trust_anchors[0].contains("BEGIN CERTIFICATE"));
     }
 }
