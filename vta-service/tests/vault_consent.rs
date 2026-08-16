@@ -57,7 +57,7 @@ async fn consent_lifecycle_end_to_end() {
 
     // create — build + sign + store.
     let grant = ConsentGrant {
-        holder_did: &holder,
+        holder: vta_service::vault::consent::HolderIdentity::Subject(&holder),
         credential_id: "cred-1",
         verifier_did: verifier,
         purpose: "join the Acme community",
@@ -160,7 +160,7 @@ async fn expired_consent_authorizes_nothing_end_to_end() {
     let valid_until = Utc::now() - Duration::minutes(1);
 
     let grant = ConsentGrant {
-        holder_did: &holder,
+        holder: vta_service::vault::consent::HolderIdentity::Subject(&holder),
         credential_id: "cred-1",
         verifier_did: verifier,
         purpose: "join",

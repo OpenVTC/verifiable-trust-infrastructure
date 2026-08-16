@@ -188,7 +188,7 @@ fn grant<'a>(
     valid_until: DateTime<Utc>,
 ) -> ConsentGrant<'a> {
     ConsentGrant {
-        holder_did,
+        holder: vta_service::vault::consent::HolderIdentity::Subject(holder_did),
         credential_id,
         verifier_did,
         purpose: "join the Acme community",

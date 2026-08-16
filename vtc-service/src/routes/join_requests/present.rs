@@ -152,6 +152,11 @@ pub async fn prepare_join_query(
         dcql_query,
         nonce,
         purpose,
+        // The VTC join flow is a Trust-Task exchange, not OID4VP over HTTP —
+        // there is no `response_uri` to bind an mdoc's DeviceAuth to, so an
+        // mdoc is deliberately not offered here. A VTC that later wants to
+        // accept one has to run a real OID4VP session and pass it through.
+        oid4vp_session: None,
     })
 }
 

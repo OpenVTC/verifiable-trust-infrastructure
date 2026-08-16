@@ -123,9 +123,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-data-integrity"
-version = "0.7.9"
+version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c058cd5f79752762622da56aa06c6c673b658d267aa29ce4cfd1c7028d7dece5"
+checksum = "837d0913b02cccd98439abed758329bb568f5bea1edab9e719525a65ef80552b"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -260,9 +260,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-mdoc"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d30e7a1c8678393a0114d11f4418af6e894021add84f4656a1679f4670fcd910"
+checksum = "09a923616197dc73661b1b57ad8dfaef7d9297c51c137062c9435b6edd6c98a3"
 dependencies = [
  "aes-gcm",
  "ciborium",
