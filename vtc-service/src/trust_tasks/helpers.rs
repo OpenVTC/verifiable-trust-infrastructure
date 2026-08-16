@@ -163,11 +163,20 @@ pub(crate) fn error_response(err_doc: ErrorResponse) -> TrustTaskOutcome {
 /// emitting two versions is a trap for exactly the consumer that pins one of
 /// them.
 ///
+/// Now `0.5`, tracking `trust-tasks-rs` 0.9. The framework moved twice for the
+/// same reason it moved to `0.3`: a new standard code the older payload
+/// schema's `code` enum does not list and whose extended-code pattern does not
+/// match, so a document carrying it would fail to validate as the older
+/// version. `0.4` carries `idConflict`, `0.5` carries `cancelled` (SPEC §8.3).
+/// SPEC §5.2 forward-minor compatibility means a consumer pinned to `0.3`
+/// SHOULD still accept these.
+///
 /// Pinned by `unrouted_and_routed_errors_agree_on_the_type_uri` below, which
 /// compares it against a real `reject_with`, so a framework bump fails a test
-/// rather than splitting this service into two dialects.
+/// rather than splitting this service into two dialects — which is exactly how
+/// this bump was caught.
 pub(crate) fn framework_error_type_uri() -> TypeUri {
-    "https://trusttasks.org/spec/trust-task-error/0.3"
+    "https://trusttasks.org/spec/trust-task-error/0.5"
         .parse()
         .expect("framework error Type URI parses")
 }

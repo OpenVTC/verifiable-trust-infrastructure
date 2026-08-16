@@ -32,7 +32,11 @@
 //! routed here. `present` belongs to the `credential-exchange` family and is
 //! handled there.
 
-mod helpers;
+// `pub(crate)` only so sibling modules' tests can take the framework error
+// version from `framework_error_type_uri()` rather than each naming it. The
+// module's items are individually `pub(crate)` already; this widens the path,
+// not the surface.
+pub(crate) mod helpers;
 
 use serde_json::Value;
 use trust_tasks_rs::{RejectReason, TrustTask};

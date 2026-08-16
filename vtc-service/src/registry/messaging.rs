@@ -778,11 +778,14 @@ mod tests {
     }
 
     fn error_doc(code: &str) -> TrustTask<Value> {
+        // Takes the version from the emitter rather than naming one, so a
+        // framework bump moves this fixture with the code under test instead of
+        // stranding it a version behind. Backward acceptance of an *older*
+        // error document is covered deliberately, and separately, by
+        // `tests/registry_didcomm.rs`, which pins `0.1`.
         TrustTask::new(
             "urn:uuid:err".to_string(),
-            "https://trusttasks.org/spec/trust-task-error/0.3"
-                .parse()
-                .unwrap(),
+            crate::trust_tasks::helpers::framework_error_type_uri(),
             json!({ "code": code, "message": "nope" }),
         )
     }
