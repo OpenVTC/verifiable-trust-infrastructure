@@ -2,6 +2,75 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.15.4...vta-service-v0.16.0) — 2026-08-16
+
+
+### Added
+
+- **vta-vault**: Bind an mdoc to the VTA key that can present it ([#990](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/990))
+
+An mdoc's holder binding is a key, not a DID: the MSO carries a deviceKey, and
+  only its private half can sign DeviceAuth. Nothing in the stored envelope said
+  which VTA key that was, so a received mdoc could be stored and then turn out to
+  be unpresentable — with the failure surfacing much later, at presentation, and
+  nothing pointing at the cause.
+
+  Receive now resolves that binding and refuses the credential if this VTA does
+  not hold the key. Storing a credential you can never present is a trap, and the
+  right moment to find out is the moment it arrives.
+
+  mdoc_device_key_sec1 extracts the MSO deviceKey as a compressed SEC1 point —
+  the same encoding the VTA stores its own P-256 public keys in — so the caller
+  can compare without re-deriving either side. Extraction lives in vta-vault
+  because it reads mdoc internals; the matching lives in vta-service because that
+  is the layer that can see the keyspace. vta-vault does not depend on vta-keys,
+  and this keeps it that way.
+
+  find_key_by_public_multibase is a linear scan: the keyspace is indexed by key
+  id, not by public key, and a reverse index for one receive-path caller is not
+  worth the write amplification on every mint. It takes no AuthClaims because it
+  answers a factual question, not an authorization one — the caller gates on the
+  returned record's context_id, because binding a credential to a key in a
+  context the caller cannot act in would be a cross-tenant escape.
+
+- **vta-service**: Accept ISO mdoc over the credential-receive Trust Task ([#989](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/989))
+
+Everything shipped for mdoc so far — the format identity ([#984](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/984)), receive-side
+  verification ([#986](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/986)) and the IACA trust anchors ([#987](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/987)) — was reachable only
+  through the library. handle_receive was hardcoded to the Data-Integrity path:
+  a JSON credential, an issuer DID resolved through the DID cache, no format
+  parameter. An mdoc could not arrive at the VTA at all. This connects it.
+
+  ReceiveBody gains an optional format tag and a credentialBase64 carrier, since
+  an mdoc is CBOR and cannot travel as JSON. Absent format still means
+  Data-Integrity, which is the shape every existing client sends, so a deployed
+  wallet is unaffected — pinned by a test that parses a pre-existing body and
+  asserts it still routes to the DI path. Exactly one of credential or
+  credentialBase64 must be present; both, or neither, is a malformedRequest.
+
+  The mdoc arm is where the two credential families genuinely diverge. A DI
+  credential names its issuer as a DID and the key is resolved through the cache;
+  an mdoc names its issuer as an X.509 Document Signer, so the credential is
+  decoded first to read its x5chain and the key comes from the configured IACA
+  anchors instead. That asymmetry is the whole reason the anchors exist.
+
+  AppState carries the parsed anchors, built once in build_app_state from
+  [vault] mdoc_iaca_trust_anchors. A malformed certificate fails the boot rather
+  than surfacing as a puzzling rejection on the first mdoc that arrives. Empty is
+  legal and means this VTA accepts no mdoc issuers; the resolver fails closed on
+  it, so wiring the wire surface does not by itself make any VTA start trusting
+  mdocs — an operator still has to configure anchors deliberately.
+
+  No schema change: vault/credentials/receive/0.1 is in UNSPECCED_DISPATCHED_URIS,
+  so there is no published payload schema to update and dispatch validation is a
+  no-op for it either way.
+
+  Note for a follow-up, not changed here: test_support.rs constructs an AppState
+  literal directly, so build_app_state is not in practice the single constructor
+  its doc comment claims. Adding a field has to be done in both places.
+
+
+
 ## [0.15.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.15.3...vta-service-v0.15.4) — 2026-08-16
 
 

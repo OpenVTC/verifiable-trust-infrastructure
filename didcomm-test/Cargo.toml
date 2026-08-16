@@ -26,7 +26,7 @@ ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 # SLIP-0010 key derivation (`vti_common::slip10`) — the harness re-derives the
 # same keys the VTA does, from the same seed and paths.
-vti-common = { path = "../vti-common", version = "0.11" }
+vti-common = { path = "../vti-common", version = "0.12" }
 
 [lints]
 workspace = true
