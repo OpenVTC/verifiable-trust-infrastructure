@@ -2440,6 +2440,19 @@ pub(crate) enum KeyCommands {
         /// unless you're a super admin creating a context-less key (rare).
         #[arg(long = "context", alias = "context-id", value_name = "ID")]
         context_id: Option<String>,
+        /// Create a NON-RECOVERABLE internal key.
+        ///
+        /// Generated from the system CSPRNG, NOT derived from your BIP-39 seed,
+        /// excluded from backups, and never exported by any surface — the VTA
+        /// will only ever sign with it. If this VTA's storage is lost the key is
+        /// gone permanently, along with every signature it was the sole
+        /// authority for. Cannot sign did:webvh log entries; may be a signing
+        /// verificationMethod inside a DID document.
+        #[arg(long)]
+        internal: bool,
+        /// Skip the internal-key confirmation prompt (automation only).
+        #[arg(long)]
+        yes: bool,
     },
     /// Import an externally-created private key
     Import {

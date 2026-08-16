@@ -2174,6 +2174,7 @@ mod tests {
     #[test]
     fn test_create_key_request_serialization() {
         let req = CreateKeyRequest {
+            internal: None,
             key_type: KeyType::Ed25519,
             derivation_path: None,
             key_id: None,

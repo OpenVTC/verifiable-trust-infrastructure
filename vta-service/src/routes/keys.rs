@@ -28,6 +28,11 @@ use crate::server::AppState;
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateKeyRequest {
     pub key_type: KeyType,
+    /// Mint a non-extractable internal key. Absent or `false` is today's
+    /// behaviour; `true` mints a key that is never exported, never backed up,
+    /// and **cannot be recovered**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub internal: Option<bool>,
     pub derivation_path: Option<String>,
     pub key_id: Option<String>,
     pub mnemonic: Option<String>,
@@ -53,11 +58,13 @@ pub async fn create_key(
 ) -> Result<(StatusCode, Json<CreateKeyResponseBody>), AppError> {
     let result = operations::keys::create_key(
         &state.keys_ks,
+        &state.internal_ks,
         &state.contexts_ks,
         &state.seed_store,
         &state.audit_ks,
         &auth.0,
         operations::keys::CreateKeyParams {
+            internal: req.internal.unwrap_or(false),
             key_type: req.key_type,
             derivation_path: req.derivation_path,
             key_id: req.key_id,
@@ -317,6 +324,7 @@ pub async fn sign_with_key(
     let result = operations::keys::sign_payload(
         &state.keys_ks,
         &state.imported_ks,
+        &state.internal_ks,
         &state.contexts_ks,
         &state.acl_ks,
         &state.seed_store,

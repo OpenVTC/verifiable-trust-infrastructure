@@ -26,6 +26,22 @@ pub enum KeyStatus {
 pub enum KeyOrigin {
     Derived,
     Imported,
+    /// Generated from the system CSPRNG, **never** derived from the BIP-39
+    /// master seed and **never** exportable.
+    ///
+    /// The trade this variant makes: a `Derived` key can always be
+    /// reconstructed from the mnemonic, which is what makes the VTA
+    /// recoverable — and also what makes "the operator cannot obtain this key"
+    /// false. An `Internal` key has no derivation path, so the mnemonic
+    /// reveals nothing about it and no export surface will return it.
+    ///
+    /// The cost is symmetrical and permanent: **there is no way to recover an
+    /// internal key.** It is not in a backup, not in the mnemonic, and not
+    /// re-derivable. Losing the keyspace loses the key, and anything that key
+    /// authorises. Use it where a signature must be attributable to this VTA
+    /// and nowhere else; do not use it where losing the key would strand an
+    /// identity — see the `did:webvh` refusal in `vta-webvh`.
+    Internal,
 }
 
 fn default_derived() -> KeyOrigin {

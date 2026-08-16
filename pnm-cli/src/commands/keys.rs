@@ -17,6 +17,8 @@ pub(crate) async fn run(
             mnemonic,
             label,
             context_id,
+            internal,
+            yes,
         } => {
             keys::cmd_key_create(
                 client,
@@ -25,6 +27,8 @@ pub(crate) async fn run(
                 mnemonic,
                 label,
                 context_id,
+                internal,
+                yes,
             )
             .await
         }

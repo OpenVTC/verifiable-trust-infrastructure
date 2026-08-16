@@ -83,6 +83,7 @@ fn create_did_webvh_result_body_debug_redacts_mnemonic() {
 #[test]
 fn create_key_body_debug_redacts_mnemonic() {
     let body = CreateKeyBody {
+        internal: None,
         key_type: vta_sdk::keys::KeyType::Ed25519,
         derivation_path: "m/0'".into(),
         mnemonic: Some(MARKER.into()),

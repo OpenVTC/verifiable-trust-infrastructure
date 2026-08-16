@@ -69,11 +69,13 @@ pub(super) async fn handle_create(
     };
     match operations::keys::create_key(
         &state.keys_ks,
+        &state.internal_ks,
         &state.contexts_ks,
         &state.seed_store,
         &state.audit_ks,
         auth,
         operations::keys::CreateKeyParams {
+            internal: req.internal.unwrap_or(false),
             key_type: req.key_type,
             derivation_path: Some(req.derivation_path),
             // Trust-task envelope auto-generates key_id from derivation
@@ -209,6 +211,7 @@ pub(super) async fn handle_sign(
     match operations::keys::sign_payload(
         &state.keys_ks,
         &state.imported_ks,
+        &state.internal_ks,
         &state.contexts_ks,
         &state.acl_ks,
         &state.seed_store,

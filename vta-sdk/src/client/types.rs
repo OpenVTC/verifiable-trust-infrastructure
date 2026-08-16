@@ -4,7 +4,7 @@
 //! re-exported from the parent module, so callers can continue to
 //! import them via `vta_sdk::client::*` (or `vta_sdk::prelude::*`).
 
-use crate::keys::{KeyRecord, KeyStatus, KeyType};
+use crate::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 use crate::protocols::key_management::sign::SignAlgorithm;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -76,11 +76,17 @@ pub struct CreateKeyRequest {
     pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
+    /// Mint a **non-extractable internal key**. Absent or `false` is today's
+    /// behaviour. `true` mints a CSPRNG key that is never exported, excluded
+    /// from backup, and **cannot be recovered from the mnemonic or otherwise**.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub internal: Option<bool>,
 }
 
 impl CreateKeyRequest {
     pub fn new(key_type: KeyType) -> Self {
         Self {
+            internal: None,
             key_type,
             derivation_path: None,
             key_id: None,
@@ -246,7 +252,16 @@ pub struct CreateKeyResponse {
     pub public_key: String,
     pub status: KeyStatus,
     pub label: Option<String>,
+    /// How the key was produced. `Internal` means non-extractable and
+    /// unrecoverable — the CLI reprints the warning off this field, so an
+    /// operator scripting against the API sees it in the response too.
+    #[serde(default = "default_derived_origin")]
+    pub origin: KeyOrigin,
     pub created_at: DateTime<Utc>,
+}
+
+fn default_derived_origin() -> KeyOrigin {
+    KeyOrigin::Derived
 }
 
 #[derive(Debug, Deserialize)]

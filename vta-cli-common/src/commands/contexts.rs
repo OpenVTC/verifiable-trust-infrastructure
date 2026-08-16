@@ -691,6 +691,7 @@ pub async fn cmd_context_reprovision(
             eprintln!("Creating new admin key...");
             let key_resp = client
                 .create_key(CreateKeyRequest {
+                    internal: None,
                     key_type: KeyType::Ed25519,
                     derivation_path: None,
                     key_id: None,

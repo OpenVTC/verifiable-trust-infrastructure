@@ -37,6 +37,14 @@ use crate::store::KeyspaceHandle;
 
 pub struct CreateKeyParams {
     pub key_type: KeyType,
+    /// Mint a **non-extractable internal key** instead of a BIP-32 derived one.
+    ///
+    /// The key is generated from the system CSPRNG, has no derivation path,
+    /// and **cannot be recovered by any means** — not from the mnemonic, not
+    /// from a backup. Losing it loses every signature it was the sole authority
+    /// for, permanently. Callers must surface that to an operator before
+    /// setting this; the CLI requires an explicit confirmation.
+    pub internal: bool,
     pub derivation_path: Option<String>,
     pub key_id: Option<String>,
     pub mnemonic: Option<String>,
@@ -51,8 +59,89 @@ pub struct ListKeysParams {
     pub context_id: Option<String>,
 }
 
+/// Mint a non-extractable internal key.
+///
+/// Split out of [`create_key`] rather than branched inline because the two
+/// share almost nothing: this path loads no seed, builds no BIP-32 root, and
+/// records no derivation path. Every one of those absences is deliberate — a
+/// derivation path would be a reconstruction route, and the origin's whole
+/// value is that none exists.
+#[allow(clippy::too_many_arguments)]
+async fn create_internal_key(
+    keys_ks: &KeyspaceHandle,
+    internal_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    params: CreateKeyParams,
+    context_id: Option<String>,
+    channel: &str,
+) -> Result<CreateKeyResultBody, AppError> {
+    let key_id = params.key_id.clone().ok_or_else(|| {
+        AppError::Validation(
+            "an internal key needs an explicit key_id: it has no derivation path to \
+             name it after"
+                .into(),
+        )
+    })?;
+
+    if keys_ks
+        .get::<KeyRecord>(keys::store_key(&key_id))
+        .await?
+        .is_some()
+    {
+        return Err(AppError::Conflict(format!("key `{key_id}` already exists")));
+    }
+
+    let key_type = params.key_type.clone();
+    let label = params.label.clone();
+    let public = vta_keys::internal::generate(internal_ks, &key_id, key_type.clone()).await?;
+    let public_key = encode_public_multibase(&key_type, &public);
+
+    let now = Utc::now();
+    let record = KeyRecord {
+        key_id: key_id.clone(),
+        // Deliberately not a BIP-32 path. It names the origin instead, so a
+        // reader of the record cannot mistake it for something re-derivable.
+        derivation_path: "internal".to_string(),
+        key_type: key_type.clone(),
+        status: KeyStatus::Active,
+        public_key: public_key.clone(),
+        label: label.clone(),
+        context_id: context_id.clone(),
+        // No seed is involved, so there is no seed generation to pin to.
+        seed_id: None,
+        origin: keys::KeyOrigin::Internal,
+        created_at: now,
+        updated_at: now,
+    };
+    keys_ks.insert(keys::store_key(&key_id), &record).await?;
+
+    let _ = audit::record(
+        audit_ks,
+        "key.create.internal",
+        &auth.did,
+        Some(&key_id),
+        "success",
+        Some(channel),
+        context_id.as_deref(),
+    )
+    .await;
+
+    Ok(CreateKeyResultBody {
+        key_id,
+        key_type,
+        derivation_path: "internal".to_string(),
+        public_key,
+        status: KeyStatus::Active,
+        label,
+        origin: keys::KeyOrigin::Internal,
+        created_at: now,
+    })
+}
+
 pub async fn create_key(
     keys_ks: &KeyspaceHandle,
+    internal_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     audit_ks: &KeyspaceHandle,
@@ -83,6 +172,22 @@ pub async fn create_key(
             "context_id required: admin has access to multiple contexts".into(),
         ));
     };
+
+    // Internal keys short-circuit here, before any derivation-path resolution:
+    // they load no seed, build no BIP-32 root, and record no path, because each
+    // of those would be the reconstruction route the origin exists to deny.
+    if params.internal {
+        return create_internal_key(
+            keys_ks,
+            internal_ks,
+            audit_ks,
+            auth,
+            params,
+            context_id,
+            channel,
+        )
+        .await;
+    }
 
     // Resolve derivation path: use explicit value, or auto-derive from context
     let derivation_path = match params.derivation_path {
@@ -381,6 +486,20 @@ pub async fn get_key(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("key {key_id} not found")))?;
 
+    // The guarantee, enforced before any authorization check so it cannot be
+    // reasoned around: an internal key is never exported, to anybody, at any
+    // role. Admin is not a bypass — the whole point of the origin is that no
+    // caller has this power, so treating it as a permission question would be
+    // the wrong shape.
+    if record.origin == KeyOrigin::Internal {
+        return Err(AppError::Forbidden(format!(
+            "key `{key_id}` is an internal key: its material is generated from the \
+             system CSPRNG, is not derived from the master seed, and is never \
+             exported by any surface. Use the signing oracle instead — and note \
+             that an internal key cannot be recovered if lost"
+        )));
+    }
+
     if let Some(ref ctx) = record.context_id {
         auth.require_context(ctx)?;
     } else if !auth.is_super_admin() {
@@ -612,7 +731,26 @@ pub async fn get_key_secret(
         ));
     }
 
+    // Internal keys are refused here too. `InternalAuthority` bypasses the ACL,
+    // not the non-extractability guarantee — an internal key has no export
+    // surface at all, and an internal caller wanting a signature must go
+    // through the signing oracle like everyone else.
+    if record.origin == KeyOrigin::Internal {
+        return Err(AppError::Forbidden(format!(
+            "key `{key_id}` is an internal key and is never exported, including \
+             under internal authority"
+        )));
+    }
+
     let (public_key_multibase, private_key_multibase) = match record.origin {
+        // Unreachable: the early return above refuses internal keys. Kept as a
+        // second, local refusal so deleting that guard cannot quietly turn this
+        // match into an export path for them.
+        KeyOrigin::Internal => {
+            return Err(AppError::Forbidden(format!(
+                "key `{key_id}` is an internal key and is never exported"
+            )));
+        }
         KeyOrigin::Imported => {
             // Decrypt from imported_secrets keyspace
             let seed = load_seed_bytes(keys_ks, &**seed_store, None)
@@ -727,6 +865,14 @@ pub async fn get_key_secret_internal(
     // possessing an `InternalAuthority` IS the gate.
 
     let (public_key_multibase, private_key_multibase) = match record.origin {
+        // Unreachable: the early return above refuses internal keys. Kept as a
+        // second, local refusal so deleting that guard cannot quietly turn this
+        // match into an export path for them.
+        KeyOrigin::Internal => {
+            return Err(AppError::Forbidden(format!(
+                "key `{key_id}` is an internal key and is never exported"
+            )));
+        }
         KeyOrigin::Imported => {
             let seed = load_seed_bytes(keys_ks, seed_store, None)
                 .await
@@ -859,6 +1005,7 @@ async fn require_key_in_caller_scope(
 pub async fn sign_payload(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
+    internal_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     acl_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
@@ -918,6 +1065,22 @@ pub async fn sign_payload(
     }
 
     let signature_bytes = match record.origin {
+        // The one place internal key material is used. It never leaves this
+        // call: `vta_keys::internal::sign` loads, signs, and zeroizes without
+        // returning the secret to any caller.
+        KeyOrigin::Internal => {
+            let expected = matches!(
+                (algorithm, &record.key_type),
+                (SignAlgorithm::EdDSA, KeyType::Ed25519) | (SignAlgorithm::ES256, KeyType::P256)
+            );
+            if !expected {
+                return Err(AppError::Validation(format!(
+                    "algorithm {} incompatible with key type {}",
+                    algorithm, record.key_type
+                )));
+            }
+            vta_keys::internal::sign(internal_ks, key_id, payload).await?
+        }
         KeyOrigin::Imported => {
             // Decrypt imported secret and sign
             let seed = load_seed_bytes(keys_ks, &**seed_store, None)
@@ -1251,6 +1414,7 @@ mod tests {
         contexts_ks: KeyspaceHandle,
         audit_ks: KeyspaceHandle,
         imported_ks: KeyspaceHandle,
+        internal_ks: KeyspaceHandle,
         acl_ks: KeyspaceHandle,
         seed_store: Arc<dyn SeedStore>,
         _dir: tempfile::TempDir,
@@ -1268,6 +1432,7 @@ mod tests {
             let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
             let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
             let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
+            let internal_ks = store.keyspace(crate::keyspaces::INTERNAL_KEYS).unwrap();
             let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
 
             // 32-byte seed; will be expanded to 64 bytes by BIP-32 internally
@@ -1284,6 +1449,7 @@ mod tests {
                 contexts_ks,
                 audit_ks,
                 imported_ks,
+                internal_ks,
                 acl_ks,
                 seed_store,
                 _dir: dir,
@@ -1313,11 +1479,13 @@ mod tests {
 
         let victim = create_key(
             &h.keys_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
             &h.audit_ks,
             &auth,
             CreateKeyParams {
+                internal: false,
                 key_type: KeyType::Ed25519,
                 derivation_path: None,
                 key_id: Some("victim-key".into()),
@@ -1332,11 +1500,13 @@ mod tests {
 
         let err = create_key(
             &h.keys_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
             &h.audit_ks,
             &auth,
             CreateKeyParams {
+                internal: false,
                 key_type: KeyType::Ed25519,
                 derivation_path: Some("m/26'/2'/0'/7'".into()),
                 key_id: Some("victim-key".into()),
@@ -1372,11 +1542,13 @@ mod tests {
         for bad in ["did:web:example.com#key-0", "key:sneaky", "a/b", "x y"] {
             let err = create_key(
                 &h.keys_ks,
+                &h.internal_ks,
                 &h.contexts_ks,
                 &h.seed_store,
                 &h.audit_ks,
                 &auth,
                 CreateKeyParams {
+                    internal: false,
                     key_type: KeyType::Ed25519,
                     derivation_path: None,
                     key_id: Some(bad.into()),
@@ -1461,11 +1633,13 @@ mod tests {
 
         create_key(
             &h.keys_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
             &h.audit_ks,
             &auth,
             CreateKeyParams {
+                internal: false,
                 key_type: KeyType::Ed25519,
                 derivation_path: None,
                 key_id: Some("plain-key".into()),
@@ -1526,11 +1700,13 @@ mod tests {
 
         let result = create_key(
             &h.keys_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
             &h.audit_ks,
             &auth,
             CreateKeyParams {
+                internal: false,
                 key_type: KeyType::Ed25519,
                 derivation_path: None,
                 key_id: Some("test-ed25519".into()),
@@ -1559,11 +1735,13 @@ mod tests {
 
         let result = create_key(
             &h.keys_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
             &h.audit_ks,
             &auth,
             CreateKeyParams {
+                internal: false,
                 key_type: KeyType::P256,
                 derivation_path: None,
                 key_id: Some("test-p256".into()),
@@ -1593,11 +1771,13 @@ mod tests {
         // First create a key
         let key = create_key(
             &h.keys_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
             &h.audit_ks,
             &auth,
             CreateKeyParams {
+                internal: false,
                 key_type: KeyType::Ed25519,
                 derivation_path: None,
                 key_id: Some("sign-test-key".into()),
@@ -1615,6 +1795,7 @@ mod tests {
         let result = sign_payload(
             &h.keys_ks,
             &h.imported_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
@@ -1827,11 +2008,13 @@ mod tests {
 
         let key = create_key(
             &h.keys_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
             &h.audit_ks,
             &admin,
             CreateKeyParams {
+                internal: false,
                 key_type: KeyType::Ed25519,
                 derivation_path: None,
                 key_id: Some("blocked-key".into()),
@@ -1857,6 +2040,7 @@ mod tests {
         let denied = sign_payload(
             &h.keys_ks,
             &h.imported_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
@@ -1877,6 +2061,7 @@ mod tests {
         let denied_admin = sign_payload(
             &h.keys_ks,
             &h.imported_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
@@ -1895,11 +2080,13 @@ mod tests {
         // A key the policy *does* permit signs fine for the scoped actor.
         let allowed = create_key(
             &h.keys_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
             &h.audit_ks,
             &admin,
             CreateKeyParams {
+                internal: false,
                 key_type: KeyType::Ed25519,
                 derivation_path: None,
                 key_id: Some("allowed-key".into()),
@@ -1914,6 +2101,7 @@ mod tests {
         sign_payload(
             &h.keys_ks,
             &h.imported_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
@@ -1941,11 +2129,13 @@ mod tests {
         for id in ["tenant-key-a", "tenant-key-b"] {
             create_key(
                 &h.keys_ks,
+                &h.internal_ks,
                 &h.contexts_ks,
                 &h.seed_store,
                 &h.audit_ks,
                 &admin,
                 CreateKeyParams {
+                    internal: false,
                     key_type: KeyType::Ed25519,
                     derivation_path: None,
                     key_id: Some(id.into()),
@@ -1976,6 +2166,7 @@ mod tests {
                 sign_payload(
                     &h.keys_ks,
                     &h.imported_ks,
+                    &h.internal_ks,
                     &h.contexts_ks,
                     &h.acl_ks,
                     &h.seed_store,
@@ -2068,11 +2259,13 @@ mod tests {
         .unwrap();
         let foreign = create_key(
             &h.keys_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
             &h.audit_ks,
             &admin,
             CreateKeyParams {
+                internal: false,
                 key_type: KeyType::Ed25519,
                 derivation_path: None,
                 key_id: Some("foreign-key".into()),
@@ -2108,6 +2301,7 @@ mod tests {
         let denied = sign_payload(
             &h.keys_ks,
             &h.imported_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
@@ -2127,11 +2321,13 @@ mod tests {
         // filter is bound by it even where no context policy exists.
         let unscoped = create_key(
             &h.keys_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
             &h.audit_ks,
             &admin,
             CreateKeyParams {
+                internal: false,
                 key_type: KeyType::Ed25519,
                 derivation_path: Some("m/26'/2'/77'/0'".into()),
                 key_id: Some("unscoped-key".into()),
@@ -2153,6 +2349,7 @@ mod tests {
         let denied = sign_payload(
             &h.keys_ks,
             &h.imported_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
@@ -2219,11 +2416,13 @@ mod tests {
 
         let key = create_key(
             &h.keys_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
             &h.audit_ks,
             &admin,
             CreateKeyParams {
+                internal: false,
                 key_type: KeyType::Ed25519,
                 derivation_path: None,
                 key_id: Some("domain-a-key".into()),
@@ -2250,6 +2449,7 @@ mod tests {
         let denied = sign_payload(
             &h.keys_ks,
             &h.imported_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
@@ -2269,11 +2469,13 @@ mod tests {
         // so the refusal above is the scope check and not an unrelated failure.
         let own = create_key(
             &h.keys_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
             &h.audit_ks,
             &admin,
             CreateKeyParams {
+                internal: false,
                 key_type: KeyType::Ed25519,
                 derivation_path: None,
                 key_id: Some("domain-b-key".into()),
@@ -2288,6 +2490,7 @@ mod tests {
         sign_payload(
             &h.keys_ks,
             &h.imported_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
@@ -2315,11 +2518,13 @@ mod tests {
 
         let key = create_key(
             &h.keys_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
             &h.audit_ks,
             &admin,
             CreateKeyParams {
+                internal: false,
                 key_type: KeyType::Ed25519,
                 derivation_path: Some("m/26'/2'/99'/0'".into()),
                 key_id: Some("unscoped-key".into()),
@@ -2349,6 +2554,7 @@ mod tests {
 
         let denied = sign_payload(
             &h.keys_ks,
+            &h.internal_ks,
             &h.imported_ks,
             &h.contexts_ks,
             &h.acl_ks,
@@ -2368,6 +2574,7 @@ mod tests {
         sign_payload(
             &h.keys_ks,
             &h.imported_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
@@ -2393,11 +2600,13 @@ mod tests {
         // Plant a key under test-ctx so there's something to read.
         let key = create_key(
             &h.keys_ks,
+            &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
             &h.audit_ks,
             &admin,
             CreateKeyParams {
+                internal: false,
                 key_type: KeyType::Ed25519,
                 derivation_path: None,
                 key_id: Some("monitor-floor-key".into()),
@@ -2463,5 +2672,142 @@ mod tests {
         get_key(&h.keys_ks, &reader, &key.key_id, "test")
             .await
             .expect("reader-role caller can get_key");
+    }
+    // ── internal (non-extractable) keys ──────────────────────────────
+
+    async fn mint_internal(h: &TestHarness, key_id: &str) -> CreateKeyResultBody {
+        create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &h.super_admin_auth(),
+            CreateKeyParams {
+                internal: true,
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: Some(key_id.to_string()),
+                mnemonic: None,
+                label: None,
+                context_id: None,
+            },
+            "test",
+        )
+        .await
+        .expect("mint internal key")
+    }
+
+    /// The guarantee, stated as a test: no export surface returns an internal
+    /// key, and admin is not a bypass — a super-admin is refused like anyone.
+    #[tokio::test]
+    async fn an_internal_key_is_never_exported_even_to_a_super_admin() {
+        let h = TestHarness::new().await;
+        mint_internal(&h, "k-internal").await;
+
+        let err = get_key_secret(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &h.super_admin_auth(),
+            "k-internal",
+            "test",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("internal key")),
+            "a super-admin must still be refused; got {err:?}"
+        );
+    }
+
+    /// `InternalAuthority` bypasses the ACL, not the non-extractability
+    /// guarantee. If this ever passes, the export surface has reopened through
+    /// the back door rather than the front.
+    #[tokio::test]
+    async fn internal_authority_does_not_bypass_non_extractability() {
+        let h = TestHarness::new().await;
+        mint_internal(&h, "k-internal").await;
+
+        let err = get_key_secret_internal(
+            &h.keys_ks,
+            &h.imported_ks,
+            &*h.seed_store,
+            &h.audit_ks,
+            crate::operations::internal_authority::InternalAuthority::new("test"),
+            "k-internal",
+            "test",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("internal key")),
+            "{err:?}"
+        );
+    }
+
+    /// The other half: an internal key must actually be usable. A key nobody
+    /// can export *and* nobody can sign with is just a liability.
+    #[tokio::test]
+    async fn an_internal_key_signs_through_the_oracle() {
+        let h = TestHarness::new().await;
+        let created = mint_internal(&h, "k-sign").await;
+        assert_eq!(created.origin, keys::KeyOrigin::Internal);
+        assert_eq!(
+            created.derivation_path, "internal",
+            "an internal key records no BIP-32 path — there is nothing to derive"
+        );
+
+        let sig = sign_payload(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &h.super_admin_auth(),
+            "k-sign",
+            b"payload",
+            &SignAlgorithm::EdDSA,
+            "test",
+        )
+        .await
+        .expect("an internal key must be usable for signing");
+        assert!(!sig.signature.is_empty());
+    }
+
+    /// An internal key has no derivation path, so it cannot be named after one.
+    /// Refusing here beats minting an unrecoverable key under a generated id
+    /// the operator never chose and may not record.
+    #[tokio::test]
+    async fn an_internal_key_requires_an_explicit_key_id() {
+        let h = TestHarness::new().await;
+        let err = create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &h.super_admin_auth(),
+            CreateKeyParams {
+                internal: true,
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: None,
+                mnemonic: None,
+                label: None,
+                context_id: None,
+            },
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("explicit key_id")),
+            "{err:?}"
+        );
     }
 }

@@ -1008,6 +1008,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
 
     let policy_ks = store.keyspace(crate::keyspaces::POLICY).unwrap();
     let state = crate::server::AppState {
+        internal_ks: store.keyspace(crate::keyspaces::INTERNAL_KEYS).unwrap(),
         // Empty by default: a test VTA trusts no mdoc issuer until one is
         // configured, matching the fail-closed production default. A test that
         // needs mdoc receive builds its own anchors and swaps this out.

@@ -30,6 +30,7 @@ impl VtaClient {
         // silently dropping the create-from-a-phrase path (see #884's
         // `update_acl`, the same failure with different members).
         let body = crate::protocols::key_management::create::CreateKeyBody {
+            internal: None,
             key_type: req.key_type.clone(),
             derivation_path: req.derivation_path.clone().unwrap_or_default(),
             mnemonic: req.mnemonic.clone(),
@@ -46,6 +47,7 @@ impl VtaClient {
             .await?;
         let key = wrapped.key;
         Ok(CreateKeyResponse {
+            origin: key.origin,
             key_id: key.key_id,
             key_type: key.key_type,
             derivation_path: key.derivation_path,

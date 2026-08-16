@@ -1100,11 +1100,13 @@ pub async fn run_context_reprovision(
                 .unwrap_or_else(|| "admin-reprovision".to_string());
             let result = create_key(
                 &state.keys_ks,
+                &state.internal_ks,
                 &state.contexts_ks,
                 &state.seed_store,
                 &state.audit_ks,
                 &auth,
                 CreateKeyParams {
+                    internal: false,
                     key_type: KeyType::Ed25519,
                     derivation_path: None,
                     key_id: None,

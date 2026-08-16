@@ -53,6 +53,17 @@ pub const AUDIT: &str = "audit";
 /// `imported` — the latter was a long-standing test-only typo that operated on
 /// an empty keyspace disjoint from production. Always reference this const.
 pub const IMPORTED_SECRETS: &str = "imported_secrets";
+/// Non-extractable internal signing keys.
+///
+/// Deliberately **not** [`IMPORTED_SECRETS`]: that keyspace wraps its contents
+/// under a KEK derived from the BIP-39 master seed, so anything stored there is
+/// reconstructible by whoever holds the mnemonic. Internal keys exist precisely
+/// to have no such path — their material is generated from the system CSPRNG,
+/// never derived, and lives here instead.
+///
+/// In [`EXCLUDED_FROM_BACKUP`] by design, not by omission. A backup containing
+/// this keyspace would be an export of keys the VTA promises never to export.
+pub const INTERNAL_KEYS: &str = "internal_keys";
 /// Ephemeral cache (resolver/auth caches).
 pub const CACHE: &str = "cache";
 /// Holder credential vault (third-party secrets stored on this VTA).
@@ -120,6 +131,7 @@ pub const OUTBOX: &str = "outbox";
 /// asserts the partition stays exhaustive so a newly-added keyspace can't be
 /// silently omitted from the backup decision.
 pub const ALL: &[&str] = &[
+    INTERNAL_KEYS,
     KEYS,
     SESSIONS,
     ACL,
@@ -176,6 +188,10 @@ pub const BACKED_UP: &[&str] = &[
 /// backup-fidelity follow-up should move them into [`BACKED_UP`], not leave
 /// them silently dropped.
 pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
+    // Non-extractable internal signing keys. Excluding them is the feature:
+    // a backup that carried them would export keys the VTA guarantees never
+    // to export, and restoring one elsewhere would silently clone a signer.
+    INTERNAL_KEYS,
     SESSIONS,
     DID_TEMPLATES,
     CACHE,

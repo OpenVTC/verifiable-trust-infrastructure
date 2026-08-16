@@ -506,6 +506,28 @@ async fn load_key_as_secret(
 
     // Load private key material
     let private_key_multibase = match record.origin {
+        // An internal key must never authorise a `did:webvh` log entry.
+        //
+        // WebVH is append-only and each entry is authorised by the update key
+        // the previous entry named. An internal key cannot be recovered — no
+        // backup, no mnemonic, no derivation — so if it were the update key and
+        // the keyspace were lost, the DID could never be updated again by
+        // anyone, permanently, and every integration pinned to it would be
+        // stranded. That failure is not recoverable by re-issuing anything.
+        //
+        // Internal keys are still perfectly good as a *signing*
+        // `verificationMethod` inside the published document: losing one costs
+        // the ability to produce new signatures, not the ability to control the
+        // identity.
+        KeyOrigin::Internal => {
+            return Err(AppError::Validation(format!(
+                "key `{key_id}` is an internal key and cannot sign did:webvh log \
+                 entries: internal keys are unrecoverable, and losing the update \
+                 key would freeze this DID permanently. Use a derived key for the \
+                 update authority; an internal key may still be a signing \
+                 verificationMethod in the document"
+            )));
+        }
         KeyOrigin::Imported => {
             let seed = load_seed_bytes(keys_ks, seed_store, None)
                 .await
