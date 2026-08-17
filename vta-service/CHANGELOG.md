@@ -2,6 +2,94 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.16.1...vta-service-v0.17.0) — 2026-08-16
+
+
+### Added
+
+- **vta-keys**: Add non-extractable internal signing keys ([#995](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/995))
+
+An ordinary VTA key is BIP-32 derived, so anyone holding the 24-word mnemonic
+  can reconstruct it offline. That is what makes the VTA recoverable, and equally
+  what makes "the operator cannot obtain this key" false — the second limb of what
+  eIDAS calls sole control.
+
+  An internal key is generated from the system CSPRNG, has no derivation path, and
+  is never returned by any surface. The VTA acts only as a signing oracle for it.
+
+  Deliberately not a flag on the imported-key path. That path wraps its secrets
+  under a KEK derived from the master seed (derive_kek(seed, salt)), so a
+  non-extractable flag on it would be decorative: the boundary it claims to
+  enforce has already been walked around. Internal keys get their own keyspace,
+  INTERNAL_KEYS, with no seed involvement at any point, and that keyspace is in
+  EXCLUDED_FROM_BACKUP by design — a backup carrying it would be an export of keys
+  the VTA promises never to export, and restoring it elsewhere would clone a
+  signer.
+
+  Refused for did:webvh log entries, enforced in code rather than left to
+  guidance. WebVH is append-only and each entry is authorised by the update key
+  the previous entry named; an unrecoverable update key means that if storage is
+  lost the DID can never be updated again by anyone, permanently, and every
+  integration pinned to it is stranded. Credentials can be re-issued, an
+  append-only identity log cannot. Internal keys remain fine as a signing
+  verificationMethod inside a published document, where loss costs the ability to
+  produce new signatures rather than control of the identity.
+
+  The export refusal is not a permission check — admin is not a bypass, because
+  the value of the origin is that no caller holds this power. There are two
+  refusals (an early return and an in-match arm); removing either leaves the other,
+  and removing both does not compile, since the match over KeyOrigin becomes
+  non-exhaustive. An export path cannot silently reopen.
+
+  Operator surfaces carry the cost prominently: `pnm keys create --internal`
+  prints what is lost and requires the operator to type a confirmation phrase
+  rather than mash y, the response repeats the warning, and docs/02-vta/
+  internal-keys.md covers when to use one, what actually protects it (enclave
+  measurement + KMS, not a mnemonic), and the two things that genuinely destroy
+  it.
+
+- **vta-service**: Present ISO mdoc credentials over OID4VP ([#993](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/993))
+
+* feat(vta-service)!: present ISO mdoc credentials over OID4VP
+
+  Completes mdoc support. A VTA could receive, verify and store an mdoc; it could
+  not present one. This is the last piece, and it needed three things the other
+  formats do not.
+
+  An OID4VP session on the query wire. An mdoc's holder binding is a DeviceAuth
+  signature over an ISO 18013-7 SessionTranscript, whose handover is
+  [clientId, responseUri, nonce, mdocGeneratedNonce]. Two of those exist only in
+  an OID4VP exchange, so a verifier that wants an mdoc supplies them; QueryBody
+  gains an optional oid4vp_session carrying OID4VP's own field names, so a
+  verifier can copy them out of its authorization request unrenamed.
+
+  Absent, an mdoc is not offered at all rather than offered unbound. A DeviceAuth
+  over invented handover values verifies nowhere and, worse, looks bound. The gate
+  lives in match_held so matchable and presentable stay the same set: a
+  matched-but-unpresentable credential bails the entire vp_token, not just itself,
+  taking every other credential the verifier legitimately asked for with it. A
+  mutation removing the gate fails the test that pins this.
+
+  Holder identity that is key-shaped. ConsentGrant.holder_did becomes
+  HolderIdentity::{Subject, DeviceKey}: every other format names a subject DID,
+  while an mdoc names a device key discovered at receive. Both resolve to a
+  did:key because ConsentRecord::verify_proof binds the proof's
+  verificationMethod to the data subject — the variant records provenance that
+  would otherwise be silently lost, not a different kind of value.
+
+  A P-256 consent receipt. The device key signs its own receipt under
+  ecdsa-jcs-2019 (affinidi-data-integrity 0.7.10), where every other format uses
+  eddsa-jcs-2022. Signing the receipt with some other key would break the
+  verificationMethod binding above; that is why the cryptosuite was added upstream
+  rather than worked around here.
+
+  Presentation itself is not a present_single arm: an mdoc vp_token entry is
+  base64url CBOR of a DeviceResponse, not a W3C VP object, so present_mdoc sits
+  beside it. Selective disclosure is by omission — only the [namespace, element]
+  paths the query asked for are included.
+
+
+
 ## [0.16.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.16.0...vta-service-v0.16.1) — 2026-08-16
 
 
