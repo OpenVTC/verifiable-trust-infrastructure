@@ -1446,9 +1446,12 @@ mod tests {
     #[cfg(feature = "tsp")]
     #[test]
     fn an_error_document_counts_as_a_reply() {
+        // Version taken from the emitter, not named here — see `error_doc` in
+        // `registry::messaging`. `tests/registry_didcomm.rs` covers acceptance
+        // of an older error document on purpose.
         let error = serde_json::to_vec(&json!({
             "id": "urn:uuid:err",
-            "type": "https://trusttasks.org/spec/trust-task-error/0.3",
+            "type": crate::trust_tasks::helpers::framework_error_type_uri().to_string(),
             "threadId": "urn:uuid:request",
             "payload": { "code": "permissionDenied" },
         }))

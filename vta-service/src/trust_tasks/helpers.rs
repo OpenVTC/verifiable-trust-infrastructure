@@ -196,12 +196,20 @@ pub(super) fn error_response(err_doc: ErrorResponse) -> TrustTaskOutcome {
 /// them, which is not hypothetical: a client matching `0.1`/`0.2` by
 /// enumeration read every `0.3` rejection as a *success*.
 ///
+/// Now `0.5`, tracking `trust-tasks-rs` 0.9. The framework moved twice for the
+/// same reason it moved to `0.3`: a new standard code that the older payload
+/// schema's `code` enum does not list and whose extended-code pattern does not
+/// match, so a document carrying it would fail to validate as the older
+/// version. `0.4` carries `idConflict` (framework 0.4, SPEC §8.3) and `0.5`
+/// carries `cancelled`. SPEC §5.2 forward-minor compatibility means a consumer
+/// pinned to `0.3` SHOULD still accept these.
+///
 /// The constant is pinned by `unrouted_and_routed_errors_agree_on_the_type_uri`
 /// below, which compares it against a real `reject_with`. When the framework
 /// bumps the version, that test fails rather than this service silently
-/// speaking two dialects again.
+/// speaking two dialects again — which is exactly how this bump was caught.
 fn framework_error_type_uri() -> TypeUri {
-    "https://trusttasks.org/spec/trust-task-error/0.3"
+    "https://trusttasks.org/spec/trust-task-error/0.5"
         .parse()
         .expect("framework error Type URI parses")
 }
