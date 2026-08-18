@@ -14,6 +14,25 @@
 version = 2
 ignore = [
 
+  { id = "RUSTSEC-2026-0258", reason = """
+  h2 accepts and queues empty DATA frames without limit, so a stream
+  that is not actively drained can grow memory without bound (or panic
+  on a length overflow). Low severity.
+
+  The fix is 0.4.16 and the lockfile takes it — that is the h2 our own
+  servers speak HTTP/2 over, and the only side of this that faces
+  untrusted peers. The remaining hit is h2 **0.3.27**, which has no
+  patched release: 0.3.27 is the newest 0.3 and the advisory names
+  >=0.4.16 as the only fix. Our sole 0.3 path is AWS SDK's
+  aws-smithy-http-client -> hyper 0.14, used as a *client* against AWS
+  API endpoints (KMS, DynamoDB, STS, SSO), so the frames it queues come
+  from AWS's own endpoints over TLS we verify — the same narrow surface
+  as the rustls 0.21 entries above.
+
+  Drop when AWS SDK moves off hyper 0.14, or if h2 backports the fix
+  to 0.3.
+  """ },
+
   { id = "RUSTSEC-2026-0099", reason = """
   rustls-webpki 0.101.x accepts name constraints for certificates
   asserting a wildcard name (formerly tracked as GHSA-xgp8-3hg3-c2mh).
