@@ -2,7 +2,7 @@
 name = "vta-audit"
 description = "Structured audit logging for the VTA — the `audit!` tracing macro plus the audit-keyspace persistence helpers"
 readme = "README.md"
-version = "0.1.6"
+version = "0.1.7"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own

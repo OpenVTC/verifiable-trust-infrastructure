@@ -2,7 +2,7 @@
 name = "vta-support"
 description = "Shared mid-layer VTA services — trust-context storage, the sealed-transfer seal helper, and the sealed-bootstrap nonce store"
 readme = "README.md"
-version = "0.2.7"
+version = "0.2.8"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
