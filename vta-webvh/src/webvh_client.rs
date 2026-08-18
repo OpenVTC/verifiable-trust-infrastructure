@@ -95,15 +95,67 @@ pub struct CheckPathResponse {
     pub available: bool,
 }
 
-/// One entry of the host's `agentNames` array on `GET /api/dids/{mnemonic}`.
-/// Deserialize-only: the VTA reads this registry, the host owns it.
+/// One entry of the host's agent-name registry. Deserialize-only: the VTA
+/// reads this registry, the host owns it.
+///
+/// It arrives on two paths that do **not** agree on the shape of `createdAt`,
+/// and both are correct on their own terms:
+///
+/// * `GET /api/dids/{mnemonic}` (REST), and the `agentNames` nested in the
+///   DIDComm DID-record projection, serialise the host's stored record — Unix
+///   **seconds as a number**.
+/// * `did-management/agent-name/list/0.1` (DIDComm) is bound by its published
+///   payload schema, which types `createdAt` as `"string"` with
+///   `"format": "date-time"` — an **RFC3339 timestamp**.
+///
+/// One type reads both, so the same registry does not decode over one
+/// transport and fail over the other. Before this, a DID with at least one name
+/// failed the DIDComm listing outright with `invalid type: string
+/// "2026-08-18T08:58:13Z", expected u64` — surfacing to the operator as an
+/// internal error from a `set` that had in fact succeeded and was already
+/// visible in the DID document.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentNameEntryWire {
     pub name: String,
     /// `false` = parked: still reserved to this DID, just not resolving.
     pub enabled: bool,
+    /// Unix seconds at which the name was first bound to this DID. Normalised
+    /// here from whichever of the two wire shapes the host sent, because the
+    /// canonical `AgentNameEntry` the VTA relays outward types it as seconds.
+    #[serde(deserialize_with = "created_at_seconds")]
     pub created_at: u64,
+}
+
+/// Deserialize `createdAt` from either wire shape into Unix seconds.
+///
+/// Accepting both is a deliberate asymmetry between what this reads and what it
+/// emits: the VTA relays a `u64`, so an RFC3339 input is converted rather than
+/// propagated. A value that is neither is a real contract break and is reported
+/// as one, naming what arrived — the operator needs to tell a host that speaks a
+/// third shape from one that is simply unreachable (R6.4).
+fn created_at_seconds<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum CreatedAt {
+        Seconds(u64),
+        Timestamp(String),
+    }
+
+    match CreatedAt::deserialize(deserializer)? {
+        CreatedAt::Seconds(secs) => Ok(secs),
+        CreatedAt::Timestamp(text) => chrono::DateTime::parse_from_rfc3339(&text)
+            .map(|dt| dt.timestamp().max(0) as u64)
+            .map_err(|e| {
+                serde::de::Error::custom(format!(
+                    "agent-name createdAt {text:?} is neither Unix seconds nor an RFC3339 \
+                     timestamp: {e}"
+                ))
+            }),
+    }
 }
 
 /// Wire shape of `POST /api/agent-names/check`.
@@ -1726,6 +1778,76 @@ mod tests {
         assert!(
             rendered.contains("name_taken") || rendered.contains("already taken"),
             "the host's reason must survive into the error, got {rendered}"
+        );
+    }
+
+    // --- agent-name `createdAt`: two transports, two wire shapes -------------
+
+    /// The REST / DID-record shape: Unix seconds as a number.
+    #[test]
+    fn agent_name_entry_reads_epoch_seconds() {
+        let entry: AgentNameEntryWire =
+            serde_json::from_str(r#"{"name":"alice","enabled":true,"createdAt":1700000000}"#)
+                .expect("the REST shape must decode");
+        assert_eq!(entry.name, "alice");
+        assert!(entry.enabled);
+        assert_eq!(entry.created_at, 1_700_000_000);
+    }
+
+    /// The `did-management/agent-name/list/0.1` shape: an RFC3339 timestamp,
+    /// normalised to seconds. This is the case that used to fail the whole
+    /// listing with `invalid type: string "…", expected u64`, turning a claim
+    /// that had already landed in the DID document into an internal error.
+    #[test]
+    fn agent_name_entry_reads_an_rfc3339_timestamp() {
+        let entry: AgentNameEntryWire = serde_json::from_str(
+            r#"{"name":"alice","enabled":false,"createdAt":"2026-08-18T08:58:13Z"}"#,
+        )
+        .expect("the spec'd DIDComm shape must decode");
+        assert!(!entry.enabled, "a parked name stays parked");
+        assert_eq!(entry.created_at, 1_787_043_493);
+    }
+
+    /// An offset timestamp normalises to the same instant — the host is not
+    /// required to send UTC, only RFC3339.
+    #[test]
+    fn agent_name_entry_normalises_an_offset_timestamp() {
+        let utc: AgentNameEntryWire = serde_json::from_str(
+            r#"{"name":"a","enabled":true,"createdAt":"2026-08-18T08:58:13Z"}"#,
+        )
+        .unwrap();
+        let offset: AgentNameEntryWire = serde_json::from_str(
+            r#"{"name":"a","enabled":true,"createdAt":"2026-08-18T16:58:13+08:00"}"#,
+        )
+        .unwrap();
+        assert_eq!(utc.created_at, offset.created_at);
+    }
+
+    /// A whole listing decodes, so the fix holds where it is actually used
+    /// (`webvh_didcomm::list_agent_names` deserialises the array wholesale).
+    #[test]
+    fn agent_name_listing_decodes_as_an_array() {
+        let names: Vec<AgentNameEntryWire> = serde_json::from_str(
+            r#"[{"name":"alice","enabled":true,"createdAt":"2026-07-01T10:00:00Z"},
+                {"name":"ally","enabled":false,"createdAt":"2026-07-05T12:00:00Z"}]"#,
+        )
+        .expect("a two-entry registry must decode");
+        assert_eq!(names.len(), 2);
+        assert!(names[0].created_at < names[1].created_at);
+    }
+
+    /// A third shape is a genuine contract break: it must fail, and the error
+    /// must name what arrived so it can be told from an unreachable host.
+    #[test]
+    fn agent_name_entry_rejects_an_unparseable_timestamp() {
+        let err = serde_json::from_str::<AgentNameEntryWire>(
+            r#"{"name":"alice","enabled":true,"createdAt":"last Tuesday"}"#,
+        )
+        .expect_err("an uninterpretable timestamp must not decode");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("last Tuesday"),
+            "the error must quote what arrived, got: {rendered}"
         );
     }
 }

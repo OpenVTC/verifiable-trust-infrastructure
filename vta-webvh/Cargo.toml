@@ -26,13 +26,17 @@ vta-sdk = { path = "../vta-sdk", version = "0.25" }
 affinidi-tdk = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Not a test-only dependency any more: the host sends `createdAt` as an RFC3339
+# string on the DIDComm agent-name listing (its payload schema types it as
+# `format: date-time`) and as Unix seconds over REST, so the wire type parses
+# both — see `AgentNameEntryWire`.
+chrono = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 reqwest = { workspace = true }
 zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-chrono = { workspace = true }
 ed25519-dalek = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true }
