@@ -2,6 +2,45 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.1.10](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-webvh-v0.1.9...vta-webvh-v0.1.10) — 2026-08-18
+
+
+### Fixed
+
+- **webvh**: Read agent-name createdAt in both shapes the host sends ([#999](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/999))
+
+* fix(webvh): read agent-name createdAt in both shapes the host sends
+
+  A DID with at least one agent name could not be listed over DIDComm. The
+  whole task failed with `agent-name list response parse error: invalid
+  type: string "2026-08-18T08:58:13Z", expected u64`, which reached the
+  operator as an internal error from a `set` that had in fact succeeded —
+  the name was already in the DID document while the UI reported failure
+  and showed an empty registry.
+
+  `AgentNameEntryWire` is documented as the shape of the REST
+  `GET /api/dids/{mnemonic}` `agentNames` array, where `createdAt` is Unix
+  seconds as a number, and `webvh_didcomm::list_agent_names` reuses it to
+  parse the DIDComm listing — where it is not. The published payload
+  schema for `did-management/agent-name/list/0.1` types `createdAt` as
+  `"string"` with `"format": "date-time"`, and the host projects it that
+  way (affinidi-webvh-service, `did-hosting-control/src/messaging.rs`).
+
+  Both producers are right. The same host emits *both* shapes: its DID
+  record projection serialises the stored registry (numbers) while the
+  list verb answers to the spec (strings), so one shape cannot simply be
+  declared wrong. The consumer is the single place that sees both, so the
+  wire type now accepts either and normalises to seconds — the VTA relays
+  a `u64` outward in the canonical `AgentNameEntry`, so an RFC3339 input
+  is converted rather than propagated. A third shape is a genuine contract
+  break and still fails, quoting what arrived so it can be told apart from
+  an unreachable host (R6.4).
+
+  `chrono` moves from dev-dependencies to dependencies for the conversion.
+  It was already in the build graph via `vta-service`.
+
+
+
 ## [0.1.9](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-webvh-v0.1.8...vta-webvh-v0.1.9) — 2026-08-17
 
 

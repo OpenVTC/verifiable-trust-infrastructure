@@ -2,7 +2,7 @@
 name = "vti-secrets"
 description = "Pluggable secret-store backends + integration onboarding flow for Verifiable Trust Infrastructure"
 readme = "README.md"
-version = "0.1.14"
+version = "0.1.15"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
