@@ -2,7 +2,7 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
-## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.16.1...vta-service-v0.17.0) — 2026-08-16
+## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.16.1...vta-service-v0.17.0) — 2026-08-17
 
 
 ### Added
@@ -87,6 +87,54 @@ An ordinary VTA key is BIP-32 derived, so anyone holding the 24-word mnemonic
   base64url CBOR of a DeviceResponse, not a W3C VP object, so present_mdoc sits
   beside it. Selective disclosure is by omission — only the [namespace, element]
   paths the query asked for are included.
+
+
+
+### Chore
+
+- **deps**: Track trust-tasks 0.9 across the workspace ([#996](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/996))
+
+Moves all five `trust-tasks-*` requirements and `trust-tasks-capability-client`
+  (0.5 -> 0.8) together, as the family requires: `trust-tasks-rs`'s core types
+  cross the public API of `-https` / `-didcomm` / `-proof`, so a graph mixing
+  majors does not type-check. Takes the `affinidi-messaging-*` releases built on
+  0.9 (sdk 0.19.8, mediator 0.18.18, didcomm-service 0.3.26, test-mediator 0.2.51)
+  in the same move, so the lockfile carries exactly one copy of everything.
+
+  There are no `consume_inbound` call sites in this workspace, so 0.9.0's new
+  `PayloadPolicy` argument costs nothing here, and nothing matches on
+  `StandardCode`, so 0.7.0's `#[non_exhaustive]` costs nothing either. The
+  `validate` feature stays enabled and unused, as before.
+
+  What did change is the wire version of the error documents this stack emits.
+
+  `trust-task-error` moved 0.3 -> 0.4 -> 0.5 upstream, each step for the same
+  reason the 0.3 step happened: a new standard code that the older payload
+  schema's `code` enum does not list and whose extended-code pattern does not
+  match, so a document carrying it would not validate as the older version. 0.4
+  carries `idConflict`, 0.5 carries `cancelled` (SPEC §8.3).
+
+  Both services hand-write that version on their one unrouted path — where there
+  is no request document to reject from, and so no framework call to ask —
+  and both were left naming 0.3 while `reject_with` stamped 0.5 on every routed
+  rejection. One service emitting two versions is a trap for exactly the consumer
+  that pins one of them. `unrouted_and_routed_errors_agree_on_the_type_uri` exists
+  in both services to catch precisely this, and it did: the bump failed those two
+  tests rather than shipping two dialects. Constants updated, rationale extended.
+
+  Two in-`src` VTC test fixtures that also named 0.3 now take the version from
+  `framework_error_type_uri()` instead of repeating it, so they follow the emitter
+  on the next bump rather than stranding a version behind. That also keeps
+  `trust_task_manifest`'s unpublished-URI census at one URI for the family; the
+  census is deliberately exact so the debt can shrink but never grow unnoticed,
+  and raising the expected count would have been the wrong fix.
+
+  Backward acceptance of an *older* error document keeps its coverage:
+  `vtc-service/tests/registry_didcomm.rs` pins 0.1 on purpose, and is left alone.
+
+  Per SPEC §5.2 forward-minor compatibility, a consumer still pinned to
+  `trust-task-error/0.3` SHOULD accept 0.5. Marked `!` because this changes the
+  version on the wire, not because any Rust signature moved.
 
 
 
