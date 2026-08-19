@@ -1899,10 +1899,6 @@ async fn fetch_context_secrets_walks_all_pages() {
     assert_eq!(secrets.len(), 101);
 }
 
-// `path_regex` is in `wiremock::matchers` — re-exported here for
-// readability above.
-use wiremock::matchers::path_regex;
-
 // ── Error-mapping coverage (status → typed variant) ─────────────────
 
 #[tokio::test]

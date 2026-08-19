@@ -4063,3 +4063,93 @@ async fn body_cap_returns_413_for_oversized_payload() {
          DefaultBodyLimit::max(1 MB) layer appears to be missing"
     );
 }
+
+// ─── Superseded-route signalling ───────────────────────────────────────────
+//
+// `crate::deprecation` gates route removal on `deprecated_route_requests_total`
+// reaching zero. That only works if the signal is actually attached, so these
+// tests assert the middleware fires — a silent middleware would read exactly
+// like "nobody calls this route" and get it deleted out from under a client.
+
+/// Send a request and return the response headers alongside the status.
+async fn request_headers(app: &TestApp, req: Request<Body>) -> (StatusCode, axum::http::HeaderMap) {
+    let resp = app
+        .router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request failed");
+    (resp.status(), resp.headers().clone())
+}
+
+#[tokio::test]
+async fn superseded_route_advertises_its_trust_task_successor() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/contexts")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers) = request_headers(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(
+        headers.get("deprecation").map(|v| v.to_str().unwrap()),
+        Some("true"),
+        "a superseded route must say so"
+    );
+    let link = headers
+        .get("link")
+        .expect("successor link")
+        .to_str()
+        .unwrap();
+    assert!(
+        link.contains(vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0),
+        "the link must name the successor task, got: {link}"
+    );
+    assert!(
+        link.contains("rel=\"successor-version\""),
+        "RFC 8288 relation, got: {link}"
+    );
+}
+
+#[tokio::test]
+async fn a_route_with_no_trust_task_twin_is_not_marked() {
+    // `/auth/challenge` is genuinely REST — it is the bootstrap that has to work
+    // before a Trust Task can be authenticated at all — so it must never be
+    // advertised as superseded.
+    let (app, _ctx) = TestApp::new().await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/auth/challenge")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"did":"did:key:z6MkSuper"}"#))
+        .unwrap();
+    let (_status, headers) = request_headers(&app, req).await;
+    assert!(
+        headers.get("deprecation").is_none(),
+        "a route with no successor must not be marked deprecated"
+    );
+}
+
+#[tokio::test]
+async fn an_unauthenticated_rejection_is_not_counted_as_usage() {
+    // Removal is gated on the counter reaching zero, so only a response the
+    // route actually produced may count. A rejected request says nothing about
+    // a client depending on the route, and counting it would hold the metric
+    // off zero forever.
+    let (app, _ctx) = TestApp::new().await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/contexts")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers) = request_headers(&app, req).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(
+        headers.get("deprecation").is_none(),
+        "an unauthorised request must not be recorded as usage"
+    );
+}

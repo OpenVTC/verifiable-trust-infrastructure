@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use serde::Deserialize;
 
 use vta_sdk::protocols::did_management::{
@@ -247,7 +247,7 @@ pub async fn create_did_handler(
     auth: AdminAuth,
     State(state): State<AppState>,
     Json(body): Json<CreateDidWebvhBody>,
-) -> Result<(StatusCode, HeaderMap, Json<CreateDidWebvhResultBody>), AppError> {
+) -> Result<(StatusCode, Json<CreateDidWebvhResultBody>), AppError> {
     let config = state.config.read().await;
     let params = body.into();
     let did_resolver = state
@@ -257,12 +257,7 @@ pub async fn create_did_handler(
     let deps =
         operations::did_webvh::CreateDidWebvhDeps::from_app_state(&state, &config, did_resolver);
     let result = operations::did_webvh::create_did_webvh(&deps, &auth.0, params, "rest").await?;
-    // Deprecated: superseded by the `vta/webvh/dids/create/1.0` Trust-Task.
-    let headers = crate::deprecation::superseded(
-        "POST /webvh/dids",
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
-    );
-    Ok((StatusCode::CREATED, headers, Json(result)))
+    Ok((StatusCode::CREATED, Json(result)))
 }
 
 /// GET /webvh/dids — list webvh DIDs with optional filters. Auth: any authenticated user.
@@ -279,7 +274,7 @@ pub async fn list_dids_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
     Query(query): Query<ListDidsQuery>,
-) -> Result<(HeaderMap, Json<ListDidsWebvhResultBody>), AppError> {
+) -> Result<Json<ListDidsWebvhResultBody>, AppError> {
     let result = operations::did_webvh::list_dids_webvh(
         &state.webvh_ks,
         &auth,
@@ -288,12 +283,7 @@ pub async fn list_dids_handler(
         "rest",
     )
     .await?;
-    // Deprecated: superseded by the `vta/webvh/dids/list/1.0` Trust-Task.
-    let headers = crate::deprecation::superseded(
-        "GET /webvh/dids",
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
-    );
-    Ok((headers, Json(result)))
+    Ok(Json(result))
 }
 
 /// GET /webvh/dids/{did} — retrieve a single webvh DID record. Auth: any authenticated user.
