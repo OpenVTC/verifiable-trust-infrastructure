@@ -51,6 +51,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// hangs in `fetch_and_apply_overlay` instead of producing the fail-closed error
 /// the caller is written to act on.
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// `tokio-vsock` can report a stream connected just before Nitro finishes the
+/// nonblocking handshake, making the first read return `ENOTCONN`. Retry only
+/// that transient state; the outer [`READ_TIMEOUT`] remains the hard deadline.
+const NOT_CONNECTED_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Failure fetching or applying the tenant-config overlay. Every variant is
 /// fail-closed: on real Nitro the caller aborts the boot rather than continue
@@ -190,14 +194,21 @@ async fn read_envelope(stream: &mut VsockStream) -> Result<Vec<u8>, OverlayFetch
 
 /// The unbounded-in-time inner read. Only ever called under the
 /// [`read_envelope`] deadline.
-async fn read_envelope_to_eof(stream: &mut VsockStream) -> Result<Vec<u8>, OverlayFetchError> {
+async fn read_envelope_to_eof<R>(stream: &mut R) -> Result<Vec<u8>, OverlayFetchError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
-        let n = stream
-            .read(&mut chunk)
-            .await
-            .map_err(|e| OverlayFetchError::Read(e.to_string()))?;
+        let n = match stream.read(&mut chunk).await {
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::NotConnected => {
+                tokio::time::sleep(NOT_CONNECTED_RETRY_DELAY).await;
+                continue;
+            }
+            Err(e) => return Err(OverlayFetchError::Read(e.to_string())),
+        };
         if n == 0 {
             break; // EOF — parent finished and shut the connection.
         }
@@ -233,8 +244,68 @@ pub async fn fetch_and_apply_overlay(config: &mut AppConfig) -> Result<(), Overl
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use tokio::io::{AsyncRead, ReadBuf};
 
     const GOOD_ARN: &str = "arn:aws:kms:us-east-1:111122223333:key/abcd-ef01";
+
+    struct FirstReadError {
+        kind: std::io::ErrorKind,
+        payload: &'static [u8],
+        state: u8,
+    }
+
+    impl AsyncRead for FirstReadError {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            match self.state {
+                0 => {
+                    self.state = 1;
+                    Poll::Ready(Err(std::io::Error::from(self.kind)))
+                }
+                1 => {
+                    self.state = 2;
+                    buf.put_slice(self.payload);
+                    Poll::Ready(Ok(()))
+                }
+                _ => Poll::Ready(Ok(())),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn retries_transient_not_connected_read() {
+        let mut reader = FirstReadError {
+            kind: std::io::ErrorKind::NotConnected,
+            payload: b"config envelope",
+            state: 0,
+        };
+
+        assert_eq!(
+            read_envelope_to_eof(&mut reader).await.unwrap(),
+            b"config envelope"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_non_transient_read_error() {
+        let mut reader = FirstReadError {
+            kind: std::io::ErrorKind::PermissionDenied,
+            payload: b"must not be read",
+            state: 0,
+        };
+
+        assert!(matches!(
+            read_envelope_to_eof(&mut reader).await,
+            Err(OverlayFetchError::Read(_))
+        ));
+        assert_eq!(reader.state, 1);
+    }
 
     #[test]
     fn parses_a_well_formed_v1_envelope() {
