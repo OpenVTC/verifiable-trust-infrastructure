@@ -143,7 +143,9 @@ impl VtaClient {
     pub async fn get_key_secret(&self, key_id: &str) -> Result<GetKeySecretResponse, VtaError> {
         self.rpc_tt(
             trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0,
-            serde_json::json!({ "key_id": key_id }),
+            serde_json::to_value(crate::protocols::key_management::secret::GetKeySecretBody {
+                key_id: key_id.to_string(),
+            })?,
             30,
         )
         .await

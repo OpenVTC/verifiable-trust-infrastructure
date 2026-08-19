@@ -165,10 +165,10 @@ impl VtaClient {
     ) -> Result<crate::protocols::did_management::list::ListDidsWebvhResultBody, VtaError> {
         self.rpc_tt(
             crate::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
-            serde_json::json!({
-                "context_id": context_id,
-                "server_id": server_id,
-            }),
+            serde_json::to_value(crate::protocols::did_management::list::ListDidsWebvhBody {
+                context_id: context_id.map(str::to_string),
+                server_id: server_id.map(str::to_string),
+            })?,
             30,
         )
         .await
