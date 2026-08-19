@@ -1449,6 +1449,75 @@ impl VtaClient {
         })
     }
 
+    /// Run `op` as **one logical operation**, under one idempotency key, with
+    /// bounded retry on transient faults.
+    ///
+    /// This is the piece that makes the VTA's idempotency actually engage. A
+    /// retry loop written around a client method cannot carry a stable key,
+    /// because each call builds a fresh document — so the VTA sees an unrelated
+    /// request and the second durable effect happens anyway. Scoping the key
+    /// outside the call is the only place it can be held.
+    ///
+    /// ```no_run
+    /// # async fn f(
+    /// #     client: &vta_sdk::client::VtaClient,
+    /// #     build: impl Fn() -> vta_sdk::client::CreateKeyRequest,
+    /// # ) -> Result<(), vta_sdk::error::VtaError> {
+    /// let key = client.idempotent(|| client.create_key(build())).await?;
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// `op` is re-invoked from scratch per attempt, so it must rebuild any
+    /// by-value request — but every attempt carries the *same* key, so a lost
+    /// reply converges on the first execution's result instead of repeating it.
+    ///
+    /// # Use this instead of your own retry loop, not around one
+    ///
+    /// Retry layers compose badly. The messaging delivery layer already retries
+    /// a durable outbox with backoff underneath this, so an application loop on
+    /// top multiplies attempts. This method is the application-layer owner:
+    /// bounded at [`MAX_ATTEMPTS`](crate::idempotency::MAX_ATTEMPTS), backed
+    /// off, and honouring the server's `retryAfter` hint up to a cap.
+    ///
+    /// Only transient faults are repeated
+    /// ([`is_transient`](crate::idempotency::is_transient)) — a validation
+    /// error or a conflict is returned immediately, because re-sending cannot
+    /// change it.
+    pub async fn idempotent<F, Fut, T>(&self, mut op: F) -> Result<T, VtaError>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T, VtaError>>,
+    {
+        use crate::idempotency::{IDEMPOTENCY_KEY, MAX_ATTEMPTS, backoff_for, is_transient};
+        let key = crate::idempotency::new_key();
+        IDEMPOTENCY_KEY
+            .scope(key.clone(), async move {
+                let mut attempt = 1usize;
+                loop {
+                    match op().await {
+                        Ok(v) => return Ok(v),
+                        Err(e) if attempt < MAX_ATTEMPTS && is_transient(&e) => {
+                            let wait = backoff_for(&e, attempt);
+                            #[cfg(feature = "client")]
+                            tracing::warn!(
+                                idempotency_key = %key,
+                                attempt,
+                                max = MAX_ATTEMPTS,
+                                error = %e,
+                                "VTA call failed; retrying under the same idempotency key in {wait:?}"
+                            );
+                            if !wait.is_zero() {
+                                tokio::time::sleep(wait).await;
+                            }
+                            attempt += 1;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+            })
+            .await
+    }
+
     pub async fn dispatch_trust_task(
         &self,
         type_uri: &str,
@@ -1464,11 +1533,7 @@ impl VtaClient {
             return sink.dispatch(type_uri, &payload);
         }
 
-        let doc = serde_json::json!({
-            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            "type": type_uri,
-            "payload": payload,
-        });
+        let doc = build_task_document(type_uri, payload);
         match &self.transport {
             Transport::Rest {
                 client,
@@ -1688,6 +1753,21 @@ impl VtaClient {
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true),
             });
+        }
+
+        // `unavailable` is the one rejection that means "ask again" rather
+        // than "this failed" — the idempotency layer answers with it while a
+        // first attempt on the same key is still running. Collapsing it into
+        // `Protocol` would leave a retry loop unable to tell it apart from a
+        // terminal error, so it gets its own variant carrying the server's
+        // `retryAfter` hint.
+        if code == "unavailable" {
+            let retry_after = payload
+                .get("retryAfter")
+                .and_then(|v| v.as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|t| t.with_timezone(&chrono::Utc));
+            return Some(VtaError::Unavailable { retry_after });
         }
 
         Some(VtaError::Protocol(format!(
@@ -2423,5 +2503,105 @@ mod tests {
         assert_eq!(SurfaceTransport::Tsp.to_string(), "TSP");
         assert_eq!(SurfaceTransport::Didcomm.to_string(), "DIDComm");
         assert_eq!(SurfaceTransport::Rest.to_string(), "REST");
+    }
+}
+
+/// Build the Trust Task document a dispatch sends.
+///
+/// Split out of [`VtaClient::dispatch_trust_task`] so the one interesting thing
+/// it does — deciding whether to attach an idempotency key — is testable without
+/// a transport.
+///
+/// The key is attached only when one is in scope
+/// ([`crate::idempotency::current_key`], set by
+/// [`VtaClient::idempotent`]) **and** the task is one a second execution would
+/// actually harm ([`crate::retry_safety`]). Attaching it to a read or a
+/// convergent mutation would cost the VTA a dedup record and buy nothing.
+///
+/// It goes top-level, beside `id`, for two reasons: the VTA reads it from
+/// `TrustTask::extra`, and a Data-Integrity proof covers every member but
+/// `proof` — so a signed document's key cannot be rewritten in transit to split
+/// one operation into two.
+fn build_task_document(type_uri: &str, payload: serde_json::Value) -> serde_json::Value {
+    let mut doc = serde_json::json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": type_uri,
+        "payload": payload,
+    });
+    if let Some(key) = crate::idempotency::current_key()
+        && crate::retry_safety::retry_safety(type_uri).is_some_and(|s| s.needs_key())
+        && let Some(obj) = doc.as_object_mut()
+    {
+        obj.insert("idempotencyKey".to_string(), serde_json::json!(key));
+    }
+    doc
+}
+
+#[cfg(test)]
+mod idempotency_document_tests {
+    use super::build_task_document;
+    use crate::idempotency::IDEMPOTENCY_KEY;
+    use crate::trust_tasks;
+
+    fn key_in(doc: &serde_json::Value) -> Option<String> {
+        doc.get("idempotencyKey")?.as_str().map(str::to_string)
+    }
+
+    #[tokio::test]
+    async fn a_keyed_task_carries_the_scoped_key() {
+        IDEMPOTENCY_KEY
+            .scope("urn:uuid:k".to_string(), async {
+                let doc = build_task_document(
+                    trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+                    serde_json::json!({}),
+                );
+                assert_eq!(key_in(&doc).as_deref(), Some("urn:uuid:k"));
+            })
+            .await;
+    }
+
+    /// A read costs the VTA a dedup record and buys nothing, so it gets no key
+    /// even inside a scope.
+    #[tokio::test]
+    async fn a_retry_safe_task_carries_no_key_even_in_scope() {
+        IDEMPOTENCY_KEY
+            .scope("urn:uuid:k".to_string(), async {
+                let doc = build_task_document(
+                    trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
+                    serde_json::json!({}),
+                );
+                assert_eq!(key_in(&doc), None);
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn outside_a_scope_no_document_carries_a_key() {
+        let doc = build_task_document(
+            trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+            serde_json::json!({}),
+        );
+        assert_eq!(key_in(&doc), None);
+    }
+
+    /// The whole point: two dispatches inside one scope are the *same*
+    /// operation, so they must carry the same key even though their envelope
+    /// ids differ.
+    #[tokio::test]
+    async fn two_attempts_in_one_scope_share_a_key_but_not_an_envelope_id() {
+        IDEMPOTENCY_KEY
+            .scope("urn:uuid:k".to_string(), async {
+                let a =
+                    build_task_document(trust_tasks::TASK_KEYS_CREATE_0_1, serde_json::json!({}));
+                let b =
+                    build_task_document(trust_tasks::TASK_KEYS_CREATE_0_1, serde_json::json!({}));
+                assert_eq!(key_in(&a), key_in(&b), "the retry must reuse the key");
+                assert_ne!(
+                    a.get("id"),
+                    b.get("id"),
+                    "envelope ids stay per-attempt — which is exactly why the key is needed"
+                );
+            })
+            .await;
     }
 }

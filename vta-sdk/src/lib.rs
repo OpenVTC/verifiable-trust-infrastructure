@@ -134,6 +134,10 @@ pub mod http;
 #[cfg(feature = "keyring")]
 pub mod keyring_init;
 pub mod keys;
+// Client-side idempotency: one key held across every attempt of one operation.
+// Needs the async runtime for its task-local + backoff, so it rides `client`.
+#[cfg(feature = "client")]
+pub mod idempotency;
 pub mod prelude;
 // What a lost reply costs each Trust Task. Always-on and dependency-free (it
 // classifies `trust_tasks`' URI catalog), so a retry layer can consult it

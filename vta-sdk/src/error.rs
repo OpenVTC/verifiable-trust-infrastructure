@@ -173,6 +173,26 @@ pub enum VtaError {
         theirs: Vec<crate::protocol::matching::Protocol>,
     },
 
+    /// The VTA is temporarily unable to process this task — the standard
+    /// `unavailable` rejection (HTTP 503).
+    ///
+    /// Typed rather than folded into [`VtaError::Protocol`] because it is the
+    /// one wire rejection that means **"ask again"** rather than "this failed".
+    /// The idempotency layer returns it when a first attempt on the same key is
+    /// still running, so a retry loop that reads it as a terminal error gives up
+    /// on the one answer it was supposed to wait for.
+    ///
+    /// `retry_after` carries the server's hint verbatim when it supplied one. A
+    /// client should honour it and cap it — an unbounded wait on a
+    /// server-controlled value is a denial of service the server can trigger.
+    #[error("temporarily unavailable{}", match .retry_after {
+        Some(t) => format!(" (retry after {t})"),
+        None => String::new(),
+    })]
+    Unavailable {
+        retry_after: Option<chrono::DateTime<chrono::Utc>>,
+    },
+
     #[error("{0}")]
     Other(String),
 }
@@ -377,6 +397,12 @@ impl VtaError {
             Self::Conflict(_) => Some(
                 "The resource already exists. Use the corresponding `update` or \
                  `delete-then-create` flow rather than `create`.",
+            ),
+            Self::Unavailable { .. } => Some(
+                "The VTA is temporarily busy — this is a wait, not a failure. If the \
+                 request carried an idempotency key, an earlier attempt on that key is \
+                 still running: retry with the same key and the original result will be \
+                 returned rather than the operation repeated.",
             ),
             Self::Validation(_) => Some(
                 "The request body or parameters were rejected by the VTA's schema. \
