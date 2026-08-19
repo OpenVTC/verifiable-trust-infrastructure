@@ -634,6 +634,14 @@ pub fn router_with_cors(
     // connection indefinitely). The blob branch's own 100 MB body limit,
     // applied inner to this 1 MB global one, still wins for that branch
     // (the inner layer sets the limit extension last).
+    // Tag responses from REST routes a Trust-Task has superseded, and count
+    // them. Inside the body-limit and timeout layers so it sees the response a
+    // route actually produced; see `crate::deprecation` for why removal is
+    // gated on this metric reaching zero rather than on a calendar date.
+    let router = router.layer(axum::middleware::from_fn(
+        crate::deprecation::mark_superseded,
+    ));
+
     let router =
         router
             .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
