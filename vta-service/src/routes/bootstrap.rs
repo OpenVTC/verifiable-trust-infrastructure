@@ -107,7 +107,8 @@ pub struct BootstrapResponseBody {
     responses(
         (status = 200, description = "Armored sealed admin bundle + digest", body = BootstrapResponseBody),
         (status = 400, description = "Unsupported version or malformed client_did/nonce"),
-        (status = 403, description = "Carve-out already used or TEE first-boot unavailable"),
+        (status = 403, description = "TEE first-boot unavailable on this VTA build"),
+        (status = 410, description = "Carve-out already used — this VTA already has an admin"),
     ),
 )]
 pub async fn request(
@@ -186,12 +187,14 @@ pub async fn request(
 #[cfg(feature = "tee")]
 static MODE_B_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Mode B: TEE first-boot sealed bootstrap. No token; the attestation quote
+/// Mint Mode B: TEE first-boot sealed bootstrap. No token; the attestation quote
 /// is the sole authorization anchor.
 ///
 /// On success, closes the first-boot carve-out permanently by writing the
 /// `BOOTSTRAP_CARVEOUT_CLOSED_KEY` sentinel. Any subsequent request is
-/// rejected.
+/// rejected with [`carve_out_closed_error`] (410 Gone) — the carve-out is
+/// consumed, not merely disallowed for this caller, which is what
+/// distinguishes it from a 403.
 #[cfg(feature = "tee")]
 async fn mint_mode_b(
     state: &AppState,
@@ -228,9 +231,7 @@ async fn mint_mode_b(
             .await?
             .is_some()
     {
-        return Err(AppError::Forbidden(
-            "TEE first-boot carve-out has already been used".into(),
-        ));
+        return Err(carve_out_closed_error());
     }
 
     let cfg = state.config.read().await;
@@ -335,9 +336,7 @@ async fn mint_mode_b(
         // bypassed). Roll back the ACL we just wrote so it does not
         // linger as an admin entry for an undeliverable DID, and refuse.
         let _ = delete_acl_entry(&state.acl_ks, &did).await;
-        return Err(AppError::Forbidden(
-            "TEE first-boot carve-out has already been used".into(),
-        ));
+        return Err(carve_out_closed_error());
     }
 
     // Durability barrier: do not return the bundle until the carve-out
@@ -352,6 +351,20 @@ async fn mint_mode_b(
 
     info!("TEE first-boot carve-out consumed — closed for good");
     Ok(bundle)
+}
+
+/// The consumed-carve-out refusal, shared by both places `mint_mode_b` can
+/// discover the sentinel is already set (the up-front check, and the
+/// defensive `insert_raw_if_absent` loss on the commit path).
+///
+/// Rendered as **410 Gone**, not 403: the carve-out is not a permission this
+/// caller lacks (a 403 would suggest a *different* caller or a *later*
+/// retry might succeed) — it is a single-use resource that has been
+/// permanently, irreversibly consumed for this VTA. `vta_sdk::error::VtaError`
+/// keys its `Gone` variant (and CLI hint) off this exact status.
+#[cfg(feature = "tee")]
+fn carve_out_closed_error() -> AppError {
+    AppError::Gone("TEE first-boot carve-out has already been used".into())
 }
 
 /// Decode the consumer's `did:key` (Ed25519) to its raw 32-byte pubkey.
@@ -530,6 +543,61 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "sentinel must be set after the run"
+        );
+    }
+
+    /// The API-contract regression this module exists to close: a consumed
+    /// Mode B carve-out must render **410 Gone**, not 403. A 403 tells the
+    /// caller "you specifically are not authorized" — which is wrong here,
+    /// since *no* caller, with *any* credentials, can ever succeed again.
+    /// Drives the real `mint_mode_b` end-to-end (simulated TEE provider,
+    /// real keyspaces) twice: the first mints an admin and closes the
+    /// carve-out; the second — from an entirely different client key and
+    /// nonce, so this isn't a replay-detection false positive — must be
+    /// refused as `AppError::Gone`, rendering HTTP 410.
+    #[tokio::test]
+    async fn consumed_carveout_returns_410_gone_not_403() {
+        use crate::config::{TeeConfig, TeeMode};
+        use crate::server::TeeContext;
+
+        let (_app, ctx) = crate::test_support::build_test_app().await;
+
+        let tee_state = crate::tee::init_tee(&TeeConfig {
+            mode: TeeMode::Simulated,
+            ..Default::default()
+        })
+        .expect("init simulated tee")
+        .expect("simulated tee state present");
+
+        let mut state = ctx.state.clone();
+        state.tee = Some(TeeContext {
+            state: tee_state,
+            mnemonic_guard: None,
+        });
+
+        let now = now_epoch();
+
+        // First request succeeds and closes the carve-out.
+        let (_seed_a, pub_a) = generate_ed25519_keypair();
+        mint_mode_b(&state, &pub_a, [1u8; 16], now)
+            .await
+            .expect("first bootstrap mints an admin");
+
+        // Second request — different client key, different nonce — must be
+        // refused. The carve-out is consumed, not merely "not for you".
+        let (_seed_b, pub_b) = generate_ed25519_keypair();
+        let err = mint_mode_b(&state, &pub_b, [2u8; 16], now)
+            .await
+            .expect_err("second bootstrap must be refused");
+
+        assert!(
+            matches!(err, AppError::Gone(_)),
+            "consumed carve-out must map to AppError::Gone, got {err:?}"
+        );
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::GONE,
+            "consumed carve-out must render as HTTP 410, not 403/409"
         );
     }
 }
