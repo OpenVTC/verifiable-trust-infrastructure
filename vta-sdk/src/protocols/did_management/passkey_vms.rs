@@ -111,7 +111,12 @@ pub struct EnrollPasskeyChallengeResponse {
     pub user_display_name: String,
 
     /// Suggested ceremony timeout, milliseconds.
-    #[serde(rename = "timeoutMs", default, skip_serializing_if = "Option::is_none", alias = "timeout_ms")]
+    #[serde(
+        rename = "timeoutMs",
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "timeout_ms"
+    )]
     pub timeout_ms: Option<u32>,
 }
 

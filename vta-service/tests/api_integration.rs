@@ -1953,10 +1953,7 @@ async fn create_did_webvh_template_mode() {
         "template create: {status} {body}"
     );
     assert!(body["did"].as_str().is_some(), "response has did");
-    assert!(
-        body["didDocument"].is_object(),
-        "response has did_document"
-    );
+    assert!(body["didDocument"].is_object(), "response has did_document");
     assert!(
         body["logEntry"].as_str().is_some(),
         "response has log_entry"
@@ -2961,10 +2958,7 @@ async fn ctx_did_templates_deleted_when_parent_context_deleted() {
         ))
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        preview["didTemplates"].as_array().map(|a| a.len()),
-        Some(1)
-    );
+    assert_eq!(preview["didTemplates"].as_array().map(|a| a.len()), Some(1));
     assert_eq!(preview["didTemplates"][0], "will-be-deleted");
 
     // Force-delete the context.

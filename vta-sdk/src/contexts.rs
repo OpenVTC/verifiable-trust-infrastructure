@@ -30,6 +30,10 @@ pub struct ContextRecord {
     /// legacy records and by default, which imposes no constraints — enforcement
     /// resolves the policy across the whole ancestor chain, so a missing policy
     /// at any level simply contributes nothing.
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "context_policy")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "context_policy"
+    )]
     pub context_policy: Option<crate::context_policy::ContextPolicy>,
 }

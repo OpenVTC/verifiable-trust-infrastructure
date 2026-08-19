@@ -41,13 +41,25 @@ use std::collections::{BTreeMap, BTreeSet};
 #[serde(rename_all = "camelCase")]
 pub struct ContextPolicy {
     /// Verifier DIDs an actor in this context may present to. `None` = any.
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "trusted_verifiers")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "trusted_verifiers"
+    )]
     pub trusted_verifiers: Option<BTreeSet<String>>,
     /// Credential `type`s an actor may present. `None` = any.
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "presentable_types")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "presentable_types"
+    )]
     pub presentable_types: Option<BTreeSet<String>>,
     /// Key ids the signing oracle may be invoked on. `None` = any.
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "signable_keys")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "signable_keys"
+    )]
     pub signable_keys: Option<BTreeSet<String>>,
     /// Whether sealed-transfer export is permitted. Defaults to `true`
     /// (unrestricted) when absent from the wire.
