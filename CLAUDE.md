@@ -971,6 +971,14 @@ Rules that bite hardest in this workspace, with their known hotspots:
   (+ the auth-cache mutex held across its calls), the vault status-list fetch
   (which must use the foreign-fetch profile — copy
   `vtc-service/src/recognition/verify.rs`).
+- **Retry has exactly one owner per failure domain.** The messaging delivery
+  layer owns message delivery; `VtaClient::idempotent` owns operation
+  completion. Application code owns neither — never wrap a `VtaClient` call in
+  your own retry loop, because a hand-rolled loop cannot hold an idempotency key
+  stable across attempts and so converts "one operation, retried" into "two
+  operations". Every new Trust Task must be classified in
+  `vta_sdk::retry_safety` (a census test enforces it). See
+  `docs/05-design-notes/retry-and-idempotency.md`.
 - **R2.1 — Remote-First.** No local commit before the remote effect is durable
   (or make the flow resumable with an idempotency key). Confirmed violations
   live in provision-integration resume, `rotate_key`'s swap-then-persist
