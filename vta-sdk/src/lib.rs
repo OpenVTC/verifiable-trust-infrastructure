@@ -135,6 +135,10 @@ pub mod http;
 pub mod keyring_init;
 pub mod keys;
 pub mod prelude;
+// What a lost reply costs each Trust Task. Always-on and dependency-free (it
+// classifies `trust_tasks`' URI catalog), so a retry layer can consult it
+// without pulling in the client machinery.
+pub mod retry_safety;
 // `resolver` wraps `affinidi-did-resolver-cache-sdk`, which is only a
 // dependency under the `didcomm` feature.
 #[cfg(feature = "didcomm")]
