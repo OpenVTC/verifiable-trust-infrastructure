@@ -5,6 +5,7 @@ use crate::keys::KeyStatus;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct RevokeKeyBody {
     #[serde(rename = "keyId", alias = "key_id")]
     pub key_id: String,
@@ -15,6 +16,7 @@ pub struct RevokeKeyBody {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct RevokeKeyResultBody {
     #[serde(rename = "keyId", alias = "key_id")]
     pub key_id: String,

@@ -20,7 +20,10 @@ impl std::fmt::Debug for RotateSeedBody {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct RotateSeedResultBody {
+    #[serde(alias = "previous_seed_id")]
     pub previous_seed_id: u32,
+    #[serde(alias = "new_seed_id")]
     pub new_seed_id: u32,
 }

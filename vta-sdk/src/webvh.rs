@@ -23,40 +23,49 @@ use serde::{Deserialize, Serialize};
 /// from another VTA can't replay stale tokens here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct WebvhServerRecord {
     pub id: String,
     pub did: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct WebvhDidRecord {
     pub did: String,
+    #[serde(alias = "server_id")]
     pub server_id: String,
     pub mnemonic: String,
     pub scid: String,
+    #[serde(alias = "context_id")]
     pub context_id: String,
     pub portable: bool,
+    #[serde(alias = "log_entry_count")]
     pub log_entry_count: u32,
     /// Number of pre-rotation keys committed by the most recent log
     /// entry (matches `next_key_hashes.len()` of that entry). `0` means
     /// pre-rotation is disabled. Defaults to `0` for legacy records
     /// written before this field existed; the next update reads the
     /// effective value off the loaded log entry and persists it back.
-    #[serde(default)]
+    #[serde(default, alias = "pre_rotation_count")]
     pub pre_rotation_count: u32,
     /// Next monotonically-increasing fragment id to use when minting a
     /// new verificationMethod (`#key-{n}`). Stays stable for the
     /// lifetime of the DID; never decremented. Defaults to `1` for
     /// legacy records — the next rotate-keys call performs a one-shot
     /// scan of the existing document and persists the correct value.
-    #[serde(default = "default_next_fragment_id")]
+    #[serde(default = "default_next_fragment_id", alias = "next_fragment_id")]
     pub next_fragment_id: u32,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
+    #[serde(alias = "updated_at")]
     pub updated_at: DateTime<Utc>,
 }
 

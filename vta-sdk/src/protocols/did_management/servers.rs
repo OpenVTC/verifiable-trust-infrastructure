@@ -52,6 +52,7 @@ pub struct ListWebvhServersResultBody {
 /// prompt in `create-did` / `register-did`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct ListWebvhServerDomainsBody {
     #[serde(rename = "serverId", alias = "server_id")]
     pub server_id: String,
@@ -71,6 +72,7 @@ pub struct ListWebvhServerDomainsResultBody {
 /// server holds for this VTA against the DIDs the VTA has records for.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct ReconcileWebvhServerDidsBody {
     #[serde(rename = "serverId", alias = "server_id")]
     pub server_id: String,
@@ -184,8 +186,10 @@ pub struct RemoveWebvhServerResultBody {
 /// always allowed without force.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct RegisterDidWithServerBody {
     pub did: String,
+    #[serde(alias = "server_id")]
     pub server_id: String,
     #[serde(default)]
     pub force: bool,
@@ -200,8 +204,11 @@ pub struct RegisterDidWithServerBody {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct RegisterDidWithServerResultBody {
     pub did: String,
+    #[serde(alias = "server_id")]
     pub server_id: String,
+    #[serde(alias = "log_entry_count")]
     pub log_entry_count: u32,
 }

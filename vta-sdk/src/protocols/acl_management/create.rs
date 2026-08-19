@@ -43,40 +43,44 @@ pub struct CreateAclResponseBody {
 /// approve members — so the storage layer is unaffected by the canonical fold.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct CreateAclResultBody {
     pub did: String,
     pub role: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    #[serde(alias = "allowed_contexts")]
     pub allowed_contexts: Vec<String>,
+    #[serde(alias = "created_at")]
     pub created_at: u64,
+    #[serde(alias = "created_by")]
     pub created_by: String,
     /// Unix-epoch seconds at which the entry auto-expires, if set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "expires_at")]
     pub expires_at: Option<u64>,
     /// The delegated step-up approver the maintainer now holds for this
     /// subject, if any (echoes the stored `step_up_approver`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "step_up_approver")]
     pub step_up_approver: Option<String>,
     /// The per-entry step-up override the maintainer now holds for this subject,
     /// if any (echoes the stored `step_up_require`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "step_up_require")]
     pub step_up_require: Option<String>,
     /// Approve-authority the entry holds — `true` means it may confer *any*
     /// context via approval (while acting nowhere). Echoes the stored
     /// `approve_scope`; takes precedence over `approve_contexts`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not", alias = "approve_all_contexts")]
     pub approve_all_contexts: bool,
     /// Approve-authority scoped to these contexts (echoes the stored
     /// `approve_scope`). Empty = confers nothing, unless `approve_all_contexts`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "approve_contexts")]
     pub approve_contexts: Vec<String>,
     /// The signing-oracle key filter the maintainer now holds for this
     /// subject (#818), echoing the stored `allowed_keys`. `None` = no filter
     /// (every key in the entry's contexts); **`Some([])` = no keys at all** —
     /// the skip is deliberately `Option::is_none`, never emptiness, so the
     /// two cannot collapse.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "allowed_keys")]
     pub allowed_keys: Option<Vec<String>>,
 }
 

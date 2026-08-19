@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct RenameKeyBody {
     #[serde(rename = "keyId", alias = "key_id")]
     pub key_id: String,
@@ -12,6 +13,7 @@ pub struct RenameKeyBody {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct RenameKeyResultBody {
     #[serde(rename = "keyId", alias = "key_id")]
     pub key_id: String,

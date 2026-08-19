@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 /// operation takes no input parameters.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct ListSeedsBody {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,14 +14,17 @@ pub struct ListSeedsBody {}
 pub struct SeedInfo {
     pub id: u32,
     pub status: String,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "retired_at")]
     pub retired_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct ListSeedsResultBody {
     pub seeds: Vec<SeedInfo>,
+    #[serde(alias = "active_seed_id")]
     pub active_seed_id: u32,
 }

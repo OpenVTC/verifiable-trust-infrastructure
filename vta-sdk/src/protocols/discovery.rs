@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 /// shape; the operation takes no input parameters.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct CapabilitiesBody {}
 
 pub const PROTOCOL_BASE: &str = "https://firstperson.network/protocols/discovery/1.0";
@@ -25,8 +26,10 @@ pub struct CapabilitiesResponse {
     /// Enabled services (REST, DIDComm).
     pub services: ServicesInfo,
     /// Configured WebVH servers available for DID creation.
+    #[serde(alias = "webvh_servers")]
     pub webvh_servers: Vec<WebvhServerInfo>,
     /// Supported DID creation modes.
+    #[serde(alias = "did_creation_modes")]
     pub did_creation_modes: Vec<String>,
 }
 

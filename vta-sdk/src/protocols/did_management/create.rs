@@ -217,22 +217,28 @@ pub struct CreateDidWebvhBody {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct CreateDidWebvhResultBody {
     pub did: String,
+    #[serde(alias = "context_id")]
     pub context_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "server_id")]
     pub server_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mnemonic: Option<String>,
     pub scid: String,
     pub portable: bool,
+    #[serde(alias = "signing_key_id")]
     pub signing_key_id: String,
+    #[serde(alias = "ka_key_id")]
     pub ka_key_id: String,
+    #[serde(alias = "pre_rotation_key_count")]
     pub pre_rotation_key_count: u32,
+    #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "did_document")]
     pub did_document: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "log_entry")]
     pub log_entry: Option<String>,
 }
 

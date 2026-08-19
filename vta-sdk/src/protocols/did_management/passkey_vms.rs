@@ -68,6 +68,7 @@ pub struct RevokePasskeyVmBody {
 /// don't bump the wire version.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct RevokePasskeyVmResponse {}
 
 /// Server-issued WebAuthn registration challenge. Returned by
@@ -81,7 +82,7 @@ pub struct EnrollPasskeyChallengeResponse {
     /// Opaque ceremony id — pass back via the `Idempotency-Key` /
     /// `X-Pnm-Ceremony-Id` header on submit. Stored server-side
     /// against the `PasskeyRegistration` state.
-    #[serde(rename = "ceremonyId")]
+    #[serde(rename = "ceremonyId", alias = "ceremony_id")]
     pub ceremony_id: String,
 
     /// WebAuthn challenge (base64url, ≥32 random bytes).
@@ -89,28 +90,28 @@ pub struct EnrollPasskeyChallengeResponse {
 
     /// Relying-Party identifier. A DNS name that matches the origin
     /// the browser is served from.
-    #[serde(rename = "rpId")]
+    #[serde(rename = "rpId", alias = "rp_id")]
     pub rp_id: String,
 
     /// Human-readable RP name.
-    #[serde(rename = "rpName")]
+    #[serde(rename = "rpName", alias = "rp_name")]
     pub rp_name: String,
 
     /// Stable WebAuthn user handle (base64url). Opaque to the
     /// client — the VTA derives a per-DID handle.
-    #[serde(rename = "userHandle")]
+    #[serde(rename = "userHandle", alias = "user_handle")]
     pub user_handle: String,
 
     /// WebAuthn user name (e.g. the DID or operator-supplied label).
-    #[serde(rename = "userName")]
+    #[serde(rename = "userName", alias = "user_name")]
     pub user_name: String,
 
     /// WebAuthn user display name.
-    #[serde(rename = "userDisplayName")]
+    #[serde(rename = "userDisplayName", alias = "user_display_name")]
     pub user_display_name: String,
 
     /// Suggested ceremony timeout, milliseconds.
-    #[serde(rename = "timeoutMs", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "timeoutMs", default, skip_serializing_if = "Option::is_none", alias = "timeout_ms")]
     pub timeout_ms: Option<u32>,
 }
 
@@ -172,23 +173,25 @@ pub struct EnrollPasskeySubmitBody {
 /// to the DID document via a WebVH log entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct EnrollPasskeySubmitResponse {
     /// The full verificationMethod entry as it now appears in the
     /// DID document.
-    #[serde(rename = "verificationMethod")]
+    #[serde(rename = "verificationMethod", alias = "verification_method")]
     pub verification_method: PasskeyVerificationMethod,
 
     /// WebVH log entry version that recorded the change (e.g.
     /// `"3-Qm…"`).
-    #[serde(rename = "webvhVersion")]
+    #[serde(rename = "webvhVersion", alias = "webvh_version")]
     pub webvh_version: String,
 }
 
 /// `GET` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct ListPasskeyVmsResponse {
-    #[serde(rename = "verificationMethods")]
+    #[serde(rename = "verificationMethods", alias = "verification_methods")]
     pub verification_methods: Vec<PasskeyVerificationMethod>,
 }
 
@@ -197,20 +200,21 @@ pub struct ListPasskeyVmsResponse {
 /// `@pnm/core` `PasskeyVerificationMethod` type byte-for-byte.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct PasskeyVerificationMethod {
     /// `<did>#passkey-<base64url(sha256(credential_id))>`.
     pub id: String,
     /// Always `"Multikey"`.
-    #[serde(rename = "type")]
+    #[serde(rename = "type", alias = "vm_type")]
     pub vm_type: String,
     /// The DID being augmented.
     pub controller: String,
     /// W3C Multikey form of the WebAuthn public key.
-    #[serde(rename = "publicKeyMultibase")]
+    #[serde(rename = "publicKeyMultibase", alias = "public_key_multibase")]
     pub public_key_multibase: String,
     /// WebAuthn `credential.id` (base64url) — lets a verifier find
     /// this VM by recomputing `sha256(credential.id)`.
-    #[serde(rename = "webauthnCredentialId")]
+    #[serde(rename = "webauthnCredentialId", alias = "webauthn_credential_id")]
     pub webauthn_credential_id: String,
     /// Transport hints; advisory only.
     #[serde(
@@ -218,6 +222,7 @@ pub struct PasskeyVerificationMethod {
         default,
         skip_serializing_if = "Vec::is_empty"
     )]
+    #[serde(alias = "webauthn_transports")]
     pub webauthn_transports: Vec<String>,
     /// Optional operator-supplied label.
     #[serde(default, skip_serializing_if = "Option::is_none")]

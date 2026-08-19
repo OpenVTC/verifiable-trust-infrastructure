@@ -4,6 +4,7 @@ use crate::keys::KeyRecord;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct GetKeyBody {
     #[serde(rename = "keyId", alias = "key_id")]
     pub key_id: String,

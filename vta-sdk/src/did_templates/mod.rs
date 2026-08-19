@@ -98,8 +98,9 @@ pub enum Scope {
 /// A parsed DID template. Serialized shape matches the on-disk JSON file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct DidTemplate {
-    #[serde(rename = "schemaVersion")]
+    #[serde(rename = "schemaVersion", alias = "schema_version")]
     pub schema_version: u32,
 
     pub name: String,
@@ -119,11 +120,11 @@ pub struct DidTemplate {
 
     /// Variables the caller MUST supply. Reserved ambient names are not
     /// allowed here (see [`RESERVED_VARS`]).
-    #[serde(default, rename = "requiredVars")]
+    #[serde(default, rename = "requiredVars", alias = "required_vars")]
     pub required_vars: Vec<String>,
 
     /// Variables with default values. Caller-supplied values override.
-    #[serde(default, rename = "optionalVars")]
+    #[serde(default, rename = "optionalVars", alias = "optional_vars")]
     pub optional_vars: serde_json::Map<String, Value>,
 
     /// Hints for the CLI / setup wizards (e.g. `preRotationCount`, `portable`).
