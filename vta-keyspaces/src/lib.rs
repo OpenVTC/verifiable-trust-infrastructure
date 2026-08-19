@@ -126,6 +126,19 @@ pub const TASK_CONSENT: &str = "task_consent";
 /// not backed up.
 pub const OUTBOX: &str = "outbox";
 
+/// Idempotency records for keyed Trust Tasks — one row per
+/// `(actor, idempotency-key)`, holding the request digest and, for tasks whose
+/// response may be replayed, the original response. Lets a client's retry of a
+/// lost reply converge on the first execution instead of producing a second
+/// durable effect.
+///
+/// Persistent rather than in-memory (unlike the `(actor, envelope-id)` replay
+/// cache it sits beside) because the window that matters is exactly the one a
+/// restart falls inside: the VTA processed the request, the reply was lost, and
+/// the client is still retrying. Swept on TTL by
+/// `vta_sweepers::idempotency_sweeper`. Runtime state, not backed up.
+pub const IDEMPOTENCY: &str = "idempotency";
+
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
 /// asserts the partition stays exhaustive so a newly-added keyspace can't be
@@ -156,6 +169,7 @@ pub const ALL: &[&str] = &[
     POLICY,
     TASK_CONSENT,
     OUTBOX,
+    IDEMPOTENCY,
 ];
 
 /// Keyspaces whose contents a full `export_backup` captures (as typed
@@ -209,6 +223,11 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // Reliable-messaging outbox: runtime delivery state, re-driven from live
     // sends, not part of a state backup.
     OUTBOX,
+    // Trust-Task idempotency records. Short-lived by construction (a retry
+    // window, not durable state) and scoped to the VTA that served the original
+    // request — restoring one elsewhere would claim to have already performed
+    // operations that instance never did.
+    IDEMPOTENCY,
 ];
 
 #[cfg(test)]

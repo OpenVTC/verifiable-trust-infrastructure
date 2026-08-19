@@ -159,6 +159,9 @@ async fn run(
 
     let now = Utc::now();
     let entry = CacheEntry {
+        // The HTTP path has no claim stage: it caches a response it already
+        // has, so the record is complete the moment it is written.
+        state: super::EntryState::Completed,
         idempotency_key: idempotency_key.clone(),
         request_hash,
         response_status: resp_parts.status.as_u16(),

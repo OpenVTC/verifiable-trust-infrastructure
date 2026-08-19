@@ -66,6 +66,7 @@ mod device;
 mod did_templates;
 mod discovery;
 mod helpers;
+mod idempotency;
 mod keys;
 mod management;
 mod memory;
@@ -620,6 +621,28 @@ async fn dispatch_trust_task_inner(
         return reject;
     }
 
+    // Idempotency claim. Only bites when the document carries an
+    // `idempotencyKey` *and* the task is one where a second execution leaves a
+    // second durable artefact (`vta_sdk::retry_safety`) — everything else
+    // returns `Skip` and dispatches exactly as before.
+    //
+    // Placed after payload validation so a malformed request never consumes a
+    // key, and before the policy gate so a *denied* request releases its claim
+    // through the same `record_outcome` path every other failure takes. The
+    // claim is written before the handler runs, which is what makes two
+    // concurrent attempts safe: `insert_if_absent` is atomic, so one proceeds
+    // and the other is told to wait rather than both passing a check.
+    //
+    // This is the layer `replay` (2b above) cannot be. That one keys on the
+    // envelope id and so only catches a byte-identical resubmission; every SDK
+    // path mints a fresh `urn:uuid:` per attempt, so a genuine retry sails past
+    // it. The key here is stable across attempts of the same logical operation.
+    let idem_claim = match idempotency::claim(&state.idempotency_ks, &auth.did, &doc).await {
+        idempotency::Claim::Answer(outcome) => return *outcome,
+        idempotency::Claim::Proceed { key, safety } => Some((key, safety)),
+        idempotency::Claim::Skip => None,
+    };
+
     // Policy Decision Point gate — evaluated before dispatch. A no-op unless
     // `config.policy.enforcement` is on; when a policy denies (or demands
     // step-up/consent), the task is rejected here and never reaches its handler.
@@ -657,6 +680,14 @@ async fn dispatch_trust_task_inner(
                 }
             }
         };
+
+    // Record what happened, so a retry carrying the same key converges on it.
+    // A failed outcome *releases* the claim instead of recording it — the
+    // effect this exists to deduplicate never happened, so the retry should be
+    // allowed to actually run.
+    if let Some((key, safety)) = idem_claim {
+        idempotency::record_outcome(&state.idempotency_ks, &auth.did, &key, safety, &outcome).await;
+    }
 
     if let Some((action, resource, context_id, detail)) = vault_audit {
         let label = vault_audit_outcome_label(&outcome);

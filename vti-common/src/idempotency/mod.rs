@@ -52,4 +52,7 @@ pub use class::IdempotencyClass;
 pub use middleware::{
     IDEMPOTENCY_HEADER, IdempotencyLayerState, MAX_BODY_BYTES, idempotency_middleware,
 };
-pub use store::{CacheEntry, IdempotencyStore, Principal, principal_from_request};
+pub use store::{
+    CacheEntry, ClaimOutcome, CompletedResponse, EntryState, IdempotencyStore, Principal,
+    principal_from_request,
+};
