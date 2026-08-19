@@ -261,7 +261,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-clippy-
 
-      - run: cargo clippy --workspace -- -D warnings
+      # `--all-targets` so tests, benches and examples are linted too. Without
+      # it clippy sees only the lib/bin targets, and dead code in `tests/`
+      # accumulates unseen — a dead import sat on main after #1000 and only
+      # surfaced when someone ran this flag by hand.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
   fmt:
     name: Format
@@ -600,7 +604,7 @@ jobs:
       # this combination had accumulated six dead imports/constants whose only
       # consumers were behind `didcomm`; nothing built it, so nothing said so.
       - name: vta-service rest only
-        run: cargo clippy -p vta-service --no-default-features --features rest -- -D warnings
+        run: cargo clippy -p vta-service --no-default-features --features rest --all-targets -- -D warnings
       # TSP *without* DIDComm — the combination the `tsp = ["didcomm"]` feature
       # edge used to make unbuildable. `-D warnings` for the same reason as the
       # REST-only step above: the dead code this build exposes (DIDComm-only

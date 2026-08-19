@@ -1128,6 +1128,13 @@ async fn delete_did_webvh_via_didcomm() {
 // ── Backup ──────────────────────────────────────────────────────────
 
 /// The `backup/*` pair is twinless, so it stays on the legacy message (#861).
+//
+// `backup_export` is `#[deprecated]` in favour of the descriptor flow, and this
+// test calls it on purpose: the legacy inline path is exactly what it covers,
+// and it needs to keep working for as long as it ships. Allowing the lint here
+// — rather than silencing it globally or dropping the test — keeps the warning
+// live for every *other* caller, which is who it is aimed at.
+#[allow(deprecated)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backup_export_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
