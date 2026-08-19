@@ -16,7 +16,11 @@ pub struct UpdateContextBody {
     pub description: Option<String>,
     /// Set this context's policy (super-admin only). Omitted leaves it
     /// unchanged; send [`ContextPolicy::unrestricted`] to clear constraints.
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "context_policy")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "context_policy"
+    )]
     pub context_policy: Option<ContextPolicy>,
 }
 

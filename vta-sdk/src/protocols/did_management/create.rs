@@ -236,7 +236,11 @@ pub struct CreateDidWebvhResultBody {
     pub pre_rotation_key_count: u32,
     #[serde(alias = "created_at")]
     pub created_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "did_document")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "did_document"
+    )]
     pub did_document: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "log_entry")]
     pub log_entry: Option<String>,
