@@ -58,7 +58,24 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          # The observed failure here is a *hang*, not a clean error: apt sits
+          # on an unresponsive mirror and never returns. Three separate runs
+          # stalled on this step, one of them for a full hour before anyone
+          # looked. A bare retry loop is no use against that — it would wait
+          # forever on the first attempt — so each attempt is bounded with
+          # `timeout`, which turns the hang into a failure the loop can act on.
+          # Acquire::Retries handles the ordinary transient case underneath.
+          for attempt in 1 2 3; do
+            if sudo timeout 90 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y libdbus-1-dev pkg-config; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after 3 bounded attempts"
+          exit 1
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -109,7 +126,24 @@ jobs:
           df -h /
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          # The observed failure here is a *hang*, not a clean error: apt sits
+          # on an unresponsive mirror and never returns. Three separate runs
+          # stalled on this step, one of them for a full hour before anyone
+          # looked. A bare retry loop is no use against that — it would wait
+          # forever on the first attempt — so each attempt is bounded with
+          # `timeout`, which turns the hang into a failure the loop can act on.
+          # Acquire::Retries handles the ordinary transient case underneath.
+          for attempt in 1 2 3; do
+            if sudo timeout 90 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y libdbus-1-dev pkg-config; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after 3 bounded attempts"
+          exit 1
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -140,7 +174,24 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          # The observed failure here is a *hang*, not a clean error: apt sits
+          # on an unresponsive mirror and never returns. Three separate runs
+          # stalled on this step, one of them for a full hour before anyone
+          # looked. A bare retry loop is no use against that — it would wait
+          # forever on the first attempt — so each attempt is bounded with
+          # `timeout`, which turns the hang into a failure the loop can act on.
+          # Acquire::Retries handles the ordinary transient case underneath.
+          for attempt in 1 2 3; do
+            if sudo timeout 90 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y libdbus-1-dev pkg-config; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after 3 bounded attempts"
+          exit 1
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -192,7 +243,24 @@ jobs:
           df -h /
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          # The observed failure here is a *hang*, not a clean error: apt sits
+          # on an unresponsive mirror and never returns. Three separate runs
+          # stalled on this step, one of them for a full hour before anyone
+          # looked. A bare retry loop is no use against that — it would wait
+          # forever on the first attempt — so each attempt is bounded with
+          # `timeout`, which turns the hang into a failure the loop can act on.
+          # Acquire::Retries handles the ordinary transient case underneath.
+          for attempt in 1 2 3; do
+            if sudo timeout 90 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y libdbus-1-dev pkg-config; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after 3 bounded attempts"
+          exit 1
 
       - name: Read MSRV from Cargo.toml
         id: msrv
@@ -295,7 +363,24 @@ jobs:
           fetch-depth: 0
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          # The observed failure here is a *hang*, not a clean error: apt sits
+          # on an unresponsive mirror and never returns. Three separate runs
+          # stalled on this step, one of them for a full hour before anyone
+          # looked. A bare retry loop is no use against that — it would wait
+          # forever on the first attempt — so each attempt is bounded with
+          # `timeout`, which turns the hang into a failure the loop can act on.
+          # Acquire::Retries handles the ordinary transient case underneath.
+          for attempt in 1 2 3; do
+            if sudo timeout 90 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y libdbus-1-dev pkg-config; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after 3 bounded attempts"
+          exit 1
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-semver-checks
@@ -362,7 +447,24 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          # The observed failure here is a *hang*, not a clean error: apt sits
+          # on an unresponsive mirror and never returns. Three separate runs
+          # stalled on this step, one of them for a full hour before anyone
+          # looked. A bare retry loop is no use against that — it would wait
+          # forever on the first attempt — so each attempt is bounded with
+          # `timeout`, which turns the hang into a failure the loop can act on.
+          # Acquire::Retries handles the ordinary transient case underneath.
+          for attempt in 1 2 3; do
+            if sudo timeout 90 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y libdbus-1-dev pkg-config; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after 3 bounded attempts"
+          exit 1
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -482,7 +584,24 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          # The observed failure here is a *hang*, not a clean error: apt sits
+          # on an unresponsive mirror and never returns. Three separate runs
+          # stalled on this step, one of them for a full hour before anyone
+          # looked. A bare retry loop is no use against that — it would wait
+          # forever on the first attempt — so each attempt is bounded with
+          # `timeout`, which turns the hang into a failure the loop can act on.
+          # Acquire::Retries handles the ordinary transient case underneath.
+          for attempt in 1 2 3; do
+            if sudo timeout 90 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y libdbus-1-dev pkg-config; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after 3 bounded attempts"
+          exit 1
 
       - uses: dtolnay/rust-toolchain@stable
 
