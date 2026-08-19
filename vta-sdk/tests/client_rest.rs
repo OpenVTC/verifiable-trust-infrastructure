@@ -140,7 +140,12 @@ async fn mount_rest_json(
         .await
 }
 
-async fn mount_rest_status(server: &MockServer, m: &str, p: &str, status: u16) -> wiremock::MockGuard {
+async fn mount_rest_status(
+    server: &MockServer,
+    m: &str,
+    p: &str,
+    status: u16,
+) -> wiremock::MockGuard {
     Mock::given(method(m))
         .and(path(p))
         .and(auth_match())
@@ -1873,7 +1878,9 @@ async fn fetch_context_secrets_walks_all_pages() {
     Mock::given(method("POST"))
         .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .and(body_partial_json(json!({"type": TASK_SEEDS_EXPORT_MNEMONIC})))
+        .and(body_partial_json(
+            json!({"type": TASK_SEEDS_EXPORT_MNEMONIC}),
+        ))
         .respond_with(tt_ok(json!({
             "key_id": "k",
             "key_type": "x25519",
