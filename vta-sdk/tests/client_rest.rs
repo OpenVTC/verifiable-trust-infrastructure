@@ -1295,7 +1295,10 @@ async fn list_dids_webvh_filters_by_context() {
         .and(auth_match())
         .and(body_partial_json(json!({
             "type": TASK_WEBVH_DIDS_LIST,
-            "payload": {"context_id": "primary", "server_id": "s1"}
+            // camelCase: the payload is built from `ListDidsWebvhBody`, which
+            // emits the canonical spelling rather than whatever a hand-written
+            // literal happened to say.
+            "payload": {"contextId": "primary", "serverId": "s1"}
         })))
         .respond_with(tt_ok(json!({
             "dids": [webvh_did_record_json("did:webvh:Qabc:server.example.com:primary")]
