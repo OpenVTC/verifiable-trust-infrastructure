@@ -1,8 +1,7 @@
 //! Context methods on [`VtaClient`].
 
 use super::{
-    ContextListResponse, ContextResponse, CreateContextRequest, UpdateContextDidRequest,
-    UpdateContextRequest, VtaClient, encode_path_segment,
+    ContextListResponse, ContextResponse, CreateContextRequest, UpdateContextRequest, VtaClient,
 };
 use crate::error::VtaError;
 
@@ -16,7 +15,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_CONTEXTS_LIST_1_0,
             serde_json::json!({}),
             30,
-            |c, url| c.get(format!("{url}/contexts")),
         )
         .await
     }
@@ -26,7 +24,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_CONTEXTS_GET_1_0,
             serde_json::json!({ "id": id }),
             30,
-            |c, url| c.get(format!("{url}/contexts/{}", encode_path_segment(id))),
         )
         .await
     }
@@ -39,7 +36,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_CONTEXTS_CREATE_1_0,
             serde_json::to_value(&req)?,
             30,
-            |c, url| c.post(format!("{url}/contexts")).json(&req),
         )
         .await
     }
@@ -58,10 +54,6 @@ impl VtaClient {
                 "description": &req.description,
             }),
             30,
-            |c, url| {
-                c.patch(format!("{url}/contexts/{}", encode_path_segment(id)))
-                    .json(&req)
-            },
         )
         .await
     }
@@ -77,10 +69,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0,
             serde_json::json!({ "id": id, "did": &did }),
             30,
-            |c, url| {
-                c.put(format!("{url}/contexts/{}/did", encode_path_segment(id)))
-                    .json(&UpdateContextDidRequest { did: did.clone() })
-            },
         )
         .await
     }
@@ -93,12 +81,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
             serde_json::json!({ "id": id }),
             30,
-            |c, url| {
-                c.get(format!(
-                    "{url}/contexts/{}/delete-preview",
-                    encode_path_segment(id)
-                ))
-            },
         )
         .await
     }
@@ -108,13 +90,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_CONTEXTS_DELETE_1_0,
             serde_json::json!({ "id": id, "force": force }),
             30,
-            |c, url| {
-                let mut url = format!("{url}/contexts/{}", encode_path_segment(id));
-                if force {
-                    url.push_str("?force=true");
-                }
-                c.delete(url)
-            },
         )
         .await
     }

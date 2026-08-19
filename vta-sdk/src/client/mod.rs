@@ -309,20 +309,6 @@ impl VtaClient {
         }
     }
 
-    pub(super) async fn handle_delete_response(resp: reqwest::Response) -> Result<(), VtaError> {
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            let status = resp.status();
-            let text = resp.text().await?;
-            if status == reqwest::StatusCode::CONFLICT {
-                return Err(VtaError::Conflict(text));
-            }
-            let body = Self::extract_error_message(&text);
-            Err(VtaError::from_http(status, body))
-        }
-    }
-
     /// Extract the `error` field from a JSON response body, or fall back to
     /// "unknown error" with the raw text appended for diagnostics. The raw text
     /// is truncated so a large non-JSON body (e.g. a 1 MB proxy error page)
@@ -1332,7 +1318,6 @@ impl VtaClient {
         tt_uri: &str,
         payload: serde_json::Value,
         timeout: u64,
-        build_rest: impl FnOnce(&Client, &str) -> RequestBuilder,
     ) -> Result<T, VtaError> {
         // Ahead of the transport, and of the REST fork in particular: on a REST
         // transport this method takes `build_rest` and never builds a Trust
@@ -1383,7 +1368,6 @@ impl VtaClient {
         tt_uri: &str,
         payload: serde_json::Value,
         timeout: u64,
-        build_rest: impl FnOnce(&Client, &str) -> RequestBuilder,
     ) -> Result<(), VtaError> {
         // As in `rpc_tt` — see `client::loopback`.
         #[cfg(feature = "test-loopback")]
@@ -1901,7 +1885,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0,
             serde_json::json!({}),
             30,
-            |c, url| c.get(format!("{url}/capabilities")),
         )
         .await
     }
