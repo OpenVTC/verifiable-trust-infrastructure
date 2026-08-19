@@ -2,9 +2,8 @@
 
 use super::{
     CreateKeyRequest, CreateKeyResponse, GetKeySecretResponse, ImportKeyRequest, ImportKeyResponse,
-    InvalidateKeyResponse, ListKeysResponse, ListSeedsResponse, RenameKeyRequest,
-    RenameKeyResponse, RotateSeedRequest, RotateSeedResponse, SignResponse, Transport, VtaClient,
-    WrappingKeyResponse, encode_path_segment,
+    InvalidateKeyResponse, ListKeysResponse, ListSeedsResponse, RenameKeyResponse,
+    RotateSeedRequest, RotateSeedResponse, SignResponse, Transport, VtaClient, WrappingKeyResponse,
 };
 use crate::error::VtaError;
 use crate::keys::{KeyRecord, KeyType};
@@ -42,7 +41,6 @@ impl VtaClient {
                 trust_tasks::TASK_KEYS_CREATE_0_1,
                 serde_json::to_value(&body)?,
                 30,
-                |c, url| c.post(format!("{url}/keys")).json(&req),
             )
             .await?;
         let key = wrapped.key;
@@ -86,7 +84,6 @@ impl VtaClient {
                 trust_tasks::TASK_KEYS_IMPORT_0_1,
                 serde_json::to_value(&body)?,
                 30,
-                |c, url| c.post(format!("{url}/keys/import")).json(&req),
             )
             .await?;
         Ok(ImportKeyResponse {
@@ -118,16 +115,6 @@ impl VtaClient {
                 context_id: context_id.map(str::to_string),
             })?,
             30,
-            |c, url| {
-                let mut u = format!("{url}/keys?offset={offset}&limit={limit}");
-                if let Some(s) = status {
-                    u.push_str(&format!("&status={s}"));
-                }
-                if let Some(ctx) = context_id {
-                    u.push_str(&format!("&context_id={ctx}"));
-                }
-                c.get(u)
-            },
         )
         .await
     }
@@ -142,7 +129,6 @@ impl VtaClient {
                 trust_tasks::TASK_KEYS_SHOW_0_1,
                 serde_json::json!({ "keyId": key_id }),
                 30,
-                |c, url| c.get(format!("{url}/keys/{}", encode_path_segment(key_id))),
             )
             .await?;
         wrapped
@@ -159,7 +145,6 @@ impl VtaClient {
             trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0,
             serde_json::json!({ "key_id": key_id }),
             30,
-            |c, url| c.get(format!("{url}/keys/{}/secret", encode_path_segment(key_id))),
         )
         .await
     }
@@ -184,13 +169,6 @@ impl VtaClient {
                 "algorithm": algorithm,
             }),
             30,
-            |c, url| {
-                c.post(format!("{url}/keys/{}/sign", encode_path_segment(key_id)))
-                    .json(&serde_json::json!({
-                        "payload": payload_b64,
-                        "algorithm": algorithm,
-                    }))
-            },
         )
         .await
     }
@@ -219,13 +197,8 @@ impl VtaClient {
             "payload": payload_b64,
             "algorithm": algorithm,
         });
-        self.rpc_tt(
-            trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1,
-            body.clone(),
-            30,
-            move |c, url| c.post(format!("{url}/keys/derive-and-sign")).json(&body),
-        )
-        .await
+        self.rpc_tt(trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1, body.clone(), 30)
+            .await
     }
 
     /// Derive a key at `derivation_path` and attach an `eddsa-jcs-2022`
@@ -260,10 +233,6 @@ impl VtaClient {
             trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
             body.clone(),
             30,
-            move |c, url| {
-                c.post(format!("{url}/keys/derive-and-sign-document"))
-                    .json(&body)
-            },
         )
         .await
     }
@@ -273,7 +242,6 @@ impl VtaClient {
             trust_tasks::TASK_KEYS_REVOKE_0_1,
             serde_json::json!({ "keyId": key_id }),
             30,
-            |c, url| c.delete(format!("{url}/keys/{}", encode_path_segment(key_id))),
         )
         .await
     }
@@ -287,12 +255,6 @@ impl VtaClient {
             trust_tasks::TASK_KEYS_RENAME_0_1,
             serde_json::json!({ "keyId": key_id, "newKeyId": new_key_id }),
             30,
-            |c, url| {
-                c.patch(format!("{url}/keys/{}", encode_path_segment(key_id)))
-                    .json(&RenameKeyRequest {
-                        key_id: new_key_id.to_string(),
-                    })
-            },
         )
         .await
     }
@@ -327,27 +289,21 @@ impl VtaClient {
     // ── Seed methods ────────────────────────────────────────────────
 
     pub async fn list_seeds(&self) -> Result<ListSeedsResponse, VtaError> {
-        self.rpc_tt(
-            trust_tasks::TASK_SEEDS_LIST_1_0,
-            serde_json::json!({}),
-            30,
-            |c, url| c.get(format!("{url}/keys/seeds")),
-        )
-        .await
+        self.rpc_tt(trust_tasks::TASK_SEEDS_LIST_1_0, serde_json::json!({}), 30)
+            .await
     }
 
     pub async fn rotate_seed(
         &self,
         mnemonic: Option<String>,
     ) -> Result<RotateSeedResponse, VtaError> {
-        let body = RotateSeedRequest {
+        let _body = RotateSeedRequest {
             mnemonic: mnemonic.clone(),
         };
         self.rpc_tt(
             trust_tasks::TASK_SEEDS_ROTATE_1_0,
             serde_json::json!({ "mnemonic": mnemonic }),
             30,
-            |c, url| c.post(format!("{url}/keys/seeds/rotate")).json(&body),
         )
         .await
     }

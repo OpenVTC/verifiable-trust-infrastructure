@@ -14,10 +14,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_MANAGEMENT_RELOAD_SERVICES_1_0,
             serde_json::json!({}),
             30,
-            |c, url| {
-                c.post(format!("{url}/vta/restart"))
-                    .json(&serde_json::json!({}))
-            },
         )
         .await
     }
@@ -27,7 +23,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_CONFIG_SHOW_0_1,
             serde_json::json!({}),
             30,
-            |c, url| c.get(format!("{url}/config")),
         )
         .await
     }
@@ -43,7 +38,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_CONFIG_PATCH_0_1,
             serde_json::to_value(&req)?,
             30,
-            |c, url| c.patch(format!("{url}/config")).json(&req),
         )
         .await
     }

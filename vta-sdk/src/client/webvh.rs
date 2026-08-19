@@ -23,7 +23,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_WEBVH_SERVERS_REGISTER_1_0,
             serde_json::to_value(&req)?,
             30,
-            |c, url| c.post(format!("{url}/webvh/servers")).json(&req),
         )
         .await
     }
@@ -36,7 +35,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0,
             serde_json::json!({}),
             30,
-            |c, url| c.get(format!("{url}/webvh/servers")),
         )
         .await
     }
@@ -58,12 +56,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_WEBVH_SERVERS_DOMAINS_0_1,
             serde_json::json!({ "serverId": server_id }),
             30,
-            |c, url| {
-                c.get(format!(
-                    "{url}/webvh/servers/{}/domains",
-                    encode_path_segment(server_id)
-                ))
-            },
         )
         .await
     }
@@ -87,12 +79,6 @@ impl VtaClient {
             // Longer than the domains read beside it: this makes a listing call
             // to the host and the host may be paging thousands of slots.
             60,
-            |c, url| {
-                c.get(format!(
-                    "{url}/webvh/servers/{}/reconcile",
-                    encode_path_segment(server_id)
-                ))
-            },
         )
         .await
     }
@@ -112,10 +98,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_WEBVH_SERVERS_REGISTER_1_0,
             serde_json::json!({ "id": id, "label": &req.label }),
             30,
-            |c, url| {
-                c.patch(format!("{url}/webvh/servers/{}", encode_path_segment(id)))
-                    .json(&req)
-            },
         )
         .await
     }
@@ -125,7 +107,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0,
             serde_json::json!({ "id": id }),
             30,
-            |c, url| c.delete(format!("{url}/webvh/servers/{}", encode_path_segment(id))),
         )
         .await
     }
@@ -159,13 +140,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
             serde_json::to_value(&body)?,
             60,
-            |c, url| {
-                c.post(format!(
-                    "{url}/webvh/dids/{}/register-server",
-                    encode_path_segment(did)
-                ))
-                .json(&body)
-            },
         )
         .await
     }
@@ -180,7 +154,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
             serde_json::to_value(&req)?,
             60,
-            |c, url| c.post(format!("{url}/webvh/dids")).json(&req),
         )
         .await
     }
@@ -197,18 +170,6 @@ impl VtaClient {
                 "server_id": server_id,
             }),
             30,
-            |c, url| {
-                let mut u = format!("{url}/webvh/dids");
-                let mut sep = '?';
-                if let Some(ctx) = context_id {
-                    u.push_str(&format!("{sep}context_id={ctx}"));
-                    sep = '&';
-                }
-                if let Some(srv) = server_id {
-                    u.push_str(&format!("{sep}server_id={srv}"));
-                }
-                c.get(u)
-            },
         )
         .await
     }
@@ -221,7 +182,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
             serde_json::json!({ "did": did }),
             30,
-            |c, url| c.get(format!("{url}/webvh/dids/{}", encode_path_segment(did))),
         )
         .await
     }
@@ -234,7 +194,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
             serde_json::json!({ "did": did, "includeLog": true }),
             30,
-            |c, url| c.get(format!("{url}/webvh/dids/{}/log", encode_path_segment(did))),
         )
         .await
     }
@@ -244,7 +203,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
             serde_json::json!({ "did": did }),
             60,
-            |c, url| c.delete(format!("{url}/webvh/dids/{}", encode_path_segment(did))),
         )
         .await
     }

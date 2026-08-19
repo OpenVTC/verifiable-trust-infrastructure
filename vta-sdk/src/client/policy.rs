@@ -36,8 +36,7 @@ impl VtaClient {
             30,
             // No `.query(&req)`: reqwest is built without default features here,
             // so query-string serialization is unavailable. Filters ride the
-            // trust-task payload, which is the path this surface actually uses.
-            |c, url| c.get(format!("{url}/policies")),
+            // trust-task payload
         )
         .await
     }
@@ -49,7 +48,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_POLICY_GET_0_1,
             serde_json::to_value(&req)?,
             30,
-            |c, url| c.get(format!("{url}/policies/{id}")),
         )
         .await
     }
@@ -68,7 +66,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_POLICY_UPSERT_0_2,
             serde_json::to_value(&req)?,
             30,
-            |c, url| c.put(format!("{url}/policies")).json(&req),
         )
         .await
     }
@@ -78,12 +75,11 @@ impl VtaClient {
         &self,
         req: DeletePolicyBody,
     ) -> Result<DeletePolicyResultBody, VtaError> {
-        let id = req.id.clone();
+        let _id = req.id.clone();
         self.rpc_tt(
             crate::trust_tasks::TASK_POLICY_DELETE_0_1,
             serde_json::to_value(&req)?,
             30,
-            |c, url| c.delete(format!("{url}/policies/{id}")).json(&req),
         )
         .await
     }

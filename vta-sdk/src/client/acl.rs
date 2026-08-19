@@ -3,7 +3,7 @@
 use super::types::AclEntryEnvelope;
 use super::{
     AclEntryResponse, AclListResponse, ChangeAclRoleRequest, CreateAclRequest, SwapAclRequest,
-    UpdateAclRequest, VtaClient, encode_path_segment,
+    UpdateAclRequest, VtaClient,
 };
 use crate::acl::ContextDirection;
 use crate::error::VtaError;
@@ -59,22 +59,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_ACL_LIST_0_1,
             serde_json::Value::Object(payload),
             30,
-            |c, url| {
-                // Both parameters are appended independently — a direction
-                // without a context is a caller error, and the VTA says so;
-                // dropping it here would make REST answer a question DIDComm
-                // refuses.
-                let mut u = format!("{url}/acl");
-                let mut sep = '?';
-                if let Some(ctx) = context {
-                    u.push_str(&format!("{sep}context={ctx}"));
-                    sep = '&';
-                }
-                if direction != ContextDirection::default() {
-                    u.push_str(&format!("{sep}direction={direction}"));
-                }
-                c.get(u)
-            },
         )
         .await
     }
@@ -87,7 +71,6 @@ impl VtaClient {
                 crate::trust_tasks::TASK_ACL_SHOW_0_1,
                 serde_json::json!({ "subject": did }),
                 30,
-                |c, url| c.get(format!("{url}/acl/{}", encode_path_segment(did))),
             )
             .await?;
         Ok(wrapped.entry)
@@ -103,7 +86,6 @@ impl VtaClient {
                 crate::trust_tasks::TASK_ACL_GRANT_0_1,
                 serde_json::to_value(&req)?,
                 30,
-                |c, url| c.post(format!("{url}/acl")).json(&req),
             )
             .await?;
         Ok(wrapped.entry)
@@ -145,10 +127,6 @@ impl VtaClient {
                 crate::trust_tasks::TASK_ACL_UPDATE_0_1,
                 serde_json::to_value(&body)?,
                 30,
-                |c, url| {
-                    c.patch(format!("{url}/acl/{}", encode_path_segment(did)))
-                        .json(&req)
-                },
             )
             .await?;
         Ok(wrapped.entry)
@@ -183,13 +161,6 @@ impl VtaClient {
                     reason: req.reason.clone(),
                 })?,
                 30,
-                |c, url| {
-                    c.post(format!(
-                        "{url}/acl/{}/change-role",
-                        encode_path_segment(did)
-                    ))
-                    .json(&req)
-                },
             )
             .await?;
         Ok(wrapped.entry)
@@ -200,7 +171,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_ACL_REVOKE_0_1,
             serde_json::json!({ "subject": did }),
             30,
-            |c, url| c.delete(format!("{url}/acl/{}", encode_path_segment(did))),
         )
         .await
     }

@@ -25,9 +25,11 @@ use serde::{Deserialize, Serialize};
 /// only `SHA-256(token)` so a leaked DB doesn't leak the token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct BundleDescriptor {
     /// Server-generated UUID v4. Unique to this bundle for its
     /// entire lifecycle.
+    #[serde(alias = "bundle_id")]
     pub bundle_id: String,
 
     /// Transport algorithm. v1 supports only `"stream"`. Future:
@@ -37,23 +39,28 @@ pub struct BundleDescriptor {
 
     /// HTTPS URL for the byte transfer. For `stream`, this is the
     /// VTA's `{GET, POST} /backup/blob/{bundle_id}` URL.
+    #[serde(alias = "transport_url")]
     pub transport_url: String,
 
     /// Bearer token for the byte endpoint. Passed in the
     /// `X-Backup-Token` header. Never reused across bundles.
+    #[serde(alias = "transport_token")]
     pub transport_token: String,
 
     /// Hex-encoded SHA-256 of the byte stream. Wire-level integrity
     /// check independent of the encrypted envelope's internal MAC.
+    #[serde(alias = "expected_sha256")]
     pub expected_sha256: String,
 
     /// Total byte count. Lets the recipient pre-allocate buffers
     /// and detect truncated transfers.
+    #[serde(alias = "expected_size_bytes")]
     pub expected_size_bytes: u64,
 
     /// RFC 3339 timestamp after which the bundle is
     /// garbage-collected and the token rejected. Default 5 minutes
     /// from descriptor mint; max 1 hour.
+    #[serde(alias = "expires_at")]
     pub expires_at: DateTime<Utc>,
 }
 
@@ -71,6 +78,7 @@ fn default_true() -> bool {
 /// Auth: super-admin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct InitiateExportBody {
     /// Password to derive the AES-256-GCM key (Argon2id KDF).
     /// Minimum length is [`super::MIN_BACKUP_PASSWORD_LEN`], enforced at the
@@ -78,7 +86,7 @@ pub struct InitiateExportBody {
     pub password: String,
 
     /// Include audit logs in the backup. Default: false.
-    #[serde(default)]
+    #[serde(default, alias = "include_audit")]
     pub include_audit: bool,
 
     /// Preferred transport algorithm. Defaults to `"stream"`.
@@ -91,11 +99,13 @@ pub struct InitiateExportBody {
 /// `spec/vta/backup/initiate-export/1.0` response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct InitiateExportResultBody {
     pub descriptor: BundleDescriptor,
 
     /// Operator-facing hint the CLI prints so they know how to
     /// complete the download.
+    #[serde(alias = "completion_hint")]
     pub completion_hint: String,
 }
 
@@ -103,14 +113,18 @@ pub struct InitiateExportResultBody {
 /// from the client after a successful download.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct CompleteExportBody {
+    #[serde(alias = "bundle_id")]
     pub bundle_id: String,
 }
 
 /// `spec/vta/backup/complete-export/1.0` response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct CompleteExportResultBody {
+    #[serde(alias = "bundle_id")]
     pub bundle_id: String,
     /// True if the byte stream was downloaded before this ack.
     /// False when the operator skipped the download or the bundle
@@ -124,13 +138,16 @@ pub struct CompleteExportResultBody {
 /// Auth: super-admin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct InitiateImportBody {
     /// Hex-encoded SHA-256 of the `.vtabak` bytes the client is
     /// about to upload. Pre-committed so the VTA detects tampered
     /// uploads.
+    #[serde(alias = "expected_sha256")]
     pub expected_sha256: String,
 
     /// Byte count of the upcoming upload.
+    #[serde(alias = "expected_size_bytes")]
     pub expected_size_bytes: u64,
 
     /// Preferred transport algorithm. Defaults to `"stream"`.
@@ -141,8 +158,10 @@ pub struct InitiateImportBody {
 /// `spec/vta/backup/initiate-import/1.0` response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct InitiateImportResultBody {
     pub descriptor: BundleDescriptor,
+    #[serde(alias = "completion_hint")]
     pub completion_hint: String,
 }
 
@@ -152,7 +171,9 @@ pub struct InitiateImportResultBody {
 /// mode (no state mutation), `confirm: true` commits.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct FinalizeImportBody {
+    #[serde(alias = "bundle_id")]
     pub bundle_id: String,
 
     /// Password to derive the AES-256-GCM key. Kept in the
@@ -172,17 +193,23 @@ pub struct FinalizeImportBody {
 /// becomes a structured `"preview" | "committed"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct FinalizeImportResultBody {
+    #[serde(alias = "bundle_id")]
     pub bundle_id: String,
     /// `"preview"` or `"committed"`.
     pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", alias = "source_did")]
     pub source_did: Option<String>,
+    #[serde(alias = "key_count")]
     pub key_count: usize,
+    #[serde(alias = "acl_count")]
     pub acl_count: usize,
+    #[serde(alias = "context_count")]
     pub context_count: usize,
+    #[serde(alias = "audit_count")]
     pub audit_count: usize,
-    #[serde(default)]
+    #[serde(default, alias = "imported_secret_count")]
     pub imported_secret_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -195,14 +222,18 @@ pub struct FinalizeImportResultBody {
 /// `BundleRecord.created_by`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct AbortBundleBody {
+    #[serde(alias = "bundle_id")]
     pub bundle_id: String,
 }
 
 /// `spec/vta/backup/abort/1.0` response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct AbortBundleResultBody {
+    #[serde(alias = "bundle_id")]
     pub bundle_id: String,
     /// True when the abort transitioned a live bundle to
     /// `Aborted`. False if the bundle was already in a terminal

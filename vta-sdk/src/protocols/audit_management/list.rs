@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 /// deserialize.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct AuditLogEntry {
     pub id: String,
     pub timestamp: u64,
@@ -35,7 +36,7 @@ pub struct AuditLogEntry {
     pub outcome: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "context_id")]
     pub context_id: Option<String>,
     /// Optional human-readable rationale supplied by the actor (e.g. the
     /// `reason` on a `vault.delete` / `vault.archive`). `#[serde(default)]`

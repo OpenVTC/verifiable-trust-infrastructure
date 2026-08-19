@@ -8,6 +8,7 @@ pub struct DeleteDidWebvhBody {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteDidWebvhResultBody {
     pub did: String,
     pub deleted: bool,
@@ -24,6 +25,10 @@ pub struct DeleteDidWebvhResultBody {
     /// backwards-compatible with consumers that expect the older
     /// `{did, deleted}` shape — a missing field deserialises as
     /// `None`, treated as "no daemon call needed."
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "daemon_cleanup_error"
+    )]
     pub daemon_cleanup_error: Option<String>,
 }

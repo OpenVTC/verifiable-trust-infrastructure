@@ -4,16 +4,23 @@ use crate::keys::KeyType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct GetKeySecretBody {
+    #[serde(alias = "key_id")]
     pub key_id: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct GetKeySecretResultBody {
+    #[serde(alias = "key_id")]
     pub key_id: String,
+    #[serde(alias = "key_type")]
     pub key_type: KeyType,
+    #[serde(alias = "public_key_multibase")]
     pub public_key_multibase: String,
+    #[serde(alias = "private_key_multibase")]
     pub private_key_multibase: String,
 }
 

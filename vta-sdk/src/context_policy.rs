@@ -38,19 +38,32 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Per-context policy. See the module docs for the resolution model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct ContextPolicy {
     /// Verifier DIDs an actor in this context may present to. `None` = any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "trusted_verifiers"
+    )]
     pub trusted_verifiers: Option<BTreeSet<String>>,
     /// Credential `type`s an actor may present. `None` = any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "presentable_types"
+    )]
     pub presentable_types: Option<BTreeSet<String>>,
     /// Key ids the signing oracle may be invoked on. `None` = any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "signable_keys"
+    )]
     pub signable_keys: Option<BTreeSet<String>>,
     /// Whether sealed-transfer export is permitted. Defaults to `true`
     /// (unrestricted) when absent from the wire.
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", alias = "export_allowed")]
     pub export_allowed: bool,
     /// Per-operation-class daily ceilings. `None` = no quota.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -64,8 +77,10 @@ fn default_true() -> bool {
 /// Per-operation-class daily ceilings (e.g. `"sign" -> 1000`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct Quotas {
     /// operation-class -> maximum invocations per day.
+    #[serde(alias = "per_day")]
     pub per_day: BTreeMap<String, u64>,
 }
 

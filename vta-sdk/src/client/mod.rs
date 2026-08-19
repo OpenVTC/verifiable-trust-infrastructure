@@ -309,20 +309,6 @@ impl VtaClient {
         }
     }
 
-    pub(super) async fn handle_delete_response(resp: reqwest::Response) -> Result<(), VtaError> {
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            let status = resp.status();
-            let text = resp.text().await?;
-            if status == reqwest::StatusCode::CONFLICT {
-                return Err(VtaError::Conflict(text));
-            }
-            let body = Self::extract_error_message(&text);
-            Err(VtaError::from_http(status, body))
-        }
-    }
-
     /// Extract the `error` field from a JSON response body, or fall back to
     /// "unknown error" with the raw text appended for diagnostics. The raw text
     /// is truncated so a large non-JSON body (e.g. a 1 MB proxy error page)
@@ -1332,7 +1318,6 @@ impl VtaClient {
         tt_uri: &str,
         payload: serde_json::Value,
         timeout: u64,
-        build_rest: impl FnOnce(&Client, &str) -> RequestBuilder,
     ) -> Result<T, VtaError> {
         // Ahead of the transport, and of the REST fork in particular: on a REST
         // transport this method takes `build_rest` and never builds a Trust
@@ -1346,14 +1331,16 @@ impl VtaClient {
         }
 
         match &self.transport {
-            Transport::Rest {
-                client,
-                base_url,
-                auth,
-            } => {
-                let req = build_rest(client, base_url);
-                let resp = Self::send_authed(client, base_url, auth, req).await?;
-                Self::handle_response(resp).await
+            // REST carries the Trust Task too, over the HTTPS binding
+            // (`POST /api/trust-tasks`) — the same document DIDComm and TSP
+            // send. It used to fork here into a bespoke per-operation route
+            // with its own request and response bodies, which is why REST was
+            // the one transport whose wire did not match the published
+            // schemas.
+            Transport::Rest { .. } => {
+                let payload = self.dispatch_trust_task(tt_uri, payload, timeout).await?;
+                serde_json::from_value(payload)
+                    .map_err(|e| VtaError::Protocol(format!("trust-task response decode: {e}")))
             }
             #[cfg(feature = "session")]
             Transport::DIDComm { .. } => {
@@ -1381,7 +1368,6 @@ impl VtaClient {
         tt_uri: &str,
         payload: serde_json::Value,
         timeout: u64,
-        build_rest: impl FnOnce(&Client, &str) -> RequestBuilder,
     ) -> Result<(), VtaError> {
         // As in `rpc_tt` — see `client::loopback`.
         #[cfg(feature = "test-loopback")]
@@ -1391,14 +1377,10 @@ impl VtaClient {
         }
 
         match &self.transport {
-            Transport::Rest {
-                client,
-                base_url,
-                auth,
-            } => {
-                let req = build_rest(client, base_url);
-                let resp = Self::send_authed(client, base_url, auth, req).await?;
-                Self::handle_delete_response(resp).await
+            // Same fold as `rpc_tt`: the HTTPS binding carries the task.
+            Transport::Rest { .. } => {
+                let _ = self.dispatch_trust_task(tt_uri, payload, timeout).await?;
+                Ok(())
             }
             #[cfg(feature = "session")]
             Transport::DIDComm { .. } => {
@@ -1498,9 +1480,35 @@ impl VtaClient {
                     .json(&doc);
                 let resp = Self::send_authed(client, base_url, auth, req).await?;
                 if !resp.status().is_success() {
+                    // Parse the body before throwing on the status (R3.7).
+                    //
+                    // A refused task answers with a `trust-task-error` document
+                    // whose payload carries the machine-readable `code` and the
+                    // human `message`; deciding on the status alone throws both
+                    // away and reports the raw JSON as "unknown error". It is
+                    // also what surfaces `ConsentRequired`, so skipping it turns
+                    // an answerable question into a dead end.
+                    //
+                    // The fallback matches the bespoke REST routes this binding
+                    // replaced: read the document's `error` field, and truncate
+                    // an unparseable body rather than letting a
+                    // server-controlled page of text reach logs and CLI output.
                     let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    return Err(VtaError::from_http(status, body));
+                    let text = resp.text().await.unwrap_or_default();
+
+                    if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text)
+                        && let Some(payload) = doc.get("payload")
+                        && let Some(err) = Self::trust_task_error(payload)
+                    {
+                        return Err(err);
+                    }
+                    if status == reqwest::StatusCode::CONFLICT {
+                        return Err(VtaError::Conflict(text));
+                    }
+                    return Err(VtaError::from_http(
+                        status,
+                        Self::extract_error_message(&text),
+                    ));
                 }
                 let response_doc: serde_json::Value = resp.json().await?;
                 Self::extract_trust_task_payload(response_doc)
@@ -1877,7 +1885,6 @@ impl VtaClient {
             crate::trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0,
             serde_json::json!({}),
             30,
-            |c, url| c.get(format!("{url}/capabilities")),
         )
         .await
     }

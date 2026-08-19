@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use super::{VtaClient, encode_path_segment};
+use super::VtaClient;
 use crate::did_templates::{DidTemplate, DidTemplateRecord};
 use crate::error::VtaError;
 use crate::protocols::did_template_management as proto;
@@ -32,7 +32,6 @@ impl VtaClient {
                 trust_tasks::TASK_DID_TEMPLATES_LIST_2_0,
                 serde_json::to_value(proto::list::ListDidTemplatesBody { context_id: None })?,
                 30,
-                |c, url| c.get(format!("{url}/did-templates")),
             )
             .await?;
         Ok(resp.templates)
@@ -50,7 +49,6 @@ impl VtaClient {
                 name: name.to_string(),
             })?,
             30,
-            |c, url| c.get(format!("{url}/did-templates/{}", encode_path_segment(name))),
         )
         .await
     }
@@ -67,13 +65,8 @@ impl VtaClient {
             context_id: None,
             template: template.clone(),
         })?;
-        self.rpc_tt(
-            trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
-            payload,
-            30,
-            |c, url| c.post(format!("{url}/did-templates")).json(&template),
-        )
-        .await
+        self.rpc_tt(trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0, payload, 30)
+            .await
     }
 
     /// Replace a global template. Super admin only.
@@ -90,16 +83,8 @@ impl VtaClient {
             name: name.to_string(),
             template: template.clone(),
         })?;
-        self.rpc_tt(
-            trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0,
-            payload,
-            30,
-            |c, url| {
-                c.put(format!("{url}/did-templates/{}", encode_path_segment(name)))
-                    .json(&template)
-            },
-        )
-        .await
+        self.rpc_tt(trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0, payload, 30)
+            .await
     }
 
     /// Delete a global template. Super admin only.
@@ -114,7 +99,6 @@ impl VtaClient {
                 name: name.to_string(),
             })?,
             30,
-            |c, url| c.delete(format!("{url}/did-templates/{}", encode_path_segment(name))),
         )
         .await
     }
@@ -137,18 +121,7 @@ impl VtaClient {
             vars: vars.clone(),
         })?;
         let resp: proto::render::RenderDidTemplateResultBody = self
-            .rpc_tt(
-                trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0,
-                payload,
-                30,
-                |c, url| {
-                    c.post(format!(
-                        "{url}/did-templates/{}/render",
-                        encode_path_segment(name)
-                    ))
-                    .json(&serde_json::json!({ "vars": vars }))
-                },
-            )
+            .rpc_tt(trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0, payload, 30)
             .await?;
         Ok(resp.document)
     }
@@ -170,12 +143,6 @@ impl VtaClient {
                     context_id: Some(context_id.to_string()),
                 })?,
                 30,
-                |c, url| {
-                    c.get(format!(
-                        "{url}/contexts/{}/did-templates",
-                        encode_path_segment(context_id)
-                    ))
-                },
             )
             .await?;
         Ok(resp.templates)
@@ -197,13 +164,6 @@ impl VtaClient {
                 name: name.to_string(),
             })?,
             30,
-            |c, url| {
-                c.get(format!(
-                    "{url}/contexts/{}/did-templates/{}",
-                    encode_path_segment(context_id),
-                    encode_path_segment(name)
-                ))
-            },
         )
         .await
     }
@@ -221,19 +181,8 @@ impl VtaClient {
             context_id: Some(context_id.to_string()),
             template: template.clone(),
         })?;
-        self.rpc_tt(
-            trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
-            payload,
-            30,
-            |c, url| {
-                c.post(format!(
-                    "{url}/contexts/{}/did-templates",
-                    encode_path_segment(context_id)
-                ))
-                .json(&template)
-            },
-        )
-        .await
+        self.rpc_tt(trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0, payload, 30)
+            .await
     }
 
     /// Replace a context-scoped template.
@@ -251,20 +200,8 @@ impl VtaClient {
             name: name.to_string(),
             template: template.clone(),
         })?;
-        self.rpc_tt(
-            trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0,
-            payload,
-            30,
-            |c, url| {
-                c.put(format!(
-                    "{url}/contexts/{}/did-templates/{}",
-                    encode_path_segment(context_id),
-                    encode_path_segment(name)
-                ))
-                .json(&template)
-            },
-        )
-        .await
+        self.rpc_tt(trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0, payload, 30)
+            .await
     }
 
     /// Delete a context-scoped template.
@@ -283,13 +220,6 @@ impl VtaClient {
                 name: name.to_string(),
             })?,
             30,
-            |c, url| {
-                c.delete(format!(
-                    "{url}/contexts/{}/did-templates/{}",
-                    encode_path_segment(context_id),
-                    encode_path_segment(name)
-                ))
-            },
         )
         .await
     }
@@ -313,19 +243,7 @@ impl VtaClient {
             vars: vars.clone(),
         })?;
         let resp: proto::render::RenderDidTemplateResultBody = self
-            .rpc_tt(
-                trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0,
-                payload,
-                30,
-                |c, url| {
-                    c.post(format!(
-                        "{url}/contexts/{}/did-templates/{}/render",
-                        encode_path_segment(context_id),
-                        encode_path_segment(name)
-                    ))
-                    .json(&serde_json::json!({ "vars": vars }))
-                },
-            )
+            .rpc_tt(trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0, payload, 30)
             .await?;
         Ok(resp.document)
     }

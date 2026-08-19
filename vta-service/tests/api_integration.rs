@@ -1455,7 +1455,7 @@ async fn audit_retention_get_and_update() {
     // Get current retention
     let (status, body) = app.request(get_auth("/audit/retention", &token)).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body["retention_days"].is_number());
+    assert!(body["retentionDays"].is_number());
 
     // Update retention
     let (status, body) = app
@@ -1953,16 +1953,13 @@ async fn create_did_webvh_template_mode() {
         "template create: {status} {body}"
     );
     assert!(body["did"].as_str().is_some(), "response has did");
+    assert!(body["didDocument"].is_object(), "response has did_document");
     assert!(
-        body["did_document"].is_object(),
-        "response has did_document"
-    );
-    assert!(
-        body["log_entry"].as_str().is_some(),
+        body["logEntry"].as_str().is_some(),
         "response has log_entry"
     );
     // Verify the template was used (custom key ID present in returned document)
-    let doc = &body["did_document"];
+    let doc = &body["didDocument"];
     let vm = doc["verificationMethod"]
         .as_array()
         .expect("verificationMethod array");
@@ -1999,7 +1996,7 @@ async fn create_did_webvh_final_mode_stores_record() {
         StatusCode::CREATED,
         "bootstrap create: {status} {created}"
     );
-    let log_entry = created["log_entry"].as_str().expect("log_entry string");
+    let log_entry = created["logEntry"].as_str().expect("log_entry string");
 
     // Now create another DID using the log entry in final mode, under a new context
     let token2 = setup_webvh_context(&app, &ctx, "test-final-2").await;
@@ -2022,8 +2019,8 @@ async fn create_did_webvh_final_mode_stores_record() {
     let final_did = body["did"].as_str().expect("did in response");
     assert!(!final_did.is_empty());
     // signing_key_id and ka_key_id are empty in final mode (VTA didn't derive keys)
-    assert_eq!(body["signing_key_id"].as_str().unwrap(), "");
-    assert_eq!(body["ka_key_id"].as_str().unwrap(), "");
+    assert_eq!(body["signingKeyId"].as_str().unwrap(), "");
+    assert_eq!(body["kaKeyId"].as_str().unwrap(), "");
 }
 
 #[cfg(feature = "webvh")]
@@ -2299,7 +2296,7 @@ async fn create_did_webvh_with_user_signing_key() {
     );
     assert!(body["did"].as_str().is_some());
     // Document should have signing key but no keyAgreement
-    let doc = &body["did_document"];
+    let doc = &body["didDocument"];
     assert!(doc["authentication"].is_array());
     assert!(doc.get("keyAgreement").is_none() || doc["keyAgreement"].is_null());
 }
@@ -2329,7 +2326,7 @@ async fn create_did_webvh_with_user_signing_and_ka_keys() {
         StatusCode::CREATED,
         "both keys create: {status} {body}"
     );
-    let doc = &body["did_document"];
+    let doc = &body["didDocument"];
     assert!(doc["keyAgreement"].is_array(), "should have keyAgreement");
     let vm = doc["verificationMethod"].as_array().unwrap();
     assert_eq!(vm.len(), 2, "should have 2 verification methods");
@@ -2961,11 +2958,8 @@ async fn ctx_did_templates_deleted_when_parent_context_deleted() {
         ))
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        preview["did_templates"].as_array().map(|a| a.len()),
-        Some(1)
-    );
-    assert_eq!(preview["did_templates"][0], "will-be-deleted");
+    assert_eq!(preview["didTemplates"].as_array().map(|a| a.len()), Some(1));
+    assert_eq!(preview["didTemplates"][0], "will-be-deleted");
 
     // Force-delete the context.
     let (status, _) = app
@@ -3024,7 +3018,7 @@ async fn create_did_webvh_via_builtin_mediator_template() {
     // serviceEndpoint is an array of two endpoints — HTTP first, WSS
     // second. The mediator template advertises both transports under one
     // `#service` entry; clients pick whichever transport they support.
-    let doc = &body["did_document"];
+    let doc = &body["didDocument"];
     assert!(doc.is_object(), "result must include did_document");
     let services = doc["service"].as_array().unwrap();
     let didcomm = services
@@ -3400,7 +3394,7 @@ async fn create_did_webvh_context_scoped_template_shadows_global() {
     // The fact that it succeeded (and the service shape from `sample_template`
     // is present — a `Custom` service type we used in the sample) confirms
     // the rendered doc came from a template, not the VTA's auto-builder.
-    let doc = &body["did_document"];
+    let doc = &body["didDocument"];
     assert_eq!(doc["service"][0]["type"], "Custom");
 }
 

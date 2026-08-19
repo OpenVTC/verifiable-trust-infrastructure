@@ -19,6 +19,7 @@ pub enum SignAlgorithm {
 /// Body of a sign-request message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct SignRequestBody {
     /// Key ID to sign with. Must be **active**, and the consumer enforces the
     /// caller's authority over it — this is not merely a caller-side
@@ -46,6 +47,7 @@ pub struct SignRequestBody {
 /// Body of a sign-result message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct SignResultBody {
     /// Key ID that was used.
     #[serde(rename = "keyId", alias = "key_id")]
