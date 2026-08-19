@@ -22,7 +22,7 @@ pub use vta_audit as audit;
 /// soft-deleted-vault purge), extracted to the `vta-sweepers` crate and
 /// re-exported so every `crate::{acl_sweeper,consent_sweeper,vault_sweeper}::…`
 /// path (the storage-thread sweep loop, provision-integration) is unchanged.
-pub use vta_sweepers::{acl_sweeper, consent_sweeper, vault_sweeper};
+pub use vta_sweepers::{acl_sweeper, consent_sweeper, idempotency_sweeper, vault_sweeper};
 pub mod auth;
 /// Backup/restore subsystem, extracted to the `vta-backup` crate. The sealed
 /// backup-bundle store + its TTL sweeper are re-exported so every

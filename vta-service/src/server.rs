@@ -95,6 +95,11 @@ pub struct AppState {
     /// Anti-replay log for sealed-bootstrap `bundle_id`s. One row per seal;
     /// `PersistentNonceStore` refuses duplicates.
     pub sealed_nonces_ks: KeyspaceHandle,
+    /// Idempotency records for keyed Trust Tasks (`trust_tasks::idempotency`).
+    /// One row per `(actor, idempotency-key)`, so a client's retry of a lost
+    /// reply converges on the first execution instead of producing a second
+    /// durable effect.
+    pub idempotency_ks: KeyspaceHandle,
     /// In-flight backup-bundle records for the descriptor-pattern
     /// export/import slice (see
     /// `docs/05-design-notes/backup-descriptor-pattern.md`). Holds
@@ -315,6 +320,10 @@ pub async fn build_app_state(
     // row is a one-byte sentinel, so the keyspace is intentionally
     // unencrypted — saves a decrypt hop on every request.
     let sealed_nonces_ks = apply_encryption(store.keyspace(crate::keyspaces::SEALED_NONCES)?);
+    // Trust-Task idempotency records. Encrypted like every other keyspace that
+    // may hold response bodies — a `Keyed` record carries the original response
+    // verbatim, which is caller data even when it is not secret material.
+    let idempotency_ks = apply_encryption(store.keyspace(crate::keyspaces::IDEMPOTENCY)?);
     let backup_bundles_ks = apply_encryption(store.keyspace(crate::keyspaces::BACKUP_BUNDLES)?);
     // Stage `.vtabak` blobs under `{data_dir}/backups`. Created lazily
     // by the op layer at first `initiate-*` call (so a VTA that never
@@ -391,6 +400,7 @@ pub async fn build_app_state(
         vault_ks,
         service_state_ks,
         sealed_nonces_ks,
+        idempotency_ks,
         backup_bundles_ks,
         backup_blob_dir,
         #[cfg(feature = "webvh")]
@@ -696,6 +706,7 @@ pub async fn run(
         let acl_ks = apply_encryption(store.keyspace(crate::keyspaces::ACL)?);
         let audit_ks = apply_encryption(store.keyspace(crate::keyspaces::AUDIT)?);
         let consent_ks = apply_encryption(store.keyspace(crate::keyspaces::CONSENT)?);
+        let idempotency_ks = apply_encryption(store.keyspace(crate::keyspaces::IDEMPOTENCY)?);
         let task_consent_ks = apply_encryption(store.keyspace(crate::keyspaces::TASK_CONSENT)?);
         let vault_ks = apply_encryption(store.keyspace(crate::keyspaces::VAULT)?);
         let backup_bundles_ks = apply_encryption(store.keyspace(crate::keyspaces::BACKUP_BUNDLES)?);
@@ -780,6 +791,7 @@ pub async fn run(
         let storage_audit_ks = audit_ks.clone();
         let storage_acl_ks = acl_ks.clone();
         let storage_consent_ks = consent_ks.clone();
+        let storage_idempotency_ks = idempotency_ks.clone();
         let storage_task_consent_ks = task_consent_ks.clone();
         let storage_vault_ks = vault_ks.clone();
         let storage_backup_bundles_ks = backup_bundles_ks.clone();
@@ -1083,6 +1095,7 @@ pub async fn run(
                     storage_audit_ks,
                     storage_acl_ks,
                     storage_consent_ks,
+                    storage_idempotency_ks,
                     storage_task_consent_ks,
                     storage_vault_ks,
                     storage_backup_bundles_ks,
@@ -1192,6 +1205,7 @@ fn run_storage_thread(
     audit_ks: KeyspaceHandle,
     acl_ks: KeyspaceHandle,
     consent_ks: KeyspaceHandle,
+    idempotency_ks: KeyspaceHandle,
     task_consent_ks: KeyspaceHandle,
     vault_ks: KeyspaceHandle,
     backup_bundles_ks_storage: KeyspaceHandle,
@@ -1245,6 +1259,11 @@ fn run_storage_thread(
                         {
                             warn!("consent sweeper error: {e}");
                         }
+                        // Idempotency records are read-through-expiry, so a
+                        // missed pass costs space and nothing else — that is why
+                        // this one logs rather than propagating, and why it is
+                        // not audited (retry bookkeeping, not a security event).
+                        crate::idempotency_sweeper::sweep_expired_logged(&idempotency_ks).await;
                         // Same for task-execution consent: an unanswered pending
                         // would otherwise sit in the keyspace forever, since the
                         // gate only expires one lazily when its digest is re-read.

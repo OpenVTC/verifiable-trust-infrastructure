@@ -6,6 +6,7 @@
 //! - [`consent_sweeper`] — expires stale pending-consent rows and consumed
 //!   consent grants (the DTTE ceremony state).
 //! - [`vault_sweeper`] — hard-purges grace-expired soft-deleted vault entries.
+//! - [`idempotency_sweeper`] — reclaims expired Trust-Task idempotency records.
 //!
 //! Each depends only on the foundation/leaf crates (`vti-common`, `vta-audit`,
 //! `vta-keyspaces`, and — for the vault sweeper — `vta-vault`), never on
@@ -18,4 +19,5 @@
 
 pub mod acl_sweeper;
 pub mod consent_sweeper;
+pub mod idempotency_sweeper;
 pub mod vault_sweeper;
