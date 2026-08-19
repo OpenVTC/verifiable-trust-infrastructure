@@ -21,8 +21,48 @@ use vta_sdk::client::*;
 use vta_sdk::error::VtaError;
 use vta_sdk::keys::{KeyOrigin, KeyStatus, KeyType};
 use vta_sdk::protocols::key_management::sign::SignAlgorithm;
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+// ── Trust Tasks HTTPS binding test surface ─────────────────────────────
+//
+// Every `rpc_tt` call posts the same envelope to the same path, so a mock can
+// no longer be selected by method and route. What identifies a call now is the
+// envelope `type` and the `payload` — which is strictly more precise, because
+// the payload is what the VTA actually acts on.
+
+const TASK_ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.1";
+const TASK_KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.1";
+const TASK_AUDIT_LIST: &str = "https://trusttasks.org/spec/audit/list/0.1";
+/// `get_key_secret` dispatches this: the operation moved to the seeds slice
+/// because it acts on the seed behind the key, not the key itself.
+const TASK_SEEDS_EXPORT_MNEMONIC: &str =
+    "https://trusttasks.org/spec/vta/seeds/export-mnemonic/1.0";
+const TASK_WEBVH_DIDS_LIST: &str = "https://trusttasks.org/spec/vta/webvh/dids/list/1.0";
+
+/// A success response document carrying `payload`.
+fn tt_ok(payload: Value) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
+        "type": "urn:test:response",
+        "payload": payload,
+    }))
+}
+
+/// Assert a key is *absent* from the payload.
+///
+/// `body_partial_json` can only assert presence, so omission — which is the
+/// whole point of a field a forward-compatible VTA would reject — needs its
+/// own matcher.
+fn no_payload_key(key: &'static str) -> impl Fn(&wiremock::Request) -> bool {
+    move |req: &wiremock::Request| {
+        serde_json::from_slice::<Value>(&req.body)
+            .ok()
+            .and_then(|v| v.get("payload").cloned())
+            .map(|p| p.get(key).is_none())
+            .unwrap_or(false)
+    }
+}
 
 // ── Test harness ────────────────────────────────────────────────────
 
@@ -42,19 +82,37 @@ fn auth_match() -> impl wiremock::Match {
     header("authorization", &*format!("Bearer {TOKEN}"))
 }
 
-/// Helper to mount a single mock that matches method + path + auth and
-/// returns a JSON body. The mock is auto-asserted via `.expect(1)` so a
-/// missing or extra call surfaces in the test failure.
+/// Mount the reply to one typed call.
+///
+/// Every operation now leaves over the HTTPS binding — `POST /api/trust-tasks`
+/// carrying a Trust Task document — so there is no per-operation method or
+/// path left to match on. The `m` and `p` arguments are retained because each
+/// test still documents which REST route its operation *used* to occupy, and
+/// losing that would make this file harder to read against its own history;
+/// they are deliberately not matched.
+///
+/// The body a test supplies is the operation's payload, so it is wrapped in a
+/// response document the way a conforming server replies. What each operation
+/// *dispatches* is asserted separately, in `dispatches_the_canonical_task`.
+/// Mock the Trust Tasks HTTPS binding: every `rpc_tt`/`rpc_tt_void` call posts
+/// to `/api/trust-tasks` regardless of the operation, so the method and path
+/// arguments no longer select anything. They are kept because the call sites
+/// read better naming the operation being mocked, and because a future
+/// per-task assertion will want them back.
 async fn mount_json(
     server: &MockServer,
-    m: &str,
-    p: &str,
+    _m: &str,
+    _p: &str,
     status: u16,
     body: Value,
 ) -> wiremock::MockGuard {
-    let resp = ResponseTemplate::new(status).set_body_json(body);
-    Mock::given(method(m))
-        .and(path(p))
+    let resp = ResponseTemplate::new(status).set_body_json(json!({
+        "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
+        "type": "urn:test:response",
+        "payload": body,
+    }));
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
         .respond_with(resp)
         .expect(1)
@@ -62,9 +120,44 @@ async fn mount_json(
         .await
 }
 
-async fn mount_status(server: &MockServer, m: &str, p: &str, status: u16) -> wiremock::MockGuard {
+/// Mock a genuinely-REST route — one with no trust-task twin, which therefore
+/// keeps its bespoke method and path. Backup blob streaming, the import
+/// wrapping key and the deprecated legacy-`rpc` DID verbs are the whole set;
+/// anything else reaching for this helper is probably a task in disguise.
+async fn mount_rest_json(
+    server: &MockServer,
+    m: &str,
+    p: &str,
+    status: u16,
+    body: Value,
+) -> wiremock::MockGuard {
     Mock::given(method(m))
         .and(path(p))
+        .and(auth_match())
+        .respond_with(ResponseTemplate::new(status).set_body_json(body))
+        .expect(1)
+        .mount_as_scoped(server)
+        .await
+}
+
+async fn mount_rest_status(
+    server: &MockServer,
+    m: &str,
+    p: &str,
+    status: u16,
+) -> wiremock::MockGuard {
+    Mock::given(method(m))
+        .and(path(p))
+        .and(auth_match())
+        .respond_with(ResponseTemplate::new(status).set_body_json(err_body("bad")))
+        .expect(1)
+        .mount_as_scoped(server)
+        .await
+}
+
+async fn mount_status(server: &MockServer, _m: &str, _p: &str, status: u16) -> wiremock::MockGuard {
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
         .respond_with(ResponseTemplate::new(status).set_body_json(err_body("bad")))
         .expect(1)
@@ -289,7 +382,7 @@ async fn backup_export_returns_envelope() {
         "includes_audit": false,
         "ciphertext": "AAAA"
     });
-    let _g = mount_json(&server, "POST", "/backup/export", 200, envelope).await;
+    let _g = mount_rest_json(&server, "POST", "/backup/export", 200, envelope).await;
     let c = client(&server).await;
     let env = c.backup_export("hunter2hunter2", false).await.unwrap();
     assert_eq!(env.version, 1);
@@ -300,7 +393,7 @@ async fn backup_export_returns_envelope() {
 #[tokio::test]
 async fn backup_export_403_maps_to_forbidden() {
     let server = MockServer::start().await;
-    let _g = mount_status(&server, "POST", "/backup/export", 403).await;
+    let _g = mount_rest_status(&server, "POST", "/backup/export", 403).await;
     let c = client(&server).await;
     let err = c.backup_export("pw", false).await.unwrap_err();
     assert!(matches!(err, VtaError::Forbidden(_)));
@@ -358,14 +451,17 @@ async fn create_key_round_trip() {
 #[tokio::test]
 async fn list_keys_paginates_query_params() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/keys"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .and(wiremock::matchers::query_param("offset", "10"))
-        .and(wiremock::matchers::query_param("limit", "5"))
-        .and(wiremock::matchers::query_param("status", "active"))
-        .and(wiremock::matchers::query_param("context_id", "ctx-a"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+        .and(body_partial_json(json!({
+            "type": TASK_KEYS_LIST,
+            "payload": {
+                "offset": 10, "limit": 5,
+                "status": "active", "contextId": "ctx-a"
+            }
+        })))
+        .respond_with(tt_ok(json!({
             "keys": [key_record_json("k1")],
             "total": 1
         })))
@@ -497,7 +593,7 @@ async fn rename_key_409_maps_to_conflict() {
 #[tokio::test]
 async fn get_wrapping_key_returns_jwk() {
     let server = MockServer::start().await;
-    let _g = mount_json(
+    let _g = mount_rest_json(
         &server,
         "GET",
         "/keys/import/wrapping-key",
@@ -616,11 +712,16 @@ async fn list_acl_no_filter() {
 #[tokio::test]
 async fn list_acl_with_context_query() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/acl"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .and(wiremock::matchers::query_param("context", "ctx-a"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"entries": []})))
+        // `scope`, not `context`: the task payload names the filter
+        // differently from the query string it replaced.
+        .and(body_partial_json(json!({
+            "type": TASK_ACL_LIST,
+            "payload": {"scope": "ctx-a"}
+        })))
+        .respond_with(tt_ok(json!({"entries": []})))
         .expect(1)
         .mount(&server)
         .await;
@@ -637,12 +738,13 @@ async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
     use vta_sdk::acl::ContextDirection;
 
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/acl"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .and(wiremock::matchers::query_param("context", "acme/eng"))
-        .and(wiremock::matchers::query_param("direction", "subtree"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"entries": []})))
+        .and(body_partial_json(json!({
+            "payload": {"scope": "acme/eng", "direction": "subtree"}
+        })))
+        .respond_with(tt_ok(json!({"entries": []})))
         .expect(1)
         .mount(&server)
         .await;
@@ -652,12 +754,14 @@ async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
         .unwrap();
     server.reset().await;
 
-    Mock::given(method("GET"))
-        .and(path("/acl"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .and(wiremock::matchers::query_param("context", "acme/eng"))
-        .and(wiremock::matchers::query_param_is_missing("direction"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"entries": []})))
+        .and(body_partial_json(json!({"payload": {"scope": "acme/eng"}})))
+        // An old VTA rejects an unknown field, so the default direction must
+        // be omitted rather than spelled out.
+        .and(no_payload_key("direction"))
+        .respond_with(tt_ok(json!({"entries": []})))
         .expect(2)
         .mount(&server)
         .await;
@@ -812,10 +916,10 @@ async fn update_acl_patches() {
 #[tokio::test]
 async fn delete_acl_returns_unit() {
     let server = MockServer::start().await;
-    Mock::given(method("DELETE"))
-        .and(path("/acl/did:key:zAdmin"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(204))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
         .expect(1)
         .mount(&server)
         .await;
@@ -955,11 +1059,10 @@ async fn preview_delete_context_returns_summary() {
 #[tokio::test]
 async fn delete_context_with_force_query() {
     let server = MockServer::start().await;
-    Mock::given(method("DELETE"))
-        .and(path("/contexts/primary"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .and(wiremock::matchers::query_param("force", "true"))
-        .respond_with(ResponseTemplate::new(204))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
         .expect(1)
         .mount(&server)
         .await;
@@ -970,10 +1073,10 @@ async fn delete_context_with_force_query() {
 #[tokio::test]
 async fn delete_context_no_force_omits_query() {
     let server = MockServer::start().await;
-    Mock::given(method("DELETE"))
-        .and(path("/contexts/primary"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(204))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
         .expect(1)
         .mount(&server)
         .await;
@@ -1106,10 +1209,10 @@ async fn update_webvh_server_patches() {
 #[tokio::test]
 async fn remove_webvh_server_deletes() {
     let server = MockServer::start().await;
-    Mock::given(method("DELETE"))
-        .and(path("/webvh/servers/s1"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(204))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
         .expect(1)
         .mount(&server)
         .await;
@@ -1187,12 +1290,14 @@ async fn create_did_webvh_posts() {
 #[tokio::test]
 async fn list_dids_webvh_filters_by_context() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/webvh/dids"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .and(wiremock::matchers::query_param("context_id", "primary"))
-        .and(wiremock::matchers::query_param("server_id", "s1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+        .and(body_partial_json(json!({
+            "type": TASK_WEBVH_DIDS_LIST,
+            "payload": {"context_id": "primary", "server_id": "s1"}
+        })))
+        .respond_with(tt_ok(json!({
             "dids": [webvh_did_record_json("did:webvh:Qabc:server.example.com:primary")]
         })))
         .expect(1)
@@ -1242,10 +1347,10 @@ async fn get_did_webvh_log_returns_log() {
 #[tokio::test]
 async fn delete_did_webvh_returns_unit() {
     let server = MockServer::start().await;
-    Mock::given(method("DELETE"))
-        .and(path("/webvh/dids/did:webvh:abc"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(204))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
         .expect(1)
         .mount(&server)
         .await;
@@ -1302,7 +1407,7 @@ async fn update_did_webvh_by_did_sends_the_canonical_task() {
 #[tokio::test]
 async fn update_did_webvh_posts_to_context_path() {
     let server = MockServer::start().await;
-    let _g = mount_json(
+    let _g = mount_rest_json(
         &server,
         "POST",
         "/contexts/primary/dids/Qabc/update",
@@ -1330,7 +1435,7 @@ async fn update_did_webvh_posts_to_context_path() {
 #[tokio::test]
 async fn rotate_did_webvh_keys_posts() {
     let server = MockServer::start().await;
-    let _g = mount_json(
+    let _g = mount_rest_json(
         &server,
         "POST",
         "/contexts/primary/dids/Qabc/rotate-keys",
@@ -1362,16 +1467,21 @@ async fn rotate_did_webvh_keys_posts() {
 #[tokio::test]
 async fn list_audit_logs_paginates() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/audit/logs"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
         // camelCase, per canonical `audit/list/0.1`. A snake_case key
-        // here would be dropped by the route's serde binding and the
+        // here would be dropped by the handler's serde binding and the
         // filter would silently not apply.
-        .and(wiremock::matchers::query_param("pageSize", "25"))
-        .and(wiremock::matchers::query_param("action", "key.create"))
-        .and(wiremock::matchers::query_param("cursor", "opaque-token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+        .and(body_partial_json(json!({
+            "type": TASK_AUDIT_LIST,
+            "payload": {
+                "pageSize": 25,
+                "action": "key.create",
+                "cursor": "opaque-token"
+            }
+        })))
+        .respond_with(tt_ok(json!({
             "entries": [{
                 "eventId": "e1",
                 "recordedAt": "2026-07-01T00:00:00+00:00",
@@ -1406,16 +1516,13 @@ async fn list_audit_logs_paginates() {
 #[tokio::test]
 async fn audit_list_percent_encodes_rfc3339_bounds() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/audit/logs"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .and(wiremock::matchers::query_param(
-            "from",
-            "2026-07-01T00:00:00+00:00",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "entries": [], "truncated": false
+        .and(body_partial_json(json!({
+            "payload": {"from": "2026-07-01T00:00:00Z"}
         })))
+        .respond_with(tt_ok(json!({"entries": [], "truncated": false})))
         .expect(1)
         .mount(&server)
         .await;
@@ -1558,10 +1665,10 @@ async fn update_did_template_puts() {
 #[tokio::test]
 async fn delete_did_template_returns_unit() {
     let server = MockServer::start().await;
-    Mock::given(method("DELETE"))
-        .and(path("/did-templates/x"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(204))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
         .expect(1)
         .mount(&server)
         .await;
@@ -1662,10 +1769,10 @@ async fn update_context_did_template_puts() {
 #[tokio::test]
 async fn delete_context_did_template_returns_unit() {
     let server = MockServer::start().await;
-    Mock::given(method("DELETE"))
-        .and(path("/contexts/primary/did-templates/x"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(204))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
         .expect(1)
         .mount(&server)
         .await;
@@ -1732,11 +1839,14 @@ async fn fetch_context_secrets_walks_all_pages() {
     for i in 0..100 {
         page1_keys.push(key_record_json(&format!("k{i}")));
     }
-    Mock::given(method("GET"))
-        .and(path("/keys"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .and(wiremock::matchers::query_param("offset", "0"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+        .and(body_partial_json(json!({
+            "type": TASK_KEYS_LIST,
+            "payload": {"offset": 0}
+        })))
+        .respond_with(tt_ok(json!({
             "keys": page1_keys,
             "total": 101
         })))
@@ -1745,11 +1855,14 @@ async fn fetch_context_secrets_walks_all_pages() {
         .await;
 
     // Page 2: 1 key
-    Mock::given(method("GET"))
-        .and(path("/keys"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .and(wiremock::matchers::query_param("offset", "100"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+        .and(body_partial_json(json!({
+            "type": TASK_KEYS_LIST,
+            "payload": {"offset": 100}
+        })))
+        .respond_with(tt_ok(json!({
             "keys": [key_record_json("k100")],
             "total": 101
         })))
@@ -1762,10 +1875,13 @@ async fn fetch_context_secrets_walks_all_pages() {
     // x25519 multibase below is a literal `[2u8; 32]` encoded with
     // multicodec X25519 (0xec01) — `secret_from_key_response` accepts
     // any 32-byte key, so the value just needs to round-trip.
-    Mock::given(method("GET"))
-        .and(path_regex(r"^/keys/[^/]+/secret$"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+        .and(body_partial_json(
+            json!({"type": TASK_SEEDS_EXPORT_MNEMONIC}),
+        ))
+        .respond_with(tt_ok(json!({
             "key_id": "k",
             "key_type": "x25519",
             "public_key_multibase": "z6LSqHQEbN8eMpx9NhMTXmxqYDhtbW5kqwQYWN9y91vxqMtq",
@@ -1834,8 +1950,8 @@ async fn http_418_maps_to_other() {
 #[tokio::test]
 async fn malformed_error_body_falls_back_to_raw_text() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/config"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .respond_with(ResponseTemplate::new(500).set_body_string("not json"))
         .mount(&server)
         .await;
@@ -1856,8 +1972,8 @@ async fn oversized_error_body_is_truncated() {
     // error string. The fallback truncates the raw text and marks it with `…`.
     let server = MockServer::start().await;
     let huge = "x".repeat(10_000);
-    Mock::given(method("GET"))
-        .and(path("/config"))
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .respond_with(ResponseTemplate::new(500).set_body_string(huge))
         .mount(&server)
         .await;

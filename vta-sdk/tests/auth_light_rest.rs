@@ -544,14 +544,18 @@ async fn ensure_token_valid_refreshes_expired_access_token() {
         .await;
 
     // Downstream call must carry the *refreshed* token, not the expired one.
-    Mock::given(method("GET"))
-        .and(path("/config"))
+    // `get_config` is the probe for "an authenticated call"; it now rides the
+    // Trust Tasks HTTPS binding like every other typed operation.
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(wiremock::matchers::header(
             "authorization",
             "Bearer fresh-access",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "fields": []
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
+            "type": "urn:test:response",
+            "payload": {"fields": []}
         })))
         .expect(1)
         .mount(&server)
@@ -637,14 +641,18 @@ async fn ensure_token_valid_full_reauth_when_refresh_expired() {
         .mount(&server)
         .await;
 
-    Mock::given(method("GET"))
-        .and(path("/config"))
+    // `get_config` is the probe for "an authenticated call"; it now rides the
+    // Trust Tasks HTTPS binding like every other typed operation.
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(wiremock::matchers::header(
             "authorization",
             "Bearer reauth-access",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "fields": []
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
+            "type": "urn:test:response",
+            "payload": {"fields": []}
         })))
         .expect(1)
         .mount(&server)
@@ -729,14 +737,18 @@ async fn ensure_token_valid_falls_through_when_refresh_fails() {
         .mount(&server)
         .await;
 
-    Mock::given(method("GET"))
-        .and(path("/config"))
+    // `get_config` is the probe for "an authenticated call"; it now rides the
+    // Trust Tasks HTTPS binding like every other typed operation.
+    Mock::given(method("POST"))
+        .and(path("/api/trust-tasks"))
         .and(wiremock::matchers::header(
             "authorization",
             "Bearer fallback-access",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "fields": []
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
+            "type": "urn:test:response",
+            "payload": {"fields": []}
         })))
         .expect(1)
         .mount(&server)
