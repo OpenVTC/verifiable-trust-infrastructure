@@ -6,6 +6,17 @@ on:
   pull_request:
     branches: [main]
 
+# One live run per ref. Pushing a fixup to an open PR used to leave the
+# superseded run executing and racing the new one for the same runner pool;
+# a superseded PR run tells you nothing worth waiting for.
+#
+# Cancellation is scoped to pull requests on purpose. A push to main or
+# nightly gates releases and is the record of what that commit did, so those
+# runs are left to finish even when another lands on top.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -42,6 +53,7 @@ jobs:
   check:
     name: Check
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -75,6 +87,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
@@ -122,6 +135,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -147,6 +161,7 @@ jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
 
@@ -163,6 +178,7 @@ jobs:
     # newer compiler can silently break consumers on the documented MSRV.
     name: MSRV
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -212,6 +228,7 @@ jobs:
     # with justified ignores; this job just runs it.
     name: cargo-deny
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: EmbarkStudios/cargo-deny-action@v2
@@ -228,6 +245,7 @@ jobs:
     name: commit lint
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Conventional-commit PR title
         env:
@@ -269,6 +287,7 @@ jobs:
     name: semver checks
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
@@ -326,6 +345,7 @@ jobs:
     # misattribution happened twice (#706, #711).
     name: lockfile self-pins
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - name: Lockfile self-pin guard
@@ -337,6 +357,7 @@ jobs:
     # builds are covered by the `check` job above.
     name: Feature combos
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
@@ -456,6 +477,7 @@ jobs:
     # depends on `tokio-vsock` which doesn't build on macOS/Windows.
     name: Enclave build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -491,6 +513,7 @@ jobs:
     # Xcode; the macOS image also ships the Android NDK.
     name: Mobile build
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
