@@ -2,7 +2,7 @@
 name = "vta-config"
 description = "VTA configuration types — the `AppConfig` TOML shape and its sub-configs, composing the vti-common and vti-secrets config types"
 readme = "README.md"
-version = "0.3.8"
+version = "0.3.9"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own

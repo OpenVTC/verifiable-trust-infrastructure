@@ -6,6 +6,17 @@ on:
   pull_request:
     branches: [main]
 
+# One live run per ref. Pushing a fixup to an open PR used to leave the
+# superseded run executing and racing the new one for the same runner pool;
+# a superseded PR run tells you nothing worth waiting for.
+#
+# Cancellation is scoped to pull requests on purpose. A push to main or
+# nightly gates releases and is the record of what that commit did, so those
+# runs are left to finish even when another lands on top.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -42,11 +53,47 @@ jobs:
   check:
     name: Check
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          # `apt-get update` is the operation that hangs here — three runs
+          # stalled on it, and once each attempt was bounded the timings showed
+          # every failure landing on the 90s `update` ceiling, never on the
+          # install. The mirror is unresponsive; retrying it harder does not
+          # help.
+          #
+          # So don't run it unless it is actually needed. The runner image ships
+          # a usable package index, and pkg-config is already present on
+          # ubuntu-24.04, so the fast path is to check what is missing and
+          # install straight from the shipped index. Refreshing the index is the
+          # fallback, still bounded and retried, for the case where the package
+          # genuinely is not in it.
+          pkgs=""
+          for p in libdbus-1-dev pkg-config; do
+            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
+          done
+          if [ -z "$pkgs" ]; then
+            echo "libdbus-1-dev and pkg-config already present; nothing to do"
+            exit 0
+          fi
+          echo "missing:$pkgs"
+          if sudo timeout 120 apt-get install -y $pkgs; then
+            exit 0
+          fi
+          echo "::warning::install from the shipped index failed; refreshing"
+          for attempt in 1 2 3; do
+            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
+          exit 1
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -75,6 +122,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
@@ -96,7 +144,42 @@ jobs:
           df -h /
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          # `apt-get update` is the operation that hangs here — three runs
+          # stalled on it, and once each attempt was bounded the timings showed
+          # every failure landing on the 90s `update` ceiling, never on the
+          # install. The mirror is unresponsive; retrying it harder does not
+          # help.
+          #
+          # So don't run it unless it is actually needed. The runner image ships
+          # a usable package index, and pkg-config is already present on
+          # ubuntu-24.04, so the fast path is to check what is missing and
+          # install straight from the shipped index. Refreshing the index is the
+          # fallback, still bounded and retried, for the case where the package
+          # genuinely is not in it.
+          pkgs=""
+          for p in libdbus-1-dev pkg-config; do
+            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
+          done
+          if [ -z "$pkgs" ]; then
+            echo "libdbus-1-dev and pkg-config already present; nothing to do"
+            exit 0
+          fi
+          echo "missing:$pkgs"
+          if sudo timeout 120 apt-get install -y $pkgs; then
+            exit 0
+          fi
+          echo "::warning::install from the shipped index failed; refreshing"
+          for attempt in 1 2 3; do
+            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
+          exit 1
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -122,11 +205,47 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          # `apt-get update` is the operation that hangs here — three runs
+          # stalled on it, and once each attempt was bounded the timings showed
+          # every failure landing on the 90s `update` ceiling, never on the
+          # install. The mirror is unresponsive; retrying it harder does not
+          # help.
+          #
+          # So don't run it unless it is actually needed. The runner image ships
+          # a usable package index, and pkg-config is already present on
+          # ubuntu-24.04, so the fast path is to check what is missing and
+          # install straight from the shipped index. Refreshing the index is the
+          # fallback, still bounded and retried, for the case where the package
+          # genuinely is not in it.
+          pkgs=""
+          for p in libdbus-1-dev pkg-config; do
+            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
+          done
+          if [ -z "$pkgs" ]; then
+            echo "libdbus-1-dev and pkg-config already present; nothing to do"
+            exit 0
+          fi
+          echo "missing:$pkgs"
+          if sudo timeout 120 apt-get install -y $pkgs; then
+            exit 0
+          fi
+          echo "::warning::install from the shipped index failed; refreshing"
+          for attempt in 1 2 3; do
+            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
+          exit 1
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -147,6 +266,7 @@ jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
 
@@ -163,6 +283,7 @@ jobs:
     # newer compiler can silently break consumers on the documented MSRV.
     name: MSRV
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
@@ -176,7 +297,42 @@ jobs:
           df -h /
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          # `apt-get update` is the operation that hangs here — three runs
+          # stalled on it, and once each attempt was bounded the timings showed
+          # every failure landing on the 90s `update` ceiling, never on the
+          # install. The mirror is unresponsive; retrying it harder does not
+          # help.
+          #
+          # So don't run it unless it is actually needed. The runner image ships
+          # a usable package index, and pkg-config is already present on
+          # ubuntu-24.04, so the fast path is to check what is missing and
+          # install straight from the shipped index. Refreshing the index is the
+          # fallback, still bounded and retried, for the case where the package
+          # genuinely is not in it.
+          pkgs=""
+          for p in libdbus-1-dev pkg-config; do
+            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
+          done
+          if [ -z "$pkgs" ]; then
+            echo "libdbus-1-dev and pkg-config already present; nothing to do"
+            exit 0
+          fi
+          echo "missing:$pkgs"
+          if sudo timeout 120 apt-get install -y $pkgs; then
+            exit 0
+          fi
+          echo "::warning::install from the shipped index failed; refreshing"
+          for attempt in 1 2 3; do
+            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
+          exit 1
 
       - name: Read MSRV from Cargo.toml
         id: msrv
@@ -212,6 +368,7 @@ jobs:
     # with justified ignores; this job just runs it.
     name: cargo-deny
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: EmbarkStudios/cargo-deny-action@v2
@@ -228,6 +385,7 @@ jobs:
     name: commit lint
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Conventional-commit PR title
         env:
@@ -269,6 +427,7 @@ jobs:
     name: semver checks
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
@@ -276,7 +435,42 @@ jobs:
           fetch-depth: 0
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          # `apt-get update` is the operation that hangs here — three runs
+          # stalled on it, and once each attempt was bounded the timings showed
+          # every failure landing on the 90s `update` ceiling, never on the
+          # install. The mirror is unresponsive; retrying it harder does not
+          # help.
+          #
+          # So don't run it unless it is actually needed. The runner image ships
+          # a usable package index, and pkg-config is already present on
+          # ubuntu-24.04, so the fast path is to check what is missing and
+          # install straight from the shipped index. Refreshing the index is the
+          # fallback, still bounded and retried, for the case where the package
+          # genuinely is not in it.
+          pkgs=""
+          for p in libdbus-1-dev pkg-config; do
+            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
+          done
+          if [ -z "$pkgs" ]; then
+            echo "libdbus-1-dev and pkg-config already present; nothing to do"
+            exit 0
+          fi
+          echo "missing:$pkgs"
+          if sudo timeout 120 apt-get install -y $pkgs; then
+            exit 0
+          fi
+          echo "::warning::install from the shipped index failed; refreshing"
+          for attempt in 1 2 3; do
+            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
+          exit 1
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-semver-checks
@@ -326,6 +520,7 @@ jobs:
     # misattribution happened twice (#706, #711).
     name: lockfile self-pins
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - name: Lockfile self-pin guard
@@ -337,11 +532,47 @@ jobs:
     # builds are covered by the `check` job above.
     name: Feature combos
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          # `apt-get update` is the operation that hangs here — three runs
+          # stalled on it, and once each attempt was bounded the timings showed
+          # every failure landing on the 90s `update` ceiling, never on the
+          # install. The mirror is unresponsive; retrying it harder does not
+          # help.
+          #
+          # So don't run it unless it is actually needed. The runner image ships
+          # a usable package index, and pkg-config is already present on
+          # ubuntu-24.04, so the fast path is to check what is missing and
+          # install straight from the shipped index. Refreshing the index is the
+          # fallback, still bounded and retried, for the case where the package
+          # genuinely is not in it.
+          pkgs=""
+          for p in libdbus-1-dev pkg-config; do
+            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
+          done
+          if [ -z "$pkgs" ]; then
+            echo "libdbus-1-dev and pkg-config already present; nothing to do"
+            exit 0
+          fi
+          echo "missing:$pkgs"
+          if sudo timeout 120 apt-get install -y $pkgs; then
+            exit 0
+          fi
+          echo "::warning::install from the shipped index failed; refreshing"
+          for attempt in 1 2 3; do
+            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
+          exit 1
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -456,11 +687,47 @@ jobs:
     # depends on `tokio-vsock` which doesn't build on macOS/Windows.
     name: Enclave build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: |
+          # `apt-get update` is the operation that hangs here — three runs
+          # stalled on it, and once each attempt was bounded the timings showed
+          # every failure landing on the 90s `update` ceiling, never on the
+          # install. The mirror is unresponsive; retrying it harder does not
+          # help.
+          #
+          # So don't run it unless it is actually needed. The runner image ships
+          # a usable package index, and pkg-config is already present on
+          # ubuntu-24.04, so the fast path is to check what is missing and
+          # install straight from the shipped index. Refreshing the index is the
+          # fallback, still bounded and retried, for the case where the package
+          # genuinely is not in it.
+          pkgs=""
+          for p in libdbus-1-dev pkg-config; do
+            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
+          done
+          if [ -z "$pkgs" ]; then
+            echo "libdbus-1-dev and pkg-config already present; nothing to do"
+            exit 0
+          fi
+          echo "missing:$pkgs"
+          if sudo timeout 120 apt-get install -y $pkgs; then
+            exit 0
+          fi
+          echo "::warning::install from the shipped index failed; refreshing"
+          for attempt in 1 2 3; do
+            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
+              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
+          exit 1
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -491,6 +758,7 @@ jobs:
     # Xcode; the macOS image also ships the Android NDK.
     name: Mobile build
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
