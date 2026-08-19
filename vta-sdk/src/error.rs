@@ -370,9 +370,9 @@ impl VtaError {
                  the ACL entry for your DID against the target context.",
             ),
             Self::Gone(_) => Some(
-                "The resource has been permanently consumed. The single-use bootstrap \
-                 carve-out has likely already been used; ask an existing admin to \
-                 provision-integration a new operator instead.",
+                "The resource was single-use or time-limited and has been consumed or has \
+                 expired — retrying will not succeed. If this was the bootstrap carve-out, \
+                 ask an existing admin to provision-integration a new operator instead.",
             ),
             Self::Conflict(_) => Some(
                 "The resource already exists. Use the corresponding `update` or \

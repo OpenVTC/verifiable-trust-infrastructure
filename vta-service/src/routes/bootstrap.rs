@@ -187,7 +187,7 @@ pub async fn request(
 #[cfg(feature = "tee")]
 static MODE_B_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Mint Mode B: TEE first-boot sealed bootstrap. No token; the attestation quote
+/// Mode B: TEE first-boot sealed bootstrap. No token; the attestation quote
 /// is the sole authorization anchor.
 ///
 /// On success, closes the first-boot carve-out permanently by writing the

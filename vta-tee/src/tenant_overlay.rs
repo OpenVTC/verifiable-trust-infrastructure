@@ -53,7 +53,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// `tokio-vsock` can report a stream connected just before Nitro finishes the
 /// nonblocking handshake, making the first read return `ENOTCONN`. Retry only
-/// that transient state; the outer [`READ_TIMEOUT`] remains the hard deadline.
+/// that transient state, and only *before any byte has arrived* — see
+/// [`read_envelope_to_eof`]. The outer [`READ_TIMEOUT`] remains the hard
+/// deadline.
 const NOT_CONNECTED_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Failure fetching or applying the tenant-config overlay. Every variant is
@@ -194,16 +196,35 @@ async fn read_envelope(stream: &mut VsockStream) -> Result<Vec<u8>, OverlayFetch
 
 /// The unbounded-in-time inner read. Only ever called under the
 /// [`read_envelope`] deadline.
+///
+/// `ENOTCONN` is retried **only while the buffer is still empty** — that is
+/// the handshake race [`NOT_CONNECTED_RETRY_DELAY`] describes, and it can only
+/// occur before the parent has sent anything. Once a byte has arrived the
+/// connection demonstrably completed, so a later `ENOTCONN` is a real
+/// mid-stream teardown: retrying it would burn the rest of [`READ_TIMEOUT`]
+/// and then report a timeout instead of the errno that actually happened.
 async fn read_envelope_to_eof<R>(stream: &mut R) -> Result<Vec<u8>, OverlayFetchError>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
+    let mut warned_not_connected = false;
     loop {
         let n = match stream.read(&mut chunk).await {
             Ok(n) => n,
-            Err(e) if e.kind() == std::io::ErrorKind::NotConnected => {
+            Err(e) if e.kind() == std::io::ErrorKind::NotConnected && buf.is_empty() => {
+                // Log once, not once per 10ms tick: a boot that spent most of
+                // READ_TIMEOUT here must not look identical to one that read
+                // immediately, but ~1000 identical lines is not an improvement.
+                if !warned_not_connected {
+                    warned_not_connected = true;
+                    warn!(
+                        "config server accepted but the vsock handshake is not complete yet \
+                         (ENOTCONN); retrying every {NOT_CONNECTED_RETRY_DELAY:?} until the \
+                         {READ_TIMEOUT:?} read deadline"
+                    );
+                }
                 tokio::time::sleep(NOT_CONNECTED_RETRY_DELAY).await;
                 continue;
             }
@@ -251,40 +272,53 @@ mod tests {
 
     const GOOD_ARN: &str = "arn:aws:kms:us-east-1:111122223333:key/abcd-ef01";
 
-    struct FirstReadError {
-        kind: std::io::ErrorKind,
-        payload: &'static [u8],
-        state: u8,
+    /// One scripted `poll_read` outcome. A `ScriptedReader` walks these in
+    /// order; running off the end is EOF, which is how the read loop
+    /// terminates.
+    enum Step {
+        Err(std::io::ErrorKind),
+        Bytes(&'static [u8]),
     }
 
-    impl AsyncRead for FirstReadError {
+    /// A reader that replays a fixed script of `poll_read` outcomes, counting
+    /// how many polls it served so a test can pin "the loop stopped here".
+    struct ScriptedReader {
+        steps: Vec<Step>,
+        polls: usize,
+    }
+
+    impl ScriptedReader {
+        fn new(steps: Vec<Step>) -> Self {
+            Self { steps, polls: 0 }
+        }
+    }
+
+    impl AsyncRead for ScriptedReader {
         fn poll_read(
             mut self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
             buf: &mut ReadBuf<'_>,
         ) -> Poll<std::io::Result<()>> {
-            match self.state {
-                0 => {
-                    self.state = 1;
-                    Poll::Ready(Err(std::io::Error::from(self.kind)))
-                }
-                1 => {
-                    self.state = 2;
-                    buf.put_slice(self.payload);
+            let idx = self.polls;
+            self.polls += 1;
+            match self.steps.get(idx) {
+                Some(Step::Err(kind)) => Poll::Ready(Err(std::io::Error::from(*kind))),
+                Some(Step::Bytes(payload)) => {
+                    buf.put_slice(payload);
                     Poll::Ready(Ok(()))
                 }
-                _ => Poll::Ready(Ok(())),
+                // Off the end of the script: EOF.
+                None => Poll::Ready(Ok(())),
             }
         }
     }
 
     #[tokio::test]
     async fn retries_transient_not_connected_read() {
-        let mut reader = FirstReadError {
-            kind: std::io::ErrorKind::NotConnected,
-            payload: b"config envelope",
-            state: 0,
-        };
+        let mut reader = ScriptedReader::new(vec![
+            Step::Err(std::io::ErrorKind::NotConnected),
+            Step::Bytes(b"config envelope"),
+        ]);
 
         assert_eq!(
             read_envelope_to_eof(&mut reader).await.unwrap(),
@@ -294,17 +328,39 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_non_transient_read_error() {
-        let mut reader = FirstReadError {
-            kind: std::io::ErrorKind::PermissionDenied,
-            payload: b"must not be read",
-            state: 0,
-        };
+        let mut reader = ScriptedReader::new(vec![
+            Step::Err(std::io::ErrorKind::PermissionDenied),
+            Step::Bytes(b"must not be read"),
+        ]);
 
         assert!(matches!(
             read_envelope_to_eof(&mut reader).await,
             Err(OverlayFetchError::Read(_))
         ));
-        assert_eq!(reader.state, 1);
+        assert_eq!(reader.polls, 1, "a hard error must not be retried");
+    }
+
+    /// The retry is for the *handshake* race, which by definition happens
+    /// before the parent has sent anything. An `ENOTCONN` after bytes have
+    /// arrived is a real mid-stream teardown: retrying it would spin out the
+    /// whole `READ_TIMEOUT` and then report "not fully received within 10s",
+    /// hiding the errno that actually explains the failure.
+    #[tokio::test]
+    async fn does_not_retry_not_connected_once_bytes_have_arrived() {
+        let mut reader = ScriptedReader::new(vec![
+            Step::Bytes(b"{\"version\":1,"),
+            Step::Err(std::io::ErrorKind::NotConnected),
+            Step::Bytes(b"must not be read"),
+        ]);
+
+        assert!(matches!(
+            read_envelope_to_eof(&mut reader).await,
+            Err(OverlayFetchError::Read(_))
+        ));
+        assert_eq!(
+            reader.polls, 2,
+            "mid-stream ENOTCONN must fail fast, not retry"
+        );
     }
 
     #[test]

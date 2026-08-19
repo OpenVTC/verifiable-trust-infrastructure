@@ -200,14 +200,34 @@ pub fn print_cli_error(err: &(dyn std::error::Error + 'static)) {
                 );
             }
             VtaError::Gone(msg) => {
-                let bin = bin_name();
-                eprintln!("{RED}\u{2717}{RESET} Resource is gone: {msg}");
-                eprintln!(
-                    "  {DIM}This usually means the bootstrap carve-out has already been used. \
-                     For a second admin, run `{bin} bootstrap provision-request` from the new \
-                     operator's host and have an existing admin run \
-                     `{bin} bootstrap provision-integration` against this VTA.{RESET}"
-                );
+                // Same treatment as the `Conflict` arm below: the SDK keeps
+                // the full 410 body, so surface the human field rather than
+                // dumping raw JSON at the operator.
+                let human = extract_human_message(msg);
+                eprintln!("{RED}\u{2717}{RESET} Resource is gone: {human}");
+                // 410 has more than one producer — the TEE bootstrap carve-out
+                // and the one-shot backup blob slots — so the carve-out
+                // walkthrough only prints when the refusal is actually about
+                // the carve-out. Unconditionally, it would send a backup
+                // operator down the admin-provisioning path for a bundle that
+                // simply expired. The marker is the server's own wording in
+                // `routes::bootstrap::carve_out_closed_error`; a miss costs
+                // the generic hint, never a wrong one.
+                if human.contains(CARVE_OUT_MARKER) {
+                    let bin = bin_name();
+                    eprintln!(
+                        "  {DIM}This usually means the bootstrap carve-out has already been \
+                         used. For a second admin, run `{bin} bootstrap provision-request` from \
+                         the new operator's host and have an existing admin run \
+                         `{bin} bootstrap provision-integration` against this VTA.{RESET}"
+                    );
+                } else {
+                    eprintln!(
+                        "  {DIM}This resource was single-use or time-limited, and has been \
+                         consumed or has expired. Retrying will not help — restart the \
+                         operation to get a fresh one.{RESET}"
+                    );
+                }
             }
             VtaError::Validation(msg) => {
                 eprintln!("{RED}\u{2717}{RESET} Invalid request: {msg}");
@@ -320,6 +340,12 @@ pub fn print_cli_error(err: &(dyn std::error::Error + 'static)) {
 /// output we don't want to dump JSON at the operator, so prefer the body's
 /// `message` field, then its `error` field, and only fall back to the raw
 /// text when the body isn't the expected JSON shape.
+/// Substring that marks a 410 as the TEE first-boot bootstrap carve-out
+/// rather than one of the other single-use resources that now render as
+/// `Gone` (the backup blob slots). Mirrors the server's wording in
+/// `vta_service::routes::bootstrap::carve_out_closed_error`.
+const CARVE_OUT_MARKER: &str = "carve-out";
+
 fn extract_human_message(body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()

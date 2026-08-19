@@ -90,12 +90,16 @@ pub(crate) fn app_error_to_reject(doc: &TrustTask<Value>, err: &AppError) -> Tru
         | AppError::TrustTaskMalformed(_)
         | AppError::TrustTaskMissing
         | AppError::InvalidCursor => RejectReason::MalformedRequest { reason: message },
-        AppError::NotFound(_) | AppError::Conflict(_) | AppError::IdempotencyKeyConflict => {
-            RejectReason::TaskFailed {
-                reason: message,
-                details: None,
-            }
-        }
+        // `Gone` is a terminal caller-visible outcome, not a server fault —
+        // keep it out of the `internal_error` fallback, which would tell the
+        // client to retry a permanently-consumed resource.
+        AppError::NotFound(_)
+        | AppError::Conflict(_)
+        | AppError::Gone(_)
+        | AppError::IdempotencyKeyConflict => RejectReason::TaskFailed {
+            reason: message,
+            details: None,
+        },
         _ => RejectReason::InternalError { reason: message },
     };
     reject_with(doc, reason)

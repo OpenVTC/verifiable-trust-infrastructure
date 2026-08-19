@@ -804,7 +804,14 @@ pub(crate) fn app_error_code(err: &AppError) -> &'static str {
         AppError::Forbidden(_) | AppError::StepUpRequired(_) => codes::FORBIDDEN,
         AppError::Unauthorized(_) | AppError::Authentication(_) => codes::UNAUTHORIZED,
         AppError::NotFound(_) => codes::NOT_FOUND,
-        AppError::Conflict(_) | AppError::IdempotencyKeyConflict => codes::CONFLICT,
+        // The affinidi taxonomy has no `gone` code, and inventing a wire code
+        // for a variant no DIDComm surface produces would be worse than
+        // approximating. `conflict` ("your request conflicts with the
+        // resource's state") is the closest caller-fault code; the
+        // `internal-error` fallback would be an outright wrong signal.
+        AppError::Conflict(_) | AppError::Gone(_) | AppError::IdempotencyKeyConflict => {
+            codes::CONFLICT
+        }
         AppError::Validation(_)
         | AppError::TrustTaskMalformed(_)
         | AppError::TrustTaskMissing
@@ -1502,6 +1509,17 @@ mod tests {
         assert_eq!(
             app_error_code(&AppError::Validation("bad".into())),
             codes::BAD_REQUEST
+        );
+        // A consumed single-use resource is a caller-visible terminal
+        // outcome. The taxonomy has no `gone` code, so it rides with
+        // `conflict` — the one thing it must not be is `internal-error`.
+        assert_eq!(
+            app_error_code(&AppError::Gone("consumed".into())),
+            codes::CONFLICT
+        );
+        assert_ne!(
+            app_error_code(&AppError::Gone("consumed".into())),
+            codes::INTERNAL
         );
         // Genuine infra faults stay internal.
         assert_eq!(
