@@ -52,7 +52,13 @@ fn handler_err(e: impl std::fmt::Display) -> DIDCommServiceError {
 /// body is `pub(crate)` in the transport crate and not inspectable here).
 fn app_err_to_problem_report(e: &AppError) -> ProblemReport {
     match e {
-        AppError::Conflict(msg) => ProblemReport::conflict(msg.clone()),
+        // No `gone` code exists in the affinidi taxonomy, and no DIDComm
+        // surface produces `Gone` today (its producers — the TEE bootstrap
+        // carve-out and the one-shot backup blob slots — are REST-only). Ride
+        // with `conflict` rather than the `internal-error` fallback, which
+        // would tell the caller a permanently-consumed resource was a server
+        // bug worth retrying.
+        AppError::Conflict(msg) | AppError::Gone(msg) => ProblemReport::conflict(msg.clone()),
         AppError::NotFound(msg) => ProblemReport::not_found(msg.clone()),
         AppError::Authentication(msg) | AppError::Unauthorized(msg) => {
             ProblemReport::unauthorized(msg.clone())
@@ -2123,6 +2129,9 @@ mod tests {
     fn app_error_maps_to_byte_identical_codes() {
         let cases = [
             (AppError::Conflict("c".into()), codes::CONFLICT, "c"),
+            // The taxonomy has no `gone`; what matters is that it does not
+            // land in the `internal-error` fallback and read as a server bug.
+            (AppError::Gone("g".into()), codes::CONFLICT, "g"),
             (AppError::NotFound("n".into()), codes::NOT_FOUND, "n"),
             (
                 AppError::Authentication("a".into()),

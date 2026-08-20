@@ -113,7 +113,7 @@ pub async fn get_blob(
         (status = 401, description = "Missing or malformed x-backup-token header"),
         (status = 403, description = "Token does not match"),
         (status = 404, description = "Bundle not found"),
-        (status = 410, description = "Bundle expired or already received"),
+        (status = 410, description = "Bundle expired or aborted"),
     ),
 )]
 pub async fn post_blob(
@@ -315,8 +315,11 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        // gone() maps to AppError::Conflict → 409
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        // A consumed single-use slot is 410, not 409 — the status this
+        // route's `utoipa` annotation has always declared. `gone()` renders
+        // `AppError::Gone`; 409 stays for "wrong bundle kind / wrong state",
+        // which a differently-shaped request could still satisfy.
+        assert_eq!(resp.status(), StatusCode::GONE);
     }
 
     #[tokio::test]

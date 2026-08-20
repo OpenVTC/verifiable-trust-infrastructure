@@ -21,7 +21,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tokio_vsock::{VsockAddr, VsockStream};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use vta_config::AppConfig;
 use vta_config::tenant_overlay::{TenantConfigOverlay, TenantOverlayError, apply_tenant_overlay};
@@ -51,6 +51,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// hangs in `fetch_and_apply_overlay` instead of producing the fail-closed error
 /// the caller is written to act on.
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// `tokio-vsock` can report a stream connected just before Nitro finishes the
+/// nonblocking handshake, making the first read return `ENOTCONN`. Retry only
+/// that transient state, and only *before any byte has arrived* — see
+/// [`read_envelope_to_eof`]. The outer [`READ_TIMEOUT`] remains the hard
+/// deadline.
+const NOT_CONNECTED_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Failure fetching or applying the tenant-config overlay. Every variant is
 /// fail-closed: on real Nitro the caller aborts the boot rather than continue
@@ -139,6 +145,13 @@ fn parse_envelope(bytes: &[u8]) -> Result<TenantConfigOverlay, OverlayFetchError
     Ok(envelope.overlay)
 }
 
+/// Whether `bytes` contains exactly one complete JSON value. This answers only
+/// the transport-framing question; [`parse_envelope`] performs the strict
+/// version and allowlist checks after the read completes.
+fn is_complete_json(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<serde::de::IgnoredAny>(bytes).is_ok()
+}
+
 /// Connect to the parent config server, retrying with bounded backoff so a
 /// cold-boot ordering race (enclave up before the parent binds vsock:5800)
 /// isn't an outage. Gives up after ~30 attempts.
@@ -190,14 +203,47 @@ async fn read_envelope(stream: &mut VsockStream) -> Result<Vec<u8>, OverlayFetch
 
 /// The unbounded-in-time inner read. Only ever called under the
 /// [`read_envelope`] deadline.
-async fn read_envelope_to_eof(stream: &mut VsockStream) -> Result<Vec<u8>, OverlayFetchError> {
+///
+/// `ENOTCONN` while the buffer is empty is the handshake race
+/// [`NOT_CONNECTED_RETRY_DELAY`] describes. Linux AF_VSOCK may also report
+/// `ENOTCONN` instead of EOF after the peer has sent its complete payload and
+/// shut down. In that second case the bytes are accepted as framed only if they
+/// contain one complete JSON value. A partial or malformed buffer still fails
+/// closed immediately; the normal strict envelope parse follows the read.
+async fn read_envelope_to_eof<R>(stream: &mut R) -> Result<Vec<u8>, OverlayFetchError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
+    let mut warned_not_connected = false;
     loop {
-        let n = stream
-            .read(&mut chunk)
-            .await
-            .map_err(|e| OverlayFetchError::Read(e.to_string()))?;
+        let n = match stream.read(&mut chunk).await {
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::NotConnected && buf.is_empty() => {
+                // Log once, not once per 10ms tick: a boot that spent most of
+                // READ_TIMEOUT here must not look identical to one that read
+                // immediately, but ~1000 identical lines is not an improvement.
+                if !warned_not_connected {
+                    warned_not_connected = true;
+                    warn!(
+                        "config server accepted but the vsock handshake is not complete yet \
+                         (ENOTCONN); retrying every {NOT_CONNECTED_RETRY_DELAY:?} until the \
+                         {READ_TIMEOUT:?} read deadline"
+                    );
+                }
+                tokio::time::sleep(NOT_CONNECTED_RETRY_DELAY).await;
+                continue;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotConnected && is_complete_json(&buf) => {
+                debug!(
+                    "config server closed vsock with ENOTCONN after a complete {}-byte envelope; treating it as EOF",
+                    buf.len()
+                );
+                break;
+            }
+            Err(e) => return Err(OverlayFetchError::Read(e.to_string())),
+        };
         if n == 0 {
             break; // EOF — parent finished and shut the connection.
         }
@@ -233,8 +279,134 @@ pub async fn fetch_and_apply_overlay(config: &mut AppConfig) -> Result<(), Overl
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use tokio::io::{AsyncRead, ReadBuf};
 
     const GOOD_ARN: &str = "arn:aws:kms:us-east-1:111122223333:key/abcd-ef01";
+
+    /// One scripted `poll_read` outcome. A `ScriptedReader` walks these in
+    /// order; running off the end is EOF, which is how the read loop
+    /// terminates.
+    enum Step {
+        Err(std::io::ErrorKind),
+        Bytes(&'static [u8]),
+    }
+
+    /// A reader that replays a fixed script of `poll_read` outcomes, counting
+    /// how many polls it served so a test can pin "the loop stopped here".
+    struct ScriptedReader {
+        steps: Vec<Step>,
+        polls: usize,
+    }
+
+    impl ScriptedReader {
+        fn new(steps: Vec<Step>) -> Self {
+            Self { steps, polls: 0 }
+        }
+    }
+
+    impl AsyncRead for ScriptedReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let idx = self.polls;
+            self.polls += 1;
+            match self.steps.get(idx) {
+                Some(Step::Err(kind)) => Poll::Ready(Err(std::io::Error::from(*kind))),
+                Some(Step::Bytes(payload)) => {
+                    buf.put_slice(payload);
+                    Poll::Ready(Ok(()))
+                }
+                // Off the end of the script: EOF.
+                None => Poll::Ready(Ok(())),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn retries_transient_not_connected_read() {
+        let mut reader = ScriptedReader::new(vec![
+            Step::Err(std::io::ErrorKind::NotConnected),
+            Step::Bytes(b"config envelope"),
+        ]);
+
+        assert_eq!(
+            read_envelope_to_eof(&mut reader).await.unwrap(),
+            b"config envelope"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_non_transient_read_error() {
+        let mut reader = ScriptedReader::new(vec![
+            Step::Err(std::io::ErrorKind::PermissionDenied),
+            Step::Bytes(b"must not be read"),
+        ]);
+
+        assert!(matches!(
+            read_envelope_to_eof(&mut reader).await,
+            Err(OverlayFetchError::Read(_))
+        ));
+        assert_eq!(reader.polls, 1, "a hard error must not be retried");
+    }
+
+    /// A post-payload `ENOTCONN` is Linux AF_VSOCK's observable close behavior
+    /// in some parent/enclave timing windows. It is equivalent to EOF only when
+    /// the buffered bytes are already one complete JSON value.
+    #[tokio::test]
+    async fn accepts_not_connected_after_complete_envelope() {
+        const ENVELOPE: &[u8] = br#"{"version":1,"overlay":{},"integrity":null}"#;
+        let mut reader = ScriptedReader::new(vec![
+            Step::Bytes(ENVELOPE),
+            Step::Err(std::io::ErrorKind::NotConnected),
+            Step::Bytes(b"must not be read"),
+        ]);
+
+        assert_eq!(read_envelope_to_eof(&mut reader).await.unwrap(), ENVELOPE);
+        assert_eq!(
+            reader.polls, 2,
+            "a complete envelope must terminate at ENOTCONN"
+        );
+    }
+
+    #[tokio::test]
+    async fn preserves_typed_error_after_complete_invalid_envelope() {
+        const ENVELOPE: &[u8] = br#"{"version":2,"overlay":{"future_field":true}}"#;
+        let mut reader = ScriptedReader::new(vec![
+            Step::Bytes(ENVELOPE),
+            Step::Err(std::io::ErrorKind::NotConnected),
+        ]);
+
+        let bytes = read_envelope_to_eof(&mut reader)
+            .await
+            .expect("a complete JSON value is transport-complete");
+        assert!(matches!(
+            parse_envelope(&bytes),
+            Err(OverlayFetchError::UnsupportedVersion(2))
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejects_not_connected_after_partial_envelope() {
+        let mut reader = ScriptedReader::new(vec![
+            Step::Bytes(b"{\"version\":1,"),
+            Step::Err(std::io::ErrorKind::NotConnected),
+            Step::Bytes(b"must not be read"),
+        ]);
+
+        assert!(matches!(
+            read_envelope_to_eof(&mut reader).await,
+            Err(OverlayFetchError::Read(_))
+        ));
+        assert_eq!(
+            reader.polls, 2,
+            "partial-envelope ENOTCONN must fail fast, not retry"
+        );
+    }
 
     #[test]
     fn parses_a_well_formed_v1_envelope() {

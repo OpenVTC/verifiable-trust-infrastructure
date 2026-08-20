@@ -29,6 +29,18 @@ pub enum AppError {
     #[error("conflict: {0}")]
     Conflict(String),
 
+    /// The resource existed but has been permanently, irreversibly consumed
+    /// or removed — rendered as **410 Gone**, distinct from [`Self::NotFound`]
+    /// (never existed / not visible to this caller) and [`Self::Conflict`]
+    /// (a transient state mismatch a retry or different request could
+    /// resolve). Canonical use: the TEE Mode B bootstrap carve-out after it
+    /// has been claimed — a second `/bootstrap/request` cannot succeed no
+    /// matter what the caller sends, ever again for this VTA. The SDK's
+    /// `vta_sdk::error::VtaError::Gone` mirrors this on the client side
+    /// (`from_http` maps 410 → `Gone`) with an operator-facing hint.
+    #[error("gone: {0}")]
+    Gone(String),
+
     #[error("secrets error: {0}")]
     Secrets(#[from] SecretsResolverError),
 
@@ -208,6 +220,7 @@ impl IntoResponse for AppError {
             AppError::SecretStore(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::Conflict(_) => StatusCode::CONFLICT,
+            AppError::Gone(_) => StatusCode::GONE,
             AppError::Secrets(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Authentication(_) => StatusCode::UNAUTHORIZED,
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
@@ -386,5 +399,31 @@ mod approval_required_tests {
         }
         .into_response();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+}
+
+#[cfg(test)]
+mod gone_tests {
+    use super::*;
+
+    /// The whole point of the variant: a consumed single-use resource (the
+    /// canonical example being the TEE Mode B bootstrap carve-out) must
+    /// render 410, not 403/409 — the SDK's `VtaError::from_http` keys its
+    /// `Gone` mapping off exactly this status code.
+    #[test]
+    fn renders_as_410_gone() {
+        let resp =
+            AppError::Gone("TEE first-boot carve-out has already been used".into()).into_response();
+        assert_eq!(resp.status(), StatusCode::GONE);
+    }
+
+    #[tokio::test]
+    async fn body_carries_the_message() {
+        use axum::body::to_bytes;
+
+        let resp = AppError::Gone("carve-out closed".into()).into_response();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json body");
+        assert_eq!(body["error"], "gone: carve-out closed");
     }
 }

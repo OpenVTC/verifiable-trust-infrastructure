@@ -32,9 +32,9 @@ use vti_common::store::KeyspaceHandle;
 /// - bundle_id not found → `NotFound`
 /// - token doesn't match the stored hash → `Forbidden`
 /// - bundle is an import bundle, or already-downloaded / aborted /
-///   expired → `NotFound` / `Conflict` (see [`enforce_export_ready`])
-/// - bundle expired by clock → `Conflict` (410-style, via [`gone`])
-/// - blob bytes missing on disk → `Conflict` (already swept)
+///   expired → `NotFound` / `Conflict` / `Gone` (see [`enforce_export_ready`])
+/// - bundle expired by clock → `Gone` (410, via [`gone`])
+/// - blob bytes missing on disk → `Gone` (already swept)
 pub async fn read_export_blob(
     bundles_ks: &KeyspaceHandle,
     bundle_id: Uuid,
@@ -240,13 +240,13 @@ fn enforce_import_pending(record: &BundleRecord) -> Result<(), AppError> {
 }
 
 fn gone(message: String) -> AppError {
-    // `AppError` doesn't have a `Gone` variant. The blob endpoints
-    // want 410 specifically so the operator CLI can distinguish
-    // "this slot was valid but is now consumed/expired" from
-    // "this slot never existed" (404). Map via `Conflict` for now —
-    // a follow-on can add a typed variant if the CLI surface
-    // requires it.
-    AppError::Conflict(message)
+    // 410, not 409: the blob endpoints need the operator CLI to be able to
+    // distinguish "this slot was valid but is now consumed/expired" from
+    // "this slot never existed" (404). Both route annotations have declared
+    // `410` since they were written; until `AppError::Gone` existed this
+    // helper had to approximate it with `Conflict`, which rendered 409 and
+    // quietly contradicted the documented contract.
+    AppError::Gone(message)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

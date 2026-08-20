@@ -86,7 +86,7 @@ pub(super) fn parse_payload<T: serde::de::DeserializeOwned>(
 ///
 /// - `Authentication` / `Unauthorized` / `Forbidden` → `permission_denied`
 /// - `Validation` / `TrustTaskMalformed` / `InvalidCursor` → `malformed_request`
-/// - `NotFound` / `Conflict` → `task_failed`
+/// - `NotFound` / `Conflict` / `Gone` → `task_failed`
 /// - everything else → `internal_error`
 pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> TrustTaskOutcome {
     let message = err.to_string();
@@ -101,10 +101,18 @@ pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> Trus
         AppError::Validation(_) | AppError::TrustTaskMalformed(_) | AppError::InvalidCursor => {
             RejectReason::MalformedRequest { reason: message }
         }
-        AppError::NotFound(_) | AppError::Conflict(_) => RejectReason::TaskFailed {
-            reason: message,
-            details: None,
-        },
+        // `Gone` rides with these rather than the `internal_error`
+        // fallback. No task produces it today (its producers are REST-only),
+        // but the fallback is the wrong default for it: a consumed single-use
+        // resource is a terminal *caller-visible* outcome, and reporting it as
+        // an internal error tells the client to retry something that can never
+        // succeed again.
+        AppError::NotFound(_) | AppError::Conflict(_) | AppError::Gone(_) => {
+            RejectReason::TaskFailed {
+                reason: message,
+                details: None,
+            }
+        }
         // Hand the framework the *cause*, not the rendered error. Both
         // `AppError::Internal` and `RejectReason::InternalError` render as
         // "internal error: {…}", so passing the outer `Display` in put the
@@ -330,5 +338,25 @@ mod tests {
             AppError::NotFound("SCID QmNope not found".into()),
         ));
         assert!(message.contains("SCID QmNope not found"), "{message}");
+    }
+
+    /// `Gone` must not fall through to the `internal_error` catch-all. A
+    /// consumed single-use resource is a terminal outcome the *caller* has to
+    /// act on; `internal_error` reads as "server bug, try again", which is the
+    /// one instruction that can never work here.
+    #[test]
+    fn a_gone_is_a_task_failure_not_an_internal_error() {
+        let message = message_of(app_error_to_reject(
+            &doc(),
+            AppError::Gone("carve-out has already been used".into()),
+        ));
+        assert!(
+            message.contains("carve-out has already been used"),
+            "{message}"
+        );
+        assert!(
+            !message.starts_with("internal error"),
+            "a consumed resource must not report as a server fault: {message}"
+        );
     }
 }

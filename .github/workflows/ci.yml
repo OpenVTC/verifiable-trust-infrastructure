@@ -635,6 +635,16 @@ jobs:
           cargo test -p vta-service --bin vta --features config-seed setup::interactive
           cargo test -p vta-service --bin vta --features config-seed,vault-secrets,k8s-secrets setup::interactive
 
+      # The TEE Mode B carve-out. `tee` is not a default feature of
+      # `vta-service`, so `cargo test --workspace` never builds
+      # `routes::bootstrap::tests` — and the `cargo check` step above builds
+      # the lib only, so it does not even TYPE-CHECK them. That module holds
+      # the two properties CLAUDE.md calls load-bearing: exactly one admin is
+      # ever minted, and a consumed carve-out refuses with 410 rather than a
+      # code that invites a retry. Both were unrunnable in CI. Run them.
+      - name: vta-service TEE Mode B carve-out
+        run: cargo test -p vta-service --no-default-features --features tee,rest,didcomm --lib routes::bootstrap
+
       # The fleet (`BAKE_CONFIG=false`) tenant-overlay path. `tenant-overlay` is
       # not a default feature of `vta-tee` and nothing in the default workspace
       # graph turns it on, so `cargo test --workspace` never even COMPILES
