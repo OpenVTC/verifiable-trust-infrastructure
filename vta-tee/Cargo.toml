@@ -37,9 +37,18 @@ utoipa = { workspace = true }
 rand = { workspace = true }
 bip39 = "2"
 hmac = "0.13"
-aws-sdk-kms = "1"
-aws-sdk-dynamodb = "1"
-aws-config = { version = "1", features = ["behavior-version-latest"] }
+# `default-features = false` drops the SDKs' `rustls` feature, which is not
+# "use rustls" but `aws-smithy-runtime/tls-rustls` -> the smithy client's
+# `legacy-rustls-ring` -> **rustls 0.21.8** -> rustls-webpki 0.101.7, the
+# stale copy behind three Dependabot alerts. The modern stack is already in
+# the tree (`rustls-aws-lc`, rustls 0.23) via `default-https-client`, so the
+# legacy pull was redundant as well as vulnerable. Nothing in this workspace
+# names rustls-webpki, so a direct bump cannot move it — the feature edge is
+# the only lever. Re-adding a default-featured `aws-sdk-*` dependency
+# reintroduces all three alerts.
+aws-sdk-kms = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio", "credentials-process", "sso"] }
 aws-lc-rs = "1"
 aes = "0.9"
 cbc = "0.2"
