@@ -470,6 +470,31 @@ The keyring is **interactive** on macOS — a Keychain unlock prompt
 may appear when `vta` first reads the seed in a fresh terminal
 session. CI / headless environments should use a different backend.
 
+**An unreachable credential store fails closed.** If the platform store
+cannot be opened — no Secret Service on a headless Linux host, a locked
+keychain, a Windows service account with no loaded profile — this backend
+returns an error rather than reporting the seed as absent. `vta` and `vtc`
+print a warning at startup naming the store, and then fail on first seed
+access *if* `backend` resolves to `keyring`; any other backend is
+unaffected, which is why that startup warning is not fatal.
+
+The CLIs behave differently, and deliberately: `pnm` and `cnm` keep their
+session — the admin DID and its private key — in the credential store and
+nowhere else, so an unreachable store leaves them nothing to read. They
+**exit at startup** with an explanation instead of continuing as though
+you had never logged in. On a host that genuinely has no credential
+store, opt into file storage explicitly:
+
+```bash
+VTI_SECURE_STORE=file pnm auth status
+```
+
+That writes sessions as plaintext JSON at mode `0600` in a `0700`
+directory. It is a deliberate choice, never a fallback — a build with no
+session store compiled in refuses to save rather than inventing
+somewhere to put a private key. Only use it where the filesystem itself
+is the trust boundary: an encrypted volume, or a locked-down container.
+
 ### Config-seed
 
 Cargo feature: `config-seed` · File: `vti-secrets/src/seed_store/config.rs`

@@ -1501,10 +1501,14 @@ async fn main() {
 
     let cli = Cli::parse();
 
+    // Not fatal here, unlike the CLIs. The VTA's secrets live in whichever
+    // `[secrets] backend` resolves to — aws, gcp, azure, vault, k8s, tee-kms or
+    // keyring — and config is not loaded until well after this point. Hard
+    // failing would break every cloud deployment on a host that has no
+    // credential store, which is most of them. The keyring-backed seed store
+    // fails closed on its own; this only makes it diagnosable.
     #[cfg(feature = "keyring")]
-    if let Err(e) = vta_sdk::keyring_init::install_default_store() {
-        eprintln!("warning: OS keyring unavailable: {e}");
-    }
+    vta_sdk::keyring_init::warn_store_unavailable("vta");
 
     print_banner();
 

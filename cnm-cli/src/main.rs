@@ -943,10 +943,11 @@ async fn main() {
         .with_writer(std::io::stderr)
         .init();
 
+    // Same shape as PNM: CNM's session lives in the OS credential store, and a
+    // store that cannot be opened reads as "no session" rather than as an
+    // error. See `install_default_store_or_exit`.
     #[cfg(feature = "keyring")]
-    if let Err(e) = vta_sdk::keyring_init::install_default_store() {
-        eprintln!("warning: OS keyring unavailable: {e}");
-    }
+    vta_sdk::keyring_init::install_default_store_or_exit("cnm");
 
     print_banner();
 

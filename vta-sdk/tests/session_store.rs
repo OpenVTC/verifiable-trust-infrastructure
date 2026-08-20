@@ -4,9 +4,12 @@
 //!   1. **Backend ops** — pure storage round-trips with the in-memory
 //!      backend (`store_direct`, `store_pending_rotation`,
 //!      `loaded_session`, `session_status`, `logout`).
-//!   2. **`FileBackend`** — exercise the on-disk plaintext fallback by
-//!      constructing `SessionStore::new(...)` against a tempdir, where
-//!      the SDK's feature-gate cascade lands on `FileBackend`.
+//!   2. **Backend selection** — what `SessionStore::new(...)` resolves to when
+//!      no backend feature is compiled in. There is no longer a silent
+//!      plaintext fallback (#1027), so this asserts a refusal. `FileBackend`'s
+//!      own round-trip and file-mode coverage lives in unit tests beside it in
+//!      `session/backends/file.rs`, where it runs under the workspace's
+//!      unified feature set instead of being cfg'd out of every CI run.
 //!   3. **Network paths** — `login` / `ensure_authenticated` /
 //!      `rotate_key` against a `wiremock` server, using `did:key` DIDs
 //!      so TDK's resolver doesn't need outbound DNS.
@@ -17,7 +20,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::SigningKey;
 use serde_json::json;
-#[cfg(not(any(feature = "keyring", feature = "azure-secrets")))]
+#[cfg(not(any(
+    feature = "keyring",
+    feature = "azure-secrets",
+    feature = "config-session"
+)))]
 use tempfile::tempdir;
 use vta_sdk::credentials::CredentialBundle;
 use vta_sdk::did_key::ed25519_multibase_pubkey;
@@ -112,53 +119,59 @@ fn session_status_none_when_no_token_cached() {
     assert!(matches!(status.token_status, TokenStatus::None));
 }
 
-// ── FileBackend (on-disk plaintext fallback) ────────────────────────
+// ── Backend selection ───────────────────────────────────────────────
 //
-// Only exercised when no other session backend is compiled in. Under
-// workspace cov runs the `keyring` feature is unified on (pnm-cli /
-// cnm-cli enable it), and `default_backend` returns `KeyringBackend`
-// instead — so these tests would no-op against a different code path.
-// Running `cargo test -p vta-sdk --test session_store --features
-// "session test-support"` exercises this path.
+// Under a workspace test run the `keyring` feature is unified on (pnm-cli /
+// cnm-cli enable it), so `default_backend` returns `KeyringBackend` and the
+// tests below are cfg'd out. That was already true of the `FileBackend` tests
+// that used to live here — which is why their round-trip and file-mode coverage
+// moved into unit tests beside the backend, where the workspace's unified
+// feature set actually runs them. What remains here is only the selection
+// contract, which cannot be observed from inside the module.
 
-#[cfg(not(any(feature = "keyring", feature = "azure-secrets")))]
+/// With no backend feature compiled in, a session store must refuse rather than
+/// invent somewhere to put a private key.
+///
+/// This replaces `file_backend_round_trips_via_session_store_new`, which
+/// asserted the opposite: that the feature cascade silently landed on
+/// `FileBackend` and wrote `sessions.json` at the process umask. That fallback
+/// is gone — a store holding an admin key is now always an explicit choice.
+#[cfg(not(any(
+    feature = "keyring",
+    feature = "azure-secrets",
+    feature = "config-session"
+)))]
 #[test]
-fn file_backend_round_trips_via_session_store_new() {
-    // SessionStore::new() with no keyring/azure features compiled
-    // (the default for these tests) lands on FileBackend with
-    // warn=true. Save → load → clear must round-trip through
-    // `<sessions_dir>/sessions.json`.
+fn no_compiled_backend_refuses_to_store_a_session() {
     let dir = tempdir().unwrap();
     let store = SessionStore::new("test-svc", dir.path().to_path_buf());
 
     let (did, pk) = did_key_from_seed(0x30);
     let (vta_did, _) = did_key_from_seed(0x40);
-    store.store_direct("file-k", &did, &pk, &vta_did).unwrap();
 
-    // The on-disk file is created.
-    let sessions_file = dir.path().join("sessions.json");
+    let err = store
+        .store_direct("file-k", &did, &pk, &vta_did)
+        .expect_err("a build with no session store must not persist a private key");
+    let msg = err.to_string();
     assert!(
-        sessions_file.exists(),
-        "FileBackend should create sessions.json"
+        msg.contains("VTI_SECURE_STORE"),
+        "the refusal must name the deliberate opt-out, got: {msg}"
     );
 
-    // Round-trip via a fresh store instance pointing at the same dir.
-    let store2 = SessionStore::new("test-svc", dir.path().to_path_buf());
-    let info = store2.loaded_session("file-k").unwrap();
-    assert_eq!(info.client_did, did);
-    assert_eq!(info.vta_did.as_deref(), Some(vta_did.as_str()));
-
-    store2.logout("file-k");
-    assert!(!store2.has_session("file-k"));
-    // A subsequent load on a fresh store sees the cleared state.
-    let store3 = SessionStore::new("test-svc", dir.path().to_path_buf());
-    assert!(store3.loaded_session("file-k").is_none());
+    assert!(
+        !dir.path().join("sessions.json").exists(),
+        "refusing to store must not leave a plaintext file behind"
+    );
 }
 
-#[cfg(not(any(feature = "keyring", feature = "azure-secrets")))]
+/// Pointing at a non-existent path must not panic; load returns None.
+#[cfg(not(any(
+    feature = "keyring",
+    feature = "azure-secrets",
+    feature = "config-session"
+)))]
 #[test]
-fn file_backend_load_on_missing_dir_returns_none() {
-    // Pointing at a non-existent path must not panic; load returns None.
+fn load_on_missing_dir_returns_none() {
     let store = SessionStore::new(
         "test-svc",
         std::path::PathBuf::from("/tmp/never-created-vta-sdk-tests-xyz"),
