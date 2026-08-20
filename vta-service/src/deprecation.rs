@@ -379,6 +379,30 @@ const SUPERSEDED: &[(&str, &str, &str, &str)] = &[
         "GET /webvh/servers/{id}/reconcile",
         trust_tasks::TASK_WEBVH_SERVERS_RECONCILE_0_1,
     ),
+    // ─── the Trust-Task endpoint itself ─────────────────────────────────
+    //
+    // `/api/trust-tasks` is not superseded by a *task* — it IS the task
+    // endpoint. What supersedes it is the conformant spelling served beside
+    // it, `POST /trust-tasks`, which is what the published HTTPS binding asks
+    // for. The successor URI below is the envelope type rather than an
+    // operation, because there is no operation: the successor is the same
+    // dispatcher at the path the binding actually uses.
+    //
+    // The successor is a PATH, not a task URI — every other row here names the
+    // task that replaced an operation, and this one names the endpoint that
+    // replaced a spelling. `Link: rel="successor-version"` takes a URI either
+    // way, so the header stays meaningful; the row is simply the one place in
+    // this table where the successor is not a `trusttasks.org` URI.
+    //
+    // Marked so the existing metric governs its retirement like everything
+    // else. It cannot go until deployed clients stop asking for it, and those
+    // clients are our own SDK until it takes the change beside this one.
+    (
+        "POST",
+        "/api/trust-tasks",
+        "POST /api/trust-tasks",
+        "/trust-tasks",
+    ),
     // ─── /services/* ────────────────────────────────────────────────────
     //
     // These twenty were the last block with no twin at all, which is why the

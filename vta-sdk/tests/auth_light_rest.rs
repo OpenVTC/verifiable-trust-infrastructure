@@ -547,7 +547,7 @@ async fn ensure_token_valid_refreshes_expired_access_token() {
     // `get_config` is the probe for "an authenticated call"; it now rides the
     // Trust Tasks HTTPS binding like every other typed operation.
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(wiremock::matchers::header(
             "authorization",
             "Bearer fresh-access",
@@ -644,7 +644,7 @@ async fn ensure_token_valid_full_reauth_when_refresh_expired() {
     // `get_config` is the probe for "an authenticated call"; it now rides the
     // Trust Tasks HTTPS binding like every other typed operation.
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(wiremock::matchers::header(
             "authorization",
             "Bearer reauth-access",
@@ -740,7 +740,7 @@ async fn ensure_token_valid_falls_through_when_refresh_fails() {
     // `get_config` is the probe for "an authenticated call"; it now rides the
     // Trust Tasks HTTPS binding like every other typed operation.
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(wiremock::matchers::header(
             "authorization",
             "Bearer fallback-access",

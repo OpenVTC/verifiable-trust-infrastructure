@@ -112,7 +112,7 @@ async fn mount_json(
         "payload": body,
     }));
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .respond_with(resp)
         .expect(1)
@@ -157,7 +157,7 @@ async fn mount_rest_status(
 
 async fn mount_status(server: &MockServer, _m: &str, _p: &str, status: u16) -> wiremock::MockGuard {
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .respond_with(ResponseTemplate::new(status).set_body_json(err_body("bad")))
         .expect(1)
@@ -452,7 +452,7 @@ async fn create_key_round_trip() {
 async fn list_keys_paginates_query_params() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .and(body_partial_json(json!({
             "type": TASK_KEYS_LIST,
@@ -713,7 +713,7 @@ async fn list_acl_no_filter() {
 async fn list_acl_with_context_query() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         // `scope`, not `context`: the task payload names the filter
         // differently from the query string it replaced.
@@ -739,7 +739,7 @@ async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
 
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .and(body_partial_json(json!({
             "payload": {"scope": "acme/eng", "direction": "subtree"}
@@ -755,7 +755,7 @@ async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
     server.reset().await;
 
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .and(body_partial_json(json!({"payload": {"scope": "acme/eng"}})))
         // An old VTA rejects an unknown field, so the default direction must
@@ -780,7 +780,7 @@ async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
 async fn swap_acl_sends_the_canonical_task_over_rest() {
     let server = MockServer::start().await;
     let _g = Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .and(wiremock::matchers::body_partial_json(json!({
             "type": "https://trusttasks.org/spec/acl/swap-key/0.1",
@@ -917,7 +917,7 @@ async fn update_acl_patches() {
 async fn delete_acl_returns_unit() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
         .expect(1)
@@ -1060,7 +1060,7 @@ async fn preview_delete_context_returns_summary() {
 async fn delete_context_with_force_query() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
         .expect(1)
@@ -1074,7 +1074,7 @@ async fn delete_context_with_force_query() {
 async fn delete_context_no_force_omits_query() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
         .expect(1)
@@ -1210,7 +1210,7 @@ async fn update_webvh_server_patches() {
 async fn remove_webvh_server_deletes() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
         .expect(1)
@@ -1291,7 +1291,7 @@ async fn create_did_webvh_posts() {
 async fn list_dids_webvh_filters_by_context() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .and(body_partial_json(json!({
             "type": TASK_WEBVH_DIDS_LIST,
@@ -1351,7 +1351,7 @@ async fn get_did_webvh_log_returns_log() {
 async fn delete_did_webvh_returns_unit() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
         .expect(1)
@@ -1369,7 +1369,7 @@ async fn delete_did_webvh_returns_unit() {
 async fn update_did_webvh_by_did_sends_the_canonical_task() {
     let server = MockServer::start().await;
     let _g = Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .and(wiremock::matchers::body_partial_json(json!({
             "type": "https://trusttasks.org/spec/vta/webvh/dids/update/1.0",
@@ -1471,7 +1471,7 @@ async fn rotate_did_webvh_keys_posts() {
 async fn list_audit_logs_paginates() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         // camelCase, per canonical `audit/list/0.1`. A snake_case key
         // here would be dropped by the handler's serde binding and the
@@ -1520,7 +1520,7 @@ async fn list_audit_logs_paginates() {
 async fn audit_list_percent_encodes_rfc3339_bounds() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .and(body_partial_json(json!({
             "payload": {"from": "2026-07-01T00:00:00Z"}
@@ -1669,7 +1669,7 @@ async fn update_did_template_puts() {
 async fn delete_did_template_returns_unit() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
         .expect(1)
@@ -1773,7 +1773,7 @@ async fn update_context_did_template_puts() {
 async fn delete_context_did_template_returns_unit() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
         .expect(1)
@@ -1843,7 +1843,7 @@ async fn fetch_context_secrets_walks_all_pages() {
         page1_keys.push(key_record_json(&format!("k{i}")));
     }
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .and(body_partial_json(json!({
             "type": TASK_KEYS_LIST,
@@ -1859,7 +1859,7 @@ async fn fetch_context_secrets_walks_all_pages() {
 
     // Page 2: 1 key
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .and(body_partial_json(json!({
             "type": TASK_KEYS_LIST,
@@ -1879,7 +1879,7 @@ async fn fetch_context_secrets_walks_all_pages() {
     // multicodec X25519 (0xec01) — `secret_from_key_response` accepts
     // any 32-byte key, so the value just needs to round-trip.
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .and(auth_match())
         .and(body_partial_json(
             json!({"type": TASK_SEEDS_EXPORT_MNEMONIC}),
@@ -1950,7 +1950,7 @@ async fn http_418_maps_to_other() {
 async fn malformed_error_body_falls_back_to_raw_text() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .respond_with(ResponseTemplate::new(500).set_body_string("not json"))
         .mount(&server)
         .await;
@@ -1972,7 +1972,7 @@ async fn oversized_error_body_is_truncated() {
     let server = MockServer::start().await;
     let huge = "x".repeat(10_000);
     Mock::given(method("POST"))
-        .and(path("/api/trust-tasks"))
+        .and(path("/trust-tasks"))
         .respond_with(ResponseTemplate::new(500).set_body_string(huge))
         .mount(&server)
         .await;

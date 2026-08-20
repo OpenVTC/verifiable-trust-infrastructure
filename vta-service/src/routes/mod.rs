@@ -394,6 +394,27 @@ fn build_api_router(trust_xff: bool, interval_secs: u64, burst: u32) -> OpenApiR
         // docs/05-design-notes/trust-task-uri-registry.md). Phase 2
         // scaffold; handlers register per Phase 3 slice. Not yet documented
         // in OpenAPI (dynamic envelope payload).
+        // Two paths, one dispatcher, and the second is the conformant one.
+        //
+        // The HTTPS binding POSTs to `<serviceEndpoint>/trust-tasks`, where
+        // `serviceEndpoint` is what the VTA advertises on its Trust-Task
+        // service entry. Every deployment example advertises an ORIGIN
+        // (`https://trust.example.com`), so a client built from the published
+        // binding asks for `/trust-tasks` and, until now, got a 404 — while
+        // `vta-sdk` worked only because it hardcodes the same `/api` prefix
+        // this service happens to serve. Two implementations agreeing by
+        // convention is not a contract; it just hides its absence from the
+        // people who wrote both ends.
+        //
+        // Serving both makes every existing advertisement conformant without
+        // an operator touching it: for an origin-advertising VTA the
+        // Trust-Task base IS the origin. `/api/trust-tasks` stays for deployed
+        // clients and is marked superseded, so the same metric that governs
+        // every other retired route decides when it goes.
+        .route(
+            "/trust-tasks",
+            post(crate::trust_tasks::dispatch_trust_task),
+        )
         .route(
             "/api/trust-tasks",
             post(crate::trust_tasks::dispatch_trust_task),

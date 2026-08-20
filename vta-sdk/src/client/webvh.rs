@@ -339,7 +339,7 @@ impl VtaClient {
     // the VTA rather than talking to the host directly: only the VTA can sign.
     //
     // These are trust-task-only by design — there is no bespoke REST route,
-    // and none is needed: `dispatch_trust_task` posts to `/api/trust-tasks`
+    // and none is needed: `dispatch_trust_task` posts to `/trust-tasks`
     // on a REST transport and rides the DIDComm envelope otherwise, so both
     // transports reach the same handler.
 
