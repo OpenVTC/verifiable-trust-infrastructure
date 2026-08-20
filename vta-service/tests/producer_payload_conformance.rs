@@ -87,14 +87,6 @@ const UNPUBLISHED: &[(&str, &str)] = &[
         "The canonical `keys/*` fold (#888) did not reach the seed family.",
     ),
     (
-        "https://trusttasks.org/spec/vta/webvh/dids/register-with-server/1.0",
-        "The webvh fold reached `dids/update` (#885) but not registration.",
-    ),
-    (
-        "https://trusttasks.org/spec/vta/webvh/dids/list/1.0",
-        "As `register-with-server` — same family, same unfolded half.",
-    ),
-    (
         "https://trusttasks.org/spec/vault/credentials/receive/0.1",
         "The `vault/*` fold published query/get/upsert/delete but not \
          `credentials/receive`.",

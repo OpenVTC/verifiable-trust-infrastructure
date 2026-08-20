@@ -437,7 +437,7 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        36,
+        14,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
@@ -454,7 +454,15 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
          trust-tasks-rs 0.6.1. It is the first entry this list has gained and \
          lost, and the round trip is the point — the number went up when a URI \
          was bound ahead of its spec, and came back down when the registry \
-         served it. That is the whole mechanism working, not an exception to it",
+         served it. That is the whole mechanism working, not an exception to it. \
+         \
+         36 → 14 is the largest single fall this list has taken: trust-tasks \
+         #240 specified the `vta/contexts/*` and `vta/webvh/*` families — 22 \
+         URIs — and taking trust-tasks-rs 0.11 made the registry serve them. \
+         The same move retired those 22 from UNSPECCED_DISPATCHED_URIS into \
+         real conformance witnesses, so they went from bound-but-unchecked to \
+         validated against a published schema on every request. What is left \
+         is mostly the seeds, backup and attestation families",
     ),
 ];
 

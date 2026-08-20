@@ -24,15 +24,23 @@ use serde::{Deserialize, Serialize};
 /// server — that is the serverless case (selected by the absence of a
 /// `server_id`, where the DID location comes from the `URL` itself).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(tag = "mode", content = "path", rename_all = "snake_case")]
+// camelCase, because the discriminator VALUE is part of the wire contract just
+// as much as a member name is. `vta/webvh/dids/create/1.0` spells the variants
+// `wellKnown` / `explicit` / `autoAssign`, and a `oneOf` keyed on `mode` refuses
+// `auto_assign` outright — it matches no branch, so the whole payload is
+// malformed rather than merely oddly-spelled. `alias` keeps the previous
+// spelling readable on intake for a producer that has not migrated.
+#[serde(tag = "mode", content = "path", rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum WebvhPathMode {
     /// Root DID at the host: resolves at `<host>/.well-known/did.jsonl`.
+    #[serde(alias = "well_known")]
     WellKnown,
     /// Operator-chosen path label: `<host>/<path>/did.jsonl`.
     Explicit(String),
     /// Let the hosting server allocate the path.
     #[default]
+    #[serde(alias = "auto_assign")]
     AutoAssign,
 }
 
@@ -354,8 +362,18 @@ mod webvh_path_mode_tests {
         );
         assert_eq!(
             serde_json::to_value(WebvhPathMode::AutoAssign).unwrap(),
-            serde_json::json!({ "mode": "auto_assign" })
+            serde_json::json!({ "mode": "autoAssign" })
         );
+
+        // Postel: the previous spelling still parses, so a producer that has
+        // not migrated keeps working. It is accepted, never emitted — the
+        // assertion above is what the wire actually carries.
+        let legacy: WebvhPathMode =
+            serde_json::from_value(serde_json::json!({ "mode": "auto_assign" })).unwrap();
+        assert_eq!(legacy, WebvhPathMode::AutoAssign);
+        let legacy: WebvhPathMode =
+            serde_json::from_value(serde_json::json!({ "mode": "well_known" })).unwrap();
+        assert_eq!(legacy, WebvhPathMode::WellKnown);
     }
 }
 

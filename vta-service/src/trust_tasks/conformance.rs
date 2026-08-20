@@ -1895,7 +1895,330 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ));
     }
 
+    // ─── vta/contexts + vta/webvh ────────────────────────────────────
+    //
+    // These 22 were dispatched against unpublished URIs until trust-tasks #240
+    // specified them, so `schema_index` could not resolve a schema and the
+    // sweep skipped them entirely — they sat in `UNSPECCED_DISPATCHED_URIS`
+    // instead. Taking trust-tasks-rs 0.11 makes them resolvable, so they move
+    // out of that debt list and into here, which is the whole point of the
+    // list: the debt shrinks monotonically as specs land.
+    //
+    // The witnesses are written as raw JSON rather than through the producer
+    // types on purpose. Two of those producer types were WRONG when the schemas
+    // arrived — `CreateDidWebvhRequest` emitted snake_case and `update_context`
+    // emitted `null` for unset members — so building a witness from them would
+    // have encoded the defect and passed. The schema is the authority here.
+    for (uri, req, resp) in webvh_and_context_witnesses() {
+        t.push((
+            uri,
+            Conformance::Checked(Witness {
+                request: req.0,
+                parse_request: req.1,
+                validate_request: req.2,
+                response: resp.0,
+                parse_response: resp.1,
+            }),
+        ));
+    }
+
     t
+}
+
+type ReqParts = (Value, ParseFn, ValidateFn);
+type RespParts = (Value, ParseFn);
+
+/// Witnesses for the families trust-tasks #240 published.
+///
+/// Each request carries exactly its schema's required members and nothing else:
+/// an over-specified witness leaves little unset and so would not exercise the
+/// `null`-for-absent class that has already shipped twice (#895, #919).
+fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
+    use specs::vta::{contexts as ctx, webvh as wv};
+
+    let context_record = || {
+        json!({
+            "id": "personal", "name": "Personal", "basePath": "personal",
+            "createdAt": "2026-08-19T09:00:00Z", "updatedAt": "2026-08-19T09:00:00Z"
+        })
+    };
+    let did_record = || {
+        json!({
+            "did": "did:webvh:QmScid:host.example:alice", "serverId": "prod",
+            "mnemonic": "alice", "scid": "QmScid", "contextId": "personal",
+            "portable": true, "logEntryCount": 4,
+            "createdAt": "2026-08-19T09:00:00Z", "updatedAt": "2026-08-19T09:00:00Z"
+        })
+    };
+    let server_record = || {
+        json!({
+            "id": "prod", "did": "did:web:host.example",
+            "createdAt": "2026-08-19T09:00:00Z", "updatedAt": "2026-08-19T09:00:00Z"
+        })
+    };
+    let did = "did:webvh:QmScid:host.example:alice";
+
+    vec![
+        (
+            uris::TASK_CONTEXTS_LIST_1_0,
+            (
+                json!({}),
+                parses::<ctx::list::v1_0::Payload>,
+                validates::<ctx::list::v1_0::Payload>,
+            ),
+            (
+                json!({ "contexts": [context_record()] }),
+                parses::<ctx::list::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_CONTEXTS_GET_1_0,
+            (
+                json!({ "id": "personal" }),
+                parses::<ctx::get::v1_0::Payload>,
+                validates::<ctx::get::v1_0::Payload>,
+            ),
+            (context_record(), parses::<ctx::get::v1_0::Response>),
+        ),
+        (
+            uris::TASK_CONTEXTS_CREATE_1_0,
+            (
+                json!({ "id": "personal", "name": "Personal" }),
+                parses::<ctx::create::v1_0::Payload>,
+                validates::<ctx::create::v1_0::Payload>,
+            ),
+            (context_record(), parses::<ctx::create::v1_0::Response>),
+        ),
+        (
+            uris::TASK_CONTEXTS_UPDATE_1_0,
+            (
+                json!({ "id": "personal" }),
+                parses::<ctx::update::v1_0::Payload>,
+                validates::<ctx::update::v1_0::Payload>,
+            ),
+            (context_record(), parses::<ctx::update::v1_0::Response>),
+        ),
+        (
+            uris::TASK_CONTEXTS_UPDATE_DID_1_0,
+            (
+                json!({ "id": "personal", "did": did }),
+                parses::<ctx::update_did::v1_0::Payload>,
+                validates::<ctx::update_did::v1_0::Payload>,
+            ),
+            (context_record(), parses::<ctx::update_did::v1_0::Response>),
+        ),
+        (
+            uris::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
+            (
+                json!({ "id": "personal" }),
+                parses::<ctx::preview_delete::v1_0::Payload>,
+                validates::<ctx::preview_delete::v1_0::Payload>,
+            ),
+            (
+                // These four are arrays of ids, not counts. The names read like
+                // tallies and do not behave like them — precisely what a witness
+                // written by hand gets wrong and the round-trip check exists to catch.
+                json!({ "id": "personal", "keys": ["k-1"], "webvhDids": [],
+                 "aclEntriesRemoved": ["did:key:zRemoved"], "aclEntriesUpdated": [] }),
+                parses::<ctx::preview_delete::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_CONTEXTS_DELETE_1_0,
+            (
+                json!({ "id": "personal" }),
+                parses::<ctx::delete::v1_0::Payload>,
+                validates::<ctx::delete::v1_0::Payload>,
+            ),
+            (
+                json!({ "id": "personal", "deleted": true }),
+                parses::<ctx::delete::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_DIDS_LIST_1_0,
+            (
+                json!({}),
+                parses::<wv::dids::list::v1_0::Payload>,
+                validates::<wv::dids::list::v1_0::Payload>,
+            ),
+            (
+                json!({ "dids": [did_record()] }),
+                parses::<wv::dids::list::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_DIDS_GET_1_0,
+            (
+                json!({ "did": did }),
+                parses::<wv::dids::get::v1_0::Payload>,
+                validates::<wv::dids::get::v1_0::Payload>,
+            ),
+            (
+                json!({ "record": did_record() }),
+                parses::<wv::dids::get::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_DIDS_CREATE_1_0,
+            (
+                json!({ "contextId": "personal" }),
+                parses::<wv::dids::create::v1_0::Payload>,
+                validates::<wv::dids::create::v1_0::Payload>,
+            ),
+            (
+                json!({ "did": did, "contextId": "personal", "scid": "QmScid", "portable": true,
+                  "signingKeyId": "k-sign", "kaKeyId": "k-ka", "preRotationKeyCount": 2,
+                  "createdAt": "2026-08-19T09:00:00Z" }),
+                parses::<wv::dids::create::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_DIDS_DELETE_1_0,
+            (
+                json!({ "did": did }),
+                parses::<wv::dids::delete::v1_0::Payload>,
+                validates::<wv::dids::delete::v1_0::Payload>,
+            ),
+            (
+                json!({ "did": did, "deleted": true }),
+                parses::<wv::dids::delete::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
+            (
+                json!({ "did": did }),
+                parses::<wv::dids::rotate_keys::v1_0::Payload>,
+                validates::<wv::dids::rotate_keys::v1_0::Payload>,
+            ),
+            (
+                json!({ "did": did, "newVersionId": "2-zVer", "newScid": "QmScid", "newLogEntry": "{}",
+                  "updateKeysCount": 1, "preRotationKeyCount": 2, "serverless": false }),
+                parses::<wv::dids::rotate_keys::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
+            (
+                json!({ "did": did, "serverId": "prod" }),
+                parses::<wv::dids::register_with_server::v1_0::Payload>,
+                validates::<wv::dids::register_with_server::v1_0::Payload>,
+            ),
+            (
+                json!({ "did": did, "serverId": "prod", "logEntryCount": 4 }),
+                parses::<wv::dids::register_with_server::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_SERVERS_LIST_1_0,
+            (
+                json!({}),
+                parses::<wv::servers::list::v1_0::Payload>,
+                validates::<wv::servers::list::v1_0::Payload>,
+            ),
+            (
+                json!({ "servers": [server_record()] }),
+                parses::<wv::servers::list::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_SERVERS_REGISTER_1_0,
+            (
+                json!({ "id": "prod" }),
+                parses::<wv::servers::register::v1_0::Payload>,
+                validates::<wv::servers::register::v1_0::Payload>,
+            ),
+            (
+                server_record(),
+                parses::<wv::servers::register::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_SERVERS_REMOVE_1_0,
+            (
+                json!({ "id": "prod" }),
+                parses::<wv::servers::remove::v1_0::Payload>,
+                validates::<wv::servers::remove::v1_0::Payload>,
+            ),
+            (
+                json!({ "id": "prod", "removed": true }),
+                parses::<wv::servers::remove::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_AGENT_NAME_SET_1_0,
+            (
+                json!({ "did": did, "name": "alice" }),
+                parses::<wv::agent_name::set::v1_0::Payload>,
+                validates::<wv::agent_name::set::v1_0::Payload>,
+            ),
+            (
+                json!({ "did": did, "name": "alice", "enabled": true }),
+                parses::<wv::agent_name::set::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_AGENT_NAME_REMOVE_1_0,
+            (
+                json!({ "did": did, "name": "alice" }),
+                parses::<wv::agent_name::remove::v1_0::Payload>,
+                validates::<wv::agent_name::remove::v1_0::Payload>,
+            ),
+            (
+                json!({ "did": did, "name": "alice", "enabled": false }),
+                parses::<wv::agent_name::remove::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_AGENT_NAME_LIST_1_0,
+            (
+                json!({ "did": did }),
+                parses::<wv::agent_name::list::v1_0::Payload>,
+                validates::<wv::agent_name::list::v1_0::Payload>,
+            ),
+            (
+                json!({ "did": did, "names": [{ "name": "alice", "enabled": true }] }),
+                parses::<wv::agent_name::list::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_AGENT_NAME_CHECK_1_0,
+            (
+                json!({ "did": did, "name": "alice" }),
+                parses::<wv::agent_name::check::v1_0::Payload>,
+                validates::<wv::agent_name::check::v1_0::Payload>,
+            ),
+            (
+                json!({ "name": "alice", "domain": "host.example", "available": true, "reserved": false }),
+                parses::<wv::agent_name::check::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_AGENT_NAME_ENABLE_1_0,
+            (
+                json!({ "did": did, "name": "alice" }),
+                parses::<wv::agent_name::enable::v1_0::Payload>,
+                validates::<wv::agent_name::enable::v1_0::Payload>,
+            ),
+            (
+                json!({ "did": did, "name": "alice", "enabled": true }),
+                parses::<wv::agent_name::enable::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_AGENT_NAME_DISABLE_1_0,
+            (
+                json!({ "did": did, "name": "alice" }),
+                parses::<wv::agent_name::disable::v1_0::Payload>,
+                validates::<wv::agent_name::disable::v1_0::Payload>,
+            ),
+            (
+                json!({ "did": did, "name": "alice", "enabled": false }),
+                parses::<wv::agent_name::disable::v1_0::Response>,
+            ),
+        ),
+    ]
 }
 
 // ─── The sweep ───────────────────────────────────────────────────────────

@@ -209,7 +209,11 @@ impl CreateContextRequest {
     }
 }
 
+/// Sent as the `vta/contexts/update/1.0` payload, so it is bound by that
+/// schema's lowerCamelCase members — `contextPolicy`, not `context_policy`.
+/// Serialize-only: nothing reads this back, so it needs no intake alias.
 #[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateContextRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -676,7 +680,13 @@ pub struct UpdateWebvhServerRequest {
 
 // ── WebVH DID types ─────────────────────────────────────────────────
 
+/// Sent as the `vta/webvh/dids/create/1.0` payload. That schema was published
+/// in trust-tasks #240 and this struct predates it, which is why it carried
+/// snake_case members the agent would have rejected as `malformedRequest`;
+/// client-side validation only started catching it once trust-tasks-rs 0.11
+/// brought the schema into the index.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateDidWebvhRequest {
     pub context_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
