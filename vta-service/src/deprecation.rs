@@ -47,10 +47,16 @@ pub fn superseded(route: &'static str, successor: &'static str) -> HeaderMap {
 // `PATCH /webvh/servers/{id}` points at `servers/register`, because #850
 // folded add and update into that one task.
 //
-// A route absent from this table is absent on purpose. `/services/*` has no
-// Trust-Task twin at all (it needs specs first), and `/auth`, `/bootstrap`,
+// A route absent from this table is absent on purpose: `/auth`, `/bootstrap`,
 // `/backup` blob streaming, `/keys/import/wrapping-key`, `/metrics` and
-// `/.well-known` are genuinely REST and are not going anywhere.
+// `/.well-known` are genuinely REST and are not going anywhere. `/services/*`
+// used to be listed here too, as the one block with no twin at all; it has one
+// now, and its entries are at the end of this table.
+/// The table, for tests that need to assert on its contents.
+pub fn superseded_table() -> &'static [(&'static str, &'static str, &'static str, &'static str)] {
+    SUPERSEDED
+}
+
 const SUPERSEDED: &[(&str, &str, &str, &str)] = &[
     ("GET", "/acl", "GET /acl", trust_tasks::TASK_ACL_LIST_0_1),
     ("POST", "/acl", "POST /acl", trust_tasks::TASK_ACL_GRANT_0_1),
@@ -372,6 +378,139 @@ const SUPERSEDED: &[(&str, &str, &str, &str)] = &[
         "/webvh/servers/{id}/reconcile",
         "GET /webvh/servers/{id}/reconcile",
         trust_tasks::TASK_WEBVH_SERVERS_RECONCILE_0_1,
+    ),
+    // ─── /services/* ────────────────────────────────────────────────────
+    //
+    // These twenty were the last block with no twin at all, which is why the
+    // note above used to exclude them. trust-tasks #243 specified the family
+    // and the handlers landed alongside this, so they are superseded like
+    // everything else — and the metric now covers the whole retirement
+    // candidate set rather than most of it.
+    //
+    // Four verbs collapse across four transports because the task is
+    // parameterised by `service`: sixteen routes point at four tasks. The two
+    // drain routes share a path and split on method — GET lists what is
+    // draining, POST cancels a drain — which is why they map to different
+    // successors despite the identical path.
+    (
+        "GET",
+        "/services",
+        "GET /services",
+        trust_tasks::TASK_SERVICES_LIST_1_0,
+    ),
+    (
+        "GET",
+        "/services/didcomm",
+        "GET /services/didcomm",
+        trust_tasks::TASK_SERVICES_GET_1_0,
+    ),
+    (
+        "GET",
+        "/services/didcomm/drain",
+        "GET /services/didcomm/drain",
+        trust_tasks::TASK_SERVICES_DRAIN_LIST_1_0,
+    ),
+    (
+        "POST",
+        "/services/didcomm/disable",
+        "POST /services/didcomm/disable",
+        trust_tasks::TASK_SERVICES_DISABLE_1_0,
+    ),
+    (
+        "POST",
+        "/services/didcomm/drain",
+        "POST /services/didcomm/drain",
+        trust_tasks::TASK_SERVICES_DRAIN_CANCEL_1_0,
+    ),
+    (
+        "POST",
+        "/services/didcomm/enable",
+        "POST /services/didcomm/enable",
+        trust_tasks::TASK_SERVICES_ENABLE_1_0,
+    ),
+    (
+        "POST",
+        "/services/didcomm/rollback",
+        "POST /services/didcomm/rollback",
+        trust_tasks::TASK_SERVICES_ROLLBACK_1_0,
+    ),
+    (
+        "POST",
+        "/services/didcomm/update",
+        "POST /services/didcomm/update",
+        trust_tasks::TASK_SERVICES_UPDATE_1_0,
+    ),
+    (
+        "POST",
+        "/services/rest/disable",
+        "POST /services/rest/disable",
+        trust_tasks::TASK_SERVICES_DISABLE_1_0,
+    ),
+    (
+        "POST",
+        "/services/rest/enable",
+        "POST /services/rest/enable",
+        trust_tasks::TASK_SERVICES_ENABLE_1_0,
+    ),
+    (
+        "POST",
+        "/services/rest/rollback",
+        "POST /services/rest/rollback",
+        trust_tasks::TASK_SERVICES_ROLLBACK_1_0,
+    ),
+    (
+        "POST",
+        "/services/rest/update",
+        "POST /services/rest/update",
+        trust_tasks::TASK_SERVICES_UPDATE_1_0,
+    ),
+    (
+        "POST",
+        "/services/tsp/disable",
+        "POST /services/tsp/disable",
+        trust_tasks::TASK_SERVICES_DISABLE_1_0,
+    ),
+    (
+        "POST",
+        "/services/tsp/enable",
+        "POST /services/tsp/enable",
+        trust_tasks::TASK_SERVICES_ENABLE_1_0,
+    ),
+    (
+        "POST",
+        "/services/tsp/rollback",
+        "POST /services/tsp/rollback",
+        trust_tasks::TASK_SERVICES_ROLLBACK_1_0,
+    ),
+    (
+        "POST",
+        "/services/tsp/update",
+        "POST /services/tsp/update",
+        trust_tasks::TASK_SERVICES_UPDATE_1_0,
+    ),
+    (
+        "POST",
+        "/services/webauthn/disable",
+        "POST /services/webauthn/disable",
+        trust_tasks::TASK_SERVICES_DISABLE_1_0,
+    ),
+    (
+        "POST",
+        "/services/webauthn/enable",
+        "POST /services/webauthn/enable",
+        trust_tasks::TASK_SERVICES_ENABLE_1_0,
+    ),
+    (
+        "POST",
+        "/services/webauthn/rollback",
+        "POST /services/webauthn/rollback",
+        trust_tasks::TASK_SERVICES_ROLLBACK_1_0,
+    ),
+    (
+        "POST",
+        "/services/webauthn/update",
+        "POST /services/webauthn/update",
+        trust_tasks::TASK_SERVICES_UPDATE_1_0,
     ),
 ];
 
