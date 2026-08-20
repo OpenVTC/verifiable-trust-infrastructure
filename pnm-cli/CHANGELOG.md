@@ -2,6 +2,35 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.12.8](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.12.7...pnm-cli-v0.12.8) — 2026-08-20
+
+
+### Documentation
+
+- **pnm-cli**: Document the tsp and azure-secrets build features ([#1016](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1016))
+
+The README's Feature Flags table listed two of the crate's four features.
+  Both omissions changed what an operator ends up with:
+
+  `tsp` is a default (`default = ["keyring", "tsp"]`) and gates the round-trip
+  TSP probe in `pnm health`. The keyring-free build the README recommended,
+  `--no-default-features --features config-session`, silently dropped it, after
+  which `pnm health` reports an advertised TSPTransport service without ever
+  exercising it. The build examples now re-add `tsp` and say why.
+
+  `azure-secrets` is off by default and inert unless `keyring` is also off --
+  the backend's Azure arm is gated `not(feature = "keyring")` -- so adding it to
+  a default build selects nothing and reports no error.
+
+  The section also claimed "at least one of keyring or config-session must be
+  enabled". Nothing enforces that. With neither, the backend falls through to
+  the plaintext file store and warns on every access, which is a materially
+  different guarantee from the build-time gate the sentence implied. Replaced
+  with the real selection order, keyring -> azure-secrets -> config-session ->
+  plaintext fallback, and the warning verbatim.
+
+
+
 ## [0.12.7](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.12.6...pnm-cli-v0.12.7) — 2026-08-18
 
 

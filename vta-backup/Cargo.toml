@@ -2,7 +2,7 @@
 name = "vta-backup"
 description = "VTA backup/restore subsystem — encrypted full-state export/import, the sealed backup-bundle store, and its TTL sweeper"
 readme = "README.md"
-version = "0.1.11"
+version = "0.1.12"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -27,9 +27,9 @@ webvh = ["vta-keyspaces/webvh"]
 tee = ["vta-config/tee", "dep:async-trait"]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.12" }
-vta-sdk = { path = "../vta-sdk", version = "0.25" }
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
+vti-common = { path = "../vti-common", version = "0.13" }
+vta-sdk = { path = "../vta-sdk", version = "0.26" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.2" }
 vta-keys = { path = "../vta-keys", version = "0.2" }
 vta-config = { path = "../vta-config", version = "0.3" }
 vta-support = { path = "../vta-support", version = "0.2" }

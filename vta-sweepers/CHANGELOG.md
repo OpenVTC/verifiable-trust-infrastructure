@@ -2,6 +2,29 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.2.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sweepers-v0.1.4...vta-sweepers-v0.2.0) — 2026-08-20
+
+
+### Added
+
+- **vta**: Dedup keyed Trust Tasks on an idempotency key ([#1011](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1011))
+
+A client that retries a timed-out request is doing the right thing. The
+  dangerous case is the one where the VTA processed it and only the reply
+  was lost, because the retry then produces a second durable effect —
+  `webvh/dids/create` being the sharp example, where auto-assigned paths
+  mean the retry mints a *different* DID and the first stays published
+  with nobody holding a reference to it.
+
+  The existing `trust_tasks::replay` layer cannot catch that. It keys on
+  `(actor, envelope-id)` and every SDK path mints a fresh `urn:uuid:` per
+  attempt, so a genuine retry sails past it. Its own module docs name this
+  work as the deliberate follow-up.
+
+  ## Built on the store that was already here
+
+
+
 ## [0.1.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sweepers-v0.1.3...vta-sweepers-v0.1.4) — 2026-08-18
 
 

@@ -2,6 +2,48 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.13.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.12.2...vti-common-v0.13.0) — 2026-08-20
+
+
+### Added
+
+- **vta**: Dedup keyed Trust Tasks on an idempotency key ([#1011](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1011))
+
+A client that retries a timed-out request is doing the right thing. The
+  dangerous case is the one where the VTA processed it and only the reply
+  was lost, because the retry then produces a second durable effect —
+  `webvh/dids/create` being the sharp example, where auto-assigned paths
+  mean the retry mints a *different* DID and the first stays published
+  with nobody holding a reference to it.
+
+  The existing `trust_tasks::replay` layer cannot catch that. It keys on
+  `(actor, envelope-id)` and every SDK path mints a fresh `urn:uuid:` per
+  attempt, so a genuine retry sails past it. Its own module docs name this
+  work as the deliberate follow-up.
+
+  ## Built on the store that was already here
+
+
+
+### Fixed
+
+- **tee**: Bootstrap 410 and vsock enotconn ([#1003](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1003))
+
+* fix(tee): retry transient ENOTCONN on first vsock config-overlay read
+
+  tokio-vsock can report a stream connected just before Nitro finishes the
+  nonblocking handshake, so the very first read on a fresh vsock:5800
+  connection to the parent config server can return ENOTCONN even though
+  the parent is listening and ready. Retry only that specific transient
+  error kind with a short delay; any other I/O error still fails closed
+  immediately, and the existing overall READ_TIMEOUT deadline still
+  bounds the whole fetch.
+
+  Adds positive (retries ENOTCONN then succeeds) and negative (does not
+  retry PermissionDenied) unit tests against the inner read loop.
+
+
+
 ## [0.12.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.12.1...vti-common-v0.12.2) — 2026-08-18
 
 

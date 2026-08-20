@@ -2,7 +2,7 @@
 name = "vta-vault"
 description = "VTA holder credential vault — storage, query, receive/verify, present, and status refresh for credentials a holder stores on a VTA"
 readme = "README.md"
-version = "0.3.1"
+version = "0.3.2"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -32,9 +32,9 @@ bbs = ["dep:affinidi-bbs", "affinidi-data-integrity/bbs-2023"]
 webvh = ["dep:reqwest", "vta-sdk/client"]
 
 [dependencies]
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
-vti-common = { path = "../vti-common", version = "0.12", features = ["encryption"] }
-vta-sdk = { path = "../vta-sdk", version = "0.25", features = ["didcomm", "sealed-transfer"] }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.2" }
+vti-common = { path = "../vti-common", version = "0.13", features = ["encryption"] }
+vta-sdk = { path = "../vta-sdk", version = "0.26", features = ["didcomm", "sealed-transfer"] }
 affinidi-crypto = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }
 affinidi-data-integrity = { workspace = true }
