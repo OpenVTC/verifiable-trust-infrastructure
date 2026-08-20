@@ -40,6 +40,37 @@
 //! injected) after the good case passes, and the drifted form MUST be
 //! rejected — a schema that accepts anything cannot produce a green row.
 //!
+//! ## Typed bodies, or raw JSON
+//!
+//! Witnesses are written **typed when the spec preceded the type, raw JSON
+//! when it did not — and the second case is a debt**, not a style choice.
+//!
+//! A typed witness is the stronger form: it proves *our types* conform,
+//! rather than that someone can hand-write a body the schema accepts. But it
+//! only proves that when the type did not derive its shape from the same
+//! misreading that produced the body. If it did, the witness asserts the code
+//! agrees with itself and passes green over the defect.
+//!
+//! That is not hypothetical. When the `vta/contexts/*` and `vta/webvh/*`
+//! schemas arrived (#1015), two of the producer types were already wrong —
+//! `create_did_webvh` sent `context_id` where the schema names `contextId`,
+//! and `update_context` dropped `contextPolicy` on the floor. Witnesses built
+//! from those types would have encoded both defects and reported conformance.
+//! So the 22 went in as raw JSON, against the schema as the authority.
+//!
+//! It is the same principle `scripts/check-bindings-conformance.mjs` applies
+//! one layer down in `dtgwg-trust-tasks-tf`, where the binding rules are
+//! deliberately re-implemented rather than imported from the generator: a
+//! check that shares a source with the thing it checks has stopped being a
+//! check. Its header makes the trade explicit — a re-implementation can be
+//! wrong, but a wrong one disagrees loudly, where a shared one agrees
+//! silently.
+//!
+//! Which makes the retro-fit a real step rather than tidying. Converting those
+//! 22 to typed bodies turns "the schema accepts a shape someone wrote" into
+//! "our types conform" — and it is sound only now that #1015 has corrected the
+//! types. Done earlier it would have laundered the bugs into a green row.
+//!
 //! ## When this fails after a rebase
 //!
 //! Sibling consolidation streams are rebinding URIs. A newly bound published
