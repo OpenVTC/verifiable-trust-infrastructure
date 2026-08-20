@@ -1966,7 +1966,7 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
         })
     };
 
-    vec![
+    let mut v: Vec<(&'static str, ReqParts, RespParts)> = vec![
         (
             uris::TASK_CONTEXTS_LIST_1_0,
             (
@@ -2226,114 +2226,123 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                 parses::<wv::agent_name::disable::v1_0::Response>,
             ),
         ),
-        // ─── vta/services ────────────────────────────────────────
-        //
-        // `enable`/`update` carry only the members their kind needs — a `rest`
-        // witness setting `mediatorDid` would be malformed, which is the
-        // discriminated union doing its job.
-        (
-            uris::TASK_SERVICES_LIST_1_0,
+    ];
+
+    // ─── vta/services ────────────────────────────────────────────────
+    //
+    // Extended rather than inlined because these are gated with their dispatch
+    // entries. The sweep derives its census from what is actually dispatched and
+    // requires the two to agree in BOTH directions, so a witness for a task that
+    // is configured out fails it exactly as a missing one does.
+    #[cfg(feature = "webvh")]
+    {
+        // Typed explicitly: without it the array literal takes its element type
+        // from the first entry, and each `parses::<T>` is a distinct fn item
+        // rather than the `ParseFn` pointer the alias expects.
+        let services: [(&'static str, ReqParts, RespParts); 8] = [
             (
-                json!({}),
-                parses::<svc::list::v1_0::Payload>,
-                validates::<svc::list::v1_0::Payload>,
+                uris::TASK_SERVICES_LIST_1_0,
+                (
+                    json!({}),
+                    parses::<svc::list::v1_0::Payload>,
+                    validates::<svc::list::v1_0::Payload>,
+                ),
+                (
+                    json!({ "services": [{ "kind": "rest", "enabled": true, "url": "https://vta.example/api" }] }),
+                    parses::<svc::list::v1_0::Response>,
+                ),
             ),
             (
-                json!({ "services": [{ "kind": "rest", "enabled": true, "url": "https://vta.example/api" }] }),
-                parses::<svc::list::v1_0::Response>,
-            ),
-        ),
-        (
-            uris::TASK_SERVICES_GET_1_0,
-            (
-                json!({ "service": "didcomm" }),
-                parses::<svc::get::v1_0::Payload>,
-                validates::<svc::get::v1_0::Payload>,
-            ),
-            (
-                json!({ "state": { "kind": "didcomm", "enabled": true, "mediatorDid": "did:web:mediator.example" } }),
-                parses::<svc::get::v1_0::Response>,
-            ),
-        ),
-        (
-            uris::TASK_SERVICES_ENABLE_1_0,
-            (
-                json!({ "service": "rest", "config": { "url": "https://vta.example/api" } }),
-                parses::<svc::enable::v1_0::Payload>,
-                validates::<svc::enable::v1_0::Payload>,
+                uris::TASK_SERVICES_GET_1_0,
+                (
+                    json!({ "service": "didcomm" }),
+                    parses::<svc::get::v1_0::Payload>,
+                    validates::<svc::get::v1_0::Payload>,
+                ),
+                (
+                    json!({ "state": { "kind": "didcomm", "enabled": true, "mediatorDid": "did:web:mediator.example" } }),
+                    parses::<svc::get::v1_0::Response>,
+                ),
             ),
             (
-                json!({ "result": mutation_result() }),
-                parses::<svc::enable::v1_0::Response>,
-            ),
-        ),
-        (
-            uris::TASK_SERVICES_UPDATE_1_0,
-            (
-                json!({ "service": "tsp", "config": { "mediatorDid": "did:web:mediator.example" } }),
-                parses::<svc::update::v1_0::Payload>,
-                validates::<svc::update::v1_0::Payload>,
-            ),
-            (
-                json!({ "result": mutation_result() }),
-                parses::<svc::update::v1_0::Response>,
-            ),
-        ),
-        (
-            uris::TASK_SERVICES_DISABLE_1_0,
-            // No `drainTtlSecs`: absent takes the agent's default, and absent is
-            // the case a caller reaches for first.
-            (
-                json!({ "service": "didcomm" }),
-                parses::<svc::disable::v1_0::Payload>,
-                validates::<svc::disable::v1_0::Payload>,
+                uris::TASK_SERVICES_ENABLE_1_0,
+                (
+                    json!({ "service": "rest", "config": { "url": "https://vta.example/api" } }),
+                    parses::<svc::enable::v1_0::Payload>,
+                    validates::<svc::enable::v1_0::Payload>,
+                ),
+                (
+                    json!({ "result": mutation_result() }),
+                    parses::<svc::enable::v1_0::Response>,
+                ),
             ),
             (
-                json!({ "result": mutation_result() }),
-                parses::<svc::disable::v1_0::Response>,
-            ),
-        ),
-        (
-            uris::TASK_SERVICES_ROLLBACK_1_0,
-            (
-                json!({ "service": "rest" }),
-                parses::<svc::rollback::v1_0::Payload>,
-                validates::<svc::rollback::v1_0::Payload>,
-            ),
-            // `noOp` deliberately: it is the arm with no `logEntryVersionId`, so
-            // it is the one that breaks if the result ever starts requiring it.
-            (
-                json!({ "result": { "kind": "noOp", "serverless": false } }),
-                parses::<svc::rollback::v1_0::Response>,
-            ),
-        ),
-        (
-            uris::TASK_SERVICES_DRAIN_LIST_1_0,
-            (
-                json!({}),
-                parses::<svc::drain::list::v1_0::Payload>,
-                validates::<svc::drain::list::v1_0::Payload>,
+                uris::TASK_SERVICES_UPDATE_1_0,
+                (
+                    json!({ "service": "tsp", "config": { "mediatorDid": "did:web:mediator.example" } }),
+                    parses::<svc::update::v1_0::Payload>,
+                    validates::<svc::update::v1_0::Payload>,
+                ),
+                (
+                    json!({ "result": mutation_result() }),
+                    parses::<svc::update::v1_0::Response>,
+                ),
             ),
             (
-                json!({ "entries": [{ "mediatorDid": "did:web:old-mediator.example",
-                                "endpoint": "https://old-mediator.example/didcomm",
-                                "drainsUntil": "2026-08-20T21:00:00Z" }] }),
-                parses::<svc::drain::list::v1_0::Response>,
-            ),
-        ),
-        (
-            uris::TASK_SERVICES_DRAIN_CANCEL_1_0,
-            (
-                json!({ "mediatorDid": "did:web:old-mediator.example" }),
-                parses::<svc::drain::cancel::v1_0::Payload>,
-                validates::<svc::drain::cancel::v1_0::Payload>,
+                uris::TASK_SERVICES_DISABLE_1_0,
+                (
+                    json!({ "service": "didcomm" }),
+                    parses::<svc::disable::v1_0::Payload>,
+                    validates::<svc::disable::v1_0::Payload>,
+                ),
+                (
+                    json!({ "result": mutation_result() }),
+                    parses::<svc::disable::v1_0::Response>,
+                ),
             ),
             (
-                json!({ "mediatorDid": "did:web:old-mediator.example" }),
-                parses::<svc::drain::cancel::v1_0::Response>,
+                uris::TASK_SERVICES_ROLLBACK_1_0,
+                (
+                    json!({ "service": "rest" }),
+                    parses::<svc::rollback::v1_0::Payload>,
+                    validates::<svc::rollback::v1_0::Payload>,
+                ),
+                (
+                    json!({ "result": { "kind": "noOp", "serverless": false } }),
+                    parses::<svc::rollback::v1_0::Response>,
+                ),
             ),
-        ),
-    ]
+            (
+                uris::TASK_SERVICES_DRAIN_LIST_1_0,
+                (
+                    json!({}),
+                    parses::<svc::drain::list::v1_0::Payload>,
+                    validates::<svc::drain::list::v1_0::Payload>,
+                ),
+                (
+                    json!({ "entries": [{ "mediatorDid": "did:web:old-mediator.example",
+                                    "endpoint": "https://old-mediator.example/didcomm",
+                                    "drainsUntil": "2026-08-20T21:00:00Z" }] }),
+                    parses::<svc::drain::list::v1_0::Response>,
+                ),
+            ),
+            (
+                uris::TASK_SERVICES_DRAIN_CANCEL_1_0,
+                (
+                    json!({ "mediatorDid": "did:web:old-mediator.example" }),
+                    parses::<svc::drain::cancel::v1_0::Payload>,
+                    validates::<svc::drain::cancel::v1_0::Payload>,
+                ),
+                (
+                    json!({ "mediatorDid": "did:web:old-mediator.example" }),
+                    parses::<svc::drain::cancel::v1_0::Response>,
+                ),
+            ),
+        ];
+        v.extend(services);
+    }
+
+    v
 }
 
 // ─── The sweep ───────────────────────────────────────────────────────────
