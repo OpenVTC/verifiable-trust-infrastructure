@@ -69,7 +69,32 @@ pub fn trigger_restart(restart_tx: &watch::Sender<bool>) {
     });
 }
 
+/// Shared handle graph for every route, task handler and sweeper.
+///
+/// **`#[non_exhaustive]` is load-bearing, not decoration.** This struct is 46
+/// public fields with no private field and no constructor guard, so before
+/// this attribute any crate could write an `AppState { .. }` literal — which
+/// made *adding a field* a source-breaking change under
+/// `constructible_struct_adds_field`. Twenty-nine commits have added at least
+/// one field to it; one added five.
+///
+/// That break was never reported, because `cargo semver-checks` cannot build
+/// this crate's baseline (its published dependency ranges resolve two
+/// `trust-tasks-rs` versions into one graph) and a crate whose baseline fails
+/// to build is silently not compared. Version numbers stayed correct anyway
+/// — at 0.x a break needs a minor bump and conventional commits already force
+/// one for `feat:`, which every field addition since release-plz happened to
+/// be. Both of those are coincidences: `refactor:`/`fix:`/`perf:`/`chore:`
+/// yield a patch and can add fields just as easily (c93c7b57 added five under
+/// `refactor:`), and the alignment disappears entirely at 1.0, where a break
+/// needs a major and `feat:` gives only a minor.
+///
+/// Marking it non-exhaustive closes the class permanently rather than relying
+/// on any of that holding. Construction inside this crate is unaffected —
+/// both sites (`build_state` below and `test_support`) are in-crate, and
+/// `MockVta` is the supported entry point for consumers.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct AppState {
     pub keys_ks: KeyspaceHandle,
     pub sessions_ks: KeyspaceHandle,
