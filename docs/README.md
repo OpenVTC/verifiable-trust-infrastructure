@@ -169,6 +169,11 @@ are implementer-facing rather than operator-facing.
 - **[Runtime service management](05-design-notes/runtime-service-management.md)** —
   design notes for the VTA's enable/disable/migrate REST + DIDComm
   surface.
+- **[Retry and idempotency](05-design-notes/retry-and-idempotency.md)** —
+  which layer owns retry, how a Trust Task is classified for what a
+  lost reply costs it, and the `idempotencyKey` contract.
+  **Read this before adding a retry loop over a `VtaClient` call, or
+  adding a new Trust Task.**
 - **[Store migration](05-design-notes/store-migration.md)** — the
   enum-to-trait migration path for storage backends.
 - **[PNM setup with deferred VTA DID](05-design-notes/pnm-setup-deferred-vta-did.md)** —
