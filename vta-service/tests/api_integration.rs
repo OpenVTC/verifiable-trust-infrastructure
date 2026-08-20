@@ -4210,3 +4210,65 @@ fn the_two_drain_routes_split_on_method_not_path() {
         "a read and a destructive cancel are not the same successor"
     );
 }
+
+// ─── the Trust-Task endpoint contract ──────────────────────────────────────
+
+#[tokio::test]
+async fn both_trust_task_paths_reach_the_same_dispatcher() {
+    // `POST /trust-tasks` is what the published HTTPS binding asks for:
+    // `<serviceEndpoint>/trust-tasks`, where serviceEndpoint is the Trust-Task
+    // base a VTA advertises. Every deployment example advertises an origin, so
+    // the binding's request lands unprefixed — and until this route existed it
+    // got a 404 while `vta-sdk` worked, because both ends of ours hardcoded
+    // `/api`. Two implementations agreeing by convention is not a contract.
+    //
+    // Both must reach the same dispatcher, and must fail the same way when
+    // unauthenticated: a difference in either is a difference in behaviour
+    // between a conformant client and ours.
+    let (app, _ctx) = TestApp::new().await;
+    let body = r#"{"id":"urn:uuid:00000000-0000-4000-8000-000000000000","type":"urn:test:none","payload":{}}"#;
+
+    let mut seen = Vec::new();
+    for path in ["/trust-tasks", "/api/trust-tasks"] {
+        let req = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let (status, _) = app.request(req).await;
+        assert_ne!(
+            status,
+            StatusCode::NOT_FOUND,
+            "{path} must be served — the binding uses the unprefixed spelling"
+        );
+        seen.push(status);
+    }
+    assert_eq!(
+        seen[0], seen[1],
+        "the two spellings must behave identically"
+    );
+}
+
+#[tokio::test]
+async fn the_legacy_trust_task_path_advertises_the_conformant_one() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
+    let body = r#"{"id":"urn:uuid:00000000-0000-4000-8000-000000000000","type":"urn:test:none","payload":{}}"#;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/trust-tasks")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    let (_status, headers) = request_headers(&app, req).await;
+    // Only a successful response is marked — a rejected envelope says nothing
+    // about a client depending on the path.
+    if let Some(link) = headers.get("link") {
+        assert!(
+            link.to_str().unwrap().contains("/trust-tasks"),
+            "the legacy path must name the conformant one as its successor"
+        );
+    }
+}

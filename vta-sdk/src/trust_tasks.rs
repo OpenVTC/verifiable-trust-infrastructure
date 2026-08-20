@@ -2,7 +2,7 @@
 //!
 //! One `pub const` per registered URI; grep `TASK_*` to enumerate the
 //! full wire surface. Each URI is routed both on REST (via the
-//! trust-task envelope's `type` field on `POST /api/trust-tasks` or
+//! trust-task envelope's `type` field on `POST /trust-tasks` or
 //! a dedicated unauth route) and on DIDComm (via the inbound message
 //! `type`).
 //!
@@ -1581,7 +1581,7 @@ pub const ALL_URIS: &[&str] = &[
 ];
 
 /// The subset of [`ALL_URIS`] served by **dedicated REST routes** rather than
-/// the `/api/trust-tasks` dispatcher: pre-login auth (challenge / authenticate /
+/// the `/trust-tasks` dispatcher: pre-login auth (challenge / authenticate /
 /// refresh), passkey-login, and TEE attestation.
 ///
 /// These are **not** reachable through the generic dispatcher
@@ -1605,7 +1605,7 @@ pub const REST_ROUTED_URIS: &[&str] = &[
     TASK_ATTESTATION_REPORT_1_0,
 ];
 
-/// The operations reachable through the generic `/api/trust-tasks` dispatcher —
+/// The operations reachable through the generic `/trust-tasks` dispatcher —
 /// [`ALL_URIS`] minus [`REST_ROUTED_URIS`]. Use this to drive a generic
 /// "invoke any operation" surface so the advertised catalog matches what the
 /// dispatcher can actually route.

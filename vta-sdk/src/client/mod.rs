@@ -1332,7 +1332,7 @@ impl VtaClient {
 
         match &self.transport {
             // REST carries the Trust Task too, over the HTTPS binding
-            // (`POST /api/trust-tasks`) — the same document DIDComm and TSP
+            // (`POST /trust-tasks`) — the same document DIDComm and TSP
             // send. It used to fork here into a bespoke per-operation route
             // with its own request and response bodies, which is why REST was
             // the one transport whose wire did not match the published
@@ -1402,7 +1402,7 @@ impl VtaClient {
     ///
     /// The wire envelope is identical on both transports — `{ id, type,
     /// payload }`:
-    /// - **REST** → `POST /api/trust-tasks` with the envelope; the HTTP status
+    /// - **REST** → `POST /trust-tasks` with the envelope; the HTTP status
     ///   signals success/failure and the response body's `payload` is returned.
     /// - **DIDComm** → a message of type [`TRUST_TASK_ENVELOPE_TYPE`] carrying
     ///   the envelope as its body; the reply is itself a trust-task document
@@ -1541,7 +1541,17 @@ impl VtaClient {
                 auth,
             } => {
                 let req = client
-                    .post(format!("{base_url}/api/trust-tasks"))
+                    // `<base>/trust-tasks`, matching the published HTTPS
+                    // binding. `base_url` is the Trust-Task base — the
+                    // `#vta-rest` serviceEndpoint when discovered from the DID
+                    // document, else `--url`. This appended `/trust-tasks`
+                    // and worked only because the service happened to serve the
+                    // same prefix; a third-party client built from the binding
+                    // asked for `/trust-tasks` and got a 404. The service now
+                    // serves both, so this move is safe against any VTA that
+                    // has taken it, and the legacy path is marked superseded so
+                    // the usual metric decides when it goes.
+                    .post(format!("{base_url}/trust-tasks"))
                     .json(&doc);
                 let resp = Self::send_authed(client, base_url, auth, req).await?;
                 if !resp.status().is_success() {

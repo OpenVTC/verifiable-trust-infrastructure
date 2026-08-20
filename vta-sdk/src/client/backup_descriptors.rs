@@ -18,7 +18,7 @@
 //! pieces separately:
 //!
 //! - [`VtaClient::post_trust_task`] — POST a typed trust-task
-//!   envelope to `/api/trust-tasks` and deserialize the response.
+//!   envelope to `/trust-tasks` and deserialize the response.
 //! - [`VtaClient::download_blob`] / [`VtaClient::upload_blob`] —
 //!   raw byte transport against the descriptor's
 //!   `transport_url`, carrying the `X-Backup-Token` header.
@@ -173,7 +173,7 @@ impl VtaClient {
 
     // ─── Low-level: building blocks ─────────────────────────────────────
 
-    /// POST a typed trust-task envelope to `/api/trust-tasks` and
+    /// POST a typed trust-task envelope to `/trust-tasks` and
     /// deserialise the response payload as `R`. Used by the descriptor
     /// flows above; exposed in case external integrators want to
     /// drive the slice manually.
@@ -227,7 +227,10 @@ impl VtaClient {
             "payload": payload_value,
         });
 
-        let url = format!("{}/api/trust-tasks", base_url);
+        // `<base>/trust-tasks` — the same contract `rpc_tt` uses. This is a
+        // second hand-built call site rather than a shared helper, which is
+        // exactly why it carried the legacy prefix after the shared one moved.
+        let url = format!("{}/trust-tasks", base_url);
         let req = client.post(url).json(&doc);
         let resp = Self::with_auth_token(req, &token).send().await?;
 
