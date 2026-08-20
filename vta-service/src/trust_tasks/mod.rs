@@ -1581,13 +1581,27 @@ mod payload_validation_tests {
         // half of this test stopped proving anything. That is the growth the
         // comment here has always pointed at, arriving.
         //
-        // When `vta/seeds/*` is specified too, move this to whatever is still
-        // in `UNSPECCED_DISPATCHED_URIS` rather than weakening the assertion.
-        const UNSPECCED: &str = "https://trusttasks.org/spec/vta/seeds/rotate/1.0";
-        let d = doc(json!({ "mnemonic": "correct horse battery staple" }));
+        // So the fixture is now *derived* rather than named: whatever is still
+        // unspecced at run time. Naming one is what rotted twice, and the fix
+        // both times was to name a different one — which only sets the next
+        // failure. Deriving it means the test follows the debt down instead of
+        // breaking each time a spec lands, and the assertion never weakens.
+        let Some(unspecced) = super::UNSPECCED_DISPATCHED_URIS
+            .iter()
+            .copied()
+            .find(|u| trust_tasks_rs::schema_index::schema_for(u).is_none())
+        else {
+            // Every dispatched task is specced. That is the goal, and when it
+            // arrives this test has nothing left to say — delete it, and the
+            // `require_payload_schema` escape hatch it exercises with it.
+            return;
+        };
+        // Payload shape is irrelevant: the task is unvalidatable by definition,
+        // which is the property under test.
+        let d = doc(json!({}));
 
         assert!(
-            super::validate_payload(&state, UNSPECCED, &d)
+            super::validate_payload(&state, unspecced, &d)
                 .await
                 .is_none(),
             "by default an unvalidatable task still dispatches — refusing it would \
@@ -1596,7 +1610,7 @@ mod payload_validation_tests {
 
         state.config.write().await.policy.require_payload_schema = true;
         assert!(
-            super::validate_payload(&state, UNSPECCED, &d)
+            super::validate_payload(&state, unspecced, &d)
                 .await
                 .is_some(),
             "an operator who would rather fail closed can"

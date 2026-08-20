@@ -1897,6 +1897,12 @@ async fn create_did_webvh_accepts_path_mode_field() {
         .request(post_auth(
             "/webvh/dids",
             &token,
+            // Deliberately the **retired** snake_case spelling, on both the
+            // member names and the `mode` discriminant. The canonical wire is
+            // camelCase and that is what the SDK emits since #1015; this is the
+            // back-compat coverage proving a caller built against the old shape
+            // still works. Do not "modernise" it — that would quietly delete
+            // the only test of the aliases.
             json!({
                 "context_id": "test-path-mode",
                 "url": "https://example.com/.well-known/did/did.jsonl",
