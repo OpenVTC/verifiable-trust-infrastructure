@@ -316,6 +316,13 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0, RetrySafe),
     (trust_tasks::TASK_WEBVH_SERVERS_DOMAINS_0_1, ReadOnly),
     (trust_tasks::TASK_WEBVH_SERVERS_RECONCILE_0_1, RetrySafe),
+    // Destructive, but convergent: once the slot is gone a repeat removes
+    // nothing — the same reasoning as `dids/delete` below. The one hazard is a
+    // host that re-allocates the slot id, and two guards already close it: the
+    // VTA re-derives orphanhood (a re-allocated slot with a local record is
+    // refused outright), and `expectedDid` refuses a slot that no longer serves
+    // what the caller saw.
+    (trust_tasks::TASK_WEBVH_SERVERS_RETIRE_ORPHAN_0_1, RetrySafe),
     // ── WebVH DIDs ──────────────────────────────────────────────────────
     (trust_tasks::TASK_WEBVH_DIDS_LIST_1_0, ReadOnly),
     // The finding that opened all of this. Production callers use

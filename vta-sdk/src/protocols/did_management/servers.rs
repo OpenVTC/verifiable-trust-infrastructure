@@ -212,3 +212,62 @@ pub struct RegisterDidWithServerResultBody {
     #[serde(alias = "log_entry_count")]
     pub log_entry_count: u32,
 }
+
+/// Retire an **orphaned** slot on a hosting server — one the host serves for
+/// this VTA and the VTA holds no record of.
+///
+/// The gap this closes is structural. Every ordinary delete addresses a DID
+/// through its local record, which is what says which server to talk to and
+/// which keys to sign with; an orphan is defined by that record's absence, so
+/// the lookup fails before a request leaves the VTA. And the caller cannot go
+/// around it, because the VTA holds the host credentials.
+///
+/// The safety of an operation with no undo rests on one inversion: **the VTA
+/// decides whether the slot is orphaned, and the caller does not get to claim
+/// it.** A live DID has a record, and the record is what makes the refusal
+/// automatic. See `vta/webvh/servers/retire-orphan/0.1`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct RetireOrphanSlotBody {
+    #[serde(alias = "server_id")]
+    pub server_id: String,
+    /// The slot to retire, as a [`ReconcileWebvhServerDidsResultBody::host_only`]
+    /// entry reports it. The slot rather than the DID, because a slot reserved
+    /// but never published to has none and is exactly as orphaned.
+    #[serde(alias = "slot_id")]
+    pub slot_id: String,
+    /// The DID the caller believes the slot serves, echoed back from the
+    /// reconcile report it acted on.
+    ///
+    /// A reconcile response is a comparison at an instant, and a slot may be
+    /// published to between the report and this request. Naming what was seen
+    /// turns a stale report into a refusal rather than a surprise.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "expected_did"
+    )]
+    pub expected_did: Option<String>,
+    /// Operator rationale, recorded in the audit trail. The act has no undo, so
+    /// why it was done outlives the record of what was done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct RetireOrphanSlotResultBody {
+    #[serde(alias = "server_id")]
+    pub server_id: String,
+    #[serde(alias = "slot_id")]
+    pub slot_id: String,
+    /// Whether the slot is no longer served. Reported, never inferred: a VTA
+    /// that could not confirm removal with the host must not claim it.
+    pub retired: bool,
+    /// The DID the slot was serving, echoed so the record of what was retired
+    /// survives the slot's disappearance. Absent where it was never published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did: Option<String>,
+}

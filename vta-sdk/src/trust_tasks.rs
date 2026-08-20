@@ -316,6 +316,21 @@ pub const TASK_KEYS_SHOW_0_1: &str = "https://trusttasks.org/spec/keys/show/0.1"
 pub const TASK_WEBVH_SERVERS_RECONCILE_0_1: &str =
     "https://trusttasks.org/spec/vta/webvh/servers/reconcile/0.1";
 
+/// `vta/webvh/servers/retire-orphan/0.1` — remove a slot the hosting server
+/// serves for this VTA and the VTA holds no record of.
+///
+/// The remedy for the one divergence
+/// [`TASK_WEBVH_SERVERS_RECONCILE_0_1`] can name but nothing could repair. No
+/// ordinary delete reaches an orphan: every delete addresses a DID through its
+/// local record, so the lookup fails before a request leaves the VTA.
+///
+/// The VTA re-derives orphanhood itself and refuses if it holds any record for
+/// the slot — the caller does not get to assert it. Destructive, no undo, and
+/// never performed on a sweep.
+/// Payload: [`crate::protocols::did_management::servers::RetireOrphanSlotBody`].
+pub const TASK_WEBVH_SERVERS_RETIRE_ORPHAN_0_1: &str =
+    "https://trusttasks.org/spec/vta/webvh/servers/retire-orphan/0.1";
+
 pub const TASK_WEBVH_SERVERS_DOMAINS_0_1: &str =
     "https://trusttasks.org/spec/vta/webvh/servers/domains/0.1";
 
@@ -1527,6 +1542,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_SERVERS_REMOVE_1_0,
     TASK_WEBVH_SERVERS_DOMAINS_0_1,
     TASK_WEBVH_SERVERS_RECONCILE_0_1,
+    TASK_WEBVH_SERVERS_RETIRE_ORPHAN_0_1,
     TASK_WEBVH_DIDS_LIST_1_0,
     TASK_WEBVH_DIDS_CREATE_1_0,
     TASK_WEBVH_DIDS_GET_1_0,
