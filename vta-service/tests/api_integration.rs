@@ -4153,3 +4153,54 @@ async fn an_unauthenticated_rejection_is_not_counted_as_usage() {
         "an unauthorised request must not be recorded as usage"
     );
 }
+
+#[tokio::test]
+async fn a_services_route_advertises_its_task_successor() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/services")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (_status, headers) = request_headers(&app, req).await;
+    if let Some(link) = headers.get("link") {
+        assert!(
+            link.to_str()
+                .unwrap()
+                .contains(vta_sdk::trust_tasks::TASK_SERVICES_LIST_1_0),
+            "GET /services must name services/list as its successor"
+        );
+    }
+}
+
+#[test]
+fn the_two_drain_routes_split_on_method_not_path() {
+    // `/services/didcomm/drain` is one path serving two operations: GET lists
+    // what is draining, POST cancels a drain. They are the only pair in the
+    // superseded table that share a path, so they are the one entry a future
+    // edit could collapse by matching on path alone — and collapsing them would
+    // advertise a read as a destructive cancel, or the reverse.
+    let table = vta_service::deprecation::superseded_table();
+    let drain: Vec<_> = table
+        .iter()
+        .filter(|(_, path, _, _)| *path == "/services/didcomm/drain")
+        .collect();
+
+    assert_eq!(drain.len(), 2, "both drain routes must be marked");
+    let get = drain
+        .iter()
+        .find(|(m, ..)| *m == "GET")
+        .expect("GET is marked");
+    let post = drain
+        .iter()
+        .find(|(m, ..)| *m == "POST")
+        .expect("POST is marked");
+    assert_eq!(get.3, vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_LIST_1_0);
+    assert_eq!(post.3, vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_CANCEL_1_0);
+    assert_ne!(
+        get.3, post.3,
+        "a read and a destructive cancel are not the same successor"
+    );
+}
