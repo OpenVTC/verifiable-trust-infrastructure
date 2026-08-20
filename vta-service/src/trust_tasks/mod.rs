@@ -1073,6 +1073,14 @@ dispatch_table! {
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_RECONCILE_0_1 => webvh::handle_servers_reconcile
         [ None Metadata false ],
+    // Destructive rather than Mutating: it stops a published identifier
+    // resolving, with no undo, and every relying party that held the DID sees
+    // it go — they cannot distinguish retirement from compromise or an outage.
+    // Reconcile above it is the read that finds these; this is the only write
+    // in the pair, and the asymmetry in class is the point.
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_RETIRE_ORPHAN_0_1 => webvh::handle_servers_retire_orphan
+        [ Destructive None false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0 => webvh::handle_dids_list
         [ None Metadata false ],

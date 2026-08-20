@@ -733,6 +733,62 @@ pub(super) async fn handle_servers_reconcile(
     }
 }
 
+/// `spec/vta/webvh/servers/retire-orphan/0.1` — remove a slot the host serves
+/// and this VTA has no record of. Destructive, no undo, super-admin.
+///
+/// The refusals are the interesting half. Three conditions decline, and each
+/// carries the specification's extended code in `details.reason` so a caller
+/// keys on a stable field rather than on prose — the same shape the consent
+/// gate uses. Two of the three are *uncertainty* rather than contradiction,
+/// and refusing on uncertainty is deliberate: the alternative to a false
+/// refusal is a retry, and the alternative to a false removal is nothing.
+pub(super) async fn handle_servers_retire_orphan(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use vta_sdk::protocols::did_management::servers::RetireOrphanSlotBody;
+    let req: RetireOrphanSlotBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let did_resolver = match state.did_resolver.as_ref() {
+        Some(r) => r,
+        None => {
+            return app_error_to_reject(
+                &doc,
+                AppError::Internal("DID resolver not available".into()),
+            );
+        }
+    };
+    let vta_did = state.config.read().await.vta_did.clone();
+    let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
+    match operations::did_webvh::retire_orphan_slot(&deps, auth, vta_did.as_deref(), &req).await {
+        Ok(Ok(body)) => success_response(&doc, body),
+        Ok(Err(refusal)) => {
+            tracing::info!(
+                caller = %auth.did,
+                server_id = %req.server_id,
+                slot_id = %req.slot_id,
+                code = refusal.code(),
+                "retire-orphan refused"
+            );
+            super::helpers::reject_with(
+                &doc,
+                trust_tasks_rs::RejectReason::TaskFailed {
+                    reason: refusal.message(),
+                    details: Some(serde_json::json!({
+                        "reason": refusal.code(),
+                        "serverId": req.server_id,
+                        "slotId": req.slot_id,
+                    })),
+                },
+            )
+        }
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
 pub(super) async fn handle_servers_domains(
     state: &AppState,
     auth: &AuthClaims,

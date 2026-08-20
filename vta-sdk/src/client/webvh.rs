@@ -66,6 +66,34 @@ impl VtaClient {
     /// host credentials, and the host has no view of the VTA's records — which
     /// is why this is a VTA task rather than something the caller assembles
     /// from two listings.
+    /// Retire an orphaned slot on a hosting server — one the host serves and
+    /// this VTA has no record of.
+    ///
+    /// Obtain `slot_id` (and `expected_did`, when the slot has one) from a
+    /// [`Self::reconcile_webvh_server_dids`] report rather than constructing
+    /// them. The VTA re-derives orphanhood itself and refuses if it holds any
+    /// record for the slot, so naming a live DID here is refused rather than
+    /// obeyed — but `expected_did` is what turns a *stale* report into a
+    /// refusal instead of retiring something the caller never saw.
+    ///
+    /// Destructive and irreversible: the DID stops resolving, and every relying
+    /// party that held it sees that without being able to tell retirement from
+    /// compromise.
+    pub async fn retire_orphan_slot(
+        &self,
+        body: &crate::protocols::did_management::servers::RetireOrphanSlotBody,
+    ) -> Result<crate::protocols::did_management::servers::RetireOrphanSlotResultBody, VtaError>
+    {
+        self.rpc_tt(
+            crate::trust_tasks::TASK_WEBVH_SERVERS_RETIRE_ORPHAN_0_1,
+            serde_json::to_value(body)?,
+            // As reconcile: this reads the host's full listing to prove
+            // orphanhood before it removes anything.
+            60,
+        )
+        .await
+    }
+
     pub async fn reconcile_webvh_server_dids(
         &self,
         server_id: &str,

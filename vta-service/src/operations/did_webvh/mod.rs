@@ -33,7 +33,7 @@ pub use register_server::{
 };
 pub use servers::{
     list_webvh_server_domains, list_webvh_servers, reconcile_webvh_server_dids,
-    register_webvh_server, remove_webvh_server,
+    register_webvh_server, remove_webvh_server, retire_orphan_slot,
 };
 pub use update::{
     AgentNameVerb, RotateDidWebvhKeysOptions, UpdateDidWebvhError, UpdateDidWebvhOptions,

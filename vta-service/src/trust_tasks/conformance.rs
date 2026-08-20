@@ -99,7 +99,8 @@ use vta_sdk::protocols::device_management::{
 };
 use vta_sdk::protocols::did_management::servers::{
     AgentOnlyDid, HostOnlyDid, ListWebvhServerDomainsBody, ListWebvhServerDomainsResultBody,
-    ReconcileWebvhServerDidsBody, ReconcileWebvhServerDidsResultBody, WebvhServerDomainEntry,
+    ReconcileWebvhServerDidsBody, ReconcileWebvhServerDidsResultBody, RetireOrphanSlotBody,
+    RetireOrphanSlotResultBody, WebvhServerDomainEntry,
 };
 use vta_sdk::protocols::key_management::create::{
     CreateKeyBody, CreateKeyResponseBody, CreateKeyResultBody,
@@ -2140,6 +2141,38 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             (
                 server_record(),
                 parses::<wv::servers::register::v1_0::Response>,
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_SERVERS_RETIRE_ORPHAN_0_1,
+            (
+                // From the typed body rather than hand-written JSON, so this
+                // asserts that *our* wire type conforms — the property that
+                // catches drift, rather than merely that the schema accepts a
+                // shape written by hand to match it.
+                to_v(RetireOrphanSlotBody {
+                    server_id: "primary-host".into(),
+                    slot_id: "attract-case".into(),
+                    expected_did: Some(
+                        "did:webvh:QmZ4rT9xK2mN8vB5cD1sA7wE3fH6jL0pQ:did.example.com:attract-case"
+                            .into(),
+                    ),
+                    reason: Some("orphaned by a create whose reply was lost".into()),
+                }),
+                parses::<wv::servers::retire_orphan::v0_1::Payload>,
+                validates::<wv::servers::retire_orphan::v0_1::Payload>,
+            ),
+            (
+                to_v(RetireOrphanSlotResultBody {
+                    server_id: "primary-host".into(),
+                    slot_id: "attract-case".into(),
+                    retired: true,
+                    did: Some(
+                        "did:webvh:QmZ4rT9xK2mN8vB5cD1sA7wE3fH6jL0pQ:did.example.com:attract-case"
+                            .into(),
+                    ),
+                }),
+                parses::<wv::servers::retire_orphan::v0_1::Response>,
             ),
         ),
         (
