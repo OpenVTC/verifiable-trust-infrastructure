@@ -157,6 +157,29 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0, RetrySafe),
     (trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0, ReadOnly),
     (trust_tasks::TASK_CONTEXTS_DELETE_1_0, RetrySafe),
+    // ── Services ────────────────────────────────────────────────────────
+    //
+    // Every mutation here republishes the agent's did:webvh log, and that log
+    // is append-only history. The question is therefore not "does the end state
+    // converge" — it does — but "does a repeat leave a second entry", and for
+    // an operation that writes one unconditionally it can.
+    //
+    // `enable` refuses a transport already enabled, so a repeat is a conflict
+    // rather than a duplicate, which reads like RetrySafe. It is Keyed anyway:
+    // the caller who lost the reply cannot tell that conflict apart from "it
+    // never landed", and the cached response is exactly what resolves that.
+    (trust_tasks::TASK_SERVICES_LIST_1_0, ReadOnly),
+    (trust_tasks::TASK_SERVICES_GET_1_0, ReadOnly),
+    (trust_tasks::TASK_SERVICES_ENABLE_1_0, Keyed),
+    (trust_tasks::TASK_SERVICES_UPDATE_1_0, Keyed),
+    // Disable schedules a drain, and a repeat inside the window would restart
+    // it — extending the life of a mediator the operator is decommissioning.
+    (trust_tasks::TASK_SERVICES_DISABLE_1_0, Keyed),
+    (trust_tasks::TASK_SERVICES_ROLLBACK_1_0, Keyed),
+    (trust_tasks::TASK_SERVICES_DRAIN_LIST_1_0, ReadOnly),
+    // Destructive and not undoable: the messages the cancelled drain was
+    // protecting are already gone by the time a retry arrives.
+    (trust_tasks::TASK_SERVICES_DRAIN_CANCEL_1_0, Keyed),
     // ── Keys ────────────────────────────────────────────────────────────
     (trust_tasks::TASK_KEYS_LIST_0_1, ReadOnly),
     // The orphan-key case the OpenVTC retry helper already documents: a lost

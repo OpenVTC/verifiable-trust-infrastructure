@@ -388,6 +388,74 @@ pub const TASK_SEEDS_ROTATE_1_0: &str = "https://trusttasks.org/spec/vta/seeds/r
 pub const TASK_SEEDS_EXPORT_MNEMONIC_1_0: &str =
     "https://trusttasks.org/spec/vta/seeds/export-mnemonic/1.0";
 
+// ─── Services slice (spec/vta/services/*) ────────────────────────────────
+//
+// The transports the agent advertises in its own DID document: DIDComm
+// mediation, a REST endpoint, TSP mediation, a WebAuthn origin. Every mutation
+// here edits `service` in the did:webvh document and republishes the signed
+// log, so none is a runtime flag flip — the log entry IS the change.
+//
+// **Parameterised, not one family per transport.** `service` names the
+// transport and `config` carries its settings; the two MUST agree, and a
+// payload naming one kind with another's config is malformed rather than
+// carrying a harmlessly ignored field. That is what keeps a fifth transport to
+// a config variant instead of four new specs.
+
+/// `spec/vta/services/list/1.0` — every transport the agent knows about,
+/// advertised or not. Payload: empty. Auth: super-admin.
+///
+/// A kind absent from the answer has never been configured; a kind present
+/// with `enabled: false` is known and deliberately not advertised.
+pub const TASK_SERVICES_LIST_1_0: &str = "https://trusttasks.org/spec/vta/services/list/1.0";
+
+/// `spec/vta/services/get/1.0` — one transport's current state.
+/// Payload: `{ service }`. Auth: super-admin.
+pub const TASK_SERVICES_GET_1_0: &str = "https://trusttasks.org/spec/vta/services/get/1.0";
+
+/// `spec/vta/services/enable/1.0` — advertise a transport.
+/// Payload: `{ service, config }`. Auth: super-admin.
+///
+/// Not idempotent on purpose: enabling one already enabled is a conflict, so a
+/// typo cannot quietly re-point a working transport.
+pub const TASK_SERVICES_ENABLE_1_0: &str = "https://trusttasks.org/spec/vta/services/enable/1.0";
+
+/// `spec/vta/services/update/1.0` — replace the settings on a transport that
+/// is already advertised. Payload: `{ service, config }`. Auth: super-admin.
+///
+/// Refused when the transport is not enabled — that case is `enable`.
+pub const TASK_SERVICES_UPDATE_1_0: &str = "https://trusttasks.org/spec/vta/services/update/1.0";
+
+/// `spec/vta/services/disable/1.0` — stop advertising a transport.
+/// Payload: `{ service, drainTtlSecs? }`. Auth: super-admin.
+///
+/// For `didcomm` this schedules a drain rather than cutting delivery, and the
+/// TTL is a request rather than an instruction: over a DIDComm-carried task the
+/// agent enforces a floor, because tearing down the mediator the request
+/// arrived through would discard the reply. Read `drainUntil` in the result.
+pub const TASK_SERVICES_DISABLE_1_0: &str = "https://trusttasks.org/spec/vta/services/disable/1.0";
+
+/// `spec/vta/services/rollback/1.0` — restore a transport's previous settings
+/// by writing a NEW log entry. Payload: `{ service }`. Auth: super-admin.
+///
+/// May legitimately write nothing: if the previous state already equals the
+/// current one it answers `kind: noOp` with no `logEntryVersionId`, which is a
+/// success — the requested state holds.
+pub const TASK_SERVICES_ROLLBACK_1_0: &str =
+    "https://trusttasks.org/spec/vta/services/rollback/1.0";
+
+/// `spec/vta/services/drain/list/1.0` — DIDComm mediators still accepting
+/// delivery after being unadvertised. Payload: empty. Auth: super-admin.
+pub const TASK_SERVICES_DRAIN_LIST_1_0: &str =
+    "https://trusttasks.org/spec/vta/services/drain/list/1.0";
+
+/// `spec/vta/services/drain/cancel/1.0` — end a drain early.
+/// Payload: `{ mediatorDid }`. Auth: super-admin.
+///
+/// **Destructive**: messages still in flight through that mediator are lost,
+/// which is the whole reason the drain window existed.
+pub const TASK_SERVICES_DRAIN_CANCEL_1_0: &str =
+    "https://trusttasks.org/spec/vta/services/drain/cancel/1.0";
+
 // ─── Audit slice (canonical spec/audit/*, plus spec/vta/audit/*) ─────────
 
 /// `audit/list/0.1` — page through the audit log, newest first, with
@@ -1382,6 +1450,15 @@ pub const ALL_URIS: &[&str] = &[
     TASK_SEEDS_LIST_1_0,
     TASK_SEEDS_ROTATE_1_0,
     TASK_SEEDS_EXPORT_MNEMONIC_1_0,
+    // Services slice
+    TASK_SERVICES_LIST_1_0,
+    TASK_SERVICES_GET_1_0,
+    TASK_SERVICES_ENABLE_1_0,
+    TASK_SERVICES_UPDATE_1_0,
+    TASK_SERVICES_DISABLE_1_0,
+    TASK_SERVICES_ROLLBACK_1_0,
+    TASK_SERVICES_DRAIN_LIST_1_0,
+    TASK_SERVICES_DRAIN_CANCEL_1_0,
     // Audit slice
     TASK_AUDIT_LIST_0_1,
     TASK_AUDIT_GET_RETENTION_1_0,

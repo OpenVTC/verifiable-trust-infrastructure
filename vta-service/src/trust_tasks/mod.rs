@@ -80,6 +80,7 @@ mod policy_gate;
 mod provision_integration;
 mod replay;
 mod seeds;
+mod services;
 mod task_consent;
 pub(crate) mod transport;
 // The step-up *ceremony*: minting an approve-request and consuming the
@@ -839,6 +840,28 @@ dispatch_table! {
     // ─── Messaging slice ──────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_MESSAGING_PING_0_1 => messaging::handle_ping
         [ None None false ],
+    // ─── Services slice ──────────────────────────────────────────
+    //
+    // Metadata mirrors what each verb actually does to the agent's DID
+    // document. `drain/cancel` is Destructive rather than Mutating: it discards
+    // messages still in flight through the mediator, which is precisely what
+    // the drain window existed to prevent.
+    vta_sdk::trust_tasks::TASK_SERVICES_LIST_1_0 => services::handle_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_SERVICES_GET_1_0 => services::handle_get
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0 => services::handle_enable
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0 => services::handle_update
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_0 => services::handle_disable
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_0 => services::handle_rollback
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_LIST_1_0 => services::handle_drain_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_CANCEL_1_0 => services::handle_drain_cancel
+        [ Destructive None false ],
     // ─── Contexts slice ──────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0 => contexts::handle_list
         [ None Metadata false ],
