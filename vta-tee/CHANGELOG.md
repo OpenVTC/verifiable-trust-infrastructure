@@ -2,6 +2,28 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.1.9](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.1.8...vta-tee-v0.1.9) — 2026-08-20
+
+
+### Fixed
+
+- **tee**: Bootstrap 410 and vsock enotconn ([#1003](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1003))
+
+* fix(tee): retry transient ENOTCONN on first vsock config-overlay read
+
+  tokio-vsock can report a stream connected just before Nitro finishes the
+  nonblocking handshake, so the very first read on a fresh vsock:5800
+  connection to the parent config server can return ENOTCONN even though
+  the parent is listening and ready. Retry only that specific transient
+  error kind with a short delay; any other I/O error still fails closed
+  immediately, and the existing overall READ_TIMEOUT deadline still
+  bounds the whole fetch.
+
+  Adds positive (retries ENOTCONN then succeeds) and negative (does not
+  retry PermissionDenied) unit tests against the inner read loop.
+
+
+
 ## [0.1.8](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.1.7...vta-tee-v0.1.8) — 2026-08-16
 
 

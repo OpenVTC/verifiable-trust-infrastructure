@@ -2,6 +2,322 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.25.1...vta-sdk-v0.26.0) — 2026-08-20
+
+
+### Added
+
+- **service**: Retire an orphaned webvh slot, on evidence rather than assertion ([#1022](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1022))
+
+`vta/webvh/servers/reconcile` names two divergences and repairs
+  neither, deliberately — they want opposite remedies. This implements the
+  remedy for one: the orphan, a slot a hosting server serves for this VTA
+  that the VTA has no record of.
+
+  Nothing could repair that state, and the reason is structural. Every
+  delete addresses a DID through its local record, which is what says
+  which server to talk to and which keys to sign with; an orphan is
+  defined by that record's absence, so the lookup fails before a request
+  leaves the VTA. Nor can the caller go around it — the VTA holds the host
+  credentials. A slot both parties can see, and neither can remove.
+
+- **service**: The vta/services task family, and the twenty routes it supersedes ([#1017](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1017))
+
+* feat(service): the vta/services task family, one verb per task
+
+  Eight handlers covering what twenty `/services/*` REST routes did. The
+  operations are untouched — `operations::protocol::*` already implements each
+  transport — so this is the parameterised door onto them, not new logic.
+
+  `service` names the transport and `config` carries its settings, so the fan-out
+  happens here rather than on the wire. That is what keeps a fifth transport to a
+  config variant instead of four new specs.
+
+  **The drain guard is the part that matters.** Tearing down a mediator discards
+  whatever is in flight through it, so `disable`/`update`/`rollback` on didcomm
+  pass a `DisableTransport` that decides whether the 1-hour floor applies. The
+  REST route hardcodes `Rest` and the DIDComm handler hardcodes `Didcomm`,
+  because each IS that path; a trust task is not, so it reads the arrival
+  transport from the dispatch spine.
+
+  The spine records confidentiality, not binding: DIDComm and TSP are both
+  `EndToEnd` and it cannot tell them apart. `EndToEnd` therefore maps to
+  `Didcomm`, which OVER-applies the floor to a TSP-carried disable that does not
+  strictly need it. Deliberate: under-applying tears down the mediator a request
+  arrived through and discards the reply to the very task asking for it, while
+  over-applying only delays a teardown the operator can repeat. The ambiguous
+  case takes the cheaper mistake.
+
+  Three shapes the generated types forced, each documented where it lands:
+
+  - `ServiceMutationResult` and `RollbackKind` are duplicated per family —
+    identical shapes, distinct types. Mutation results round-trip through the wire
+    form rather than being hand-copied three times; rollback kinds go through a
+    macro that names the variants, so a divergence is a compile error.
+  - Rollback may write nothing. Its `noOp` arm has no `logEntryVersionId`, which
+    is why it has its own result type, and the witness uses exactly that arm.
+  - `handshake_timeout_secs` is `NonZeroU64` — the schema's `minimum: 1` — so the
+    default is constructed, not unwrapped.
+
+  **Operation futures are boxed, and that is load-bearing.** These handlers fan
+  out to four sizeable futures, awaited inside a dispatch match that already
+  carries every other task's state machine. Inlining them grew the frame past the
+  default 8 MiB stack and aborted an unrelated mock_vta test with a stack
+  overflow — which reads as infinite recursion and is not.
+
+- **sdk**: Hold one idempotency key across every attempt of an operation ([#1012](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1012))
+
+The VTA deduplicates keyed Trust Tasks on an `idempotencyKey` ([#1011](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1011)).
+  That only helps if the retry carries the *same* key as the attempt it is
+  retrying — and a hand-rolled retry loop structurally cannot do that,
+  because it re-invokes a client method that builds a fresh document each
+  time. Minting the key inside the method has the identical problem the
+  envelope id already has: attempt two gets a new one, the VTA sees an
+  unrelated request, and the second durable effect happens anyway.
+
+  So the key has to be scoped *outside* the call. `VtaClient::idempotent`
+  mints one, holds it in a task-local for the duration of a closure, and
+  retries transient faults inside that scope:
+
+      let key = client.idempotent(|| client.create_key(req.clone())).await?;
+
+  Every dispatch the closure makes carries the same key. A task-local
+  rather than a parameter because it has to reach all twenty-odd typed
+  methods without changing twenty signatures, and because it is genuinely
+  ambient — it belongs to the operation, not the call.
+
+  The key is attached only when the task is one a second execution would
+  actually harm (`retry_safety`); attaching it to a read would cost the
+  VTA a dedup record and buy nothing. It goes top-level beside `id`, where
+  the VTA reads it from `TrustTask::extra` and a Data-Integrity proof
+  covers it — so a relayer cannot rewrite it to split one operation
+  into two.
+
+  ## One retry owner
+
+  Retry layers compose badly. The messaging delivery layer already retries
+  a durable outbox with backoff underneath this, so an application loop on
+  top multiplies attempts against a server that dedups at neither. This is
+  the application-layer owner: bounded at 3 attempts, backed off, and
+  honouring the server's `retryAfter` up to a 30s cap — an unbounded wait
+  on a server-chosen value is a stall the server can trigger at will.
+
+  Callers should use it *instead of* their own loop, not around one.
+
+  ## BREAKING CHANGE
+
+  `VtaError` gains an `Unavailable { retry_after }` variant (exhaustive
+  enum), reported by cargo-semver-checks so the release moves the
+  compatibility field rather than shipping it as a patch.
+
+  It is typed rather than folded into `Protocol(String)` because it is the
+  one wire rejection meaning "ask again" rather than "this failed" — the
+  idempotency layer returns it while a first attempt on the same key is
+  still running. A retry loop reading it as terminal gives up on precisely
+  the answer it was told to wait for. The REST leg parses the error
+  document before the status (R3.7), so without this the `unavailable`
+  code collapsed to a string and its 503 never surfaced.
+
+- **sdk**: Classify what a lost reply costs every Trust Task ([#1010](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1010))
+
+A client that retries a timed-out request is doing the right thing — the
+  dominant transport fault is a request that never arrived. The dangerous
+  case is the other one, where the VTA processed it and only the reply was
+  lost, and whether that is harmful depends entirely on the operation.
+  Deleting an already-deleted DID is free; creating a second auto-assigned
+  `did:webvh` is not, because the first stays published in the log with
+  nobody holding a reference to it.
+
+  Callers currently cannot tell those apart, so they guess. This adds the
+  property as data: `RetrySafety` over all 148 URIs in `ALL_URIS`, with a
+  census test that fails if a task joins the catalog unclassified — the
+  same discipline that pins `REST_ROUTED_URIS`.
+
+  Four classes, drawn around the question a retry layer actually asks:
+
+  - `ReadOnly` — no durable effect.
+  - `RetrySafe` — mutating, but a repeat is harmless: it either converges
+    on the same end state (revoke, disable, delete) or leaves an inert,
+    self-expiring duplicate (a spare auth challenge). Deliberately not
+    named "idempotent", because the second half is not.
+  - `Keyed` — non-convergent: a repeat leaves a second durable artefact
+    that persists and matters. Needs an idempotency key.
+  - `KeyedSecret` — as `Keyed`, but the response carries secret material,
+    so the response must never be cached. Deduping the effect without
+    turning a dedup store into a second place mnemonics and sealed
+    bundles live.
+
+  That last class is the one worth arguing about. Result-caching
+  idempotency wants to replay the stored response, and for
+  `seeds/export-mnemonic`, `backup/complete-export` and
+  `provision/integration` that would mean persisting the secret a second
+  time, indefinitely, to serve a retry. The effect is still deduped; only
+  the replay is refused.
+
+  Where convergence is not obvious from an operation's contract it is
+  classified `Keyed` rather than `RetrySafe`. The asymmetry is nearly
+  free — an over-classified task costs one dedup record, while an
+  under-classified one loses the protection in exactly the rare case the
+  table exists for.
+
+  Classification alone gates nothing: it changes how a *keyed* request is
+  handled, and a request carrying no key behaves exactly as it does today
+  on every task in the table. Nothing consumes this yet; the VTA-side
+  dedup store and the client-side key are the follow-ups.
+
+- **service**: Signal every superseded REST route, from one layer ([#1007](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1007))
+
+
+### Fixed
+
+- **sdk,service**: Serve and use the Trust-Task path the binding asks for ([#1020](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1020))
+
+`trust-tasks-https` POSTs to `<serviceEndpoint>/trust-tasks`, where
+  `serviceEndpoint` is what a VTA advertises on its service entry. Every
+  deployment example advertises an ORIGIN — `https://trust.example.com`,
+  `http://localhost:3000` — so a client built from the published binding asked
+  for `/trust-tasks` and got a 404. Ours worked only because `vta-sdk` hardcoded
+  `/api/trust-tasks` and this service happened to serve the same prefix.
+
+  Two implementations agreeing by convention is not a contract; it hides the
+  absence of one from the only people who would notice — which is why this
+  survived until someone read the binding rather than the code.
+
+  The underlying defect was never the path. Nothing defined what the advertised
+  endpoint DENOTES, so the two clients composed it differently and both could not
+  be right: the SDK appended `/api/trust-tasks`, the binding appended
+  `/trust-tasks`. Settled, per Glenn: **serviceEndpoint is the Trust-Task base**,
+  and the binding's suffix is the contract.
+
+  - **The service serves both.** `/trust-tasks` alongside `/api/trust-tasks`, one
+    dispatcher. This is what makes the change safe: for an origin-advertising VTA
+    the Trust-Task base IS the origin, so every existing advertisement becomes
+    conformant with no operator touching anything.
+  - **The SDK moved to `<base>/trust-tasks`.** That is the half that makes the
+    contract real rather than aspirational, and it is safe against any VTA that
+    has taken the change above.
+  - **`/api/trust-tasks` is marked superseded**, so the metric that governs every
+    other retired route decides when it goes. Its successor is a PATH, not a task
+    URI — the one row in that table where the successor is not a
+    `trusttasks.org` URI, because what replaced it is a spelling rather than an
+    operation.
+
+  Moving the SDK surfaced a second hand-built call site: `backup_descriptors.rs`
+  formatted `{base}/api/trust-tasks` itself instead of going through `rpc_tt`,
+  which is exactly why it kept the legacy prefix after the shared path moved.
+
+  Tests pin that both spellings reach the same dispatcher AND fail identically
+  when unauthenticated — a divergence there would mean a conformant client and
+  ours behave differently, which is the thing being fixed. 26 mocks across
+  client_rest and auth_light_rest move with the client.
+
+  Still to do, and deliberately not here: specifying what the Trust-Task service
+  entry means, so this is a contract rather than a second convention. That is a
+  spec-registry change.
+
+- **tee**: Bootstrap 410 and vsock enotconn ([#1003](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1003))
+
+* fix(tee): retry transient ENOTCONN on first vsock config-overlay read
+
+  tokio-vsock can report a stream connected just before Nitro finishes the
+  nonblocking handshake, so the very first read on a fresh vsock:5800
+  connection to the parent config server can return ENOTCONN even though
+  the parent is listening and ready. Retry only that specific transient
+  error kind with a short delay; any other I/O error still fails closed
+  immediately, and the existing overall READ_TIMEOUT deadline still
+  bounds the whole fetch.
+
+  Adds positive (retries ENOTCONN then succeeds) and negative (does not
+  retry PermissionDenied) unit tests against the inner read loop.
+
+- **sdk/service**: Take trust-tasks-rs 0.11, and fix the four defects it exposes ([#1015](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1015))
+
+* build(deps): move to trust-tasks-rs 0.11 and affinidi-messaging-sdk 0.19.9
+
+  trust-tasks-rs 0.11 carries the vta/services/* families this branch implements.
+  The move needed affinidi-messaging-sdk to go first — acl_setup hands a
+  MediatorAcl to TrustTasks::account_update, so two semver-incompatible copies of
+  trust-tasks-rs made that a type error rather than a link. That landed as
+  affinidi-tdk-rs#717 and published as 0.19.9.
+
+  vta-sdk builds clean on this. The workspace does NOT yet: vtc-service still
+  hits a duplicated TrustTask<Value> because the trust-tasks sibling crates
+  (trust-tasks-didcomm, -https, -proof, -tsp, -capability-client, -didcomm-v1)
+  changed their requirement to 0.11 without moving their own versions, so
+  crates.io still serves tarballs built against 0.9. dtgwg-trust-tasks-tf's
+  release/siblings-on-0.11 fixes that; this branch waits on it.
+
+- **sdk**: Build these two task payloads from their typed bodies ([#1005](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1005))
+
+`get_key_secret` and `list_dids_webvh` were the last two `rpc_tt` call sites
+  constructing their payload as a hand-written `serde_json::json!` literal, so
+  they emitted `key_id`, `context_id` and `server_id` — snake_case, against a
+  SPEC §4.10 contract that says lowerCamelCase.
+
+  The earlier casing fold could not reach them by construction: it rewrote
+  structs via `rename_all`, and a literal has no struct to fold. Nothing was
+  broken, because `GetKeySecretBody` and `ListDidsWebvhBody` both carry
+  `#[serde(alias = "…")]` for the old spelling — but the SDK was emitting a
+  non-canonical spelling of its own published contract, and a consumer generated
+  from the schemas would not have recognised it.
+
+  Building the typed body instead means the wire spelling now comes from the same
+  struct the schema is generated from, so the two cannot drift again. This is
+  what the earlier fold's "known gap" note pointed at.
+
+  `list_dids_webvh` gains a second, smaller correctness win: the literal emitted
+  `"context_id": null` for an absent filter, while `ListDidsWebvhBody` carries
+  `skip_serializing_if = "Option::is_none"` and omits the key entirely.
+
+  `list_dids_webvh_filters_by_context` asserted the old spelling and now asserts
+  `contextId`/`serverId` — the test is the proof the emitted wire actually
+  changed, not just the source.
+
+- **wire**: Emit canonical lowerCamelCase on Trust Task payloads, accept snake_case ([#1000](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1000))
+
+* fix(wire)!: emit canonical lowerCamelCase on Trust Task payloads, accept snake_case
+
+  SPEC §4.10 makes lowerCamelCase the wire contract for Trust Task payload
+  members. 53 wire structs emitted snake_case, so every consumer generated from
+  the published schemas disagreed with what this agent actually sends — and the
+  disagreement was invisible until someone wrote a client against the spec.
+
+  The fold is Postel's. `rename_all = "camelCase"` changes what is emitted;
+  a per-field `alias` keeps the previous spelling accepted on intake, so a
+  producer written against the old wire keeps working while it migrates. 126
+  fields carry an alias.
+
+  **Scope is deliberately narrow, and three exclusions are not oversights:**
+
+  - **Config (`setup/from_toml.rs`)** is TOML, where snake_case is idiomatic and
+    is not a wire at all.
+  - **Persisted stores and the backup file format** (`backup_management/types.rs`,
+    `drain_store.rs`) are read back from disk. Re-casing those would fail to read
+    data already written — a worse bug than the one being fixed. Note that
+    `WebvhDidRecord` *is* both wire and persisted: it is folded, and reads of
+    existing snake_case records keep working precisely because of the aliases.
+  - **`protocols/credential_exchange.rs`** carries OID4VCI and OID4VP structures
+    (`vp_token`, `credential_offer`, `dcql_query`). §4.10 requires externally
+    owned names to be carried verbatim, never re-cased. The conformance harness
+    caught this when a first pass re-cased `vp_token`, which is exactly what that
+    test is for.
+
+  REST request/response bodies (`routes/`, `client/types.rs`, `protocol/`) are a
+  further 54 structs with the same problem. They are left for a separate change:
+  unlike task payloads, no published schema pins their casing, and changing what
+  they emit breaks readers that have no alias to fall back on.
+
+  Thirteen integration assertions read the old spelling and now read the new one.
+  Full suite green: 823 lib, 119 api_integration, 90 conformance, plus the rest.
+
+  * style: wrap the serde attributes the casing fold widened
+
+  Adding a per-field `alias` pushed several `#[serde(...)]` attributes past the
+  line width, so rustfmt wants them broken across lines. No semantic change —
+  `cargo fmt --all` output, nothing hand-edited.
+
+
+
 ## [0.25.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.25.0...vta-sdk-v0.25.1) — 2026-08-18
 
 
