@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::create::CreateContextResultBody;
 use crate::context_policy::ContextPolicy;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateContextBody {

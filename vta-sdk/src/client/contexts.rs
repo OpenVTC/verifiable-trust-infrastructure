@@ -45,14 +45,22 @@ impl VtaClient {
         id: &str,
         req: UpdateContextRequest,
     ) -> Result<ContextResponse, VtaError> {
+        // Built from the canonical body rather than a hand-rolled map. The map
+        // emitted every member unconditionally, so an unset `name`/`did`/
+        // `description` went out as `null` — and the published schema types
+        // them as optional *strings*, which `null` is not. It validated only
+        // while the registry had no schema for this task to check against.
+        // Same defect, same fix, as `keys/create` (#919).
+        let body = crate::protocols::context_management::update::UpdateContextBody {
+            id: id.to_string(),
+            name: req.name.clone(),
+            did: req.did.clone(),
+            description: req.description.clone(),
+            ..Default::default()
+        };
         self.rpc_tt(
             crate::trust_tasks::TASK_CONTEXTS_UPDATE_1_0,
-            serde_json::json!({
-                "id": id,
-                "name": &req.name,
-                "did": &req.did,
-                "description": &req.description,
-            }),
+            serde_json::to_value(&body)?,
             30,
         )
         .await

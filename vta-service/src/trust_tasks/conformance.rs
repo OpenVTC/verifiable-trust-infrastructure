@@ -344,6 +344,58 @@ fn acl_entry() -> AclEntry {
     }
 }
 
+/// A `did:webvh` with a real-shaped SCID — several schemas bound `minLength`
+/// on these, and a placeholder like `"did:webvh:x"` satisfies a length check by
+/// accident while testing nothing about the form.
+const WEBVH_DID: &str = "did:webvh:QmZ4rT9xK2mN8vB5cD1sA7wE3fH6jL0pQ:did.example.com:alice";
+/// The DID of a DID-hosting server, as `webvh/servers/register` records it.
+const HOST_DID: &str = "did:web:did.example.com";
+
+/// The shared `ContextRecord` (`vta/_shared/0.1/context.schema.json`) every
+/// context task answers with. One builder because the shape is shared: a
+/// per-witness copy would let four of the five drift apart unnoticed.
+fn context_record_json() -> Value {
+    json!({
+        "id": "ctx1",
+        "name": "Production",
+        "basePath": "m/26'/2'/1'",
+        "createdAt": TS,
+        "updatedAt": TS,
+    })
+}
+
+/// The `WebvhDidRecord` shape `dids/get` and `dids/list` share.
+fn webvh_did_record_json() -> Value {
+    json!({
+        "did": WEBVH_DID,
+        "serverId": "primary-host",
+        "mnemonic": "attract-case",
+        "scid": "QmZ4rT9xK2mN8vB5cD1sA7wE3fH6jL0pQ",
+        "contextId": "ctx1",
+        "portable": true,
+        "logEntryCount": 1,
+        "createdAt": TS,
+        "updatedAt": TS,
+    })
+}
+
+/// The registered-server record `servers/list` and `servers/register` share.
+fn webvh_server_json() -> Value {
+    json!({
+        "id": "primary-host",
+        "did": HOST_DID,
+        "label": "Primary",
+        "createdAt": TS,
+        "updatedAt": TS,
+    })
+}
+
+/// The `{did, name, enabled}` answer every agent-name mutation returns.
+/// `set`/`enable` report `true`; `remove`/`disable` report `false`.
+fn agent_name_state_json(enabled: bool) -> Value {
+    json!({ "did": WEBVH_DID, "name": "alice", "enabled": enabled })
+}
+
 fn to_v<T: serde::Serialize>(t: T) -> Value {
     serde_json::to_value(t).expect("serialize fixture")
 }
@@ -1469,6 +1521,261 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         reason: "immutable".into(),
                     }],
                 })
+            ),
+        ),
+        // ─── contexts (published at 1.0 by the move to trust-tasks-rs 0.11) ──
+        //
+        // These seven were dispatched against unpublished URIs, so
+        // `validate_payload` skipped them on both ends and nothing checked the
+        // wire. The registry now serves their schemas; these witnesses are what
+        // holds them to it.
+        (
+            uris::TASK_CONTEXTS_CREATE_1_0,
+            checked!(
+                specs::vta::contexts::create::v1_0::Payload,
+                specs::vta::contexts::create::v1_0::Response,
+                json!({ "id": "ctx1", "name": "Production", "description": "prod" }),
+                json!(context_record_json())
+            ),
+        ),
+        (
+            uris::TASK_CONTEXTS_GET_1_0,
+            checked!(
+                specs::vta::contexts::get::v1_0::Payload,
+                specs::vta::contexts::get::v1_0::Response,
+                json!({ "id": "ctx1" }),
+                json!(context_record_json())
+            ),
+        ),
+        (
+            uris::TASK_CONTEXTS_LIST_1_0,
+            checked!(
+                specs::vta::contexts::list::v1_0::Payload,
+                specs::vta::contexts::list::v1_0::Response,
+                json!({}),
+                json!({ "contexts": [context_record_json()] })
+            ),
+        ),
+        (
+            uris::TASK_CONTEXTS_UPDATE_1_0,
+            checked!(
+                specs::vta::contexts::update::v1_0::Payload,
+                specs::vta::contexts::update::v1_0::Response,
+                // Only `id` is required, and the optional members are typed as
+                // strings — so an unset one must be ABSENT, not `null`. The
+                // client sent `null` here until this witness existed to say so.
+                json!({ "id": "ctx1", "name": "Renamed" }),
+                json!(context_record_json())
+            ),
+        ),
+        (
+            uris::TASK_CONTEXTS_UPDATE_DID_1_0,
+            checked!(
+                specs::vta::contexts::update_did::v1_0::Payload,
+                specs::vta::contexts::update_did::v1_0::Response,
+                json!({ "id": "ctx1", "did": SUBJECT }),
+                json!(context_record_json())
+            ),
+        ),
+        (
+            uris::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
+            checked!(
+                specs::vta::contexts::preview_delete::v1_0::Payload,
+                specs::vta::contexts::preview_delete::v1_0::Response,
+                json!({ "id": "ctx1" }),
+                json!({
+                    "id": "ctx1",
+                    "keys": ["key-1"],
+                    "webvhDids": [WEBVH_DID],
+                    "aclEntriesRemoved": [SUBJECT],
+                    "aclEntriesUpdated": []
+                })
+            ),
+        ),
+        (
+            uris::TASK_CONTEXTS_DELETE_1_0,
+            checked!(
+                specs::vta::contexts::delete::v1_0::Payload,
+                specs::vta::contexts::delete::v1_0::Response,
+                json!({ "id": "ctx1", "force": true }),
+                json!({ "id": "ctx1", "deleted": true })
+            ),
+        ),
+        // ─── webvh/agent-name ────────────────────────────────────────────
+        (
+            uris::TASK_WEBVH_AGENT_NAME_CHECK_1_0,
+            checked!(
+                specs::vta::webvh::agent_name::check::v1_0::Payload,
+                specs::vta::webvh::agent_name::check::v1_0::Response,
+                json!({ "did": WEBVH_DID, "name": "alice" }),
+                json!({
+                    "name": "alice",
+                    "domain": "did.example.com",
+                    "available": true,
+                    "reserved": false
+                })
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_AGENT_NAME_LIST_1_0,
+            checked!(
+                specs::vta::webvh::agent_name::list::v1_0::Payload,
+                specs::vta::webvh::agent_name::list::v1_0::Response,
+                json!({ "did": WEBVH_DID }),
+                json!({
+                    "did": WEBVH_DID,
+                    // `createdAt` here is epoch seconds, not the RFC3339 the context and
+                    // webvh records use — the families genuinely differ, so the
+                    // fixture must too.
+                    "names": [{ "name": "alice", "enabled": true, "createdAt": 1_785_628_800u64 }]
+                })
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_AGENT_NAME_SET_1_0,
+            checked!(
+                specs::vta::webvh::agent_name::set::v1_0::Payload,
+                specs::vta::webvh::agent_name::set::v1_0::Response,
+                json!({ "did": WEBVH_DID, "name": "alice" }),
+                json!(agent_name_state_json(true))
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_AGENT_NAME_REMOVE_1_0,
+            checked!(
+                specs::vta::webvh::agent_name::remove::v1_0::Payload,
+                specs::vta::webvh::agent_name::remove::v1_0::Response,
+                json!({ "did": WEBVH_DID, "name": "alice" }),
+                json!(agent_name_state_json(false))
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_AGENT_NAME_ENABLE_1_0,
+            checked!(
+                specs::vta::webvh::agent_name::enable::v1_0::Payload,
+                specs::vta::webvh::agent_name::enable::v1_0::Response,
+                json!({ "did": WEBVH_DID, "name": "alice" }),
+                json!(agent_name_state_json(true))
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_AGENT_NAME_DISABLE_1_0,
+            checked!(
+                specs::vta::webvh::agent_name::disable::v1_0::Payload,
+                specs::vta::webvh::agent_name::disable::v1_0::Response,
+                json!({ "did": WEBVH_DID, "name": "alice" }),
+                json!(agent_name_state_json(false))
+            ),
+        ),
+        // ─── webvh/dids ──────────────────────────────────────────────────
+        (
+            uris::TASK_WEBVH_DIDS_CREATE_1_0,
+            checked!(
+                specs::vta::webvh::dids::create::v1_0::Payload,
+                specs::vta::webvh::dids::create::v1_0::Response,
+                // camelCase, because the schema is `additionalProperties: false`.
+                // The SDK's `CreateDidWebvhRequest` emitted snake_case here and
+                // was only ever accepted through the body type's back-compat
+                // aliases; this witness is what makes that a test failure.
+                json!({
+                    "contextId": "ctx1",
+                    "serverId": "primary-host",
+                    "portable": true,
+                    "addMediatorService": true,
+                    "preRotationCount": 2,
+                    "setPrimary": false
+                }),
+                json!({
+                    "did": WEBVH_DID,
+                    "contextId": "ctx1",
+                    "scid": "QmZ4rT9xK2mN8vB5cD1sA7wE3fH6jL0pQ",
+                    "portable": true,
+                    "signingKeyId": "key-sign",
+                    "kaKeyId": "key-ka",
+                    "preRotationKeyCount": 2,
+                    "createdAt": TS
+                })
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_DIDS_GET_1_0,
+            checked!(
+                specs::vta::webvh::dids::get::v1_0::Payload,
+                specs::vta::webvh::dids::get::v1_0::Response,
+                json!({ "did": WEBVH_DID, "includeLog": false }),
+                json!({ "record": webvh_did_record_json() })
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_DIDS_LIST_1_0,
+            checked!(
+                specs::vta::webvh::dids::list::v1_0::Payload,
+                specs::vta::webvh::dids::list::v1_0::Response,
+                json!({ "contextId": "ctx1" }),
+                json!({ "dids": [webvh_did_record_json()] })
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_DIDS_DELETE_1_0,
+            checked!(
+                specs::vta::webvh::dids::delete::v1_0::Payload,
+                specs::vta::webvh::dids::delete::v1_0::Response,
+                json!({ "did": WEBVH_DID }),
+                json!({ "did": WEBVH_DID, "deleted": true })
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
+            checked!(
+                specs::vta::webvh::dids::rotate_keys::v1_0::Payload,
+                specs::vta::webvh::dids::rotate_keys::v1_0::Response,
+                json!({ "did": WEBVH_DID, "preRotationCount": 2 }),
+                json!({
+                    "did": WEBVH_DID,
+                    "newVersionId": "2-QmNewVersionIdentifierValue",
+                    "newScid": "QmY8nP3bV6xC1kM4hS9dF2gJ5tR7wL0zQ",
+                    "newLogEntry": "{\"versionId\":\"2-Qm\"}",
+                    "updateKeysCount": 1,
+                    "preRotationKeyCount": 2,
+                    "serverless": false
+                })
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
+            checked!(
+                specs::vta::webvh::dids::register_with_server::v1_0::Payload,
+                specs::vta::webvh::dids::register_with_server::v1_0::Response,
+                json!({ "did": WEBVH_DID, "serverId": "primary-host" }),
+                json!({ "did": WEBVH_DID, "serverId": "primary-host", "logEntryCount": 1 })
+            ),
+        ),
+        // ─── webvh/servers ───────────────────────────────────────────────
+        (
+            uris::TASK_WEBVH_SERVERS_LIST_1_0,
+            checked!(
+                specs::vta::webvh::servers::list::v1_0::Payload,
+                specs::vta::webvh::servers::list::v1_0::Response,
+                json!({}),
+                json!({ "servers": [webvh_server_json()] })
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_SERVERS_REGISTER_1_0,
+            checked!(
+                specs::vta::webvh::servers::register::v1_0::Payload,
+                specs::vta::webvh::servers::register::v1_0::Response,
+                json!({ "id": "primary-host", "did": HOST_DID, "label": "Primary" }),
+                json!(webvh_server_json())
+            ),
+        ),
+        (
+            uris::TASK_WEBVH_SERVERS_REMOVE_1_0,
+            checked!(
+                specs::vta::webvh::servers::remove::v1_0::Payload,
+                specs::vta::webvh::servers::remove::v1_0::Response,
+                json!({ "id": "primary-host" }),
+                json!({ "id": "primary-host", "removed": true })
             ),
         ),
     ];

@@ -226,13 +226,6 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
 #[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
 const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     // ─ vta/contexts/* — keep-and-spec under `vta/` (reduction plan §E).
-    "https://trusttasks.org/spec/vta/contexts/list/1.0",
-    "https://trusttasks.org/spec/vta/contexts/create/1.0",
-    "https://trusttasks.org/spec/vta/contexts/get/1.0",
-    "https://trusttasks.org/spec/vta/contexts/update/1.0",
-    "https://trusttasks.org/spec/vta/contexts/update-did/1.0",
-    "https://trusttasks.org/spec/vta/contexts/preview-delete/1.0",
-    "https://trusttasks.org/spec/vta/contexts/delete/1.0",
     // ─ vta/seeds/* — keep-and-spec under `vta/` (reduction plan §E).
     "https://trusttasks.org/spec/vta/seeds/list/1.0",
     "https://trusttasks.org/spec/vta/seeds/rotate/1.0",
@@ -254,21 +247,6 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     "https://trusttasks.org/spec/vta/attestation/report/1.0",
     // ─ vta/webvh/** — two-ends-of-one-wire decision pending (plan §B).
     //   `dids/update` is published; the rest are not.
-    "https://trusttasks.org/spec/vta/webvh/servers/list/1.0",
-    "https://trusttasks.org/spec/vta/webvh/servers/register/1.0",
-    "https://trusttasks.org/spec/vta/webvh/servers/remove/1.0",
-    "https://trusttasks.org/spec/vta/webvh/dids/list/1.0",
-    "https://trusttasks.org/spec/vta/webvh/dids/create/1.0",
-    "https://trusttasks.org/spec/vta/webvh/dids/get/1.0",
-    "https://trusttasks.org/spec/vta/webvh/dids/delete/1.0",
-    "https://trusttasks.org/spec/vta/webvh/dids/rotate-keys/1.0",
-    "https://trusttasks.org/spec/vta/webvh/dids/register-with-server/1.0",
-    "https://trusttasks.org/spec/vta/webvh/agent-name/list/1.0",
-    "https://trusttasks.org/spec/vta/webvh/agent-name/check/1.0",
-    "https://trusttasks.org/spec/vta/webvh/agent-name/set/1.0",
-    "https://trusttasks.org/spec/vta/webvh/agent-name/remove/1.0",
-    "https://trusttasks.org/spec/vta/webvh/agent-name/disable/1.0",
-    "https://trusttasks.org/spec/vta/webvh/agent-name/enable/1.0",
     // ─ Vault archival lifecycle (#540) — generalise with a store
     //   discriminator instead of publishing twelve (reduction plan §C).
     "https://trusttasks.org/spec/vault/archive/0.1",
@@ -1561,13 +1539,26 @@ mod payload_validation_tests {
     #[tokio::test]
     async fn an_unspecced_task_proceeds_by_default_and_can_be_refused() {
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
-        // No published spec — one of many. (`vta/memory/list` HAS one, which is
-        // itself the point: the set of validatable tasks is growing.)
-        const UNSPECCED: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.0";
+        // Chosen from the tracked-debt list at runtime rather than named, because
+        // naming one is how this test rots: it used to hard-code
+        // `vta/webvh/dids/create/1.0`, which the registry published, and the
+        // test then failed for the best possible reason — the debt shrank.
+        // Deriving it means the test follows the debt down instead of breaking
+        // each time a spec lands.
+        let Some(unspecced) = super::UNSPECCED_DISPATCHED_URIS
+            .iter()
+            .copied()
+            .find(|u| trust_tasks_rs::schema_index::schema_for(u).is_none())
+        else {
+            // Every dispatched task is specced. That is the goal, and when it
+            // arrives this test has nothing left to say — delete it, and the
+            // `require_payload_schema` escape hatch with it.
+            return;
+        };
         let d = doc(json!({ "contextId": "default" }));
 
         assert!(
-            super::validate_payload(&state, UNSPECCED, &d)
+            super::validate_payload(&state, unspecced, &d)
                 .await
                 .is_none(),
             "by default an unvalidatable task still dispatches — refusing it would \
@@ -1576,7 +1567,7 @@ mod payload_validation_tests {
 
         state.config.write().await.policy.require_payload_schema = true;
         assert!(
-            super::validate_payload(&state, UNSPECCED, &d)
+            super::validate_payload(&state, unspecced, &d)
                 .await
                 .is_some(),
             "an operator who would rather fail closed can"

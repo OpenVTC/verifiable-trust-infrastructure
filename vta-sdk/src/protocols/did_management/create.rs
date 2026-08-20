@@ -23,16 +23,30 @@ use serde::{Deserialize, Serialize};
 /// absent path has never meant the `.well-known` root on a hosting
 /// server — that is the serverless case (selected by the absence of a
 /// `server_id`, where the DID location comes from the `URL` itself).
+/// # Wire casing
+///
+/// The discriminant values are **camelCase** (`wellKnown` / `autoAssign`),
+/// because that is what `vta/webvh/dids/create/1.0`'s published schema pins
+/// with a `const` in each `oneOf` branch — and, like every other wire type
+/// here, the canonical form is camelCase (R3.1).
+///
+/// This emitted `snake_case` until the registry served a schema to check it
+/// against. Nothing caught it because the discriminant is a *value*, not a
+/// member name, so it slipped past the reviews that watch member casing. The
+/// snake_case forms stay accepted as aliases, so a peer built against the old
+/// spelling keeps working; only what we *emit* changes.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(tag = "mode", content = "path", rename_all = "snake_case")]
+#[serde(tag = "mode", content = "path", rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum WebvhPathMode {
     /// Root DID at the host: resolves at `<host>/.well-known/did.jsonl`.
+    #[serde(alias = "well_known")]
     WellKnown,
     /// Operator-chosen path label: `<host>/<path>/did.jsonl`.
     Explicit(String),
     /// Let the hosting server allocate the path.
     #[default]
+    #[serde(alias = "auto_assign")]
     AutoAssign,
 }
 
@@ -354,8 +368,33 @@ mod webvh_path_mode_tests {
         );
         assert_eq!(
             serde_json::to_value(WebvhPathMode::AutoAssign).unwrap(),
-            serde_json::json!({ "mode": "auto_assign" })
+            serde_json::json!({ "mode": "autoAssign" })
         );
+        assert_eq!(
+            serde_json::to_value(WebvhPathMode::WellKnown).unwrap(),
+            serde_json::json!({ "mode": "wellKnown" })
+        );
+    }
+
+    /// The discriminant used to be snake_case, which the published schema
+    /// rejects — it pins each branch with a camelCase `const`. What we emit
+    /// moved; what we accept did not, so a peer built against the old spelling
+    /// still deserializes.
+    #[test]
+    fn the_retired_snake_case_discriminants_still_deserialize() {
+        for (wire, expected) in [
+            (
+                serde_json::json!({ "mode": "auto_assign" }),
+                WebvhPathMode::AutoAssign,
+            ),
+            (
+                serde_json::json!({ "mode": "well_known" }),
+                WebvhPathMode::WellKnown,
+            ),
+        ] {
+            let got: WebvhPathMode = serde_json::from_value(wire.clone()).expect("alias accepted");
+            assert_eq!(got, expected, "{wire} must still parse");
+        }
     }
 }
 

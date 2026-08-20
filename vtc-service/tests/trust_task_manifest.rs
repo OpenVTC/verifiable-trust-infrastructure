@@ -437,7 +437,7 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        36,
+        14,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
@@ -454,7 +454,12 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
          trust-tasks-rs 0.6.1. It is the first entry this list has gained and \
          lost, and the round trip is the point — the number went up when a URI \
          was bound ahead of its spec, and came back down when the registry \
-         served it. That is the whole mechanism working, not an exception to it",
+         served it. That is the whole mechanism working, not an exception to it. \
+         Then 36 → 14 in one step, on the move to trust-tasks-rs 0.11: \
+         twenty-two of these were authored upstream while this workspace sat \
+         on 0.9, so bumping the registry crate is what revealed them as \
+         published — nothing here was rebound. The debt shrinks when the \
+         registry catches up, which is the direction it is meant to move",
     ),
 ];
 

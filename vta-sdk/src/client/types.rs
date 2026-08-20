@@ -676,7 +676,14 @@ pub struct UpdateWebvhServerRequest {
 
 // ── WebVH DID types ─────────────────────────────────────────────────
 
+/// `rename_all = "camelCase"` because the canonical wire is camelCase (R3.1),
+/// and `vta/webvh/dids/create/1.0`'s published schema is
+/// `additionalProperties: false`. This struct emitted snake_case, which the
+/// server accepted only through the back-compat aliases on
+/// [`crate::protocols::did_management::create::CreateDidWebvhBody`] — so the
+/// drift was invisible until the registry served a schema to check it against.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateDidWebvhRequest {
     pub context_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
