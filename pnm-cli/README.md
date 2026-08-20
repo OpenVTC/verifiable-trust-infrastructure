@@ -17,29 +17,43 @@ non-interactive setup flow.
 
 ## Feature Flags
 
-| Feature          | Description                                                                                                                                                                                    | Default |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| `keyring`        | Store sessions in the OS keyring (macOS Keychain, GNOME Keyring, Windows Credential Manager)                                                                                                   | Yes     |
-| `config-session` | Store sessions in `~/.config/pnm/sessions.json`. Useful for containers and CI where no keyring is available. **Warning:** sessions are stored on disk unprotected -- do not use in production. | No      |
+| Feature          | Description                                                                                                                                                                                                          | Default |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `keyring`        | Store sessions in the OS keyring (macOS Keychain, Linux secret-service, Windows Credential Manager).                                                                                                                  | Yes     |
+| `tsp`            | Round-trip TSP probe in `pnm health` -- opens a TSP websocket to the mediator and sends a Trust Task to the VTA. Without it `pnm health` still reports an advertised `TSPTransport` service but never exercises it.    | Yes     |
+| `config-session` | Store sessions in `~/.config/pnm/sessions.json`. Useful for containers and CI where no keyring is available. **Warning:** sessions are stored on disk unprotected -- do not use in production.                        | No      |
+| `azure-secrets`  | Store sessions in Azure Key Vault, vault URL read from `AZURE_KEYVAULT_URL`. Only takes effect when `keyring` is disabled.                                                                                            | No      |
 
-At least one of `keyring` or `config-session` must be enabled. When `keyring`
-is enabled it takes priority over `config-session`.
+The session backend is chosen at compile time in the order **`keyring` ->
+`azure-secrets` -> `config-session` -> plaintext fallback**; the first enabled
+feature wins. Nothing enforces that one of them is enabled -- a build with none
+still stores sessions in plaintext at `~/.config/pnm/sessions.json`, and prints
+`WARNING: No secure session store — using plaintext file storage` on every
+access. Pick one deliberately.
 
 ### Build examples
 
+`--no-default-features` drops `tsp` along with `keyring`, so re-add it unless
+you mean to give up the `pnm health` TSP probe.
+
 ```sh
-# Default build (keyring)
+# Default build (keyring + tsp)
 cargo build --package pnm-cli --release
 
-# Keyring-free build for containers / CI
-cargo build --package pnm-cli --release --no-default-features --features config-session
+# Keyring-free build for containers / CI, keeping the TSP probe
+cargo build --package pnm-cli --release \
+  --no-default-features --features config-session,tsp
+
+# Azure Key Vault sessions (requires keyring off; set AZURE_KEYVAULT_URL)
+cargo build --package pnm-cli --release \
+  --no-default-features --features azure-secrets,tsp
 ```
 
 ## Installation
 
 ### From source
 
-Requires **Rust 1.94.0+**.
+Requires **Rust 1.95.0+**.
 
 ```sh
 cargo build --package pnm-cli --release
@@ -141,8 +155,9 @@ credential manager:
 | Linux    | secret-service (e.g. GNOME Keyring) |
 | Windows  | Credential Manager                  |
 
-When built with `--features config-session` (and without `keyring`), sessions
-are stored in `~/.config/pnm/sessions.json` instead. See
+Built without `keyring`, sessions go to Azure Key Vault instead
+(`--features azure-secrets`, vault URL from `AZURE_KEYVAULT_URL`), or to
+plaintext `~/.config/pnm/sessions.json` (`--features config-session`). See
 [Feature Flags](#feature-flags) for details.
 
 ## Configuration
