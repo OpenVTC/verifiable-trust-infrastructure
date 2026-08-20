@@ -225,14 +225,6 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
 /// Tracking issue: OpenVTC/verifiable-trust-infrastructure#854.
 #[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
 const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
-    // ─ vta/contexts/* — keep-and-spec under `vta/` (reduction plan §E).
-    "https://trusttasks.org/spec/vta/contexts/list/1.0",
-    "https://trusttasks.org/spec/vta/contexts/create/1.0",
-    "https://trusttasks.org/spec/vta/contexts/get/1.0",
-    "https://trusttasks.org/spec/vta/contexts/update/1.0",
-    "https://trusttasks.org/spec/vta/contexts/update-did/1.0",
-    "https://trusttasks.org/spec/vta/contexts/preview-delete/1.0",
-    "https://trusttasks.org/spec/vta/contexts/delete/1.0",
     // ─ vta/seeds/* — keep-and-spec under `vta/` (reduction plan §E).
     "https://trusttasks.org/spec/vta/seeds/list/1.0",
     "https://trusttasks.org/spec/vta/seeds/rotate/1.0",
@@ -254,21 +246,6 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     "https://trusttasks.org/spec/vta/attestation/report/1.0",
     // ─ vta/webvh/** — two-ends-of-one-wire decision pending (plan §B).
     //   `dids/update` is published; the rest are not.
-    "https://trusttasks.org/spec/vta/webvh/servers/list/1.0",
-    "https://trusttasks.org/spec/vta/webvh/servers/register/1.0",
-    "https://trusttasks.org/spec/vta/webvh/servers/remove/1.0",
-    "https://trusttasks.org/spec/vta/webvh/dids/list/1.0",
-    "https://trusttasks.org/spec/vta/webvh/dids/create/1.0",
-    "https://trusttasks.org/spec/vta/webvh/dids/get/1.0",
-    "https://trusttasks.org/spec/vta/webvh/dids/delete/1.0",
-    "https://trusttasks.org/spec/vta/webvh/dids/rotate-keys/1.0",
-    "https://trusttasks.org/spec/vta/webvh/dids/register-with-server/1.0",
-    "https://trusttasks.org/spec/vta/webvh/agent-name/list/1.0",
-    "https://trusttasks.org/spec/vta/webvh/agent-name/check/1.0",
-    "https://trusttasks.org/spec/vta/webvh/agent-name/set/1.0",
-    "https://trusttasks.org/spec/vta/webvh/agent-name/remove/1.0",
-    "https://trusttasks.org/spec/vta/webvh/agent-name/disable/1.0",
-    "https://trusttasks.org/spec/vta/webvh/agent-name/enable/1.0",
     // ─ Vault archival lifecycle (#540) — generalise with a store
     //   discriminator instead of publishing twelve (reduction plan §C).
     "https://trusttasks.org/spec/vault/archive/0.1",
@@ -1561,10 +1538,17 @@ mod payload_validation_tests {
     #[tokio::test]
     async fn an_unspecced_task_proceeds_by_default_and_can_be_refused() {
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
-        // No published spec — one of many. (`vta/memory/list` HAS one, which is
-        // itself the point: the set of validatable tasks is growing.)
-        const UNSPECCED: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.0";
-        let d = doc(json!({ "contextId": "default" }));
+        // No published spec — one of the remaining few, and the set keeps
+        // shrinking. This fixture named `vta/webvh/dids/create/1.0` until
+        // trust-tasks #240 specified it and trust-tasks-rs 0.11 made the schema
+        // resolvable, at which point the task validated and the fail-closed
+        // half of this test stopped proving anything. That is the growth the
+        // comment here has always pointed at, arriving.
+        //
+        // When `vta/seeds/*` is specified too, move this to whatever is still
+        // in `UNSPECCED_DISPATCHED_URIS` rather than weakening the assertion.
+        const UNSPECCED: &str = "https://trusttasks.org/spec/vta/seeds/rotate/1.0";
+        let d = doc(json!({ "mnemonic": "correct horse battery staple" }));
 
         assert!(
             super::validate_payload(&state, UNSPECCED, &d)
