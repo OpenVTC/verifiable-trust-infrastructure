@@ -45,17 +45,28 @@ impl VtaClient {
         id: &str,
         req: UpdateContextRequest,
     ) -> Result<ContextResponse, VtaError> {
-        self.rpc_tt(
-            crate::trust_tasks::TASK_CONTEXTS_UPDATE_1_0,
-            serde_json::json!({
-                "id": id,
-                "name": &req.name,
-                "did": &req.did,
-                "description": &req.description,
-            }),
-            30,
-        )
-        .await
+        // Built from the request struct rather than a `json!` literal, for two
+        // reasons the literal got wrong.
+        //
+        // It named the members by hand and omitted `contextPolicy`, so a caller
+        // setting a policy had it silently dropped — the field was accepted and
+        // never sent. And it read `req.name`/`req.did`/`req.description`
+        // directly, which bypasses their `skip_serializing_if` and emits
+        // `null` for every unset one; the agent rejects that as
+        // `malformedRequest`, since an absent optional must be ABSENT.
+        let mut payload = serde_json::to_value(&req)?;
+        match payload.as_object_mut() {
+            Some(obj) => {
+                obj.insert("id".into(), serde_json::Value::String(id.to_string()));
+            }
+            None => {
+                return Err(VtaError::Protocol(
+                    "update-context request did not serialize to an object".into(),
+                ));
+            }
+        }
+        self.rpc_tt(crate::trust_tasks::TASK_CONTEXTS_UPDATE_1_0, payload, 30)
+            .await
     }
 
     /// Update the DID for a context. Requires Admin role with access to the context.

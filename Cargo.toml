@@ -236,8 +236,8 @@ aws-lc-rs = "1.16"
 # `v0_1` modules — the VTA dual-accepts both during the migration.
 # Bump in lockstep with affinidi-webvh-service when upstream publishes.
 trust-tasks-rs = { version = "0.11", default-features = false, features = ["validate"] }
-trust-tasks-capability-client = "0.8"
-trust-tasks-https = { version = "0.9", default-features = false, features = ["server", "client", "jwt"] }
+trust-tasks-capability-client = "0.9"
+trust-tasks-https = { version = "0.10", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
 # and the `pack_trust_task`/`unpack_trust_task` pair that enforce it.
@@ -248,8 +248,8 @@ trust-tasks-https = { version = "0.9", default-features = false, features = ["se
 # A conformant peer rejects that, silently, because "not an envelope" is
 # indistinguishable from "not addressed to me". One constant, from the crate
 # that defines it.
-trust-tasks-didcomm = { version = "0.9", default-features = false }
-trust-tasks-proof = { version = "0.9", default-features = false, features = ["affinidi"] }
+trust-tasks-didcomm = { version = "0.10", default-features = false }
+trust-tasks-proof = { version = "0.10", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }
