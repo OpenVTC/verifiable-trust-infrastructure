@@ -61,20 +61,21 @@ use syn::{ImplItem, Item, ReturnType, Type};
 ///
 /// Every name here should disappear as #1035 collapses the pairs.
 const COVERED_BY_SEAM_TEST: &[&str] = &[
-    "ContextResponse",
-    "ContextListResponse",
-    "SignResponse",
-    "RenameKeyResponse",
-    "InvalidateKeyResponse",
-    "GetKeySecretResponse",
-    "RotateSeedResponse",
-    "ListSeedsResponse",
-    // Not part of the #1033 outage — classified safe by reading the attributes
-    // on both types. That reading was right, but it is the same kind of
-    // reasoning that classified `client/types.rs` as REST bodies, so it is now a
-    // check rather than a conclusion.
+    // The ACL pair is the one place two types is the right answer:
+    // `AclEntryResponse` renames `subject`→`did` and `scopes`→`allowed_contexts`
+    // and converts RFC 3339 to epoch seconds, so it cannot simply re-export the
+    // agent's `AclEntry`. An adapter carrying real logic can be wrong in ways a
+    // mirror cannot, which is why it is checked rather than reasoned about.
     "AclListResponse",
 ];
+
+// The eight names that used to sit above — ContextResponse, ContextListResponse,
+// SignResponse, RenameKeyResponse, InvalidateKeyResponse, GetKeySecretResponse,
+// RotateSeedResponse, ListSeedsResponse — are gone because the types are gone.
+// #1035 replaced each with a `pub use` of the agent's own body, so they are no
+// longer defined under `src/client/` and this census no longer classifies them
+// as private. That is the intended end state: the list shrinks as the duplicates
+// are removed, rather than growing as they are papered over.
 
 /// Client-private types that are nonetheless safe, each with the reason.
 ///

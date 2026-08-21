@@ -770,25 +770,14 @@ pub async fn run_keys_bundle(
     .await
 }
 
-/// Convert a server-side `CreateContextResultBody` (the operations-layer
-/// return type) to the client-side `ContextResponse` shape that the
-/// shared `vta_cli_common::commands::contexts::render_*` helpers
-/// consume. Field-by-field copy — the two types are identical on the
-/// wire; this adapter exists only because they're declared in
-/// different modules for layering reasons.
-fn to_context_response(
-    record: &vta_sdk::protocols::context_management::create::CreateContextResultBody,
-) -> vta_sdk::client::ContextResponse {
-    vta_sdk::client::ContextResponse {
-        id: record.id.clone(),
-        name: record.name.clone(),
-        did: record.did.clone(),
-        description: record.description.clone(),
-        base_path: record.base_path.clone(),
-        created_at: record.created_at,
-        updated_at: record.updated_at,
-    }
-}
+// The `to_context_response` adapter that used to sit here is gone (#1035).
+//
+// It copied a `CreateContextResultBody` field-by-field into the client's
+// separate `ContextResponse`, and its comment said the two were "identical on
+// the wire". They were not: the client struct had no `parent`, so this silently
+// dropped it and `vta contexts create --parent x` rendered the new context with
+// no parent shown. Both are now one type, so the render helpers take the record
+// directly and the member cannot go missing.
 
 /// `vta contexts create` — offline equivalent of `POST /contexts`
 /// (and `pnm contexts create`).
@@ -865,7 +854,7 @@ pub async fn run_context_create(
     cs.persist().await?;
 
     println!("Context created:");
-    render_context_record(&to_context_response(&record));
+    render_context_record(&record);
     Ok(())
 }
 
@@ -885,7 +874,7 @@ pub async fn run_context_list(
     let resp = crate::operations::contexts::list_contexts(&contexts_ks, &auth, "vta-contexts-list")
         .await?;
 
-    let contexts: Vec<_> = resp.contexts.iter().map(to_context_response).collect();
+    let contexts = resp.contexts;
     render_context_list(&contexts);
     Ok(())
 }
@@ -908,7 +897,7 @@ pub async fn run_context_get(
         crate::operations::contexts::get_context_op(&contexts_ks, &auth, &id, "vta-contexts-get")
             .await?;
 
-    render_context_record(&to_context_response(&record));
+    render_context_record(&record);
     Ok(())
 }
 
@@ -947,7 +936,7 @@ pub async fn run_context_update(
 
     cs.persist().await?;
     println!("Context updated:");
-    render_context_record(&to_context_response(&record));
+    render_context_record(&record);
     Ok(())
 }
 
