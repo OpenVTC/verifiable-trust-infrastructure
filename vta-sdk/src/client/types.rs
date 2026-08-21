@@ -6,34 +6,40 @@
 //!
 //! # These are Trust-Task decode targets, not REST bodies
 //!
-//! The name of this file is older than what is in it. Several of the response
-//! types below are the deserialize target of a **Trust Task** — `rpc_tt` carries
-//! the same document over REST, DIDComm and TSP alike, so "the REST types" has
-//! not described this module since the transports converged.
+//! The name of this file is older than what is in it. The response types here
+//! are the deserialize target of a **Trust Task** — `rpc_tt` carries the same
+//! document over REST, DIDComm and TSP alike, so "the REST types" has not
+//! described this module since the transports converged.
 //!
-//! That mattered once. #1000 folded Trust Task payloads to lowerCamelCase per
-//! SPEC §4.10 and excluded this file as REST bodies whose casing "no published
-//! schema pins". The exclusion was drawn by path, and the path was stale: the
-//! agent moved to `basePath` while [`ContextResponse`] went on demanding
-//! `base_path`, so every `pnm contexts` command failed with `missing field
-//! base_path` — plus `keys sign`/`rename`/`invalidate`, seed rotate/list, and
-//! the MCP surface that wraps them.
+//! That mattered once, badly. #1000 folded Trust Task payloads to lowerCamelCase
+//! per SPEC §4.10 and excluded this file as REST bodies whose casing "no
+//! published schema pins". The exclusion was drawn by path, and the path was
+//! stale: the agent moved to `basePath` while `ContextResponse` went on
+//! demanding `base_path`, so every `pnm contexts` command failed with `missing
+//! field base_path` — plus `keys sign`/`rename`/`revoke`, seed rotate/list, and
+//! the MCP surface wrapping them.
 //!
-//! **The casing was the symptom. The defect is that a single wire has two
-//! structs** — this one and the `protocols::**` body the agent serializes — so a
-//! change to either can move one end alone. The 50 Trust-Task call sites that
-//! did *not* break are precisely those where client and agent decode the *same*
-//! struct. Aliases restore compatibility without changing what anything emits;
-//! collapsing each pair onto one type is the real repair, and is deliberately
-//! not attempted here because it changes public type identity for
-//! `vta-cli-common` and `vta-mcp`.
+//! # A response type here is the agent's type, under the client's name
 //!
-//! Until then: **a `#[serde(alias)]` here is load-bearing.** Adding a
-//! multi-word field to any type in this file without one reintroduces the same
-//! outage. `vta-sdk/tests/trust_task_decode.rs` fails if you do.
+//! The casing was the symptom; the defect was that one wire had **two structs**,
+//! either of which could move alone. #1033 papered it with `serde` aliases;
+//! #1035 removed it: every decode target below is now a `pub use` of the very
+//! body the agent serializes. The two ends cannot disagree, because there are no
+//! longer two ends — which is a stronger guarantee than any test could give.
+//!
+//! The re-export keeps the client-facing name, so `get_context` still returns
+//! something called `ContextResponse` rather than `CreateContextResultBody`.
+//!
+//! **When adding a Trust-Task response type, re-export the agent's body rather
+//! than declaring a struct that mirrors it.** A mirror compiles, passes review,
+//! and drifts the next time someone touches the wire.
+//! `vta-sdk/tests/trust_task_decode_census.rs` refuses a new one.
+//!
+//! Request builders are a different matter and stay local: `CreateKeyRequest`
+//! and friends exist for ergonomics (`.new(..).label(..)`) and produce the wire
+//! shape rather than describing it, so they cannot drift the same way.
 
 use crate::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
-use crate::protocols::key_management::sign::SignAlgorithm;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -260,32 +266,23 @@ pub struct UpdateContextDidRequest {
     pub did: String,
 }
 
-/// Decode target for the `contexts/{create,get,update,update-did}` Trust Tasks.
+/// Decode target for the `contexts/{create,get,update,update-did}` Trust Tasks
+/// — **the agent's own body type**, under the name the client API has always
+/// used.
 ///
-/// The agent serializes
-/// [`CreateContextResultBody`](crate::protocols::context_management::create::CreateContextResultBody),
-/// which is lowerCamelCase per SPEC §4.10. This type is a *separate* struct for
-/// the same wire, so the fold in #1000 moved one end and not the other — see the
-/// module note on [`super::types`] about why the aliases below are load-bearing
-/// rather than decoration.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ContextResponse {
-    pub id: String,
-    pub name: String,
-    pub did: Option<String>,
-    pub description: Option<String>,
-    #[serde(alias = "basePath")]
-    pub base_path: String,
-    #[serde(alias = "createdAt")]
-    pub created_at: DateTime<Utc>,
-    #[serde(alias = "updatedAt")]
-    pub updated_at: DateTime<Utc>,
-}
+/// It was a separate struct with the same members until #1035. Being separate is
+/// what let #1000 move the agent to `basePath` while this went on demanding
+/// `base_path`, breaking every `pnm contexts` command; being the same type makes
+/// that unrepresentable rather than merely tested for.
+///
+/// The old struct also had no `parent`, so a nested context rendered without
+/// one. That is fixed here by construction — the member now exists because the
+/// agent's type has it.
+pub use crate::protocols::context_management::create::CreateContextResultBody as ContextResponse;
 
-#[derive(Debug, Deserialize)]
-pub struct ContextListResponse {
-    pub contexts: Vec<ContextResponse>,
-}
+/// Decode target for `contexts/list` — the agent's own body type. See
+/// [`ContextResponse`].
+pub use crate::protocols::context_management::list::ListContextsResultBody as ContextListResponse;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateKeyResponse {
@@ -307,48 +304,28 @@ fn default_derived_origin() -> KeyOrigin {
     KeyOrigin::Derived
 }
 
-#[derive(Debug, Deserialize)]
-pub struct InvalidateKeyResponse {
-    #[serde(alias = "keyId")]
-    pub key_id: String,
-    pub status: KeyStatus,
-    #[serde(alias = "updatedAt")]
-    pub updated_at: DateTime<Utc>,
-}
+/// Decode target for `keys/revoke` — the agent's own body type. See
+/// [`ContextResponse`] for why these are re-exports rather than structs.
+pub use crate::protocols::key_management::revoke::RevokeKeyResultBody as InvalidateKeyResponse;
 
 #[derive(Debug, Serialize)]
 pub struct RenameKeyRequest {
     pub key_id: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct RenameKeyResponse {
-    #[serde(alias = "keyId")]
-    pub key_id: String,
-    #[serde(alias = "updatedAt")]
-    pub updated_at: DateTime<Utc>,
-}
+/// Decode target for `keys/rename` — the agent's own body type.
+pub use crate::protocols::key_management::rename::RenameKeyResultBody as RenameKeyResponse;
 
-#[derive(Debug, Deserialize)]
-pub struct GetKeySecretResponse {
-    #[serde(alias = "keyId")]
-    pub key_id: String,
-    #[serde(alias = "keyType")]
-    pub key_type: KeyType,
-    #[serde(alias = "publicKeyMultibase")]
-    pub public_key_multibase: String,
-    #[serde(alias = "privateKeyMultibase")]
-    pub private_key_multibase: String,
-}
+/// Decode target for `seeds/export-mnemonic` — the agent's own body type.
+///
+/// Carries a real improvement beyond deduplication: the struct this replaces
+/// derived `Debug`, so `{:?}` on a response printed the **raw private key**.
+/// The agent's type hand-writes `Debug` to redact it, precisely so a caller
+/// cannot tracing-log it by accident.
+pub use crate::protocols::key_management::secret::GetKeySecretResultBody as GetKeySecretResponse;
 
-/// Response from the `keys/sign` Trust Task.
-#[derive(Debug, Deserialize)]
-pub struct SignResponse {
-    #[serde(alias = "keyId")]
-    pub key_id: String,
-    pub signature: String,
-    pub algorithm: SignAlgorithm,
-}
+/// Decode target for `keys/sign` — the agent's own body type.
+pub use crate::protocols::key_management::sign::SignResultBody as SignResponse;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ListKeysResponse {
@@ -363,31 +340,16 @@ pub struct ErrorResponse {
 
 // ── Seed types ──────────────────────────────────────────────────────
 
-/// Nested element of [`ListSeedsResponse`].
+/// Nested element of [`ListSeedsResponse`] — the agent's own body type.
 ///
-/// The agent's counterpart
-/// ([`SeedInfo`](crate::protocols::seed_management::list::SeedInfo)) is the one
-/// payload struct #1000 left *without* `rename_all`, so it still emits
-/// snake_case and its own `alias = "created_at"` attributes are inert. These
-/// aliases are therefore pre-emptive: they cost nothing today and mean this type
-/// keeps decoding when `SeedInfo` is folded, instead of breaking a release later
-/// for a reason nobody will connect to that change.
-#[derive(Debug, Deserialize)]
-pub struct SeedInfoResponse {
-    pub id: u32,
-    pub status: String,
-    #[serde(alias = "createdAt")]
-    pub created_at: DateTime<Utc>,
-    #[serde(alias = "retiredAt")]
-    pub retired_at: Option<DateTime<Utc>>,
-}
+/// Note that `SeedInfo` is the one payload struct #1000 left without
+/// `rename_all`, so it still emits snake_case and its own `alias` attributes are
+/// inert (#1034). Sharing the type means that when #1034 folds it, both ends
+/// move together and there is nothing here to forget.
+pub use crate::protocols::seed_management::list::SeedInfo as SeedInfoResponse;
 
-#[derive(Debug, Deserialize)]
-pub struct ListSeedsResponse {
-    pub seeds: Vec<SeedInfoResponse>,
-    #[serde(alias = "activeSeedId")]
-    pub active_seed_id: u32,
-}
+/// Decode target for `seeds/list` — the agent's own body type.
+pub use crate::protocols::seed_management::list::ListSeedsResultBody as ListSeedsResponse;
 
 #[derive(Debug, Serialize)]
 pub struct RotateSeedRequest {
@@ -395,13 +357,8 @@ pub struct RotateSeedRequest {
     pub mnemonic: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct RotateSeedResponse {
-    #[serde(alias = "previousSeedId")]
-    pub previous_seed_id: u32,
-    #[serde(alias = "newSeedId")]
-    pub new_seed_id: u32,
-}
+/// Decode target for `seeds/rotate` — the agent's own body type.
+pub use crate::protocols::seed_management::rotate::RotateSeedResultBody as RotateSeedResponse;
 
 // ── ACL types ───────────────────────────────────────────────────────
 
