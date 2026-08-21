@@ -2,6 +2,138 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.26.0...vta-sdk-v0.27.0) — 2026-08-21
+
+
+### Fixed
+
+- **sdk**: Decode the Trust-Task responses the agent actually sends ([#1033](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1033))
+
+`pnm contexts create` fails against any agent built since #1000:
+
+      Protocol error: trust-task response decode: missing field `base_path`
+
+  #1000 folded Trust Task payloads to lowerCamelCase per SPEC §4.10 and excluded
+  `client/types.rs` as REST bodies whose casing "no published schema pins". The
+  exclusion was drawn by file path, and the path was stale: `rpc_tt` carries the
+  same Trust-Task document over REST, DIDComm and TSP alike, so `ContextResponse`
+  is a Trust-Task decode target and a published schema does pin it. The agent moved
+  to `basePath`; the client went on demanding `base_path`.
+
+  Eleven call sites across eight types, every one a required field with no
+  `default`, so they fail hard on every transport rather than degrading:
+
+  - contexts create / get / update / update-did / list — all of `pnm contexts`
+  - keys sign / rename / revoke / export-secret
+  - seeds rotate / list (`activeSeedId` only)
+
+  `vta-cli-common` and `vta-mcp` consume these, so `pnm`/`cnm` key management and
+  the MCP tool surface are equally affected. The user who reported it hit contexts
+  first and would have hit `keys sign` next.
+
+  Aliases rather than `rename_all`: this is the same Postel fold #1000 used, it
+  changes nothing about what the SDK emits, and it keeps working against an agent
+  that has not taken the change. `SeedInfoResponse` gets aliases it does not yet
+  need, because its counterpart `SeedInfo` is the one payload struct #1000 left
+  unfolded — when that lands, this type should not be what breaks.
+
+  The casing is the symptom. The defect is that one wire has two structs, so
+  either end can move alone; the 50 Trust-Task call sites that did NOT break are
+  exactly those where client and agent decode the same type. Collapsing each pair
+  onto one type is the real repair and is not attempted here — it changes public
+  type identity for two downstream crates. The module note records that.
+
+  ## Why no test caught a total outage
+
+  Three layers each stopped one step short of the join. The conformance harness
+  checks the agent against the published schema — green, its witness correctly
+  said `basePath`. The SDK's client tests check the client against a hand-written
+  mock — also green, because the mock still said `base_path`. Nothing compared the
+  two fixtures, so they disagreed for two days while both suites passed.
+
+  `vta-sdk/tests/trust_task_decode.rs` is that missing seam: it constructs the
+  agent's own body type, serializes it as the agent would, and requires the
+  client's own decode type to accept the bytes. No JSON literal appears in the
+  derived cases, so there is no third spelling to drift. Verified non-vacuous —
+  with the aliases reverted, 9 of 9 derived cases fail, each naming the CLI surface
+  that is broken and printing the exact wire.
+
+  The stale fixtures are re-cut to what an agent really sends, including the
+  asymmetry a uniform pass would have got wrong: `seeds[]` stays snake_case inside
+  a camelCase `activeSeedId`, because that is what the half-folded type emits.
+  Re-cutting them would have silently retired the only coverage of the snake_case
+  intake aliases, so that direction is now asserted explicitly by name —
+  `a_legacy_agent_snake_case_response_still_decodes` — rather than left implicit in
+  a fixture someone would later tidy.
+
+  Conformance witnesses stay hand-written: they anchor the types to the spec, and
+  deriving them from the types they check would make them vacuous.
+
+  Two adjacent findings, left alone as neither is a break: `CapabilitiesResponse`
+  and `SeedInfo` both received `alias` attributes in #1000 without the
+  `rename_all` that would give them meaning, so both still emit snake_case and
+  their aliases are inert. Filed rather than folded in, since fixing them changes
+  the wire.
+
+- **sdk/cli**: A credential store that cannot be opened must not read as "never logged in" ([#1032](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1032))
+
+All four binaries treated an unavailable OS credential store as a warning
+  and carried on. What happened next was worse than a silent fallback:
+  `KeyringBackend` stayed registered, every `Entry::new` returned
+  `NoDefaultStore`, and `SessionBackend::load` swallowed it and returned
+  `None` — so the tool behaved exactly as though the user had never logged
+  in. A silent fallback at least stores something; this silently forgets.
+  OpenVTC hit the user-facing end of it: a profile kept in the Linux kernel
+  keyring did not survive a reboot, and the error told the user to check
+  their network.
+
+  The four call sites are byte-identical, but their consequences are not,
+  so the fix is not:
+
+  - `pnm` and `cnm` keep their session — the admin DID and its private key
+    — in the credential store and nowhere else. They now exit at startup
+    via `keyring_init::install_default_store_or_exit`, which is the whole
+    point: there is nothing they can usefully do next.
+  - `vta` and `vtc` never construct an SDK `SessionStore`; they use the
+    fjall-backed `KeyspaceSessionStore`, and their keyring use is the seed
+    store, one of eight `[secrets] backend` options. Which one is in play
+    is not known until config loads, long after `main` starts, so hard
+    failing there would break every deployment on aws/gcp/azure/vault/k8s
+    running on a host with no credential store — the normal server shape.
+    They get `warn_store_unavailable`, and `KeyringSeedStore` — which
+    already failed closed — now says which subsystem broke rather than
+    "failed to create keyring entry".
+
+  The second half is `FileBackend`. `default_backend` ended in an
+  `#[allow(unreachable_code)]` fallback into it whenever no backend feature
+  was enabled, writing the admin private key to `sessions.json` as
+  plaintext at the process umask, announced by a WARNING on every access —
+  which is to say, invisible. `pnm`'s own bootstrap-secrets path has always
+  used 0600; the inconsistency was inside one tool.
+
+  That fallback is gone. A build with no session store gets `RefusingBackend`,
+  which refuses to save rather than inventing somewhere to put a private
+  key. `FileBackend` is now reachable only by explicit choice — the
+  `config-session` feature, or `VTI_SECURE_STORE=file` at runtime — and
+  creates its file at 0600 inside a 0700 directory *before* writing, since
+  writing and then hardening leaves a window at the umask. An existing
+  world-readable file from an older build is re-hardened on the next write.
+
+  The runtime override exists because requiring a rebuild to run on a
+  headless host creates pressure to disable the check rather than make a
+  choice. It parses strictly: `os` or `file`, and anything else — including
+  a near-miss like `plaintext` — resolves to neither and refuses. Asking
+  for `os` on a build with no `keyring` feature refuses too, rather than
+  quietly substituting a file.
+
+  One explanation now serves every tool, in `vta_sdk::secure_store`, taking
+  the error as `Display` so it is available without the `keyring` feature —
+  OpenVTC renders the same text and honours the same override, which was
+  the stated goal: identical secret handling across vta, pnm, openvtc and
+  vtc, hard failure rather than a fallback to open text files.
+
+
+
 ## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.25.1...vta-sdk-v0.26.0) — 2026-08-20
 
 

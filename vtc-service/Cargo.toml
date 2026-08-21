@@ -133,8 +133,8 @@ vti-common = { path = "../vti-common", version = "0.13", features = [
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
-vti-secrets = { path = "../vti-secrets", version = "0.1" }
-vta-sdk = { path = "../vta-sdk", version = "0.26", features = [
+vti-secrets = { path = "../vti-secrets", version = "0.2" }
+vta-sdk = { path = "../vta-sdk", version = "0.27", features = [
   "didcomm",
   "session",
   "config-session",
