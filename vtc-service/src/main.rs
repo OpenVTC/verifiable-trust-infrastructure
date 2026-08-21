@@ -170,10 +170,11 @@ async fn main() {
 
     let cli = Cli::parse();
 
+    // Same reasoning as the VTA: `[secrets] backend` picks the store and is not
+    // known this early, so this reports rather than exits. See
+    // `warn_store_unavailable`.
     #[cfg(feature = "keyring")]
-    if let Err(e) = vta_sdk::keyring_init::install_default_store() {
-        eprintln!("warning: OS keyring unavailable: {e}");
-    }
+    vta_sdk::keyring_init::warn_store_unavailable("vtc");
 
     print_banner();
 

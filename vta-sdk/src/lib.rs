@@ -134,6 +134,11 @@ pub mod http;
 #[cfg(feature = "keyring")]
 pub mod keyring_init;
 pub mod keys;
+// Which store holds a tool's secrets, and the one explanation every tool in the
+// workspace prints when that store cannot be opened. Always compiled — a
+// consumer that does not enable `keyring` still renders the same text and
+// honours the same `VTI_SECURE_STORE` override.
+pub mod secure_store;
 // Client-side idempotency: one key held across every attempt of one operation.
 // Needs the async runtime for its task-local + backoff, so it rides `client`.
 #[cfg(feature = "client")]

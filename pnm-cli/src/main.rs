@@ -81,10 +81,12 @@ async fn main() {
         .with_writer(std::io::stderr)
         .init();
 
+    // PNM's session — the admin DID and its private key — lives in the OS
+    // credential store. If that store cannot be opened, `SessionStore` reads
+    // return `None`, which is indistinguishable from "never logged in": the
+    // tool does not fall back, it forgets. Stop and say so instead.
     #[cfg(feature = "keyring")]
-    if let Err(e) = vta_sdk::keyring_init::install_default_store() {
-        eprintln!("warning: OS keyring unavailable: {e}");
-    }
+    vta_sdk::keyring_init::install_default_store_or_exit("pnm");
 
     print_banner();
 
