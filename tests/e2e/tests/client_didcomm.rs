@@ -155,15 +155,21 @@ fn imported_key_envelope(id: &str) -> Value {
     json!({ "key": record })
 }
 
+/// A context as a **current** agent returns it — lowerCamelCase per SPEC §4.10.
+///
+/// Said `base_path` until #1000 folded the agent's body and left this behind, so
+/// the DIDComm transport's context tests described an agent that no longer
+/// existed. The casing is transport-independent: it is the Trust-Task body, not
+/// a REST detail. See `vta-sdk/tests/trust_task_decode.rs`.
 fn context_json(id: &str) -> Value {
     json!({
         "id": id,
         "name": "Primary",
         "did": "did:web:vta.example.com",
         "description": null,
-        "base_path": "m/26'/2'/0'",
-        "created_at": "2026-01-01T00:00:00Z",
-        "updated_at": "2026-01-01T00:00:00Z"
+        "basePath": "m/26'/2'/0'",
+        "createdAt": "2026-01-01T00:00:00Z",
+        "updatedAt": "2026-01-01T00:00:00Z"
     })
 }
 
