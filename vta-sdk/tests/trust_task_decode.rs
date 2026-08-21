@@ -42,10 +42,12 @@
 use chrono::{TimeZone, Utc};
 
 use vta_sdk::client::{
-    ContextListResponse, ContextResponse, GetKeySecretResponse, InvalidateKeyResponse,
-    ListSeedsResponse, RenameKeyResponse, RotateSeedResponse, SignResponse,
+    AclEntryResponse, AclListResponse, ContextListResponse, ContextResponse, GetKeySecretResponse,
+    InvalidateKeyResponse, ListSeedsResponse, RenameKeyResponse, RotateSeedResponse, SignResponse,
 };
 use vta_sdk::keys::{KeyStatus, KeyType};
+use vta_sdk::protocols::acl_management::entry::AclEntry;
+use vta_sdk::protocols::acl_management::list::ListAclResultBody;
 use vta_sdk::protocols::context_management::create::CreateContextResultBody;
 use vta_sdk::protocols::context_management::list::ListContextsResultBody;
 use vta_sdk::protocols::key_management::rename::RenameKeyResultBody;
@@ -211,6 +213,79 @@ fn seeds_list_decodes_including_its_elements() {
     assert_eq!(got.active_seed_id, 1);
     assert_eq!(got.seeds.len(), 1, "the element must survive the decode");
     assert_eq!(got.seeds[0].created_at, ts());
+}
+
+// ── ACL ─────────────────────────────────────────────────────────────
+
+/// A representative entry, with every optional member **set**.
+///
+/// A fixture that leaves optionals unset would serialize without them (they all
+/// carry `skip_serializing_if`), and a member absent from the wire is exactly a
+/// member this seam cannot check. `allowed_keys` is `Some(vec![])` on purpose:
+/// `None` and `Some(∅)` are opposite grants on this type, and the empty vec is
+/// the one that must survive as `"allowedKeys": []`.
+fn agent_acl_entry() -> AclEntry {
+    AclEntry {
+        subject: "did:key:z6MkSubject".into(),
+        role: "admin".into(),
+        scopes: vec!["personal".into()],
+        allowed_keys: Some(vec![]),
+        label: Some("laptop".into()),
+        created_at: Some(ts()),
+        created_by: Some("did:key:z6MkAdmin".into()),
+        updated_at: Some(ts()),
+        updated_by: Some("did:key:z6MkAdmin".into()),
+        expires_at: Some(ts()),
+        step_up: None,
+        approve: None,
+    }
+}
+
+/// `pnm acl show` / `grant` / `update` / `change-role`.
+///
+/// These decode a `pub(crate)` `{ entry }` envelope, which a `tests/` file
+/// cannot name — and which cannot drift anyway, its one member being
+/// single-word. The seam that *can* drift is the entry inside it, so that is
+/// what is asserted: the agent's `AclEntry` into the client's
+/// `AclEntryResponse`, which renames `subject`→`did` and `scopes`→
+/// `allowed_contexts` and converts RFC 3339 to epoch seconds.
+///
+/// The audit for #1033 classified this pair safe by reading the attributes on
+/// both types. That reading was right — and it is the same kind of reasoning
+/// that classified `client/types.rs` as REST bodies, so it is a check now.
+#[test]
+fn acl_entry_decodes() {
+    let got: AclEntryResponse =
+        agent_to_client("pnm acl grant / show / update", &agent_acl_entry());
+    assert_eq!(got.did, "did:key:z6MkSubject", "subject renames to did");
+    assert_eq!(
+        got.allowed_contexts,
+        vec!["personal".to_string()],
+        "scopes renames to allowed_contexts"
+    );
+    assert_eq!(
+        got.allowed_keys,
+        Some(vec![]),
+        "Some(empty) is the narrowest grant and must not decode as None"
+    );
+    assert_eq!(got.label.as_deref(), Some("laptop"));
+    assert_ne!(got.created_at, 0, "RFC 3339 must convert to epoch seconds");
+    assert!(got.expires_at.is_some());
+}
+
+/// `pnm acl list`, including its elements.
+#[test]
+fn acl_list_decodes_including_its_elements() {
+    let agent = ListAclResultBody {
+        entries: vec![agent_acl_entry()],
+        truncated: false,
+        cursor: None,
+        redacted_fields: vec![],
+    };
+    let got: AclListResponse = agent_to_client("pnm acl list", &agent);
+    assert_eq!(got.entries.len(), 1, "the element must survive the decode");
+    assert_eq!(got.entries[0].did, "did:key:z6MkSubject");
+    assert_ne!(got.entries[0].created_at, 0);
 }
 
 // ── The other direction ─────────────────────────────────────────────

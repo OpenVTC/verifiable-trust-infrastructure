@@ -366,7 +366,13 @@ nitro_attest = { version = "0.2", features = ["builder"] }
 # rather than grepped: the attribute it looks for is routinely written across
 # several lines, which a regex reads wrong in exactly the direction that lets a
 # violation through.
-syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
+#
+# `visit` is for the decode census (tests/trust_task_decode_census.rs), which
+# has to find `rpc_tt` *call sites* inside method bodies — nested in `match`
+# arms, behind `?`, sometimes built across statements. A visitor finds the real
+# method call; searching the body's tokens would also match a mention in a
+# comment or a doc link.
+syn = { version = "2", features = ["full", "parsing", "extra-traits", "visit"] }
 
 [lints]
 workspace = true
