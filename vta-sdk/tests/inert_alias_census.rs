@@ -147,14 +147,12 @@ fn aliases(attrs: &[syn::Attribute]) -> Vec<String> {
         let mut cursor = tokens.as_str();
         while let Some(idx) = cursor.find("alias") {
             let rest = &cursor[idx..];
-            if let Some(open) = rest.find('"') {
-                if let Some(close) = rest[open + 1..].find('"') {
-                    found.push(rest[open + 1..open + 1 + close].to_string());
-                    cursor = &rest[open + 1 + close..];
-                    continue;
-                }
-            }
-            break;
+            let Some(open) = rest.find('"') else { break };
+            let Some(close) = rest[open + 1..].find('"') else {
+                break;
+            };
+            found.push(rest[open + 1..open + 1 + close].to_string());
+            cursor = &rest[open + 1 + close..];
         }
     }
     found
