@@ -511,10 +511,10 @@ async fn get_key_secret_returns_multibase() {
         "/keys/k1/secret",
         200,
         json!({
-            "key_id": "k1",
-            "key_type": "ed25519",
-            "public_key_multibase": "z6Mkpub",
-            "private_key_multibase": "zPriv"
+            "keyId": "k1",
+            "keyType": "ed25519",
+            "publicKeyMultibase": "z6Mkpub",
+            "privateKeyMultibase": "zPriv"
         }),
     )
     .await;
@@ -533,7 +533,7 @@ async fn sign_posts_base64url_payload() {
         "/keys/k1/sign",
         200,
         json!({
-            "key_id": "k1",
+            "keyId": "k1",
             "signature": "AQID",
             "algorithm": "eddsa"
         }),
@@ -554,9 +554,9 @@ async fn invalidate_key_deletes() {
         "/keys/k1",
         200,
         json!({
-            "key_id": "k1",
+            "keyId": "k1",
             "status": "revoked",
-            "updated_at": "2026-01-01T00:00:00Z"
+            "updatedAt": "2026-01-01T00:00:00Z"
         }),
     )
     .await;
@@ -573,7 +573,7 @@ async fn rename_key_patches() {
         "PATCH",
         "/keys/old",
         200,
-        json!({"key_id": "new", "updated_at": "2026-01-01T00:00:00Z"}),
+        json!({"keyId": "new", "updatedAt": "2026-01-01T00:00:00Z"}),
     )
     .await;
     let c = client(&server).await;
@@ -642,11 +642,16 @@ async fn list_seeds_returns_active() {
         "GET",
         "/keys/seeds",
         200,
+        // `seeds[]` is deliberately snake_case while `activeSeedId` is not:
+        // that asymmetry is what the agent really emits, because #1000 folded
+        // `ListSeedsResultBody` and left the nested `SeedInfo` alone. Making
+        // this fixture uniformly camelCase would describe an agent that does
+        // not exist. See `tests/trust_task_decode.rs::seeds_list_*`.
         json!({
             "seeds": [
                 {"id": 1, "status": "active", "created_at": "2026-01-01T00:00:00Z", "retired_at": null}
             ],
-            "active_seed_id": 1
+            "activeSeedId": 1
         }),
     )
     .await;
@@ -664,7 +669,7 @@ async fn rotate_seed_with_mnemonic() {
         "POST",
         "/keys/seeds/rotate",
         200,
-        json!({"previous_seed_id": 1, "new_seed_id": 2}),
+        json!({"previousSeedId": 1, "newSeedId": 2}),
     )
     .await;
     let c = client(&server).await;
@@ -938,15 +943,23 @@ async fn delete_acl_404_maps_to_not_found() {
 
 // ── Contexts ────────────────────────────────────────────────────────
 
+/// A context as a **current** agent returns it.
+///
+/// This fixture said `base_path` until #1000 folded the agent's body to
+/// lowerCamelCase and nothing moved it, so every context test here passed
+/// against an agent that no longer existed while `pnm contexts create` failed
+/// for real users. The authoritative check is now
+/// `tests/trust_task_decode.rs`, which serializes the agent's own type instead
+/// of describing it; this fixture is kept in step with it by hand.
 fn context_json(id: &str) -> Value {
     json!({
         "id": id,
         "name": "Primary",
         "did": "did:web:vta.example.com",
         "description": null,
-        "base_path": "m/26'/2'/0'",
-        "created_at": "2026-01-01T00:00:00Z",
-        "updated_at": "2026-01-01T00:00:00Z"
+        "basePath": "m/26'/2'/0'",
+        "createdAt": "2026-01-01T00:00:00Z",
+        "updatedAt": "2026-01-01T00:00:00Z"
     })
 }
 
