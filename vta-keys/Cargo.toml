@@ -2,7 +2,7 @@
 name = "vta-keys"
 description = "VTA key management — master-seed storage, BIP-32 key derivation, key wrapping, and the seed-store backend selection"
 readme = "README.md"
-version = "0.2.7"
+version = "0.2.8"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -37,8 +37,8 @@ tee = ["vti-secrets/tee"]
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.2" }
 vta-config = { path = "../vta-config", version = "0.3" }
 vti-common = { path = "../vti-common", version = "0.13" }
-vti-secrets = { path = "../vti-secrets", version = "0.1" }
-vta-sdk = { path = "../vta-sdk", version = "0.26", features = ["sealed-transfer"] }
+vti-secrets = { path = "../vti-secrets", version = "0.2" }
+vta-sdk = { path = "../vta-sdk", version = "0.27", features = ["sealed-transfer"] }
 affinidi-tdk = { workspace = true }
 affinidi-crypto = { workspace = true }
 ed25519-dalek = { workspace = true }
