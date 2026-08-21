@@ -9,8 +9,29 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct ListSeedsBody {}
 
+/// One seed record as `seeds/list` reports it.
+///
+/// # The `rename_all` here is load-bearing
+///
+/// #1000 folded Trust Task payloads to lowerCamelCase per SPEC §4.10 and added
+/// the aliases below — but not `rename_all`, without which an alias equal to the
+/// field's own name is a no-op. So this stayed snake_case while
+/// [`ListSeedsResultBody`] around it moved, and `seeds/list` emitted a body that
+/// disagreed with itself:
+///
+/// ```json
+/// {"seeds":[{"id":1,"status":"active","created_at":"…"}],"activeSeedId":1}
+/// ```
+///
+/// That is not a preserved contract, it is half a fold (#1034). Finished here;
+/// the aliases now do the Postel job they were written for, so a producer still
+/// sending `created_at` keeps decoding.
+///
+/// `tests/inert_alias_census.rs` is what makes this stick — it fails on any
+/// alias that accepts only what would be accepted anyway.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct SeedInfo {
     pub id: u32,
     pub status: String,

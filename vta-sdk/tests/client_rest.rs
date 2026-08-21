@@ -642,14 +642,13 @@ async fn list_seeds_returns_active() {
         "GET",
         "/keys/seeds",
         200,
-        // `seeds[]` is deliberately snake_case while `activeSeedId` is not:
-        // that asymmetry is what the agent really emits, because #1000 folded
-        // `ListSeedsResultBody` and left the nested `SeedInfo` alone. Making
-        // this fixture uniformly camelCase would describe an agent that does
-        // not exist. See `tests/trust_task_decode.rs::seeds_list_*`.
+        // Uniformly camelCase since #1034 folded the nested `SeedInfo`. This
+        // fixture previously carried a snake_case `seeds[]` inside a camelCase
+        // `activeSeedId` — the half-folded body #1000 actually left behind. That
+        // asymmetry is gone, so describing it here would now be the fiction.
         json!({
             "seeds": [
-                {"id": 1, "status": "active", "created_at": "2026-01-01T00:00:00Z", "retired_at": null}
+                {"id": 1, "status": "active", "createdAt": "2026-01-01T00:00:00Z", "retiredAt": null}
             ],
             "activeSeedId": 1
         }),
