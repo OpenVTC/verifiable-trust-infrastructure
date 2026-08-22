@@ -51,38 +51,36 @@ pub struct SupportedTasksResponse {
 /// a change to readers nobody can enumerate. That route is gone (#1039), so the
 /// only consumers left are Trust-Task and DIDComm callers who decode this very
 /// struct — and the fold is free.
+/// # Reduced to the delta (#1039)
+///
+/// This carried `features` and `services` — booleans for webvh / didcomm / tee
+/// / rest. Both are gone, because **the DID document is authoritative for which
+/// protocols a party speaks** (see the workspace CLAUDE.md), and a second
+/// answer to the same question is a second answer that can be wrong.
+///
+/// It was not hypothetically wrong, either. `services` was read from local
+/// config while a peer resolves the DID document, and runtime service
+/// management can change what is advertised without the config moving —
+/// so the two could disagree about the very thing a caller was asking.
+/// `features` reported compile-time `cfg!` flags, which say what the binary
+/// *could* serve rather than what it *does*; the honest version of that
+/// question is now `trust-task-discovery/0.1`, answered from the dispatch
+/// table.
+///
+/// What remains is genuinely VTA-specific inventory that neither the DID
+/// document nor task discovery covers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilitiesResponse {
     /// Crate version of the VTA service.
     pub version: String,
-    /// Enabled features/modules.
-    pub features: FeaturesInfo,
-    /// Enabled services (REST, DIDComm).
-    pub services: ServicesInfo,
     /// Configured WebVH servers available for DID creation.
     #[serde(alias = "webvh_servers")]
     pub webvh_servers: Vec<WebvhServerInfo>,
     /// Supported DID creation modes.
     #[serde(alias = "did_creation_modes")]
     pub did_creation_modes: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct FeaturesInfo {
-    pub webvh: bool,
-    pub didcomm: bool,
-    pub tee: bool,
-    pub rest: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct ServicesInfo {
-    pub rest: bool,
-    pub didcomm: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

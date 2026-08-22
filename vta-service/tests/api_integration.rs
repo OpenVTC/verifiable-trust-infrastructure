@@ -356,13 +356,14 @@ async fn capabilities_returns_features() {
     assert_eq!(status, StatusCode::OK, "body: {body}");
     let payload = &body["payload"];
     assert!(payload["version"].as_str().is_some());
-    assert!(payload["features"].is_object());
-    assert!(payload["services"].is_object());
     // `didCreationModes`, not `did_creation_modes` — this body was folded to
     // lowerCamelCase in #1039 once removing the REST route made it free.
     assert!(payload["didCreationModes"].is_array());
-    // webvh feature is compiled in for tests
-    assert_eq!(payload["features"]["webvh"], true);
+    // `features` / `services` were asserted here until #1039. The DID document
+    // is authoritative for what a party speaks, so this body no longer offers a
+    // second answer that could disagree with it.
+    assert!(payload.get("features").is_none(), "body: {body}");
+    assert!(payload.get("services").is_none(), "body: {body}");
 }
 
 /// `trust-task-discovery/0.1` answers from the dispatch table.

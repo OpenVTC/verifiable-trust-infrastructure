@@ -7,9 +7,10 @@
 //!   registry, already carried by `trust-tasks-rs`. This is what a client
 //!   should ask before assuming a task exists.
 //! - **`spec/vta/discovery/capabilities/1.0`** — the VTA-specific *deployment
-//!   inventory* (webvh hosts, DID-creation modes, compiled features). Not
-//!   task discovery; `registry-drift-triage.md` records the intent to reduce
-//!   this to the delta the canonical family does not cover.
+//!   inventory*: webvh hosts and DID-creation modes. Reduced to exactly that
+//!   delta in #1039; its `features` / `services` booleans are gone, because the
+//!   DID document is authoritative for which protocols a party speaks and a
+//!   second answer to that question is one that can disagree.
 //!
 //! The capabilities body used to be served on `GET /capabilities` as well.
 //! That route is gone (#1039): nothing consumed it — `VtaClient::capabilities`
@@ -19,9 +20,7 @@
 use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use vta_sdk::protocols::discovery::{
-    CapabilitiesBody, CapabilitiesResponse, FeaturesInfo, ServicesInfo, WebvhServerInfo,
-};
+use vta_sdk::protocols::discovery::{CapabilitiesBody, CapabilitiesResponse, WebvhServerInfo};
 
 use crate::auth::AuthClaims;
 use crate::server::AppState;
@@ -44,20 +43,12 @@ pub(super) async fn handle_capabilities(
         Err(resp) => return resp,
     };
 
-    let config = state.config.read().await;
-
-    let features = FeaturesInfo {
-        webvh: cfg!(feature = "webvh"),
-        didcomm: cfg!(feature = "didcomm"),
-        tee: cfg!(feature = "tee"),
-        rest: cfg!(feature = "rest"),
-    };
-
-    let services = ServicesInfo {
-        rest: config.services.rest,
-        didcomm: config.services.didcomm,
-    };
-
+    // `features` and `services` used to be assembled here and are gone (#1039).
+    // The DID document is authoritative for which protocols a party speaks, and
+    // `services` answered from local config — which runtime service management
+    // can leave behind, so the two could disagree about exactly the thing a
+    // caller was asking. `features` reported `cfg!` flags: what the binary could
+    // serve, not what it does. That question is `trust-task-discovery/0.1` now.
     #[cfg(feature = "webvh")]
     let webvh_servers = match crate::webvh_store::list_servers(&state.webvh_ks).await {
         Ok(servers) => servers
@@ -81,8 +72,6 @@ pub(super) async fn handle_capabilities(
 
     let body = CapabilitiesResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
-        features,
-        services,
         webvh_servers,
         did_creation_modes,
     };
