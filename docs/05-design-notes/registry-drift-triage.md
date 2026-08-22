@@ -134,7 +134,7 @@ Recommendation vocabulary: **spec** (author upstream, URI stays),
 
 | URI | Recommendation |
 |---|---|
-| `vta/discovery/capabilities/1.0` | **Diffed (#1039).** The published `trust-task-discovery/0.1` answers *"which Trust Tasks do you serve"* and is now served, from the dispatch table. What remains here genuinely exceeds it — webvh hosts, DID-creation modes, compiled features — so the recommendation resolves to *"keep, spec the delta"* rather than a straight fold. Still open: whether `features`/`services` should exist at all, given the DID document is already authoritative for what a party speaks. |
+| `vta/discovery/capabilities/1.0` | **RESOLVED — retired (#1039, #1043).** The original recommendation (fold) was right. `trust-task-discovery/0.1` now answers *"which tasks do you serve"*, from the dispatch table. Every other member had a better home: `features`/`services` at the DID document (authoritative for what a party speaks, and these could contradict it); `version` at `GET /health/details`, same auth, same `env!`; `webvhServers` at `webvh/servers/list/1.0`, a strict superset at the same auth; `didCreationModes` nowhere — it had no consumer and its vocabulary existed nowhere else in the codebase. |
 | `vta/management/reload-services/1.0` | Diff against published `config/reload/0.1`. The VTA already folded `vta/config/*` onto `config/{show,patch}` (#840 phase A); reload is the same shape of thing. Expected outcome: **fold onto `config/reload/0.1`, delete**. |
 
 ### `vta/backup/*` — 5 × fold-to-new-canonical (§D)

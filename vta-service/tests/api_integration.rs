@@ -317,53 +317,25 @@ fn delete_auth(uri: &str, token: &str) -> Request<Body> {
 
 // ── Capabilities ──────────────────────────────────────────────────
 
+/// The Trust-Task surface is authenticated.
+///
+/// This was `capabilities_requires_auth`, pointed at the retired task (#1043).
+/// The property is the spine's, not that task's, so it is asserted through the
+/// discovery task that replaced it rather than deleted with its subject.
 #[tokio::test]
-async fn capabilities_requires_auth() {
-    // `GET /capabilities` was removed in #1039; the task it wrapped remains and
-    // is still authenticated. Asserted through the Trust-Task surface, which is
-    // where every caller reaches it now.
+async fn trust_tasks_require_auth() {
     let (app, _ctx) = TestApp::new().await;
     let (status, _) = app
         .request(post_unauth(
             "/api/trust-tasks",
             json!({
                 "id": "urn:uuid:2a1b3c4d-5e6f-4071-8293-a4b5c6d7e8f0",
-                "type": "https://trusttasks.org/spec/vta/discovery/capabilities/1.0",
+                "type": "https://trusttasks.org/spec/trust-task-discovery/0.1",
                 "payload": {},
             }),
         ))
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn capabilities_returns_features() {
-    let (app, ctx) = TestApp::new().await;
-    let token = ctx
-        .auth_token("did:key:z6MkReader", "reader", vec!["any".into()])
-        .await;
-    let (status, body) = app
-        .request(post_auth(
-            "/api/trust-tasks",
-            &token,
-            json!({
-                "id": "urn:uuid:3b2c4d5e-6f70-4182-93a4-b5c6d7e8f901",
-                "type": "https://trusttasks.org/spec/vta/discovery/capabilities/1.0",
-                "payload": {},
-            }),
-        ))
-        .await;
-    assert_eq!(status, StatusCode::OK, "body: {body}");
-    let payload = &body["payload"];
-    assert!(payload["version"].as_str().is_some());
-    // `didCreationModes`, not `did_creation_modes` — this body was folded to
-    // lowerCamelCase in #1039 once removing the REST route made it free.
-    assert!(payload["didCreationModes"].is_array());
-    // `features` / `services` were asserted here until #1039. The DID document
-    // is authoritative for what a party speaks, so this body no longer offers a
-    // second answer that could disagree with it.
-    assert!(payload.get("features").is_none(), "body: {body}");
-    assert!(payload.get("services").is_none(), "body: {body}");
 }
 
 /// `trust-task-discovery/0.1` answers from the dispatch table.

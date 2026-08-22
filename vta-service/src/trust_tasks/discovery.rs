@@ -1,82 +1,24 @@
-//! Discovery slice trust-task handlers. Any authenticated caller.
+//! Discovery slice. One URI, one question: **which Trust Tasks does this agent
+//! serve?**
 //!
-//! Two URIs, answering two different questions:
+//! `spec/trust-task-discovery/0.1` — the published canonical family from the
+//! dtgwg-trust-tasks-tf registry, carried by `trust-tasks-rs`. Any
+//! authenticated caller. This is what a client should ask before assuming a
+//! task exists.
 //!
-//! - **`spec/trust-task-discovery/0.1`** — *which Trust Tasks does this agent
-//!   serve?* The published, canonical family from the dtgwg-trust-tasks-tf
-//!   registry, already carried by `trust-tasks-rs`. This is what a client
-//!   should ask before assuming a task exists.
-//! - **`spec/vta/discovery/capabilities/1.0`** — the VTA-specific *deployment
-//!   inventory*: webvh hosts and DID-creation modes. Reduced to exactly that
-//!   delta in #1039; its `features` / `services` booleans are gone, because the
-//!   DID document is authoritative for which protocols a party speaks and a
-//!   second answer to that question is one that can disagree.
-//!
-//! The capabilities body used to be served on `GET /capabilities` as well.
-//! That route is gone (#1039): nothing consumed it — `VtaClient::capabilities`
-//! goes over `rpc_tt` like every other task — and a REST route parallel to a
-//! Trust Task is the shape #1020 spent a PR removing everywhere else.
+//! `vta/discovery/capabilities/1.0` and `GET /capabilities` used to live here
+//! too. Both are retired (#1039, #1043) — see
+//! `vta_sdk::protocols::discovery` for what each of their members turned out to
+//! duplicate, and why a task named "capabilities" accumulated them.
 
 use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use vta_sdk::protocols::discovery::{CapabilitiesBody, CapabilitiesResponse, WebvhServerInfo};
 
 use crate::auth::AuthClaims;
 use crate::server::AppState;
 
-// `app_error_to_reject` is only reachable when the `webvh` feature is
-// on (the only branch that produces an `AppError`). Gate the import
-// alongside to avoid an "unused import" lint in non-webvh combos.
-#[cfg(feature = "webvh")]
-use super::helpers::app_error_to_reject;
 use super::helpers::{parse_payload, success_response};
-
-/// Handler for `spec/vta/discovery/capabilities/1.0`.
-pub(super) async fn handle_capabilities(
-    state: &AppState,
-    _auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let _req: CapabilitiesBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-
-    // `features` and `services` used to be assembled here and are gone (#1039).
-    // The DID document is authoritative for which protocols a party speaks, and
-    // `services` answered from local config — which runtime service management
-    // can leave behind, so the two could disagree about exactly the thing a
-    // caller was asking. `features` reported `cfg!` flags: what the binary could
-    // serve, not what it does. That question is `trust-task-discovery/0.1` now.
-    #[cfg(feature = "webvh")]
-    let webvh_servers = match crate::webvh_store::list_servers(&state.webvh_ks).await {
-        Ok(servers) => servers
-            .into_iter()
-            .map(|s| WebvhServerInfo {
-                id: s.id,
-                label: s.label,
-            })
-            .collect(),
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
-    #[cfg(not(feature = "webvh"))]
-    let webvh_servers: Vec<WebvhServerInfo> = vec![];
-
-    let mut did_creation_modes = vec!["vta-built".to_string()];
-    if cfg!(feature = "webvh") {
-        did_creation_modes.push("template".to_string());
-        did_creation_modes.push("final".to_string());
-        did_creation_modes.push("user-specified-keys".to_string());
-    }
-
-    let body = CapabilitiesResponse {
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        webvh_servers,
-        did_creation_modes,
-    };
-    success_response(&doc, body)
-}
 
 /// Handler for `spec/trust-task-discovery/0.1` — canonical capability
 /// negotiation.

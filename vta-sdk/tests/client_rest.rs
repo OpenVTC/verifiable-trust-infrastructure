@@ -226,34 +226,36 @@ async fn health_500_maps_to_server_error() {
 
 // ── Discovery + VTA management ──────────────────────────────────────
 
+/// `trust-task-discovery/0.1` replaces the retired `capabilities` task (#1043).
+///
+/// Asserts the decode, not the transport: the response is a bare list plus an
+/// optional framework version, and `frameworkVersion` is OPTIONAL in 0.1, so a
+/// responder that omits it must still decode rather than erroring.
 #[tokio::test]
-async fn capabilities_returns_features() {
+async fn supported_trust_tasks_decodes_without_a_framework_version() {
     let server = MockServer::start().await;
     let _g = mount_json(
         &server,
-        "GET",
-        "/capabilities",
+        "POST",
+        "/api/trust-tasks",
         200,
-        // Deliberately snake_case: the agent emits camelCase since #1039, and
-        // the aliases must keep accepting the retired spelling from an older
-        // one. `features` / `services` are gone — the DID document answers
-        // "what do you speak" — and are left in the fixture as members a
-        // current agent no longer sends, which must be ignored rather than
-        // rejected.
+        // `mount_json` wraps this in the response envelope itself — the body
+        // supplied here is the payload, not the whole document.
         json!({
-            "version": "0.5.0",
-            "features": {"webvh": true, "didcomm": false, "tee": false, "rest": true},
-            "services": {"rest": true, "didcomm": false},
-            "webvh_servers": [{"id": "s1"}],
-            "did_creation_modes": ["webvh"]
+            "supportedTypes": [
+                "https://trusttasks.org/spec/acl/grant/0.1",
+                "https://trusttasks.org/spec/acl/revoke/0.1"
+            ]
         }),
     )
     .await;
     let c = client(&server).await;
-    let caps = c.capabilities().await.unwrap();
-    assert_eq!(caps.version, "0.5.0");
-    assert_eq!(caps.webvh_servers.len(), 1);
-    assert_eq!(caps.webvh_servers[0].id, "s1");
+    let tasks = c.supported_trust_tasks(&["acl/*"]).await.unwrap();
+    assert_eq!(tasks.supported_types.len(), 2);
+    assert!(
+        tasks.framework_version.is_none(),
+        "an omitted frameworkVersion is legitimate in 0.1, not an error"
+    );
 }
 
 #[tokio::test]

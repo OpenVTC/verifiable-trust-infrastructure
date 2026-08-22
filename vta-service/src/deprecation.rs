@@ -104,12 +104,6 @@ const SUPERSEDED: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "GET",
-        "/capabilities",
-        "GET /capabilities",
-        trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0,
-    ),
-    (
-        "GET",
         "/config",
         "GET /config",
         trust_tasks::TASK_CONFIG_SHOW_0_1,

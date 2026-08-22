@@ -1337,46 +1337,6 @@ pub async fn handle_problem_report(_ctx: HandlerContext, message: Message) -> Ha
 // Discovery
 // ---------------------------------------------------------------------------
 
-pub async fn handle_discover_capabilities(
-    _ctx: HandlerContext,
-    _message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    // `features` / `services` removed in #1039 — the DID document is
-    // authoritative for which protocols a party speaks, and this answered from
-    // local config, which runtime service management can leave behind.
-    #[cfg(feature = "webvh")]
-    let webvh_servers = {
-        let servers = app_try!(crate::webvh_store::list_servers(&state.webvh_ks).await);
-        servers
-            .into_iter()
-            .map(|s| vta_sdk::protocols::discovery::WebvhServerInfo {
-                id: s.id,
-                label: s.label,
-            })
-            .collect()
-    };
-    #[cfg(not(feature = "webvh"))]
-    let webvh_servers: Vec<vta_sdk::protocols::discovery::WebvhServerInfo> = vec![];
-
-    let mut did_creation_modes = vec!["vta-built".to_string()];
-    if cfg!(feature = "webvh") {
-        did_creation_modes.push("template".to_string());
-        did_creation_modes.push("final".to_string());
-        did_creation_modes.push("user-specified-keys".to_string());
-    }
-
-    let result = vta_sdk::protocols::discovery::CapabilitiesResponse {
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        webvh_servers,
-        did_creation_modes,
-    };
-    response(
-        vta_sdk::protocols::discovery::DISCOVER_CAPABILITIES_RESULT,
-        &result,
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Provision-integration (DIDComm transport for the VP→sealed-bundle flow)
 // ---------------------------------------------------------------------------

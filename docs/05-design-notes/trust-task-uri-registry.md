@@ -309,7 +309,6 @@ with no HTTPS transport).
 | URI | Today's surface |
 |---|---|
 | `spec/trust-task-discovery/0.1` | Trust Task only — **the canonical "which tasks do you serve"**, answered from the dispatch table |
-| `spec/vta/discovery/capabilities/1.0` | Trust Task only — VTA deployment inventory (webvh hosts, DID-creation modes, compiled features) |
 
 `GET /capabilities` was removed in #1039. Nothing consumed it, and a REST route
 running parallel to a Trust Task is the shape #1020 removed everywhere else —
@@ -490,7 +489,8 @@ DIDComm protocols:
   backup-management/1.0/{export,import}             → vta/backup/{export,import}/1.0
   did-management/1.0/*                              → vta/webvh/*/1.0 (server + did sub-ops)
   did-template-management/1.0/*                     → vta/did-templates/*/1.0 + vta/contexts/did-templates/*/1.0
-  discovery/1.0/capabilities                        → vta/discovery/capabilities/1.0
+  (discovery/1.0/capabilities                       → RETIRED in #1043 with the
+                                                      task; use trust-task-discovery/0.1)
   join-requests/1.0/*                               → vta/join-requests/*/1.0
   protocol-management/services-management/1.0/*     → vta/services/*/1.0
   provision-integration/1.0/*                       → vta/bootstrap/provision-integration/1.0 (single op now)
