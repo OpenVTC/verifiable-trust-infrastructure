@@ -1,15 +1,35 @@
-//! Deprecation signalling for legacy REST routes that a canonical
-//! `/api/trust-tasks` Trust-Task now supersedes.
+//! How this service retires things, in two halves.
 //!
-//! These routes keep working — the deprecation is advisory. We add response
-//! headers so clients can detect the deprecation and migrate, and increment a
-//! hit counter (`deprecated_route_requests_total`, labelled by route) so that
-//! removal can be gated on **observed usage dropping to zero** rather than a
-//! guessed calendar date. (No `Sunset` date is emitted for that reason.)
+//! **Legacy REST routes** that a canonical `/api/trust-tasks` Trust-Task now
+//! supersedes. These routes keep working — the deprecation is advisory. We add
+//! response headers so clients can detect the deprecation and migrate, and
+//! increment a hit counter (`deprecated_route_requests_total`, labelled by
+//! route) so that removal can be gated on **observed usage dropping to zero**
+//! rather than a guessed calendar date. (No `Sunset` date is emitted for that
+//! reason.) The canonical replacement for every route marked here is the same
+//! operation dispatched as a Trust-Task via `POST /api/trust-tasks` (reachable
+//! over REST, DIDComm, and TSP through the shared `dispatch_trust_task_core`
+//! spine).
 //!
-//! The canonical replacement for every route marked here is the same operation
-//! dispatched as a Trust-Task via `POST /api/trust-tasks` (reachable over REST,
-//! DIDComm, and TSP through the shared `dispatch_trust_task_core` spine).
+//! **Superseded Trust Task URIs**, further down. Same rule, same evidence:
+//! `deprecated_trust_task_requests_total` labelled by URI, a successor named
+//! in the response so a client can act rather than guess, and removal on an
+//! observed zero. Added in #1045, because until then a task could be retired
+//! only by deleting it and the only evidence available was a source audit —
+//! grep the repos we can see and reason about the rest.
+//!
+//! Both tables are pinned to the thing they describe by a test, because a row
+//! that outlives its route or its handler reads zero forever and **that is the
+//! same reading as "safe to delete"**. See
+//! `every_superseded_row_names_a_live_route` (`tests/api_integration.rs`) and
+//! `superseded_tasks_are_dispatched` (`crate::trust_tasks`).
+//!
+//! One consequence worth naming: a URI can now leave
+//! `UNSPECCED_DISPATCHED_URIS` (or `vtc-service`'s `UNPUBLISHED_CANONICAL_OK`)
+//! by *ceasing to exist* rather than by gaining a spec. Both censuses shrink
+//! monotonically by test, so that departure looks identical to progress in the
+//! count alone. A row here, and its removal, is the explicit record of which
+//! one happened.
 
 use axum::extract::{MatchedPath, Request};
 use axum::http::{HeaderMap, HeaderValue};
@@ -565,4 +585,318 @@ pub async fn mark_superseded(req: Request, next: Next) -> Response {
         }
     }
     resp
+}
+
+// ─── The superseded-task table ─────────────────────────────────────────────
+//
+// The Trust-Task half of everything above. A REST route gets `Deprecation:
+// true`, a `Link: rel="successor-version"`, and a per-route hit counter, so it
+// can be removed on evidence. A Trust Task URI had none of that: it could be
+// retired only by deleting it, and the only available evidence was a source
+// audit — grep this repo and the ones we can see, and reason about the rest.
+// That was defensible for `vta/discovery/capabilities/1.0` (#1044: zero
+// consumers anywhere, plus a member whose vocabulary corresponded to nothing)
+// and it does not generalise. The next retirement may be one somebody is
+// calling, and we would find out from a support ticket.
+//
+// ## Invention, not adoption — the framework has no signal to adopt
+//
+// Checked first, per #1045. The *registry* has the concept: a spec's front
+// matter can say `status: retired` with `supersededBy`, which is how twelve
+// `messaging/*` tasks were retired upstream. `trust-tasks-rs` (0.11) exposes
+// none of it — `schema_index` maps URI → payload schema and nothing else,
+// `Payload` carries `IS_BEARER` / `IS_PROOF_REQUIRED` and no lifecycle
+// constant, and `trust-task-discovery/0.1`'s expanded `supportedTypes` entry is
+// `additionalProperties: false` over `{type, requiredExt}`. So a consumer
+// cannot read a task's retirement status at runtime and a producer has nowhere
+// framework-defined to announce one. This stays local machinery until that
+// changes; the vocabulary deliberately matches the registry's (`supersededBy`)
+// so adopting a published signal later is a rename, not a redesign.
+
+/// One Trust Task the VTA still dispatches and intends to stop dispatching.
+///
+/// Rows are added when a task is superseded and removed when the task itself
+/// is — retirement is gated on `deprecated_trust_task_requests_total` reaching
+/// zero for the URI, exactly as route removal is gated on
+/// `deprecated_route_requests_total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SupersededTask {
+    /// The Type URI clients still send. MUST be one the dispatch spine
+    /// actually routes — pinned by `superseded_tasks_are_dispatched` in
+    /// `crate::trust_tasks`. A row for a URI nothing dispatches reads zero
+    /// forever, which is the "safe to delete" signal produced about something
+    /// already deleted.
+    pub uri: &'static str,
+    /// The Type URI to send instead. Named on the wire so a client can act
+    /// rather than guess.
+    pub successor: &'static str,
+    /// Why, in one line, rendered to the caller alongside the successor.
+    pub reason: &'static str,
+}
+
+/// The table.
+///
+/// Seeded from what this workspace had already declared deprecated in prose:
+/// the eleven dispatched URIs carrying `#[deprecated]` in
+/// `vta_sdk::trust_tasks`, each naming its 0.2 successor. Those attributes
+/// told a Rust caller to migrate and told a wire caller nothing at all, and no
+/// instrument anywhere said whether anyone was still sending them.
+///
+/// `auth/passkey/login/{start,finish}/0.1` are deprecated too and are
+/// deliberately **absent**: they are `REST_ROUTED_URIS`, served by dedicated
+/// unauthenticated routes the dispatcher never sees, so a row here would count
+/// nothing and read a permanent zero.
+///
+/// Naming the gap rather than hiding it: those two are covered by *neither*
+/// instrument. The route table above excludes `/auth/*` on purpose (genuinely
+/// REST, and the pre-login bootstrap that has to work before a Trust Task can
+/// be authenticated at all), and a per-route counter could not separate 0.1
+/// from 0.2 anyway — one path serves both and the only difference is the
+/// casing of a `purpose` value inside the body. Distinguishing them needs a
+/// counter inside those two handlers, which is its own change.
+#[allow(deprecated)] // names the deprecated 0.1 URIs on purpose — that is the point
+const SUPERSEDED_TASKS: &[SupersededTask] = &[
+    // ── auth ────────────────────────────────────────────────────────────
+    SupersededTask {
+        uri: trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,
+        successor: trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2,
+        reason: "0.2 spells the evidence enum `didSigned` in camelCase; the payload is \
+                 signed, so the two versions have separate typed handlers rather than \
+                 an edge transform",
+    },
+    // ── device ──────────────────────────────────────────────────────────
+    SupersededTask {
+        uri: trust_tasks::TASK_DEVICE_REGISTER_0_1,
+        successor: trust_tasks::TASK_DEVICE_REGISTER_0_2,
+        reason: "0.2 spells the enum values in camelCase",
+    },
+    SupersededTask {
+        uri: trust_tasks::TASK_DEVICE_HEARTBEAT_0_1,
+        successor: trust_tasks::TASK_DEVICE_HEARTBEAT_0_2,
+        reason: "0.2 spells the enum values in camelCase",
+    },
+    SupersededTask {
+        uri: trust_tasks::TASK_DEVICE_LIST_0_1,
+        successor: trust_tasks::TASK_DEVICE_LIST_0_2,
+        reason: "0.2 spells the enum values in camelCase",
+    },
+    SupersededTask {
+        uri: trust_tasks::TASK_DEVICE_SET_WAKE_0_1,
+        successor: trust_tasks::TASK_DEVICE_SET_WAKE_0_2,
+        reason: "no enum values changed; the bump is canonical-version alignment, so \
+                 the whole device slice sits on one version",
+    },
+    // ── vault ───────────────────────────────────────────────────────────
+    SupersededTask {
+        uri: trust_tasks::TASK_VAULT_LIST_0_1,
+        successor: trust_tasks::TASK_VAULT_LIST_0_2,
+        reason: "0.2 spells secretKind and the related enums in camelCase",
+    },
+    SupersededTask {
+        uri: trust_tasks::TASK_VAULT_GET_0_1,
+        successor: trust_tasks::TASK_VAULT_GET_0_2,
+        reason: "0.2 spells the response enums in camelCase",
+    },
+    SupersededTask {
+        uri: trust_tasks::TASK_VAULT_UPSERT_0_1,
+        successor: trust_tasks::TASK_VAULT_UPSERT_0_2,
+        reason: "0.2 spells the secretKind / sealed-envelope / target enums in camelCase",
+    },
+    SupersededTask {
+        uri: trust_tasks::TASK_VAULT_RELEASE_0_1,
+        successor: trust_tasks::TASK_VAULT_RELEASE_0_2,
+        reason: "0.2 spells the secretKind / sealed-envelope / step-up-proof enums in \
+                 camelCase, inside the sealed cleartext as well as around it",
+    },
+    SupersededTask {
+        uri: trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1,
+        successor: trust_tasks::TASK_VAULT_PROXY_LOGIN_0_2,
+        reason: "0.2 spells the site-target / step-up-proof enums in camelCase, inside \
+                 the sealed cleartext as well as around it",
+    },
+    SupersededTask {
+        uri: trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_1,
+        successor: trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_2,
+        reason: "0.2 spells the step-up-proof enums in camelCase",
+    },
+];
+
+/// The table, for the dispatch spine and for tests that assert on its contents.
+pub fn superseded_tasks_table() -> &'static [SupersededTask] {
+    SUPERSEDED_TASKS
+}
+
+/// The row for `type_uri`, or `None` when the task is not superseded.
+pub fn superseded_task(type_uri: &str) -> Option<&'static SupersededTask> {
+    SUPERSEDED_TASKS.iter().find(|t| t.uri == type_uri)
+}
+
+/// Top-level document member carrying the deprecation notice.
+///
+/// A reverse-DNS name, matching SPEC §4.5.1's `ext` namespace convention and
+/// the `org.openvtc.*` names this workspace already uses (`vault-session`,
+/// `authorization-context`, `purpose`).
+///
+/// **Document level, not `payload.ext`.** The framework's envelope keeps
+/// unrecognized top-level members in `TrustTask::extra`, and SPEC §7.1/§7.2
+/// tells consumers to preserve rather than reject them, so a member here
+/// cannot break a client that has never heard of it. `payload` can make no
+/// such promise: every published payload schema is `additionalProperties:
+/// false`, the generated `Response` types are `deny_unknown_fields`, and the
+/// conformance sweep validates response payloads against those schemas — so a
+/// member there would have to go in per-spec, and only for specs whose schema
+/// happens to define `ext`. This is the Trust-Task analogue of putting the
+/// REST signal in a header: beside the answer rather than inside it.
+pub const DEPRECATION_MEMBER: &str = "org.openvtc.deprecation";
+
+/// Record a dispatch of a superseded task.
+///
+/// Unlike [`mark_superseded`], this counts the request whatever the outcome.
+/// The route middleware filters non-success responses because an unauthorised
+/// request there says nothing about a client depending on the route — those
+/// routes are reachable without credentials. The dispatch spine is behind
+/// authentication on all three transports (bearer on REST, authcrypt sender on
+/// DIDComm, VID on TSP), so there is no unauthenticated-prober class to filter
+/// out: an authenticated party emitting this URI *is* the usage being
+/// measured, whether or not its payload turned out to be well-formed.
+pub fn note_superseded_task(task: &SupersededTask) {
+    counter!("deprecated_trust_task_requests_total", "task" => task.uri).increment(1);
+}
+
+/// Stamp the deprecation notice onto a serialized response document.
+///
+/// Refuses to touch a document carrying a `proof`: adding a member after
+/// signing voids the signature, and a silently-invalid proof is worse than an
+/// absent notice. Also a no-op on a body that is not a JSON object, or that
+/// already carries the member.
+pub fn annotate_superseded(body: &mut Vec<u8>, task: &SupersededTask) {
+    let Ok(mut doc) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return;
+    };
+    let Some(obj) = doc.as_object_mut() else {
+        return;
+    };
+    if obj.contains_key("proof") || obj.contains_key(DEPRECATION_MEMBER) {
+        return;
+    }
+    obj.insert(
+        DEPRECATION_MEMBER.to_string(),
+        serde_json::json!({
+            "supersededBy": task.successor,
+            "reason": task.reason,
+        }),
+    );
+    if let Ok(bytes) = serde_json::to_vec(&doc) {
+        *body = bytes;
+    }
+}
+
+#[cfg(test)]
+mod superseded_task_tests {
+    use super::*;
+
+    #[test]
+    fn a_notice_rides_the_document_top_level_not_the_payload() {
+        let task = &SUPERSEDED_TASKS[0];
+        let mut body = serde_json::to_vec(&serde_json::json!({
+            "id": "urn:uuid:1",
+            "type": "https://trusttasks.org/spec/device/list/0.1#response",
+            "payload": { "devices": [] },
+        }))
+        .unwrap();
+
+        annotate_superseded(&mut body, task);
+
+        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(doc[DEPRECATION_MEMBER]["supersededBy"], task.successor);
+        assert_eq!(doc[DEPRECATION_MEMBER]["reason"], task.reason);
+        // The payload is what a published schema validates and what a generated
+        // `Response` type deserialises with `deny_unknown_fields`. It must come
+        // back unchanged.
+        assert_eq!(doc["payload"], serde_json::json!({ "devices": [] }));
+    }
+
+    #[test]
+    fn a_signed_document_is_left_alone() {
+        // Stamping a member into a signed document voids the proof over it. A
+        // notice is worth less than a verifiable signature, so the notice loses.
+        let task = &SUPERSEDED_TASKS[0];
+        let original = serde_json::json!({
+            "id": "urn:uuid:1",
+            "type": "https://trusttasks.org/spec/device/list/0.1#response",
+            "payload": {},
+            "proof": { "type": "DataIntegrityProof" },
+        });
+        let mut body = serde_json::to_vec(&original).unwrap();
+
+        annotate_superseded(&mut body, task);
+
+        let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            doc, original,
+            "a proofed document must be returned untouched"
+        );
+    }
+
+    #[test]
+    fn annotating_twice_does_not_nest_or_duplicate() {
+        // The spine annotates exactly once today — the idempotency store
+        // records the un-annotated outcome and the replay is annotated on its
+        // way out like any other. This pins the helper against a future caller
+        // that does not preserve that ordering: a second stamp must be a no-op,
+        // not a nested or duplicated notice.
+        let task = &SUPERSEDED_TASKS[0];
+        let mut body = serde_json::to_vec(&serde_json::json!({
+            "id": "urn:uuid:1",
+            "type": "x",
+            "payload": {},
+        }))
+        .unwrap();
+
+        annotate_superseded(&mut body, task);
+        let once = body.clone();
+        annotate_superseded(&mut body, task);
+
+        assert_eq!(body, once);
+    }
+
+    #[test]
+    fn a_body_that_is_not_a_document_is_left_alone() {
+        // `error_response` falls back to an empty body when serialisation
+        // fails. Annotation must not turn that into a panic or a fake document.
+        let task = &SUPERSEDED_TASKS[0];
+        let mut empty: Vec<u8> = Vec::new();
+        annotate_superseded(&mut empty, task);
+        assert!(empty.is_empty());
+
+        let mut array = b"[1,2,3]".to_vec();
+        annotate_superseded(&mut array, task);
+        assert_eq!(array, b"[1,2,3]");
+    }
+
+    #[test]
+    fn every_row_names_a_different_successor() {
+        // A row whose successor is itself would advertise "migrate to where you
+        // already are" and could never be retired.
+        for t in SUPERSEDED_TASKS {
+            assert_ne!(
+                t.uri, t.successor,
+                "{} is listed as its own successor",
+                t.uri
+            );
+            assert!(!t.reason.is_empty(), "{} has no reason", t.uri);
+        }
+    }
+
+    #[test]
+    fn no_uri_is_listed_twice() {
+        // `superseded_task` returns the first match, so a duplicate would make
+        // one of the two rows unreachable — and unreachable is exactly what a
+        // zero reading means.
+        let mut seen: Vec<&str> = SUPERSEDED_TASKS.iter().map(|t| t.uri).collect();
+        seen.sort_unstable();
+        let before = seen.len();
+        seen.dedup();
+        assert_eq!(before, seen.len(), "a URI is listed more than once");
+    }
 }
