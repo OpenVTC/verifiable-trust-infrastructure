@@ -42,7 +42,7 @@ pub(super) async fn handle_register(
 
     match operations::device::register_device(
         &state.acl_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         auth,
         consumer_kind,
         display_name,
@@ -101,7 +101,8 @@ pub(super) async fn handle_disable(
         Err(resp) => return resp,
     };
     let device_id = payload.device_id.to_string();
-    match operations::device::disable_device(&state.acl_ks, &state.audit_ks, auth, &device_id).await
+    match operations::device::disable_device(&state.acl_ks, &state.audit_sink, auth, &device_id)
+        .await
     {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
@@ -124,7 +125,7 @@ pub(super) async fn handle_wipe(
     let scope = payload.scope.to_string();
     match operations::device::wipe_device(
         &state.acl_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         auth,
         &device_id,
         &reason,
@@ -164,7 +165,7 @@ pub(super) async fn handle_set_wake(
     let provision_inputs = (wake.clone(), vta_did.clone());
     match operations::device::set_wake_device(
         &state.acl_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         auth,
         wake,
         suggested,

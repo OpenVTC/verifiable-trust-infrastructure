@@ -122,7 +122,7 @@ pub async fn load_signing_key_by_id(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     key_id: &str,
 ) -> Result<SigningKey, AppError> {
     let authority = InternalAuthority::new("vault-proxy-login");
@@ -130,7 +130,7 @@ pub async fn load_signing_key_by_id(
         keys_ks,
         imported_ks,
         seed_store,
-        audit_ks,
+        audit,
         authority,
         key_id,
         PROXY_LOGIN_CHANNEL,
@@ -154,7 +154,7 @@ pub async fn load_signing_secret_by_id(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     key_id: &str,
 ) -> Result<Secret, AppError> {
     let authority = InternalAuthority::new("vault-sign-trust-task");
@@ -162,7 +162,7 @@ pub async fn load_signing_secret_by_id(
         keys_ks,
         imported_ks,
         seed_store,
-        audit_ks,
+        audit,
         authority,
         key_id,
         SIGN_TRUST_TASK_CHANNEL,

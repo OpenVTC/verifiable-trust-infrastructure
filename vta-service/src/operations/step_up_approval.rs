@@ -104,7 +104,7 @@ pub async fn load_vta_key0_signing_key(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     vta_did: &str,
 ) -> Result<SigningKey, AppError> {
     let key_id = format!("{vta_did}#key-0");
@@ -113,7 +113,7 @@ pub async fn load_vta_key0_signing_key(
         keys_ks,
         imported_ks,
         seed_store,
-        audit_ks,
+        audit,
         authority,
         &key_id,
         "step-up-approval-internal",

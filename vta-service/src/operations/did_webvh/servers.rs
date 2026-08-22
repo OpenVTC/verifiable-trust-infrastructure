@@ -143,7 +143,7 @@ pub async fn list_webvh_server_domains(
         deps.keys_ks,
         deps.imported_ks,
         deps.seed_store,
-        deps.audit_ks,
+        deps.audit,
         vta_did_value,
     )
     .await?;
@@ -256,7 +256,7 @@ pub async fn reconcile_webvh_server_dids(
         deps.keys_ks,
         deps.imported_ks,
         deps.seed_store,
-        deps.audit_ks,
+        deps.audit,
         vta_did_value,
     )
     .await?;
@@ -707,7 +707,7 @@ pub async fn retire_orphan_slot(
         deps.keys_ks,
         deps.imported_ks,
         deps.seed_store,
-        deps.audit_ks,
+        deps.audit,
         vta_did_value,
     )
     .await?;
@@ -775,7 +775,7 @@ pub async fn retire_orphan_slot(
     // The slot will not exist to be asked about afterwards, so this row is the
     // only account of what happened — including why, when the operator said.
     crate::audit::record_with_detail(
-        deps.audit_ks,
+        deps.audit,
         "webvh.slot.retire_orphan",
         &auth.did,
         Some(&body.slot_id),

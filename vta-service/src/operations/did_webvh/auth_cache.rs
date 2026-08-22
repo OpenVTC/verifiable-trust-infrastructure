@@ -224,7 +224,7 @@ pub async fn publish_log_to_server(
         deps.keys_ks,
         deps.imported_ks,
         deps.seed_store,
-        deps.audit_ks,
+        deps.audit,
         vta_did,
     )
     .await?;
@@ -258,7 +258,7 @@ pub async fn delete_log_on_server(
         deps.keys_ks,
         deps.imported_ks,
         deps.seed_store,
-        deps.audit_ks,
+        deps.audit,
         vta_did,
     )
     .await?;
@@ -294,7 +294,7 @@ pub async fn register_did_atomic_on_server(
         deps.keys_ks,
         deps.imported_ks,
         deps.seed_store,
-        deps.audit_ks,
+        deps.audit,
         vta_did,
     )
     .await?;
@@ -333,7 +333,7 @@ pub async fn agent_name_op_on_server(
         deps.keys_ks,
         deps.imported_ks,
         deps.seed_store,
-        deps.audit_ks,
+        deps.audit,
         vta_did,
     )
     .await?;
@@ -367,7 +367,7 @@ pub async fn list_agent_names_on_server(
         deps.keys_ks,
         deps.imported_ks,
         deps.seed_store,
-        deps.audit_ks,
+        deps.audit,
         vta_did,
     )
     .await?;
@@ -400,7 +400,7 @@ pub async fn check_agent_name_on_server(
         deps.keys_ks,
         deps.imported_ks,
         deps.seed_store,
-        deps.audit_ks,
+        deps.audit,
         vta_did,
     )
     .await?;
@@ -436,7 +436,7 @@ pub async fn load_vta_webvh_signing_identity(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     vta_did: &str,
 ) -> Result<VtaSigningIdentityOwned, AppError> {
     let signing_kid = format!("{vta_did}#key-0");
@@ -445,7 +445,7 @@ pub async fn load_vta_webvh_signing_identity(
         keys_ks,
         imported_ks,
         seed_store,
-        audit_ks,
+        audit,
         authority,
         &signing_kid,
         "webvh-rest-auth-internal",

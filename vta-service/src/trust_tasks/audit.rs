@@ -68,7 +68,7 @@ pub(super) async fn handle_update_retention(
     };
     match operations::audit::update_retention(
         &state.config,
-        &state.audit_ks,
+        &state.audit_sink,
         auth,
         req.retention_days,
         TRANSPORT_TRUST_TASK,

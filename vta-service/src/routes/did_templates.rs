@@ -79,7 +79,7 @@ pub async fn create_handler(
 ) -> Result<(StatusCode, Json<DidTemplateRecord>), AppError> {
     let record = operations::did_templates::create_global(
         &state.did_templates_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &auth.0,
         template,
         "rest",
@@ -131,7 +131,7 @@ pub async fn update_handler(
 ) -> Result<Json<DidTemplateRecord>, AppError> {
     let record = operations::did_templates::update_global(
         &state.did_templates_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &auth.0,
         &name,
         template,
@@ -160,7 +160,7 @@ pub async fn delete_handler(
 ) -> Result<StatusCode, AppError> {
     operations::did_templates::delete_global(
         &state.did_templates_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &auth.0,
         &name,
         "rest",
@@ -257,7 +257,7 @@ pub async fn create_context_handler(
     let record = operations::did_templates::create_context(
         &state.did_templates_ks,
         &state.contexts_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &auth,
         &context_id,
         template,
@@ -320,7 +320,7 @@ pub async fn update_context_handler(
 ) -> Result<Json<DidTemplateRecord>, AppError> {
     let record = operations::did_templates::update_context(
         &state.did_templates_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &auth,
         &context_id,
         &name,
@@ -352,7 +352,7 @@ pub async fn delete_context_handler(
 ) -> Result<StatusCode, AppError> {
     operations::did_templates::delete_context(
         &state.did_templates_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &auth,
         &context_id,
         &name,

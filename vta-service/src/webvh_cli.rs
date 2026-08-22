@@ -155,6 +155,8 @@ pub async fn run_create_did(
     let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
     let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
+    let audit: vta_audit::SharedAuditSink =
+        std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
     let did_templates_ks = cs.keyspace(crate::keyspaces::DID_TEMPLATES)?;
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&config)?);
@@ -208,7 +210,7 @@ pub async fn run_create_did(
         contexts_ks: &contexts_ks,
         webvh_ks: &webvh_ks,
         did_templates_ks: &did_templates_ks,
-        audit_ks: &audit_ks,
+        audit: &audit,
         seed_store: &*seed_store,
         config: &config,
         did_resolver: &did_resolver,
@@ -289,6 +291,8 @@ pub async fn run_delete_did(
     let imported_ks = cs.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
     let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
     let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
+    let audit: vta_audit::SharedAuditSink =
+        std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&config)?);
@@ -302,7 +306,7 @@ pub async fn run_delete_did(
         imported_ks: &imported_ks,
         contexts_ks: &contexts_ks,
         webvh_ks: &webvh_ks,
-        audit_ks: &audit_ks,
+        audit: &audit,
         seed_store: &*seed_store,
         did_resolver: &did_resolver,
         didcomm_bridge: &no_bridge,
@@ -386,6 +390,8 @@ pub async fn run_edit_did(
     let imported_ks = cs.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
     let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
     let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
+    let audit: vta_audit::SharedAuditSink =
+        std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
     let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
@@ -488,7 +494,7 @@ pub async fn run_edit_did(
         imported_ks: &imported_ks,
         contexts_ks: &contexts_ks,
         webvh_ks: &webvh_ks,
-        audit_ks: &audit_ks,
+        audit: &audit,
         seed_store: &*seed_store,
         did_resolver: &did_resolver,
         didcomm_bridge: &didcomm_bridge,
@@ -562,6 +568,8 @@ pub async fn run_register_did(
     let imported_ks = cs.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
     let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
     let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
+    let audit: vta_audit::SharedAuditSink =
+        std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
     let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
@@ -574,7 +582,7 @@ pub async fn run_register_did(
         imported_ks: &imported_ks,
         contexts_ks: &contexts_ks,
         webvh_ks: &webvh_ks,
-        audit_ks: &audit_ks,
+        audit: &audit,
         seed_store: &*seed_store,
         did_resolver: &did_resolver,
         didcomm_bridge: &didcomm_bridge,

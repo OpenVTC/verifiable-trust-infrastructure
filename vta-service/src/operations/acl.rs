@@ -256,7 +256,7 @@ fn validate_allowed_keys(
 #[allow(clippy::too_many_arguments)]
 pub async fn create_acl(
     acl_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     contexts_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     did: &str,
@@ -311,7 +311,7 @@ pub async fn create_acl(
         outcome = "success"
     );
     let _ = audit::record(
-        audit_ks,
+        audit,
         "acl.create",
         &auth.did,
         Some(did),
@@ -413,7 +413,7 @@ async fn list_acl(
 /// [`update_from_params`].
 async fn update_acl(
     acl_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     contexts_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     did: &str,
@@ -541,7 +541,7 @@ async fn update_acl(
         outcome = "success"
     );
     let _ = audit::record_with_detail(
-        audit_ks,
+        audit,
         "acl.update",
         &auth.did,
         Some(did),
@@ -580,7 +580,7 @@ async fn update_acl(
 #[allow(clippy::too_many_arguments)]
 async fn change_role(
     acl_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     subject: &str,
     from_role: &str,
@@ -643,7 +643,7 @@ async fn change_role(
         outcome = "success"
     );
     let _ = audit::record_with_detail(
-        audit_ks,
+        audit,
         "acl.change_role",
         &auth.did,
         Some(subject),
@@ -658,7 +658,7 @@ async fn change_role(
 
 pub async fn delete_acl(
     acl_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     did: &str,
     channel: &str,
@@ -698,7 +698,7 @@ pub async fn delete_acl(
         outcome = "success"
     );
     let _ = audit::record(
-        audit_ks,
+        audit,
         "acl.delete",
         &auth.did,
         Some(did),
@@ -724,7 +724,7 @@ pub async fn delete_acl(
 #[allow(clippy::too_many_arguments)]
 pub async fn swap_acl(
     acl_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     presentation: &str,
     did_resolver: &DIDCacheClient,
@@ -806,7 +806,7 @@ pub async fn swap_acl(
         outcome = "success"
     );
     let _ = audit::record(
-        audit_ks,
+        audit,
         "acl.swap",
         &auth.did,
         Some(&new_did),
@@ -839,7 +839,7 @@ use vta_sdk::protocols::acl_management::entry::{AclEntry as WireAclEntry, to_epo
 /// `acl/grant/0.1` → [`create_acl`].
 pub async fn grant_from_entry(
     acl_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     contexts_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     entry: WireAclEntry,
@@ -849,7 +849,7 @@ pub async fn grant_from_entry(
         .map_err(|_| AppError::Validation(format!("invalid role: {}", entry.role)))?;
     let stored = create_acl(
         acl_ks,
-        audit_ks,
+        audit,
         contexts_ks,
         auth,
         &entry.subject,
@@ -919,7 +919,7 @@ pub async fn list_entries(
 #[allow(clippy::too_many_arguments)]
 pub async fn change_role_by_subject(
     acl_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     subject: &str,
     from_role: &str,
@@ -928,7 +928,7 @@ pub async fn change_role_by_subject(
     channel: &str,
 ) -> Result<CreateAclResponseBody, AppError> {
     let stored = change_role(
-        acl_ks, audit_ks, auth, subject, from_role, to_role, reason, channel,
+        acl_ks, audit, auth, subject, from_role, to_role, reason, channel,
     )
     .await?;
     Ok(CreateAclResponseBody {
@@ -939,23 +939,14 @@ pub async fn change_role_by_subject(
 /// `acl/update/0.1` → [`update_acl`].
 pub async fn update_from_params(
     acl_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     contexts_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     subject: &str,
     params: UpdateAclParams,
     channel: &str,
 ) -> Result<CreateAclResponseBody, AppError> {
-    let stored = update_acl(
-        acl_ks,
-        audit_ks,
-        contexts_ks,
-        auth,
-        subject,
-        params,
-        channel,
-    )
-    .await?;
+    let stored = update_acl(acl_ks, audit, contexts_ks, auth, subject, params, channel).await?;
     Ok(CreateAclResponseBody {
         entry: WireAclEntry::from_result(&stored),
     })
@@ -971,7 +962,7 @@ pub async fn update_from_params(
 /// direction to guess in.
 pub async fn revoke_by_subject(
     acl_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     subject: &str,
     scopes: Option<Vec<String>>,
@@ -989,7 +980,7 @@ pub async fn revoke_by_subject(
     // withdrawn. Canonical revoke returns the entry, not a boolean: a bare
     // `deleted: true` cannot tell an auditor what authority was lost.
     let stored = get_acl(acl_ks, auth, subject, channel).await?;
-    delete_acl(acl_ks, audit_ks, auth, subject, channel).await?;
+    delete_acl(acl_ks, audit, auth, subject, channel).await?;
     Ok(DeleteAclResultBody {
         entry: WireAclEntry::from_result(&stored),
     })
@@ -1005,7 +996,7 @@ mod tests {
     async fn fresh_store() -> (
         Store,
         KeyspaceHandle,
-        KeyspaceHandle,
+        vta_audit::SharedAuditSink,
         KeyspaceHandle,
         tempfile::TempDir,
     ) {
@@ -1015,9 +1006,11 @@ mod tests {
         })
         .unwrap();
         let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
-        let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+        let audit: vta_audit::SharedAuditSink = std::sync::Arc::new(
+            vta_audit::KeyspaceAuditSink::new(store.keyspace(crate::keyspaces::AUDIT).unwrap()),
+        );
         let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
-        (store, acl_ks, audit_ks, contexts_ks, dir)
+        (store, acl_ks, audit, contexts_ks, dir)
     }
 
     /// Seed `ContextRecord`s for the given ids so `require_contexts_exist`
@@ -1103,7 +1096,7 @@ mod tests {
     /// context is now readable by that context's admin.
     #[tokio::test]
     async fn get_acl_surfaces_an_approver_conferring_into_callers_context() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
         let target = "did:key:zApproverRead";
         store_acl_entry(
@@ -1119,13 +1112,13 @@ mod tests {
             .await
             .expect("an approver in my context must be auditable");
         assert_eq!(body.did, target);
-        let _ = (audit_ks, contexts_ks);
+        let _ = (audit, contexts_ks);
     }
 
     /// …and appears in the listing, which is where an operator actually audits.
     #[tokio::test]
     async fn list_acl_includes_an_approver_conferring_into_callers_context() {
-        let (_store, acl_ks, _audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, _audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
         store_acl_entry(
             &acl_ks,
@@ -1176,7 +1169,7 @@ mod tests {
     /// cut. Both directions are now askable, and they answer differently.
     #[tokio::test]
     async fn a_subtree_listing_returns_the_leaves_an_act_in_listing_omits() {
-        let (_store, acl_ks, _audit_ks, _contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, _audit, _contexts_ks, _dir) = fresh_store().await;
         seed_tenant_subtree(&acl_ks).await;
         let caller = super_admin("did:key:zRoot");
 
@@ -1205,7 +1198,7 @@ mod tests {
     /// Absent parameter ⇒ pre-#822 behaviour, entry for entry.
     #[tokio::test]
     async fn the_default_direction_is_the_historical_filter() {
-        let (_store, acl_ks, _audit_ks, _contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, _audit, _contexts_ks, _dir) = fresh_store().await;
         seed_tenant_subtree(&acl_ks).await;
         let caller = super_admin("did:key:zRoot");
         assert_eq!(
@@ -1219,7 +1212,7 @@ mod tests {
     /// could not otherwise see.
     #[tokio::test]
     async fn a_subtree_listing_does_not_widen_what_a_context_admin_can_see() {
-        let (_store, acl_ks, _audit_ks, _contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, _audit, _contexts_ks, _dir) = fresh_store().await;
         seed_tenant_subtree(&acl_ks).await;
         // Admin of a sibling unit only.
         let caller = ctx_admin("did:key:zOpsAdmin", &["acme/ops"]);
@@ -1237,7 +1230,7 @@ mod tests {
     /// branch is the failure this issue is about, one level up.
     #[tokio::test]
     async fn a_direction_without_a_context_is_refused() {
-        let (_store, acl_ks, _audit_ks, _contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, _audit, _contexts_ks, _dir) = fresh_store().await;
         seed_tenant_subtree(&acl_ks).await;
         let caller = super_admin("did:key:zRoot");
 
@@ -1256,7 +1249,7 @@ mod tests {
     /// administers someone else's.
     #[tokio::test]
     async fn delete_acl_refuses_an_entry_that_acts_outside_callers_contexts() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
         let target = "did:key:zForeignAdmin";
         seed_foreign_admin_conferring_into(&acl_ks, target, &["ctx-b"], &["ctx-a"]).await;
@@ -1267,7 +1260,7 @@ mod tests {
             .await
             .expect("confers into ctx-a, so ctx-a's admin may read it");
         // …but not deletable, and the error says why rather than lying.
-        let err = delete_acl(&acl_ks, &audit_ks, &caller, target, "test")
+        let err = delete_acl(&acl_ks, &audit, &caller, target, "test")
             .await
             .expect_err("ctx-a admin must not delete an entry that administers ctx-b");
         assert!(
@@ -1280,13 +1273,13 @@ mod tests {
     /// the split must not turn the enumeration guard into an oracle.
     #[tokio::test]
     async fn delete_acl_still_conflates_a_wholly_invisible_entry_to_not_found() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
         let target = "did:key:zInvisible";
         seed_target(&acl_ks, target, &["ctx-b"]).await;
 
         let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
-        let err = delete_acl(&acl_ks, &audit_ks, &caller, target, "test")
+        let err = delete_acl(&acl_ks, &audit, &caller, target, "test")
             .await
             .expect_err("not visible, not auditable");
         assert!(
@@ -1427,7 +1420,7 @@ mod tests {
     /// failed recreate leaves the DID with no ACL entry at all.
     #[tokio::test]
     async fn update_acl_sets_and_revokes_approve_scope() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
         let target = "did:key:zApprover";
         seed_target(&acl_ks, target, &["ctx-a"]).await;
@@ -1448,7 +1441,7 @@ mod tests {
         // Narrow: All -> a single context, without touching the entry.
         update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &admin,
             target,
@@ -1468,7 +1461,7 @@ mod tests {
 
         update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &admin,
             target,
@@ -1490,7 +1483,7 @@ mod tests {
         // rather than absence.
         update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &admin,
             target,
@@ -1516,7 +1509,7 @@ mod tests {
     async fn update_acl_sets_empties_and_clears_the_key_filter() {
         use std::collections::BTreeSet;
 
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
         let target = "did:key:zSigner";
         seed_target(&acl_ks, target, &["ctx-a"]).await;
@@ -1548,7 +1541,7 @@ mod tests {
         let keys: BTreeSet<String> = ["key-1".to_string()].into_iter().collect();
         update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &admin,
             target,
@@ -1562,7 +1555,7 @@ mod tests {
         // Omitted: a label-only edit must not disturb the filter.
         update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &admin,
             target,
@@ -1584,7 +1577,7 @@ mod tests {
         // collapsed into "no filter".
         update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &admin,
             target,
@@ -1598,7 +1591,7 @@ mod tests {
         // Clear: back to every key in scope — Some(None), an explicit value.
         update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &admin,
             target,
@@ -1613,7 +1606,7 @@ mod tests {
         // `--contexts ''` lesson one axis over).
         let err = update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &admin,
             target,
@@ -1629,7 +1622,7 @@ mod tests {
     /// that made a flat bool/list pair unusable for this.
     #[tokio::test]
     async fn update_acl_leaves_approve_scope_alone_when_absent() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
         let target = "did:key:zApprover";
         seed_target(&acl_ks, target, &["ctx-a"]).await;
@@ -1637,7 +1630,7 @@ mod tests {
 
         update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &admin,
             target,
@@ -1660,7 +1653,7 @@ mod tests {
         // A label-only edit must not disturb the scope.
         update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &admin,
             target,
@@ -1693,7 +1686,7 @@ mod tests {
     /// update does not relax who may confer what.
     #[tokio::test]
     async fn update_acl_applies_the_same_approve_grant_check_as_create() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
         let target = "did:key:zApprover";
         seed_target(&acl_ks, target, &["ctx-a"]).await;
@@ -1701,7 +1694,7 @@ mod tests {
         let ctx_admin_a = ctx_admin("did:key:zCallerA", &["ctx-a"]);
         let err = update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &ctx_admin_a,
             target,
@@ -1727,7 +1720,7 @@ mod tests {
 
         let err = update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &ctx_admin_a,
             target,
@@ -1754,7 +1747,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_acl_rejects_shrink_across_caller_scope() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
         let target = "did:key:zTarget";
         seed_target(&acl_ks, target, &["ctx-a", "ctx-b"]).await;
@@ -1762,7 +1755,7 @@ mod tests {
         let caller = ctx_admin("did:key:zCallerA", &["ctx-a"]);
         let err = update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &caller,
             target,
@@ -1791,7 +1784,7 @@ mod tests {
     /// retains their independent grant.
     #[tokio::test]
     async fn update_acl_allows_remove_within_caller_scope() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
         let target = "did:key:zTarget2";
         seed_target(&acl_ks, target, &["ctx-a", "ctx-b"]).await;
@@ -1801,7 +1794,7 @@ mod tests {
         let caller = ctx_admin("did:key:zCallerAB", &["ctx-a", "ctx-b"]);
         let body = update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &caller,
             target,
@@ -1829,7 +1822,7 @@ mod tests {
     /// refactor doesn't accidentally regress it).
     #[tokio::test]
     async fn update_acl_rejects_add_outside_caller_scope() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
         let target = "did:key:zTarget3";
         seed_target(&acl_ks, target, &["ctx-a"]).await;
@@ -1837,7 +1830,7 @@ mod tests {
         let caller = ctx_admin("did:key:zCallerA", &["ctx-a"]);
         let err = update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &caller,
             target,
@@ -1866,7 +1859,7 @@ mod tests {
     /// that id was later registered.
     #[tokio::test]
     async fn create_acl_rejects_unknown_context() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-real"]).await;
 
         // Super-admin caller — privileged enough to pass the scope
@@ -1882,7 +1875,7 @@ mod tests {
         };
         let err = create_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &caller,
             "did:key:zNewAdmin",
@@ -1904,7 +1897,7 @@ mod tests {
     /// Existing contexts in the contexts keyspace are accepted.
     #[tokio::test]
     async fn create_acl_accepts_known_context() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-real"]).await;
 
         let caller = AuthClaims {
@@ -1918,7 +1911,7 @@ mod tests {
         };
         let body = create_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &caller,
             "did:key:zNewAdmin",
@@ -1944,13 +1937,13 @@ mod tests {
     /// scope names only a context the caller administers.
     #[tokio::test]
     async fn context_admin_can_mint_a_least_privilege_approver() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
 
         let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
         let body = create_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &caller,
             "did:key:zApprover",
@@ -1977,13 +1970,13 @@ mod tests {
     /// approver for a context it does not administer.
     #[tokio::test]
     async fn context_admin_cannot_confer_a_foreign_context_via_the_approver() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
 
         let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
         let err = create_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &caller,
             "did:key:zApprover",
@@ -2006,13 +1999,13 @@ mod tests {
     /// create an admin with no contexts (a super-admin).
     #[tokio::test]
     async fn context_admin_still_cannot_mint_a_super_admin() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
 
         let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
         let err = create_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &caller,
             "did:key:zWouldBeSuper",
@@ -2039,7 +2032,7 @@ mod tests {
     /// `validate_role_assignment(auth, &entry.role)` check rejects this.
     #[tokio::test]
     async fn delete_acl_rejects_initiator_deleting_admin() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-shared"]).await;
 
         let admin_target = "did:key:zAdminTarget";
@@ -2054,7 +2047,7 @@ mod tests {
             amr: Vec::new(),
             acr: String::new(),
         };
-        let err = delete_acl(&acl_ks, &audit_ks, &caller, admin_target, "test")
+        let err = delete_acl(&acl_ks, &audit, &caller, admin_target, "test")
             .await
             .unwrap_err();
         assert!(
@@ -2067,7 +2060,7 @@ mod tests {
     /// the new role-floor check refuses lower-priv callers, not peers.
     #[tokio::test]
     async fn delete_acl_admin_can_delete_admin_entry() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-shared"]).await;
 
         let admin_target = "did:key:zAdminTarget2";
@@ -2077,7 +2070,7 @@ mod tests {
         // `delete_acl` is the internal removal; the canonical response body is
         // built by `revoke_by_subject`, which reads the entry first so the
         // caller learns what was withdrawn.
-        delete_acl(&acl_ks, &audit_ks, &caller, admin_target, "test")
+        delete_acl(&acl_ks, &audit, &caller, admin_target, "test")
             .await
             .expect("admin-on-admin delete succeeds");
         assert!(
@@ -2095,7 +2088,7 @@ mod tests {
     /// unregistered context.
     #[tokio::test]
     async fn update_acl_rejects_adding_unknown_context() {
-        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
         let target = "did:key:zTargetUnknown";
         seed_target(&acl_ks, target, &["ctx-a"]).await;
@@ -2113,7 +2106,7 @@ mod tests {
         };
         let err = update_acl(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &contexts_ks,
             &caller,
             target,

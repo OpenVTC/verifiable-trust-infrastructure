@@ -154,7 +154,7 @@ pub(super) async fn handle_decision(
         Ok(Some(p)) => p,
         Ok(None) => {
             crate::audit::record_consent(
-                &state.audit_ks,
+                &state.audit_sink,
                 "consent.decision",
                 &approver,
                 &payload.payload_digest,
@@ -179,7 +179,7 @@ pub(super) async fn handle_decision(
     // Bind the decision to this exact request.
     if payload.challenge != pending.challenge {
         crate::audit::record_consent(
-            &state.audit_ks,
+            &state.audit_sink,
             "consent.decision",
             &approver,
             &pending.type_uri,
@@ -207,7 +207,7 @@ pub(super) async fn handle_decision(
         .unwrap_or_default();
     if !members.iter().any(|m| m == &approver) {
         crate::audit::record_consent(
-            &state.audit_ks,
+            &state.audit_sink,
             "consent.decision",
             &approver,
             &pending.type_uri,
@@ -228,7 +228,7 @@ pub(super) async fn handle_decision(
     // A requester can't approve their own task when the policy excludes them.
     if pending.exclude_requester && approver == pending.requester_did {
         crate::audit::record_consent(
-            &state.audit_ks,
+            &state.audit_sink,
             "consent.decision",
             &approver,
             &pending.type_uri,
@@ -248,7 +248,7 @@ pub(super) async fn handle_decision(
     if payload.decision == Decision::Deny {
         let _ = consent::delete_pending(ks, &pending).await;
         crate::audit::record_consent(
-            &state.audit_ks,
+            &state.audit_sink,
             "consent.decision",
             &approver,
             &pending.type_uri,
@@ -272,7 +272,7 @@ pub(super) async fn handle_decision(
             // nothing, which made it look identical to a decision that never
             // arrived.
             crate::audit::record_consent(
-                &state.audit_ks,
+                &state.audit_sink,
                 "consent.decision",
                 &approver,
                 &pending.type_uri,
@@ -321,7 +321,7 @@ pub(super) async fn handle_decision(
         // two rows so the trail shows both the final approver and the single-use
         // grant the requester will consume.
         crate::audit::record_consent(
-            &state.audit_ks,
+            &state.audit_sink,
             "consent.decision",
             &approver,
             &updated.type_uri,
@@ -335,7 +335,7 @@ pub(super) async fn handle_decision(
         )
         .await;
         crate::audit::record_consent(
-            &state.audit_ks,
+            &state.audit_sink,
             "consent.granted",
             &updated.requester_did,
             &updated.type_uri,
@@ -368,7 +368,7 @@ pub(super) async fn handle_decision(
     }
 
     crate::audit::record_consent(
-        &state.audit_ks,
+        &state.audit_sink,
         "consent.decision",
         &approver,
         &updated.type_uri,

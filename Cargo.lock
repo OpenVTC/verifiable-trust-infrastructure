@@ -9224,6 +9224,8 @@ dependencies = [
 name = "vta-audit"
 version = "0.1.10"
 dependencies = [
+ "async-trait",
+ "tokio",
  "tracing",
  "uuid",
  "vta-sdk",

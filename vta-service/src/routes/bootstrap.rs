@@ -160,7 +160,7 @@ pub async fn request(
             outcome = "success"
         );
         let _ = crate::audit::record(
-            &state.audit_ks,
+            &state.audit_sink,
             "bootstrap.swap",
             "bootstrap-endpoint",
             None,

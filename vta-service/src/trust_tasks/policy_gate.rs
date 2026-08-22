@@ -329,7 +329,7 @@ async fn consent_gate(
             // approver is asked again against the world as it now is.
             if let Err(why) = approvals_still_authorize(&require, &members, &grant, &auth.did) {
                 crate::audit::record_consent(
-                    &state.audit_ks,
+                    &state.audit_sink,
                     "consent.consumed",
                     &auth.did,
                     type_uri,
@@ -362,7 +362,7 @@ async fn consent_gate(
                      — re-raising consent. If this line repeats, THIS is the loop."
                 );
                 crate::audit::record_consent(
-                    &state.audit_ks,
+                    &state.audit_sink,
                     "consent.consumed",
                     &auth.did,
                     type_uri,
@@ -379,7 +379,7 @@ async fn consent_gate(
             // a delegation (approvers conferred a context the requester lacked),
             // hand it to the caller to widen `auth` for this one dispatch.
             crate::audit::record_consent(
-                &state.audit_ks,
+                &state.audit_sink,
                 "consent.consumed",
                 &auth.did,
                 type_uri,
@@ -449,7 +449,7 @@ async fn consent_gate(
         }
         if eligible < min_approvals {
             crate::audit::record_consent(
-                &state.audit_ks,
+                &state.audit_sink,
                 "consent.required",
                 &auth.did,
                 type_uri,
@@ -600,7 +600,7 @@ async fn consent_gate(
     // digest and no matching `consent.consumed` — the loop, made visible after
     // the fact without needing live logs.
     crate::audit::record_consent(
-        &state.audit_ks,
+        &state.audit_sink,
         "consent.required",
         &auth.did,
         type_uri,

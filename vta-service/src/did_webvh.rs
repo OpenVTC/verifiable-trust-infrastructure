@@ -44,6 +44,8 @@ pub async fn run_create_did_webvh(
     let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
     let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
     let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
+    let audit: vta_audit::SharedAuditSink =
+        std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
     let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES)?;
 
     // Resolve context
@@ -185,7 +187,7 @@ pub async fn run_create_did_webvh(
         contexts_ks: &contexts_ks,
         webvh_ks: &webvh_ks,
         did_templates_ks: &did_templates_ks,
-        audit_ks: &audit_ks,
+        audit: &audit,
         seed_store: &*seed_store,
         config: &config,
         did_resolver: &did_resolver,
@@ -277,7 +279,9 @@ pub async fn run_create_did_webvh(
             &keys_ks,
             &imported_ks,
             &Arc::from(seed_store),
-            &store.keyspace(crate::keyspaces::AUDIT)?,
+            &(std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(
+                store.keyspace(crate::keyspaces::AUDIT)?,
+            )) as vta_audit::SharedAuditSink),
             &auth,
             &result.signing_key_id,
             "cli",
@@ -296,7 +300,9 @@ pub async fn run_create_did_webvh(
                 &keys_ks,
                 &imported_ks,
                 &Arc::from(create_seed_store(&config)?),
-                &store.keyspace(crate::keyspaces::AUDIT)?,
+                &(std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(
+                    store.keyspace(crate::keyspaces::AUDIT)?,
+                )) as vta_audit::SharedAuditSink),
                 &auth,
                 &result.ka_key_id,
                 "cli",
@@ -764,6 +770,8 @@ mod tests {
         let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
         let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
         let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+        let audit: vta_audit::SharedAuditSink =
+            std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
         let seed_store = Arc::from(create_seed_store(&config).unwrap());
         let auth = cli_super_admin();
 
@@ -778,7 +786,7 @@ mod tests {
             &keys_ks,
             &imported_ks,
             &seed_store,
-            &audit_ks,
+            &audit,
             &auth,
             &key_id,
             "test",
@@ -859,6 +867,8 @@ mod tests {
         let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
         let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
         let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+        let audit: vta_audit::SharedAuditSink =
+            std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
         let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES).unwrap();
         let seed_store = create_seed_store(&config).unwrap();
 
@@ -897,7 +907,7 @@ mod tests {
             contexts_ks: &contexts_ks,
             webvh_ks: &webvh_ks,
             did_templates_ks: &did_templates_ks,
-            audit_ks: &audit_ks,
+            audit: &audit,
             seed_store: &*seed_store,
             config: &config,
             did_resolver: &did_resolver,
@@ -941,7 +951,7 @@ mod tests {
             &keys_ks,
             &imported_ks,
             &Arc::from(create_seed_store(&config).unwrap()),
-            &audit_ks,
+            &audit,
             &cli_super_admin(),
             &format!("{}#key-0", result.did),
             "test",

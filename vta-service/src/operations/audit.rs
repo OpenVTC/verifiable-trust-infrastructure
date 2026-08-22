@@ -241,7 +241,10 @@ pub async fn get_retention(
 /// Update the audit retention period (super-admin only).
 pub async fn update_retention(
     config: &Arc<RwLock<AppConfig>>,
-    audit_ks: &KeyspaceHandle,
+    // The sink, not the keyspace: this only *writes* one row. Note that the
+    // retention period it sets governs the keyspace, which an alternative sink
+    // does not necessarily share — see `vta_audit::sink`.
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     retention_days: u32,
     channel: &str,
@@ -273,7 +276,7 @@ pub async fn update_retention(
         outcome = "success"
     );
     let _ = audit::record(
-        audit_ks,
+        audit,
         "audit.retention_update",
         &auth.did,
         Some(&retention_days.to_string()),

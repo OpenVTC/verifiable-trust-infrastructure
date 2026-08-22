@@ -134,7 +134,7 @@ pub async fn get_policy(
 /// it is the thing they can fix without re-reading state.
 pub async fn upsert_policy(
     policy_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     req: UpsertPolicyBody,
     channel: &str,
@@ -212,7 +212,7 @@ pub async fn upsert_policy(
     storage::store_policy(policy_ks, &row).await?;
 
     crate::audit::record(
-        audit_ks,
+        audit,
         "policy.upsert",
         &auth.did,
         Some(&id),
@@ -236,7 +236,7 @@ pub async fn upsert_policy(
 /// `policy/delete/0.1`. Auth: super-admin.
 pub async fn delete_policy(
     policy_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     id: &str,
     expected_version: Option<u64>,
@@ -273,7 +273,7 @@ pub async fn delete_policy(
     let deleted_at = now_rfc3339();
     storage::delete_policy(policy_ks, id).await?;
     crate::audit::record_with_detail(
-        audit_ks,
+        audit,
         "policy.delete",
         &auth.did,
         Some(id),
@@ -304,7 +304,11 @@ mod tests {
     const HAND_REGO: &str =
         "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"allow\"}";
 
-    async fn keyspaces() -> (KeyspaceHandle, KeyspaceHandle, tempfile::TempDir) {
+    async fn keyspaces() -> (
+        KeyspaceHandle,
+        vta_audit::SharedAuditSink,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&StoreConfig {
             data_dir: dir.path().to_path_buf(),
@@ -312,7 +316,9 @@ mod tests {
         .unwrap();
         (
             store.keyspace(vta_keyspaces::POLICY).unwrap(),
-            store.keyspace(vta_keyspaces::AUDIT).unwrap(),
+            std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(
+                store.keyspace(vta_keyspaces::AUDIT).unwrap(),
+            )),
             dir,
         )
     }
@@ -355,11 +361,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_declarative_row_whose_module_matches_its_rules_is_accepted() {
-        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let (policy_ks, audit, _d) = keyspaces().await;
         let rules = vec![ApprovalRule::reauth(ACL_GRANT)];
         let out = upsert_policy(
             &policy_ks,
-            &audit_ks,
+            &audit,
             &super_admin(),
             declarative_body(&rules, None),
             "test",
@@ -375,11 +381,11 @@ mod tests {
     /// `pnm approvals list` prints is advisory rather than true.
     #[tokio::test]
     async fn a_declarative_row_whose_module_contradicts_its_rules_is_refused() {
-        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let (policy_ks, audit, _d) = keyspaces().await;
         let rules = vec![ApprovalRule::reauth(ACL_GRANT)];
         let err = upsert_policy(
             &policy_ks,
-            &audit_ks,
+            &audit,
             &super_admin(),
             declarative_body(&rules, Some(HAND_REGO)),
             "test",
@@ -396,10 +402,10 @@ mod tests {
     /// approvals surface reporting rules that no longer decide anything.
     #[tokio::test]
     async fn the_reserved_id_cannot_hold_hand_authored_rego() {
-        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let (policy_ks, audit, _d) = keyspaces().await;
         let err = upsert_policy(
             &policy_ks,
-            &audit_ks,
+            &audit,
             &super_admin(),
             UpsertPolicyBody {
                 ext: serde_json::Value::Null,
@@ -419,11 +425,11 @@ mod tests {
     /// ambiguous which rules are in force.
     #[tokio::test]
     async fn only_the_reserved_id_may_carry_declarative_ext() {
-        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let (policy_ks, audit, _d) = keyspaces().await;
         let rules = vec![ApprovalRule::reauth(ACL_GRANT)];
         let err = upsert_policy(
             &policy_ks,
-            &audit_ks,
+            &audit,
             &super_admin(),
             UpsertPolicyBody {
                 id: Some("impostor".into()),
@@ -441,10 +447,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_module_that_does_not_compile_is_refused() {
-        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let (policy_ks, audit, _d) = keyspaces().await;
         let err = upsert_policy(
             &policy_ks,
-            &audit_ks,
+            &audit,
             &super_admin(),
             UpsertPolicyBody {
                 id: Some("broken".into()),
@@ -464,10 +470,10 @@ mod tests {
     /// Whoever can write policy can delete the rule that gates them.
     #[tokio::test]
     async fn writing_policy_is_super_admin_only() {
-        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let (policy_ks, audit, _d) = keyspaces().await;
         let err = upsert_policy(
             &policy_ks,
-            &audit_ks,
+            &audit,
             &admin_only(),
             declarative_body(&[ApprovalRule::reauth(ACL_GRANT)], None),
             "test",
@@ -479,11 +485,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_stale_expected_version_conflicts() {
-        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let (policy_ks, audit, _d) = keyspaces().await;
         let rules = vec![ApprovalRule::reauth(ACL_GRANT)];
         upsert_policy(
             &policy_ks,
-            &audit_ks,
+            &audit,
             &super_admin(),
             declarative_body(&rules, None),
             "test",
@@ -493,7 +499,7 @@ mod tests {
 
         let err = upsert_policy(
             &policy_ks,
-            &audit_ks,
+            &audit,
             &super_admin(),
             UpsertPolicyBody {
                 // The row is at 1 now; a second operator still holding 0.
@@ -512,13 +518,13 @@ mod tests {
     /// exist.
     #[tokio::test]
     async fn the_baseline_cannot_be_deleted() {
-        let (policy_ks, audit_ks, _d) = keyspaces().await;
+        let (policy_ks, audit, _d) = keyspaces().await;
         vta_policy::install_default_policy(&policy_ks, "2026-08-09T00:00:00Z")
             .await
             .unwrap();
         let err = delete_policy(
             &policy_ks,
-            &audit_ks,
+            &audit,
             &super_admin(),
             vta_policy::defaults::DEFAULT_POLICY_ID,
             None,

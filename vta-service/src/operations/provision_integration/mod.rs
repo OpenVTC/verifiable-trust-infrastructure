@@ -111,7 +111,7 @@ pub enum AssertionMode {
 pub struct ProvisionIntegrationDeps {
     pub keys_ks: KeyspaceHandle,
     pub acl_ks: KeyspaceHandle,
-    pub audit_ks: KeyspaceHandle,
+    pub audit: vta_audit::SharedAuditSink,
     pub contexts_ks: KeyspaceHandle,
     pub did_templates_ks: KeyspaceHandle,
     pub imported_ks: KeyspaceHandle,
@@ -134,7 +134,7 @@ impl From<&AppState> for ProvisionIntegrationDeps {
         Self {
             keys_ks: state.keys_ks.clone(),
             acl_ks: state.acl_ks.clone(),
-            audit_ks: state.audit_ks.clone(),
+            audit: std::sync::Arc::clone(&state.audit_sink),
             contexts_ks: state.contexts_ks.clone(),
             did_templates_ks: state.did_templates_ks.clone(),
             imported_ks: state.imported_ks.clone(),
@@ -448,7 +448,7 @@ pub async fn provision_integration(
             contexts_ks: &state.contexts_ks,
             webvh_ks: &state.webvh_ks,
             did_templates_ks: &state.did_templates_ks,
-            audit_ks: &state.audit_ks,
+            audit: &state.audit,
             seed_store: &*state.seed_store,
             config: &config,
             did_resolver,
@@ -538,7 +538,7 @@ pub async fn provision_integration(
             &state.keys_ks,
             &state.imported_ks,
             &state.seed_store,
-            &state.audit_ks,
+            &state.audit,
             auth,
             &signing_key_id,
             "provision-integration",
@@ -548,7 +548,7 @@ pub async fn provision_integration(
             &state.keys_ks,
             &state.imported_ks,
             &state.seed_store,
-            &state.audit_ks,
+            &state.audit,
             auth,
             &ka_key_id,
             "provision-integration",
@@ -628,7 +628,7 @@ pub async fn provision_integration(
     // bundle.
     match super::acl::create_acl(
         &state.acl_ks,
-        &state.audit_ks,
+        &state.audit,
         &state.contexts_ks,
         auth,
         &admin_did,
@@ -845,7 +845,7 @@ async fn retire_ephemeral_after_rollover(
         outcome = "success"
     );
     let _ = audit::record(
-        &state.audit_ks,
+        &state.audit,
         "acl.swap",
         client_did,
         Some(admin_did),
@@ -900,7 +900,7 @@ async fn provision_admin_rotation(
     // hits a Conflict — same handling as the TemplateBootstrap path.
     match super::acl::create_acl(
         &state.acl_ks,
-        &state.audit_ks,
+        &state.audit,
         &state.contexts_ks,
         auth,
         &admin_did,
@@ -2243,7 +2243,7 @@ mod tests {
         // resource=long-term, outcome=success, channel=provision-integration,
         // context_id=ctx-swap.
         let entries: Vec<AuditLogEntry> = {
-            let raw = deps
+            let raw = ts
                 .audit_ks
                 .prefix_iter_raw("log:")
                 .await
@@ -2316,7 +2316,7 @@ mod tests {
 
         // No acl.swap audit — there was no swap to record.
         let entries: Vec<AuditLogEntry> = {
-            let raw = deps
+            let raw = ts
                 .audit_ks
                 .prefix_iter_raw("log:")
                 .await

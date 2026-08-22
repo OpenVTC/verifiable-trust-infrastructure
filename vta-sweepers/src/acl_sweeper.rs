@@ -11,6 +11,7 @@
 
 use tracing::{debug, info, warn};
 
+use vta_audit::SharedAuditSink;
 use vti_common::acl::{AclEntry, delete_acl_entry};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
@@ -39,7 +40,7 @@ fn now_epoch() -> u64 {
 /// expired entry around.
 pub async fn sweep_expired(
     acl_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &SharedAuditSink,
 ) -> Result<(), AppError> {
     let now = now_epoch();
     let mut pruned = 0usize;
@@ -81,7 +82,7 @@ pub async fn sweep_expired(
             // because no human / consumer triggered this — it's a
             // background timer firing on a previously-set TTL.
             if let Err(e) = vta_audit::record(
-                audit_ks,
+                audit,
                 "acl.expire",
                 "system:sweeper",
                 Some(&did),
@@ -113,7 +114,13 @@ mod tests {
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 
-    async fn fresh_store() -> (Store, KeyspaceHandle, KeyspaceHandle, tempfile::TempDir) {
+    async fn fresh_store() -> (
+        Store,
+        KeyspaceHandle,
+        SharedAuditSink,
+        KeyspaceHandle,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let config = StoreConfig {
             data_dir: dir.path().to_path_buf(),
@@ -121,7 +128,12 @@ mod tests {
         let store = Store::open(&config).unwrap();
         let acl_ks = store.keyspace(vta_keyspaces::ACL).unwrap();
         let audit_ks = store.keyspace(vta_keyspaces::AUDIT).unwrap();
-        (store, acl_ks, audit_ks, dir)
+        // Both halves: the sink the sweeper writes through, and the keyspace
+        // the assertions read back from. They are the same storage here — the
+        // split exists so a deployment can point the write half elsewhere.
+        let audit: SharedAuditSink =
+            std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
+        (store, acl_ks, audit, audit_ks, dir)
     }
 
     fn entry(did: &str, expires_at: Option<u64>) -> AclEntry {
@@ -134,7 +146,7 @@ mod tests {
     /// orphaned by stale entries, or every entry would be at risk.
     #[tokio::test]
     async fn sweeper_deletes_expired_and_preserves_permanent() {
-        let (_store, acl_ks, audit_ks, _dir) = fresh_store().await;
+        let (_store, acl_ks, audit, audit_ks, _dir) = fresh_store().await;
 
         let now = now_epoch();
         let expired = entry("did:key:zExpired", Some(now - 1));
@@ -144,7 +156,7 @@ mod tests {
         store_acl_entry(&acl_ks, &live_ttl).await.unwrap();
         store_acl_entry(&acl_ks, &permanent).await.unwrap();
 
-        sweep_expired(&acl_ks, &audit_ks).await.unwrap();
+        sweep_expired(&acl_ks, &audit).await.unwrap();
 
         // Expired entry: gone.
         assert!(
@@ -191,7 +203,7 @@ mod tests {
     /// Sweep over an empty keyspace is a no-op + does not panic.
     #[tokio::test]
     async fn sweeper_handles_empty_keyspace() {
-        let (_store, acl_ks, audit_ks, _dir) = fresh_store().await;
-        sweep_expired(&acl_ks, &audit_ks).await.unwrap();
+        let (_store, acl_ks, audit, _audit_ks, _dir) = fresh_store().await;
+        sweep_expired(&acl_ks, &audit).await.unwrap();
     }
 }

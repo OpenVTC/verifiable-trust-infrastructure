@@ -33,7 +33,7 @@ pub async fn restart(
 
     // Log the restart request before triggering
     let _ = crate::audit::record(
-        &state.audit_ks,
+        &state.audit_sink,
         "vta.restart",
         &auth.did,
         None,

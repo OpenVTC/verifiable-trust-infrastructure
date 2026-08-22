@@ -70,7 +70,7 @@ pub struct ListKeysParams {
 async fn create_internal_key(
     keys_ks: &KeyspaceHandle,
     internal_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     params: CreateKeyParams,
     context_id: Option<String>,
@@ -117,7 +117,7 @@ async fn create_internal_key(
     keys_ks.insert(keys::store_key(&key_id), &record).await?;
 
     let _ = audit::record(
-        audit_ks,
+        audit,
         "key.create.internal",
         &auth.did,
         Some(&key_id),
@@ -144,7 +144,7 @@ pub async fn create_key(
     internal_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     params: CreateKeyParams,
     channel: &str,
@@ -180,7 +180,7 @@ pub async fn create_key(
         return create_internal_key(
             keys_ks,
             internal_ks,
-            audit_ks,
+            audit,
             auth,
             params,
             context_id,
@@ -272,7 +272,7 @@ pub async fn create_key(
         outcome = "success"
     );
     let _ = audit::record(
-        audit_ks,
+        audit,
         "key.create",
         &auth.did,
         Some(&key_id),
@@ -307,7 +307,7 @@ pub async fn import_key(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     params: ImportKeyParams,
     channel: &str,
@@ -447,7 +447,7 @@ pub async fn import_key(
         outcome = "success"
     );
     let _ = audit::record(
-        audit_ks,
+        audit,
         "key.import",
         &auth.did,
         Some(&key_id),
@@ -586,7 +586,7 @@ pub async fn list_keys(
 
 pub async fn rename_key(
     keys_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     key_id: &str,
     new_key_id: &str,
@@ -629,7 +629,7 @@ pub async fn rename_key(
         outcome = "success"
     );
     let _ = audit::record(
-        audit_ks,
+        audit,
         "key.rename",
         &auth.did,
         Some(new_key_id),
@@ -648,7 +648,7 @@ pub async fn rename_key(
 pub async fn revoke_key(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     key_id: &str,
     channel: &str,
@@ -692,7 +692,7 @@ pub async fn revoke_key(
         outcome = "success"
     );
     let _ = audit::record(
-        audit_ks,
+        audit,
         "key.revoke",
         &auth.did,
         Some(key_id),
@@ -713,7 +713,7 @@ pub async fn get_key_secret(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     key_id: &str,
     channel: &str,
@@ -814,7 +814,7 @@ pub async fn get_key_secret(
         outcome = "success"
     );
     let _ = audit::record(
-        audit_ks,
+        audit,
         "key.secret_export",
         &auth.did,
         Some(key_id),
@@ -851,7 +851,7 @@ pub async fn get_key_secret_internal(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     authority: super::internal_authority::InternalAuthority,
     key_id: &str,
     channel: &str,
@@ -936,7 +936,7 @@ pub async fn get_key_secret_internal(
         outcome = "success"
     );
     let _ = audit::record(
-        audit_ks,
+        audit,
         "key.secret_export",
         &actor,
         Some(key_id),
@@ -1412,7 +1412,7 @@ mod tests {
     struct TestHarness {
         keys_ks: KeyspaceHandle,
         contexts_ks: KeyspaceHandle,
-        audit_ks: KeyspaceHandle,
+        audit: vta_audit::SharedAuditSink,
         imported_ks: KeyspaceHandle,
         internal_ks: KeyspaceHandle,
         acl_ks: KeyspaceHandle,
@@ -1430,7 +1430,9 @@ mod tests {
 
             let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
             let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
-            let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+            let audit: vta_audit::SharedAuditSink = std::sync::Arc::new(
+                vta_audit::KeyspaceAuditSink::new(store.keyspace(crate::keyspaces::AUDIT).unwrap()),
+            );
             let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
             let internal_ks = store.keyspace(crate::keyspaces::INTERNAL_KEYS).unwrap();
             let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
@@ -1447,7 +1449,7 @@ mod tests {
             Self {
                 keys_ks,
                 contexts_ks,
-                audit_ks,
+                audit,
                 imported_ks,
                 internal_ks,
                 acl_ks,
@@ -1482,7 +1484,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -1503,7 +1505,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -1545,7 +1547,7 @@ mod tests {
                 &h.internal_ks,
                 &h.contexts_ks,
                 &h.seed_store,
-                &h.audit_ks,
+                &h.audit,
                 &auth,
                 CreateKeyParams {
                     internal: false,
@@ -1573,7 +1575,7 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &auth,
             ImportKeyParams {
                 key_type: KeyType::Ed25519,
@@ -1590,7 +1592,7 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &auth,
             ImportKeyParams {
                 key_type: KeyType::Ed25519,
@@ -1636,7 +1638,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -1654,7 +1656,7 @@ mod tests {
 
         let err = rename_key(
             &h.keys_ks,
-            &h.audit_ks,
+            &h.audit,
             &auth,
             "plain-key",
             "did:web:example.com#key-0",
@@ -1678,7 +1680,7 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &auth,
             ImportKeyParams {
                 key_type: KeyType::Ed25519,
@@ -1703,7 +1705,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -1738,7 +1740,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -1774,7 +1776,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -2011,7 +2013,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2083,7 +2085,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2132,7 +2134,7 @@ mod tests {
                 &h.internal_ks,
                 &h.contexts_ks,
                 &h.seed_store,
-                &h.audit_ks,
+                &h.audit,
                 &admin,
                 CreateKeyParams {
                     internal: false,
@@ -2262,7 +2264,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2324,7 +2326,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2419,7 +2421,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2472,7 +2474,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2521,7 +2523,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2603,7 +2605,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2681,7 +2683,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &h.super_admin_auth(),
             CreateKeyParams {
                 internal: true,
@@ -2709,7 +2711,7 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &h.super_admin_auth(),
             "k-internal",
             "test",
@@ -2735,7 +2737,7 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &*h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             crate::operations::internal_authority::InternalAuthority::new("test"),
             "k-internal",
             "test",
@@ -2790,7 +2792,7 @@ mod tests {
             &h.internal_ks,
             &h.contexts_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             &h.super_admin_auth(),
             CreateKeyParams {
                 internal: true,

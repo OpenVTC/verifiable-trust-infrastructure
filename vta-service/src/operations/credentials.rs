@@ -208,7 +208,7 @@ pub(crate) async fn load_vta_issuer_secret(
         &state.keys_ks,
         &state.imported_ks,
         &*state.seed_store,
-        &state.audit_ks,
+        &state.audit_sink,
         authority,
         &key_id,
         purpose,

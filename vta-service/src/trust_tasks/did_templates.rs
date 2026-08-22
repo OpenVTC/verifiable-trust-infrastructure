@@ -88,7 +88,7 @@ pub(super) async fn handle_create(
             operations::did_templates::create_context(
                 &state.did_templates_ks,
                 &state.contexts_ks,
-                &state.audit_ks,
+                &state.audit_sink,
                 auth,
                 &context_id,
                 req.template,
@@ -99,7 +99,7 @@ pub(super) async fn handle_create(
         None => {
             operations::did_templates::create_global(
                 &state.did_templates_ks,
-                &state.audit_ks,
+                &state.audit_sink,
                 auth,
                 req.template,
                 TRANSPORT_TRUST_TASK,
@@ -164,7 +164,7 @@ pub(super) async fn handle_update(
         Some(context_id) => {
             operations::did_templates::update_context(
                 &state.did_templates_ks,
-                &state.audit_ks,
+                &state.audit_sink,
                 auth,
                 &context_id,
                 &req.name,
@@ -176,7 +176,7 @@ pub(super) async fn handle_update(
         None => {
             operations::did_templates::update_global(
                 &state.did_templates_ks,
-                &state.audit_ks,
+                &state.audit_sink,
                 auth,
                 &req.name,
                 req.template,
@@ -205,7 +205,7 @@ pub(super) async fn handle_delete(
         Some(context_id) => {
             operations::did_templates::delete_context(
                 &state.did_templates_ks,
-                &state.audit_ks,
+                &state.audit_sink,
                 auth,
                 context_id,
                 &req.name,
@@ -216,7 +216,7 @@ pub(super) async fn handle_delete(
         None => {
             operations::did_templates::delete_global(
                 &state.did_templates_ks,
-                &state.audit_ks,
+                &state.audit_sink,
                 auth,
                 &req.name,
                 TRANSPORT_TRUST_TASK,

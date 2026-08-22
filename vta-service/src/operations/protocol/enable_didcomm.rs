@@ -349,7 +349,7 @@ mod tests {
         imported_ks: KeyspaceHandle,
         contexts_ks: KeyspaceHandle,
         webvh_ks: KeyspaceHandle,
-        audit_ks: KeyspaceHandle,
+        audit: vta_audit::SharedAuditSink,
         snapshot_ks: KeyspaceHandle,
         service_state_ks: KeyspaceHandle,
         drains_ks: KeyspaceHandle,
@@ -371,6 +371,8 @@ mod tests {
             let (d3, contexts_ks) = empty_keyspace("contexts").await;
             let (d4, webvh_ks) = empty_keyspace("webvh").await;
             let (d5, audit_ks) = empty_keyspace("audit").await;
+            let audit: vta_audit::SharedAuditSink =
+                std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks));
             let (d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
             let (d7, service_state_ks) = empty_keyspace("service_state").await;
             let (d8, drains_ks) = empty_keyspace("drains").await;
@@ -391,7 +393,7 @@ mod tests {
                 imported_ks,
                 contexts_ks,
                 webvh_ks,
-                audit_ks,
+                audit,
                 snapshot_ks,
                 service_state_ks,
                 drains_ks,
@@ -413,7 +415,7 @@ mod tests {
                 imported_ks: &self.imported_ks,
                 contexts_ks: &self.contexts_ks,
                 webvh_ks: &self.webvh_ks,
-                audit_ks: &self.audit_ks,
+                audit: &self.audit,
                 snapshot_ks: &self.snapshot_ks,
                 service_state_ks: &self.service_state_ks,
                 drains_ks: &self.drains_ks,

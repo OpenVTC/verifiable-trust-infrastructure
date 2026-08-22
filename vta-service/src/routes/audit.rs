@@ -72,7 +72,7 @@ pub async fn update_retention(
 ) -> Result<Json<RetentionResultBody>, AppError> {
     let result = operations::audit::update_retention(
         &state.config,
-        &state.audit_ks,
+        &state.audit_sink,
         &auth.0,
         body.retention_days,
         "rest",

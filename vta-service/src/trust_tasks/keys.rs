@@ -72,7 +72,7 @@ pub(super) async fn handle_create(
         &state.internal_ks,
         &state.contexts_ks,
         &state.seed_store,
-        &state.audit_ks,
+        &state.audit_sink,
         auth,
         operations::keys::CreateKeyParams {
             internal: req.internal.unwrap_or(false),
@@ -135,7 +135,7 @@ pub(super) async fn handle_rename(
     };
     match operations::keys::rename_key(
         &state.keys_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         auth,
         &req.key_id,
         &req.new_key_id,
@@ -165,7 +165,7 @@ pub(super) async fn handle_revoke(
     match operations::keys::revoke_key(
         &state.keys_ks,
         &state.imported_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         auth,
         &req.key_id,
         TRANSPORT_TRUST_TASK,
@@ -419,7 +419,7 @@ pub(super) async fn handle_import(
         &state.keys_ks,
         &state.imported_ks,
         &state.seed_store,
-        &state.audit_ks,
+        &state.audit_sink,
         auth,
         operations::keys::ImportKeyParams {
             key_type: req.key_type,

@@ -100,7 +100,7 @@ pub struct WebvhDeps<'a> {
     pub imported_ks: &'a KeyspaceHandle,
     pub contexts_ks: &'a KeyspaceHandle,
     pub webvh_ks: &'a KeyspaceHandle,
-    pub audit_ks: &'a KeyspaceHandle,
+    pub audit: &'a vta_audit::SharedAuditSink,
     pub seed_store: &'a dyn SeedStore,
     pub did_resolver: &'a DIDCacheClient,
     pub didcomm_bridge: &'a Arc<DIDCommBridge>,
@@ -126,7 +126,7 @@ impl<'a> WebvhDeps<'a> {
             imported_ks: &s.imported_ks,
             contexts_ks: &s.contexts_ks,
             webvh_ks: &s.webvh_ks,
-            audit_ks: &s.audit_ks,
+            audit: &s.audit_sink,
             seed_store: &*s.seed_store,
             did_resolver,
             #[cfg(any(feature = "didcomm", feature = "tsp"))]
@@ -149,7 +149,7 @@ impl<'a> WebvhDeps<'a> {
             imported_ks: &s.imported_ks,
             contexts_ks: &s.contexts_ks,
             webvh_ks: &s.webvh_ks,
-            audit_ks: &s.audit_ks,
+            audit: &s.audit_sink,
             seed_store: &*s.seed_store,
             did_resolver,
             #[cfg(any(feature = "didcomm", feature = "tsp"))]
@@ -164,7 +164,7 @@ impl<'a> WebvhDeps<'a> {
 /// Dependency bundle for [`create_did_webvh`] — P2.5.
 ///
 /// Create has a *different* shape from [`WebvhDeps`]: it mints + stores a new
-/// DID locally (no remote publish at create time, so no `auth_locks` / `audit_ks`
+/// DID locally (no remote publish at create time, so no `auth_locks` / `audit`
 /// / `vta_did`), but it renders a DID template (`did_templates_ks`) and reads
 /// operator config (`config`). Distinct struct rather than a strained reuse.
 ///
@@ -180,7 +180,7 @@ pub struct CreateDidWebvhDeps<'a> {
     /// Audit keyspace — needed to load the VTA's own signing identity
     /// (`load_vta_webvh_signing_identity`) when authenticating a
     /// server publish. Only touched on the non-serverless path.
-    pub audit_ks: &'a KeyspaceHandle,
+    pub audit: &'a vta_audit::SharedAuditSink,
     pub seed_store: &'a dyn SeedStore,
     pub config: &'a AppConfig,
     pub did_resolver: &'a DIDCacheClient,
@@ -211,7 +211,7 @@ impl<'a> CreateDidWebvhDeps<'a> {
             contexts_ks: &s.contexts_ks,
             webvh_ks: &s.webvh_ks,
             did_templates_ks: &s.did_templates_ks,
-            audit_ks: &s.audit_ks,
+            audit: &s.audit_sink,
             seed_store: &*s.seed_store,
             config,
             did_resolver,
@@ -237,7 +237,7 @@ impl<'a> CreateDidWebvhDeps<'a> {
             contexts_ks: &s.contexts_ks,
             webvh_ks: &s.webvh_ks,
             did_templates_ks: &s.did_templates_ks,
-            audit_ks: &s.audit_ks,
+            audit: &s.audit_sink,
             seed_store: &*s.seed_store,
             config,
             did_resolver,
@@ -628,7 +628,7 @@ async fn authenticated_server_transport<'a>(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     webvh_ks: &KeyspaceHandle,
     did_resolver: &DIDCacheClient,
     didcomm_bridge: &'a Arc<DIDCommBridge>,
@@ -647,7 +647,7 @@ async fn authenticated_server_transport<'a>(
         keys_ks,
         imported_ks,
         seed_store,
-        audit_ks,
+        audit,
         vta_did,
     )
     .await?;
@@ -674,7 +674,7 @@ pub async fn create_did_webvh(
         contexts_ks,
         webvh_ks,
         did_templates_ks,
-        audit_ks,
+        audit,
         seed_store,
         config,
         did_resolver,
@@ -995,7 +995,7 @@ pub async fn create_did_webvh(
             keys_ks,
             imported_ks,
             seed_store,
-            audit_ks,
+            audit,
             webvh_ks,
             did_resolver,
             didcomm_bridge,
@@ -1380,7 +1380,7 @@ pub async fn create_did_webvh(
             keys_ks,
             imported_ks,
             seed_store,
-            audit_ks,
+            audit,
             webvh_ks,
             did_resolver,
             didcomm_bridge,

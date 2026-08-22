@@ -101,7 +101,20 @@ pub struct AppState {
     pub acl_ks: KeyspaceHandle,
     pub contexts_ks: KeyspaceHandle,
     pub did_templates_ks: KeyspaceHandle,
+    /// The audit keyspace, for **reads and retention only** — the audit-list
+    /// query and `cleanup_expired_logs`. Writes go through [`Self::audit_sink`].
+    ///
+    /// The two are separate because an alternative sink may be write-only and
+    /// remote, and "delete rows older than N days" is not an operation an
+    /// append-only or anchored backend can offer — the immutability is the
+    /// point. Retention therefore stays a property of the local keyspace, which
+    /// is what the retention API is documented to govern.
     pub audit_ks: KeyspaceHandle,
+    /// Pluggable audit sink — every audit *write* goes through this.
+    /// Default impl is the `audit` keyspace ([`KeyspaceAuditSink`]);
+    /// an append-only log, transparency log, or hash chain plugs in via the
+    /// `AuditSink` trait without any call site changing (#1031).
+    pub audit_sink: vta_audit::SharedAuditSink,
     pub imported_ks: KeyspaceHandle,
     /// Non-extractable internal signing keys. Separate from `imported_ks`
     /// because that keyspace wraps under a seed-derived KEK; these must have
@@ -282,6 +295,10 @@ impl AuthState for AppState {
 pub struct AppStateParts {
     /// Telemetry sink shared with the mediator registry. `None` → fresh ring buffer.
     pub telemetry: Option<vti_common::telemetry::SharedTelemetrySink>,
+    /// Audit sink. `None` → the `audit` keyspace, i.e. what the VTA has always
+    /// done. An operator wiring tamper-evidence supplies one here — typically a
+    /// `FanOutAuditSink` keeping the keyspace so the query API goes on working.
+    pub audit_sink: Option<vta_audit::SharedAuditSink>,
     /// Live mediator listener registry. `None` → fresh registry over `telemetry`.
     #[cfg(all(feature = "webvh", feature = "didcomm"))]
     pub mediator_registry: Option<Arc<crate::messaging::registry::MediatorListenerRegistry>>,
@@ -412,6 +429,13 @@ pub async fn build_app_state(
         ))
     });
 
+    // Default sink = the audit keyspace, i.e. unchanged behaviour. A caller
+    // that supplied its own keeps the keyspace handle too (`audit_ks` above),
+    // because reads and retention deliberately do not route through the sink.
+    let audit_sink: vta_audit::SharedAuditSink = parts
+        .audit_sink
+        .unwrap_or_else(|| Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone())));
+
     Ok(AppState {
         keys_ks,
         sessions_ks,
@@ -419,6 +443,7 @@ pub async fn build_app_state(
         contexts_ks,
         did_templates_ks,
         audit_ks,
+        audit_sink,
         imported_ks,
         internal_ks,
         cache_ks,
@@ -814,6 +839,12 @@ pub async fn run(
         let storage_store = store.clone();
         let storage_sessions_ks = sessions_ks.clone();
         let storage_audit_ks = audit_ks.clone();
+        // Built once here and handed to *both* the storage thread and
+        // `AppStateParts` below, so the sweepers and the request path share one
+        // sink object rather than two that merely happen to agree today.
+        let audit_sink: vta_audit::SharedAuditSink =
+            Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
+        let storage_audit_sink = Arc::clone(&audit_sink);
         let storage_acl_ks = acl_ks.clone();
         let storage_consent_ks = consent_ks.clone();
         let storage_idempotency_ks = idempotency_ks.clone();
@@ -839,6 +870,9 @@ pub async fn run(
         let app_state = {
             let parts = AppStateParts {
                 telemetry: Some(Arc::clone(&telemetry)),
+                // The same sink the storage thread's sweepers hold, so an
+                // operator-installed backend covers unattended removals too.
+                audit_sink: Some(Arc::clone(&audit_sink)),
                 #[cfg(all(feature = "webvh", feature = "didcomm"))]
                 mediator_registry: Some(Arc::clone(&mediator_registry)),
                 #[cfg(all(feature = "webvh", feature = "didcomm"))]
@@ -1118,6 +1152,7 @@ pub async fn run(
                     storage_store,
                     storage_sessions_ks,
                     storage_audit_ks,
+                    storage_audit_sink,
                     storage_acl_ks,
                     storage_consent_ks,
                     storage_idempotency_ks,
@@ -1227,7 +1262,14 @@ pub async fn run(
 fn run_storage_thread(
     store: Store,
     sessions_ks: KeyspaceHandle,
+    // `audit_ks` for `cleanup_expired_logs` — retention prunes the keyspace.
+    // `audit_sink` for the sweepers' own audit rows: the *same* sink the
+    // request path uses, threaded in rather than rebuilt from `audit_ks`. A
+    // sweeper's `acl.expire` is exactly the kind of unattended removal an
+    // operator installs a tamper-evident backend to capture, and rebuilding one
+    // here would route it back to the keyspace whatever they configured.
     audit_ks: KeyspaceHandle,
+    audit_sink: vta_audit::SharedAuditSink,
     acl_ks: KeyspaceHandle,
     consent_ks: KeyspaceHandle,
     idempotency_ks: KeyspaceHandle,
@@ -1272,7 +1314,7 @@ fn run_storage_thread(
                         // can't distinguish "entry was never created" from
                         // "entry was created then expired and pruned".
                         if let Err(e) =
-                            crate::acl_sweeper::sweep_expired(&acl_ks, &audit_ks).await
+                            crate::acl_sweeper::sweep_expired(&acl_ks, &audit_sink).await
                         {
                             warn!("acl sweeper error: {e}");
                         }
@@ -1280,7 +1322,7 @@ fn run_storage_thread(
                         // lapsed grants, so the consent keyspace can't grow
                         // unbounded at inbound-message rate.
                         if let Err(e) =
-                            crate::consent_sweeper::sweep_expired(&consent_ks, &audit_ks).await
+                            crate::consent_sweeper::sweep_expired(&consent_ks, &audit_sink).await
                         {
                             warn!("consent sweeper error: {e}");
                         }
@@ -1335,7 +1377,7 @@ fn run_storage_thread(
                         // (soft-deleted entries past their recovery window), so
                         // the trash can't linger forever. Audits each purge.
                         if let Err(e) =
-                            crate::vault_sweeper::sweep_expired(&vault_ks, &audit_ks).await
+                            crate::vault_sweeper::sweep_expired(&vault_ks, &audit_sink).await
                         {
                             warn!("vault sweeper error: {e}");
                         }

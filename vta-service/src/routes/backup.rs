@@ -39,7 +39,7 @@ pub async fn export(
     .await?;
 
     let _ = crate::audit::record(
-        &state.audit_ks,
+        &state.audit_sink,
         "backup.export",
         &auth.did,
         None,
@@ -93,7 +93,7 @@ pub async fn import(
     .await?;
 
     let _ = crate::audit::record(
-        &state.audit_ks,
+        &state.audit_sink,
         "backup.import",
         &auth.did,
         payload.config.vta_did.as_deref(),

@@ -102,7 +102,7 @@ async fn audit_memory(
     context_id: &str,
 ) {
     if let Err(e) = audit::record(
-        &state.audit_ks,
+        &state.audit_sink,
         action,
         &auth.did,
         Some(resource),

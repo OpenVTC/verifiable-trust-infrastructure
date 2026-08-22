@@ -93,7 +93,7 @@ struct OfflineDeps {
     imported_ks: KeyspaceHandle,
     contexts_ks: KeyspaceHandle,
     webvh_ks: KeyspaceHandle,
-    audit_ks: KeyspaceHandle,
+    audit_sink: vta_audit::SharedAuditSink,
     drains_ks: KeyspaceHandle,
     snapshot_ks: KeyspaceHandle,
     service_state_ks: KeyspaceHandle,
@@ -125,7 +125,7 @@ impl OfflineDeps {
             imported_ks: &self.imported_ks,
             contexts_ks: &self.contexts_ks,
             webvh_ks: &self.webvh_ks,
-            audit_ks: &self.audit_ks,
+            audit: &self.audit_sink,
             snapshot_ks: &self.snapshot_ks,
             service_state_ks: &self.service_state_ks,
             drains_ks: &self.drains_ks,
@@ -166,7 +166,9 @@ async fn build_offline_deps(
     let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
     let imported_ks = cs.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
     let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
-    let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
+    let audit_sink: vta_audit::SharedAuditSink = std::sync::Arc::new(
+        vta_audit::KeyspaceAuditSink::new(cs.keyspace(crate::keyspaces::AUDIT)?),
+    );
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
     let drains_ks = cs.keyspace(crate::keyspaces::DRAINS)?;
     let snapshot_ks = cs.keyspace(snapshot::KEYSPACE_NAME)?;
@@ -218,7 +220,7 @@ async fn build_offline_deps(
         imported_ks,
         contexts_ks,
         webvh_ks,
-        audit_ks,
+        audit_sink,
         drains_ks,
         snapshot_ks,
         service_state_ks,

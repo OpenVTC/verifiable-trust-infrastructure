@@ -17,6 +17,7 @@ use tracing::{debug, info, warn};
 
 use vti_common::vault::{StoredVaultEntry, VaultStatus, delete_vault_entry};
 
+use vta_audit::SharedAuditSink;
 use vta_vault::model::StoredCredential;
 use vta_vault::storage as cred_storage;
 use vti_common::error::AppError;
@@ -26,7 +27,7 @@ use vti_common::store::KeyspaceHandle;
 /// entry and credential whose grace window has elapsed.
 pub async fn sweep_expired(
     vault_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &SharedAuditSink,
 ) -> Result<(), AppError> {
     let now = chrono::Utc::now().to_rfc3339();
     let mut purged = 0usize;
@@ -48,7 +49,7 @@ pub async fn sweep_expired(
             delete_vault_entry(vault_ks, &stored.entry.id).await?;
             purged += 1;
             audit_purge(
-                audit_ks,
+                audit,
                 "vault.purge",
                 &stored.entry.id,
                 Some(stored.entry.context_id.as_str()),
@@ -71,7 +72,7 @@ pub async fn sweep_expired(
             cred_storage::delete(vault_ks, &cred.id).await?;
             purged += 1;
             audit_purge(
-                audit_ks,
+                audit,
                 "vault.cred.purge",
                 &cred.id,
                 cred.community_did.as_deref(),
@@ -95,9 +96,9 @@ fn is_purgeable(status: VaultStatus, grace_until: Option<&str>, now: &str) -> bo
     matches!(status, VaultStatus::Deleted) && grace_until.is_some_and(|g| now >= g)
 }
 
-async fn audit_purge(audit_ks: &KeyspaceHandle, action: &str, id: &str, context_id: Option<&str>) {
+async fn audit_purge(audit: &SharedAuditSink, action: &str, id: &str, context_id: Option<&str>) {
     if let Err(e) = vta_audit::record(
-        audit_ks,
+        audit,
         action,
         "system:sweeper",
         Some(id),

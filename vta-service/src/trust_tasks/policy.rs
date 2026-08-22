@@ -77,7 +77,7 @@ pub(super) async fn handle_upsert(
     };
     match operations::policy::upsert_policy(
         &state.policy_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         auth,
         req,
         TRANSPORT_TRUST_TASK,
@@ -101,7 +101,7 @@ pub(super) async fn handle_delete(
     };
     match operations::policy::delete_policy(
         &state.policy_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         auth,
         &req.id,
         req.expected_version,
