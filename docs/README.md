@@ -159,6 +159,11 @@ How to operate and integrate against a VTC.
 In-flight or historical design documents kept for context. These
 are implementer-facing rather than operator-facing.
 
+- **[Application-state store](05-design-notes/appstate-store.md)** — the
+  proposed third store (beside the secrets and credential vaults) for
+  versioned, namespaced, per-context application JSON: why agent memory
+  and both vaults are the wrong home, what the surface needs, and the
+  upstream spec dependency that has to land first. Design only.
 - **[vta-service decomposition](05-design-notes/vta-service-decomposition.md)** —
   how the ~114k-line VTA crate was split into subsystem crates, the
   extraction technique, and the rule for where the program stops.
