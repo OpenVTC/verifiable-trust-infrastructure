@@ -159,6 +159,13 @@ How to operate and integrate against a VTC.
 In-flight or historical design documents kept for context. These
 are implementer-facing rather than operator-facing.
 
+- **[Task version negotiation](05-design-notes/task-version-negotiation.md)** —
+  how two peers on different Trust Task versions find a common one, and the
+  versioning contract that has to exist first for "negotiate" to mean anything
+  more than "match exactly or fail". Proposes dropping semver's 0.x exemption
+  rather than adding a PATCH component, and explains why the sender speaking
+  *down* is what lets `deny_unknown_fields` stay. Design only; §2 is a proposal
+  for the shared registry.
 - **[Application-state store](05-design-notes/appstate-store.md)** — the
   proposed third store (beside the secrets and credential vaults) for
   versioned, namespaced, per-context application JSON: why agent memory
