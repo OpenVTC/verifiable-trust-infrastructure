@@ -908,3 +908,180 @@ async fn the_webvh_rest_route_is_gated_like_its_trust_task() {
         "a refused update must not have rotated the DID's update key"
     );
 }
+
+// ─── Reprovision under consent (#1030) ───────────────────────────────────────
+
+/// Build the wire form of a signed `BootstrapRequest` for `template` — the
+/// `request` member of a `provision-integration` payload.
+///
+/// Passed as the **wire value** the holder signed rather than a typed struct,
+/// because the handler verifies the bytes as received. Re-serialising a typed
+/// view here would re-impose this crate's casing on the very document the proof
+/// covers, which is the defect `verify_value` exists to prevent.
+async fn signed_bootstrap_request_value(template: &str, context_hint: &str) -> Value {
+    use std::collections::BTreeMap;
+
+    use chrono::Duration;
+    use vta_sdk::provision_integration::{
+        BootstrapAsk, BootstrapRequest, DidTemplateRef, TemplateBootstrapAsk,
+    };
+
+    // The same `[7u8; 32]` setup seed the other provisioning helpers use, so the
+    // holder DID this derives is one a test VTA already trusts.
+    let seed = [7u8; 32];
+    let signing = SigningKey::from_bytes(&seed);
+    let client_did =
+        affinidi_crypto::did_key::ed25519_pub_to_did_key(&signing.verifying_key().to_bytes());
+
+    let ask = BootstrapAsk::TemplateBootstrap(TemplateBootstrapAsk {
+        context_hint: Some(context_hint.into()),
+        template: DidTemplateRef {
+            name: template.into(),
+            vars: BTreeMap::new(),
+        },
+        admin_template: None,
+        note: None,
+    });
+
+    BootstrapRequest::sign(
+        &seed,
+        &client_did,
+        [0u8; 16],
+        Duration::minutes(10),
+        None,
+        ask,
+    )
+    .await
+    .expect("sign bootstrap request")
+    .to_signed_wire_value()
+    .expect("wire value")
+}
+
+/// **#1030: reprovisioning can be gated on a human rather than an operator.**
+///
+/// Recovery today needs someone holding `pnm` to run `context reprovision`. The
+/// claim in #1030 is that this is already just DTTE — register the provisioning
+/// task URI as consent-requiring and the existing ceremony does the rest. That
+/// claim is plausible and had never been executed, which is the condition every
+/// bug this file exists for was found in.
+///
+/// `provision-integration/0.2` is dispatched and classified `[Mutating Secret
+/// false]`, so the PDP gate sees it and it is not ceremony-exempt. But "the gate
+/// sees it" and "the ceremony completes for it" are different claims, and only
+/// the second is worth anything to an operator.
+///
+/// What this does **not** show, and what the issue's framing understates:
+/// consent is the *policy* gate, and it sits behind the bearer/authcrypt gate
+/// that authenticates the relayer. A brand-new install holding no credential
+/// cannot dispatch this task at all. The flow that works is the one the
+/// relayer≠holder split was built for — an already-enrolled device relays for
+/// the new one — so the requester here keeps a real token throughout. "Recovery
+/// without an operator" is true; "recovery from nothing" is not.
+#[tokio::test]
+async fn a_reprovision_is_refused_pending_consent_and_executes_once_approved() {
+    let (router, ctx) = build_test_app_with(TestAppOptions {
+        provisionable_vta: true,
+        ..Default::default()
+    })
+    .await;
+    let requester = "did:key:z6MkTestRequester";
+    let token = ctx.mint_token(requester, "admin", vec![]).await;
+    let ops = approver(23);
+
+    vta_service::contexts::create_context(&ctx.contexts_ks, "default", "Default")
+        .await
+        .expect("seed the default context");
+
+    {
+        let mut cfg = ctx.config.write().await;
+        cfg.policy.enforcement = true;
+        cfg.policy
+            .approver_sets
+            .insert("operators".into(), vec![ops.did.clone()]);
+    }
+    install_policy(&ctx, REQUIRE_CONSENT).await;
+
+    let request = signed_bootstrap_request_value("vta-admin", "default").await;
+    // `context`, not `contextId` — the published `provision/integration/0.2`
+    // schema is `additionalProperties: false` and names it `context`. Written
+    // from the schema rather than from the neighbouring tasks, most of which do
+    // spell it `contextId`; the first draft of this test used that and the
+    // spine refused it as malformed.
+    let payload = json!({ "request": request, "context": "default" });
+
+    // ── 1. Refused, pending a human.
+    let doc = envelope(
+        vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_2,
+        requester,
+        &ctx.vta_did,
+        payload.clone(),
+    );
+    let (status, rejected) = post(&router, &token, &doc).await;
+    assert!(
+        !status.is_success(),
+        "a reprovision needing consent must be refused, not executed: {rejected}"
+    );
+    // Non-vacuity: a reprovision that failed for an unrelated reason — a bad
+    // template, a missing context — would satisfy the assertion above while
+    // proving nothing about consent, and the rest of this test would then be
+    // exercising a flow that never started.
+    assert_eq!(
+        rejected["payload"]["details"]["reason"], "auth:consent_required",
+        "the refusal must name the consent requirement: {rejected}"
+    );
+
+    // ── 2. The approver is shown a digest bound to *this* bundle.
+    let details = &rejected["payload"]["details"];
+    let payload_digest = details["payloadDigest"].as_str().expect("a digest");
+    let challenge = details["challenge"].as_str().expect("a challenge");
+    let requests = details["consentRequests"]
+        .as_array()
+        .expect("signed consent requests");
+    assert_eq!(requests.len(), 1, "one request per eligible approver");
+    assert!(
+        requests[0]["proof"].is_object(),
+        "the request must be VTA-signed, or anyone can author what the human reads"
+    );
+    assert_eq!(requests[0]["recipient"], json!(ops.did));
+
+    // ── 3. The human approves. Approver-set membership alone authorizes the
+    //       decision (#907) — `ops` holds no ACL entry, which is exactly the
+    //       property that lets a recovery approver be a device rather than an
+    //       administrator.
+    let decision = sign_as(
+        &ops,
+        envelope(
+            TASK_CONSENT_DECISION,
+            &ops.did,
+            &ctx.vta_did,
+            json!({
+                "challenge": challenge,
+                "payloadDigest": payload_digest,
+                "decision": "approve"
+            }),
+        ),
+    );
+    let (status, granted) = post(&router, &token, &decision).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "decision must be accepted: {granted}"
+    );
+    assert_eq!(granted["payload"]["status"], "granted", "{granted}");
+
+    // ── 4. The same payload in a fresh envelope: the grant binds the payload
+    //       digest, not the envelope id, and the replay guard would refuse a
+    //       reused id outright.
+    let resubmit = envelope(
+        vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_2,
+        requester,
+        &ctx.vta_did,
+        payload,
+    );
+    let (status, executed) = post(&router, &token, &resubmit).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the approved reprovision must execute: {executed}"
+    );
+}

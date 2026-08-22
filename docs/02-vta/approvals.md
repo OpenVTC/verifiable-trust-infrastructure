@@ -176,6 +176,71 @@ be **stopped** (fjall takes a per-data-dir lock, so it will refuse to open
 otherwise), and it is **not available in TEE** — inside an enclave the store lives
 behind a vsock proxy that the host-side binary cannot reach.
 
+## Recipe: approve a device recovery instead of running it as an operator
+
+Recovering a lost client normally needs someone holding `pnm` to run the
+reprovision:
+
+```bash
+new install   pnm bootstrap request --out req.json
+operator      pnm context reprovision --id <ctx> --recipient req.json
+new install   pnm bootstrap open --bundle <f> --expect-digest <hex>
+```
+
+The out-of-band step is a real security boundary — anything that lets an
+unauthenticated caller re-issue an admin credential means anyone who knows your
+context id can become you. But where the holder can already prove a second
+enrolled device, the operator in the middle is friction rather than security.
+
+Provisioning is a Trust Task (`provision/integration/0.2`), so it takes an
+approval rule like anything else:
+
+```bash
+pnm approvals approvers add recovery did:key:z6MkTheUsersPhoneDeviceKey
+pnm approvals require https://trusttasks.org/spec/provision/integration/0.2 \
+    --consent --set recovery
+```
+
+Now the reprovision is refused with `auth:consent_required` and a
+challenge-salted digest, the nominated device is sent a VTA-signed
+`task-consent/request`, and re-submitting the same payload after an approval
+executes it. Three properties make this a good fit rather than merely a
+convenient one:
+
+- **Approver-set membership alone authorizes the decision.** The phone approving
+  your laptop's recovery does not need an ACL entry of its own.
+- **Consent binds to the payload digest, not to a session.** The approver
+  approves *this* reprovision — this context, this recipient key — rather than
+  elevating anything.
+- The approver only ever sees the challenge-salted digest, never the bundle.
+
+It also leaves better evidence than an audit row: `task-consent/decision/0.1` is
+signed by the approver, so an approved recovery produces a second independently
+verifiable artifact beside the sealed bundle's own producer assertion.
+
+### What this does not remove
+
+**The requester still needs a credential.** Consent is the *policy* gate, and it
+sits behind the bearer/authcrypt gate that authenticates the caller — so a
+brand-new install holding nothing cannot dispatch the task at all, approval rule
+or not. What the rule buys is recovery **without an operator**, not recovery
+from nothing: an already-enrolled device relays the request for the new one,
+which is exactly the relayer-is-not-the-holder split provisioning was built
+around. Nominate the approver set while you still have two devices; one
+established at recovery time is not a recovery mechanism.
+
+Two further caveats:
+
+- Rules are inert unless `policy.enforcement` is on (see **Enforcement** above),
+  so this is opt-in per deployment.
+- The `pnm approvals` surface is Trust-Task transport only. A REST-only VTA
+  cannot configure this today — the SDK's REST arm is unimplemented and there is
+  no `/policies` route, so a REST client gets a 404.
+
+The flow is exercised end to end by
+`a_reprovision_is_refused_pending_consent_and_executes_once_approved` in
+`vta-service/tests/delegated_consent_e2e.rs`.
+
 ## See also
 
 - `docs/05-design-notes/approvals-convergence.md` — why there is one model rather
