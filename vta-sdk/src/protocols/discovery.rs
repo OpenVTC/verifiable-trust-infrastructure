@@ -15,9 +15,45 @@ pub const DISCOVER_CAPABILITIES: &str =
 pub const DISCOVER_CAPABILITIES_RESULT: &str =
     "https://firstperson.network/protocols/discovery/1.0/discover-capabilities-result";
 
-/// Response describing the VTA's capabilities and enabled features.
+/// Response to `trust-task-discovery/0.1` — the Trust Task types an agent
+/// serves.
+///
+/// Deliberately a local mirror of the framework crate's `Response` rather than a
+/// re-export: the SDK's `client` feature does not otherwise pull the generated
+/// spec types, and the shape is two members. Kept `deny_unknown_fields`-free so
+/// a responder at a later framework revision — which MAY add members — still
+/// decodes here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct SupportedTasksResponse {
+    /// The Type URIs this agent serves, matching the requested patterns.
+    pub supported_types: Vec<String>,
+    /// MAJOR.MINOR of the Trust Tasks framework spec the responder targets.
+    ///
+    /// Optional in 0.1 and RECOMMENDED afterwards, so absent is a legitimate
+    /// answer from an older peer rather than a malformed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framework_version: Option<String>,
+}
+
+/// Response describing the VTA's capabilities and enabled features.
+///
+/// # `rename_all` here is load-bearing
+///
+/// #1000 added the aliases below without it, which made them no-ops: an alias
+/// equal to the member's own serialized name accepts what is already accepted.
+/// So this kept emitting snake_case while its siblings moved, and read — to
+/// anyone glancing at the attributes — as though it had been folded.
+///
+/// It stayed that way through #1034 because this body was also served on the
+/// REST route `GET /capabilities`, and re-casing a public discovery endpoint is
+/// a change to readers nobody can enumerate. That route is gone (#1039), so the
+/// only consumers left are Trust-Task and DIDComm callers who decode this very
+/// struct — and the fold is free.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct CapabilitiesResponse {
     /// Crate version of the VTA service.
     pub version: String,

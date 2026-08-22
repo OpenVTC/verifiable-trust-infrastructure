@@ -304,11 +304,17 @@ with no HTTPS transport).
 | `spec/vta/config/get/1.0` | DIDComm `get-config` |
 | `spec/vta/config/update/1.0` | DIDComm `update-config` |
 
-### Discovery slice (`spec/vta/discovery/*`)
+### Discovery slice
 
 | URI | Today's surface |
 |---|---|
-| `spec/vta/discovery/capabilities/1.0` | `GET /capabilities` |
+| `spec/trust-task-discovery/0.1` | Trust Task only — **the canonical "which tasks do you serve"**, answered from the dispatch table |
+| `spec/vta/discovery/capabilities/1.0` | Trust Task only — VTA deployment inventory (webvh hosts, DID-creation modes, compiled features) |
+
+`GET /capabilities` was removed in #1039. Nothing consumed it, and a REST route
+running parallel to a Trust Task is the shape #1020 removed everywhere else —
+the Trust-Task surface is reachable over REST at `POST <base>/trust-tasks` like
+every other task.
 
 ### VTA management slice (`spec/vta/management/*`)
 
@@ -463,7 +469,9 @@ REST:
   POST   /backup/import                             → vta/backup/initiate-import/1.0 + POST /backup/blob/{id}
                                                        + vta/backup/finalize-import/1.0
   POST   /vta/restart                               → vta/management/reload-services/1.0
-  GET    /capabilities                              → vta/discovery/capabilities/1.0
+  (GET   /capabilities                              → REMOVED in #1039; the task
+                                                      remains, the parallel REST
+                                                      route does not)
 
   GET /health/details, GET /metrics,
   GET /did/{did}/log (public),

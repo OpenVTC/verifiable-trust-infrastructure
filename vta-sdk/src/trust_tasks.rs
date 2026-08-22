@@ -499,8 +499,38 @@ pub const TASK_AUDIT_UPDATE_RETENTION_1_0: &str =
 /// services, and configured webvh hosts. Payload: empty
 /// (`ListSeedsBody`-style — no input required). Auth: any
 /// authenticated user.
+///
+/// **Deployment inventory only.** "Which Trust Tasks does this agent serve" is
+/// [`TASK_TRUST_TASK_DISCOVERY_0_1`] — the published, canonical answer. This
+/// task is the VTA-specific remainder (webvh hosts, DID-creation modes) that
+/// the canonical family does not cover; see
+/// `docs/05-design-notes/registry-drift-triage.md`, which records the intent to
+/// reduce this to that delta.
 pub const TASK_DISCOVERY_CAPABILITIES_1_0: &str =
     "https://trusttasks.org/spec/vta/discovery/capabilities/1.0";
+
+/// `spec/trust-task-discovery/0.1` — **the canonical capability negotiation.**
+///
+/// A client asks which Trust Task types this agent serves, optionally narrowed
+/// by slug-glob patterns (`*`, `acl/*`, or an exact slug), and receives the
+/// matching Type URIs plus the framework version the agent targets.
+///
+/// This is a *published* family from the dtgwg-trust-tasks-tf registry, already
+/// carried by `trust-tasks-rs` — not something this workspace invented. The VTA
+/// answers it from its own dispatch table, so the reply cannot drift from what
+/// is actually wired up.
+///
+/// # What it does and does not settle
+///
+/// It answers "do we both know this task, at this version". It does **not**
+/// answer "do we agree on how its payload is spelled" — two peers can both
+/// serve `contexts/create/1.0` and still disagree about `basePath` vs
+/// `base_path`, which is what #1033 was. Discovery is not a substitute for
+/// moving a wire change through the published schema.
+///
+/// Auth: any authenticated user.
+pub const TASK_TRUST_TASK_DISCOVERY_0_1: &str =
+    "https://trusttasks.org/spec/trust-task-discovery/0.1";
 
 // ─── Vault slice (spec/vault/*/0.1) ──────────────────────────────────────
 //
@@ -1479,6 +1509,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUDIT_GET_RETENTION_1_0,
     TASK_AUDIT_UPDATE_RETENTION_1_0,
     // Discovery
+    TASK_TRUST_TASK_DISCOVERY_0_1,
     TASK_DISCOVERY_CAPABILITIES_1_0,
     // Vault slice (0.1 + 0.2 dual-accept; delete is 0.1-only upstream)
     TASK_VAULT_LIST_0_1,
@@ -1733,6 +1764,14 @@ mod tests {
             // read and written, so it is also the surface that made approval
             // posture editable at runtime instead of via config + restart.
             "https://trusttasks.org/spec/policy/",
+            // Canonical capability negotiation — `trust-task-discovery/0.1`.
+            // Top-level and framework-level rather than VTA-private: "which
+            // Trust Tasks do you serve" is a question about any responder, not
+            // about an agent's domain, which is why the registry puts it beside
+            // the framework spec rather than under a maintainer's namespace.
+            // Note the family has no sub-path — the version follows the family
+            // name directly.
+            "https://trusttasks.org/spec/trust-task-discovery/",
         ];
         for uri in ALL_URIS {
             assert!(

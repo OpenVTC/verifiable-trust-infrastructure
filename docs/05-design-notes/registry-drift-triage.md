@@ -134,7 +134,7 @@ Recommendation vocabulary: **spec** (author upstream, URI stays),
 
 | URI | Recommendation |
 |---|---|
-| `vta/discovery/capabilities/1.0` | Diff against the published `trust-task-discovery/*` family. Expected outcome: **fold** (the discovery family exists precisely for "what can you do"); keep only if the VTA's services/hosts inventory genuinely exceeds it — then spec the *delta*, not a parallel task. |
+| `vta/discovery/capabilities/1.0` | **Diffed (#1039).** The published `trust-task-discovery/0.1` answers *"which Trust Tasks do you serve"* and is now served, from the dispatch table. What remains here genuinely exceeds it — webvh hosts, DID-creation modes, compiled features — so the recommendation resolves to *"keep, spec the delta"* rather than a straight fold. Still open: whether `features`/`services` should exist at all, given the DID document is already authoritative for what a party speaks. |
 | `vta/management/reload-services/1.0` | Diff against published `config/reload/0.1`. The VTA already folded `vta/config/*` onto `config/{show,patch}` (#840 phase A); reload is the same shape of thing. Expected outcome: **fold onto `config/reload/0.1`, delete**. |
 
 ### `vta/backup/*` — 5 × fold-to-new-canonical (§D)

@@ -466,6 +466,27 @@ fn vault_entry() -> vti_common::vault::VaultEntry {
 #[allow(deprecated)]
 fn table() -> Vec<(&'static str, Conformance)> {
     let mut t: Vec<(&'static str, Conformance)> = vec![
+        // ─── discovery ───────────────────────────────────────────
+        //
+        // The one canonical family this agent serves that is *about* the agent
+        // rather than its data. The request pins a real slug-glob rather than
+        // `*`, so the witness exercises the pattern grammar the handler
+        // implements; the response pins the shorthand (bare Type URI) form.
+        (
+            uris::TASK_TRUST_TASK_DISCOVERY_0_1,
+            checked!(
+                specs::trust_task_discovery::v0_1::Payload,
+                specs::trust_task_discovery::v0_1::Response,
+                json!({ "patterns": ["acl/*"] }),
+                json!({
+                    "frameworkVersion": "0.2",
+                    "supportedTypes": [
+                        "https://trusttasks.org/spec/acl/grant/0.1",
+                        "https://trusttasks.org/spec/acl/revoke/0.1"
+                    ]
+                })
+            ),
+        ),
         // ─── auth ────────────────────────────────────────────────
         (
             uris::TASK_AUTH_REVOKE_SESSION_0_1,
