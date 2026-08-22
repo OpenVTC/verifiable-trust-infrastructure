@@ -437,7 +437,7 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        14,
+        13,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
@@ -462,7 +462,15 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
          The same move retired those 22 from UNSPECCED_DISPATCHED_URIS into \
          real conformance witnesses, so they went from bound-but-unchecked to \
          validated against a published schema on every request. What is left \
-         is mostly the seeds, backup and attestation families",
+         is mostly the seeds, backup and attestation families. \
+         \
+         14 → 13 is a different mechanism from every fall above it. \
+         `vta/discovery/capabilities/1.0` was not folded onto a canonical \
+         family and was not specified upstream — it was RETIRED (#1043), \
+         audited member by member and found to hold nothing a better source \
+         did not already answer. A URI leaves this list either by gaining a \
+         spec or by ceasing to exist, and the two are worth telling apart: \
+         the first grows the registry, the second does not",
     ),
 ];
 
