@@ -194,17 +194,14 @@ fn acl_entry_envelope(did: &str) -> Value {
 // ── Discovery / VTA management ──────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn capabilities_via_didcomm() {
+async fn supported_trust_tasks_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0) {
+        if is_tt(msg_type, body, trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1) {
             tt_ok(
-                trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0,
+                trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1,
                 json!({
-                    "version": "0.5.0",
-                    "features": {"webvh": true, "didcomm": true, "tee": false, "rest": true},
-                    "services": {"rest": true, "didcomm": true},
-                    "webvh_servers": [],
-                    "did_creation_modes": ["webvh"]
+                    "frameworkVersion": "0.2",
+                    "supportedTypes": ["https://trusttasks.org/spec/acl/grant/0.1"]
                 }),
             )
         } else {
@@ -213,13 +210,12 @@ async fn capabilities_via_didcomm() {
     })
     .await;
 
-    let caps = client.capabilities().await.unwrap();
-    assert_eq!(caps.version, "0.5.0");
-    // `features.didcomm` was asserted here until #1039. It reported a compile
-    // time `cfg!` flag — what the binary could serve, not what it does — and the
-    // DID document is authoritative for what a party speaks. The transport this
-    // very call arrived on is the better evidence anyway.
-    assert!(caps.webvh_servers.is_empty());
+    // Replaces `capabilities_via_didcomm` (#1043). The property that mattered
+    // there — a discovery answer survives the DIDComm round trip — is unchanged;
+    // the question being asked is the one with a canonical answer.
+    let tasks = client.supported_trust_tasks(&["acl/*"]).await.unwrap();
+    assert_eq!(tasks.framework_version.as_deref(), Some("0.2"));
+    assert_eq!(tasks.supported_types.len(), 1);
 
     shutdown_all(client, responder, mediator).await;
 }
@@ -1265,15 +1261,15 @@ async fn with_didcomm_sequential_cycles_for_same_did_do_not_duel() {
     let (mediator, responder) = TestVtaResponder::spawn_with_mediator(
         vec![client_did.clone()],
         |msg_type: &str, body: &Value| {
-            if is_tt(msg_type, body, trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0) {
+            // Any round-tripping task will do — this test is about session
+            // lifecycle, not about what was asked. Discovery is used because it
+            // needs no state on the responder.
+            if is_tt(msg_type, body, trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1) {
                 tt_ok(
-                    trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0,
+                    trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1,
                     json!({
-                        "version": "0.5.0",
-                        "features": {"webvh": true, "didcomm": true, "tee": false, "rest": true},
-                        "services": {"rest": true, "didcomm": true},
-                        "webvh_servers": [],
-                        "did_creation_modes": ["webvh"]
+                        "frameworkVersion": "0.2",
+                        "supportedTypes": ["https://trusttasks.org/spec/acl/grant/0.1"]
                     }),
                 )
             } else {
@@ -1291,11 +1287,11 @@ async fn with_didcomm_sequential_cycles_for_same_did_do_not_duel() {
             responder.did(),
             mediator.did(),
             None,
-            |client| async move { client.capabilities().await },
+            |client| async move { client.supported_trust_tasks(&["acl/*"]).await },
         )
         .await
         .unwrap_or_else(|e| panic!("cycle {cycle} round-trip failed — leaked-session duel? {e:?}"));
-        assert_eq!(caps.version, "0.5.0", "cycle {cycle}");
+        assert_eq!(caps.supported_types.len(), 1, "cycle {cycle}");
     }
 
     responder.shutdown().await;

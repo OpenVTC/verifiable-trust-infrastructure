@@ -238,8 +238,9 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     // ─ vta/audit retention pair — candidate `audit/retention/{show,update}`.
     "https://trusttasks.org/spec/vta/audit/get-retention/1.0",
     "https://trusttasks.org/spec/vta/audit/update-retention/1.0",
-    // ─ Discovery / management singletons — diff against canonical first.
-    "https://trusttasks.org/spec/vta/discovery/capabilities/1.0",
+    // ─ Management singleton — diff against canonical first.
+    // (`vta/discovery/capabilities/1.0` was here until #1043 retired the task;
+    // its debt is discharged by deletion rather than by a spec.)
     "https://trusttasks.org/spec/vta/management/reload-services/1.0",
     // ─ vta/backup/* — author top-level `backup/*` (reduction plan §D).
     "https://trusttasks.org/spec/vta/backup/initiate-export/1.0",
@@ -933,8 +934,6 @@ dispatch_table! {
         [ Mutating None false ],
     // ─── Discovery ───────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1 => discovery::handle_trust_task_discovery
-        [ None None false ],
-    vta_sdk::trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0 => discovery::handle_capabilities
         [ None None false ],
     // ─── Credential-exchange: deferred-presentation approval ─────
     //

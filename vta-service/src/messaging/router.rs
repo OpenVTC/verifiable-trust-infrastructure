@@ -565,12 +565,10 @@ pub async fn dispatch(
         }
     }
 
-    // ── Discovery (no auth) ──────────────────────────────────────────
-    if t == protocols::discovery::DISCOVER_CAPABILITIES {
-        return finish(
-            handlers::handle_discover_capabilities(ctx, msg, Extension(vta_state)).await,
-        );
-    }
+    // The `discovery/1.0/*` DIDComm protocol was routed here — unauthenticated
+    // — until #1043 retired it with the task behind it. Capability discovery is
+    // `trust-task-discovery/0.1` on the Trust-Task spine, which is authenticated
+    // like everything else there.
 
     // ── Fallback ─────────────────────────────────────────────────────
     finish(handlers::handle_unknown(ctx, msg).await)

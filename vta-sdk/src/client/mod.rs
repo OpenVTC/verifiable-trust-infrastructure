@@ -1963,21 +1963,11 @@ impl VtaClient {
 
     // ── Discovery ──────────────────────────────────────────────────
 
-    /// Discover VTA capabilities: enabled features, services, WebVH servers,
-    /// and supported DID creation modes.
-    ///
-    /// Requires authentication — any role (including Reader) can access.
-    #[cfg(feature = "client")]
-    pub async fn capabilities(
-        &self,
-    ) -> Result<crate::protocols::discovery::CapabilitiesResponse, VtaError> {
-        self.rpc_tt(
-            crate::trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0,
-            serde_json::json!({}),
-            30,
-        )
-        .await
-    }
+    // `capabilities()` was removed in #1043 along with the task behind it. Its
+    // members each had a better home: `version` at `GET /health/details`,
+    // `webvhServers` at `list_webvh_servers()` (a strict superset, same auth),
+    // and `features`/`services` at the DID document, which is authoritative for
+    // what a party speaks. `didCreationModes` had no consumer at all.
 
     /// Ask which Trust Task types this agent serves — `trust-task-discovery/0.1`.
     ///

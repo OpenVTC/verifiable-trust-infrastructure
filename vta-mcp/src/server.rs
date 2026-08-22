@@ -42,6 +42,19 @@ fn ok_json(value: impl serde::Serialize) -> Result<CallToolResult, McpError> {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct SupportedTasksParams {
+    /// Slug-glob patterns, ORed. `*` matches every task; `acl/*` matches a
+    /// family; anything else is an exact slug. Omit for everything.
+    ///
+    /// Patterns match the slug — the part after
+    /// `https://trusttasks.org/spec/` — so `acl/*`, not the full URI. An
+    /// unmatched pattern returns an empty list rather than an error, so a
+    /// wrong prefix looks like "serves nothing".
+    #[serde(default)]
+    pub patterns: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListKeysParams {
     /// Pagination offset (default 0).
     #[serde(default)]
@@ -160,12 +173,29 @@ impl VtaMcp {
         self.agent.client()
     }
 
+    /// Replaces the old `vta_capabilities` tool, which #1043 retired along with
+    /// the task behind it.
+    ///
+    /// The rename is not cosmetic: the old tool promised "enabled features,
+    /// advertised services, WebVH servers, and DID-creation modes" — four
+    /// answers, three of which were better held elsewhere and one of which
+    /// (`didCreationModes`) described a vocabulary nothing else used. What an
+    /// agent actually needs before calling something is whether the VTA serves
+    /// it, and that is a question with a canonical answer.
     #[tool(
-        description = "Discover the connected VTA's capabilities: enabled features, advertised services, WebVH servers, and supported DID-creation modes."
+        description = "Discover which Trust Tasks the connected VTA serves. Optionally narrow with                        slug-glob patterns such as 'acl/*' or 'vta/webvh/*'; omit for everything.                        Ask this before assuming an operation exists — calling one the VTA does not                        serve fails as a transport timeout rather than a clear error."
     )]
-    async fn vta_capabilities(&self) -> Result<CallToolResult, McpError> {
-        let caps = self.client().capabilities().await.map_err(to_mcp)?;
-        ok_json(caps)
+    async fn vta_supported_tasks(
+        &self,
+        Parameters(p): Parameters<SupportedTasksParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let patterns: Vec<&str> = p.patterns.iter().map(String::as_str).collect();
+        let tasks = self
+            .client()
+            .supported_trust_tasks(&patterns)
+            .await
+            .map_err(to_mcp)?;
+        ok_json(tasks)
     }
 
     #[tool(description = "List the signing keys available on the VTA.")]
@@ -366,7 +396,7 @@ impl ServerHandler for VtaMcp {
             .with_server_info(server_info)
             .with_instructions(
                 "Bridges a Verifiable Trust Agent (VTA) to MCP. Convenience tools: \
-                 vta_capabilities, list_keys, sign (signing oracle), vault_list, vault_get, \
+                 vta_supported_tasks, list_keys, sign (signing oracle), vault_list, vault_get, \
                  vault_release (DIDComm only), device_heartbeat, resolve_did, issue_vp. \
                  For the FULL management surface (contexts, keys, acl, did-management, webvh, \
                  did-templates, device, vault, seeds, audit, backup, …) use vta_list_operations \
@@ -387,7 +417,7 @@ mod tests {
     fn tool_router_exposes_the_expected_tools() {
         let router = VtaMcp::tool_router();
         let expected = [
-            "vta_capabilities",
+            "vta_supported_tasks",
             "list_keys",
             "sign",
             "vault_list",

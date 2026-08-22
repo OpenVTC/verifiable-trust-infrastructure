@@ -157,7 +157,7 @@ should be authored **top-level**, not under `vta/`, so other agents can use them
 | `vta/seeds/*` | 3 | Master-seed lifecycle. Meaningless to an agent that is not the key authority. |
 | `vta/attestation/*` | 2 | Nitro/SEV attestation posture. |
 | `vta/audit/{get,update}-retention` | 2 | Extends the canonical `audit/*` family; author as `audit/retention/{show,update}` if generic, else `vta/`. |
-| `vta/discovery/capabilities` | 1 | Overlaps `trust-task-discovery/*` — **needs a diff**. |
+| `vta/discovery/capabilities` | 0 | **Retired (#1043).** Diffed against `trust-task-discovery/0.1`, which is now served; every remaining member duplicated a better source. |
 | `vta/management/reload-services` | 1 | Overlaps `config/reload` — **needs a diff**. |
 
 ### F. Not a task — 1
