@@ -1,6 +1,19 @@
 # Sealed Bootstrap: Unified Secret Transfer Design
 
-Status: **Design — not yet implemented**
+Status: **Implemented.** Retained as the design record — the rationale below is
+still the reason the code is shaped as it is, but do not read the phase plan in
+§"Phased rollout" as outstanding work. Spot-checked against the tree: the
+`vta_sdk::sealed_transfer` module and the `vta bootstrap` / `pnm bootstrap`
+surfaces (phases 1–2), the unified `POST /bootstrap/request` with its single-use
+`BOOTSTRAP_CARVEOUT_CLOSED_KEY` and the retired
+`GET /attestation/admin-credential` (phase 3), `keys/wrapping.rs` built on
+`sealed_transfer` (phase 4), and no plaintext bundle encode paths left in
+`vta-sdk` (phase 5).
+
+The stale header cost at least one reader a wrong assumption in a downstream
+design doc (#1030), which is the cost of a status line nobody owns: it is
+written once, at the moment it is least likely to be true for long.
+
 Scope: workspace-wide (`openvtc`, `verifiable-trust-infrastructure`)
 
 ## Problem
