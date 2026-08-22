@@ -4264,6 +4264,106 @@ async fn a_services_route_advertises_its_task_successor() {
     }
 }
 
+/// Every `SUPERSEDED` row must correspond to a route the service still serves.
+///
+/// The table's purpose is that removal can be gated on **observed usage
+/// dropping to zero**. A row whose route no longer exists matches a path that
+/// can never be hit again, so it reads zero forever — which is exactly the
+/// signal the table exists to produce, emitted about something already
+/// deleted. #1042 left such a row behind when it removed `GET /capabilities`;
+/// it was found by accident in #1044 and removed by hand, because nothing tied
+/// the table to the live router.
+///
+/// The assertion is on `MatchedPath`, not on a status code, because
+/// `MatchedPath` is what `mark_superseded` matches on. A row that spells a live
+/// route's parameter differently — `/acl/{id}` where the router registered
+/// `/acl/{did}` — matches nothing, attaches no header and counts nothing, while
+/// the route goes on answering. A status-only probe reads green over that.
+///
+/// The reverse direction is deliberately **not** asserted: a live route absent
+/// from the table is legitimate, and `deprecation.rs` documents which routes
+/// are excluded and why.
+///
+/// Feature-gated: the table lists `/webvh/*` and `/services/*` unconditionally
+/// while their routes are behind `webvh` / `didcomm`, so the guard only holds
+/// in a build that serves all of them. Both are on by default and are what CI
+/// builds; in a narrower build the metric those rows govern is not emitted
+/// either.
+#[cfg(all(feature = "webvh", feature = "didcomm"))]
+#[tokio::test]
+async fn every_superseded_row_names_a_live_route() {
+    use axum::extract::MatchedPath;
+    use axum::http::HeaderValue;
+
+    /// Echo the router's `MatchedPath` into a response header so the probe can
+    /// read it. Added with `Router::layer`, the same way `mark_superseded` is,
+    /// so it observes the extension at the same point that middleware does.
+    async fn echo_matched_path(
+        req: axum::extract::Request,
+        next: axum::middleware::Next,
+    ) -> axum::response::Response {
+        let matched = req
+            .extensions()
+            .get::<MatchedPath>()
+            .map(|m| m.as_str().to_owned());
+        let mut resp = next.run(req).await;
+        if let Some(m) = matched
+            && let Ok(v) = HeaderValue::from_str(&m)
+        {
+            resp.headers_mut().insert("x-probe-matched-path", v);
+        }
+        resp
+    }
+
+    let (app, _ctx) = TestApp::new().await;
+    let probe = app
+        .router
+        .clone()
+        .layer(axum::middleware::from_fn(echo_matched_path));
+
+    for (method, path, label, successor) in vta_service::deprecation::superseded_table() {
+        // Substitute a literal for each `{param}` segment. The value is
+        // irrelevant — every probe is unauthenticated and is refused by the
+        // route's auth extractor, which runs *after* path matching, so the
+        // handler never sees it.
+        let uri: String = path
+            .split('/')
+            .map(|seg| if seg.starts_with('{') { "probe" } else { seg })
+            .collect::<Vec<_>>()
+            .join("/");
+
+        let req = Request::builder()
+            .method(*method)
+            .uri(&uri)
+            .body(Body::empty())
+            .unwrap();
+        let resp = probe.clone().oneshot(req).await.expect("request failed");
+
+        let matched = resp
+            .headers()
+            .get("x-probe-matched-path")
+            .map(|v| v.to_str().unwrap().to_owned());
+
+        assert_eq!(
+            matched.as_deref(),
+            Some(*path),
+            "the superseded row `{method} {path}` (successor `{successor}`) does not \
+             match a live route — it matched {matched:?}. If the route was removed, \
+             drop the row: it now reads zero usage forever and would report the route \
+             as safe to delete when it is already gone. If the row is a typo, correct \
+             it — do not delete it to silence this, because the row is what carries \
+             the successor URI."
+        );
+        assert_ne!(
+            resp.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "the superseded row `{method} {path}` (label `{label}`) names a path the \
+             service serves but not that method, so `mark_superseded` never fires for \
+             it. Correct the method, or drop the row if the operation is gone."
+        );
+    }
+}
+
 #[test]
 fn the_two_drain_routes_split_on_method_not_path() {
     // `/services/didcomm/drain` is one path serving two operations: GET lists

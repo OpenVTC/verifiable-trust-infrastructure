@@ -478,6 +478,10 @@ pub(crate) async fn dispatch_trust_task_core(
 /// the transport scope wraps every path out of it, including the early
 /// rejections — a handler that reads the transport must never see a scope that
 /// was skipped because the envelope failed validation first.
+///
+/// This layer parses the envelope and attaches the superseded-task signal; the
+/// checks and dispatch are in [`dispatch_trust_task_validated`], for the same
+/// wrap-every-exit reason.
 async fn dispatch_trust_task_inner(
     state: &AppState,
     auth: &AuthClaims,
@@ -486,9 +490,57 @@ async fn dispatch_trust_task_inner(
     // 1. Parse the envelope.
     let doc: TrustTask<Value> = match serde_json::from_slice(body) {
         Ok(d) => d,
+        // No `type` to attribute the request to, so nothing to count and no
+        // successor to name. The one exit that legitimately carries no
+        // deprecation signal.
         Err(e) => return body_parse_error_response(&e.to_string()),
     };
 
+    // Superseded-task signalling wraps everything below, for the same reason
+    // `mark_superseded` is a layer rather than a call inside each of the 56
+    // REST handlers: [`dispatch_trust_task_validated`] has a dozen early
+    // returns — expiry, wrong recipient, replay, schema validation, the policy
+    // gate — and a signal applied at only some of them is worse than none.
+    // Removal is gated on this counter reading zero; a URI that goes quiet
+    // because its callers are all being rejected before the hook would read as
+    // "nobody sends this any more" and be deleted out from under them.
+    //
+    // Read from the URI as it *arrived*, before the 0.2 down-convert rewrites
+    // `doc.type_uri`: what is being measured is what the client sent, and
+    // reading it after the rewrite would count every 0.2 caller as a 0.1 one
+    // and hold the metric off zero permanently.
+    let superseded = crate::deprecation::superseded_task(&doc.type_uri.to_string());
+
+    // `Box::pin` rather than a bare `.await`: the callee's state machine
+    // inlines every handler's future through `dispatch_typed`, so awaiting it
+    // by value would nest that whole thing inside this frame as well. It does
+    // not fit — a debug build of `--workspace` (where feature unification turns
+    // on `tee` and the rest) overflowed the test-thread stack in
+    // `tests/mock_vta.rs` the moment this split was introduced. Boxing puts the
+    // large half on the heap and leaves a pointer here.
+    let mut outcome = Box::pin(dispatch_trust_task_validated(state, auth, doc)).await;
+
+    if let Some(task) = superseded {
+        // Whatever the outcome. A superseded task that was *rejected* is still
+        // a client sending a URI we want to stop serving, and a client about to
+        // retry is the one most in need of knowing what to retry onto.
+        crate::deprecation::note_superseded_task(task);
+        crate::deprecation::annotate_superseded(&mut outcome.body, task);
+    }
+
+    outcome
+}
+
+/// Everything after the envelope parses: framework checks, replay, schema
+/// validation, idempotency, the policy gate, and typed dispatch.
+///
+/// Split from [`dispatch_trust_task_inner`] so the deprecation signal there
+/// wraps every exit path out of this function, not just the last one.
+async fn dispatch_trust_task_validated(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
     // 2. Framework §7.2 items 4 + 5 — expiry + recipient
     //    enforcement. Closes L5 from the May 2026 security
     //    review: the hand-rolled dispatcher previously skipped
@@ -1316,6 +1368,97 @@ mod tests {
         }
     }
 
+    /// Every `SUPERSEDED_TASKS` row must name a URI this spine dispatches.
+    ///
+    /// The table exists so a task can be retired on an observed zero, and the
+    /// counter only moves when the spine sees the URI. A row for something the
+    /// spine never routes — a REST-routed URI, a typo, a task already deleted —
+    /// reads zero forever, which is precisely the "safe to delete" signal,
+    /// produced about something that is already gone. That is the route-table
+    /// defect from #1042 in the other half of the mechanism, and it is why the
+    /// row and the handler have to be pinned to each other rather than each
+    /// maintained by hand.
+    ///
+    /// Fixing a failure: if the task was retired, drop its row (the whole
+    /// point of the row has been served). If the URI is a typo, correct it. If
+    /// the operation is served by a dedicated REST route rather than the
+    /// dispatcher, it belongs in `deprecation::SUPERSEDED` — the route table —
+    /// not here.
+    #[test]
+    fn superseded_tasks_are_dispatched() {
+        let dispatched = dispatched_uris();
+
+        for task in crate::deprecation::superseded_tasks_table() {
+            let served = dispatched.contains(&task.uri)
+                // Feature-gated arms drop out of `dispatched_uris()` when their
+                // cfg is off; the allowlist is where the parity harness tracks
+                // them, so it is the right second source here too.
+                || KNOWN_FEATURE_GATED_URIS.contains(&task.uri);
+            assert!(
+                served,
+                "`{}` is marked superseded but nothing dispatches it, so its counter \
+                 reads zero forever and would report the task as safe to retire when \
+                 it has already been retired. Drop the row if the task is gone; fix \
+                 the URI if it is a typo; move it to `deprecation::SUPERSEDED` if the \
+                 operation is served by a REST route rather than this dispatcher.",
+                task.uri
+            );
+        }
+    }
+
+    /// A successor must be something the client can actually send instead.
+    ///
+    /// A row pointing at a URI this VTA does not serve tells a client to
+    /// migrate onto a 404 — worse than saying nothing, because the client acts
+    /// on it. `REST_ROUTED` counts: the operation is reachable, just not
+    /// through this dispatcher.
+    #[test]
+    fn superseded_task_successors_are_served() {
+        let dispatched = dispatched_uris();
+
+        for task in crate::deprecation::superseded_tasks_table() {
+            let served = dispatched.contains(&task.successor)
+                || KNOWN_FEATURE_GATED_URIS.contains(&task.successor)
+                || REST_ROUTED.contains(&task.successor)
+                || wire_v0_2::WIRE_V0_2_URIS.contains(&task.successor);
+            assert!(
+                served,
+                "`{}` is advertised as the successor to `{}`, but this VTA does not \
+                 serve it — the notice would send a migrating client onto an \
+                 unsupported type",
+                task.successor, task.uri
+            );
+        }
+    }
+
+    /// The two 0.1→0.2 tables must agree.
+    ///
+    /// `wire_v0_2::WIRE_SPECS_V0_2` is where a spec is declared dual-accepted;
+    /// `deprecation::SUPERSEDED_TASKS` is where the 0.1 form is declared on its
+    /// way out. They are separate because only the second carries a reason and
+    /// only the first carries the enum paths — but a 0.2 form added without the
+    /// matching deprecation row is a task nothing is measuring, which is the
+    /// state #1045 exists to end. Adding one entry now requires the other.
+    #[test]
+    fn every_dual_accepted_spec_marks_its_0_1_form_superseded() {
+        for spec in wire_v0_2::WIRE_SPECS_V0_2 {
+            let row = crate::deprecation::superseded_task(spec.uri_0_1).unwrap_or_else(|| {
+                panic!(
+                    "`{}` is dual-accepted at `{}` but its 0.1 form is not in \
+                     `deprecation::SUPERSEDED_TASKS`, so nothing counts the callers \
+                     still on it and it can never be retired on evidence",
+                    spec.uri_0_1, spec.uri_0_2
+                )
+            });
+            assert_eq!(
+                row.successor, spec.uri_0_2,
+                "`{}` is down-converted from `{}` but its deprecation row points \
+                 somewhere else",
+                spec.uri_0_1, spec.uri_0_2
+            );
+        }
+    }
+
     /// Reverse parity harness (#854) — the opposite direction of
     /// [`dispatcher_handles_every_vta_sdk_uri`]. Every URI this service
     /// *serves* — dispatched, REST-routed, feature-gated, or accepted via the
@@ -1631,6 +1774,133 @@ mod payload_validation_tests {
                 .await
                 .is_some(),
             "an operator who would rather fail closed can"
+        );
+    }
+}
+
+#[cfg(test)]
+mod superseded_task_dispatch_tests {
+    //! The Trust-Task deprecation signal, end to end through the spine.
+    //!
+    //! `deprecation.rs` covers the table and the annotation in isolation. What
+    //! those cannot show is that the spine *reaches* them — and a signal that
+    //! is silently not attached reads exactly like "nobody sends this any
+    //! more", which is the reading the whole mechanism exists to trust. That is
+    //! why the REST half has `superseded_route_advertises_its_trust_task_successor`
+    //! against a live router rather than a unit test of `superseded()`.
+
+    use serde_json::{Value, json};
+
+    use crate::deprecation::DEPRECATION_MEMBER;
+    use crate::test_support::{build_signing_test_app_state, super_admin_claims};
+    use crate::trust_tasks::transport::TransportConfidentiality;
+
+    /// Dispatch `type_uri` with `payload` and return the response document.
+    async fn dispatch(type_uri: &str, payload: Value) -> Value {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let vta_did = state
+            .config
+            .read()
+            .await
+            .vta_did
+            .clone()
+            .expect("the signing test state configures a vta_did");
+        let body = serde_json::to_vec(&json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": type_uri,
+            "issuer": "did:key:zTestAdmin",
+            "recipient": vta_did,
+            "issuedAt": "2026-08-22T00:00:00Z",
+            "payload": payload,
+        }))
+        .unwrap();
+
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &super_admin_claims(),
+            &body,
+            TransportConfidentiality::HopByHop,
+        )
+        .await;
+        serde_json::from_slice(&outcome.body).expect("a response document")
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)] // sends a deprecated URI on purpose — that is the subject
+    async fn a_superseded_task_names_its_successor_in_the_response() {
+        let uri = vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1;
+        let doc = dispatch(uri, json!({})).await;
+
+        // Non-vacuity: a rejection document would also carry the notice (that
+        // is deliberate — see the spine), but then this test would be
+        // asserting nothing about the case that matters, which is a task that
+        // still works and is on its way out.
+        assert_eq!(
+            doc["type"],
+            format!("{uri}#response"),
+            "expected a success response to annotate, got: {doc}"
+        );
+
+        let notice = &doc[DEPRECATION_MEMBER];
+        assert_eq!(
+            notice["supersededBy"],
+            vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_2,
+            "the response must name what to send instead, so a client can act \
+             rather than guess; got document: {doc}"
+        );
+        assert!(
+            notice["reason"].as_str().is_some_and(|r| !r.is_empty()),
+            "the notice must say why, got: {notice}"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)] // sends a deprecated URI on purpose — that is the subject
+    async fn a_rejected_superseded_task_still_names_its_successor() {
+        // A client whose request was refused is the client most in need of the
+        // successor: it is about to retry, and it can retry onto the right URI.
+        // `device/register/0.1` requires members an empty payload does not
+        // carry, so this is a schema rejection, not a handler failure.
+        let uri = vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_1;
+        let doc = dispatch(uri, json!({})).await;
+
+        assert_eq!(
+            doc["payload"]["code"], "malformedRequest",
+            "expected a rejection to annotate, got: {doc}"
+        );
+        assert_eq!(
+            doc[DEPRECATION_MEMBER]["supersededBy"],
+            vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_2,
+            "a rejection must carry the successor too: {doc}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_current_task_carries_no_notice() {
+        // The counterpart the route table learned to need: a signal attached to
+        // everything is a signal about nothing. `auth/whoami/0.1` is current.
+        let doc = dispatch(vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1, json!({})).await;
+        assert!(
+            doc.get(DEPRECATION_MEMBER).is_none(),
+            "a task that is not superseded must not be advertised as one: {doc}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_payload_is_untouched_by_the_notice() {
+        // The notice rides the document top level precisely so the payload
+        // stays exactly what the spec says it is — every published payload
+        // schema is `additionalProperties: false` and the generated `Response`
+        // types are `deny_unknown_fields`. Assert it on a real dispatch, not
+        // just on the annotation helper.
+        #[allow(deprecated)]
+        let uri = vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1;
+        let doc = dispatch(uri, json!({})).await;
+
+        let payload = doc.get("payload").expect("a response carries a payload");
+        assert!(
+            payload.get(DEPRECATION_MEMBER).is_none() && payload.get("ext").is_none(),
+            "the notice must not reach the payload: {payload}"
         );
     }
 }
