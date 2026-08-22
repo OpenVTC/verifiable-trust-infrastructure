@@ -1,4 +1,12 @@
 pub mod acl;
+/// Versioned, namespaced application state. Backs the
+/// `vta/app-state/{get,put,list,delete,get-many,put-many}/1.0` Trust Tasks.
+/// Records are keyed `app:<contextId>:<namespace>:<key>` in the
+/// [`APP_STATE`](crate::keyspaces::APP_STATE) keyspace, alongside an `appv:`
+/// version index and an `appc:` per-namespace write counter. Deliberately not
+/// [`memory`] — clearing an agent's memory must stay safe, which it cannot be
+/// if account state lives there.
+pub mod app_state;
 #[cfg(feature = "tee")]
 pub mod attestation;
 pub mod audit;

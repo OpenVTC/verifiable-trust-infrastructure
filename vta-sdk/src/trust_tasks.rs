@@ -736,6 +736,57 @@ pub const TASK_VTA_MEMORY_LIST_0_1: &str = "https://trusttasks.org/spec/vta/memo
 /// [`crate::protocols::memory::MemoryDeleteBody`].
 pub const TASK_VTA_MEMORY_DELETE_0_1: &str = "https://trusttasks.org/spec/vta/memory/delete/0.1";
 
+// ─── Application-state slice (spec/vta/app-state/*) ──────────────────────
+//
+// The third store, beside the vault (secrets + credentials) and agent memory:
+// versioned, namespaced, per-context JSON an application owns and the VTA does
+// not interpret. Records are addressed `(contextId, namespace, key)`; auth is
+// context access, the same `require_context` gate the memory slice uses.
+//
+// Deliberately not built on `vta/memory/*`: `MemoryItem` is `{key, value}` with
+// nothing to hang a precondition on, its `list` returns the whole context, and
+// — the argument that settles it — "forget everything" has to stay a safe thing
+// to ask an agent, which it cannot be if account state lives there.
+
+/// `spec/vta/app-state/get/1.0` — read one record by
+/// `(contextId, namespace, key)`. Auth: context access. Payload:
+/// [`crate::protocols::app_state::AppStateGetBody`].
+pub const TASK_VTA_APP_STATE_GET_1_0: &str = "https://trusttasks.org/spec/vta/app-state/get/1.0";
+
+/// `spec/vta/app-state/put/1.0` — write one record, optionally conditional on
+/// `expectedVersion` (`0` = create only). A failed precondition returns the
+/// VTA's current version *and value*, so the caller resolves without a re-read.
+/// Auth: context access. Payload:
+/// [`crate::protocols::app_state::AppStatePutBody`].
+pub const TASK_VTA_APP_STATE_PUT_1_0: &str = "https://trusttasks.org/spec/vta/app-state/put/1.0";
+
+/// `spec/vta/app-state/list/1.0` — key-ordered snapshot, or (with
+/// `sinceVersion`) a version-ordered change feed that always includes
+/// tombstones. Auth: context access. Payload:
+/// [`crate::protocols::app_state::AppStateListBody`].
+pub const TASK_VTA_APP_STATE_LIST_1_0: &str = "https://trusttasks.org/spec/vta/app-state/list/1.0";
+
+/// `spec/vta/app-state/delete/1.0` — remove one record, leaving a versioned
+/// tombstone so an incremental consumer learns of the deletion. Deleting an
+/// absent address is a success. Auth: context access. Payload:
+/// [`crate::protocols::app_state::AppStateDeleteBody`].
+pub const TASK_VTA_APP_STATE_DELETE_1_0: &str =
+    "https://trusttasks.org/spec/vta/app-state/delete/1.0";
+
+/// `spec/vta/app-state/get-many/1.0` — read up to 256 records in one round
+/// trip; every requested key comes back in exactly one of `records`, `missing`
+/// or `deferred`. Auth: context access. Payload:
+/// [`crate::protocols::app_state::AppStateGetManyBody`].
+pub const TASK_VTA_APP_STATE_GET_MANY_1_0: &str =
+    "https://trusttasks.org/spec/vta/app-state/get-many/1.0";
+
+/// `spec/vta/app-state/put-many/1.0` — up to 64 writes in one round trip, each
+/// with its own precondition, applied `independent` (default) or `atomic`.
+/// Auth: context access. Payload:
+/// [`crate::protocols::app_state::AppStatePutManyBody`].
+pub const TASK_VTA_APP_STATE_PUT_MANY_1_0: &str =
+    "https://trusttasks.org/spec/vta/app-state/put-many/1.0";
+
 // ─── DID-management slice (spec/did-management/*) ────────────────────────
 //
 // Canonical Trust Tasks for DID + domain + server + registry management
@@ -1605,6 +1656,13 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_MEMORY_PUT_0_1,
     TASK_VTA_MEMORY_LIST_0_1,
     TASK_VTA_MEMORY_DELETE_0_1,
+    // Application-state slice (spec/vta/app-state/*)
+    TASK_VTA_APP_STATE_GET_1_0,
+    TASK_VTA_APP_STATE_PUT_1_0,
+    TASK_VTA_APP_STATE_LIST_1_0,
+    TASK_VTA_APP_STATE_DELETE_1_0,
+    TASK_VTA_APP_STATE_GET_MANY_1_0,
+    TASK_VTA_APP_STATE_PUT_MANY_1_0,
     // Policy slice (spec/policy/*)
     TASK_POLICY_LIST_0_2,
     TASK_POLICY_GET_0_1,

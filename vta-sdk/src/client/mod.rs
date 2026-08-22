@@ -230,6 +230,7 @@ mod keys;
 // this crate — the workspace patches `vta-sdk` onto itself, so the `-p` node
 // and the built node differ and cargo reports the unit Fresh — which is why the
 // census lives downstream rather than in this crate's own tests.
+mod app_state;
 #[cfg(feature = "test-loopback")]
 pub mod loopback;
 mod memory;

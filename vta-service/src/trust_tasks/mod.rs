@@ -45,6 +45,7 @@ use crate::error::AppError;
 use crate::server::AppState;
 
 mod acl;
+mod app_state;
 mod audit;
 mod auth;
 mod backup;
@@ -1060,6 +1061,26 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_LIST_0_1 => memory::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_DELETE_0_1 => memory::handle_delete
+        [ Mutating None false ],
+    // ─── Application-state slice (spec/vta/app-state/*) ──────────
+    // Versioned, namespaced per-context JSON the VTA stores but never
+    // interprets. Gated on context access (require_context), NOT operator
+    // step-up — same boundary as the memory slice. `discloses: Metadata` on
+    // the reads because the values are application data rather than secrets;
+    // secret material belongs in the vault, and the published specs say so
+    // normatively. `delete` is Destructive: the value goes immediately and,
+    // once the tombstone is reaped, nothing records the record ever existed.
+    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_GET_1_0 => app_state::handle_get
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_PUT_1_0 => app_state::handle_put
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_LIST_1_0 => app_state::handle_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_DELETE_1_0 => app_state::handle_delete
+        [ Destructive None false ],
+    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_GET_MANY_1_0 => app_state::handle_get_many
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_APP_STATE_PUT_MANY_1_0 => app_state::handle_put_many
         [ Mutating None false ],
     // ─── Config slice ────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONFIG_SHOW_0_1 => config::handle_get

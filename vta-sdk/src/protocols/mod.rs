@@ -22,6 +22,12 @@ pub mod members;
 /// Per-context key/value store for AI-agent memory
 /// (`spec/vta/memory/{put,list,delete}/0.1`).
 pub mod memory;
+
+/// Versioned, namespaced application state
+/// (`spec/vta/app-state/{get,put,list,delete,get-many,put-many}/1.0`) — the
+/// third store, beside the vault and agent memory, for JSON an application owns
+/// and the VTA does not interpret.
+pub mod app_state;
 /// Passkey-based login flow (`vta/auth/passkey-login-{start,finish}/1.0`).
 pub mod passkey_login;
 /// Runtime Policy Decision Point management (`policy/*`) — where the
