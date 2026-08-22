@@ -72,7 +72,7 @@ pub(crate) async fn proxy_login(
     vault_ks: &KeyspaceHandle,
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     seed_store: &dyn SeedStore,
     vta_did: &str,
     holder_did: &str,
@@ -102,7 +102,7 @@ pub(crate) async fn proxy_login(
                 keys_ks,
                 imported_ks,
                 seed_store,
-                audit_ks,
+                audit,
                 signing_key_id,
             )
             .await?;

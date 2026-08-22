@@ -153,7 +153,7 @@ pub async fn disable_webauthn(
         deps.imported_ks,
         deps.contexts_ks,
         deps.webvh_ks,
-        deps.audit_ks,
+        deps.audit,
         deps.seed_store,
         deps.did_resolver,
         deps.didcomm_bridge,

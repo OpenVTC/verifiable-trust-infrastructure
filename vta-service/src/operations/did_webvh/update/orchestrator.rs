@@ -496,7 +496,7 @@ async fn run_update(
         keys_ks,
         contexts_ks,
         webvh_ks,
-        audit_ks,
+        audit,
         seed_store,
         did_resolver,
         ..
@@ -1219,7 +1219,7 @@ async fn run_update(
     );
     let label = opts.label.as_deref().unwrap_or("update");
     if let Err(e) = audit::record(
-        audit_ks,
+        audit,
         &format!("did.update:{label}"),
         &auth.did,
         Some(&resource),

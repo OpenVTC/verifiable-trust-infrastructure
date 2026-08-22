@@ -41,7 +41,7 @@ pub struct ExportDeps<'a> {
     pub keys_ks: &'a KeyspaceHandle,
     pub contexts_ks: &'a KeyspaceHandle,
     pub imported_ks: &'a KeyspaceHandle,
-    pub audit_ks: &'a KeyspaceHandle,
+    pub audit: &'a vta_audit::SharedAuditSink,
     pub acl_ks: &'a KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh_ks: &'a KeyspaceHandle,
@@ -100,7 +100,7 @@ pub async fn build_did_secrets_bundle(
                 deps.keys_ks,
                 deps.imported_ks,
                 deps.seed_store,
-                deps.audit_ks,
+                deps.audit,
                 auth,
                 &key.key_id,
                 channel,
@@ -166,7 +166,7 @@ pub async fn credential_from_key_offline(
         deps.keys_ks,
         deps.imported_ks,
         deps.seed_store,
-        deps.audit_ks,
+        deps.audit,
         auth,
         key_id,
         channel,
@@ -288,7 +288,7 @@ mod tests {
         contexts_ks: KeyspaceHandle,
         keys_ks: KeyspaceHandle,
         imported_ks: KeyspaceHandle,
-        audit_ks: KeyspaceHandle,
+        audit: vta_audit::SharedAuditSink,
         acl_ks: KeyspaceHandle,
         #[cfg(feature = "webvh")]
         webvh_ks: KeyspaceHandle,
@@ -307,7 +307,9 @@ mod tests {
             contexts_ks: store.keyspace(crate::keyspaces::CONTEXTS).unwrap(),
             keys_ks: store.keyspace(crate::keyspaces::KEYS).unwrap(),
             imported_ks: store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap(),
-            audit_ks: store.keyspace(crate::keyspaces::AUDIT).unwrap(),
+            audit: Arc::new(vta_audit::KeyspaceAuditSink::new(
+                store.keyspace(crate::keyspaces::AUDIT).unwrap(),
+            )),
             acl_ks: store.keyspace(crate::keyspaces::ACL).unwrap(),
             #[cfg(feature = "webvh")]
             webvh_ks: store.keyspace(crate::keyspaces::WEBVH).unwrap(),
@@ -323,7 +325,7 @@ mod tests {
             keys_ks: &env.keys_ks,
             contexts_ks: &env.contexts_ks,
             imported_ks: &env.imported_ks,
-            audit_ks: &env.audit_ks,
+            audit: &env.audit,
             acl_ks: &env.acl_ks,
             #[cfg(feature = "webvh")]
             webvh_ks: &env.webvh_ks,

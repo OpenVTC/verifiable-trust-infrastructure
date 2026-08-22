@@ -736,7 +736,7 @@ async fn dispatch_trust_task_validated(
     if let Some((action, resource, context_id, detail)) = vault_audit {
         let label = vault_audit_outcome_label(&outcome);
         if let Err(e) = crate::audit::record_with_detail(
-            &state.audit_ks,
+            &state.audit_sink,
             &action,
             &auth.did,
             resource.as_deref(),

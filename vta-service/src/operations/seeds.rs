@@ -60,7 +60,7 @@ pub async fn rotate_seed(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     actor: &str,
     mnemonic: Option<&str>,
     channel: &str,
@@ -129,7 +129,7 @@ pub async fn rotate_seed(
         outcome = "success"
     );
     let _ = audit::record(
-        audit_ks,
+        audit,
         "seed.rotate",
         actor,
         Some("seed"),
@@ -191,7 +191,7 @@ mod tests {
     struct TestHarness {
         keys_ks: KeyspaceHandle,
         imported_ks: KeyspaceHandle,
-        audit_ks: KeyspaceHandle,
+        audit: vta_audit::SharedAuditSink,
         seed_store: Arc<dyn SeedStore>,
         _dir: tempfile::TempDir,
     }
@@ -206,7 +206,9 @@ mod tests {
 
             let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
             let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
-            let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+            let audit: vta_audit::SharedAuditSink = std::sync::Arc::new(
+                vta_audit::KeyspaceAuditSink::new(store.keyspace(crate::keyspaces::AUDIT).unwrap()),
+            );
 
             let initial_seed = vec![0xABu8; 32];
             let seed_store: Arc<dyn SeedStore> =
@@ -230,7 +232,7 @@ mod tests {
             Self {
                 keys_ks,
                 imported_ks,
-                audit_ks,
+                audit,
                 seed_store,
                 _dir: dir,
             }
@@ -253,7 +255,9 @@ mod tests {
         .expect("open store");
         let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
         let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
-        let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+        let audit: vta_audit::SharedAuditSink = std::sync::Arc::new(
+            vta_audit::KeyspaceAuditSink::new(store.keyspace(crate::keyspaces::AUDIT).unwrap()),
+        );
 
         // Bootstrap generation 0 as the active seed.
         save_seed_record(
@@ -279,7 +283,7 @@ mod tests {
             &keys_ks,
             &imported_ks,
             &seed_store,
-            &audit_ks,
+            &audit,
             "did:key:z6MkTestAdmin",
             None,
             "test",
@@ -310,14 +314,14 @@ mod tests {
         for _ in 0..2 {
             let keys_ks = h.keys_ks.clone();
             let imported_ks = h.imported_ks.clone();
-            let audit_ks = h.audit_ks.clone();
+            let audit = h.audit.clone();
             let seed_store = h.seed_store.clone();
             handles.push(tokio::spawn(async move {
                 rotate_seed(
                     &keys_ks,
                     &imported_ks,
                     &seed_store,
-                    &audit_ks,
+                    &audit,
                     "did:key:z6MkTestAdmin",
                     None,
                     "test",
@@ -364,7 +368,7 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.seed_store,
-            &h.audit_ks,
+            &h.audit,
             "did:key:z6MkTestAdmin",
             None,
             "test",

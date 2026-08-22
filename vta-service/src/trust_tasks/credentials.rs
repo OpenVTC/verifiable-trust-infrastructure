@@ -70,7 +70,7 @@ pub(super) async fn handle_issue(
     // 5. Audit (`detail` carries the operator-supplied purpose, like the vault
     //    slice records its `reason`).
     if let Err(e) = audit::record_with_detail(
-        &state.audit_ks,
+        &state.audit_sink,
         "credentials.issue",
         &auth.did,
         Some(&record.id),
@@ -121,7 +121,7 @@ pub(super) async fn handle_revoke(
     };
 
     if let Err(e) = audit::record_with_detail(
-        &state.audit_ks,
+        &state.audit_sink,
         "credentials.revoke",
         &auth.did,
         Some(&req.credential_id),

@@ -359,7 +359,7 @@ didcomm_handler!(
         &s.internal_ks,
         &s.contexts_ks,
         &s.seed_store,
-        &s.audit_ks,
+        &s.audit_sink,
         &auth,
         operations::keys::CreateKeyParams {
             internal: body.internal.unwrap_or(false),
@@ -413,7 +413,7 @@ didcomm_handler!(
     key_management::rename::RenameKeyBody,
     |s, auth, body| operations::keys::rename_key(
         &s.keys_ks,
-        &s.audit_ks,
+        &s.audit_sink,
         &auth,
         &body.key_id,
         &body.new_key_id,
@@ -430,7 +430,7 @@ didcomm_handler!(
     |s, auth, body| operations::keys::revoke_key(
         &s.keys_ks,
         &s.imported_ks,
-        &s.audit_ks,
+        &s.audit_sink,
         &auth,
         &body.key_id,
         "didcomm",
@@ -447,7 +447,7 @@ didcomm_handler!(
         &s.keys_ks,
         &s.imported_ks,
         &s.seed_store,
-        &s.audit_ks,
+        &s.audit_sink,
         &auth,
         &body.key_id,
         "didcomm",
@@ -501,7 +501,7 @@ didcomm_handler!(
         &s.keys_ks,
         &s.imported_ks,
         &s.seed_store,
-        &s.audit_ks,
+        &s.audit_sink,
         &auth.did,
         body.mnemonic.as_deref(),
         "didcomm",
@@ -630,7 +630,7 @@ didcomm_handler!(
     |s, auth, body| {
         operations::acl::grant_from_entry(
             &s.acl_ks,
-            &s.audit_ks,
+            &s.audit_sink,
             &s.contexts_ks,
             &auth,
             body.entry,
@@ -718,7 +718,7 @@ pub async fn handle_swap_acl(
     let result = app_try!(
         operations::acl::swap_acl(
             &state.acl_ks,
-            &state.audit_ks,
+            &state.audit_sink,
             &auth,
             &presentation,
             did_resolver,
@@ -797,7 +797,7 @@ didcomm_handler!(
     acl_management::change_role::ChangeRoleBody,
     |s, auth, body| operations::acl::change_role_by_subject(
         &s.acl_ks,
-        &s.audit_ks,
+        &s.audit_sink,
         &auth,
         &body.subject,
         &body.from_role,
@@ -819,7 +819,7 @@ didcomm_handler!(
         let role = None;
         operations::acl::update_from_params(
             &s.acl_ks,
-            &s.audit_ks,
+            &s.audit_sink,
             &s.contexts_ks,
             &auth,
             &body.did,
@@ -850,7 +850,7 @@ didcomm_handler!(
     acl_management::delete::DeleteAclBody,
     |s, auth, body| operations::acl::revoke_by_subject(
         &s.acl_ks,
-        &s.audit_ks,
+        &s.audit_sink,
         &auth,
         &body.subject,
         body.scopes,
@@ -885,7 +885,7 @@ didcomm_handler!(
     audit_management::retention::UpdateRetentionBody,
     |s, auth, body| operations::audit::update_retention(
         &s.config,
-        &s.audit_ks,
+        &s.audit_sink,
         &auth,
         body.retention_days,
         "didcomm",
@@ -1192,7 +1192,7 @@ pub async fn handle_restart(
     let auth = app_try!(auth_from_message(&message, &state.acl_ks, &state.sessions_ks).await);
     app_try!(auth.require_super_admin());
     let _ = crate::audit::record(
-        &state.audit_ks,
+        &state.audit_sink,
         "vta.restart",
         &auth.did,
         None,
@@ -1237,7 +1237,7 @@ pub async fn handle_backup_export(
         .await
     );
     let _ = crate::audit::record(
-        &state.audit_ks,
+        &state.audit_sink,
         "backup.export",
         &auth.did,
         None,
@@ -1295,7 +1295,7 @@ pub async fn handle_backup_import(
     );
 
     let _ = crate::audit::record(
-        &state.audit_ks,
+        &state.audit_sink,
         "backup.import",
         &auth.did,
         payload.config.vta_did.as_deref(),
@@ -1792,7 +1792,7 @@ pub async fn handle_step_up_approve(
             &state.keys_ks,
             &state.imported_ks,
             &*state.seed_store,
-            &state.audit_ks,
+            &state.audit_sink,
             &vta_did,
         )
         .await

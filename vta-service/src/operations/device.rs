@@ -33,7 +33,7 @@ use trust_tasks_rs::specs::device::register::v0_1 as register_spec;
 #[allow(clippy::too_many_arguments)]
 pub async fn register_device(
     acl_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     consumer_kind: ConsumerKind,
     display_name: String,
@@ -79,7 +79,7 @@ pub async fn register_device(
 
     info!(channel, did = %did, "device registered");
     let _ = audit::record(
-        audit_ks,
+        audit,
         "device.register",
         &did,
         Some(&did),
@@ -226,7 +226,7 @@ fn form_factor_matches(
 /// surfaces it via `device/list`.
 pub async fn disable_device(
     acl_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     device_id: &str,
 ) -> Result<Value, AppError> {
@@ -253,7 +253,7 @@ pub async fn disable_device(
 
     info!(did = %did, device_id, "device disabled");
     let _ = audit::record(
-        audit_ks,
+        audit,
         "device.disable",
         &auth.did,
         Some(&did),
@@ -275,7 +275,7 @@ pub async fn disable_device(
 /// re-wiping a wiped device keeps the original `wiped_at`.
 pub async fn wipe_device(
     acl_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     device_id: &str,
     reason: &str,
@@ -309,7 +309,7 @@ pub async fn wipe_device(
 
     info!(did = %did, device_id, reason, scope, "device wiped");
     let _ = audit::record(
-        audit_ks,
+        audit,
         "device.wipe",
         &auth.did,
         Some(&did),
@@ -344,7 +344,7 @@ pub async fn wipe_device(
 /// DIDComm surface. This records the VTA-side state the VTA-trigger reads.
 pub async fn set_wake_device(
     acl_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     wake: Option<(String, String)>,
     suggested_triggers: Vec<String>,
@@ -367,7 +367,7 @@ pub async fn set_wake_device(
         entry.device.as_mut().unwrap().wake = None;
         store_acl_entry(acl_ks, &entry).await?;
         let _ = audit::record(
-            audit_ks,
+            audit,
             "device.set_wake.clear",
             &did,
             Some(&did),
@@ -402,7 +402,7 @@ pub async fn set_wake_device(
 
     info!(did = %did, triggers = allowed.len(), "device wake channel set");
     let _ = audit::record(
-        audit_ks,
+        audit,
         "device.set_wake",
         &did,
         Some(&did),
@@ -592,15 +592,21 @@ mod tests {
     use crate::store::{KeyspaceHandle, Store};
     use vti_common::config::StoreConfig;
 
-    async fn fresh() -> (KeyspaceHandle, KeyspaceHandle, tempfile::TempDir) {
+    async fn fresh() -> (
+        KeyspaceHandle,
+        vta_audit::SharedAuditSink,
+        tempfile::TempDir,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&StoreConfig {
             data_dir: dir.path().into(),
         })
         .unwrap();
         let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
-        let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
-        (acl_ks, audit_ks, dir)
+        let audit: vta_audit::SharedAuditSink = std::sync::Arc::new(
+            vta_audit::KeyspaceAuditSink::new(store.keyspace(crate::keyspaces::AUDIT).unwrap()),
+        );
+        (acl_ks, audit, dir)
     }
 
     fn device_auth(did: &str) -> AuthClaims {
@@ -623,10 +629,10 @@ mod tests {
 
     #[tokio::test]
     async fn register_rejects_did_not_in_acl() {
-        let (acl_ks, audit_ks, _dir) = fresh().await;
+        let (acl_ks, audit, _dir) = fresh().await;
         let err = register_device(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &device_auth("did:key:zUnknown"),
             mobile_kind(),
             "Phone".into(),
@@ -641,7 +647,7 @@ mod tests {
 
     #[tokio::test]
     async fn register_attaches_binding_then_refuses_reregistration() {
-        let (acl_ks, audit_ks, _dir) = fresh().await;
+        let (acl_ks, audit, _dir) = fresh().await;
         let did = "did:key:zDevice";
         // Seed the device's ACL entry (as provision-integration + swap-key would).
         store_acl_entry(
@@ -653,7 +659,7 @@ mod tests {
 
         let body = register_device(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &device_auth(did),
             mobile_kind(),
             "Glenn's iPhone".into(),
@@ -675,7 +681,7 @@ mod tests {
         // …and a second registration is refused (rotate keys + retry).
         let err = register_device(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &device_auth(did),
             mobile_kind(),
             "Glenn's iPhone".into(),
@@ -690,7 +696,7 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_refreshes_last_seen_and_platform() {
-        let (acl_ks, audit_ks, _dir) = fresh().await;
+        let (acl_ks, audit, _dir) = fresh().await;
         let did = "did:key:zDevice";
         store_acl_entry(
             &acl_ks,
@@ -700,7 +706,7 @@ mod tests {
         .unwrap();
         register_device(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &device_auth(did),
             mobile_kind(),
             "Phone".into(),
@@ -731,7 +737,7 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_rejects_unregistered_device() {
-        let (acl_ks, _audit_ks, _dir) = fresh().await;
+        let (acl_ks, _audit, _dir) = fresh().await;
         // ACL entry exists but no DeviceBinding attached.
         store_acl_entry(
             &acl_ks,
@@ -763,7 +769,7 @@ mod tests {
 
     async fn seed_and_register(
         acl_ks: &KeyspaceHandle,
-        audit_ks: &KeyspaceHandle,
+        audit: &vta_audit::SharedAuditSink,
         did: &str,
         ff: CompanionFormFactor,
         name: &str,
@@ -776,7 +782,7 @@ mod tests {
         .unwrap();
         register_device(
             acl_ks,
-            audit_ks,
+            audit,
             &device_auth(did),
             ConsumerKind::Companion { form_factor: ff },
             name.into(),
@@ -790,10 +796,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_filters_then_disable_hides_device() {
-        let (acl_ks, audit_ks, _dir) = fresh().await;
+        let (acl_ks, audit, _dir) = fresh().await;
         seed_and_register(
             &acl_ks,
-            &audit_ks,
+            &audit,
             "did:key:zPhone",
             CompanionFormFactor::Mobile,
             "Phone",
@@ -801,7 +807,7 @@ mod tests {
         .await;
         seed_and_register(
             &acl_ks,
-            &audit_ks,
+            &audit,
             "did:key:zLaptop",
             CompanionFormFactor::Desktop,
             "Laptop",
@@ -828,7 +834,7 @@ mod tests {
 
         // Disable the phone by its deviceId.
         let phone_id = devs[0]["deviceId"].as_str().unwrap().to_string();
-        let d = disable_device(&acl_ks, &audit_ks, &admin_auth(), &phone_id)
+        let d = disable_device(&acl_ks, &audit, &admin_auth(), &phone_id)
             .await
             .unwrap();
         assert_eq!(d["deviceId"], phone_id.as_str());
@@ -852,8 +858,8 @@ mod tests {
 
     #[tokio::test]
     async fn disable_unknown_device_is_not_found() {
-        let (acl_ks, audit_ks, _dir) = fresh().await;
-        let err = disable_device(&acl_ks, &audit_ks, &admin_auth(), "dev-nope")
+        let (acl_ks, audit, _dir) = fresh().await;
+        let err = disable_device(&acl_ks, &audit, &admin_auth(), "dev-nope")
             .await
             .expect_err("unknown deviceId must be NotFound");
         assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
@@ -861,10 +867,10 @@ mod tests {
 
     #[tokio::test]
     async fn wipe_marks_wiped_and_disabled_then_hidden() {
-        let (acl_ks, audit_ks, _dir) = fresh().await;
+        let (acl_ks, audit, _dir) = fresh().await;
         seed_and_register(
             &acl_ks,
-            &audit_ks,
+            &audit,
             "did:key:zLost",
             CompanionFormFactor::Desktop,
             "Laptop",
@@ -875,7 +881,7 @@ mod tests {
             .unwrap();
         let id = all["devices"][0]["deviceId"].as_str().unwrap().to_string();
 
-        let w = wipe_device(&acl_ks, &audit_ks, &admin_auth(), &id, "stolen", "full")
+        let w = wipe_device(&acl_ks, &audit, &admin_auth(), &id, "stolen", "full")
             .await
             .unwrap();
         // Canonical `device/wipe/0.1` response shape (#857): exactly
@@ -908,8 +914,8 @@ mod tests {
 
     #[tokio::test]
     async fn wipe_unknown_device_is_not_found() {
-        let (acl_ks, audit_ks, _dir) = fresh().await;
-        let err = wipe_device(&acl_ks, &audit_ks, &admin_auth(), "dev-nope", "r", "full")
+        let (acl_ks, audit, _dir) = fresh().await;
+        let err = wipe_device(&acl_ks, &audit, &admin_auth(), "dev-nope", "r", "full")
             .await
             .expect_err("unknown deviceId must be NotFound");
         assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
@@ -917,20 +923,13 @@ mod tests {
 
     #[tokio::test]
     async fn set_wake_records_channel_and_vta_owned_allowlist() {
-        let (acl_ks, audit_ks, _dir) = fresh().await;
+        let (acl_ks, audit, _dir) = fresh().await;
         let did = "did:key:zDevice";
-        seed_and_register(
-            &acl_ks,
-            &audit_ks,
-            did,
-            CompanionFormFactor::Mobile,
-            "Phone",
-        )
-        .await;
+        seed_and_register(&acl_ks, &audit, did, CompanionFormFactor::Mobile, "Phone").await;
 
         let body = set_wake_device(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &device_auth(did),
             Some(("did:webvh:gw".into(), "z6MkHandle".into())),
             vec!["did:webvh:mediator".into()],
@@ -962,19 +961,12 @@ mod tests {
 
     #[tokio::test]
     async fn set_wake_clear_removes_channel() {
-        let (acl_ks, audit_ks, _dir) = fresh().await;
+        let (acl_ks, audit, _dir) = fresh().await;
         let did = "did:key:zDevice";
-        seed_and_register(
-            &acl_ks,
-            &audit_ks,
-            did,
-            CompanionFormFactor::Mobile,
-            "Phone",
-        )
-        .await;
+        seed_and_register(&acl_ks, &audit, did, CompanionFormFactor::Mobile, "Phone").await;
         set_wake_device(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &device_auth(did),
             Some(("did:webvh:gw".into(), "h".into())),
             vec![],
@@ -986,7 +978,7 @@ mod tests {
         // Clearing (wake = None) removes the channel.
         let body = set_wake_device(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &device_auth(did),
             None,
             vec![],
@@ -1001,7 +993,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_wake_rejects_unregistered_device() {
-        let (acl_ks, audit_ks, _dir) = fresh().await;
+        let (acl_ks, audit, _dir) = fresh().await;
         store_acl_entry(
             &acl_ks,
             &AclEntry::new("did:key:zBare", Role::Application, "did:key:zSetup"),
@@ -1010,7 +1002,7 @@ mod tests {
         .unwrap();
         let err = set_wake_device(
             &acl_ks,
-            &audit_ks,
+            &audit,
             &device_auth("did:key:zBare"),
             Some(("g".into(), "h".into())),
             vec![],

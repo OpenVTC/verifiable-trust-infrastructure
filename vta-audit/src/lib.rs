@@ -2,16 +2,23 @@
 //!
 //! Audit events are:
 //! 1. Emitted via `tracing` at a dedicated target (`audit`) for log shipping
-//! 2. Persisted to the `audit` fjall keyspace for API-based retrieval
+//! 2. Persisted through an [`AuditSink`] — by default the `audit` fjall
+//!    keyspace, which is what the retrieval API reads
 //!
-//! The `audit!` macro emits the tracing event. Persisting to storage is done
-//! via `AuditStore::record()` which should be called alongside the macro in
-//! route/handler code.
+//! The `audit!` macro emits the tracing event. Persisting is done via
+//! [`record`] / [`record_with_detail`], which should be called alongside the
+//! macro in route/handler code.
+//!
+//! The sink is an extension point, not a policy: see [`sink`] for why the write
+//! path is pluggable while retention is not.
 
 use vta_sdk::protocols::audit_management::list::AuditLogEntry;
 
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
+
+pub mod sink;
+pub use sink::{AuditSink, FanOutAuditSink, KeyspaceAuditSink, SharedAuditSink};
 
 /// Emit a structured audit event to the tracing subsystem.
 ///
@@ -60,12 +67,13 @@ macro_rules! audit {
     };
 }
 
-/// Persist an audit log entry to the audit keyspace.
+/// Persist an audit log entry through `sink`.
 ///
-/// Storage key format: `log:{timestamp_secs}:{uuid}` — enables efficient
-/// time-range prefix scans and guarantees uniqueness.
+/// The default sink is the audit keyspace, which is what
+/// [`cleanup_expired_logs`] prunes and what the retrieval API reads. A
+/// deployment may install another; see [`sink`].
 pub async fn record(
-    audit_ks: &KeyspaceHandle,
+    sink: &SharedAuditSink,
     action: &str,
     actor: &str,
     resource: Option<&str>,
@@ -74,7 +82,7 @@ pub async fn record(
     context_id: Option<&str>,
 ) -> Result<(), AppError> {
     record_with_detail(
-        audit_ks, action, actor, resource, outcome, channel, context_id, None,
+        sink, action, actor, resource, outcome, channel, context_id, None,
     )
     .await
 }
@@ -84,7 +92,7 @@ pub async fn record(
 /// so the existing `record(...)` call sites stay untouched.
 #[allow(clippy::too_many_arguments)]
 pub async fn record_with_detail(
-    audit_ks: &KeyspaceHandle,
+    sink: &SharedAuditSink,
     action: &str,
     actor: &str,
     resource: Option<&str>,
@@ -100,7 +108,7 @@ pub async fn record_with_detail(
     let id = uuid::Uuid::new_v4().to_string();
 
     let entry = AuditLogEntry {
-        id: id.clone(),
+        id,
         timestamp: now,
         action: action.to_string(),
         actor: actor.to_string(),
@@ -111,9 +119,9 @@ pub async fn record_with_detail(
         detail: detail.map(String::from),
     };
 
-    // Key: zero-padded timestamp for lexicographic time ordering
-    let key = format!("log:{:020}:{}", now, id);
-    audit_ks.insert(key, &entry).await
+    // The storage key is the sink's business — a keyspace derives one, an
+    // append-only or anchored backend has no use for it. See `sink`.
+    sink.record(&entry).await
 }
 
 /// Best-effort audit write for the DTTE consent ceremony.
@@ -136,7 +144,7 @@ pub async fn record_with_detail(
 /// via the audit API but invisible in `RUST_LOG` output, so a live capture of a
 /// consent loop showed no consent activity at all. Emit both.
 pub async fn record_consent(
-    audit_ks: &KeyspaceHandle,
+    sink: &SharedAuditSink,
     action: &str,
     actor: &str,
     resource: &str,
@@ -167,7 +175,7 @@ pub async fn record_consent(
         );
     }
     if let Err(e) = record_with_detail(
-        audit_ks,
+        sink,
         action,
         actor,
         Some(resource),

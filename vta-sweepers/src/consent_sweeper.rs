@@ -11,6 +11,7 @@ use tracing::{debug, info, warn};
 
 use vti_common::consent::{ConsentGrant, PendingConsent};
 
+use vta_audit::SharedAuditSink;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -25,7 +26,7 @@ fn now_epoch() -> u64 {
 /// grants. Audit-record failures are warn-logged but don't abort the sweep.
 pub async fn sweep_expired(
     consent_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &SharedAuditSink,
 ) -> Result<(), AppError> {
     let now = now_epoch();
     let mut pruned = 0usize;
@@ -42,7 +43,7 @@ pub async fn sweep_expired(
         if now >= pending.expires_at {
             consent_ks.remove(key).await?;
             pruned += 1;
-            audit_expire(audit_ks, &pending.subject.agent).await;
+            audit_expire(audit, &pending.subject.agent).await;
         }
     }
 
@@ -58,7 +59,7 @@ pub async fn sweep_expired(
         if grant.is_expired(now) {
             consent_ks.remove(key).await?;
             pruned += 1;
-            audit_expire(audit_ks, &grant.subject.agent).await;
+            audit_expire(audit, &grant.subject.agent).await;
         }
     }
 
@@ -71,9 +72,9 @@ pub async fn sweep_expired(
     Ok(())
 }
 
-async fn audit_expire(audit_ks: &KeyspaceHandle, agent: &str) {
+async fn audit_expire(audit: &SharedAuditSink, agent: &str) {
     if let Err(e) = vta_audit::record(
-        audit_ks,
+        audit,
         "consent.expire",
         "system:sweeper",
         Some(agent),

@@ -58,6 +58,9 @@ pub struct TestStore {
     pub keys_ks: KeyspaceHandle,
     pub acl_ks: KeyspaceHandle,
     pub audit_ks: KeyspaceHandle,
+    /// The sink over [`Self::audit_ks`] — tests that *write* audit rows take
+    /// this, tests that read them back take the keyspace.
+    pub audit: vta_audit::SharedAuditSink,
     pub imported_ks: KeyspaceHandle,
     pub webvh_ks: KeyspaceHandle,
     pub sealed_nonces_ks: KeyspaceHandle,
@@ -94,6 +97,9 @@ pub async fn open_test_store() -> TestStore {
         keys_ks: store.keyspace(crate::keyspaces::KEYS).expect("keys ks"),
         acl_ks: store.keyspace(crate::keyspaces::ACL).expect("acl ks"),
         audit_ks: store.keyspace(crate::keyspaces::AUDIT).expect("audit ks"),
+        audit: std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(
+            store.keyspace(crate::keyspaces::AUDIT).expect("audit ks"),
+        )),
         imported_ks: store
             .keyspace(crate::keyspaces::IMPORTED_SECRETS)
             .expect("imported ks"),
@@ -153,7 +159,7 @@ pub fn test_deps(ts: &TestStore) -> ProvisionIntegrationDeps {
     ProvisionIntegrationDeps {
         keys_ks: ts.keys_ks.clone(),
         acl_ks: ts.acl_ks.clone(),
-        audit_ks: ts.audit_ks.clone(),
+        audit: std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(ts.audit_ks.clone())),
         contexts_ks: ts.contexts_ks.clone(),
         did_templates_ks: ts.did_templates_ks.clone(),
         imported_ks: ts.imported_ks.clone(),
@@ -383,7 +389,7 @@ pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegration
     let deps = ProvisionIntegrationDeps {
         keys_ks: ts.keys_ks.clone(),
         acl_ks: ts.acl_ks.clone(),
-        audit_ks: ts.audit_ks.clone(),
+        audit: std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(ts.audit_ks.clone())),
         contexts_ks: ts.contexts_ks.clone(),
         did_templates_ks: ts.did_templates_ks.clone(),
         imported_ks: ts.imported_ks.clone(),
@@ -1008,6 +1014,9 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
 
     let policy_ks = store.keyspace(crate::keyspaces::POLICY).unwrap();
     let state = crate::server::AppState {
+        audit_sink: std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(
+            store.keyspace(crate::keyspaces::AUDIT).unwrap(),
+        )),
         internal_ks: store.keyspace(crate::keyspaces::INTERNAL_KEYS).unwrap(),
         idempotency_ks: store.keyspace(crate::keyspaces::IDEMPOTENCY).unwrap(),
         // Empty by default: a test VTA trusts no mdoc issuer until one is

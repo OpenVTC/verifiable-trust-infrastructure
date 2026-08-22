@@ -64,7 +64,7 @@ impl From<AppError> for SignTrustTaskError {
 pub async fn sign_envelope(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     seed_store: &dyn SeedStore,
     secret: &VaultSecret,
     unsigned_envelope: &Value,
@@ -135,14 +135,9 @@ pub async fn sign_envelope(
     // Load the signing key as an affinidi Secret and sign. The proof's
     // verificationMethod kid IS the entry's signing_key_id — the maintainer
     // trusts the stored reference (validated at upsert time).
-    let secret_key = super::load_signing_secret_by_id(
-        keys_ks,
-        imported_ks,
-        seed_store,
-        audit_ks,
-        &signing_key_id,
-    )
-    .await?;
+    let secret_key =
+        super::load_signing_secret_by_id(keys_ks, imported_ks, seed_store, audit, &signing_key_id)
+            .await?;
     let proof = affinidi_data_integrity::DataIntegrityProof::sign(
         unsigned_envelope,
         &secret_key,

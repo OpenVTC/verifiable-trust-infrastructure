@@ -1640,7 +1640,7 @@ pub(super) async fn handle_proxy_login(
         &state.vault_ks,
         &state.keys_ks,
         &state.imported_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &*state.seed_store,
         &vta_did,
         &auth.did,
@@ -1798,7 +1798,7 @@ pub(super) async fn handle_sign_trust_task(
     let signed = match crate::operations::vault::sign_trust_task::sign_envelope(
         &state.keys_ks,
         &state.imported_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &*state.seed_store,
         &stored.secret,
         &req.unsigned_envelope,

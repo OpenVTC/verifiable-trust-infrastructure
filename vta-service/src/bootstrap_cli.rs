@@ -753,7 +753,7 @@ pub async fn run_keys_bundle(
         keys_ks: &state.keys_ks,
         contexts_ks: &state.contexts_ks,
         imported_ks: &state.imported_ks,
-        audit_ks: &state.audit_ks,
+        audit: &state.audit_sink,
         acl_ks: &state.acl_ks,
         #[cfg(feature = "webvh")]
         webvh_ks: &state.webvh_ks,
@@ -958,6 +958,8 @@ pub async fn run_context_delete(
     let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
     let acl_ks = cs.keyspace(crate::keyspaces::ACL)?;
     let did_templates_ks = cs.keyspace(crate::keyspaces::DID_TEMPLATES)?;
+    // Keyspace, not sink: this path hands the bundle to `Keyspaces`, which
+    // carries the audit keyspace so backup export can dump it.
     let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
     let imported_ks = cs.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
     #[cfg(feature = "webvh")]
@@ -1092,7 +1094,7 @@ pub async fn run_context_reprovision(
                 &state.internal_ks,
                 &state.contexts_ks,
                 &state.seed_store,
-                &state.audit_ks,
+                &state.audit_sink,
                 &auth,
                 CreateKeyParams {
                     internal: false,
@@ -1118,7 +1120,7 @@ pub async fn run_context_reprovision(
         keys_ks: &state.keys_ks,
         contexts_ks: &state.contexts_ks,
         imported_ks: &state.imported_ks,
-        audit_ks: &state.audit_ks,
+        audit: &state.audit_sink,
         acl_ks: &state.acl_ks,
         #[cfg(feature = "webvh")]
         webvh_ks: &state.webvh_ks,

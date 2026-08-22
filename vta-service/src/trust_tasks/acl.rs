@@ -69,7 +69,7 @@ pub(super) async fn handle_create(
     };
     match operations::acl::grant_from_entry(
         &state.acl_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &state.contexts_ks,
         auth,
         req.entry,
@@ -124,7 +124,7 @@ pub(super) async fn handle_update(
     let role = None;
     match operations::acl::update_from_params(
         &state.acl_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &state.contexts_ks,
         auth,
         &req.did,
@@ -172,7 +172,7 @@ pub(super) async fn handle_change_role(
     };
     match operations::acl::change_role_by_subject(
         &state.acl_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         auth,
         &req.subject,
         &req.from_role,
@@ -205,7 +205,7 @@ pub(super) async fn handle_delete(
     };
     match operations::acl::revoke_by_subject(
         &state.acl_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         auth,
         &req.subject,
         req.scopes,
@@ -280,7 +280,7 @@ pub(super) async fn handle_swap_key(
 
     match operations::acl::swap_acl(
         &state.acl_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         auth,
         &req.link_proof,
         did_resolver,

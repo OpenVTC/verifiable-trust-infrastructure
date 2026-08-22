@@ -61,7 +61,7 @@ pub async fn create_key(
         &state.internal_ks,
         &state.contexts_ks,
         &state.seed_store,
-        &state.audit_ks,
+        &state.audit_sink,
         &auth.0,
         operations::keys::CreateKeyParams {
             internal: req.internal.unwrap_or(false),
@@ -102,7 +102,7 @@ pub async fn get_key_secret(
         &state.keys_ks,
         &state.imported_ks,
         &state.seed_store,
-        &state.audit_ks,
+        &state.audit_sink,
         &auth.0,
         &key_id,
         "rest",
@@ -151,7 +151,7 @@ pub async fn invalidate_key(
     let result = operations::keys::revoke_key(
         &state.keys_ks,
         &state.imported_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &auth.0,
         &key_id,
         "rest",
@@ -186,7 +186,7 @@ pub async fn rename_key(
 ) -> Result<Json<RenameKeyResultBody>, AppError> {
     let result = operations::keys::rename_key(
         &state.keys_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &auth.0,
         &key_id,
         &req.key_id,
@@ -280,7 +280,7 @@ pub async fn rotate_seed(
         &state.keys_ks,
         &state.imported_ks,
         &state.seed_store,
-        &state.audit_ks,
+        &state.audit_sink,
         &_auth.0.did,
         req.mnemonic.as_deref(),
         "rest",
@@ -534,7 +534,7 @@ pub async fn import_key(
         &state.keys_ks,
         &state.imported_ks,
         &state.seed_store,
-        &state.audit_ks,
+        &state.audit_sink,
         &auth.0,
         operations::keys::ImportKeyParams {
             key_type: req.key_type,

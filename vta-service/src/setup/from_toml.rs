@@ -754,6 +754,8 @@ pub async fn apply_inputs(
     let contexts_ks = maybe_encrypt(store.keyspace(crate::keyspaces::CONTEXTS)?);
     let webvh_ks = maybe_encrypt(store.keyspace(crate::keyspaces::WEBVH)?);
     let audit_ks = maybe_encrypt(store.keyspace(crate::keyspaces::AUDIT)?);
+    let audit: vta_audit::SharedAuditSink =
+        std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
     let did_templates_ks = maybe_encrypt(store.keyspace(crate::keyspaces::DID_TEMPLATES)?);
 
     let mut vta_ctx = create_seed_context(&contexts_ks, "vta", "Verifiable Trust Agent").await?;
@@ -912,7 +914,7 @@ pub async fn apply_inputs(
                 &imported_ks,
                 &contexts_ks,
                 &webvh_ks,
-                &audit_ks,
+                &audit,
                 &did_templates_ks,
                 &*wizard_seed_store,
                 &wizard_config,
@@ -1014,7 +1016,7 @@ pub async fn apply_inputs(
                 &imported_ks,
                 &contexts_ks,
                 &webvh_ks,
-                &audit_ks,
+                &audit,
                 &did_templates_ks,
                 &*wizard_seed_store,
                 &wizard_config,
@@ -1755,7 +1757,7 @@ async fn create_simple_webvh_did(
     imported_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     did_templates_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     config: &AppConfig,
@@ -1816,7 +1818,7 @@ async fn create_simple_webvh_did(
         contexts_ks,
         webvh_ks,
         did_templates_ks,
-        audit_ks,
+        audit,
         seed_store,
         config,
         did_resolver: &did_resolver,

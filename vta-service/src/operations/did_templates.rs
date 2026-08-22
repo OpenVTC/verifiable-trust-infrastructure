@@ -30,7 +30,7 @@ use crate::store::KeyspaceHandle;
 /// Rejects duplicates — updates must go through [`update_global`].
 pub async fn create_global(
     templates_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     template: DidTemplate,
     channel: &str,
@@ -69,7 +69,7 @@ pub async fn create_global(
 
     store::store_global_template(templates_ks, &record).await?;
     let _ = audit::record(
-        audit_ks,
+        audit,
         "did_template.created",
         &auth.did,
         Some(&record.template.name),
@@ -90,7 +90,7 @@ pub async fn create_global(
 /// replaced — partial updates go through delete + create.
 pub async fn update_global(
     templates_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     name: &str,
     template: DidTemplate,
@@ -124,7 +124,7 @@ pub async fn update_global(
 
     store::store_global_template(templates_ks, &record).await?;
     let _ = audit::record(
-        audit_ks,
+        audit,
         "did_template.updated",
         &auth.did,
         Some(&record.template.name),
@@ -167,7 +167,7 @@ pub async fn list_global(
 /// Delete a global template. Super admin only.
 pub async fn delete_global(
     templates_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     name: &str,
     channel: &str,
@@ -183,7 +183,7 @@ pub async fn delete_global(
 
     store::delete_global_template(templates_ks, name).await?;
     let _ = audit::record(
-        audit_ks,
+        audit,
         "did_template.deleted",
         &auth.did,
         Some(name),
@@ -283,7 +283,7 @@ fn require_context_read(auth: &AuthClaims, context_id: &str) -> Result<(), AppEr
 pub async fn create_context(
     templates_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     context_id: &str,
     template: DidTemplate,
@@ -329,7 +329,7 @@ pub async fn create_context(
 
     store::store_context_template(templates_ks, context_id, &record).await?;
     let _ = audit::record(
-        audit_ks,
+        audit,
         "did_template.created",
         &auth.did,
         Some(&record.template.name),
@@ -351,7 +351,7 @@ pub async fn create_context(
 /// Replace an existing context-scoped template. Context-admin-or-super.
 pub async fn update_context(
     templates_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     context_id: &str,
     name: &str,
@@ -393,7 +393,7 @@ pub async fn update_context(
 
     store::store_context_template(templates_ks, context_id, &record).await?;
     let _ = audit::record(
-        audit_ks,
+        audit,
         "did_template.updated",
         &auth.did,
         Some(&record.template.name),
@@ -444,7 +444,7 @@ pub async fn list_context(
 /// Delete a context-scoped template. Context-admin-or-super.
 pub async fn delete_context(
     templates_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     context_id: &str,
     name: &str,
@@ -463,7 +463,7 @@ pub async fn delete_context(
 
     store::delete_context_template(templates_ks, context_id, name).await?;
     let _ = audit::record(
-        audit_ks,
+        audit,
         "did_template.deleted",
         &auth.did,
         Some(name),

@@ -264,7 +264,7 @@ pub async fn register_did_with_server(
     // 6. Audit. Best-effort; log+swallow on error.
     let resource = format!("did:webvh:{}", record.scid);
     if let Err(e) = audit::record(
-        deps.audit_ks,
+        deps.audit,
         "did.register_server",
         &auth.did,
         Some(&resource),
@@ -305,18 +305,24 @@ mod tests {
     use vta_sdk::webvh::{WebvhDidRecord, WebvhServerRecord};
     use vti_common::config::StoreConfig as VtiStoreConfig;
 
-    async fn setup() -> (tempfile::TempDir, KeyspaceHandle, KeyspaceHandle) {
+    async fn setup() -> (
+        tempfile::TempDir,
+        KeyspaceHandle,
+        vta_audit::SharedAuditSink,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&VtiStoreConfig {
             data_dir: dir.path().into(),
         })
         .unwrap();
         let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
-        let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+        let audit: vta_audit::SharedAuditSink = std::sync::Arc::new(
+            vta_audit::KeyspaceAuditSink::new(store.keyspace(crate::keyspaces::AUDIT).unwrap()),
+        );
         // Force the test_app_config helper to be exercised so any
         // future field addition surfaces as a test failure.
         let _ = test_app_config(dir.path().into());
-        (dir, webvh_ks, audit_ks)
+        (dir, webvh_ks, audit)
     }
 
     fn serverless_record(did: &str) -> WebvhDidRecord {
@@ -388,7 +394,7 @@ mod tests {
     /// keys / imported / contexts.
     fn deps<'a>(
         webvh_ks: &'a KeyspaceHandle,
-        audit_ks: &'a KeyspaceHandle,
+        audit: &'a vta_audit::SharedAuditSink,
         seed: &'a dyn crate::keys::seed_store::SeedStore,
         resolver: &'a DIDCacheClient,
         bridge: &'a Arc<DIDCommBridge>,
@@ -399,7 +405,7 @@ mod tests {
             imported_ks: webvh_ks,
             contexts_ks: webvh_ks,
             webvh_ks,
-            audit_ks,
+            audit,
             seed_store: seed,
             did_resolver: resolver,
             didcomm_bridge: bridge,
@@ -409,12 +415,12 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_non_super_admin() {
-        let (_dir, webvh_ks, audit_ks) = setup().await;
+        let (_dir, webvh_ks, audit) = setup().await;
         let resolver = resolver().await;
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
         let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
-        let deps = deps(&webvh_ks, &audit_ks, &seed, &resolver, &bridge, &auth_locks);
+        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge, &auth_locks);
         let err = register_did_with_server(
             &deps,
             &other_user(),
@@ -434,12 +440,12 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_when_did_not_found() {
-        let (_dir, webvh_ks, audit_ks) = setup().await;
+        let (_dir, webvh_ks, audit) = setup().await;
         let resolver = resolver().await;
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
         let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
-        let deps = deps(&webvh_ks, &audit_ks, &seed, &resolver, &bridge, &auth_locks);
+        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge, &auth_locks);
         let err = register_did_with_server(
             &deps,
             &super_admin(),
@@ -459,7 +465,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_when_already_server_managed() {
-        let (_dir, webvh_ks, audit_ks) = setup().await;
+        let (_dir, webvh_ks, audit) = setup().await;
         let did = "did:webvh:scid:host:vta";
         let mut rec = serverless_record(did);
         rec.server_id = "existing-host".into();
@@ -469,7 +475,7 @@ mod tests {
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
         let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
-        let deps = deps(&webvh_ks, &audit_ks, &seed, &resolver, &bridge, &auth_locks);
+        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge, &auth_locks);
         let err = register_did_with_server(
             &deps,
             &super_admin(),
@@ -492,7 +498,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_when_server_not_registered() {
-        let (_dir, webvh_ks, audit_ks) = setup().await;
+        let (_dir, webvh_ks, audit) = setup().await;
         let did = "did:webvh:scid:host:vta";
         webvh_store::store_did(&webvh_ks, &serverless_record(did))
             .await
@@ -505,7 +511,7 @@ mod tests {
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
         let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
-        let deps = deps(&webvh_ks, &audit_ks, &seed, &resolver, &bridge, &auth_locks);
+        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge, &auth_locks);
         let err = register_did_with_server(
             &deps,
             &super_admin(),
@@ -525,7 +531,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_when_log_missing() {
-        let (_dir, webvh_ks, audit_ks) = setup().await;
+        let (_dir, webvh_ks, audit) = setup().await;
         let did = "did:webvh:scid:host:vta";
         webvh_store::store_did(&webvh_ks, &serverless_record(did))
             .await
@@ -539,7 +545,7 @@ mod tests {
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
         let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
-        let deps = deps(&webvh_ks, &audit_ks, &seed, &resolver, &bridge, &auth_locks);
+        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge, &auth_locks);
         let err = register_did_with_server(
             &deps,
             &super_admin(),

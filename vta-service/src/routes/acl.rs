@@ -108,7 +108,7 @@ pub async fn create_acl(
 
     let result = operations::acl::grant_from_entry(
         &state.acl_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &state.contexts_ks,
         &auth.0,
         req.entry,
@@ -234,7 +234,7 @@ pub async fn update_acl(
 
     let result = operations::acl::update_from_params(
         &state.acl_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &state.contexts_ks,
         &auth.0,
         &did,
@@ -309,7 +309,7 @@ pub async fn change_role(
 
     let result = operations::acl::change_role_by_subject(
         &state.acl_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &auth.0,
         &did,
         &req.from_role,
@@ -348,7 +348,7 @@ pub async fn delete_acl(
     )
     .await?;
 
-    operations::acl::delete_acl(&state.acl_ks, &state.audit_ks, &auth.0, &did, "rest").await?;
+    operations::acl::delete_acl(&state.acl_ks, &state.audit_sink, &auth.0, &did, "rest").await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -468,7 +468,7 @@ pub async fn swap_acl(
     };
     let result = operations::acl::swap_acl(
         &state.acl_ks,
-        &state.audit_ks,
+        &state.audit_sink,
         &auth,
         &presentation,
         did_resolver,

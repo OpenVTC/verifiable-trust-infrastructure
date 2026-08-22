@@ -73,6 +73,12 @@ pub struct VtaState {
     pub contexts_ks: KeyspaceHandle,
     pub did_templates_ks: KeyspaceHandle,
     pub audit_ks: KeyspaceHandle,
+    /// Shared with `AppState` — one audit sink across both transports, so a
+    /// deployment-installed backend covers DIDComm as well as REST. Cloned as
+    /// an `Arc`, not rebuilt, for the same reason the config `RwLock` is (P1.1):
+    /// two transports resolving audit differently is a gap you find in an
+    /// incident.
+    pub audit_sink: vta_audit::SharedAuditSink,
     pub imported_ks: KeyspaceHandle,
     /// Non-extractable internal signing keys, mirrored from `AppState` so the
     /// DIDComm signing oracle reaches the same keys the REST one does.
@@ -150,7 +156,7 @@ impl From<&VtaState> for crate::operations::provision_integration::ProvisionInte
         Self {
             keys_ks: state.keys_ks.clone(),
             acl_ks: state.acl_ks.clone(),
-            audit_ks: state.audit_ks.clone(),
+            audit: std::sync::Arc::clone(&state.audit_sink),
             contexts_ks: state.contexts_ks.clone(),
             did_templates_ks: state.did_templates_ks.clone(),
             imported_ks: state.imported_ks.clone(),
@@ -187,6 +193,7 @@ impl From<&AppState> for VtaState {
             contexts_ks: state.contexts_ks.clone(),
             did_templates_ks: state.did_templates_ks.clone(),
             audit_ks: state.audit_ks.clone(),
+            audit_sink: std::sync::Arc::clone(&state.audit_sink),
             imported_ks: state.imported_ks.clone(),
             internal_ks: state.internal_ks.clone(),
             service_state_ks: state.service_state_ks.clone(),

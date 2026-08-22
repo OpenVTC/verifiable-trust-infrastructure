@@ -45,7 +45,7 @@ async fn load_vta_key_as_secret(
         &state.keys_ks,
         &state.imported_ks,
         &*state.seed_store,
-        &state.audit_ks,
+        &state.audit,
         authority,
         &key_id,
         "provision-integration-internal",
