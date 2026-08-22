@@ -215,7 +215,11 @@ async fn capabilities_via_didcomm() {
 
     let caps = client.capabilities().await.unwrap();
     assert_eq!(caps.version, "0.5.0");
-    assert!(caps.features.didcomm);
+    // `features.didcomm` was asserted here until #1039. It reported a compile
+    // time `cfg!` flag — what the binary could serve, not what it does — and the
+    // DID document is authoritative for what a party speaks. The transport this
+    // very call arrived on is the better evidence anyway.
+    assert!(caps.webvh_servers.is_empty());
 
     shutdown_all(client, responder, mediator).await;
 }

@@ -349,9 +349,17 @@ macro_rules! dispatch_table {
         /// URIs wired into [`dispatch_typed`], collected from the same
         /// declarations that generate the match arms. Feature-gated arms
         /// contribute only when their cfg is active.
-        #[cfg(test)]
+        ///
+        /// Available at runtime, not just under `cfg(test)`, because
+        /// `trust-task-discovery/0.1` answers with exactly this set. Deriving
+        /// the answer from the dispatch table is the whole point: a
+        /// hand-maintained list of "what we support" is a second source of
+        /// truth, and it goes stale the first time someone adds a handler
+        /// without remembering it exists. A discovery response that overstates
+        /// the server is worse than none — a client believes a task is
+        /// available and finds out otherwise on a live call.
         #[allow(deprecated)]
-        fn dispatched_uris() -> Vec<&'static str> {
+        pub(crate) fn dispatched_uris() -> Vec<&'static str> {
             let mut v: Vec<&'static str> = Vec::new();
             $(
                 $(#[$meta])*
@@ -924,6 +932,8 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0 => audit::handle_update_retention
         [ Mutating None false ],
     // ─── Discovery ───────────────────────────────────────────────
+    vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1 => discovery::handle_trust_task_discovery
+        [ None None false ],
     vta_sdk::trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0 => discovery::handle_capabilities
         [ None None false ],
     // ─── Credential-exchange: deferred-presentation approval ─────

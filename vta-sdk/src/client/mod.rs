@@ -1979,6 +1979,36 @@ impl VtaClient {
         .await
     }
 
+    /// Ask which Trust Task types this agent serves — `trust-task-discovery/0.1`.
+    ///
+    /// `patterns` are slug globs matched against the URI's slug (everything
+    /// after `https://trusttasks.org/spec/`): `*` for everything, `vta/acl/*`
+    /// for a family, or an exact slug. An empty list means everything, per the
+    /// spec.
+    ///
+    /// The agent answers from its own dispatch table, so the reply reflects what
+    /// is actually routed rather than what someone remembered to list.
+    ///
+    /// # This is not a wire-compatibility check
+    ///
+    /// It tells you whether both ends know a task **at a version**. It does not
+    /// tell you whether they agree on how that task's payload is spelled — two
+    /// peers can both serve `contexts/create/1.0` and still disagree about
+    /// `basePath` vs `base_path` (#1033). Use it to avoid calling a task that
+    /// isn't there; don't read it as proof the call will decode.
+    #[cfg(feature = "client")]
+    pub async fn supported_trust_tasks(
+        &self,
+        patterns: &[&str],
+    ) -> Result<crate::protocols::discovery::SupportedTasksResponse, VtaError> {
+        self.rpc_tt(
+            crate::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1,
+            serde_json::json!({ "patterns": patterns }),
+            30,
+        )
+        .await
+    }
+
     /// Check whether the current auth token is valid by calling an authenticated endpoint.
     ///
     /// Returns `true` if authenticated, `false` if the token is invalid/expired.

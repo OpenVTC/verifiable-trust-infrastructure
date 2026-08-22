@@ -266,6 +266,16 @@ fn get_auth(uri: &str, token: &str) -> Request<Body> {
         .unwrap()
 }
 
+/// A POST carrying no bearer token, for asserting that a surface is gated.
+fn post_unauth(uri: &str, body: Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap()
+}
+
 fn post_auth(uri: &str, token: &str, body: Value) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -309,8 +319,20 @@ fn delete_auth(uri: &str, token: &str) -> Request<Body> {
 
 #[tokio::test]
 async fn capabilities_requires_auth() {
+    // `GET /capabilities` was removed in #1039; the task it wrapped remains and
+    // is still authenticated. Asserted through the Trust-Task surface, which is
+    // where every caller reaches it now.
     let (app, _ctx) = TestApp::new().await;
-    let (status, _) = app.request(get("/capabilities")).await;
+    let (status, _) = app
+        .request(post_unauth(
+            "/api/trust-tasks",
+            json!({
+                "id": "urn:uuid:2a1b3c4d-5e6f-4071-8293-a4b5c6d7e8f0",
+                "type": "https://trusttasks.org/spec/vta/discovery/capabilities/1.0",
+                "payload": {},
+            }),
+        ))
+        .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -320,14 +342,103 @@ async fn capabilities_returns_features() {
     let token = ctx
         .auth_token("did:key:z6MkReader", "reader", vec!["any".into()])
         .await;
-    let (status, body) = app.request(get_auth("/capabilities", &token)).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body["version"].as_str().is_some());
-    assert!(body["features"].is_object());
-    assert!(body["services"].is_object());
-    assert!(body["did_creation_modes"].is_array());
-    // webvh feature is compiled in for tests
-    assert_eq!(body["features"]["webvh"], true);
+    let (status, body) = app
+        .request(post_auth(
+            "/api/trust-tasks",
+            &token,
+            json!({
+                "id": "urn:uuid:3b2c4d5e-6f70-4182-93a4-b5c6d7e8f901",
+                "type": "https://trusttasks.org/spec/vta/discovery/capabilities/1.0",
+                "payload": {},
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let payload = &body["payload"];
+    assert!(payload["version"].as_str().is_some());
+    // `didCreationModes`, not `did_creation_modes` — this body was folded to
+    // lowerCamelCase in #1039 once removing the REST route made it free.
+    assert!(payload["didCreationModes"].is_array());
+    // `features` / `services` were asserted here until #1039. The DID document
+    // is authoritative for what a party speaks, so this body no longer offers a
+    // second answer that could disagree with it.
+    assert!(payload.get("features").is_none(), "body: {body}");
+    assert!(payload.get("services").is_none(), "body: {body}");
+}
+
+/// `trust-task-discovery/0.1` answers from the dispatch table.
+///
+/// The property worth pinning is not that it returns *something* but that it
+/// returns the tasks this service actually routes — a discovery response
+/// assembled from a hand-maintained list would pass a laxer assertion while
+/// advertising tasks that 404 on a live call.
+#[tokio::test]
+async fn trust_task_discovery_reports_dispatched_tasks() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx
+        .auth_token("did:key:z6MkReader", "reader", vec!["any".into()])
+        .await;
+    let (status, body) = app
+        .request(post_auth(
+            "/api/trust-tasks",
+            &token,
+            json!({
+                "id": "urn:uuid:4c3d5e6f-7081-4293-a4b5-c6d7e8f90123",
+                "type": "https://trusttasks.org/spec/trust-task-discovery/0.1",
+                "payload": { "patterns": ["acl/*"] },
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+
+    let types = body["payload"]["supportedTypes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("supportedTypes must be an array: {body}"));
+    assert!(!types.is_empty(), "acl/* must match something: {body}");
+    assert!(
+        types
+            .iter()
+            .all(|t| t.as_str().is_some_and(|s| s.contains("/spec/acl/"))),
+        "the pattern must narrow the answer, got: {types:?}"
+    );
+    assert_eq!(body["payload"]["frameworkVersion"], "0.2");
+}
+
+/// An empty pattern list means "everything", and everything is a lot.
+///
+/// Separate from the narrowed case because the two exercise opposite branches:
+/// this one would also pass if pattern matching were broken open, so it is the
+/// narrowed test above that carries the real weight.
+#[tokio::test]
+async fn trust_task_discovery_defaults_to_everything() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx
+        .auth_token("did:key:z6MkReader", "reader", vec!["any".into()])
+        .await;
+    let (status, body) = app
+        .request(post_auth(
+            "/api/trust-tasks",
+            &token,
+            json!({
+                "id": "urn:uuid:5d4e6f70-8192-43a4-b5c6-d7e8f9012345",
+                "type": "https://trusttasks.org/spec/trust-task-discovery/0.1",
+                "payload": {},
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    let types = body["payload"]["supportedTypes"].as_array().unwrap();
+    assert!(
+        types.len() > 50,
+        "an unfiltered query must report the whole table, got {}",
+        types.len()
+    );
+    assert!(
+        types
+            .iter()
+            .any(|t| t == "https://trusttasks.org/spec/trust-task-discovery/0.1"),
+        "discovery must advertise itself"
+    );
 }
 
 // ── Health ─────────────────────────────────────────────────────────

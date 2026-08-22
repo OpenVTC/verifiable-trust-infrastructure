@@ -20,19 +20,26 @@
 //! - `SeedInfo` — inside `ListSeedsResultBody`, which *was* folded. `seeds/list`
 //!   therefore emitted a body that disagreed with itself,
 //!   `{"seeds":[{"created_at":…}],"activeSeedId":1}`. Fixed in #1034.
-//! - `CapabilitiesResponse` — still open, see [`INERT_BY_DECISION`].
+//! - `CapabilitiesResponse` — fixed in #1039, once removing `GET /capabilities`
+//!   made the fold free.
+//! - `UpdateRetentionBody` — **found by this census, not by a person.** Its
+//!   sibling response one screen down was already folded, so
+//!   `audit/update-retention` took a snake_case request and returned a
+//!   camelCase response. Fixed in #1039.
 //!
-//! Both were found by hand, months later, while auditing something else. Nothing
-//! failed: the code compiled, every test passed, and the attributes read as
-//! though the work was done. A reviewer looking at the diff sees `alias =
-//! "created_at"` and reasonably assumes the member is now `createdAt`.
+//! The first two were found by hand, months later, while auditing something
+//! else. Nothing failed: the code compiled, every test passed, and the
+//! attributes read as though the work was done. A reviewer looking at the diff
+//! sees `alias = "created_at"` and reasonably assumes the member is now
+//! `createdAt`.
 //!
 //! ## Why the class, not the instances
 //!
-//! Fixing the two found instances leaves the next fold free to repeat it, and
-//! the next fold is coming — the REST bodies #1000 deferred are still snake_case.
+//! Fixing the found instances leaves the next fold free to repeat it, and the
+//! next fold is coming — the REST bodies #1000 deferred are still snake_case.
 //! An inert alias is decidable from the source, so it is decided here, once, for
-//! every wire type at the same time.
+//! every wire type at the same time. That it turned up a third instance on its
+//! first run is the argument for having written it.
 //!
 //! Parsed with `syn`, like [`payload_null_census`](../payload_null_census.rs) and
 //! for the same reason: these attributes wrap across lines, and a line-oriented
@@ -47,29 +54,13 @@ use syn::{Fields, Item, ItemStruct, Meta};
 ///
 /// An entry says: this type deliberately still emits snake_case, and the alias
 /// is kept for the fold that is coming. Anything else belongs in a fix.
-const INERT_BY_DECISION: &[(&str, &str)] = &[
-    (
-        "CapabilitiesResponse",
-        "Served on `GET /capabilities` as well as the Trust-Task and DIDComm \
-         surfaces. #1000 never touched its emission, so folding it is a fresh \
-         REST wire change of exactly the kind that PR deferred — not the \
-         completion of a half-done one, which is what made SeedInfo \
-         unambiguous. Tracked in #1039; the aliases stay so the eventual fold \
-         is a one-line change.",
-    ),
-    (
-        "UpdateRetentionBody",
-        "Found by this census, not by anyone reading the file. Its sibling \
-         `RetentionResultBody` — one screen down, same task — IS folded, so \
-         `audit/update-retention` takes a snake_case request and returns a \
-         camelCase response. Plainly a miss. Deferred anyway because it is a \
-         REQUEST body: folding changes what clients SEND, on the Trust-Task, \
-         DIDComm and REST surfaces at once, and an agent that predates the \
-         change rejects the new spelling. SeedInfo is safe to finish precisely \
-         because its containing body already moved; this one has not moved at \
-         all. Tracked in #1039.",
-    ),
-];
+///
+/// **Empty, and that is the intended end state.** It held
+/// `CapabilitiesResponse` and `UpdateRetentionBody` between #1034 and #1039;
+/// both are folded now. A future entry is legitimate — a type genuinely pinned
+/// to snake_case for a reason — but it should be rare and it should say why,
+/// because the alternative reading of a long list here is that the fold stalled.
+const INERT_BY_DECISION: &[(&str, &str)] = &[];
 
 /// One alias that accepts what would be accepted anyway.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]

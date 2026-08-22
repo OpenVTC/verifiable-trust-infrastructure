@@ -1342,20 +1342,9 @@ pub async fn handle_discover_capabilities(
     _message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let config = state.config.read().await;
-
-    let features = vta_sdk::protocols::discovery::FeaturesInfo {
-        webvh: cfg!(feature = "webvh"),
-        didcomm: cfg!(feature = "didcomm"),
-        tee: cfg!(feature = "tee"),
-        rest: cfg!(feature = "rest"),
-    };
-
-    let services = vta_sdk::protocols::discovery::ServicesInfo {
-        rest: config.services.rest,
-        didcomm: config.services.didcomm,
-    };
-
+    // `features` / `services` removed in #1039 — the DID document is
+    // authoritative for which protocols a party speaks, and this answered from
+    // local config, which runtime service management can leave behind.
     #[cfg(feature = "webvh")]
     let webvh_servers = {
         let servers = app_try!(crate::webvh_store::list_servers(&state.webvh_ks).await);
@@ -1379,8 +1368,6 @@ pub async fn handle_discover_capabilities(
 
     let result = vta_sdk::protocols::discovery::CapabilitiesResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
-        features,
-        services,
         webvh_servers,
         did_creation_modes,
     };

@@ -209,6 +209,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_AUDIT_GET_RETENTION_1_0, ReadOnly),
     (trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0, RetrySafe),
     // ── Discovery ───────────────────────────────────────────────────────
+    (trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1, ReadOnly),
     (trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0, ReadOnly),
     // ── Password vault ──────────────────────────────────────────────────
     (trust_tasks::TASK_VAULT_LIST_0_1, ReadOnly),

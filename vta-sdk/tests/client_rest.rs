@@ -234,6 +234,12 @@ async fn capabilities_returns_features() {
         "GET",
         "/capabilities",
         200,
+        // Deliberately snake_case: the agent emits camelCase since #1039, and
+        // the aliases must keep accepting the retired spelling from an older
+        // one. `features` / `services` are gone — the DID document answers
+        // "what do you speak" — and are left in the fixture as members a
+        // current agent no longer sends, which must be ignored rather than
+        // rejected.
         json!({
             "version": "0.5.0",
             "features": {"webvh": true, "didcomm": false, "tee": false, "rest": true},
@@ -246,8 +252,6 @@ async fn capabilities_returns_features() {
     let c = client(&server).await;
     let caps = c.capabilities().await.unwrap();
     assert_eq!(caps.version, "0.5.0");
-    assert!(caps.features.webvh);
-    assert!(!caps.features.didcomm);
     assert_eq!(caps.webvh_servers.len(), 1);
     assert_eq!(caps.webvh_servers[0].id, "s1");
 }

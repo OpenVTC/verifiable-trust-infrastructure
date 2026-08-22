@@ -8,7 +8,6 @@ mod backup;
 mod backup_blob;
 mod bootstrap;
 mod cache;
-mod capabilities;
 mod config;
 mod contexts;
 mod did_templates;
@@ -611,12 +610,16 @@ fn build_api_router(trust_xff: bool, interval_secs: u64, burst: u32) -> OpenApiR
         apply_unauth_governor(backup_blob_router, trust_xff, interval_secs, burst);
     let router = router.merge(backup_blob_router);
 
-    // Authenticated health details and capabilities
-    router
-        .route("/health/details", get(health::health_details))
-        // First route migrated to the OpenAPI-aware registration: its
-        // `#[utoipa::path]` operation lands in the served `/openapi.json`.
-        .routes(routes!(capabilities::capabilities))
+    // Authenticated health details.
+    //
+    // `GET /capabilities` used to sit here too. It was removed in #1039: nothing
+    // consumed it — `VtaClient::capabilities` goes over `rpc_tt` like every
+    // other task — and a REST route running parallel to a Trust Task is exactly
+    // the shape #1020 removed everywhere else. Capability discovery is
+    // `spec/trust-task-discovery/0.1`; the VTA's deployment inventory is
+    // `spec/vta/discovery/capabilities/1.0`. Both reachable on every transport,
+    // including this one, via `POST <base>/trust-tasks`.
+    router.route("/health/details", get(health::health_details))
 }
 
 /// The assembled OpenAPI 3.1 document describing the VTA REST surface.
@@ -753,24 +756,20 @@ mod cors_tests {
             schemes.contains_key("bearer_jwt"),
             "bearer_jwt security scheme must be registered"
         );
-        // The first migrated route's `#[utoipa::path]` operation is present,
-        // with its response schema referenced.
-        let cap = spec
+        // `/capabilities` was this assertion's subject — the first route
+        // migrated to OpenAPI-aware registration — and the route is gone
+        // (#1039). Pin a different migrated route rather than deleting the
+        // check: what it is really asserting is that `routes!()` registration
+        // still lands operations in the served document, and that property did
+        // not go away with the route.
+        let challenge = spec
             .paths
             .paths
-            .get("/capabilities")
-            .expect("/capabilities operation must be in the spec");
+            .get("/auth/challenge")
+            .expect("/auth/challenge operation must be in the spec");
         assert!(
-            cap.get.is_some(),
-            "/capabilities must document a GET operation"
-        );
-        assert!(
-            spec.components
-                .as_ref()
-                .unwrap()
-                .schemas
-                .contains_key("CapabilitiesResponse"),
-            "CapabilitiesResponse schema must be emitted"
+            challenge.post.is_some(),
+            "/auth/challenge must document a POST operation"
         );
     }
 
@@ -790,7 +789,6 @@ mod cors_tests {
             "/audit/logs",
             "/cache/{key}",
             "/config",
-            "/capabilities",
             "/vta/restart",
             "/backup/export",
             "/backup/blob/{bundle_id}",
