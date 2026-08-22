@@ -2,6 +2,9 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.2.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.2.0...vti-secrets-v0.2.1) — 2026-08-22
+
+
 ## [0.2.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-secrets-v0.1.16...vti-secrets-v0.2.0) — 2026-08-21
 
 

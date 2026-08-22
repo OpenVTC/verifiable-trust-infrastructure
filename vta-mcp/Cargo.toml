@@ -14,7 +14,7 @@ publish = false
 # accept-all on connect (`vta_sdk::acl_setup::set_client_acl_on_connection`).
 # Without it the MCP server's ACL is never configured and the mediator silently
 # drops message types it was not told to accept.
-vta-sdk = { path = "../vta-sdk", version = "0.27", features = ["client", "session", "sealed-transfer", "didcomm", "vp", "crypto-provider", "acl-setup"] }
+vta-sdk = { path = "../vta-sdk", version = "0.28", features = ["client", "session", "sealed-transfer", "didcomm", "vp", "crypto-provider", "acl-setup"] }
 rmcp = { version = "1.7", features = ["server", "transport-io", "macros", "schemars"] }
 schemars = "1"
 tokio = { workspace = true }
