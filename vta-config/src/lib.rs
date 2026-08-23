@@ -4,7 +4,8 @@ use vti_common::error::AppError;
 
 // Re-export shared config types
 pub use vti_common::config::{
-    AuditConfig, AuthConfig, LogConfig, LogFormat, MessagingConfig, StoreConfig, VaultConfig,
+    AppStateConfig, AuditConfig, AuthConfig, LogConfig, LogFormat, MessagingConfig, StoreConfig,
+    VaultConfig,
 };
 // The `[secrets]` config shape + its seed-store backends live in the shared
 // `vti-secrets` crate (issue #501). Re-exported here so `AppConfig.secrets`
@@ -145,6 +146,9 @@ pub struct AppConfig {
     /// password vault and the credential store.
     #[serde(default)]
     pub vault: VaultConfig,
+    /// Application-state store tuning (tombstone retention).
+    #[serde(default)]
+    pub app_state: AppStateConfig,
     /// Policy Decision Point settings (enforcement toggle).
     #[serde(default)]
     pub policy: PolicyConfig,

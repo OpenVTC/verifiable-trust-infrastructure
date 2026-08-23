@@ -109,6 +109,12 @@ use vta_sdk::protocols::acl_management::get::{GetAclBody, GetAclResultBody};
 use vta_sdk::protocols::acl_management::list::{ListAclBody, ListAclResultBody};
 use vta_sdk::protocols::acl_management::swap::{SwapKeyBody, SwapKeyResultBody};
 use vta_sdk::protocols::acl_management::update::UpdateAclBody;
+use vta_sdk::protocols::app_state::{
+    AppStateDeleteBody, AppStateDeleteResponse, AppStateGetBody, AppStateGetManyBody,
+    AppStateGetManyResponse, AppStateGetResponse, AppStateListBody, AppStateListResponse,
+    AppStatePutBody, AppStatePutManyBody, AppStatePutManyResponse, AppStatePutResponse,
+    AppStateRecord, AppStateWrite, PutManyMode, WriteOutcome, WriteResult,
+};
 use vta_sdk::protocols::audit_management::list::{
     AuditEnvelope, ListAuditLogsBody, ListAuditLogsResultBody,
 };
@@ -277,6 +283,41 @@ fn dt() -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::parse_from_rfc3339(TS)
         .expect("valid ts")
         .with_timezone(&chrono::Utc)
+}
+
+/// A live application-state record, with a version deliberately not 1: versions
+/// are values of the *namespace* counter, so a fixture using 1 would quietly
+/// model the per-record counter the design rejects.
+fn app_state_record() -> AppStateRecord {
+    AppStateRecord {
+        context_id: "ctx-a".into(),
+        namespace: "openvtc".into(),
+        key: "community/acme".into(),
+        version: 52,
+        deleted: false,
+        value: Some(serde_json::json!({ "label": "Acme", "role": "admin" })),
+        value_bytes: Some(95),
+        created_at: Some(TS.into()),
+        updated_at: TS.into(),
+        deleted_at: None,
+    }
+}
+
+/// A tombstone: `deleted` true, no value, and a `deletedAt`. Carried in the
+/// list witness because a change feed that cannot express one cannot converge.
+fn app_state_tombstone() -> AppStateRecord {
+    AppStateRecord {
+        context_id: "ctx-a".into(),
+        namespace: "openvtc".into(),
+        key: "community/defunct".into(),
+        version: 44,
+        deleted: true,
+        value: None,
+        value_bytes: None,
+        created_at: Some(TS.into()),
+        updated_at: TS.into(),
+        deleted_at: Some(TS.into()),
+    }
 }
 
 /// The Rego the declarative approvals fixture synthesizes to. Derived, not
@@ -1407,6 +1448,180 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 }),
                 to_v(MemoryDeleteResponse {
                     key: "greeting".into(),
+                })
+            ),
+        ),
+        // ─── vta/app-state ───────────────────────────────────────
+        //
+        // The fixtures deliberately exercise the members the design turns on
+        // rather than a minimal payload: a version on every record, a conflict
+        // carrying `currentValue`, a tombstone with `deleted: true` and no
+        // value, and a change-feed response with its `highWatermark`. A witness
+        // built from the smallest legal document would validate while testing
+        // none of it.
+        (
+            uris::TASK_VTA_APP_STATE_GET_1_0,
+            checked!(
+                specs::vta::app_state::get::v1_0::Payload,
+                specs::vta::app_state::get::v1_0::Response,
+                to_v(AppStateGetBody {
+                    context_id: "ctx-a".into(),
+                    namespace: "openvtc".into(),
+                    key: "community/acme".into(),
+                    include_deleted: None,
+                    ext: None,
+                }),
+                to_v(AppStateGetResponse {
+                    record: app_state_record(),
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_APP_STATE_PUT_1_0,
+            checked!(
+                specs::vta::app_state::put::v1_0::Payload,
+                specs::vta::app_state::put::v1_0::Response,
+                to_v(AppStatePutBody {
+                    context_id: "ctx-a".into(),
+                    namespace: "openvtc".into(),
+                    key: "community/acme".into(),
+                    value: Some(serde_json::json!({ "label": "Acme" })),
+                    merge_patch: None,
+                    expected_version: Some(47),
+                    ext: None,
+                }),
+                to_v(AppStatePutResponse {
+                    context_id: "ctx-a".into(),
+                    namespace: "openvtc".into(),
+                    key: "community/acme".into(),
+                    version: 52,
+                    created: false,
+                    updated_at: TS.into(),
+                    value_bytes: Some(95),
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_APP_STATE_LIST_1_0,
+            checked!(
+                specs::vta::app_state::list::v1_0::Payload,
+                specs::vta::app_state::list::v1_0::Response,
+                to_v(AppStateListBody {
+                    context_id: "ctx-a".into(),
+                    namespace: Some("openvtc".into()),
+                    prefix: Some("community/".into()),
+                    since_version: Some(40),
+                    include_values: Some(true),
+                    include_deleted: None,
+                    page_size: Some(50),
+                    cursor: None,
+                    ext: None,
+                }),
+                to_v(AppStateListResponse {
+                    records: vec![app_state_record(), app_state_tombstone()],
+                    truncated: false,
+                    cursor: None,
+                    high_watermark: Some(52),
+                    tombstone_retention_seconds: Some(2_592_000),
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_APP_STATE_DELETE_1_0,
+            checked!(
+                specs::vta::app_state::delete::v1_0::Payload,
+                specs::vta::app_state::delete::v1_0::Response,
+                to_v(AppStateDeleteBody {
+                    context_id: "ctx-a".into(),
+                    namespace: "openvtc".into(),
+                    key: "community/defunct".into(),
+                    expected_version: Some(44),
+                    ext: None,
+                }),
+                to_v(AppStateDeleteResponse {
+                    context_id: "ctx-a".into(),
+                    namespace: "openvtc".into(),
+                    key: "community/defunct".into(),
+                    existed: true,
+                    version: Some(54),
+                    deleted_at: Some(TS.into()),
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_APP_STATE_GET_MANY_1_0,
+            checked!(
+                specs::vta::app_state::get_many::v1_0::Payload,
+                specs::vta::app_state::get_many::v1_0::Response,
+                to_v(AppStateGetManyBody {
+                    context_id: "ctx-a".into(),
+                    namespace: "openvtc".into(),
+                    keys: vec!["community/acme".into(), "profile/labels".into()],
+                    include_deleted: None,
+                    ext: None,
+                }),
+                to_v(AppStateGetManyResponse {
+                    records: vec![app_state_record()],
+                    missing: vec!["profile/labels".into()],
+                    deferred: None,
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_APP_STATE_PUT_MANY_1_0,
+            checked!(
+                specs::vta::app_state::put_many::v1_0::Payload,
+                specs::vta::app_state::put_many::v1_0::Response,
+                to_v(AppStatePutManyBody {
+                    context_id: "ctx-a".into(),
+                    namespace: "openvtc".into(),
+                    mode: Some(PutManyMode::Independent),
+                    writes: vec![
+                        AppStateWrite {
+                            key: "community/acme".into(),
+                            value: None,
+                            merge_patch: Some(serde_json::json!({ "role": "owner" })),
+                            expected_version: Some(52),
+                        },
+                        AppStateWrite {
+                            key: "profile/labels".into(),
+                            value: Some(serde_json::json!({ "colours": { "acme": "blue" } })),
+                            merge_patch: None,
+                            expected_version: Some(0),
+                        },
+                    ],
+                    ext: None,
+                }),
+                to_v(AppStatePutManyResponse {
+                    mode: PutManyMode::Independent,
+                    results: vec![
+                        WriteResult {
+                            key: "community/acme".into(),
+                            outcome: WriteOutcome::Written,
+                            version: Some(59),
+                            created: Some(false),
+                            current_version: None,
+                            current_value: None,
+                            current_deleted: None,
+                            limit_bytes: None,
+                            actual_bytes: None,
+                        },
+                        // A conflict carrying the winner's view — the member
+                        // that removes the re-read race, and the one most
+                        // likely to be dropped by a well-meaning refactor.
+                        WriteResult {
+                            key: "profile/labels".into(),
+                            outcome: WriteOutcome::Conflict,
+                            version: None,
+                            created: None,
+                            current_version: Some(57),
+                            current_value: Some(serde_json::json!({ "colours": {} })),
+                            current_deleted: None,
+                            limit_bytes: None,
+                            actual_bytes: None,
+                        },
+                    ],
+                    high_watermark: Some(60),
                 })
             ),
         ),

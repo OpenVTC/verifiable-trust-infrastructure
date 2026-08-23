@@ -385,6 +385,33 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_VTA_MEMORY_PUT_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_MEMORY_LIST_0_1, ReadOnly),
     (trust_tasks::TASK_VTA_MEMORY_DELETE_0_1, RetrySafe),
+    // ── Application state ───────────────────────────────────────────────
+    //
+    // `put` and `put-many` are `Keyed`, and the reason is worth stating
+    // because a future reader will be tempted to "optimise" them.
+    //
+    // A `put` carrying `expectedVersion` genuinely converges: the replay
+    // fails its own precondition and one record results. But the class is
+    // per URI, not per payload, and a `put` WITHOUT the precondition does
+    // not converge — the replay writes twice and takes two values of the
+    // namespace counter, so every consumer watching that namespace's change
+    // feed sees a change that never happened. Since one URI carries both
+    // shapes, the conservative reading this module already prescribes
+    // applies: where convergence is not obvious from the contract, classify
+    // `Keyed`. The `expectedVersion` path simply benefits twice.
+    //
+    // `put-many` is worse still: partial application in `independent` mode
+    // means a blind replay's conflicts differ from the first attempt's.
+    //
+    // `delete` converges — a second delete finds the tombstone, returns
+    // `existed: false`, and deliberately does NOT take a new counter value,
+    // so a watcher sees nothing.
+    (trust_tasks::TASK_VTA_APP_STATE_GET_1_0, ReadOnly),
+    (trust_tasks::TASK_VTA_APP_STATE_PUT_1_0, Keyed),
+    (trust_tasks::TASK_VTA_APP_STATE_LIST_1_0, ReadOnly),
+    (trust_tasks::TASK_VTA_APP_STATE_DELETE_1_0, RetrySafe),
+    (trust_tasks::TASK_VTA_APP_STATE_GET_MANY_1_0, ReadOnly),
+    (trust_tasks::TASK_VTA_APP_STATE_PUT_MANY_1_0, Keyed),
     // ── Policy ──────────────────────────────────────────────────────────
     (trust_tasks::TASK_POLICY_LIST_0_2, ReadOnly),
     (trust_tasks::TASK_POLICY_GET_0_1, ReadOnly),

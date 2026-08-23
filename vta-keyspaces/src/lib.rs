@@ -103,6 +103,30 @@ pub const ISSUED_CREDENTIALS: &str = "issued_credentials";
 /// user data → in [`BACKED_UP`].
 pub const MEMORY: &str = "memory";
 
+/// Versioned, namespaced application state (`vta/app-state/{get,put,list,
+/// delete,get-many,put-many}/1.0`) — the third store, beside [`VAULT`] (secrets
+/// and credentials) and [`MEMORY`] (agent memory), for JSON an application owns
+/// and the VTA does not interpret.
+///
+/// Four record shapes share the keyspace, distinguished by prefix:
+///
+/// - `app:<contextId>:<namespace>:<key>` — the record itself. `list` in
+///   snapshot mode is an `app:<contextId>:<namespace>:` prefix scan.
+/// - `appv:<contextId>:<namespace>:<version:020}>` — version index, mapping a
+///   zero-padded counter value to its record key. Change-feed `list` scans this
+///   so it can return changes in version order and paginate over a stable
+///   storage key; a scan-and-sort over the records could do neither.
+/// - `appc:<contextId>:<namespace>` — the namespace's monotonic write counter.
+/// - `appt:<contextId>:<namespace>` — the oldest version still covered by a
+///   retained tombstone, which is what `sinceVersion` is checked against.
+///
+/// Deliberately **not** [`MEMORY`]: clearing an agent's memory has to stay a
+/// safe thing for a user to ask, which it cannot be if account state lives
+/// there. Durable user data — an account's recoverability depends on it — so it
+/// is in [`BACKED_UP`], and a restore that came back without it would defeat
+/// the point of the feature.
+pub const APP_STATE: &str = "app_state";
+
 /// Rego policy modules for the Policy Decision Point (`policy/{upsert,list,
 /// delete,evaluate}`). One `policy::PolicyModule` per id, keyed `policy:<id>`;
 /// the active set is every enabled row, priority-ordered. Durable operator
@@ -166,6 +190,7 @@ pub const ALL: &[&str] = &[
     CONSENT_APPROVERS,
     ISSUED_CREDENTIALS,
     MEMORY,
+    APP_STATE,
     POLICY,
     TASK_CONSENT,
     OUTBOX,
@@ -185,6 +210,11 @@ pub const BACKED_UP: &[&str] = &[
     CONSENT_APPROVERS,
     // Durable agent memory is user data and must survive a restore.
     MEMORY,
+    // Application state IS the user's account for a consumer built on it —
+    // labels, relationships, contacts, join history. A restore that came back
+    // without it would return a VTA whose applications no longer recognise
+    // their own data, which is the failure the store exists to prevent.
+    APP_STATE,
     // Operator security policy — must survive a restore, else enforcement
     // silently reverts to whatever defaults boot-install provides.
     POLICY,

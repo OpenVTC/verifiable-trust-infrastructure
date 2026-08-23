@@ -77,6 +77,7 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         auth: Default::default(),
         audit: Default::default(),
         vault: Default::default(),
+        app_state: Default::default(),
         policy: Default::default(),
         secrets: Default::default(),
         hardened: Default::default(),

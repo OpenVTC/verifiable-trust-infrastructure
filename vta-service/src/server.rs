@@ -181,6 +181,19 @@ pub struct AppState {
     /// delete}/0.1`). Entries keyed `mem:<contextId>:<key>`; gated on context
     /// access. Durable user data.
     pub memory_ks: KeyspaceHandle,
+    /// Versioned, namespaced application state (`vta/app-state/*`) — the third
+    /// store, beside the vault and agent memory, for JSON an application owns
+    /// and the VTA does not interpret. Records keyed
+    /// `app:<contextId>:<namespace>:<key>`, with a `appv:` version index and an
+    /// `appc:` per-namespace write counter alongside; gated on context access.
+    /// Durable user data an account's recoverability depends on.
+    pub app_state_ks: KeyspaceHandle,
+    /// One lock per `(contextId, namespace)`, serialising the read-modify-write
+    /// sequences the application-state store needs and that the store layer
+    /// cannot make atomic on its own (it serialises individual operations, not
+    /// sequences of them). See `operations::app_state` for why this is sound
+    /// for a single-writer VTA and what it does not cover.
+    pub app_state_locks: crate::operations::app_state::NamespaceLocks,
     /// Rego policy modules for the Policy Decision Point (`policy/*`). One
     /// [`crate::policy::PolicyModule`] per id; the active set is every enabled
     /// row, priority-ordered. A migration-safe baseline is boot-installed if
@@ -383,6 +396,7 @@ pub async fn build_app_state(
     let issued_credentials_ks =
         apply_encryption(store.keyspace(crate::keyspaces::ISSUED_CREDENTIALS)?);
     let memory_ks = apply_encryption(store.keyspace(crate::keyspaces::MEMORY)?);
+    let app_state_ks = apply_encryption(store.keyspace(crate::keyspaces::APP_STATE)?);
     let policy_ks = apply_encryption(store.keyspace(crate::keyspaces::POLICY)?);
     let task_consent_ks = apply_encryption(store.keyspace(crate::keyspaces::TASK_CONSENT)?);
     #[cfg(feature = "webvh")]
@@ -461,6 +475,8 @@ pub async fn build_app_state(
         consent_approvers_ks,
         issued_credentials_ks,
         memory_ks,
+        app_state_ks,
+        app_state_locks: crate::operations::app_state::NamespaceLocks::default(),
         policy_ks,
         task_consent_ks,
         #[cfg(feature = "webvh")]
@@ -850,6 +866,8 @@ pub async fn run(
         let storage_idempotency_ks = idempotency_ks.clone();
         let storage_task_consent_ks = task_consent_ks.clone();
         let storage_vault_ks = vault_ks.clone();
+        let storage_app_state_ks = apply_encryption(store.keyspace(crate::keyspaces::APP_STATE)?);
+        let storage_app_state_retention_days = config.app_state.tombstone_retention_days;
         let storage_backup_bundles_ks = backup_bundles_ks.clone();
         let storage_backup_blob_dir = backup_blob_dir.clone();
         let storage_audit_config = config.audit.clone();
@@ -893,6 +911,14 @@ pub async fn run(
             )
             .await?
         };
+
+        // The tombstone sweeper takes a namespace's lock to reap it, so it must
+        // hold the *same* map the request path writes through. Cloned from the
+        // built `AppState` rather than injected through `AppStateParts`: adding
+        // a public field to that struct is a semver break (it is not
+        // `#[non_exhaustive]`, unlike `AppState`), and the storage thread is
+        // spawned after `build_app_state` anyway, so there is nothing to inject.
+        let storage_app_state_locks = app_state.app_state_locks.clone();
         // The wrapping-key cache reaper is a run()-path concern (build_app_state
         // just constructs the cache); arm it on the live state.
         #[cfg(any(feature = "rest", feature = "didcomm"))]
@@ -1158,6 +1184,9 @@ pub async fn run(
                     storage_idempotency_ks,
                     storage_task_consent_ks,
                     storage_vault_ks,
+                    storage_app_state_ks,
+                    storage_app_state_locks,
+                    storage_app_state_retention_days,
                     storage_backup_bundles_ks,
                     storage_backup_blob_dir,
                     storage_audit_config,
@@ -1275,6 +1304,9 @@ fn run_storage_thread(
     idempotency_ks: KeyspaceHandle,
     task_consent_ks: KeyspaceHandle,
     vault_ks: KeyspaceHandle,
+    app_state_ks: KeyspaceHandle,
+    app_state_locks: crate::operations::app_state::NamespaceLocks,
+    app_state_retention_days: u32,
     backup_bundles_ks_storage: KeyspaceHandle,
     backup_blob_dir_storage: std::path::PathBuf,
     audit_config: crate::config::AuditConfig,
@@ -1380,6 +1412,36 @@ fn run_storage_thread(
                             crate::vault_sweeper::sweep_expired(&vault_ks, &audit_sink).await
                         {
                             warn!("vault sweeper error: {e}");
+                        }
+                        // Reap application-state tombstones past their retention
+                        // window. This is what makes the window real rather than
+                        // advertised — and what makes `watermarkTooOld`
+                        // reachable, so a consumer resuming from a watermark
+                        // whose deletions have been discarded is told to rebuild
+                        // instead of being served a feed that silently omits
+                        // them.
+                        // `0` days disables reaping outright: tombstones are
+                        // kept forever, no watermark ever expires, and the
+                        // keyspace grows unbounded. That is a legitimate choice
+                        // for a deployment that would rather spend disk than
+                        // ever force a consumer to rebuild — so it is a skip
+                        // here rather than a zero cutoff, which would mean the
+                        // opposite and reap everything.
+                        if app_state_retention_days > 0 {
+                            match crate::operations::app_state::sweep_expired_tombstones(
+                                &app_state_ks,
+                                &app_state_locks,
+                                &audit_sink,
+                                u64::from(app_state_retention_days) * 24 * 60 * 60,
+                            )
+                            .await
+                            {
+                                Ok(n) if n > 0 => {
+                                    info!(reaped = n, "app-state tombstone sweeper")
+                                }
+                                Ok(_) => {}
+                                Err(e) => warn!("app-state tombstone sweeper error: {e}"),
+                            }
                         }
                     }
                     _ = shutdown_rx.changed() => {

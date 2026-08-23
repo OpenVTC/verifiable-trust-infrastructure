@@ -1,7 +1,14 @@
 # Application-state store
 
-Status: **Design — not implemented.** Tracked by
+Status: **Implemented.** Specifications published upstream as
+`vta/app-state/{get,put,list,delete,get-many,put-many}/1.0`
+(trustoverip/dtgwg-trust-tasks-tf#252, #253); served by this workspace per
 [#1029](https://github.com/OpenVTC/verifiable-trust-infrastructure/issues/1029).
+
+Two things in this note were changed by building it, and both are corrected
+in place below rather than left for a reader to trip over: the version counter
+is per **namespace**, not per record (§2), and the family is named
+`app-state`, not `appstate` (§8.5). The rest stood.
 
 A third store on the VTA, beside the secrets vault and the credential vault, for
 **application state**: versioned, namespaced, per-context JSON that an
@@ -70,7 +77,7 @@ the existence of a vault next door. A boundary that is not written down erodes.
 
 | Property | Behaviour |
 |---|---|
-| `version` | Server-assigned, monotonic per record; returned by `get`, `list`, `put` |
+| `version` | Server-assigned, monotonic per `(contextId, namespace)`; returned by `get`, `list`, `put` |
 | `expectedVersion` on `put` | Optional precondition. On mismatch, a typed conflict **carrying the current version and value** |
 | `expectedVersion: 0` | "Create only — fail if it exists" |
 | `prefix` + pagination on `list` | Scoped enumeration |
@@ -78,7 +85,22 @@ the existence of a vault next door. A boundary that is not written down erodes.
 | Tombstones on `delete` | Versioned, reaped after a retention window |
 | Stated size limit | A per-record cap, and an explicit error on exceeding it |
 
-Two of these carry more weight than their row suggests.
+Three of these carry more weight than their row suggests.
+
+**The counter is per namespace, not per record — and this note originally got
+that wrong.** Implementing it surfaced the problem: `sinceVersion` compares a
+consumer's watermark against record versions, and *per-record* counters are not
+comparable to each other, so no single number can mean "everything changed after
+this point". A per-record counter would have forced a second sequence alongside
+it, and the two would have had to be kept consistent by hand.
+
+Making the counter per `(contextId, namespace)` collapses both jobs into one
+number: a record's `version` is the counter value its most recent write took, so
+it is simultaneously the optimistic-concurrency token and the sync watermark. The
+cost is that a record's version jumps by however many values its neighbours
+consumed, which is why the published contract states that versions are opaque and
+monotonic and never an edit count. That cost is real but bounded; the alternative
+was two counters and a consistency invariant between them.
 
 **Returning the current value with a conflict** is not a convenience. A caller
 that receives a bare rejection must re-read, and between the rejection and the
@@ -207,6 +229,13 @@ design is sound without blobs and blocked on nothing; blobs are the only part
 that forces a decision about REST advertisement, and deferring them keeps that
 decision out of the critical path for OpenVTC recovery.
 
+**Decided: (3).** 1.0 has no blob member at all. Adding a `blobRef` later is a
+MINOR addition rather than a breaking change, so nothing is foreclosed, and the
+REST-advertisement question stays unanswered until a consumer actually forces
+it. The published `put` spec instead states a per-record cap and requires the
+maintainer to refuse loudly at it, which is what keeps a consumer from quietly
+treating `value` as a blob store in the meantime.
+
 ---
 
 ## 6. Retry safety
@@ -232,6 +261,19 @@ obvious from its contract, it is classified `Keyed`"*), so **`put` should be
 explicitly in the spec so a future reader does not "optimise" it to `RetrySafe`
 on the strength of the precondition alone.
 
+**As shipped**, in `vta_sdk::retry_safety`: `get` / `list` / `get-many` are
+`ReadOnly`, `delete` is `RetrySafe`, and `put` / `put-many` are `Keyed`. The
+reasoning above is recorded as a comment beside the entries, because the
+temptation to "fix" the `put` classification is exactly the kind of change that
+looks like a cleanup and is not.
+
+The `delete` classification earns its `RetrySafe` from a specific
+implementation choice rather than from the shape of the task: a repeat delete
+finds a tombstone, returns `existed: false`, and **deliberately does not take a
+new counter value**. Had it taken one, every consumer watching the namespace
+would see a change that did not happen, and delete would have had to be `Keyed`
+like the writes.
+
 ---
 
 ## 7. Sequence
@@ -251,25 +293,130 @@ Steps 1–2 are in another repository and on another team's cadence. That is wor
 knowing before this is scheduled: the implementation is a few days and the
 sequencing is not.
 
+**Steps 1–3 are done.** The schemas are published upstream (#252, with #253
+correcting the error taxonomy), and this workspace serves all six URIs with
+conformance witnesses, so nothing entered `UNSPECCED_DISPATCHED_URIS`. Step 4 —
+OpenVTC adoption — is the remaining work and belongs to that repository.
+
+The sequencing prediction held, and in one respect it was optimistic: the
+implementation is what found the per-namespace counter problem (§2) and the two
+error-taxonomy defects (#253). Specifying first was still right — the dispatcher
+gives no other option — but "specify, then implement, then correct the spec" is
+the honest shape of it, and the second correction round should be budgeted.
+
 **Do not** shortcut by adding the URIs to `UNSPECCED_DISPATCHED_URIS`. That list
 is acknowledged debt from before the registry existed, it shrinks monotonically
 by test, and the harness's own message calls growing it the wrong fix.
 
 ---
 
-## 8. Open questions
+## 8. Resolved questions
 
-1. **Blobs** — §5. Recommend deferring; needs a decision either way.
-2. **Per-namespace ACLs.** The address supports them; nothing grants them. Is a
-   namespace a trust boundary between applications on one context, or only a
-   collision-avoidance convention? Answering "trust boundary" later is a
-   migration, so it is worth answering now even if the answer is "not yet".
-3. **Tombstone retention window.** Long enough that a peer offline for a
-   plausible interval still converges; short enough that deletes are real.
-   Suggest starting at the vault's 30-day grace and revisiting with evidence.
-4. **Size cap.** Needs a number. The cap interacts with the 1 MB global request
-   body limit, which is the ceiling for anything on the REST binding.
-5. **Is `appstate` the right name?** It is the noun the issue uses. `app-state`
-   or `application-state` would match the hyphenation of neighbouring task
-   families more closely; worth settling before the URIs are published, because
-   afterwards it is a new family rather than a rename.
+Each of these was open when the note was written and is settled now. The
+reasoning is kept because the answers constrain what a later change may do.
+
+1. **Blobs — deferred.** §5. No blob member in 1.0; adding a `blobRef` is a
+   MINOR addition, so the REST-advertisement question stays unanswered until a
+   consumer forces it.
+
+2. **Per-namespace ACLs — not yet, and the address is ready for them.** A
+   namespace in 1.0 is collision avoidance, **not** a trust boundary. Both the
+   `put` and `delete` specifications say so normatively in their
+   `## Authorization` sections, and say what to do instead: mutually distrusting
+   applications go in separate **contexts**.
+
+   The important half is that the *address* already carries the namespace, so
+   granting on it later is a new grant type rather than a migration of every
+   stored record. That was the point of answering the question now — the answer
+   "not yet" was only safe because the address did not foreclose it.
+
+   `delete` is where the coarseness has teeth, and its spec says that too: a
+   compromised application sharing a context can remove another's records, with
+   only the tombstone retention window between that and permanent loss.
+
+3. **Tombstone retention — configurable, default 30 days, and swept.**
+   `config.app_state.tombstone_retention_days`, matching the vault's
+   `grace_days` precedent: a destructive retention window is an operator's
+   choice, not a constant. The configured value — not a constant — is what the
+   `list` change-feed response advertises as `tombstoneRetentionSeconds`, since
+   a consumer schedules against that number and advertising 30 days while
+   reaping at 7 would strand exactly the clients that trusted it.
+
+   `sweep_expired_tombstones` runs from the storage thread's interval loop
+   beside the ACL / consent / vault sweepers, and lives in `vta-service` rather
+   than `vta-sweepers` for the reason the backup-bundle sweeper does: it is
+   coupled to this module's key layout, and a second copy of that in a lower
+   crate is a second thing to keep in step.
+
+   Two properties are worth knowing before changing it:
+
+   - **It reaps a prefix, not a set.** Each namespace walks its tombstones in
+     version order and stops at the first still inside the window. Reaping a
+     later tombstone while leaving an earlier one would make `appt:`
+     unstateable — no single watermark would describe what survives, which is
+     the one thing `watermarkTooOld` needs to be able to say. An expired
+     tombstone sitting behind a younger one waits for the next sweep.
+   - **`0` days disables it**, and that is enforced at the call site rather than
+     as a zero cutoff, because a zero cutoff means the opposite (everything is
+     expired). Disabled means tombstones are kept forever, no watermark ever
+     expires, and the keyspace grows unbounded — a legitimate trade for a
+     deployment that would rather spend disk than force a rebuild.
+
+   `reap_tombstones_through` writes the reap watermark **before** removing
+   anything: a crash mid-reap then refuses a resumable sync, where the opposite
+   order would serve an incomplete feed as though it were whole.
+
+4. **Size cap — 65536 bytes per record**, measured over the value's compact JSON
+   encoding, with `limitBytes` and `actualBytes` both returned on refusal. The
+   number matters less than the loudness; the batch surfaces carry their own
+   aggregate budgets (`get-many` defers past 512 KiB of response, `put-many`
+   refuses past 768 KiB of request), because the per-record cap times the item
+   ceiling exceeds any sane request or response limit.
+
+5. **The name is `app-state`.** Hyphenated, matching `did-management`,
+   `credential-exchange` and `task-consent`. `appstate` — the noun the issue
+   used — would have been the only unhyphenated multiword family in the
+   registry. Settled before publication, which was the whole reason to ask.
+
+## 9. Concurrency: why a lock and not a compare-and-swap
+
+The read-modify-write sequences are serialised by a process-local lock per
+`(contextId, namespace)`, plus a durable, fsynced version reservation. A
+compare-and-swap in the store layer was considered as the more robust starting
+point and rejected, because on inspection it does not protect anything the lock
+leaves exposed.
+
+**There is no reachable multi-writer topology.** fjall — the local backend —
+takes an exclusive file lock on the database directory, so two processes cannot
+open one store at all. The vsock backend proxies to a single store from a single
+enclave; `insert_if_absent` and `swap` there are already *non-atomic* get+insert
+fallbacks that log a warning, and the wire protocol has six opcodes, none
+atomic. A genuine CAS would need a seventh opcode implemented in
+`deploy/nitro/enclave-proxy` — a separate, non-workspace crate deployed to the
+parent EC2 instance — plus version negotiation between two independently
+deployed artifacts. That is a TEE-protocol decision, and it would still leave
+the fallback non-atomic on any proxy that had not been upgraded.
+
+So a CAS added today would be atomic exactly where the lock already suffices,
+and a warn-and-fallback exactly where it would need to be real. It would read as
+multi-writer safety while providing none.
+
+**What the CAS question did surface was a real bug**, and that is fixed: the
+version counter was written without an fsync. `vti_common::store::counter` makes
+the argument for BIP-32 path counters and it transfers exactly — a counter
+surviving only in the journal buffer can be re-derived after a crash and hand
+out a value already used. Here a reused *version* means two records collide on
+one `appv:` index key, so one of them disappears from the change feed and every
+incremental consumer misses that change permanently, with nothing to signal it.
+`reserve_versions` now fsyncs the reservation and re-seals the TEE integrity
+manifest before returning, and reserves a whole block for a batch so `put_many`
+pays one fsync rather than N.
+
+The residual exposure is a second VTA process against one store, which nothing
+can currently do. If that ever becomes reachable, the fix is a compare-and-swap
+in the store layer — not a bigger lock here — and it should land with the vsock
+opcode, not before it.
+
+## 10. Still open
+
+1. **OpenVTC adoption** (§7 step 4), in that repository.

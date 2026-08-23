@@ -182,6 +182,44 @@ fn default_vault_grace_days() -> u32 {
     30
 }
 
+/// Application-state store tuning (`vta/app-state/*`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppStateConfig {
+    /// Days a deleted record's **tombstone** is retained before the sweeper
+    /// reaps it. Default 30, matching the vault's grace window.
+    ///
+    /// This is a correctness parameter, not just housekeeping. A tombstone is
+    /// how a consumer syncing from a watermark learns a record was deleted;
+    /// once it is reaped, any watermark from before that point can no longer
+    /// converge, and the VTA answers such a resume with
+    /// `vta/app-state/list:watermarkTooOld` so the consumer rebuilds instead of
+    /// being served a feed that silently omits deletions.
+    ///
+    /// So the window is really "how long may a consumer be offline and still
+    /// resume incrementally". Too short and a client that was away for a
+    /// weekend pays for a full rebuild; too long and deletions are not real.
+    /// Raising it is always safe; lowering it strands consumers whose
+    /// watermarks predate the new cutoff.
+    ///
+    /// `0` disables reaping entirely — tombstones are kept forever, no watermark
+    /// ever expires, and the keyspace grows without bound. Legitimate for a
+    /// deployment that would rather spend disk than ever force a rebuild.
+    #[serde(default = "default_tombstone_retention_days")]
+    pub tombstone_retention_days: u32,
+}
+
+fn default_tombstone_retention_days() -> u32 {
+    30
+}
+
+impl Default for AppStateConfig {
+    fn default() -> Self {
+        Self {
+            tombstone_retention_days: default_tombstone_retention_days(),
+        }
+    }
+}
+
 impl Default for VaultConfig {
     fn default() -> Self {
         Self {
@@ -360,6 +398,29 @@ mod mdoc_trust_anchor_config_tests {
         assert!(
             cfg.mdoc_iaca_trust_anchors.is_empty(),
             "absent means no mdoc issuer is trusted, not a permissive default"
+        );
+    }
+
+    /// An existing deployment's config has no `[app_state]` section at all, and
+    /// must keep loading with the documented default rather than failing or
+    /// silently disabling retention.
+    #[test]
+    fn app_state_config_defaults_when_absent() {
+        let cfg: AppStateConfig = toml::from_str("").expect("an absent section loads");
+        assert_eq!(cfg.tombstone_retention_days, 30);
+        assert_eq!(AppStateConfig::default().tombstone_retention_days, 30);
+    }
+
+    /// `0` is a meaningful value, not a missing one: it disables reaping. The
+    /// distinction matters because the sweeper treats a zero *cutoff* as "expire
+    /// everything", so this must survive as 0 rather than falling back to 30.
+    #[test]
+    fn app_state_retention_zero_survives_as_zero() {
+        let cfg: AppStateConfig =
+            toml::from_str("tombstone_retention_days = 0").expect("explicit zero loads");
+        assert_eq!(
+            cfg.tombstone_retention_days, 0,
+            "an explicit 0 must not be rewritten to the default"
         );
     }
 
