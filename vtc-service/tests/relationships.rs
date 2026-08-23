@@ -1416,10 +1416,15 @@ mod pairwise {
             let edge = publish_edge(&fix, RDID, PEER_RDID).await;
             attach_ok(&fix, edge, PERSONA, PEER_RDID).await;
 
+            // The graph groups by pair (#1073), so the per-VRC fields — and
+            // the persona, which is asserted per VRC — live on the half, not
+            // on the edge. Only one direction is published here, so there is
+            // exactly one half.
             let edges = graph_edges(&fix).await;
             assert_eq!(edges.len(), 1);
-            assert_eq!(edges[0]["personaDid"], did_for(PERSONA));
-            assert_eq!(edges[0]["issuerDid"], did_for(RDID));
+            assert_eq!(edges[0]["halves"].as_array().unwrap().len(), 1);
+            assert_eq!(edges[0]["halves"][0]["personaDid"], did_for(PERSONA));
+            assert_eq!(edges[0]["halves"][0]["issuerDid"], did_for(RDID));
 
             // The annotation must not smuggle the member back in.
             let rows = vtc_service::relationships::list_all(&fix.relationships_ks)
@@ -1459,13 +1464,13 @@ mod pairwise {
             let edges = graph_edges(&fix).await;
             assert_eq!(edges.len(), 2);
             for e in &edges {
-                assert_eq!(e["personaDid"], did_for(PERSONA));
+                assert_eq!(e["halves"][0]["personaDid"], did_for(PERSONA));
             }
             // A P-DID recurring is the feature. An R-DID recurring is not:
             // the two edges must still carry distinct issuers.
             let issuers: std::collections::BTreeSet<_> = edges
                 .iter()
-                .map(|e| e["issuerDid"].as_str().unwrap().to_string())
+                .map(|e| e["halves"][0]["issuerDid"].as_str().unwrap().to_string())
                 .collect();
             assert_eq!(issuers.len(), 2);
         }
