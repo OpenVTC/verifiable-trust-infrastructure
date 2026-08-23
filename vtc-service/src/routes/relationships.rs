@@ -29,7 +29,10 @@
 //!    file because the URL is rooted under `/v1/members/`.
 //!
 //! 3. `DELETE /v1/relationships/{id}` — issuer-only retraction
-//!    (admin can also revoke for moderation). Deletes the row
+//!    (admin can also revoke for moderation). Authorized the
+//!    same three ways publication is: session DID equals the
+//!    row's issuer, admin, or a `VrcRevokeAuthorization`
+//!    proving control of a pairwise issuer. Deletes the row
 //!    plus secondary-index entries; emits `VrcRevoked`. Per
 //!    D7, VRCs carry no `credentialStatus`; revocation is row
 //!    deletion, not a status-list bit flip.
@@ -435,10 +438,58 @@ pub struct RevokeResponse {
     pub id: String,
 }
 
+/// `type` of the revoke authorization. Distinct from the publish type so the
+/// authorization a member signs every time they lodge an edge cannot be
+/// replayed to delete it.
+const REVOKE_AUTHORIZATION_TYPE: &str = "VrcRevokeAuthorization";
+
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+pub struct RevokeBody {
+    /// Proof that the caller controls the key behind the row's `issuerDid`,
+    /// when that is not the caller's session DID — i.e. for every edge
+    /// published under a pairwise relationship DID.
+    ///
+    /// Bound to the row `id` rather than to a credential, because `DELETE
+    /// /v1/relationships/{id}` names the row and carries no credential to
+    /// bind to.
+    #[serde(default)]
+    pub pop: Option<JsonValue>,
+}
+
+/// `DELETE /v1/relationships/{id}` — retract an edge.
+///
+/// ## Why there is a body here at all
+///
+/// `revoke` kept the identity equality that `publish` replaced in #1054/#1061:
+/// `auth.did == rel.issuer_did`. For an edge published under a pairwise
+/// relationship DID that compares a membership DID against an R-DID and is
+/// false by construction, so a member could lodge an edge and then never take
+/// it back — only an admin could. The property the equality was standing in
+/// for is *control of the issuing key*, and once the identifier stopped being
+/// the member's own, only a proof can establish it.
+///
+/// Three routes to authorization, and the first two are exactly as before:
+///
+/// - **attributed** — `auth.did == rel.issuer_did`. Still correct, still
+///   sufficient, no proof needed. The session already demonstrates control of
+///   that key.
+/// - **admin** — moderation, keyed on the row id and not on issuer identity.
+///   Unchanged.
+/// - **pairwise** — a `VrcRevokeAuthorization` signed by the row's
+///   `issuerDid`, bound to this row, this community, this session and this
+///   moment. New.
+///
+/// Like the publish authorization, **it is verified and discarded** — never
+/// stored, logged or audited. It carries `sessionId`, which is attributable to
+/// a membership DID, and this handler writes to the audit store, so it is the
+/// one place on the pairwise path where that linkage could plausibly become
+/// durable. See `docs/05-design-notes/vrc-publish-proof-of-possession.md`.
 #[utoipa::path(
     delete, path = "/relationships/{id}", tag = "relationships",
     security(("bearer_jwt" = [])),
     params(("id" = String, Path, description = "Relationship (VRC) id")),
+    request_body(content = RevokeBody, description = "Optional. Required only \
+        for an edge issued under a pairwise relationship DID."),
     responses(
         (status = 200, description = "Relationship (VRC) revoked", body = RevokeResponse),
         (status = 401, description = "Missing or invalid bearer token"),
@@ -450,23 +501,68 @@ pub async fn revoke(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
+    // Optional: every client sending this request today sends no body at all,
+    // and must keep working. `Option<Json<_>>` yields `None` when there is no
+    // JSON content-type, and still rejects a malformed body when there is.
+    body: Option<Json<RevokeBody>>,
 ) -> Result<(StatusCode, Json<RevokeResponse>), AppError> {
     let rel = get_relationship(&state.relationships_ks, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("VRC {id} not found")))?;
 
-    // Auth: issuer of the row OR admin.
+    let pop = body.and_then(|Json(b)| b.pop);
     let is_issuer = auth.did == rel.issuer_did;
     let is_admin = auth.role == vti_common::acl::Role::Admin;
-    if !is_issuer && !is_admin {
+
+    // Cheapest gate first, before the resolver is touched: with none of the
+    // three routes available this is a caller error, and reaching the
+    // daemon-config prerequisite below would report it as a 500. Same ordering
+    // rule the publish path documents.
+    if !is_issuer && !is_admin && pop.is_none() {
         return Err(AppError::Forbidden(
-            "only the issuer or an admin can revoke a VRC".into(),
+            "only the issuer or an admin can revoke a VRC — an edge issued \
+             under a relationship DID needs a revoke authorization (`pop`) \
+             proving control of it"
+                .into(),
         ));
+    }
+
+    // A supplied authorization must verify, whoever supplied it. Accepting a
+    // request that carried an authorization we then ignored would make the
+    // failure of a *bad* one indistinguishable from success.
+    let mut proved_control = false;
+    if let Some(pop) = &pop {
+        let resolver = state.did_resolver.as_ref().cloned().ok_or_else(|| {
+            AppError::Internal(
+                "DID resolver not configured — VRC revoke authorization requires it".into(),
+            )
+        })?;
+        let aud = crate::routes::recognise::vtc_did(&state).await?;
+        check_authorization_envelope(pop, REVOKE_AUTHORIZATION_TYPE, &aud, &auth.session_id)
+            .and_then(|()| {
+                let edge = authorization_field(pop, "relationship")?;
+                if edge != id.to_string() {
+                    return Err("authorization is bound to a different edge".into());
+                }
+                Ok(())
+            })
+            .map_err(|e| AppError::Forbidden(format!("VrcRevokeAuthorizationInvalid: {e}")))?;
+        verify_di_proof(pop, &rel.issuer_did, &resolver)
+            .await
+            .map_err(|e| AppError::Forbidden(format!("VrcRevokeAuthorizationInvalid: {e}")))?;
+        proved_control = true;
     }
 
     delete_relationship(&state.relationships_ks, &state.relationships_by_did_ks, id).await?;
 
-    let revoked_by = if is_issuer { "issuer" } else { "admin" };
+    // Proving control of the issuing key *is* being the issuer. Recording it
+    // as an admin action would misattribute a member's own retraction in the
+    // one trail an operator uses to answer who did what.
+    let revoked_by = if is_issuer || proved_control {
+        "issuer"
+    } else {
+        "admin"
+    };
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
@@ -1363,6 +1459,10 @@ mod tests {
             vrc_jsonld,
             vrc_sha256,
             created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, minute, 0).unwrap(),
+            // These fixtures exercise the half/complete grouping, which is
+            // independent of whether a persona was asserted. The persona
+            // rendering has its own tests.
+            persona: None,
         }
     }
 
