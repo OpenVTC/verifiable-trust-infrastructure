@@ -151,10 +151,15 @@ pub async fn publish(
     let issuer_did = extract_did_field(vrc, "issuer")?;
     let subject_did = extract_subject_id(vrc)?;
 
-    // 2. Shape: is this even a relationship credential? Checked
-    //    before anything expensive, and before authorization,
-    //    because a malformed body is a 400 whoever sent it.
-    check_vrc_shape(vrc)?;
+    // 2. Shape + validity window: is this even a relationship
+    //    credential, and is it in date? Checked before anything
+    //    expensive, and before authorization, because a
+    //    malformed or expired body is a 400 whoever sent it.
+    //
+    //    `now` is read once and passed in rather than read
+    //    inside the check, so a test can choose the instant.
+    let now = Utc::now();
+    check_vrc_shape(vrc, now)?;
 
     // 3. Cheapest authorization gate first: a VRC issued under a
     //    DID that is not the session's must carry a publish
@@ -950,18 +955,26 @@ fn extract_subject_id(vrc: &JsonValue) -> Result<String, AppError> {
         })
 }
 
-/// Reject anything that is not a conformant VRC before it becomes an edge in
-/// the community's trust graph.
+/// Reject anything that is not a conformant, currently-valid VRC before it
+/// becomes an edge in the community's trust graph.
 ///
 /// The VTC does not mint VRCs — they are self-issued — but it decides what
 /// enters the graph, and an edge is only interpretable if it says what it is.
 /// Delegates to [`crate::credentials::ingress`], the one place the DTG common
-/// structure is checked, so this endpoint and every other ingress point agree
-/// about what a DTG credential is.
-fn check_vrc_shape(vrc: &JsonValue) -> Result<(), AppError> {
+/// structure and the validity window are checked, so this endpoint and every
+/// other ingress point agree about what a DTG credential is and about when it
+/// is in date.
+///
+/// Until #1069 this path read neither `validFrom` nor `validUntil`, so a VRC
+/// that had already expired became a permanent edge — permanent because the
+/// graph is read without re-checking dates, and because per D7 a VRC has no
+/// `credentialStatus` to retract it with. The only removal is the issuer (or an
+/// admin) calling `DELETE /v1/relationships/{id}`.
+fn check_vrc_shape(vrc: &JsonValue, now: chrono::DateTime<Utc>) -> Result<(), AppError> {
     crate::credentials::ingress::require_dtg_type(
         vrc,
         dtg_credentials::DTGCredentialType::Relationship,
+        now,
         "this endpoint publishes relationship edges",
     )
 }
@@ -1401,7 +1414,7 @@ mod tests {
         let now = Utc::now();
         let vrc =
             DTGCredential::new_vrc("did:peer:2.zR1".into(), "did:peer:2.zR2".into(), now, None);
-        check_vrc_shape(&body(&vrc)).expect("a catalog-minted VRC must be publishable");
+        check_vrc_shape(&body(&vrc), now).expect("a catalog-minted VRC must be publishable");
 
         // Same catalog, different subtype — this endpoint publishes
         // relationship edges, and a membership edge has different issuance
@@ -1413,11 +1426,46 @@ mod tests {
             None,
             false,
         );
-        let err = check_vrc_shape(&body(&vmc)).expect_err("a VMC must not publish as a VRC");
+        let err = check_vrc_shape(&body(&vmc), now).expect_err("a VMC must not publish as a VRC");
         assert!(
             format!("{err:?}").contains("relationship edges"),
             "unexpected rejection: {err:?}"
         );
+    }
+
+    /// #1069: this endpoint read neither `validFrom` nor `validUntil`, so an
+    /// expired VRC became a permanent edge — and per D7 a VRC has no
+    /// `credentialStatus`, so nothing downstream would ever retract it.
+    ///
+    /// Asserted at the route's own gate rather than only in
+    /// `credentials::ingress`, because the gap was this call site not doing
+    /// the check, not the check being wrong.
+    #[test]
+    fn refuses_a_vrc_whose_validity_window_has_passed() {
+        use chrono::Duration;
+        use dtg_credentials::DTGCredential;
+
+        use crate::test_support::dtg_json as body;
+
+        let now = Utc::now();
+        let expired = DTGCredential::new_vrc(
+            "did:peer:2.zR1".into(),
+            "did:peer:2.zR2".into(),
+            now - Duration::days(30),
+            Some(now - Duration::days(1)),
+        );
+        let err = check_vrc_shape(&body(&expired), now)
+            .expect_err("an expired VRC must not enter the graph");
+        assert!(
+            format!("{err:?}").contains("expired at"),
+            "unexpected rejection: {err:?}"
+        );
+
+        // Same credential, evaluated while it was still in date: publishable.
+        // Without this, a check that rejected everything would pass the test
+        // above.
+        check_vrc_shape(&body(&expired), now - Duration::days(2))
+            .expect("the same VRC inside its window is publishable");
     }
 
     #[test]
