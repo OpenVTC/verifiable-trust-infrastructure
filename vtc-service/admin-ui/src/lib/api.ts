@@ -331,18 +331,29 @@ const RELATIONSHIPS_GRAPH_TASK =
 export interface GraphNode {
   did: string;
 }
-export interface GraphEdge {
+/** One published VRC: a directed half of an edge. */
+export interface GraphHalf {
   id: string;
   issuerDid: string;
   subjectDid: string;
   createdAt: string;
+}
+/** One edge between a pair of identifiers. A DTG edge is *two* VRCs, one in
+ * each direction; `complete` says whether both have been published. A
+ * half-edge is one party's unilateral claim, not a mutual relationship. */
+export interface GraphEdge {
+  /** The two endpoints, DID-sorted. Always length 2. */
+  endpoints: string[];
+  /** Every VRC published between them, oldest first. */
+  halves: GraphHalf[];
+  complete: boolean;
 }
 export interface RelationshipsGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
 }
 
-/** The community's member-relationship (VRC) graph — every trust edge between
+/** The community's relationship (VRC) graph — every trust edge between
  * members, for the connections-graph view. Admin-gated. */
 export const fetchRelationshipsGraph = (): Promise<RelationshipsGraph> =>
   getJson<RelationshipsGraph>("/v1/relationships/graph", {

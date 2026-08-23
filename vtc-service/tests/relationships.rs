@@ -35,6 +35,7 @@ use vtc_service::test_support::TestVtc;
 const PUBLIC_URL: &str = "https://vtc.example.com";
 const PUBLISH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/publish/0.1";
 const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/list/0.1";
+const GRAPH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/graph/0.1";
 const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/revoke/0.1";
 const ISSUER_DID: &str = "did:key:zVrcIssuer";
 const SUBJECT_DID: &str = "did:key:zVrcSubject";
@@ -483,6 +484,89 @@ async fn list_keeps_rows_for_tombstoned_other_party() {
         1,
         "Tombstoned subject keeps the edge visible: {v}"
     );
+}
+
+// ─── Connections graph (admin) ────────────────────────────
+//
+// A DTG edge is two VRCs, one in each direction, so the graph groups by
+// unordered pair and reports whether both halves arrived. It used to return one
+// entry per stored VRC, which made a mutual relationship and an unanswered
+// claim indistinguishable to the operator reading it (#1054).
+
+#[tokio::test]
+async fn graph_separates_complete_edges_from_half_edges() {
+    let fix = build_fixture().await;
+    // ISSUER ↔ SUBJECT — reciprocated, so a complete edge.
+    let a_to_b = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
+    let b_to_a = seed_relationship(&fix, SUBJECT_DID, ISSUER_DID).await;
+    // ISSUER → STRANGER — never answered, so a half-edge.
+    let a_to_c = seed_relationship(&fix, ISSUER_DID, STRANGER_DID).await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/relationships/graph")
+        .header("authorization", format!("Bearer {}", fix.admin_token))
+        .header("trust-task", GRAPH_TASK)
+        .body(Body::empty())
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, v) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+
+    let nodes: Vec<&str> = v["nodes"]
+        .as_array()
+        .expect("nodes array")
+        .iter()
+        .map(|n| n["did"].as_str().unwrap())
+        .collect();
+    assert_eq!(nodes.len(), 3, "three endpoints appear: {v}");
+
+    let edges = v["edges"].as_array().expect("edges array");
+    assert_eq!(edges.len(), 2, "three VRCs, two pairs: {v}");
+
+    let complete: Vec<_> = edges
+        .iter()
+        .filter(|e| e["complete"].as_bool().unwrap())
+        .collect();
+    assert_eq!(complete.len(), 1, "exactly one pair reciprocated: {v}");
+    let ids: Vec<&str> = complete[0]["halves"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&a_to_b.to_string().as_str()));
+    assert!(ids.contains(&b_to_a.to_string().as_str()));
+
+    let half: Vec<_> = edges
+        .iter()
+        .filter(|e| !e["complete"].as_bool().unwrap())
+        .collect();
+    assert_eq!(half.len(), 1);
+    assert_eq!(half[0]["halves"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        half[0]["halves"][0]["id"].as_str().unwrap(),
+        a_to_c.to_string(),
+        "the unanswered claim is the half-edge: {v}"
+    );
+    // Wire shape is camelCase and the pair is DID-sorted, not publish-ordered.
+    let endpoints = half[0]["endpoints"].as_array().unwrap();
+    assert_eq!(endpoints.len(), 2);
+    assert!(endpoints[0].as_str().unwrap() <= endpoints[1].as_str().unwrap());
+}
+
+#[tokio::test]
+async fn graph_is_admin_only() {
+    let fix = build_fixture().await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/relationships/graph")
+        .header("authorization", format!("Bearer {}", fix.issuer_token))
+        .header("trust-task", GRAPH_TASK)
+        .body(Body::empty())
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
 
 // ─── Publish under a pairwise relationship DID ────────────

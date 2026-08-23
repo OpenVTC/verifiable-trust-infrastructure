@@ -710,25 +710,62 @@ fn canonicalise(v: &JsonValue) -> String {
 }
 
 // ── Connections graph (admin) ──────────────────────────────────────────────
+//
+// DTG Credentials defines a DTG edge as **two** VRCs, one in each direction.
+// This endpoint used to return one entry per stored VRC, so a mutual
+// relationship and a unilateral claim were indistinguishable: two members who
+// had each vouched for the other looked the same as one member asserting an
+// edge the other has never acknowledged (#1054).
+//
+// That distinction is the whole reason the subject-membership precondition
+// could be dropped in #1061. The design there
+// (`docs/05-design-notes/vrc-publish-proof-of-possession.md`) is that the
+// subject's consent to an edge **is** their publication of the reciprocal VRC,
+// rather than the community asserting on their behalf that they exist. If the
+// graph cannot show whether that reciprocal VRC arrived, the consent signal the
+// check was replaced with is invisible to the operator reading the graph.
+//
+// So the graph groups by unordered pair and reports the halves it holds.
 
-/// One node in the connections graph — a member that is an endpoint of at least
-/// one relationship (VRC). Isolated members (no VRCs) are not surfaced.
+/// One node in the connections graph — an identifier that is an endpoint of at
+/// least one relationship (VRC). Isolated members (no VRCs) are not surfaced.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphNode {
     pub did: String,
 }
 
-/// One directed edge — a published VRC from `issuerDid` (the asserting member)
-/// to `subjectDid`. Body-free (no VRC JSON-LD): the graph shows the shape, not
-/// the credential contents.
+/// One published VRC: a directed *half* of a DTG edge, from `issuerDid` (the
+/// asserting party) to `subjectDid`. Body-free (no VRC JSON-LD) — the graph
+/// shows the shape, not the credential contents. `id` is the row id, which is
+/// what `DELETE /v1/relationships/{id}` takes.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct GraphEdge {
+pub struct GraphHalf {
     pub id: String,
     pub issuer_did: String,
     pub subject_did: String,
     pub created_at: String,
+}
+
+/// One edge between a pair of identifiers, carrying every VRC published between
+/// them.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphEdge {
+    /// The two endpoints, DID-sorted. Always exactly two entries, and sorting
+    /// them gives the pair one identity whichever half was published first.
+    /// Both entries are equal only for a self-issued VRC.
+    pub endpoints: Vec<String>,
+    /// Every VRC published between the endpoints, oldest first. One for a
+    /// half-edge, two for the ordinary complete edge; more only if a party
+    /// published several VRCs in the same direction, which nothing prevents
+    /// (idempotency is per credential hash, not per direction).
+    pub halves: Vec<GraphHalf>,
+    /// A VRC exists in **both** directions — a complete DTG edge, and the only
+    /// form in which both parties have consented. False means a half-edge: one
+    /// party's unilateral claim, which the other has not reciprocated.
+    pub complete: bool,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -738,16 +775,77 @@ pub struct RelationshipsGraph {
     pub edges: Vec<GraphEdge>,
 }
 
-/// `GET /v1/relationships/graph` — the community's member-relationship (VRC)
-/// graph: every published trust edge between members, for the admin-UI
-/// connections view. Admin-gated; a full scan of the relationships keyspace
-/// (communities are small and this is operator-only). Edge-derived nodes —
-/// members with no VRCs don't appear.
+/// Group stored VRCs into pair-edges. Pure, so the half/complete rule is
+/// testable without standing up a keyspace.
+fn build_graph(mut rels: Vec<Relationship>) -> RelationshipsGraph {
+    // Oldest first, id-tiebroken, so `halves` ordering is stable across calls
+    // rather than inheriting whatever order the keyspace scan produced.
+    rels.sort_by_key(|r| (r.created_at, r.id));
+
+    let mut nodes = std::collections::BTreeSet::new();
+    // BTreeMap, not HashMap: the response order is then a function of the data
+    // and not of hash seeding, which keeps the admin view from reshuffling on
+    // every poll.
+    let mut pairs: std::collections::BTreeMap<(String, String), Vec<GraphHalf>> =
+        std::collections::BTreeMap::new();
+
+    for r in rels {
+        nodes.insert(r.issuer_did.clone());
+        nodes.insert(r.subject_did.clone());
+        let key = if r.issuer_did <= r.subject_did {
+            (r.issuer_did.clone(), r.subject_did.clone())
+        } else {
+            (r.subject_did.clone(), r.issuer_did.clone())
+        };
+        pairs.entry(key).or_default().push(GraphHalf {
+            id: r.id.to_string(),
+            issuer_did: r.issuer_did,
+            subject_did: r.subject_did,
+            created_at: r.created_at.to_rfc3339(),
+        });
+    }
+
+    let edges = pairs
+        .into_iter()
+        .map(|((lo, hi), halves)| {
+            // A self-issued VRC (`lo == hi`) has no counterparty who could ever
+            // reciprocate, so it can never be complete — without the `lo != hi`
+            // guard the two `any` checks below would both match the same row
+            // and report a self-vouch as a mutual relationship.
+            let complete = lo != hi
+                && halves
+                    .iter()
+                    .any(|h| h.issuer_did == lo && h.subject_did == hi)
+                && halves
+                    .iter()
+                    .any(|h| h.issuer_did == hi && h.subject_did == lo);
+            GraphEdge {
+                endpoints: vec![lo, hi],
+                halves,
+                complete,
+            }
+        })
+        .collect();
+
+    RelationshipsGraph {
+        nodes: nodes.into_iter().map(|did| GraphNode { did }).collect(),
+        edges,
+    }
+}
+
+/// `GET /v1/relationships/graph` — the community's relationship (VRC) graph for
+/// the admin-UI connections view. Admin-gated; a full scan of the relationships
+/// keyspace (communities are small and this is operator-only). Edge-derived
+/// nodes — members with no VRCs don't appear.
+///
+/// Edges are pairs, not individual credentials: each carries the VRCs published
+/// between its two endpoints and a `complete` flag saying whether both
+/// directions are present. See the module comment above for why.
 #[utoipa::path(
     get, path = "/relationships/graph", tag = "relationships",
     security(("bearer_jwt" = [])),
     responses(
-        (status = 200, description = "Member-relationship graph", body = RelationshipsGraph),
+        (status = 200, description = "Relationship graph", body = RelationshipsGraph),
         (status = 403, description = "Caller is not an admin"),
     ),
 )]
@@ -756,22 +854,7 @@ pub async fn graph(
     State(state): State<AppState>,
 ) -> Result<Json<RelationshipsGraph>, AppError> {
     let rels = crate::relationships::list_all(&state.relationships_ks).await?;
-    let mut nodes = std::collections::BTreeSet::new();
-    let mut edges = Vec::with_capacity(rels.len());
-    for r in rels {
-        nodes.insert(r.issuer_did.clone());
-        nodes.insert(r.subject_did.clone());
-        edges.push(GraphEdge {
-            id: r.id.to_string(),
-            issuer_did: r.issuer_did,
-            subject_did: r.subject_did,
-            created_at: r.created_at.to_rfc3339(),
-        });
-    }
-    Ok(Json(RelationshipsGraph {
-        nodes: nodes.into_iter().map(|did| GraphNode { did }).collect(),
-        edges,
-    }))
+    Ok(Json(build_graph(rels)))
 }
 
 #[cfg(test)]
@@ -845,5 +928,111 @@ mod tests {
         let a = json!({ "b": 1, "a": 2, "c": { "y": 5, "x": 4 } });
         let b = json!({ "a": 2, "c": { "x": 4, "y": 5 }, "b": 1 });
         assert_eq!(canonicalise(&a), canonicalise(&b));
+    }
+
+    // ─── Half-edges vs complete edges ───────────────────────
+    //
+    // A DTG edge is two VRCs, one each way. These pin the rule that says which
+    // is which, because getting it wrong is silent: the graph still renders, it
+    // just tells the operator a unilateral claim is a mutual relationship.
+
+    const A: &str = "did:key:zAlice";
+    const B: &str = "did:key:zBob";
+    const C: &str = "did:key:zCarol";
+
+    /// A stored row whose body is minted by the same catalog constructor the
+    /// publish path documents (`DTGCredential::new_vrc`) rather than
+    /// hand-rolled JSON — a hand-rolled fixture agrees with the test that wrote
+    /// it and with nothing that ships.
+    fn row(issuer: &str, subject: &str, minute: u32) -> Relationship {
+        use chrono::TimeZone;
+        let valid_from = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let vrc = dtg_credentials::DTGCredential::new_vrc(
+            issuer.to_string(),
+            subject.to_string(),
+            valid_from,
+            None,
+        );
+        let vrc_jsonld = serde_json::to_value(vrc.credential()).expect("VRC serialises");
+        let vrc_sha256 = hex::encode(Sha256::digest(canonicalise(&vrc_jsonld).as_bytes()));
+        Relationship {
+            id: Uuid::new_v4(),
+            issuer_did: issuer.into(),
+            subject_did: subject.into(),
+            vrc_jsonld,
+            vrc_sha256,
+            created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, minute, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_reciprocated_pair_is_one_complete_edge() {
+        let g = build_graph(vec![row(A, B, 0), row(B, A, 1)]);
+        assert_eq!(g.edges.len(), 1, "two VRCs one each way are ONE edge");
+        assert_eq!(g.edges[0].endpoints, vec![A.to_string(), B.to_string()]);
+        assert_eq!(g.edges[0].halves.len(), 2);
+        assert!(g.edges[0].complete);
+        assert_eq!(g.nodes.len(), 2);
+    }
+
+    #[test]
+    fn an_unreciprocated_vrc_is_a_half_edge() {
+        let g = build_graph(vec![row(A, B, 0)]);
+        assert_eq!(g.edges.len(), 1);
+        assert_eq!(g.edges[0].halves.len(), 1);
+        assert!(
+            !g.edges[0].complete,
+            "B has never acknowledged this edge, so it is not complete"
+        );
+        // The subject still appears — the graph shows who was named, it just no
+        // longer implies they agreed.
+        assert_eq!(g.nodes.len(), 2);
+    }
+
+    /// The trap this whole change exists to close: several VRCs between two
+    /// parties are not evidence of reciprocity if they all point one way.
+    #[test]
+    fn repeated_vrcs_in_one_direction_do_not_complete_an_edge() {
+        let g = build_graph(vec![row(A, B, 0), row(A, B, 1), row(A, B, 2)]);
+        assert_eq!(g.edges.len(), 1);
+        assert_eq!(g.edges[0].halves.len(), 3);
+        assert!(!g.edges[0].complete);
+    }
+
+    /// `endpoints` is DID-sorted, so the pair has one identity whichever half
+    /// arrived first — otherwise the same relationship would appear as two
+    /// edges depending on publish order.
+    #[test]
+    fn pair_identity_does_not_depend_on_publish_order() {
+        let forward = build_graph(vec![row(A, B, 0), row(B, A, 1)]);
+        let reverse = build_graph(vec![row(B, A, 0), row(A, B, 1)]);
+        assert_eq!(forward.edges[0].endpoints, reverse.edges[0].endpoints);
+        assert!(forward.edges[0].complete && reverse.edges[0].complete);
+    }
+
+    /// A VRC a party issued to themselves has no counterparty who could
+    /// reciprocate. Both directions are the same direction, so the naive
+    /// "a VRC each way" test would report it complete.
+    #[test]
+    fn a_self_issued_vrc_is_never_complete() {
+        let g = build_graph(vec![row(A, A, 0)]);
+        assert_eq!(g.edges.len(), 1);
+        assert_eq!(g.edges[0].endpoints, vec![A.to_string(), A.to_string()]);
+        assert!(!g.edges[0].complete);
+    }
+
+    #[test]
+    fn distinct_pairs_stay_distinct_and_ordering_is_stable() {
+        let rows = vec![row(B, C, 2), row(A, B, 0), row(B, A, 1)];
+        let g = build_graph(rows);
+        assert_eq!(g.edges.len(), 2);
+        // BTreeMap keyed on the sorted pair: (A,B) before (B,C).
+        assert_eq!(g.edges[0].endpoints, vec![A.to_string(), B.to_string()]);
+        assert_eq!(g.edges[1].endpoints, vec![B.to_string(), C.to_string()]);
+        assert!(g.edges[0].complete);
+        assert!(!g.edges[1].complete);
+        // Halves are oldest-first regardless of the order rows came back in.
+        assert_eq!(g.edges[0].halves[0].issuer_did, A);
+        assert_eq!(g.edges[0].halves[1].issuer_did, B);
     }
 }

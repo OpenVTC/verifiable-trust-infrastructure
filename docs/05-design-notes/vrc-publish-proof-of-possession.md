@@ -190,7 +190,7 @@ acknowledgement. The same logic applies one layer down.
 Consequence: `GET /v1/relationships/graph` should distinguish half-edges from
 complete edges, and the admin UI should show the difference. That is a better
 graph than today's, which cannot tell a mutual relationship from a unilateral
-claim.
+claim. **Implemented** — see "The graph" below.
 
 ## Compatibility
 
@@ -257,6 +257,81 @@ no-op default (`vti-common/src/auth/backend.rs:284`). The criterion worth
 enforcing is that resolving an R-DID must not disclose the relationship to a
 third party; methods either meet it or do not, and the community should say which
 it accepts.
+
+## The graph — the remaining #1054 work
+
+Two things were left open on the graph in #1054. One was built and one was
+deliberately not, and the reasoning for the second is the more useful record.
+
+### Half-edges vs complete edges — built
+
+`GET /v1/relationships/graph` returned one entry per stored VRC, so a mutual
+relationship and a unilateral claim rendered identically. It now groups by
+unordered pair (`vtc-service/src/routes/relationships.rs`, `build_graph`) and
+each edge carries `endpoints` (DID-sorted), `halves` (every VRC published
+between them, oldest first) and `complete` (a VRC exists in both directions).
+The admin UI draws a complete edge solid and double-headed, a half-edge dashed
+and single-headed, and counts them separately
+(`vtc-service/admin-ui/src/plugins/relationshipsGraph.tsx`).
+
+This is a breaking response-shape change. It is worth taking because the
+distinction is what the dropped subject-membership check was replaced *with*:
+if consent to an edge is the counterparty's publication of the reciprocal VRC,
+an operator who cannot see whether that VRC arrived cannot see consent at all.
+
+Two rules that are easy to get wrong and are pinned by tests:
+
+- **Several VRCs in the same direction do not complete an edge.** Idempotency is
+  keyed on the credential hash, not the direction, so a member can publish three
+  A→B VRCs. `complete` checks for a VRC in each direction, not for two rows.
+- **A self-issued VRC (`issuer == subject`) is never complete.** It has no
+  counterparty who could reciprocate, and the naive both-directions test matches
+  the same row twice.
+
+### Stored vs derived — not built, and why
+
+The proposal on #1054 was item 3: "make the graph derived rather than stored…
+without persisting an M-DID adjacency list." That is not built, on two grounds.
+
+**The motivation was removed by #1061, not deferred.** The concern was a durable
+*membership-DID* adjacency list — a correlation store the community holds and
+the spec's Privacy Considerations are written to avoid. Since #1061 the stored
+DIDs are the identifiers the member chose to publish under. Under the pairwise
+form those are R-DIDs, which name nobody and correlate nothing beyond the single
+relationship they were minted for; under the attributed form the member has
+deliberately asserted a correlatable edge, which DTG Credentials permits
+directly. Neither is the thing item 3 was written against.
+
+**"Derived" has no source to derive from.** The relationships keyspace is the
+only place a published VRC exists on the VTC side — `Relationship.vrc_jsonld`
+holds the credential verbatim, and `issuer_did` / `subject_did` are projections
+of fields inside it (`vtc-service/src/relationships/mod.rs`). Deriving the graph
+from something else would mean not storing published VRCs at all, which deletes
+`POST /v1/relationships` and the two read endpoints with it. What is actually
+available is a narrower change — drop the two projected DID columns and re-read
+them out of the stored credential on each scan — and that removes no
+information, because the credential containing them is still the row.
+
+**And nothing publishes.** `POST /v1/relationships` is the only production
+writer to the keyspace, and as of this note no caller exists: not in this
+workspace, not in `vta-sdk` (which has no relationship protocol module at all),
+not in `vtc-client`, and not in `openvtc`. OpenVTC mints VRCs through
+`DTGCredential::new_vrc` and exchanges them peer-to-peer over DIDComm
+(`openvtc/src/state_handler/inbox_actions.rs`,
+`openvtc/src/state_handler/main_page/mod.rs`), then retains them locally; it
+speaks the VTC's join, ACL, credential-exchange and self-remove Trust Tasks but
+never `relationships/publish`. So the graph is empty in every deployment that
+exists, and reshaping its storage would be work against no data and no reader.
+
+None of that makes the *question* wrong — a community that gets real publish
+traffic under the attributed form does accumulate a correlatable edge set, by
+design and with the members' assertion, and one that gets pairwise traffic
+accumulates a set that is correlatable only to the operator holding the audit
+trail (see "Audit attribution" above, which is where that residual was already
+recorded). It makes it premature. The point to revisit it is when something
+publishes, and the concrete decision then is whether to keep `issuer_did` and
+`subject_did` as columns or read them from the credential — not whether to hold
+the credentials.
 
 ## What this does not solve
 
