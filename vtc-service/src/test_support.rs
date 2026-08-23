@@ -1615,3 +1615,20 @@ mod didcomm_harness {
         secret
     }
 }
+
+/// Serialise a catalog-built DTG credential to the JSON body the VTC's
+/// validators see, exactly as `credentials::dtg` does before signing.
+///
+/// The sanctioned way for a test to obtain a DTG credential. Hand-rolling the
+/// JSON instead states the *implementation's* belief about the wire form
+/// rather than the catalog's definition of it — so a fixture and a validator
+/// can agree with each other while both disagree with what any client sends.
+/// That is not hypothetical: it is how the recognition path came to match
+/// `"VerifiableEndorsementCredential"`, a type nothing has ever issued, and
+/// reject every real presentation (#1062), with a green suite throughout.
+///
+/// Hand-rolled JSON remains correct for malformed-input cases — the catalog
+/// cannot produce a credential that is missing its own `@context`.
+pub fn dtg_json(dtg: &dtg_credentials::DTGCredential) -> serde_json::Value {
+    serde_json::to_value(dtg.credential()).expect("catalog credential serialises")
+}
