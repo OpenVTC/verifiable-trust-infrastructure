@@ -33,7 +33,7 @@
 //! a non-TEE VTA tamper-proof.
 
 use aes_gcm::aead::{OsRng, rand_core::RngCore};
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use serde::{Deserialize, Serialize};
 use vta_sdk::keys::KeyType;
 use vti_common::error::AppError;
@@ -96,11 +96,7 @@ pub async fn generate(
             let secret = p256::SecretKey::from_slice(&raw)
                 .map_err(|e| AppError::Internal(format!("internal P-256 keygen: {e}")))?;
             raw.zeroize();
-            let public = secret
-                .public_key()
-                .to_encoded_point(true)
-                .as_bytes()
-                .to_vec();
+            let public = secret.public_key().to_sec1_point(true).as_bytes().to_vec();
             (secret.to_bytes().to_vec(), public)
         }
         // X25519 is a key-agreement key, not a signing key. Internal keys exist

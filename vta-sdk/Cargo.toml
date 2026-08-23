@@ -372,7 +372,7 @@ nitro_attest = { version = "0.2", features = ["builder"] }
 # arms, behind `?`, sometimes built across statements. A visitor finds the real
 # method call; searching the body's tokens would also match a mention in a
 # comment or a doc link.
-syn = { version = "2", features = ["full", "parsing", "extra-traits", "visit"] }
+syn = { version = "3", features = ["full", "parsing", "extra-traits", "visit"] }
 
 [lints]
 workspace = true

@@ -62,6 +62,6 @@ reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Generates the IACA -> Document Signer chains the mdoc trust tests need.
-rcgen = { version = "0.13", features = ["x509-parser"] }
+rcgen = { version = "0.14", features = ["x509-parser"] }
 tokio = { workspace = true }
 tempfile = "3"

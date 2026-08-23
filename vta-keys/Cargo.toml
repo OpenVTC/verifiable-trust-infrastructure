@@ -59,7 +59,7 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 x25519-dalek = { workspace = true }
-p256 = "0.13"
+p256 = "0.14"
 
 [dev-dependencies]
 tempfile = "3"
