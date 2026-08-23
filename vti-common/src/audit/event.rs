@@ -250,6 +250,25 @@ pub enum AuditEvent {
     /// row deletion in the local `relationships:` keyspace.
     VrcRevoked(VrcRevokedData),
 
+    /// A member attached a Verifiable Persona Credential (VPC)
+    /// to one of their published relationship edges — DTG
+    /// Credentials §Annotation Credentials. The actor is the
+    /// authenticated member; `persona_did` is the VPC's issuer,
+    /// the P-DID the member chose to be correlated under.
+    ///
+    /// Recording the P-DID alongside the member is the same
+    /// deliberate, narrow exception the VRC publish trail makes
+    /// for the actor: the audit store is access-controlled,
+    /// redactable and tamper-evident, and without it no operator
+    /// could answer "who asserted this persona" for moderation.
+    /// See `docs/05-design-notes/vpc-persona-annotation.md`.
+    VpcAttached(VpcAnnotationData),
+
+    /// A member removed the VPC annotation from one of their
+    /// edges. Withdrawing a persona is as much a privacy act as
+    /// asserting one, so it leaves the same trail.
+    VpcDetached(VpcAnnotationData),
+
     /// A member's personhood flag was asserted true via
     /// `POST /v1/members/{did}/personhood/assert`. Phase 4
     /// M4.3. The actor is the asserter (admin or issuer); the
@@ -437,6 +456,8 @@ impl AuditEvent {
             Self::CrossCommunitySessionMinted(..) => "CrossCommunitySessionMinted",
             Self::VrcPublished(..) => "VrcPublished",
             Self::VrcRevoked(..) => "VrcRevoked",
+            Self::VpcAttached(..) => "VpcAttached",
+            Self::VpcDetached(..) => "VpcDetached",
             Self::PersonhoodAsserted(..) => "PersonhoodAsserted",
             Self::PersonhoodRevoked(..) => "PersonhoodRevoked",
             Self::CustomEndorsementIssued(..) => "CustomEndorsementIssued",
@@ -1061,6 +1082,25 @@ pub struct VrcRevokedData {
     /// or `"admin"` (an admin revoked on behalf of the
     /// community).
     pub revoked_by: String,
+}
+
+/// Payload for [`AuditEvent::VpcAttached`] and
+/// [`AuditEvent::VpcDetached`]. One shape for both because the
+/// facts are the same in each direction — which edge, which
+/// persona — and the verb is already the variant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VpcAnnotationData {
+    /// Server-allocated id (UUID) of the relationship row the
+    /// VPC annotates. Annotation credentials do not create graph
+    /// structure, so a VPC is always recorded against an edge
+    /// that already exists.
+    pub vrc_id: String,
+    /// The VPC's `issuer` — the persona DID (P-DID) the member
+    /// asserted. Unlike a relationship DID, a P-DID is *meant*
+    /// to recur across edges: that is what makes the correlation
+    /// deliberate rather than accidental.
+    pub persona_did: String,
 }
 
 /// Payload for [`AuditEvent::PersonhoodAsserted`]. Phase 4
@@ -1856,6 +1896,32 @@ mod tests {
     }
 
     #[test]
+    fn vpc_attach_and_detach_share_one_payload_shape() {
+        for (e, expected) in [
+            (
+                AuditEvent::VpcAttached(VpcAnnotationData {
+                    vrc_id: "id".into(),
+                    persona_did: "did:key:zPersona".into(),
+                }),
+                "VpcAttached",
+            ),
+            (
+                AuditEvent::VpcDetached(VpcAnnotationData {
+                    vrc_id: "id".into(),
+                    persona_did: "did:key:zPersona".into(),
+                }),
+                "VpcDetached",
+            ),
+        ] {
+            let v = wire_value(&e);
+            assert_eq!(v["type"], expected);
+            assert_eq!(v["data"]["vrcId"], "id");
+            assert_eq!(v["data"]["personaDid"], "did:key:zPersona");
+            round_trip(&e);
+        }
+    }
+
+    #[test]
     fn personhood_asserted_round_trip() {
         let e = AuditEvent::PersonhoodAsserted(PersonhoodAssertedData {
             vmc_id: "vmc-7".into(),
@@ -2150,6 +2216,20 @@ mod tests {
                     revoked_by: "admin".into(),
                 }),
                 "VrcRevoked",
+            ),
+            (
+                AuditEvent::VpcAttached(VpcAnnotationData {
+                    vrc_id: "id".into(),
+                    persona_did: "did:key:zPersona".into(),
+                }),
+                "VpcAttached",
+            ),
+            (
+                AuditEvent::VpcDetached(VpcAnnotationData {
+                    vrc_id: "id".into(),
+                    persona_did: "did:key:zPersona".into(),
+                }),
+                "VpcDetached",
             ),
             (
                 AuditEvent::PersonhoodAsserted(PersonhoodAssertedData {

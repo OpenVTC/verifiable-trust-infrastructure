@@ -2,7 +2,7 @@
 //! — Phase 4 M4.6. Spec §5.4 + §6.1; planning-review D1
 //! (issuer is the *member*, not the community).
 //!
-//! ## Three endpoints
+//! ## Four endpoints
 //!
 //! 1. `POST /v1/relationships` — publish a self-issued VRC.
 //!    The VTC verifies the credential's data-integrity proof
@@ -33,6 +33,11 @@
 //!    plus secondary-index entries; emits `VrcRevoked`. Per
 //!    D7, VRCs carry no `credentialStatus`; revocation is row
 //!    deletion, not a status-list bit flip.
+//!
+//! 4. `POST` / `DELETE /v1/relationships/{id}/persona` —
+//!    attach or withdraw a VPC (persona credential) on an
+//!    edge that already exists. See [`attach_persona`] for the
+//!    binding argument and for what upstream has not settled.
 
 use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
@@ -47,7 +52,7 @@ use serde_json::{Value as JsonValue, json};
 use sha2::{Digest, Sha256};
 use tracing::info;
 use uuid::Uuid;
-use vti_common::audit::{AuditEvent, VrcPublishedData, VrcRevokedData};
+use vti_common::audit::{AuditEvent, VpcAnnotationData, VrcPublishedData, VrcRevokedData};
 use vti_common::error::AppError;
 
 use crate::acl::get_acl_entry;
@@ -343,6 +348,9 @@ pub async fn publish(
         vrc_jsonld: vrc.clone(),
         vrc_sha256: vrc_sha256.clone(),
         created_at: Utc::now(),
+        // A persona is asserted separately, against an edge that already
+        // exists — see [`attach_persona`].
+        persona: None,
     };
     store_relationship(
         &state.relationships_ks,
@@ -477,6 +485,344 @@ pub async fn revoke(
     Ok((StatusCode::OK, Json(RevokeResponse { id: id.to_string() })))
 }
 
+// ─── Persona annotation (VPC) ────────────────────────────
+//
+// DTG Credentials §Annotation Credentials: a VPC creates no
+// graph structure, it annotates structure that already exists.
+// So there is no "publish a VPC" — there is only "attach this
+// persona to that edge", which is why both verbs sit under
+// `/v1/relationships/{id}/persona` rather than on a collection
+// of their own.
+//
+// What the VPC is *for* (§Privacy Considerations 3): correlation
+// across relationships should happen only through the holder's
+// deliberate assertion of a persona or an M-DID, "never as a
+// side effect of credential structure". Before this existed the
+// VTC offered a member exactly two settings — publish under a
+// pairwise R-DID and be correlatable with nothing, or publish
+// under the M-DID and be correlatable with everything. The VPC
+// is the third: correlate these edges, under this name, because
+// I chose to.
+
+/// `type` of the attach authorization. Distinct from the detach type so an
+/// attach authorization cannot be replayed to remove a persona, or vice versa.
+const VPC_ATTACH_AUTHORIZATION_TYPE: &str = "VpcAttachAuthorization";
+
+/// `type` of the detach authorization.
+const VPC_DETACH_AUTHORIZATION_TYPE: &str = "VpcDetachAuthorization";
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct AttachPersonaBody {
+    /// The self-issued VPC, in the DTG Credentials wire form:
+    /// `type` including `PersonaCredential`, `issuer` the P-DID
+    /// of the persona, `credentialSubject.id` the counterparty's
+    /// DID, and a data-integrity proof. Built by
+    /// `dtg_credentials::DTGCredential::new_vpc`.
+    pub vpc: JsonValue,
+    /// Proof that the caller controls the key behind the edge's
+    /// `issuerDid`, when that is not the caller's session DID.
+    /// Required for every pairwise edge, since a relationship
+    /// DID is never the session DID by construction.
+    #[serde(default)]
+    pub pop: Option<JsonValue>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct DetachPersonaBody {
+    /// As for [`AttachPersonaBody::pop`], with
+    /// `type: "VpcDetachAuthorization"` and no `vpc` field.
+    #[serde(default)]
+    pub pop: Option<JsonValue>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct PersonaResponse {
+    pub id: Uuid,
+    /// The P-DID now on the edge, or `null` after a detach.
+    pub persona_did: Option<String>,
+}
+
+/// `POST /v1/relationships/{id}/persona` — attach a VPC to a published edge,
+/// asserting that the party behind the edge's `issuerDid` is this persona.
+///
+/// ## How the VPC is bound to the edge — and what is assumed
+///
+/// **This is the part trustoverip/dtgwg-cred-spec#9 has not settled.** A VPC
+/// names its persona (`issuer`) and the counterparty (`credentialSubject.id`).
+/// It does *not* name the relationship DID the persona used, so a VPC on its
+/// own does not identify an edge, and nothing in the current specification
+/// says how it should.
+///
+/// Rather than invent a credential-level binding and present it as settled,
+/// the binding here is made at the *request* level, out of three parts:
+///
+/// 1. the caller names the edge, by id, in the URL;
+/// 2. the caller proves control of that edge's `issuerDid` — the same
+///    proof-of-possession construction publishing the edge required
+///    (`docs/05-design-notes/vrc-publish-proof-of-possession.md`);
+/// 3. the VPC's `credentialSubject.id` must equal the edge's `subjectDid`.
+///
+/// (2) is what makes it safe: the only party who could have published this
+/// edge is the only party who can annotate it, so attaching a persona is
+/// exactly as authorized as publishing the edge was. (3) is a consistency
+/// check, not a binding — it rules out attaching a persona asserted to some
+/// *other* counterparty. Nothing is added to the VPC and no claim is made
+/// about how the specification should resolve #9; if it lands an in-credential
+/// binding (a `digest` over the VRC, as the VWC has), this endpoint can
+/// require that as well without changing the stored shape.
+///
+/// **Known limitation of (3).** DTG Credentials says the VPC's subject is
+/// "typically the R-DID or M-DID used in the relationship". A VPC whose
+/// subject is the counterparty's *M-DID*, on an edge whose `subjectDid` is
+/// their *R-DID*, is rejected here. That case is real and this endpoint
+/// cannot presently accept it — resolving it needs the same #9 answer.
+///
+/// ## The persona is the edge issuer's
+///
+/// One VRC is one direction of an edge, and the persona it carries belongs to
+/// the party who issued it. The counterparty asserts their own persona on
+/// their own reciprocal VRC. This keeps each half-edge self-contained and
+/// means neither party can put words in the other's mouth.
+#[utoipa::path(
+    post, path = "/relationships/{id}/persona", tag = "relationships",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Relationship (VRC) id")),
+    request_body = AttachPersonaBody,
+    responses(
+        (status = 200, description = "Persona (VPC) attached", body = PersonaResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller does not control the edge's issuer"),
+        (status = 404, description = "Relationship not found"),
+    ),
+)]
+pub async fn attach_persona(
+    auth: AuthClaims,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AttachPersonaBody>,
+) -> Result<(StatusCode, Json<PersonaResponse>), AppError> {
+    let mut rel = get_relationship(&state.relationships_ks, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("VRC {id} not found")))?;
+
+    // Shape first: a malformed VPC is a 400 whoever sent it, and rejecting it
+    // here costs nothing and reveals nothing about the edge.
+    check_vpc_shape(&body.vpc)?;
+    let persona_did = extract_did_field(&body.vpc, "issuer")?;
+    let vpc_subject = extract_subject_id(&body.vpc)?;
+
+    // Then authorization, before anything that could read the edge back to
+    // the caller. Edge ids are unguessable UUIDs, but a member who has seen
+    // one should still learn nothing from this endpoint about an edge they do
+    // not control — which is why neither this error nor the consistency check
+    // below quotes the row's DIDs. Same ordering rule as publish: caller
+    // errors before daemon-config prerequisites, and disclosure last.
+    if body.pop.is_none() && rel.issuer_did != auth.did {
+        return Err(AppError::Forbidden(format!(
+            "edge {id} was not issued by the session DID and no authorization \
+             (`pop`) was supplied — annotating an edge published under a \
+             relationship DID requires proof the caller controls it"
+        )));
+    }
+
+    let resolver = state.did_resolver.as_ref().cloned().ok_or_else(|| {
+        AppError::Internal("DID resolver not configured — VPC attach requires it".into())
+    })?;
+
+    // The VPC was made by the persona it names. This is the analogue of the
+    // VRC's own proof check, and it holds whatever kind of identifier the
+    // P-DID is.
+    verify_di_proof(&body.vpc, &persona_did, &resolver)
+        .await
+        .map_err(|e| AppError::Validation(format!("VpcProofInvalid: {e}")))?;
+
+    if let Some(pop) = &body.pop {
+        let aud = crate::routes::recognise::vtc_did(&state).await?;
+        let vpc_sha256 = hex::encode(Sha256::digest(canonicalise(&body.vpc).as_bytes()));
+        check_authorization_envelope(pop, VPC_ATTACH_AUTHORIZATION_TYPE, &aud, &auth.session_id)
+            .and_then(|()| {
+                let bound = authorization_field(pop, "vpc")?;
+                if bound != vpc_sha256 {
+                    return Err("authorization is bound to a different VPC".into());
+                }
+                let edge = authorization_field(pop, "relationship")?;
+                if edge != id.to_string() {
+                    return Err("authorization is bound to a different edge".into());
+                }
+                Ok(())
+            })
+            .map_err(|e| AppError::Forbidden(format!("VpcAttachAuthorizationInvalid: {e}")))?;
+        verify_di_proof(pop, &rel.issuer_did, &resolver)
+            .await
+            .map_err(|e| AppError::Forbidden(format!("VpcAttachAuthorizationInvalid: {e}")))?;
+    }
+
+    if vpc_subject != rel.subject_did {
+        return Err(AppError::Validation(format!(
+            "VPC names {vpc_subject} as the counterparty but edge {id} points at \
+             a different DID — a persona is asserted to the party the edge names"
+        )));
+    }
+
+    // No uniqueness check on the P-DID, deliberately, and in direct contrast
+    // to the R-DID rule the publish path enforces. A relationship DID that
+    // recurs across counterparties is a defect; a persona DID that recurs is
+    // the entire point of the credential.
+    rel.persona = Some(crate::relationships::PersonaAnnotation {
+        persona_did: persona_did.clone(),
+        vpc_jsonld: body.vpc.clone(),
+        attached_at: Utc::now(),
+    });
+    store_relationship(
+        &state.relationships_ks,
+        &state.relationships_by_did_ks,
+        &rel,
+    )
+    .await?;
+
+    audit_persona_change(&state, &auth.did, &rel, id, &persona_did, true).await?;
+    info!(vrc_id = %id, persona = %persona_did, "VPC attached");
+
+    Ok((
+        StatusCode::OK,
+        Json(PersonaResponse {
+            id,
+            persona_did: Some(persona_did),
+        }),
+    ))
+}
+
+/// `DELETE /v1/relationships/{id}/persona` — withdraw the persona from an
+/// edge, leaving the edge itself in place.
+///
+/// This exists because the assertion it reverses is a disclosure. A member who
+/// can correlate their edges under a persona but can never stop is worse off
+/// than one who never could, so the withdrawal has to be as available as the
+/// assertion — and gated the same way, or anyone could strip another member's
+/// persona.
+///
+/// Idempotent: detaching from an edge that carries no persona is a 200 with a
+/// null `personaDid`, matching `delete_relationship`'s convention. No audit
+/// entry is written in that case — nothing changed.
+///
+/// The authorization object is carried in the request body. `DELETE` with a
+/// body is unusual, but the alternative is putting a signed object in a query
+/// string, and the proof of control has to travel with the request somehow.
+#[utoipa::path(
+    delete, path = "/relationships/{id}/persona", tag = "relationships",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Relationship (VRC) id")),
+    request_body = DetachPersonaBody,
+    responses(
+        (status = 200, description = "Persona (VPC) detached", body = PersonaResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller does not control the edge's issuer"),
+        (status = 404, description = "Relationship not found"),
+    ),
+)]
+pub async fn detach_persona(
+    auth: AuthClaims,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<DetachPersonaBody>,
+) -> Result<(StatusCode, Json<PersonaResponse>), AppError> {
+    let mut rel = get_relationship(&state.relationships_ks, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("VRC {id} not found")))?;
+
+    if body.pop.is_none() && rel.issuer_did != auth.did {
+        return Err(AppError::Forbidden(format!(
+            "edge {id} was not issued by the session DID and no authorization \
+             (`pop`) was supplied"
+        )));
+    }
+
+    if let Some(pop) = &body.pop {
+        let resolver = state.did_resolver.as_ref().cloned().ok_or_else(|| {
+            AppError::Internal("DID resolver not configured — VPC detach requires it".into())
+        })?;
+        let aud = crate::routes::recognise::vtc_did(&state).await?;
+        check_authorization_envelope(pop, VPC_DETACH_AUTHORIZATION_TYPE, &aud, &auth.session_id)
+            .and_then(|()| {
+                let edge = authorization_field(pop, "relationship")?;
+                if edge != id.to_string() {
+                    return Err("authorization is bound to a different edge".into());
+                }
+                Ok(())
+            })
+            .map_err(|e| AppError::Forbidden(format!("VpcDetachAuthorizationInvalid: {e}")))?;
+        verify_di_proof(pop, &rel.issuer_did, &resolver)
+            .await
+            .map_err(|e| AppError::Forbidden(format!("VpcDetachAuthorizationInvalid: {e}")))?;
+    }
+
+    let Some(previous) = rel.persona.take() else {
+        return Ok((
+            StatusCode::OK,
+            Json(PersonaResponse {
+                id,
+                persona_did: None,
+            }),
+        ));
+    };
+    store_relationship(
+        &state.relationships_ks,
+        &state.relationships_by_did_ks,
+        &rel,
+    )
+    .await?;
+
+    audit_persona_change(&state, &auth.did, &rel, id, &previous.persona_did, false).await?;
+    info!(vrc_id = %id, persona = %previous.persona_did, "VPC detached");
+
+    Ok((
+        StatusCode::OK,
+        Json(PersonaResponse {
+            id,
+            persona_did: None,
+        }),
+    ))
+}
+
+/// Write the `VpcAttached` / `VpcDetached` audit entry.
+///
+/// The actor is the **authenticated member**, not the edge's issuer, for the
+/// same reason the VRC publish trail records it that way: under a pairwise
+/// identifier the issuer names nobody, so a trail keyed on it could never
+/// answer "who asserted this persona". Recording the P-DID beside the member
+/// does create an M-DID-to-P-DID mapping inside the audit store — accepted, on
+/// the same reasoning set out in
+/// `docs/05-design-notes/vrc-publish-proof-of-possession.md` §Audit
+/// attribution, and confined to the same store. The `info!` above deliberately
+/// carries the persona and not the member.
+async fn audit_persona_change(
+    state: &AppState,
+    actor_did: &str,
+    rel: &Relationship,
+    id: Uuid,
+    persona_did: &str,
+    attached: bool,
+) -> Result<(), AppError> {
+    let Some(writer) = state.audit_writer.as_ref() else {
+        return Ok(());
+    };
+    let data = VpcAnnotationData {
+        vrc_id: id.to_string(),
+        persona_did: persona_did.to_string(),
+    };
+    let event = if attached {
+        AuditEvent::VpcAttached(data)
+    } else {
+        AuditEvent::VpcDetached(data)
+    };
+    writer
+        .write(actor_did, Some(&rel.subject_did), event)
+        .await?;
+    Ok(())
+}
+
 // ─── Helpers ─────────────────────────────────────────────
 
 /// Extract a DID from a JSON-LD VC field that may be either a
@@ -524,6 +870,25 @@ fn check_vrc_shape(vrc: &JsonValue) -> Result<(), AppError> {
     )
 }
 
+/// Reject anything that is not a conformant VPC before it annotates an edge.
+///
+/// Same contract as [`check_vrc_shape`], one subtype over: DTG Credentials
+/// §VPC says `type` MUST include `PersonaCredential`, and classification goes
+/// through the catalog rather than a string comparison here.
+///
+/// This delegates to `credentials::ingress` rather than carrying its own copy
+/// of the common-structure check. The VPC arrived on a branch cut before that
+/// module existed and brought a local `check_dtg_shape` with it; keeping both
+/// would have put two definitions of "is this a DTG credential" in the tree,
+/// which is the condition #1064 was filed about.
+fn check_vpc_shape(vpc: &JsonValue) -> Result<(), AppError> {
+    crate::credentials::ingress::require_dtg_type(
+        vpc,
+        dtg_credentials::DTGCredentialType::Persona,
+        "this endpoint attaches a persona annotation",
+    )
+}
+
 /// `type` of the publish authorization object. Guarding on it stops a
 /// signature the member made over some *other* object being replayed here as
 /// authorization to publish.
@@ -566,36 +931,64 @@ async fn verify_publish_authorization(
     expected_session_id: &str,
     resolver: &DIDCacheClient,
 ) -> Result<(), String> {
-    let field = |name: &str| -> Result<String, String> {
-        pop.get(name)
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .ok_or_else(|| format!("authorization missing `{name}`"))
-    };
+    check_authorization_envelope(
+        pop,
+        PUBLISH_AUTHORIZATION_TYPE,
+        expected_aud,
+        expected_session_id,
+    )?;
 
-    let ty = field("type")?;
-    if ty != PUBLISH_AUTHORIZATION_TYPE {
-        return Err(format!(
-            "authorization `type` must be `{PUBLISH_AUTHORIZATION_TYPE}`, got `{ty}`"
-        ));
-    }
-
-    let bound_vrc = field("vrc")?;
+    let bound_vrc = authorization_field(pop, "vrc")?;
     if bound_vrc != expected_vrc_sha256 {
         return Err("authorization is bound to a different VRC".into());
     }
 
-    let aud = field("aud")?;
+    // Signed by the key the VRC's `issuer` names. `check_issuer_binding`
+    // inside `verify_di_proof` is what makes this proof-of-possession rather
+    // than proof-of-anything-signed.
+    verify_di_proof(pop, issuer_did, resolver).await
+}
+
+/// Read a required string field off an authorization object.
+fn authorization_field(pop: &JsonValue, name: &str) -> Result<String, String> {
+    pop.get(name)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| format!("authorization missing `{name}`"))
+}
+
+/// The checks every request-bound authorization object in this module shares:
+/// what it authorizes (`type`), where (`aud`), by whom (`sessionId`), and how
+/// recently (`issuedAt`).
+///
+/// Factored out because the persona endpoints need exactly these and would
+/// otherwise copy them — and a copy is how one of the four quietly goes
+/// missing. The per-object bindings (which VRC, which edge) stay at the call
+/// sites, since those are what distinguish the objects.
+fn check_authorization_envelope(
+    pop: &JsonValue,
+    expected_type: &str,
+    expected_aud: &str,
+    expected_session_id: &str,
+) -> Result<(), String> {
+    let ty = authorization_field(pop, "type")?;
+    if ty != expected_type {
+        return Err(format!(
+            "authorization `type` must be `{expected_type}`, got `{ty}`"
+        ));
+    }
+
+    let aud = authorization_field(pop, "aud")?;
     if aud != expected_aud {
         return Err("authorization `aud` is not this community".into());
     }
 
-    let session_id = field("sessionId")?;
+    let session_id = authorization_field(pop, "sessionId")?;
     if session_id != expected_session_id {
         return Err("authorization is bound to a different session".into());
     }
 
-    let issued_at = chrono::DateTime::parse_from_rfc3339(&field("issuedAt")?)
+    let issued_at = chrono::DateTime::parse_from_rfc3339(&authorization_field(pop, "issuedAt")?)
         .map_err(|e| format!("authorization `issuedAt` is not an RFC 3339 timestamp: {e}"))?
         .with_timezone(&Utc);
     let age = Utc::now().signed_duration_since(issued_at).num_seconds();
@@ -605,11 +998,7 @@ async fn verify_publish_authorization(
              {PUBLISH_AUTHORIZATION_MAX_AGE_SECS}s freshness window (age {age}s)"
         ));
     }
-
-    // Signed by the key the VRC's `issuer` names. `check_issuer_binding`
-    // inside `verify_di_proof` is what makes this proof-of-possession rather
-    // than proof-of-anything-signed.
-    verify_di_proof(pop, issuer_did, resolver).await
+    Ok(())
 }
 
 /// Verify a data-integrity proof on a JSON document: bind the proof's
@@ -746,6 +1135,15 @@ pub struct GraphHalf {
     pub issuer_did: String,
     pub subject_did: String,
     pub created_at: String,
+    /// The persona (P-DID) the issuer has asserted on this edge, if any.
+    ///
+    /// This is the one place the deliberate correlation a VPC exists to
+    /// enable becomes visible: two pairwise edges carrying the same
+    /// `personaDid` are the same party, said so by that party. Without it the
+    /// annotation would be stored and never read, which is the state #1067
+    /// describes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_did: Option<String>,
 }
 
 /// One edge between a pair of identifiers, carrying every VRC published between
@@ -797,11 +1195,14 @@ fn build_graph(mut rels: Vec<Relationship>) -> RelationshipsGraph {
         } else {
             (r.subject_did.clone(), r.issuer_did.clone())
         };
+        // Taken before the DIDs are moved into the half below.
+        let persona_did = r.persona.map(|p| p.persona_did);
         pairs.entry(key).or_default().push(GraphHalf {
             id: r.id.to_string(),
             issuer_did: r.issuer_did,
             subject_did: r.subject_did,
             created_at: r.created_at.to_rfc3339(),
+            persona_did,
         });
     }
 

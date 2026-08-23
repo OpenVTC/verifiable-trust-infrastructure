@@ -280,6 +280,18 @@ export function Relationships() {
                       const issuedBySelected = e.halves.some(
                         (h) => h.issuerDid === selected,
                       );
+                      // Personas (VPCs) asserted on this edge. Rendered per
+                      // half, and attributed, because a persona is asserted by
+                      // one party about one relationship — a complete edge can
+                      // carry two different ones, and picking a single
+                      // `personaDid` off the edge (as this did before the
+                      // graph became pair-grouped) would silently drop the
+                      // other party's.
+                      const personas = e.halves.flatMap((h) =>
+                        h.personaDid
+                          ? [{ id: h.id, by: h.issuerDid, as: h.personaDid }]
+                          : [],
+                      );
                       return (
                         <li key={edgeKey(e)} style={{ marginBottom: 4 }}>
                           {e.complete ? (
@@ -301,6 +313,13 @@ export function Relationships() {
                               </span>
                             </>
                           )}
+                          {personas.map((p) => (
+                            <span key={p.id} className="muted">
+                              {" · "}
+                              <code>{nameBook.nameOrDid(p.by)}</code> as{" "}
+                              <code>{nameBook.nameOrDid(p.as)}</code>
+                            </span>
+                          ))}
                         </li>
                       );
                     })}

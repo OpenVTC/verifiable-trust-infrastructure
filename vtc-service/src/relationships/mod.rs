@@ -41,6 +41,10 @@
 //! (the route layer verifies caller-DID == VC.issuer + the
 //! VC's data-integrity proof verifies against the member's
 //! `#key-0`). The community signer is uninvolved.
+//!
+//! The same holds for the optional [`PersonaAnnotation`]: the
+//! VPC is self-issued by the member under a persona DID, and the
+//! VTC only verifies and stores it.
 
 pub mod storage;
 
@@ -83,4 +87,46 @@ pub struct Relationship {
     /// rather than creating a duplicate row.
     pub vrc_sha256: String,
     pub created_at: DateTime<Utc>,
+    /// The persona (VPC) this edge's issuer has asserted on it,
+    /// if any. Absent on every edge published before #1067 and
+    /// on every edge whose issuer has not asserted a persona —
+    /// which is why it is `#[serde(default)]`: existing rows
+    /// decode unchanged.
+    ///
+    /// A VPC is an *annotation* credential (DTG Credentials
+    /// §Annotation Credentials): it creates no graph structure,
+    /// it attaches to structure that already exists. Storing it
+    /// on the edge row rather than in a keyspace of its own is
+    /// the direct expression of that — there is no persona
+    /// record without an edge to hang it on, and deleting the
+    /// edge deletes the annotation with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona: Option<PersonaAnnotation>,
+}
+
+/// A Verifiable Persona Credential (VPC) attached to one edge.
+///
+/// The VPC is issued by the *edge issuer* under a persona DID
+/// (P-DID) and names the edge's counterparty as its subject. It
+/// is the sanctioned mechanism for deliberate correlation: a
+/// member who wants several of their pairwise edges to be
+/// recognisable as one party asserts the same P-DID on each,
+/// without ever putting their membership DID in a credential.
+///
+/// See `docs/05-design-notes/vpc-persona-annotation.md` for how
+/// the annotation is bound to the edge, and for what upstream
+/// (trustoverip/dtgwg-cred-spec#9) has not yet settled.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct PersonaAnnotation {
+    /// The VPC's `issuer` — the P-DID. Denormalised out of
+    /// `vpc_jsonld` so the graph view can group edges by persona
+    /// without re-parsing every credential.
+    pub persona_did: String,
+    /// The VPC body verbatim, including its data-integrity
+    /// proof, so a consumer of the row can re-verify the
+    /// assertion rather than taking the VTC's word for it.
+    pub vpc_jsonld: JsonValue,
+    pub attached_at: DateTime<Utc>,
 }

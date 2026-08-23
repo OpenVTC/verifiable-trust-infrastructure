@@ -410,6 +410,26 @@ fn no_new_bindings_on_the_retired_authority() {
 /// (#821) is what produced this list. **None of it was previously checked by
 /// anything.**
 const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
+    // `vtc/relationships/persona/0.1` — the VPC annotation endpoints (#1067).
+    // Bound ahead of its spec, which is the mechanism this list exists for,
+    // not an exception to it: `vta/webvh/servers/reconcile/0.1` went up and
+    // back down the same way once the registry served it.
+    //
+    // It is bound ahead deliberately rather than by oversight. The credential
+    // it carries is specified — DTG Credentials §VPC — but how a VPC binds to
+    // a specific edge is open upstream (trustoverip/dtgwg-cred-spec#9), and a
+    // Trust Task payload schema authored before that settles would have to
+    // encode this implementation's request-level binding as if it were the
+    // answer. The endpoint can move first; the schema should not.
+    //
+    // This is the first entry the `spec/vtc/` family has ever had. It goes
+    // back to zero when the task is authored upstream.
+    (
+        "https://trusttasks.org/spec/vtc/relationships/persona/",
+        1,
+        "VPC persona annotation (#1067) — bound ahead of its spec while \
+         dtgwg-cred-spec#9 (how a VPC binds to an edge) is open upstream",
+    ),
     // Not a dispatchable task: the framework's error envelope is a *response*
     // type, deliberately absent from the task index, so `schema_for` will never
     // resolve it. This entry is permanent — the others are debt.

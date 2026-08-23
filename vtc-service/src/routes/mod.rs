@@ -643,6 +643,14 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(relationships::revoke),
             "https://trusttasks.org/spec/vtc/relationships/revoke/0.1",
         ))
+        // #1067 — the VPC (persona annotation) on an existing
+        // edge. POST + DELETE share one task mount, the same
+        // workaround the personhood assert/revoke pair uses; the
+        // two verbs are one operation in either direction.
+        .routes(tt(
+            routes!(relationships::attach_persona, relationships::detach_persona),
+            "https://trusttasks.org/spec/vtc/relationships/persona/0.1",
+        ))
         // Phase 4 M4.8.1 — operator-uploaded endorsement type
         // registry. Admin-gated CRUD.
         // POST + GET on `/endorsement-types` each carry their own canonical
