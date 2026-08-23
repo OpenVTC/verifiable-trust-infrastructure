@@ -759,6 +759,49 @@ mod pairwise {
         assert!(saw_publish, "expected a VrcPublished audit entry");
     }
 
+    /// Option B on #1061: the audit trail attributes a publication to the
+    /// **member**, not to the relationship DID that issued the credential.
+    ///
+    /// Recording the issuing R-DID as the actor would leave the trail unable
+    /// to answer "which member published this edge" for anyone, at any access
+    /// level. The linkage is confined to the audit store — HMAC'd actor,
+    /// RTBF-nullable plaintext, admin-gated — and deliberately kept out of the
+    /// credential, the stored row, and the logs.
+    #[tokio::test]
+    async fn audit_attributes_the_publication_to_the_member_not_the_relationship_did() {
+        let fix = fixture().await;
+        let v = vrc(RDID, PEER_RDID).await;
+        let pop = sign(
+            RDID,
+            authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        assert_eq!(
+            post(&fix, &v, Some(pop)).await.status(),
+            StatusCode::CREATED
+        );
+
+        let pairs = fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
+        let mut saw = false;
+        for (_k, raw) in pairs {
+            let env: AuditEnvelope = serde_json::from_slice(&raw).unwrap();
+            if matches!(env.event, AuditEvent::VrcPublished(_)) {
+                saw = true;
+                assert_eq!(
+                    env.actor_did_plain.as_deref(),
+                    Some(did_for(MEMBER).as_str()),
+                    "the actor must be the authenticated member"
+                );
+                assert_ne!(
+                    env.actor_did_plain.as_deref(),
+                    Some(did_for(RDID).as_str()),
+                    "the relationship DID names nobody and must not be the actor"
+                );
+            }
+        }
+        assert!(saw, "expected a VrcPublished audit entry");
+    }
+
     /// Membership is not a precondition for a VRC — DTG Credentials
     /// §Community-Anchored ZKP. The subject's consent is their own reciprocal
     /// VRC, not our roster.

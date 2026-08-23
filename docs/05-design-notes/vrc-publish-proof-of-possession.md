@@ -206,14 +206,40 @@ no-op-that-warns approach openvtc#241 took, in the same direction.
 
 ## Tradeoffs to decide, not assume
 
-**Audit attribution changes.** `audit_writer.write(&issuer_did, ...)`
-(`relationships.rs:193-205`) records the issuer as the actor. Once the issuer is
-an R-DID, the audit trail no longer attributes publications to a named member.
-That is the intended privacy property and a real loss for moderation. Options:
-attribute to the R-DID and accept it; attribute to the session's M-DID and accept
-a linkage inside the audit store with its own retention rules; or record neither
-and rely on the row itself. **This needs an explicit decision — it should not be
-settled by whichever variable happens to be in scope.**
+**Audit attribution — decided.** The trail attributes a publication to the
+**authenticated member**, not to the VRC's issuer. Under the pairwise form
+those differ, and the issuing relationship DID names nobody, so recording it
+would leave the trail unable to answer "which member published this edge" for
+anyone, at any access level, ever.
+
+This is a deliberate, narrow exception to the rule above that the
+membership-to-relationship linkage must not be persisted, and the reasoning for
+drawing it here and nowhere else:
+
+- What #1054 set out to remove is *public, permanent, unavoidable* correlation
+  — a membership DID welded into a credential anyone can retain and republish.
+  The audit store is none of those things: `AuditEnvelope` HMACs the actor
+  under a rotating key (`actor_did_hash`, covered by the tamper-evidence
+  chain), keeps the plaintext in a field deliberately excluded from the chain
+  digest so RTBF can null it without breaking verification
+  (`actor_did_plain`), and the surface is admin-gated.
+- Giving it up would buy little. `VrcPublishedData` carries `vrc_id`, `vrc_id`
+  resolves to the row, and the row holds the relationship DIDs — so any trail
+  that both references the edge and names the member creates the mapping
+  transitively. There is no variant that attributes without linking.
+- Moderation needs the reverse lookup. "This edge is abusive, who made it?" is
+  the question an operator actually has; a hash-only variant answers only the
+  forward one ("this member is suspect, what have they done?").
+
+**The residual, stated plainly:** an operator with audit access can map every
+pairwise edge to its member. That is the cost, it is accepted, and it is why
+the linkage stops at the audit store — the `info!` on the publish path carries
+the relationship DID and not the member, because logs have neither the
+redaction machinery nor the access controls that make this trade defensible.
+
+Note this decision is not VRC-specific. It answers "when a member acts under a
+pairwise identifier, what does the audit trail record?", and it should hold for
+every pairwise-capable operation added later.
 
 **Admin revocation is unaffected.** It keys on row id, not issuer identity
 (`relationships.rs`, revoke section), so moderation of a specific edge still
@@ -261,7 +287,8 @@ stored row changes.
 | Subject not a member | 201 — no longer an error |
 | One direction only | edge shows as half, not complete |
 | `issuer == auth.did`, no PoP | 201 + deprecation warning |
-| Stored row / audit / logs | contain no `sessionId` and no M-DID |
+| Stored row and logs | contain no `sessionId` and no membership DID |
+| Audit envelope | actor is the member, never the relationship DID |
 
 The last row is the one that regresses silently if someone later adds a debug
 log. It deserves an explicit assertion, not a review comment.

@@ -361,6 +361,35 @@ pub async fn publish(
     .await?;
 
     // 10. Audit.
+    //
+    //    The actor is the **authenticated member**, not the VRC's
+    //    issuer. Under the pairwise form those differ, and the
+    //    issuing relationship DID names nobody — recording it as
+    //    the actor would leave the trail unable to answer "which
+    //    member published this edge" for anyone, at any access
+    //    level, ever.
+    //
+    //    This is a deliberate, narrow exception to the rule that
+    //    the membership-to-relationship linkage must not be
+    //    persisted, and it is confined to the one store built to
+    //    hold privileged records: the audit envelope HMACs the
+    //    actor under a rotating key, keeps the plaintext in a
+    //    field that RTBF can null without breaking the
+    //    tamper-evidence chain, and is admin-gated. What #1054
+    //    set out to remove was *public, permanent, unavoidable*
+    //    correlation — a membership DID welded into a credential
+    //    anyone can retain and republish. Accountability inside
+    //    an access-controlled, redactable, tamper-evident log is
+    //    a different thing, and giving it up would buy nothing:
+    //    `vrc_id` resolves to the row, and the row holds the
+    //    relationship DIDs, so any trail that references the edge
+    //    and names the member creates the mapping regardless.
+    //
+    //    The residual is real and worth stating: an operator with
+    //    audit access can map every pairwise edge to its member.
+    //    The `info!` below deliberately does *not* carry the
+    //    member — logs have neither the redaction machinery nor
+    //    the access controls that make this trade defensible.
     let edge_type = vrc
         .pointer("/credentialSubject/endorsement/type")
         .and_then(|v| v.as_str())
@@ -369,7 +398,7 @@ pub async fn publish(
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
-                &issuer_did,
+                &auth.did,
                 Some(&subject_did),
                 AuditEvent::VrcPublished(VrcPublishedData {
                     vrc_id: id.to_string(),
