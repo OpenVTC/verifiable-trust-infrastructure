@@ -5,7 +5,7 @@ use affinidi_secrets_resolver::secrets::Secret;
 use base64::Engine;
 use chrono::Utc;
 use multibase::Base;
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
 use tracing::info;
 use zeroize::Zeroize;
 
@@ -232,7 +232,7 @@ pub async fn create_key(
         KeyType::P256 => {
             let p256_secret = bip32.derive_p256(&derivation_path)?;
             let verifying_key = p256_secret.secret_key.public_key();
-            let encoded = verifying_key.to_encoded_point(true);
+            let encoded = verifying_key.to_sec1_point(true);
             multibase::encode(Base::Base58Btc, encoded.as_bytes())
         }
     };
@@ -362,7 +362,7 @@ pub async fn import_key(
             let secret_key = p256::SecretKey::from_slice(&private_bytes)
                 .map_err(|e| AppError::Validation(format!("invalid P-256 private key: {e}")))?;
             let public = secret_key.public_key();
-            let encoded = public.to_encoded_point(true);
+            let encoded = public.to_sec1_point(true);
             let pub_multibase = multibase::encode(Base::Base58Btc, encoded.as_bytes());
             (pub_multibase, "p256")
         }
@@ -794,7 +794,7 @@ pub async fn get_key_secret(
                 KeyType::P256 => {
                     let p256_secret = bip32.derive_p256(&record.derivation_path)?;
                     let public_key = p256_secret.secret_key.public_key();
-                    let encoded = public_key.to_encoded_point(true);
+                    let encoded = public_key.to_sec1_point(true);
                     let pub_mb = encode_public_multibase(&KeyType::P256, encoded.as_bytes());
                     let priv_mb = encode_private_multibase(
                         &KeyType::P256,
@@ -915,7 +915,7 @@ pub async fn get_key_secret_internal(
                 KeyType::P256 => {
                     let p256_secret = bip32.derive_p256(&record.derivation_path)?;
                     let public_key = p256_secret.secret_key.public_key();
-                    let encoded = public_key.to_encoded_point(true);
+                    let encoded = public_key.to_sec1_point(true);
                     let pub_mb = encode_public_multibase(&KeyType::P256, encoded.as_bytes());
                     let priv_mb = encode_private_multibase(
                         &KeyType::P256,

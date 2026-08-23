@@ -319,7 +319,7 @@ mod tests {
     use affinidi_mdoc::mso::ValidityInfo;
     use coset::CoseSign1;
     use rcgen::{
-        BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose,
+        BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose,
         PKCS_ECDSA_P256_SHA256,
     };
 
@@ -338,7 +338,7 @@ mod tests {
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
-        let cert = params.clone().self_signed(&key).unwrap();
+        let cert = params.self_signed(&key).unwrap();
         Iaca {
             pem: cert.pem(),
             params,
@@ -355,8 +355,8 @@ mod tests {
         params.is_ca = IsCa::NoCa;
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         let ds_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
-        let issuer = root.params.clone().self_signed(&root.key).unwrap();
-        let cert = params.signed_by(&ds_key, &issuer, &root.key).unwrap();
+        let issuer = Issuer::from_params(&root.params, &root.key);
+        let cert = params.signed_by(&ds_key, &issuer).unwrap();
         (cert.der().to_vec(), ds_key)
     }
 

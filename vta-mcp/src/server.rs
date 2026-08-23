@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -38,7 +38,7 @@ fn to_mcp(e: VtaError) -> McpError {
 fn ok_json(value: impl serde::Serialize) -> Result<CallToolResult, McpError> {
     let text = serde_json::to_string_pretty(&value)
         .map_err(|e| McpError::internal_error(format!("serialising result: {e}"), None))?;
-    Ok(CallToolResult::success(vec![Content::text(text)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

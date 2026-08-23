@@ -34,7 +34,7 @@ url = { workspace = true }
 
 # Crate-local deps.
 aws-lc-rs = { workspace = true }                # ECDSA verification — workspace crypto policy.
-p256 = "0.13"                                   # SEC1 point decompression ONLY (not signing or
+p256 = "0.14"                                   # SEC1 point decompression ONLY (not signing or
                                                 # verifying). aws-lc-rs requires uncompressed
                                                 # points; Multikey carries compressed. Already
                                                 # in the workspace dep tree transitively.

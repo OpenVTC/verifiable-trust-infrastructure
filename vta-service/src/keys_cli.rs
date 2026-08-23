@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use p256::elliptic_curve::sec1::ToEncodedPoint;
+use p256::elliptic_curve::sec1::ToSec1Point;
 
 use crate::cli_store::CliStore;
 use crate::config::AppConfig;
@@ -144,7 +144,7 @@ pub async fn run_keys_secrets(
                     .derive_p256(&record.derivation_path)
                     .map_err(|e| format!("failed to derive key {key_id}: {e}"))?;
                 let verifying_key = p256_secret.secret_key.public_key();
-                let encoded = verifying_key.to_encoded_point(true);
+                let encoded = verifying_key.to_sec1_point(true);
                 (
                     multibase::encode(multibase::Base::Base58Btc, encoded.as_bytes()),
                     multibase::encode(

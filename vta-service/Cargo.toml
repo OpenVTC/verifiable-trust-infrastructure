@@ -307,7 +307,7 @@ serde_json_canonicalizer = "0.3"
 subtle = { workspace = true }
 x25519-dalek = { workspace = true }
 multibase = { workspace = true }
-p256 = "0.13"
+p256 = "0.14"
 # WebAuthn — used by `operations::passkey_vms` to drive the
 # registration ceremony for passkey-as-verificationMethod enrolment.
 webauthn-rs = { workspace = true }

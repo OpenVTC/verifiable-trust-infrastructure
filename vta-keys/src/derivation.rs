@@ -140,9 +140,16 @@ impl Bip32Extension for ExtendedSigningKey {
         let hmac_output = mac.finalize().into_bytes();
 
         // First 32 bytes → P-256 scalar. from_bytes() reduces mod n automatically.
-        let secret_key =
-            p256::SecretKey::from_bytes(p256::FieldBytes::from_slice(&hmac_output[..32]))
-                .map_err(|e| key_derivation_error(format!("P-256 key creation failed: {e}")))?;
+        //
+        // `TryFrom` rather than the deprecated `FieldBytes::from_slice`: the
+        // slice is a fixed 32-byte window of a SHA-512 HMAC so the conversion
+        // cannot fail, but the fallible form is the supported one in
+        // elliptic-curve 0.14 and it keeps the length check explicit rather
+        // than resting on a panic inside the old helper.
+        let field_bytes = p256::FieldBytes::try_from(&hmac_output[..32])
+            .map_err(|e| key_derivation_error(format!("P-256 scalar is not 32 bytes: {e}")))?;
+        let secret_key = p256::SecretKey::from_bytes(&field_bytes)
+            .map_err(|e| key_derivation_error(format!("P-256 key creation failed: {e}")))?;
 
         Ok(P256Secret { secret_key })
     }
@@ -201,7 +208,7 @@ pub async fn load_or_generate_seed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    use p256::elliptic_curve::sec1::ToSec1Point;
 
     fn get_bip32() -> ExtendedSigningKey {
         ExtendedSigningKey::from_seed(&[
@@ -534,7 +541,7 @@ mod tests {
 
         // Public key must be derivable
         let pk = p256_1.secret_key.public_key();
-        let encoded = pk.to_encoded_point(true);
+        let encoded = pk.to_sec1_point(true);
         assert_eq!(
             encoded.len(),
             33,

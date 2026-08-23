@@ -85,7 +85,7 @@ vta-sdk = { path = "../vta-sdk", version = "0.28", features = [
 # adds the bundled Mozilla webpki roots — so `wss://` works on iOS. We don't use
 # the crate directly (`use tokio_tungstenite as _` in lib.rs); it's a feature
 # enabler matched to the version affinidi-messaging-sdk already pulls.
-tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
 # Test-only Ed25519 signing for the did-signed verify round-trip (stands in for

@@ -115,17 +115,25 @@ fn verify_p256(resolved: &ResolvedVm, message: &[u8], signature: &[u8]) -> Resul
 /// Uses the `p256` crate for the curve-point math only — no
 /// cryptographic operations (signing, verifying) go through it.
 fn decompress_p256_point(compressed: &[u8]) -> Result<[u8; 65], VerifyError> {
-    use p256::EncodedPoint;
+    // elliptic-curve 0.14 renamed this family: `EncodedPoint` -> `Sec1Point`,
+    // `From/ToEncodedPoint` -> `From/ToSec1Point`. The old names survive as
+    // deprecated stubs; these are the current ones.
     use p256::PublicKey;
-    use p256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
+    use p256::Sec1Point;
+    use p256::elliptic_curve::sec1::{FromSec1Point, ToSec1Point};
 
-    let ep = EncodedPoint::from_bytes(compressed)
+    // Kept as parse-then-validate rather than the one-shot
+    // `PublicKey::from_sec1_bytes`: that collapses both failures into a single
+    // error, and the two say different things to whoever reads the log — a
+    // malformed encoding is a broken client, a valid encoding off the curve is
+    // a point someone chose.
+    let ep = Sec1Point::from_bytes(compressed)
         .map_err(|_| VerifyError::MalformedAssertion("invalid SEC1 compressed P-256 point"))?;
-    let pk: Option<PublicKey> = Option::from(PublicKey::from_encoded_point(&ep));
+    let pk: Option<PublicKey> = Option::from(PublicKey::from_sec1_point(&ep));
     let pk = pk.ok_or(VerifyError::MalformedAssertion(
         "compressed P-256 point is not on the curve",
     ))?;
-    let uncompressed = pk.to_encoded_point(false);
+    let uncompressed = pk.to_sec1_point(false);
     let bytes = uncompressed.as_bytes();
     if bytes.len() != 65 {
         return Err(VerifyError::MalformedAssertion(
