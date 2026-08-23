@@ -196,6 +196,29 @@ pub struct AppState {
     pub didcomm: Arc<tokio::sync::OnceCell<Arc<crate::messaging::VtcMessaging>>>,
 }
 
+/// Delivery deadline for an ordinary proactive message to a member.
+///
+/// A member who misses one of these can ask again — the credential push, the
+/// exchange query and the reciprocal-VMC request all have a member-initiated
+/// counterpart.
+const DEFAULT_DELIVER_BY: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Delivery deadline for a removal notice: **30 days**.
+///
+/// Longer than everything else because a removed member has no second route to
+/// the information. Removal hard-deletes their ACL row, and `resolve_auth_role`
+/// refuses any DID without one, so every authenticated endpoint — including any
+/// poll that might have served the notice — is closed to them from the moment
+/// the removal lands. The push is the only channel that exists.
+///
+/// Thirty days is a judgement, not a derivation: long enough that a member
+/// offline for a holiday still learns they were removed, short enough that the
+/// outbox is not a permanent store. A member offline beyond it never finds out,
+/// and no window fixes that — the honest fix would be a retrieval path that
+/// does not require an ACL row, which is a larger design than this.
+pub(crate) const REMOVAL_NOTICE_DELIVER_BY: std::time::Duration =
+    std::time::Duration::from_secs(30 * 24 * 3600);
+
 impl AppState {
     /// Current cached member-row count (equal to
     /// `members::list_members(..).len()`). O(1) — see
@@ -243,6 +266,26 @@ impl AppState {
         recipient_did: &str,
         message: affinidi_messaging_didcomm::Message,
     ) -> Result<(), AppError> {
+        self.send_to_member_by(recipient_did, message, DEFAULT_DELIVER_BY)
+            .await
+    }
+
+    /// As [`send_to_member`](Self::send_to_member), but with an explicit
+    /// delivery deadline.
+    ///
+    /// The default window suits a message the member is expecting and will come
+    /// back for. It does not suit a **removal notice**, which is the one case
+    /// where the act being reported is the act that ends the member's ability
+    /// to ask about it: their ACL row is gone, so every authenticated route now
+    /// refuses them and there is no poll to fall back on. Undelivered inside
+    /// the window means never, with no way for them to find out otherwise —
+    /// hence [`REMOVAL_NOTICE_DELIVER_BY`].
+    pub async fn send_to_member_by(
+        &self,
+        recipient_did: &str,
+        message: affinidi_messaging_didcomm::Message,
+        deliver_by: std::time::Duration,
+    ) -> Result<(), AppError> {
         let messaging = self.didcomm.get().ok_or_else(|| {
             AppError::Internal("VTC messaging not running — cannot send to member".into())
         })?;
@@ -268,7 +311,7 @@ impl AppState {
                 affinidi_messaging_delivery::Delivery::Guaranteed {
                     idempotency_key: Some(idempotency_key),
                     ordering_key: None,
-                    deliver_by: std::time::Duration::from_secs(24 * 3600),
+                    deliver_by,
                 },
             )
             .await
