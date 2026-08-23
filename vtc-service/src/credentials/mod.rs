@@ -48,6 +48,7 @@ pub mod custom_endorsement;
 pub mod delivery;
 pub mod dtg;
 pub mod exchange;
+pub mod ingress;
 pub mod invitation;
 pub mod invitation_registry;
 pub mod invitation_verify;

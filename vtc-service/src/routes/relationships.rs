@@ -508,59 +508,20 @@ fn extract_subject_id(vrc: &JsonValue) -> Result<String, AppError> {
         })
 }
 
-/// The two `@context` entries every DTG credential MUST carry
-/// (DTG Credentials §Common Structure — normative).
-const DTG_CONTEXTS: [&str; 2] = [
-    "https://www.w3.org/ns/credentials/v2",
-    "https://firstperson.network/credentials/dtg/v1",
-];
-
 /// Reject anything that is not a conformant VRC before it becomes an edge in
 /// the community's trust graph.
 ///
 /// The VTC does not mint VRCs — they are self-issued — but it decides what
 /// enters the graph, and an edge is only interpretable if it says what it is.
-/// Until this existed the publish path never looked at `type` at all, so any
-/// signed JSON with an `issuer` and a `credentialSubject.id` could be stored as
-/// a relationship.
-///
-/// Classification goes through `dtg_credentials`, the same catalog
-/// `DTGCredential::new_vrc` mints from, rather than string-matching here — one
-/// definition of the wire form, shared by issuer and verifier.
+/// Delegates to [`crate::credentials::ingress`], the one place the DTG common
+/// structure is checked, so this endpoint and every other ingress point agree
+/// about what a DTG credential is.
 fn check_vrc_shape(vrc: &JsonValue) -> Result<(), AppError> {
-    let ctx: Vec<String> = vrc
-        .get("@context")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .ok_or_else(|| AppError::Validation("VRC `@context` missing or not an array".into()))?;
-    for required in DTG_CONTEXTS {
-        if !ctx.iter().any(|c| c == required) {
-            return Err(AppError::Validation(format!(
-                "VRC `@context` must include `{required}`"
-            )));
-        }
-    }
-
-    let types: Vec<String> = vrc
-        .get("type")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .ok_or_else(|| AppError::Validation("VRC `type` missing or not an array".into()))?;
-    for required in ["VerifiableCredential", "DTGCredential"] {
-        if !types.iter().any(|t| t == required) {
-            return Err(AppError::Validation(format!(
-                "VRC `type` must include `{required}`"
-            )));
-        }
-    }
-
-    match dtg_credentials::DTGCredentialType::try_from(types.as_slice()) {
-        Ok(dtg_credentials::DTGCredentialType::Relationship) => Ok(()),
-        Ok(other) => Err(AppError::Validation(format!(
-            "this endpoint publishes relationship edges; got a {other}"
-        ))),
-        Err(_) => Err(AppError::Validation(
-            "VRC `type` names no DTG credential subtype — expected `RelationshipCredential`".into(),
-        )),
-    }
+    crate::credentials::ingress::require_dtg_type(
+        vrc,
+        dtg_credentials::DTGCredentialType::Relationship,
+        "this endpoint publishes relationship edges",
+    )
 }
 
 /// `type` of the publish authorization object. Guarding on it stops a
@@ -841,6 +802,42 @@ mod tests {
             "credentialSubject": { "id": "did:key:zSubject", "role": "member" }
         });
         assert_eq!(extract_subject_id(&vrc).unwrap(), "did:key:zSubject");
+    }
+
+    /// `check_vrc_shape` must accept exactly what the catalog mints as a VRC,
+    /// and reject what it mints as anything else.
+    ///
+    /// Asserted against **catalog output** rather than a literal. A literal
+    /// here could agree with the literal in `check_vrc_shape` while both
+    /// disagreed with what clients actually send — the failure mode that let
+    /// `VerifiableRecognitionCredential` live in this file's fixtures while no
+    /// client ever emitted it, and that broke recognition in #1062 next door.
+    #[test]
+    fn accepts_what_the_catalog_mints_as_a_vrc_and_nothing_else() {
+        use dtg_credentials::DTGCredential;
+
+        use crate::test_support::dtg_json as body;
+
+        let now = Utc::now();
+        let vrc =
+            DTGCredential::new_vrc("did:peer:2.zR1".into(), "did:peer:2.zR2".into(), now, None);
+        check_vrc_shape(&body(&vrc)).expect("a catalog-minted VRC must be publishable");
+
+        // Same catalog, different subtype — this endpoint publishes
+        // relationship edges, and a membership edge has different issuance
+        // rules.
+        let vmc = DTGCredential::new_vmc(
+            "did:web:community.example".into(),
+            "did:key:zMember".into(),
+            now,
+            None,
+            false,
+        );
+        let err = check_vrc_shape(&body(&vmc)).expect_err("a VMC must not publish as a VRC");
+        assert!(
+            format!("{err:?}").contains("relationship edges"),
+            "unexpected rejection: {err:?}"
+        );
     }
 
     #[test]

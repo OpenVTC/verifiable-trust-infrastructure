@@ -320,6 +320,16 @@ fn extract_vec_vmc(
         let cred: VerifiableCredential = serde_json::from_value(entry.clone()).map_err(|e| {
             AppError::Validation(format!("embedded credential is not a valid VC: {e}"))
         })?;
+        // Common structure first: a presented credential must be a DTG
+        // credential before its subtype means anything. This path used to
+        // classify on `type` alone, so a document carrying the right subtype
+        // tag and neither `@context` entry was routed as though it were a VEC.
+        // Non-DTG credentials in a VP are legitimate and simply skipped — only
+        // the VEC + VMC pair is acted on — so a failure here is not an error.
+        if crate::credentials::ingress::classify_dtg(entry).is_err() {
+            continue;
+        }
+
         // Route the credential to its slot by type. Other credential types are
         // ignored — the recognition gate only acts on the VEC + VMC pair.
         let (slot, label) = match classify(&cred.types) {
@@ -669,6 +679,70 @@ mod classify_tests {
                 "VerifiableMembershipCredential"
             ]))
             .is_none()
+        );
+    }
+
+    /// The guard that would have caught #1062.
+    ///
+    /// Every other test in this module states the wire form as a literal, and
+    /// a literal here can agree with a literal in the handler while both
+    /// disagree with what the VTC actually issues — which is exactly what
+    /// happened. This one asserts against **catalog output**: it mints through
+    /// the same `dtg-credentials` constructors `issue_endorsement` and the VMC
+    /// path use, serialises as `credentials::dtg` does, and requires
+    /// `classify` to recognise the result.
+    ///
+    /// Change the catalog's wire form and this fails. Change `classify` away
+    /// from the catalog and this fails. No literal in this file can make it
+    /// pass.
+    #[tokio::test]
+    async fn classifies_what_the_catalog_actually_mints() {
+        use dtg_credentials::DTGCredential;
+
+        fn types_of(dtg: &DTGCredential) -> Vec<String> {
+            crate::test_support::dtg_json(dtg)["type"]
+                .as_array()
+                .expect("`type` is an array")
+                .iter()
+                .map(|t| t.as_str().expect("`type` entries are strings").to_string())
+                .collect()
+        }
+
+        let now = chrono::Utc::now();
+        let vec = DTGCredential::new_vec(
+            "did:web:issuer.example".into(),
+            "did:key:zSubject".into(),
+            now,
+            None,
+            serde_json::json!({ "role": "moderator" }),
+        );
+        assert!(
+            is_endorsement(classify(&types_of(&vec))),
+            "a catalog-minted VEC must classify as an endorsement — got {:?}",
+            types_of(&vec)
+        );
+
+        let vmc = DTGCredential::new_vmc(
+            "did:web:community.example".into(),
+            "did:key:zMember".into(),
+            now,
+            None,
+            false,
+        );
+        assert!(
+            is_membership(classify(&types_of(&vmc))),
+            "a catalog-minted VMC must classify as a membership — got {:?}",
+            types_of(&vmc)
+        );
+
+        // A relationship credential is neither, and the recognition gate must
+        // ignore it rather than routing it into a slot.
+        let vrc =
+            DTGCredential::new_vrc("did:peer:2.zR1".into(), "did:peer:2.zR2".into(), now, None);
+        let vrc_types = types_of(&vrc);
+        assert!(
+            !is_endorsement(classify(&vrc_types)) && !is_membership(classify(&vrc_types)),
+            "a VRC must not be routed to the VEC or VMC slot"
         );
     }
 
