@@ -247,6 +247,23 @@ pub async fn purge_member(
     }
 
     info!(actor = actor_did, target = target_did, "member purged");
+
+    // Tell them. Best-effort and after the fact: the purge is done and durable,
+    // so a delivery problem must not fail the operator's request and leave them
+    // believing it did not happen. `purged` rather than `adminRemoved` because
+    // the two differ in what recourse the member has — this one deliberately
+    // skipped the removal policy.
+    crate::ceremony::removal_notice::send(
+        state,
+        target_did,
+        vta_sdk::protocols::members::RemovalCode::Purged,
+        "purge",
+        None,
+        &chrono::Utc::now().to_rfc3339(),
+        actor_did,
+    )
+    .await;
+
     Ok(LeaveOutcome {
         did: target_did.to_string(),
         disposition: "purge".into(),
@@ -381,6 +398,23 @@ pub async fn remove_inner(
         reason_present = !reason.is_empty(),
         "member removed"
     );
+
+    // Tell them — but only when somebody else decided. `remove_inner` serves
+    // both the admin path and the DIDComm self-leave, and a member who chose to
+    // leave already has their receipt; sending this as well would tell somebody
+    // who left that they were removed.
+    if actor_did != target_did {
+        crate::ceremony::removal_notice::send(
+            state,
+            target_did,
+            vta_sdk::protocols::members::RemovalCode::AdminRemoved,
+            disposition_str,
+            Some(reason.clone()),
+            &chrono::Utc::now().to_rfc3339(),
+            actor_did,
+        )
+        .await;
+    }
 
     Ok(LeaveOutcome {
         did: target_did.to_string(),

@@ -63,6 +63,7 @@ pub mod execute;
 pub mod facts;
 pub mod invariant;
 pub mod orchestrate;
+pub mod removal_notice;
 pub mod verdict;
 pub mod verify;
 

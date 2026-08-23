@@ -46,6 +46,74 @@ pub const MEMBER_VMC_TYPE: &str = "https://trusttasks.org/spec/vtc/members/vmc/0
 pub const MEMBER_VMC_RESPONSE_TYPE: &str =
     "https://trusttasks.org/spec/vtc/members/vmc/0.1#response";
 
+/// VTC → member: **unsolicited** notice that the community removed them.
+///
+/// Distinct from the self-remove receipt
+/// ([`crate::protocols::join_requests::MEMBER_SELF_REMOVE_RECEIPT_TYPE`]) in the
+/// way that matters: a receipt answers a request the member made and is
+/// correlated to it, so the member is already waiting for it. This answers
+/// nothing — the member did not ask, is not waiting, and may be offline. Sending
+/// one for a member-initiated departure would tell somebody who chose to leave
+/// that they were removed.
+pub const MEMBER_REMOVAL_NOTICE_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/members/removal-notice/0.1";
+
+/// Which removal happened, as carried in [`RemovalNoticeBody::code`].
+///
+/// Two variants rather than one `removed` flag because they differ in what
+/// recourse the member has: an administrator's removal ran the community's
+/// removal policy, a super-administrator's purge deliberately skipped it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RemovalCode {
+    /// Policy-governed removal by an administrator.
+    AdminRemoved,
+    /// Forceful super-administrator deletion; skips the removal policy.
+    Purged,
+}
+
+/// Body of a [`MEMBER_REMOVAL_NOTICE_TYPE`] notice.
+///
+/// Every field except `reason` is required, because a notice that omits any of
+/// them fails to answer one of the questions a removed member has: what
+/// happened, to what, when, and on whose say-so.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovalNoticeBody {
+    /// The removed member's DID.
+    ///
+    /// Carried in the payload as well as the DIDComm envelope so a notice that
+    /// is retained or forwarded — detached from the transport that delivered
+    /// it — still names its own subject.
+    pub did: String,
+    /// Which removal happened.
+    pub code: RemovalCode,
+    /// How the member's published record was handled: `purge`, `tombstone` or
+    /// `historical`. Always concrete — `policydefault` is resolved before the
+    /// notice is sent, since naming an unresolved default tells the member
+    /// nothing about their own record.
+    pub disposition: String,
+    /// The operator's stated reason, verbatim.
+    ///
+    /// `None` when the community gave none, which is a different claim from an
+    /// empty string and is kept distinguishable on the wire. This is the
+    /// member's only account of why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// When the removal took effect (RFC 3339).
+    ///
+    /// Deliberately not the notice's own send time: the two diverge whenever
+    /// the member was offline, and it is the decision that has to be placeable
+    /// in time.
+    pub decided_at: String,
+    /// DID of the administrator who decided.
+    ///
+    /// Names the deciding authority rather than the community, because "the
+    /// community removed me" is unanswerable and "this administrator removed
+    /// me" is. The community itself is the DIDComm sender.
+    pub decided_by: String,
+}
+
 /// Body of a [`MEMBER_REQUEST_VMC_TYPE`] request. The member should issue a VMC
 /// whose `credentialSubject.id` is `community_did` and send it back as a
 /// [`MEMBER_VMC_TYPE`] message.
