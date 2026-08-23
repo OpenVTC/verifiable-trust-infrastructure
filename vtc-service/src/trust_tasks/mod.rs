@@ -38,6 +38,13 @@
 // not the surface.
 pub(crate) mod helpers;
 
+// The schema-conformance sweep (#1059): every bound, published `spec/vtc/*`
+// URI must speak that URI's wire shape. Lives in `src` rather than `tests`
+// because its census is derived from `DISPATCHED_URIS` below, which no
+// integration test can see.
+#[cfg(test)]
+mod conformance;
+
 use serde_json::Value;
 use trust_tasks_rs::{RejectReason, TrustTask};
 
