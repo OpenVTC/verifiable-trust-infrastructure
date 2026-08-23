@@ -137,6 +137,53 @@ VRCs naming a `Tombstone` or `Historical` departure stay visible
 Bilateral counter-signing (where B confirms A's VRC) is **v2**.
 For Phase 4, every VRC is self-issued by the originator.
 
+### The connections graph: half-edges vs complete edges
+
+`GET /v1/relationships/graph` (admin-only) returns the whole edge
+set for the admin UI's connections view. DTG Credentials defines a
+DTG edge as **two** VRCs, one in each direction, so the response
+groups by unordered pair rather than listing one entry per stored
+credential:
+
+```json
+{
+  "nodes": [{ "did": "did:key:zA" }, { "did": "did:key:zB" }],
+  "edges": [{
+    "endpoints": ["did:key:zA", "did:key:zB"],
+    "halves": [
+      { "id": "…", "issuerDid": "did:key:zA", "subjectDid": "did:key:zB", "createdAt": "…" },
+      { "id": "…", "issuerDid": "did:key:zB", "subjectDid": "did:key:zA", "createdAt": "…" }
+    ],
+    "complete": true
+  }]
+}
+```
+
+`complete` is true only when a VRC exists in **both** directions.
+A single-direction edge is a *half-edge* — one party's claim that
+the other has not answered.
+
+The distinction matters because it is what replaced a check.
+Publishing used to require the subject to be a current member; that
+check was the community asserting on the subject's behalf that the
+edge was legitimate. #1061 dropped it, on the DTG rule that
+"community membership is not a precondition for issuing, holding,
+or presenting a VRC", and on the reasoning that the subject's
+consent to an edge is *their publication of the reciprocal VRC*.
+That consent signal is only visible to an operator if the graph
+shows whether the reciprocal VRC arrived — which is what
+`complete` is.
+
+`endpoints` is DID-sorted so a pair has one identity whichever
+half was published first. `halves` can hold more than two entries:
+idempotency is keyed on the credential hash, not on direction, so a
+party can publish several VRCs the same way round. That does not
+make an edge complete — the check is for a VRC in each direction,
+not for two credentials.
+
+Design record:
+[`../05-design-notes/vrc-publish-proof-of-possession.md`](../05-design-notes/vrc-publish-proof-of-possession.md).
+
 ## Custom endorsements
 
 Phase 4 also adds operator-defined custom endorsements via an
