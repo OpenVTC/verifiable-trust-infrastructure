@@ -337,6 +337,11 @@ export interface GraphHalf {
   issuerDid: string;
   subjectDid: string;
   createdAt: string;
+  /** The persona (P-DID) the edge's issuer has asserted on it, via a VPC.
+   *  Absent unless they chose to. Two edges sharing one `personaDid` are the
+   *  same party, said so by that party — the only correlation the graph is
+   *  entitled to draw between two pairwise identifiers. */
+  personaDid?: string;
 }
 /** One edge between a pair of identifiers. A DTG edge is *two* VRCs, one in
  * each direction; `complete` says whether both have been published. A

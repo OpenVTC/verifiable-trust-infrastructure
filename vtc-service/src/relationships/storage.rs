@@ -301,6 +301,7 @@ mod tests {
             }),
             vrc_sha256: format!("{:x}", id.as_u128()),
             created_at: Utc::now(),
+            persona: None,
         }
     }
 
@@ -311,6 +312,25 @@ mod tests {
         store_relationship(&primary, &index, &rel).await.unwrap();
         let got = get_relationship(&primary, rel.id).await.unwrap().unwrap();
         assert_eq!(got, rel);
+    }
+
+    #[tokio::test]
+    async fn rows_written_before_the_persona_field_still_decode() {
+        // #1067 added `persona` to an already-shipped row. Every edge in
+        // every live VTC predates it, so the field has to be optional on
+        // read, not merely optional on write — a bare `Option` without
+        // `#[serde(default)]` would fail here and take the whole
+        // relationships surface down on upgrade.
+        let raw = serde_json::json!({
+            "id": Uuid::new_v4().to_string(),
+            "issuerDid": "did:key:zA",
+            "subjectDid": "did:key:zB",
+            "vrcJsonld": { "type": ["VerifiableCredential"] },
+            "vrcSha256": "deadbeef",
+            "createdAt": "2026-01-01T00:00:00Z",
+        });
+        let rel = decode(raw.to_string().as_bytes()).expect("pre-#1067 row must decode");
+        assert!(rel.persona.is_none());
     }
 
     #[tokio::test]

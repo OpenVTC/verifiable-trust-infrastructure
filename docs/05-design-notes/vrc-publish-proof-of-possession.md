@@ -241,9 +241,32 @@ Note this decision is not VRC-specific. It answers "when a member acts under a
 pairwise identifier, what does the audit trail record?", and it should hold for
 every pairwise-capable operation added later.
 
-**Admin revocation is unaffected.** It keys on row id, not issuer identity
-(`relationships.rs`, revoke section), so moderation of a specific edge still
-works.
+**Revocation — both halves, corrected.** This paragraph originally read only
+"admin revocation is unaffected: it keys on row id, not issuer identity, so
+moderation of a specific edge still works." That is true, and it was the wrong
+half to reassure the reader about.
+
+*Issuer* revocation keys on `auth.did == rel.issuer_did` — the same identity
+equality this design replaced on the publish path, sitting one function below
+it in the same file. Under a pairwise identifier that compares a membership DID
+against a relationship DID and is false by construction, so from #1061 until
+#1067's follow-up a member could publish an edge under a relationship DID and
+then never retract it; only an admin could. Writing "admin revocation is
+unaffected" and stopping there is what let that pass review: the sentence
+answers the question nobody needed answered and is silent on the one that
+mattered.
+
+`DELETE /v1/relationships/{id}` now takes an optional `VrcRevokeAuthorization`
+in the request body — same construction as the publish authorization, bound to
+the row id rather than to a credential digest, since the request names a row and
+carries no credential. Verified and discarded, for the same `sessionId` reason.
+The attributed form (`auth.did == rel.issuer_did`) and admin moderation are
+unchanged and need no proof.
+
+The general lesson, worth applying to anything added later: **replacing an
+identity equality is not done until every sibling operation on the same
+resource has been checked for the same equality.** Grep for the field, not for
+the function.
 
 **Accepted DID methods become policy.** If the issuer identifier is
 method-independent — and it should be; nothing in this design reads a method

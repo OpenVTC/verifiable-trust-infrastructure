@@ -97,7 +97,7 @@ sealed-transfer, and protocol types shared with the VTA.
 | `policy/` | `regorus`-backed engine, policy-id storage, default policies, evaluation helpers. |
 | `recognition/` | Foreign-credential verifier (status list + registry membership) for cross-community session minting. |
 | `registry/` | Trust-registry client + `RegistryHealth` + `MembershipSyncer` + RTBF batching. |
-| `relationships/` | VRC primary keyspace + per-DID secondary index. |
+| `relationships/` | VRC primary keyspace + per-DID secondary index. Each row optionally carries a persona (VPC) annotation — see `docs/05-design-notes/vpc-persona-annotation.md`. |
 | `routes/` | All axum handlers; one file per resource. `routes/mod.rs` wires the `TrustTaskRouter`. |
 | `routing/` | Phase 5 middleware: `host_dispatch`, `csrf`, `security_headers`. |
 | `server.rs` | `AppState` + binary entry point + three OS threads (REST / DIDComm / storage). |

@@ -475,6 +475,42 @@ mod catalog_wire_shape {
         );
     }
 
+    /// The VPC is the one DTG credential in this file the VTC **verifies but
+    /// never mints** — it is self-issued by a person under a persona DID, and
+    /// the community signer has no business asserting someone's persona. So
+    /// there is no `issue_persona`, and this test mints one only to pin the
+    /// shape `routes::relationships::check_vpc_shape` validates against.
+    ///
+    /// That makes the pin more load-bearing here than for the credentials
+    /// above, not less: for a VMC a catalog drift changes what we emit and we
+    /// find out from a consumer, but for a VPC it changes what we *accept*,
+    /// and the failure is every conformant VPC in the ecosystem being
+    /// rejected by a VTC that still compiles and still passes its own tests.
+    #[test]
+    fn persona_credential_wire_shape() {
+        let (valid_from, valid_until) = super::window(Duration::days(30));
+        let dtg = dtg_credentials::DTGCredential::new_vpc(
+            "did:key:zPersona".into(),
+            "did:key:zCounterparty".into(),
+            valid_from,
+            Some(valid_until),
+        );
+        // Not signed: the VTC has no key that may legitimately sign a VPC, so
+        // the body alone is what is pinned. Every other test here goes through
+        // `finalize` because the VTC does mint those.
+        let doc = serde_json::to_value(dtg.credential()).expect("VPC body -> value");
+        assert_shape(
+            &doc,
+            &["VerifiableCredential", "DTGCredential", "PersonaCredential"],
+            "VPC",
+        );
+        // DTG Credentials §VPC: issuer is the P-DID, subject is the
+        // counterparty. The VTC reads both — the first to verify the proof,
+        // the second to check the annotation names the edge's counterparty.
+        assert_eq!(doc["issuer"], "did:key:zPersona");
+        assert_eq!(doc["credentialSubject"]["id"], "did:key:zCounterparty");
+    }
+
     #[tokio::test]
     async fn invitation_credential_wire_shape() {
         let doc = issue_invitation(&signer(), "did:key:zM", None, None, Duration::days(30), &[])

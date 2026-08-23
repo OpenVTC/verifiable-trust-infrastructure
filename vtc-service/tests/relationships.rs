@@ -282,6 +282,7 @@ async fn seed_relationship(fix: &Fixture, issuer: &str, subject: &str) -> Uuid {
         vrc_jsonld: fake_vrc(issuer, subject),
         vrc_sha256: format!("seed-{id}"),
         created_at: chrono::Utc::now(),
+        persona: None,
     };
     store_relationship(&fix.relationships_ks, &fix.relationships_by_did_ks, &rel)
         .await
@@ -748,6 +749,21 @@ mod pairwise {
         hex::encode(Sha256::digest(sorted(v.clone()).to_string().as_bytes()))
     }
 
+    /// Publish a pairwise edge `issuer_seed -> subject_seed`, return its id.
+    /// Shared by the `persona` and `revocation` suites below, both of which
+    /// need an already-published pairwise edge to act on.
+    async fn publish_edge(fix: &Pw, issuer_seed: u8, subject_seed: u8) -> Uuid {
+        let v = vrc(issuer_seed, subject_seed).await;
+        let pop = sign(
+            issuer_seed,
+            authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        let (status, body) = body_value(post(fix, &v, Some(pop)).await).await;
+        assert_eq!(status, StatusCode::CREATED, "seed publish failed: {body}");
+        Uuid::parse_str(body["id"].as_str().unwrap()).unwrap()
+    }
+
     /// A well-formed publish authorization, before signing.
     fn authorization(vrc_hash: &str, aud: &str, session_id: &str) -> Value {
         json!({
@@ -1211,5 +1227,692 @@ mod pairwise {
             post(&fix, &v, Some(pop)).await.status(),
             StatusCode::FORBIDDEN
         );
+    }
+
+    // ─── Persona annotation (VPC) — #1067 ─────────────────
+    //
+    // These live inside `pairwise` because that is where they
+    // matter. On an attributed edge the member is already
+    // correlatable and a persona changes nothing; on pairwise
+    // edges the VPC is the only thing that lets a member be
+    // recognised across relationships without surrendering
+    // their membership DID.
+
+    mod persona {
+        use super::*;
+
+        const PERSONA: u8 = 0x45;
+        const RDID2: u8 = 0x46;
+        const PEER2_RDID: u8 = 0x47;
+        const GRAPH_ADMIN: u8 = 0x7A;
+
+        const PERSONA_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/persona/0.1";
+        const GRAPH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/graph/0.1";
+
+        /// A signed VPC: issued under `persona_seed`'s P-DID, naming
+        /// `counterparty_seed` as the subject. DTG Credentials §VPC.
+        async fn vpc(persona_seed: u8, counterparty_seed: u8) -> Value {
+            sign(
+                persona_seed,
+                json!({
+                    "@context": [
+                        "https://www.w3.org/ns/credentials/v2",
+                        "https://firstperson.network/credentials/dtg/v1"
+                    ],
+                    "type": ["VerifiableCredential", "DTGCredential", "PersonaCredential"],
+                    "issuer": did_for(persona_seed),
+                    "validFrom": "2020-01-01T00:00:00Z",
+                    "credentialSubject": { "id": did_for(counterparty_seed) },
+                }),
+            )
+            .await
+        }
+
+        fn attach_authorization(vpc_hash: &str, edge: Uuid, session_id: &str) -> Value {
+            json!({
+                "type": "VpcAttachAuthorization",
+                "vpc": vpc_hash,
+                "relationship": edge.to_string(),
+                "aud": TEST_VTC_DID,
+                "sessionId": session_id,
+                "issuedAt": chrono::Utc::now().to_rfc3339(),
+            })
+        }
+
+        fn detach_authorization(edge: Uuid, session_id: &str) -> Value {
+            json!({
+                "type": "VpcDetachAuthorization",
+                "relationship": edge.to_string(),
+                "aud": TEST_VTC_DID,
+                "sessionId": session_id,
+                "issuedAt": chrono::Utc::now().to_rfc3339(),
+            })
+        }
+
+        async fn attach(
+            fix: &Pw,
+            edge: Uuid,
+            vpc: &Value,
+            pop: Option<Value>,
+        ) -> (StatusCode, Value) {
+            let mut body = json!({ "vpc": vpc });
+            if let Some(p) = pop {
+                body["pop"] = p;
+            }
+            persona_request(fix, "POST", edge, body).await
+        }
+
+        async fn detach(fix: &Pw, edge: Uuid, pop: Option<Value>) -> (StatusCode, Value) {
+            let mut body = json!({});
+            if let Some(p) = pop {
+                body["pop"] = p;
+            }
+            persona_request(fix, "DELETE", edge, body).await
+        }
+
+        async fn persona_request(
+            fix: &Pw,
+            method: &str,
+            edge: Uuid,
+            body: Value,
+        ) -> (StatusCode, Value) {
+            let req = Request::builder()
+                .method(method)
+                .uri(format!("/v1/relationships/{edge}/persona"))
+                .header("authorization", format!("Bearer {}", fix.token))
+                .header("trust-task", PERSONA_TASK)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+        }
+
+        /// The attach happy path in one call, for tests whose subject is what
+        /// happens *after* a successful attach. The authorization is signed by
+        /// `RDID`, so this is only for edges that `RDID` issued.
+        async fn attach_ok(fix: &Pw, edge: Uuid, persona_seed: u8, counterparty_seed: u8) {
+            let v = vpc(persona_seed, counterparty_seed).await;
+            let pop = sign(
+                RDID,
+                attach_authorization(&sha256_hex(&v), edge, &fix.session_id),
+            )
+            .await;
+            let (status, body) = attach(fix, edge, &v, Some(pop)).await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+        }
+
+        /// The admin connections graph is where the correlation a persona
+        /// enables actually becomes visible, so the assertions that matter
+        /// read it rather than the storage layer. Seeds its own admin because
+        /// the `pairwise` fixture only has the one member session.
+        async fn graph_edges(fix: &Pw) -> Vec<Value> {
+            let now = now_epoch();
+            let admin = did_for(GRAPH_ADMIN);
+            store_acl_entry(
+                &fix._vtc.state.acl_ks,
+                &VtcAclEntry {
+                    did: admin.clone(),
+                    role: VtcRole::Admin,
+                    label: None,
+                    allowed_contexts: vec![],
+                    created_at: now,
+                    created_by: "did:key:vtc-install".into(),
+                    updated_at: None,
+                    updated_by: None,
+                    expires_at: None,
+                },
+            )
+            .await
+            .unwrap();
+            store_member(&fix._vtc.state.members_ks, &Member::fresh(&admin))
+                .await
+                .unwrap();
+            let session_id = format!("sess-{}", Uuid::new_v4());
+            store_session(
+                &fix._vtc.state.sessions_ks,
+                &Session {
+                    session_id: session_id.clone(),
+                    did: admin.clone(),
+                    challenge: "test".into(),
+                    state: SessionState::Authenticated,
+                    created_at: now,
+                    last_seen: now,
+                    refresh_token: None,
+                    refresh_expires_at: None,
+                    tee_attested: false,
+                    amr: Vec::new(),
+                    acr: String::new(),
+                    acr_expires_at: None,
+                    token_id: None,
+                    session_pubkey_b58btc: None,
+                },
+            )
+            .await
+            .unwrap();
+            let claims =
+                fix._vtc
+                    .jwt_keys
+                    .new_claims(admin, session_id, "admin".into(), vec![], 3600, true);
+            let token = fix._vtc.jwt_keys.encode(&claims).unwrap();
+
+            let req = Request::builder()
+                .method("GET")
+                .uri("/v1/relationships/graph")
+                .header("authorization", format!("Bearer {token}"))
+                .header("trust-task", GRAPH_TASK)
+                .body(Body::empty())
+                .unwrap();
+            let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+            assert_eq!(status, StatusCode::OK, "graph: {body}");
+            body["edges"].as_array().cloned().unwrap_or_default()
+        }
+
+        /// The property #1067 exists to restore: a member can be recognised
+        /// across relationships under a name they chose, while every edge
+        /// still names only pairwise identifiers.
+        #[tokio::test]
+        async fn attaches_a_persona_to_a_pairwise_edge() {
+            let fix = fixture().await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            attach_ok(&fix, edge, PERSONA, PEER_RDID).await;
+
+            // The graph groups by pair (#1073), so the per-VRC fields — and
+            // the persona, which is asserted per VRC — live on the half, not
+            // on the edge. Only one direction is published here, so there is
+            // exactly one half.
+            let edges = graph_edges(&fix).await;
+            assert_eq!(edges.len(), 1);
+            assert_eq!(edges[0]["halves"].as_array().unwrap().len(), 1);
+            assert_eq!(edges[0]["halves"][0]["personaDid"], did_for(PERSONA));
+            assert_eq!(edges[0]["halves"][0]["issuerDid"], did_for(RDID));
+
+            // The annotation must not smuggle the member back in.
+            let rows = vtc_service::relationships::list_all(&fix.relationships_ks)
+                .await
+                .unwrap();
+            let stored = serde_json::to_string(&rows[0]).unwrap();
+            assert!(
+                !stored.contains(&did_for(MEMBER)),
+                "membership DID leaked into the annotated row"
+            );
+            assert!(
+                !stored.contains(&fix.session_id),
+                "session id leaked into the annotated row"
+            );
+        }
+
+        /// The whole point: two edges under two different relationship DIDs,
+        /// correlatable because — and only because — the member said so.
+        #[tokio::test]
+        async fn the_same_persona_may_be_asserted_on_several_edges() {
+            let fix = fixture().await;
+            let e1 = publish_edge(&fix, RDID, PEER_RDID).await;
+            let e2 = publish_edge(&fix, RDID2, PEER2_RDID).await;
+            attach_ok(&fix, e1, PERSONA, PEER_RDID).await;
+
+            // Second edge: same persona, different relationship DID, so the
+            // authorization is signed by RDID2.
+            let v = vpc(PERSONA, PEER2_RDID).await;
+            let pop = sign(
+                RDID2,
+                attach_authorization(&sha256_hex(&v), e2, &fix.session_id),
+            )
+            .await;
+            let (status, body) = attach(&fix, e2, &v, Some(pop)).await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+
+            let edges = graph_edges(&fix).await;
+            assert_eq!(edges.len(), 2);
+            for e in &edges {
+                assert_eq!(e["halves"][0]["personaDid"], did_for(PERSONA));
+            }
+            // A P-DID recurring is the feature. An R-DID recurring is not:
+            // the two edges must still carry distinct issuers.
+            let issuers: std::collections::BTreeSet<_> = edges
+                .iter()
+                .map(|e| e["halves"][0]["issuerDid"].as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(issuers.len(), 2);
+        }
+
+        /// Anyone who was ever handed a VPC could otherwise staple it to
+        /// someone else's edge. Control of the edge's issuing key is the gate.
+        #[tokio::test]
+        async fn rejects_an_authorization_signed_by_another_key() {
+            let fix = fixture().await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            let v = vpc(PERSONA, PEER_RDID).await;
+            let pop = sign(
+                OTHER,
+                attach_authorization(&sha256_hex(&v), edge, &fix.session_id),
+            )
+            .await;
+            let (status, body) = attach(&fix, edge, &v, Some(pop)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+        }
+
+        /// A pairwise edge's issuer is never the session DID, so omitting the
+        /// authorization is never valid there.
+        #[tokio::test]
+        async fn rejects_an_attach_with_no_authorization_on_a_pairwise_edge() {
+            let fix = fixture().await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            let v = vpc(PERSONA, PEER_RDID).await;
+            let (status, body) = attach(&fix, edge, &v, None).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+        }
+
+        /// An authorization for one edge must not annotate another. Without
+        /// the `relationship` binding a member could move a persona onto any
+        /// edge they control.
+        #[tokio::test]
+        async fn rejects_an_authorization_bound_to_a_different_edge() {
+            let fix = fixture().await;
+            let e1 = publish_edge(&fix, RDID, PEER_RDID).await;
+            let e2 = publish_edge(&fix, RDID2, PEER2_RDID).await;
+            let v = vpc(PERSONA, PEER2_RDID).await;
+            let pop = sign(
+                RDID2,
+                attach_authorization(&sha256_hex(&v), e1, &fix.session_id),
+            )
+            .await;
+            let (status, body) = attach(&fix, e2, &v, Some(pop)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+        }
+
+        /// This endpoint annotates; it does not publish. A VRC posted here is
+        /// a caller error, not a second way to create an edge.
+        #[tokio::test]
+        async fn rejects_a_credential_that_is_not_a_vpc() {
+            let fix = fixture().await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            let not_a_vpc = vrc(PERSONA, PEER_RDID).await;
+            let pop = sign(
+                RDID,
+                attach_authorization(&sha256_hex(&not_a_vpc), edge, &fix.session_id),
+            )
+            .await;
+            let (status, body) = attach(&fix, edge, &not_a_vpc, Some(pop)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+        }
+
+        /// A persona is asserted *to* a counterparty. A VPC naming somebody
+        /// else has nothing to say about this edge.
+        #[tokio::test]
+        async fn rejects_a_vpc_asserted_to_a_different_counterparty() {
+            let fix = fixture().await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            let v = vpc(PERSONA, OTHER).await;
+            let pop = sign(
+                RDID,
+                attach_authorization(&sha256_hex(&v), edge, &fix.session_id),
+            )
+            .await;
+            let (status, body) = attach(&fix, edge, &v, Some(pop)).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+        }
+
+        /// Withdrawing a persona has to work, or the feature is a one-way
+        /// disclosure. The edge itself survives.
+        #[tokio::test]
+        async fn detach_removes_the_persona_and_leaves_the_edge() {
+            let fix = fixture().await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            attach_ok(&fix, edge, PERSONA, PEER_RDID).await;
+
+            let pop = sign(RDID, detach_authorization(edge, &fix.session_id)).await;
+            let (status, body) = detach(&fix, edge, Some(pop)).await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            assert!(body["personaDid"].is_null());
+
+            let edges = graph_edges(&fix).await;
+            assert_eq!(edges.len(), 1, "the edge must outlive its annotation");
+            assert!(edges[0].get("personaDid").is_none());
+        }
+
+        /// The two authorization types are distinct so that one cannot stand
+        /// in for the other — otherwise a captured attach authorization would
+        /// let its holder strip the persona it was made to assert.
+        #[tokio::test]
+        async fn rejects_an_attach_authorization_replayed_as_a_detach() {
+            let fix = fixture().await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            let v = vpc(PERSONA, PEER_RDID).await;
+            attach_ok(&fix, edge, PERSONA, PEER_RDID).await;
+
+            let pop = sign(
+                RDID,
+                attach_authorization(&sha256_hex(&v), edge, &fix.session_id),
+            )
+            .await;
+            let (status, body) = detach(&fix, edge, Some(pop)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+        }
+
+        /// Both verbs leave a trail, and neither leaves the session id in it.
+        #[tokio::test]
+        async fn attach_and_detach_are_audited_without_the_session_id() {
+            let fix = fixture().await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            attach_ok(&fix, edge, PERSONA, PEER_RDID).await;
+            let pop = sign(RDID, detach_authorization(edge, &fix.session_id)).await;
+            assert_eq!(detach(&fix, edge, Some(pop)).await.0, StatusCode::OK);
+
+            let (mut saw_attach, mut saw_detach) = (false, false);
+            for (_k, raw) in fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap() {
+                assert!(
+                    !String::from_utf8_lossy(&raw).contains(&fix.session_id),
+                    "session id reached the audit store"
+                );
+                let env: AuditEnvelope = serde_json::from_slice(&raw).unwrap();
+                match env.event {
+                    AuditEvent::VpcAttached(d) => {
+                        assert_eq!(d.persona_did, did_for(PERSONA));
+                        saw_attach = true;
+                    }
+                    AuditEvent::VpcDetached(d) => {
+                        assert_eq!(d.persona_did, did_for(PERSONA));
+                        saw_detach = true;
+                    }
+                    _ => {}
+                }
+            }
+            assert!(saw_attach && saw_detach);
+        }
+
+        #[tokio::test]
+        async fn unknown_edge_is_404() {
+            let fix = fixture().await;
+            let v = vpc(PERSONA, PEER_RDID).await;
+            let missing = Uuid::new_v4();
+            let pop = sign(
+                RDID,
+                attach_authorization(&sha256_hex(&v), missing, &fix.session_id),
+            )
+            .await;
+            let (status, _) = attach(&fix, missing, &v, Some(pop)).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+        }
+    }
+
+    // ─── Retracting a pairwise edge ───────────────────────
+    //
+    // `revoke` kept the identity equality the publish path
+    // replaced — `auth.did == rel.issuer_did` — one function
+    // below where it was fixed. For a pairwise edge that
+    // compares a membership DID against a relationship DID and
+    // is false by construction, so from #1061 until this suite
+    // a member could publish an edge under a relationship DID
+    // and then never take it back; only an admin could.
+    //
+    // `revoke_issuer_can_retract_own` (top of this file) seeds
+    // the *attributed* form, where the equality still holds,
+    // which is exactly why the regression shipped green.
+
+    mod revocation {
+        use super::*;
+
+        /// A second relationship DID + counterparty, so a caller can hold two
+        /// edges at once and try to retract one with the other's proof.
+        const RDID_B: u8 = 0x48;
+        const PEER_B_RDID: u8 = 0x49;
+        /// A second community member, for the cross-session replay test.
+        const OTHER_MEMBER: u8 = 0x4A;
+
+        /// A well-formed revoke authorization, before signing. Bound to the
+        /// row id, because that is what `DELETE /v1/relationships/{id}`
+        /// names — there is no credential in the request to bind to.
+        fn revoke_authorization(edge: Uuid, session_id: &str) -> Value {
+            json!({
+                "type": "VrcRevokeAuthorization",
+                "relationship": edge.to_string(),
+                "aud": TEST_VTC_DID,
+                "sessionId": session_id,
+                "issuedAt": chrono::Utc::now().to_rfc3339(),
+            })
+        }
+
+        async fn delete_edge(fix: &Pw, edge: Uuid, pop: Option<Value>) -> (StatusCode, Value) {
+            let mut req = Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/relationships/{edge}"))
+                .header("authorization", format!("Bearer {}", fix.token))
+                .header("trust-task", REVOKE_TASK);
+            // No `pop` means no body and no content-type at all — the shape
+            // every client sending this request today uses, and the shape the
+            // optional extractor has to keep accepting.
+            let body = match pop {
+                Some(p) => {
+                    req = req.header("content-type", "application/json");
+                    Body::from(json!({ "pop": p }).to_string())
+                }
+                None => Body::empty(),
+            };
+            let resp = fix
+                .router
+                .clone()
+                .oneshot(req.body(body).unwrap())
+                .await
+                .unwrap();
+            body_value(resp).await
+        }
+
+        async fn edge_count(fix: &Pw) -> usize {
+            vtc_service::relationships::list_all(&fix.relationships_ks)
+                .await
+                .unwrap()
+                .len()
+        }
+
+        /// Seed a second current member with their own live session, and
+        /// return their bearer token. Used to replay one member's
+        /// authorization inside another member's session.
+        async fn other_member_token(fix: &Pw) -> String {
+            let now = now_epoch();
+            let did = did_for(OTHER_MEMBER);
+            store_acl_entry(
+                &fix._vtc.state.acl_ks,
+                &VtcAclEntry {
+                    did: did.clone(),
+                    role: VtcRole::Member,
+                    label: None,
+                    allowed_contexts: vec![],
+                    created_at: now,
+                    created_by: "did:key:vtc-install".into(),
+                    updated_at: None,
+                    updated_by: None,
+                    expires_at: None,
+                },
+            )
+            .await
+            .unwrap();
+            store_member(&fix._vtc.state.members_ks, &Member::fresh(&did))
+                .await
+                .unwrap();
+            let session_id = format!("sess-{}", Uuid::new_v4());
+            store_session(
+                &fix._vtc.state.sessions_ks,
+                &Session {
+                    session_id: session_id.clone(),
+                    did: did.clone(),
+                    challenge: "test".into(),
+                    state: SessionState::Authenticated,
+                    created_at: now,
+                    last_seen: now,
+                    refresh_token: None,
+                    refresh_expires_at: None,
+                    tee_attested: false,
+                    amr: Vec::new(),
+                    acr: String::new(),
+                    acr_expires_at: None,
+                    token_id: None,
+                    session_pubkey_b58btc: None,
+                },
+            )
+            .await
+            .unwrap();
+            let claims =
+                fix._vtc
+                    .jwt_keys
+                    .new_claims(did, session_id, "reader".into(), vec![], 3600, true);
+            fix._vtc.jwt_keys.encode(&claims).unwrap()
+        }
+
+        /// The regression. Fails against the pre-fix handler with 403: the
+        /// session DID is the member's, the row's issuer is a relationship
+        /// DID, and nothing in `revoke` could bridge them.
+        #[tokio::test]
+        async fn issuer_can_retract_a_pairwise_edge_with_an_authorization() {
+            let fix = fixture().await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            assert_eq!(edge_count(&fix).await, 1);
+
+            let pop = sign(RDID, revoke_authorization(edge, &fix.session_id)).await;
+            let (status, body) = delete_edge(&fix, edge, Some(pop)).await;
+            assert_eq!(status, StatusCode::OK, "body: {body}");
+            assert_eq!(edge_count(&fix).await, 0, "the row must actually be gone");
+        }
+
+        /// Without proof of control the answer is still 403 — that part was
+        /// never wrong. What was wrong was that there was no way to supply
+        /// the proof.
+        #[tokio::test]
+        async fn a_pairwise_edge_still_needs_an_authorization() {
+            let fix = fixture().await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            let (status, body) = delete_edge(&fix, edge, None).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+            assert_eq!(edge_count(&fix).await, 1);
+        }
+
+        /// Holding a session is not holding the issuing key. Without this,
+        /// any member could delete any pairwise edge in the community.
+        #[tokio::test]
+        async fn rejects_an_authorization_signed_by_another_key() {
+            let fix = fixture().await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            let pop = sign(OTHER, revoke_authorization(edge, &fix.session_id)).await;
+            let (status, body) = delete_edge(&fix, edge, Some(pop)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+            assert_eq!(edge_count(&fix).await, 1);
+        }
+
+        /// An authorization naming one edge must not delete another, even
+        /// when both were issued under keys the caller controls.
+        #[tokio::test]
+        async fn rejects_an_authorization_bound_to_a_different_edge() {
+            let fix = fixture().await;
+            let e1 = publish_edge(&fix, RDID, PEER_RDID).await;
+            let e2 = publish_edge(&fix, RDID_B, PEER_B_RDID).await;
+            let pop = sign(RDID_B, revoke_authorization(e1, &fix.session_id)).await;
+            let (status, body) = delete_edge(&fix, e2, Some(pop)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+            assert_eq!(edge_count(&fix).await, 2);
+        }
+
+        /// The `type` guard on its own.
+        ///
+        /// Added because mutation testing showed it was untested: with the
+        /// type comparison removed, every test here still passed. The replay
+        /// test below was being caught by the *edge* binding — a publish
+        /// authorization has no `relationship` field — so it never exercised
+        /// `type` at all. This object is a valid revoke authorization in every
+        /// respect except the one under test, so nothing else can catch it.
+        #[tokio::test]
+        async fn rejects_an_authorization_of_the_wrong_type() {
+            let fix = fixture().await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            let mut a = revoke_authorization(edge, &fix.session_id);
+            a["type"] = json!("SomeOtherSignedThing");
+            let pop = sign(RDID, a).await;
+            let (status, body) = delete_edge(&fix, edge, Some(pop)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+            assert_eq!(edge_count(&fix).await, 1);
+        }
+
+        /// The `type` guard as a member would actually meet it. A member signs
+        /// a publish authorization every time they lodge an edge; replaying
+        /// one here must not delete it. (Belt and braces with the test above:
+        /// this one is currently caught by the missing `relationship` field,
+        /// which is a second reason it fails and a fine one.)
+        #[tokio::test]
+        async fn rejects_a_publish_authorization_replayed_as_a_revoke() {
+            let fix = fixture().await;
+            let v = vrc(RDID, PEER_RDID).await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            let stolen = sign(
+                RDID,
+                authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
+            )
+            .await;
+            let (status, body) = delete_edge(&fix, edge, Some(stolen)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+            assert_eq!(edge_count(&fix).await, 1);
+        }
+
+        /// The `sessionId` binding — the load-bearing one, per the publish
+        /// design note.
+        ///
+        /// Added because mutation testing showed it was untested here: with
+        /// the session comparison neutered, every other test still passed,
+        /// because every other test happens to present the authorization in
+        /// the session it was minted for. The threat is a *different* member
+        /// replaying a captured authorization: the signature on it is still
+        /// the issuer's and verifies, so `sessionId` is the only thing that
+        /// stops them deleting an edge they do not control.
+        #[tokio::test]
+        async fn rejects_an_authorization_replayed_in_another_members_session() {
+            let fix = fixture().await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            // Minted for — and correctly signed for — the *first* member's
+            // session, then presented by someone else.
+            let pop = sign(RDID, revoke_authorization(edge, &fix.session_id)).await;
+
+            let token = other_member_token(&fix).await;
+            let req = Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/relationships/{edge}"))
+                .header("authorization", format!("Bearer {token}"))
+                .header("trust-task", REVOKE_TASK)
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "pop": pop }).to_string()))
+                .unwrap();
+            let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+            assert_eq!(edge_count(&fix).await, 1);
+        }
+
+        /// The authorization carries `sessionId`, which is attributable to a
+        /// membership DID. Persisting it would rebuild the durable linkage
+        /// publishing under a relationship DID exists to remove — and the
+        /// revoke path writes to the audit store, so it is the one place it
+        /// could plausibly leak.
+        #[tokio::test]
+        async fn authorization_is_never_persisted_to_the_audit_trail() {
+            let fix = fixture().await;
+            let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            let pop = sign(RDID, revoke_authorization(edge, &fix.session_id)).await;
+            assert_eq!(delete_edge(&fix, edge, Some(pop)).await.0, StatusCode::OK);
+
+            let mut saw_revoke = false;
+            for (_k, raw) in fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap() {
+                assert!(
+                    !String::from_utf8_lossy(&raw).contains(&fix.session_id),
+                    "session id reached the audit store"
+                );
+                assert!(
+                    !String::from_utf8_lossy(&raw).contains("VrcRevokeAuthorization"),
+                    "the authorization object reached the audit store"
+                );
+                let env: AuditEnvelope = serde_json::from_slice(&raw).unwrap();
+                if let AuditEvent::VrcRevoked(d) = env.event {
+                    // Proving control of the issuing key *is* being the
+                    // issuer; the trail should not call it an admin action.
+                    assert_eq!(d.revoked_by, "issuer");
+                    saw_revoke = true;
+                }
+            }
+            assert!(saw_revoke, "expected a VrcRevoked audit entry");
+        }
     }
 }
