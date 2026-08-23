@@ -56,18 +56,15 @@ async fn state_with_sink(
     let seed_store: Arc<dyn vta_service::keys::seed_store::SeedStore> =
         Arc::new(TestSeedStore(vec![0xABu8; 32]));
     let (restart_tx, _rx) = tokio::sync::watch::channel(false);
-    let state = build_app_state(
-        config,
-        &store,
-        seed_store,
-        None,
-        None,
-        restart_tx,
-        AppStateParts {
-            audit_sink: sink,
-            ..AppStateParts::default()
-        },
-    )
+    let state = build_app_state(config, &store, seed_store, None, None, restart_tx, {
+        // `AppStateParts` is `#[non_exhaustive]`, so a struct literal is
+        // not available from another crate — and an integration test is
+        // one. Default-then-assign is the supported shape, and the same
+        // change any external consumer makes.
+        let mut parts = AppStateParts::default();
+        parts.audit_sink = sink;
+        parts
+    })
     .await
     .expect("build app state");
     (state, dir)

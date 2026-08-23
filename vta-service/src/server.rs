@@ -304,7 +304,30 @@ impl AuthState for AppState {
 /// literal) keeps `build_app_state` the single `AppState` constructor — one
 /// `WebvhAuthLocks::new()`, one config `RwLock`, one `init_auth` — so the REST
 /// and DIDComm transports can't diverge (P1.1).
+/// **`#[non_exhaustive]` for the same reason [`AppState`] carries it** (#1024),
+/// and the gap that motivated adding it here was found the same way: a field
+/// addition landing as a source-breaking change nobody had labelled.
+///
+/// Every field is public with no private field and no constructor guard, so
+/// before this attribute any crate could write an `AppStateParts { .. }`
+/// literal — including the functional-update form — which made *adding a
+/// field* break them under `constructible_struct_adds_field`. That is not
+/// hypothetical: #1049 added `audit_sink` and #1051 nearly added
+/// `app_state_locks` before the break was noticed and routed around.
+///
+/// Construction inside this crate is unaffected. Outside it, `Default` plus
+/// field assignment replaces the literal:
+///
+/// ```ignore
+/// let mut parts = AppStateParts::default();
+/// parts.audit_sink = Some(sink);
+/// ```
+///
+/// which is what this crate's own integration tests now do — they are separate
+/// crates, so they were the first thing the attribute broke, and they are a
+/// fair proxy for what a consumer has to change.
 #[derive(Default)]
+#[non_exhaustive]
 pub struct AppStateParts {
     /// Telemetry sink shared with the mediator registry. `None` → fresh ring buffer.
     pub telemetry: Option<vti_common::telemetry::SharedTelemetrySink>,
