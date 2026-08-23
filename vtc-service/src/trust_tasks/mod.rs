@@ -269,17 +269,7 @@ fn outcome_to_verdict(outcome: &JoinSubmitOutcome) -> Result<VerdictResponse, Ap
                 },
             },
         },
-        Some(PolicyVerdict::Deny(d)) => VerdictResponse {
-            request_id,
-            verdict: jr::Verdict {
-                effect: jr::VerdictEffect::Deny,
-                with: jr::VerdictWith {
-                    code: Some(d.code),
-                    reason: d.reason,
-                    ..Default::default()
-                },
-            },
-        },
+        Some(PolicyVerdict::Deny(d)) => VerdictResponse::deny(request_id, d.code, d.reason),
         Some(PolicyVerdict::Refer(r)) => {
             VerdictResponse::refer(request_id, r.queue, r.reason.unwrap_or_default())
         }

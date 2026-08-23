@@ -128,10 +128,27 @@ pub async fn status_by_applicant(
 
 /// Shared projection of a stored request into the applicant-facing response.
 /// Only non-sensitive lifecycle fields (never the stored VP).
+///
+/// Two statuses carry more than the bare lifecycle word, for the same reason:
+/// a `Deferred` applicant cannot act without knowing what is still missing,
+/// and a `Rejected` one cannot act — or stop — without knowing why. Both are
+/// projected here rather than only in the correlated ceremony reply, because
+/// that reply is a **one-shot** delivery: an applicant whose socket was down,
+/// whose reply was lost, or who was rejected by an admin long after the fact
+/// never sees it. The poll is the recovery path, so it has to carry the
+/// evidence the reply would have.
 fn project_status(
     id: Uuid,
     req: crate::join::JoinRequest,
 ) -> Result<JoinRequestStatusResponseBody, AppError> {
+    // Why the request was refused — `None` unless it was. Reconciles the two
+    // rejection paths (policy auto-deny, admin reject) into one shape; see
+    // `JoinRequest::decision_for_applicant`.
+    let (code, reason, decided_at) = match req.decision_for_applicant() {
+        Some((code, reason, at)) => (Some(code), reason, at),
+        None => (None, None, None),
+    };
+
     // Project the outstanding requirements only for a Deferred request
     // (a `request_more` verdict the daemon persisted on `policy_decision`).
     let (needs, presentation_definition) = if req.status == JoinStatus::Deferred {
@@ -151,6 +168,9 @@ fn project_status(
         status: req.status.to_string(),
         needs,
         presentation_definition,
+        code,
+        reason,
+        decided_at,
     })
 }
 

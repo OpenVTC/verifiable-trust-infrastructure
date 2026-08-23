@@ -35,6 +35,7 @@
 //!   body is the TrustTask document; the authcrypt sender authenticates
 //!   the holder (no separate signature needed).
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
@@ -186,7 +187,39 @@ pub struct JoinRequestStatusResponseBody {
     /// for a `deferred` request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presentation_definition: Option<JsonValue>,
+    /// Stable refusal code — present only for a `rejected` request.
+    ///
+    /// A policy auto-deny carries the `code` the `join.rego` `deny` verdict
+    /// returned; an admin reject carries [`ADMIN_REJECT_CODE`], since there is
+    /// no policy verdict to source one from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// Human-readable elaboration of the refusal — present only for a
+    /// `rejected` request, and only when the decider supplied one (the policy's
+    /// optional `reason`, or the operator's words on an admin reject).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// When the decision was taken.
+    ///
+    /// Deliberately **not** the response document's `issuedAt`, which is when
+    /// *this* document was produced. For an admin reject the two diverge
+    /// arbitrarily — the applicant may poll days after the decision — so the
+    /// decision's own timestamp has to travel with it.
+    ///
+    /// `None` on a request decided before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<DateTime<Utc>>,
 }
+
+/// The refusal code on the **admin** reject path.
+///
+/// A policy auto-deny sources its code from the `deny` verdict `join.rego`
+/// returned. An admin reject has no verdict behind it — the decision is the
+/// operator's — so the code is this constant and the operator's words ride in
+/// `reason`. Clients switch on it to tell "the community's rules refused you"
+/// (retry once you satisfy them) from "a human refused you" (retrying changes
+/// nothing).
+pub const ADMIN_REJECT_CODE: &str = "admin-reject";
 
 // ---------------------------------------------------------------------------
 // Verdict — the shared `request`/`present` response envelope
@@ -293,6 +326,27 @@ impl VerdictResponse {
                     role,
                     vmc,
                     role_vec,
+                    ..Default::default()
+                },
+            },
+        }
+    }
+
+    /// `deny` verdict — the policy refused a well-formed, verified request.
+    ///
+    /// `code` is the policy's stable refusal code; `reason` its optional
+    /// elaboration. A constructor rather than a hand-assembled struct because
+    /// this shape now has two producers — the correlated ceremony reply and the
+    /// status poll's projection — and hand-assembling it in both is how they
+    /// drift.
+    pub fn deny(request_id: Uuid, code: impl Into<String>, reason: Option<String>) -> Self {
+        Self {
+            request_id,
+            verdict: Verdict {
+                effect: VerdictEffect::Deny,
+                with: VerdictWith {
+                    code: Some(code.into()),
+                    reason,
                     ..Default::default()
                 },
             },

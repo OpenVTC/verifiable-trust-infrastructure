@@ -114,6 +114,52 @@ pub struct JoinRequest {
     /// layer.
     #[serde(default)]
     pub extensions: JsonValue,
+    /// Why this request was refused, for the applicant.
+    ///
+    /// Written by **both** rejection paths — the policy auto-deny at
+    /// submit and the admin reject — so the status poll has one field
+    /// to read rather than two shapes to reconcile. [`JoinDecision`]
+    /// says why that matters.
+    ///
+    /// `None` for a request that has not been rejected, and for one
+    /// rejected before this field existed (see
+    /// [`JoinRequest::decision_for_applicant`], which reconstructs what
+    /// it can from [`Self::policy_decision`]).
+    #[serde(default)]
+    pub decision: Option<JoinDecision>,
+}
+
+/// The refusal, in the form the applicant is owed it.
+///
+/// Both rejection paths reach the applicant through the same poll, but
+/// the evidence used to sit in two different places and only one of them
+/// was projected: an auto-deny left a serialized `Deny` verdict on
+/// [`JoinRequest::policy_decision`], and an admin reject wrote the
+/// operator's reason to the audit log and nowhere else. So an
+/// admin-rejected applicant could never learn why — the correlated
+/// ceremony reply is a one-shot delivery, and the poll that exists to
+/// recover a missed one returned bare `{requestId, status}`.
+///
+/// One field written by both paths is the fix, and it is deliberately
+/// *not* `policy_decision`: an operator's decision is not a policy
+/// verdict, and recording it as one would make the audit trail lie about
+/// where the refusal came from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct JoinDecision {
+    /// Stable refusal code. From the policy's `deny` verdict on the
+    /// auto-deny path; [`vta_sdk::protocols::join_requests::ADMIN_REJECT_CODE`]
+    /// on the admin path, where there is no verdict to source one from.
+    pub code: String,
+    /// Optional elaboration — the policy's `reason`, or the operator's
+    /// words. Absent when the decider supplied none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// When the decision was taken — not when the poll answering it was
+    /// produced. For an admin reject the two diverge by however long the
+    /// applicant takes to poll.
+    pub decided_at: DateTime<Utc>,
 }
 
 impl JoinRequest {
@@ -129,6 +175,36 @@ impl JoinRequest {
             policy_decision: None,
             registry_consent: false,
             extensions: JsonValue::Null,
+            decision: None,
+        }
+    }
+
+    /// The refusal to show the applicant, or `None` if there isn't one.
+    ///
+    /// Reads [`Self::decision`] when it is set. When it is not, a request
+    /// rejected before that field existed can still be answered from the
+    /// serialized `Deny` verdict on [`Self::policy_decision`] — every
+    /// auto-deny wrote one. The only thing lost to the fallback is the
+    /// decision timestamp, which was never recorded then; `decided_at`
+    /// stays `None` rather than being back-filled with a time that would
+    /// be a guess.
+    ///
+    /// An **admin** reject predating the field has nothing to recover:
+    /// its reason only ever reached the audit log. Those rows return
+    /// `None` and the poll answers exactly as it did before.
+    pub fn decision_for_applicant(
+        &self,
+    ) -> Option<(String, Option<String>, Option<DateTime<Utc>>)> {
+        if self.status != JoinStatus::Rejected {
+            return None;
+        }
+        if let Some(d) = &self.decision {
+            return Some((d.code.clone(), d.reason.clone(), Some(d.decided_at)));
+        }
+        let verdict = self.policy_decision.clone()?;
+        match serde_json::from_value::<crate::ceremony::Verdict>(verdict).ok()? {
+            crate::ceremony::Verdict::Deny(d) => Some((d.code, d.reason, None)),
+            _ => None,
         }
     }
 }
@@ -194,5 +270,94 @@ mod tests {
     fn join_transport_str_round_trip() {
         assert_eq!(JoinTransport::Rest.as_str(), "rest");
         assert_eq!(JoinTransport::DIDComm.as_str(), "didcomm");
+    }
+
+    // -- decision_for_applicant (#1052) ------------------------------------
+
+    fn rejected(decision: Option<JoinDecision>, policy: Option<JsonValue>) -> JoinRequest {
+        let mut r = JoinRequest::new("did:key:zApplicant", serde_json::json!({}));
+        r.status = JoinStatus::Rejected;
+        r.decision = decision;
+        r.policy_decision = policy;
+        r
+    }
+
+    #[test]
+    fn a_stored_decision_is_returned_verbatim() {
+        let at = Utc::now();
+        let r = rejected(
+            Some(JoinDecision {
+                code: "membership-required".into(),
+                reason: Some("members of the parent community only".into()),
+                decided_at: at,
+            }),
+            None,
+        );
+        assert_eq!(
+            r.decision_for_applicant(),
+            Some((
+                "membership-required".to_string(),
+                Some("members of the parent community only".to_string()),
+                Some(at),
+            ))
+        );
+    }
+
+    /// Rows rejected before `decision` existed are not lost: an auto-deny
+    /// always wrote the serialized `Deny` verdict, so the code and reason are
+    /// still recoverable. Only the timestamp is not — it was never recorded,
+    /// and reporting `None` is honest where back-filling `Utc::now()` would
+    /// tell the applicant they were rejected the instant they polled.
+    #[test]
+    fn a_legacy_auto_deny_row_falls_back_to_the_policy_verdict() {
+        let r = rejected(
+            None,
+            Some(serde_json::json!({
+                "effect": "deny",
+                "with": { "code": "closed", "reason": "not accepting applications" }
+            })),
+        );
+        assert_eq!(
+            r.decision_for_applicant(),
+            Some((
+                "closed".to_string(),
+                Some("not accepting applications".to_string()),
+                None,
+            )),
+            "the code and reason survive; the never-recorded timestamp does not"
+        );
+    }
+
+    /// A legacy **admin** reject has nothing to fall back to — its reason only
+    /// ever reached the audit log, which the applicant cannot read. The poll
+    /// answers exactly as it did before rather than inventing a code.
+    #[test]
+    fn a_legacy_admin_reject_row_yields_nothing() {
+        assert_eq!(rejected(None, None).decision_for_applicant(), None);
+    }
+
+    /// A `request_more` verdict on `policy_decision` is not a refusal, and a
+    /// `Deferred` row is not a rejected one. Neither may leak into the
+    /// refusal fields.
+    #[test]
+    fn only_a_rejected_request_has_a_refusal() {
+        let mut deferred = rejected(
+            None,
+            Some(serde_json::json!({
+                "effect": "request_more",
+                "with": { "needs": ["agreed:code-of-conduct"] }
+            })),
+        );
+        // Still Rejected, but the stored verdict is not a deny.
+        assert_eq!(deferred.decision_for_applicant(), None);
+
+        // And a Deferred row never reports a refusal, whatever it carries.
+        deferred.status = JoinStatus::Deferred;
+        deferred.decision = Some(JoinDecision {
+            code: "should-not-surface".into(),
+            reason: None,
+            decided_at: Utc::now(),
+        });
+        assert_eq!(deferred.decision_for_applicant(), None);
     }
 }
