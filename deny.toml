@@ -10,6 +10,24 @@
 # entry states the attack surface, why it does not apply to our workloads,
 # and the upstream condition that would let us drop the ignore.
 
+[graph]
+# Scan the graph with every feature on, not just the default set.
+#
+# This is a coverage fix, not a preference. The AWS SDK stack — and with it
+# `hyper` 0.14, `h2` 0.3 and `rustls` 0.21, which is where most of the ignores
+# below point — reaches the graph only through the `tee` feature. A
+# default-feature scan therefore never sees those crates, so it was neither
+# enforcing the ignores nor, more importantly, able to catch a NEW advisory
+# anywhere in that path. The advisories most worth catching were the ones not
+# being checked.
+#
+# The visible symptom was cargo-deny reporting most of the list below as
+# `advisory-not-detected` — which reads as "these are stale, delete them" and
+# is exactly the wrong conclusion: they are live, just out of frame. Turning
+# this on makes the warning mean what it says, so a genuinely stale entry
+# stands out instead of hiding among false ones.
+all-features = true
+
 [advisories]
 version = 2
 ignore = [
@@ -68,29 +86,7 @@ ignore = [
   rustls-webpki 0.101 ships a fix.
   """ },
 
-  { id = "RUSTSEC-2025-0134", reason = """
-  rustls-pemfile is unmaintained. Pulled transitively (in two
-  different versions) through the AWS SDK rustls 0.21 path —
-  `aws-smithy-http-client` and `hyper-rustls` 0.24 both depend on
-  it for parsing PEM-encoded certificates. Functional, just no
-  longer maintained; the parser is small enough that "unmaintained"
-  is the only flagged risk.
 
-  Drop when AWS SDK retires the rustls 0.21 code path; both 0.27
-  hyper-rustls and rustls 0.23 have moved to rustls-pki-types.
-  """ },
-
-  { id = "RUSTSEC-2024-0370", reason = """
-  proc-macro-error 1.0.4 is unmaintained. Build-time-only proc
-  macro library; no runtime presence. Pulled transitively via
-  linked-data-derive → linked-data → json-ld → ssi-json-ld →
-  ssi-claims-core → ssi-dids-core → affinidi-did-resolver-cache-sdk.
-  We do not execute proc-macro-error code at runtime; the lint is
-  for code-hygiene, not a vulnerability.
-
-  Drop when the upstream ssi-* / json-ld stack migrates to
-  proc-macro-error2 or syn 2 native error handling.
-  """ },
 
   { id = "RUSTSEC-2021-0127", reason = """
   serde_cbor 0.11.x is unmaintained. Used only by
@@ -123,24 +119,6 @@ ignore = [
   Drop when uniffi (0.28.x) removes its `paste` dependency.
   """ },
 
-  { id = "RUSTSEC-2026-0215", reason = """
-  smallstr 0.3.1 is unmaintained. Not a vulnerability — no CVE, no known
-  exploit; the crate is a `SmallVec`-backed string type and the advisory is
-  purely a maintenance-status signal.
-
-  Transitive-only and deep: smallstr <- json-syntax <- json-ld <-
-  ssi-json-ld <- ssi-claims-core <- ssi-dids-core <-
-  affinidi-did-resolver-cache-sdk. Nothing in this workspace names it, and
-  we do not choose it — the `ssi-*` stack does, for JSON-LD parsing.
-
-  No safe upgrade exists (all versions are affected), so there is nothing to
-  bump to. The suggested replacements (compact_str, smol_str) are a change
-  for the `ssi-json-ld`/`json-syntax` maintainers to make, not something we
-  can force from here without forking the JSON-LD stack.
-
-  Drop this ignore when json-syntax releases a version off smallstr and the
-  `ssi-*` chain picks it up.
-  """ },
 ]
 
 # License policy. Allow-list is derived from the actual licenses present
