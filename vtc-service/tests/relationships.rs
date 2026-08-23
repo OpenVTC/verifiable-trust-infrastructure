@@ -880,6 +880,124 @@ mod pairwise {
         );
     }
 
+    // ─── A relationship DID must be unique per counterparty ───
+
+    /// DTG Credentials: "each entity MUST generate a new, unique R-DID for
+    /// every single entity they connect with, even within the same community."
+    ///
+    /// This is type integrity rather than a privacy policy. A verifier reading
+    /// a pairwise edge is entitled to conclude the identifier says nothing
+    /// beyond that one relationship; a reused R-DID breaks that inference for
+    /// every reader of the graph.
+    #[tokio::test]
+    async fn rejects_a_relationship_did_reused_with_a_second_counterparty() {
+        let fix = fixture().await;
+
+        let first = vrc(RDID, PEER_RDID).await;
+        let pop = sign(
+            RDID,
+            authorization(&sha256_hex(&first), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        assert_eq!(
+            post(&fix, &first, Some(pop)).await.status(),
+            StatusCode::CREATED
+        );
+
+        // Same relationship DID, different counterparty.
+        let second = vrc(RDID, OTHER).await;
+        let pop2 = sign(
+            RDID,
+            authorization(&sha256_hex(&second), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        let (status, body) = body_value(post(&fix, &second, Some(pop2)).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    }
+
+    /// Uniqueness is per counterparty, not per credential — re-issuing to the
+    /// *same* counterparty (a renewal, a corrected claim) is not reuse.
+    #[tokio::test]
+    async fn allows_reissuing_to_the_same_counterparty() {
+        let fix = fixture().await;
+
+        let first = vrc(RDID, PEER_RDID).await;
+        let pop = sign(
+            RDID,
+            authorization(&sha256_hex(&first), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        assert_eq!(
+            post(&fix, &first, Some(pop)).await.status(),
+            StatusCode::CREATED
+        );
+
+        // Same parties, different credential body — a distinct VRC, so the
+        // idempotency hash differs and this is a genuine second publish.
+        let mut body = json!({
+            "@context": [
+                "https://www.w3.org/ns/credentials/v2",
+                "https://firstperson.network/credentials/dtg/v1"
+            ],
+            "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
+            "issuer": did_for(RDID),
+            "validFrom": "2021-06-01T00:00:00Z",
+            "credentialSubject": { "id": did_for(PEER_RDID) },
+        });
+        body["validUntil"] = json!("2999-01-01T00:00:00Z");
+        let second = sign(RDID, body).await;
+        let pop2 = sign(
+            RDID,
+            authorization(&sha256_hex(&second), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        let (status, b) = body_value(post(&fix, &second, Some(pop2)).await).await;
+        assert_eq!(status, StatusCode::CREATED, "body: {b}");
+    }
+
+    /// The public-community case. In an open-source community everyone is
+    /// known, and a member may reasonably want one identifier across every
+    /// relationship. DTG Credentials supports that — as the *attributed*
+    /// form, under the membership DID — and the uniqueness rule does not
+    /// apply to it, because an M-DID is not claiming to be pairwise.
+    ///
+    /// The member is not forced to choose between being recognised and being
+    /// conformant; they choose the form that means what they intend.
+    #[tokio::test]
+    async fn attributed_edges_may_share_one_identifier_across_counterparties() {
+        let fix = fixture().await;
+        let member = did_for(MEMBER);
+
+        for peer in [PEER_RDID, OTHER] {
+            // Issued under the member's own DID, so no authorization object —
+            // the session already proves control of it.
+            let v = sign(
+                MEMBER,
+                json!({
+                    "@context": [
+                        "https://www.w3.org/ns/credentials/v2",
+                        "https://firstperson.network/credentials/dtg/v1"
+                    ],
+                    "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
+                    "issuer": member,
+                    "validFrom": "2020-01-01T00:00:00Z",
+                    "credentialSubject": { "id": did_for(peer) },
+                }),
+            )
+            .await;
+            let (status, b) = body_value(post(&fix, &v, None).await).await;
+            // The default policy's attributed rule needs both parties to be
+            // members; only the issuer is, so this is the policy's call, not
+            // the uniqueness rule's. What matters is that it is never the
+            // "relationship DID already has an edge" rejection.
+            assert!(
+                status != StatusCode::BAD_REQUEST
+                    || !b.to_string().contains("must be unique to one counterparty"),
+                "attributed edges must not be subject to R-DID uniqueness: {b}"
+            );
+        }
+    }
+
     // ─── Only a conformant VRC becomes a graph edge ───
 
     /// Build an otherwise-valid, correctly-signed credential whose shape has

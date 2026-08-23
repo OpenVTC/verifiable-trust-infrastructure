@@ -1055,7 +1055,7 @@ mod tests {
     }
 
     #[test]
-    fn relationships_default_requires_both_parties_current() {
+    fn relationships_default_attributed_requires_both_parties_current() {
         let c = compile_default(PolicyPurpose::Relationships);
 
         let both = evaluate(
@@ -1063,6 +1063,8 @@ mod tests {
             "data.vtc.relationships.allow",
             json!({
                 "vrc": {},
+                "identifier_form": "attributed",
+                "authenticated_member": { "did": "did:key:zIssuer", "is_current": true },
                 "issuer_member": { "did": "did:key:zIssuer", "is_current": true },
                 "subject_member": { "did": "did:key:zSubject", "is_current": true },
                 "action": "publish"
@@ -1076,6 +1078,8 @@ mod tests {
             "data.vtc.relationships.allow",
             json!({
                 "vrc": {},
+                "identifier_form": "attributed",
+                "authenticated_member": { "did": "did:key:zIssuer", "is_current": true },
                 "issuer_member": { "did": "did:key:zIssuer", "is_current": true },
                 "subject_member": { "did": "did:key:zSubject", "is_current": false },
                 "action": "publish"
@@ -1095,11 +1099,12 @@ mod tests {
     fn relationships_default_allows_pairwise_publish_with_pop() {
         let c = compile_default(PolicyPurpose::Relationships);
 
-        let input = |member_current: bool, pop_verified: bool| {
+        let input = |member_current: bool, pairwise: bool| {
             json!({
                 "vrc": {},
+                "identifier_form": if pairwise { "pairwise" } else { "attributed" },
                 "authenticated_member": { "did": "did:key:zMember", "is_current": member_current },
-                "issuer":  { "did": "did:peer:2.zR1", "pop_verified": pop_verified },
+                "issuer":  { "did": "did:peer:2.zR1", "pop_verified": pairwise },
                 "subject": { "did": "did:peer:2.zR2" },
                 // Pairwise DIDs are not members; the deprecated fields say so.
                 "issuer_member":  { "did": "did:peer:2.zR1", "is_current": false },
@@ -1117,8 +1122,8 @@ mod tests {
         let no_pop = evaluate(&c, "data.vtc.relationships.allow", input(true, false)).unwrap();
         assert!(
             !pluck_bool(&no_pop),
-            "without proof of control the pairwise rule must not fire, and the \
-             deprecated rule must not rescue it — neither party is a member"
+            "an attributed claim whose named parties are not members must be denied — \
+             the pairwise rule must not fire, and the attributed rule must not rescue it"
         );
 
         let not_a_member =

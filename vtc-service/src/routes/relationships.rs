@@ -13,7 +13,7 @@
 //!    an `issuer` equal to the session DID. It then runs
 //!    `relationships.rego` against an enriched input
 //!    (`{ vrc, authenticated_member: { did, is_current },
-//!        issuer: { did, pop_verified }, subject: { did },
+//!        identifier_form, issuer: { did }, subject: { did },
 //!        action }`), persists the row + secondary-index
 //!    entries on allow, and emits `VrcPublished`.
 //!
@@ -57,11 +57,36 @@ use crate::policy::{
     get_policy,
 };
 use crate::relationships::{
-    Relationship, delete_relationship, find_by_hash, get_relationship, store_relationship,
+    Relationship, delete_relationship, find_by_hash, get_relationship,
+    issuer_counterparties_besides, store_relationship,
 };
 use crate::server::AppState;
 
 // ─── Publish ─────────────────────────────────────────────
+
+/// Which kind of identifier a VRC is issued under. A member picks per
+/// relationship; the community declares which it expects (see the community
+/// profile's `relationshipIdentifierDefault`). Both are permanent, supported
+/// forms — neither is a migration state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdentifierForm {
+    /// Issued under the member's membership DID. The edge names them and the
+    /// graph is correlatable by design — what a public community wants.
+    Attributed,
+    /// Issued under a relationship DID scoped to one counterparty, with a
+    /// publish authorization proving control of it.
+    Pairwise,
+}
+
+impl IdentifierForm {
+    /// Wire value, and the string operator policies match on.
+    fn as_str(self) -> &'static str {
+        match self {
+            IdentifierForm::Attributed => "attributed",
+            IdentifierForm::Pairwise => "pairwise",
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PublishBody {
@@ -165,7 +190,25 @@ pub async fn publish(
     //    publishable credential. The session proves membership;
     //    the authorization object proves control of the issuing
     //    key; neither requires them to be the same string (#1054).
-    let pop_verified = match (&body.pop, issuer_did == auth.did) {
+    //    A member chooses this per relationship. Both forms are
+    //    first-class and permanent — neither is a migration
+    //    state:
+    //
+    //    **attributed** — the VRC is issued under the member's
+    //    own membership DID. The edge names them, and the graph
+    //    is correlatable by design. This is what a public
+    //    community wants; DTG Credentials permits it directly
+    //    ("the member may also assert the M-DID in any VRC where
+    //    the member wishes to assert a VTC relationship").
+    //
+    //    **pairwise** — the VRC is issued under a relationship
+    //    DID scoped to this counterparty, and the authorization
+    //    object proves the caller controls it.
+    //
+    //    The community declares which it expects; the member
+    //    decides each time. Only the *claim* is enforced here —
+    //    see the uniqueness check below.
+    let identifier_form = match (&body.pop, issuer_did == auth.did) {
         (Some(pop), _) => {
             let aud = crate::routes::recognise::vtc_did(&state).await?;
             verify_publish_authorization(
@@ -178,19 +221,9 @@ pub async fn publish(
             )
             .await
             .map_err(|e| AppError::Forbidden(format!("VrcPublishAuthorizationInvalid: {e}")))?;
-            true
+            IdentifierForm::Pairwise
         }
-        // Deprecated: issuer == session DID, no authorization
-        // object. Accepted for one release so existing clients
-        // keep working while they move to pairwise identifiers.
-        (None, true) => {
-            info!(
-                issuer = %issuer_did,
-                "VRC published under the session DID with no publish authorization — \
-                 deprecated; issue under a relationship DID and send `pop` instead"
-            );
-            false
-        }
+        (None, true) => IdentifierForm::Attributed,
         // Rejected at step 2; restated rather than `unreachable!` so a
         // future edit that moves the gate cannot turn a caller error into
         // a panicking request handler.
@@ -202,6 +235,42 @@ pub async fn publish(
             ));
         }
     };
+
+    //    An identifier presented as pairwise must actually be
+    //    pairwise. DTG Credentials: "each entity MUST generate a
+    //    new, unique R-DID for every single entity they connect
+    //    with, even within the same community."
+    //
+    //    This is type integrity, not a privacy policy, which is
+    //    why it is unconditional rather than something a
+    //    community can switch off. A verifier reading a pairwise
+    //    edge is entitled to conclude the identifier says nothing
+    //    beyond that one relationship; a reused R-DID breaks that
+    //    inference for every reader of the graph, not just for
+    //    the member who reused it. A member who wants to be
+    //    recognised across their relationships has a supported
+    //    way to do it — the attributed form above.
+    //
+    //    The community is the only party that can see the
+    //    violation: each counterparty sees only its own edge.
+    if identifier_form == IdentifierForm::Pairwise {
+        let others = issuer_counterparties_besides(
+            &state.relationships_ks,
+            &state.relationships_by_did_ks,
+            &issuer_did,
+            &subject_did,
+        )
+        .await?;
+        if !others.is_empty() {
+            return Err(AppError::Validation(format!(
+                "relationship DID {issuer_did} already has an edge to {} other \
+                 counterpart(y|ies) — a relationship DID must be unique to one \
+                 counterparty. Mint a new one for this relationship, or issue \
+                 under your membership DID to publish an attributed edge",
+                others.len()
+            )));
+        }
+    }
 
     // 7. Enrich for the policy input.
     //
@@ -230,7 +299,7 @@ pub async fn publish(
     // presenting a VRC". The subject's consent to the edge is
     // their publication of the reciprocal VRC, not our assertion
     // that they exist.
-    if !pop_verified
+    if identifier_form == IdentifierForm::Attributed
         && !subject_current
         && get_acl_entry(&state.acl_ks, &subject_did).await?.is_none()
     {
@@ -242,7 +311,12 @@ pub async fn publish(
     let policy_input = json!({
         "vrc": vrc,
         "authenticated_member": { "did": auth.did, "is_current": member_current },
-        "issuer": { "did": issuer_did, "pop_verified": pop_verified },
+        "identifier_form": identifier_form.as_str(),
+        "issuer": {
+            "did": issuer_did,
+            // Retained: `pairwise` implies the authorization was verified.
+            "pop_verified": identifier_form == IdentifierForm::Pairwise,
+        },
         "subject": { "did": subject_did },
         // Deprecated shape — see above.
         "issuer_member": { "did": issuer_did, "is_current": issuer_current },

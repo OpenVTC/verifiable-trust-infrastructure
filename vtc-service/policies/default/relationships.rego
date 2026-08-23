@@ -1,44 +1,63 @@
 # Default `relationships` policy — store iff the caller is a
-# current member and has proven control of the issuing DID.
+# current member of this community.
 #
-# A VRC names two parties (issuer + subject). Under pairwise
-# relationship DIDs — which DTG Credentials recommends, and
-# requires to be unique per counterparty — neither party is
-# resolvable to a community member, and is not meant to be.
-# Asking "are both parties current members?" is therefore no
-# longer answerable, and per DTG Credentials §Community-Anchored
-# ZKP it is also the wrong question: "community membership is
-# not a precondition for issuing, holding, or presenting a VRC".
+# A VRC names two parties (issuer + subject). Under the pairwise
+# form neither is resolvable to a member, and is not meant to be:
+# DTG Credentials §Community-Anchored ZKP is explicit that
+# "community membership is not a precondition for issuing,
+# holding, or presenting a VRC". So the question this policy asks
+# is not "are both parties members?" but "is this publication
+# authorized by a member of this community?".
 #
-# The question that *is* answerable, and is the one this policy
-# was really asking, is whether the publication is authorized by
-# a member of this community. That splits in two:
+# The handler answers that before the policy runs — the session
+# is authenticated, and for a pairwise VRC the caller has proven
+# control of the issuing DID. What is left for the policy is the
+# membership check and whatever the community wants to add.
 #
-#   authenticated_member.is_current — the session belongs to a
-#     live, ACL-listed, non-tombstoned member.
-#   issuer.pop_verified — the caller proved control of the key
-#     behind the VRC's `issuer` (see `verify_publish_authorization`),
-#     so this is the issuer publishing its own edge rather than a
-#     third party republishing one it was handed.
+# ## Identifier form
 #
-# The subject's consent to the edge is their own publication of
-# the reciprocal VRC — the two-VRC DTG edge model — not this
-# community's assertion that they exist.
+# `identifier_form` is how the credential identifies its parties:
+#
+#   "attributed" — issued under the member's membership DID. The
+#     edge names them; the graph is correlatable by design. A
+#     public community (an open-source project, say) reasonably
+#     wants this, and DTG Credentials permits it directly: "the
+#     member may also assert the M-DID in any VRC where the
+#     member wishes to assert a VTC relationship".
+#
+#   "pairwise" — issued under a relationship DID unique to one
+#     counterparty. DTG Credentials RECOMMENDS this, and requires
+#     the uniqueness the handler enforces.
+#
+# Both are permanent, supported forms. **The member chooses per
+# relationship and this default policy accepts either.** The
+# community *declares* which it expects in the community profile
+# (`relationshipIdentifierDefault`), which clients read before
+# minting — a declaration, not a gate.
+#
+# A community that wants to *require* one form enforces it here.
+# To require attributed edges, replace the two rules below with:
+#
+#   allow if {
+#     input.action == "publish"
+#     input.authenticated_member.is_current
+#     input.identifier_form == "attributed"
+#   }
 #
 # Input shape (enriched by the handler):
 #   { vrc,
 #     authenticated_member: { did, is_current },
+#     identifier_form: "attributed" | "pairwise",
 #     issuer:  { did, pop_verified },
 #     subject: { did },
-#     issuer_member:  { did, is_current },   # deprecated
-#     subject_member: { did, is_current },   # deprecated
+#     issuer_member:  { did, is_current },   # deprecated shape
+#     subject_member: { did, is_current },   # deprecated shape
 #     action }
 #
-# `issuer_member` / `subject_member` remain in the input for
-# operator-authored policies written against the old shape. For a
-# pairwise VRC both report `is_current: false`, so an un-updated
-# operator policy denies the publish. That is deliberate — this
-# change does not silently loosen a policy someone wrote.
+# `issuer_member` / `subject_member` remain for operator policies
+# written against the old shape. For a pairwise VRC both report
+# `is_current: false`, so an un-updated operator policy denies the
+# publish rather than being silently loosened.
 
 package vtc.relationships
 
@@ -46,21 +65,21 @@ import rego.v1
 
 default allow := false
 
-# Pairwise form: membership comes from the session, control of the
-# issuing DID from the publish authorization.
+# Pairwise: membership comes from the session; control of the
+# relationship DID was proven to the handler, which also enforced
+# that the DID is unique to this counterparty.
 allow if {
 	input.action == "publish"
 	input.authenticated_member.is_current
-	input.issuer.pop_verified
+	input.identifier_form == "pairwise"
 }
 
-# Deprecated form: the VRC is issued under the member's own
-# membership DID and carries no publish authorization. Accepted
-# for one release; both named parties must be current members, as
-# before.
+# Attributed: the member issues under their own membership DID, so
+# both named parties are community members and the historical
+# both-parties-current check still applies.
 allow if {
 	input.action == "publish"
-	not input.issuer.pop_verified
+	input.identifier_form == "attributed"
 	input.issuer_member.is_current
 	input.subject_member.is_current
 }

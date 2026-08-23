@@ -53,6 +53,18 @@ fn cap_len(field: &str, value: Option<&str>, max: usize) -> Result<(), AppError>
     Ok(())
 }
 
+/// Identifier form a community declares when it has not chosen one. DTG
+/// Credentials recommends relationship DIDs, so silence declares the more
+/// conservative expectation rather than the more convenient one.
+pub const RELATIONSHIP_IDENTIFIER_DEFAULT: &str = "pairwise";
+
+/// The two identifier forms a community may declare.
+pub const RELATIONSHIP_IDENTIFIER_FORMS: [&str; 2] = ["attributed", "pairwise"];
+
+fn default_relationship_identifier() -> String {
+    RELATIONSHIP_IDENTIFIER_DEFAULT.to_string()
+}
+
 /// The singleton record. Field names are wire contract — operators
 /// + the admin UX read this shape directly.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,6 +81,28 @@ pub struct CommunityProfile {
     pub contact_email: Option<String>,
     /// BCP 47 language tag. Defaults to `"en"`.
     pub language: String,
+    /// Which identifier form this community expects members to issue
+    /// relationship credentials under — `"attributed"` (the member's
+    /// membership DID, so edges name them) or `"pairwise"` (a relationship
+    /// DID unique to each counterparty).
+    ///
+    /// A **declaration, not an enforcement**: the member still chooses per
+    /// relationship, and both forms are accepted. It exists so a client can
+    /// read what the community expects *before* minting — a public
+    /// open-source community reasonably declares `attributed`, one organised
+    /// around privacy declares `pairwise`.
+    ///
+    /// A community that wants to *require* a form does so in
+    /// `relationships.rego`, which receives `identifier_form` on every
+    /// publish. Defaults to `"pairwise"`, matching DTG Credentials'
+    /// recommendation, so a community that has not considered the question
+    /// declares the more conservative expectation.
+    ///
+    /// `serde(default)` is load-bearing: a config export taken before this
+    /// field existed must still import. Without it every saved export becomes
+    /// unreadable — which the admin-config round-trip tests caught.
+    #[serde(default = "default_relationship_identifier")]
+    pub relationship_identifier_default: String,
     pub created_at: DateTime<Utc>,
     /// Opaque per-community JSON. Capped at [`MAX_EXTENSIONS_BYTES`]
     /// when serialised. Defaults to `null` when no extension data
@@ -89,6 +123,7 @@ impl CommunityProfile {
             public_url: None,
             contact_email: None,
             language: "en".into(),
+            relationship_identifier_default: RELATIONSHIP_IDENTIFIER_DEFAULT.into(),
             created_at: Utc::now(),
             extensions: Value::Null,
         }
@@ -113,6 +148,9 @@ pub struct CommunityProfileUpdate {
     pub public_url: Option<Option<String>>,
     pub contact_email: Option<Option<String>>,
     pub language: Option<String>,
+    /// See [`CommunityProfile::relationship_identifier_default`]. Must be one
+    /// of [`RELATIONSHIP_IDENTIFIER_FORMS`].
+    pub relationship_identifier_default: Option<String>,
     pub extensions: Option<Value>,
 }
 
@@ -163,7 +201,25 @@ impl CommunityProfileUpdate {
             }
         }
 
+        // Validated before mutating, with the other pre-checks: an
+        // unrecognised value would be published to clients as the community's
+        // expectation, and they cannot act on a form they do not understand.
+        if let Some(form) = self.relationship_identifier_default.as_deref()
+            && !RELATIONSHIP_IDENTIFIER_FORMS.contains(&form)
+        {
+            return Err(AppError::Validation(format!(
+                "relationshipIdentifierDefault must be one of {:?} (got {form:?})",
+                RELATIONSHIP_IDENTIFIER_FORMS
+            )));
+        }
+
         let mut changed = Vec::new();
+        if let Some(form) = self.relationship_identifier_default
+            && profile.relationship_identifier_default != form
+        {
+            profile.relationship_identifier_default = form;
+            changed.push("relationshipIdentifierDefault".into());
+        }
         if let Some(name) = self.name
             && profile.name != name
         {
