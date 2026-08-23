@@ -214,6 +214,53 @@ pub async fn list_for_did(
     paginate(hydrated, cursor, limit, &audit_key.key, snapshot_id, decode)
 }
 
+/// Counterparties this DID already has an edge to, as issuer, excluding
+/// `except_subject`.
+///
+/// Used to enforce the DTG Credentials requirement that an R-DID is unique per
+/// counterparty ("a new, unique R-DID for every single entity they connect
+/// with, even within the same community"). The community is the only party
+/// that can see a violation: each counterparty sees only its own edge.
+///
+/// Carries the same `did:webvh` prefix caveat as [`list_for_did`] — the index
+/// prefix `relationships_by_did:<did>:` also matches a longer DID that has
+/// `<did>` as a colon-delimited prefix, so rows are post-filtered on the
+/// decoded issuer.
+pub async fn issuer_counterparties_besides(
+    primary: &KeyspaceHandle,
+    index: &KeyspaceHandle,
+    issuer_did: &str,
+    except_subject: &str,
+) -> Result<Vec<String>, AppError> {
+    let mut index_prefix = RELATIONSHIPS_BY_DID_PREFIX.to_vec();
+    index_prefix.extend_from_slice(issuer_did.as_bytes());
+    index_prefix.push(b':');
+
+    let mut others = Vec::new();
+    for (idx_key, _) in index.prefix_iter_raw(index_prefix).await? {
+        let Ok(key_str) = std::str::from_utf8(&idx_key) else {
+            continue;
+        };
+        let Some(id_str) = key_str.rsplit(':').next() else {
+            continue;
+        };
+        let Ok(id) = Uuid::parse_str(id_str) else {
+            continue;
+        };
+        let Some(raw) = primary.get_raw(primary_key(id)).await? else {
+            continue;
+        };
+        if let Ok(rel) = decode(&raw)
+            && rel.issuer_did == issuer_did
+            && rel.subject_did != except_subject
+            && !others.contains(&rel.subject_did)
+        {
+            others.push(rel.subject_did);
+        }
+    }
+    Ok(others)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -248,7 +295,7 @@ mod tests {
             issuer_did: issuer.into(),
             subject_did: subject.into(),
             vrc_jsonld: serde_json::json!({
-                "type": ["VerifiableCredential", "VerifiableRecognitionCredential"],
+                "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
                 "issuer": issuer,
                 "credentialSubject": { "id": subject, "endorsement": { "type": "endorses" } }
             }),

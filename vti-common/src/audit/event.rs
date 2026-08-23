@@ -238,7 +238,7 @@ pub enum AuditEvent {
     CrossCommunitySessionMinted(CrossCommunitySessionMintedData),
 
     // ─── Phase 4 lifecycle ─────────────────────────────────
-    /// A member published a self-issued Verifiable Recognition
+    /// A member published a self-issued Verifiable Relationship
     /// Credential (VRC) — a trust edge `issuer-member → subject-
     /// member` per spec §5.4 + §6.1. Phase 4 M4.6. The actor is
     /// the issuer; the target is the subject DID.

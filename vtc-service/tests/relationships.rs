@@ -186,8 +186,11 @@ async fn build_fixture() -> Fixture {
 
 fn fake_vrc(issuer: &str, subject: &str) -> Value {
     json!({
-        "@context": ["https://www.w3.org/ns/credentials/v2"],
-        "type": ["VerifiableCredential", "VerifiableRecognitionCredential"],
+        "@context": [
+            "https://www.w3.org/ns/credentials/v2",
+            "https://firstperson.network/credentials/dtg/v1"
+        ],
+        "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
         "issuer": issuer,
         "credentialSubject": {
             "id": subject,
@@ -480,4 +483,649 @@ async fn list_keeps_rows_for_tombstoned_other_party() {
         1,
         "Tombstoned subject keeps the edge visible: {v}"
     );
+}
+
+// ─── Publish under a pairwise relationship DID ────────────
+//
+// The credential's `issuer` is a relationship DID that belongs
+// to no member. Membership comes from the session; control of
+// the issuing key comes from a publish authorization bound to
+// this request. See
+// `docs/05-design-notes/vrc-publish-proof-of-possession.md`.
+
+mod pairwise {
+    use super::*;
+    use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
+    use ed25519_dalek::SigningKey;
+    use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
+
+    /// Seeds: `MEMBER` joins the community; `RDID` is the pairwise
+    /// identifier they issue the VRC under; `OTHER` is an unrelated key
+    /// used to forge authorizations.
+    const MEMBER: u8 = 0x41;
+    const RDID: u8 = 0x42;
+    const PEER_RDID: u8 = 0x43;
+    const OTHER: u8 = 0x44;
+
+    fn did_for(seed: u8) -> String {
+        affinidi_crypto::did_key::ed25519_pub_to_did_key(
+            &SigningKey::from_bytes(&[seed; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+    }
+
+    fn secret_for(seed: u8) -> affinidi_secrets_resolver::secrets::Secret {
+        let did = did_for(seed);
+        let vm = format!("{did}#{}", did.strip_prefix("did:key:").unwrap());
+        affinidi_secrets_resolver::secrets::Secret::generate_ed25519(Some(&vm), Some(&[seed; 32]))
+    }
+
+    /// Attach an `eddsa-jcs-2022` data-integrity proof signed by `seed`.
+    async fn sign(seed: u8, mut doc: Value) -> Value {
+        let proof = DataIntegrityProof::sign(
+            &doc,
+            &secret_for(seed),
+            SignOptions::new()
+                .with_proof_purpose("assertionMethod")
+                .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+        )
+        .await
+        .unwrap();
+        doc["proof"] = serde_json::to_value(&proof).unwrap();
+        doc
+    }
+
+    async fn vrc(issuer_seed: u8, subject_seed: u8) -> Value {
+        sign(
+            issuer_seed,
+            json!({
+                "@context": [
+                    "https://www.w3.org/ns/credentials/v2",
+                    "https://firstperson.network/credentials/dtg/v1"
+                ],
+                "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
+                "issuer": did_for(issuer_seed),
+                "validFrom": "2020-01-01T00:00:00Z",
+                "credentialSubject": {
+                    "id": did_for(subject_seed),
+                    "endorsement": { "type": "endorses" }
+                },
+            }),
+        )
+        .await
+    }
+
+    struct Pw {
+        router: axum::Router,
+        token: String,
+        session_id: String,
+        relationships_ks: vti_common::store::KeyspaceHandle,
+        audit_ks: vti_common::store::KeyspaceHandle,
+        _vtc: TestVtc,
+    }
+
+    /// A live `did:key` resolver (purely computational — no network) plus one
+    /// current member whose session we publish under.
+    async fn fixture() -> Pw {
+        let vtc = TestVtc::builder()
+            .with_audit(true)
+            .with_signers(true)
+            .with_did_resolver(true)
+            .build()
+            .await;
+
+        vtc_service::policy::default::install_defaults(
+            &vtc.state.policies_ks,
+            &vtc.state.active_policies_ks,
+        )
+        .await
+        .unwrap();
+
+        let now = now_epoch();
+        let member = did_for(MEMBER);
+        store_acl_entry(
+            &vtc.state.acl_ks,
+            &VtcAclEntry {
+                did: member.clone(),
+                role: VtcRole::Member,
+                label: None,
+                allowed_contexts: vec![],
+                created_at: now,
+                created_by: "did:key:vtc-install".into(),
+                updated_at: None,
+                updated_by: None,
+                expires_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        store_member(&vtc.state.members_ks, &Member::fresh(&member))
+            .await
+            .unwrap();
+
+        let session_id = format!("sess-{}", Uuid::new_v4());
+        store_session(
+            &vtc.state.sessions_ks,
+            &Session {
+                session_id: session_id.clone(),
+                did: member.clone(),
+                challenge: "test".into(),
+                state: SessionState::Authenticated,
+                created_at: now,
+                last_seen: now,
+                refresh_token: None,
+                refresh_expires_at: None,
+                tee_attested: false,
+                amr: Vec::new(),
+                acr: String::new(),
+                acr_expires_at: None,
+                token_id: None,
+                session_pubkey_b58btc: None,
+            },
+        )
+        .await
+        .unwrap();
+        let claims = vtc.jwt_keys.new_claims(
+            member,
+            session_id.clone(),
+            "reader".into(),
+            vec![],
+            3600,
+            true,
+        );
+        let token = vtc.jwt_keys.encode(&claims).unwrap();
+
+        Pw {
+            router: vtc.router.clone(),
+            token,
+            session_id,
+            relationships_ks: vtc.state.relationships_ks.clone(),
+            audit_ks: vtc.state.audit_ks.clone(),
+            _vtc: vtc,
+        }
+    }
+
+    fn sha256_hex(v: &Value) -> String {
+        use sha2::{Digest, Sha256};
+        // Mirrors the handler's `canonicalise`: recursive key sort.
+        fn sorted(v: Value) -> Value {
+            match v {
+                Value::Object(m) => serde_json::to_value(
+                    m.into_iter()
+                        .map(|(k, val)| (k, sorted(val)))
+                        .collect::<std::collections::BTreeMap<_, _>>(),
+                )
+                .unwrap(),
+                Value::Array(a) => Value::Array(a.into_iter().map(sorted).collect()),
+                other => other,
+            }
+        }
+        hex::encode(Sha256::digest(sorted(v.clone()).to_string().as_bytes()))
+    }
+
+    /// A well-formed publish authorization, before signing.
+    fn authorization(vrc_hash: &str, aud: &str, session_id: &str) -> Value {
+        json!({
+            "type": "VrcPublishAuthorization",
+            "vrc": vrc_hash,
+            "aud": aud,
+            "sessionId": session_id,
+            "issuedAt": chrono::Utc::now().to_rfc3339(),
+        })
+    }
+
+    async fn post(fix: &Pw, vrc: &Value, pop: Option<Value>) -> axum::response::Response {
+        let mut body = json!({ "vrc": vrc });
+        if let Some(p) = pop {
+            body["pop"] = p;
+        }
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/relationships")
+            .header("authorization", format!("Bearer {}", fix.token))
+            .header("trust-task", PUBLISH_TASK)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        fix.router.clone().oneshot(req).await.unwrap()
+    }
+
+    /// The happy path #1054 exists to enable: the published row names only
+    /// pairwise identifiers, and the member's own DID appears nowhere in it.
+    #[tokio::test]
+    async fn publishes_under_a_relationship_did() {
+        let fix = fixture().await;
+        let v = vrc(RDID, PEER_RDID).await;
+        let pop = sign(
+            RDID,
+            authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+
+        let (status, body) = body_value(post(&fix, &v, Some(pop)).await).await;
+        assert_eq!(status, StatusCode::CREATED, "body: {body}");
+        assert_eq!(body["issuerDid"], did_for(RDID));
+        assert_eq!(body["subjectDid"], did_for(PEER_RDID));
+
+        // The stored row must carry no trace of the publishing member.
+        let rows = vtc_service::relationships::list_all(&fix.relationships_ks)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let stored = serde_json::to_string(&rows[0].vrc_jsonld).unwrap();
+        assert_eq!(rows[0].issuer_did, did_for(RDID));
+        assert!(
+            !stored.contains(&did_for(MEMBER)),
+            "membership DID leaked into the stored VRC"
+        );
+        assert!(
+            !stored.contains(&fix.session_id),
+            "session id leaked into the stored VRC — this is the linkage the \
+             pairwise identifier exists to remove"
+        );
+    }
+
+    /// The authorization is verified and dropped. If it ever reaches the audit
+    /// store, the membership-DID-to-relationship-DID linkage becomes durable
+    /// and the privacy property is lost — silently.
+    #[tokio::test]
+    async fn authorization_is_never_persisted_to_the_audit_trail() {
+        let fix = fixture().await;
+        let v = vrc(RDID, PEER_RDID).await;
+        let pop = sign(
+            RDID,
+            authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        assert_eq!(
+            post(&fix, &v, Some(pop)).await.status(),
+            StatusCode::CREATED
+        );
+
+        let pairs = fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
+        let mut saw_publish = false;
+        for (_k, raw) in pairs {
+            let blob = String::from_utf8_lossy(&raw);
+            assert!(
+                !blob.contains(&fix.session_id),
+                "session id reached the audit store"
+            );
+            let env: AuditEnvelope = serde_json::from_slice(&raw).unwrap();
+            if matches!(env.event, AuditEvent::VrcPublished(_)) {
+                saw_publish = true;
+            }
+        }
+        assert!(saw_publish, "expected a VrcPublished audit entry");
+    }
+
+    /// Option B on #1061: the audit trail attributes a publication to the
+    /// **member**, not to the relationship DID that issued the credential.
+    ///
+    /// Recording the issuing R-DID as the actor would leave the trail unable
+    /// to answer "which member published this edge" for anyone, at any access
+    /// level. The linkage is confined to the audit store — HMAC'd actor,
+    /// RTBF-nullable plaintext, admin-gated — and deliberately kept out of the
+    /// credential, the stored row, and the logs.
+    #[tokio::test]
+    async fn audit_attributes_the_publication_to_the_member_not_the_relationship_did() {
+        let fix = fixture().await;
+        let v = vrc(RDID, PEER_RDID).await;
+        let pop = sign(
+            RDID,
+            authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        assert_eq!(
+            post(&fix, &v, Some(pop)).await.status(),
+            StatusCode::CREATED
+        );
+
+        let pairs = fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
+        let mut saw = false;
+        for (_k, raw) in pairs {
+            let env: AuditEnvelope = serde_json::from_slice(&raw).unwrap();
+            if matches!(env.event, AuditEvent::VrcPublished(_)) {
+                saw = true;
+                assert_eq!(
+                    env.actor_did_plain.as_deref(),
+                    Some(did_for(MEMBER).as_str()),
+                    "the actor must be the authenticated member"
+                );
+                assert_ne!(
+                    env.actor_did_plain.as_deref(),
+                    Some(did_for(RDID).as_str()),
+                    "the relationship DID names nobody and must not be the actor"
+                );
+            }
+        }
+        assert!(saw, "expected a VrcPublished audit entry");
+    }
+
+    /// Membership is not a precondition for a VRC — DTG Credentials
+    /// §Community-Anchored ZKP. The subject's consent is their own reciprocal
+    /// VRC, not our roster.
+    #[tokio::test]
+    async fn subject_need_not_be_a_member() {
+        let fix = fixture().await;
+        let v = vrc(RDID, OTHER).await;
+        let pop = sign(
+            RDID,
+            authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        let (status, body) = body_value(post(&fix, &v, Some(pop)).await).await;
+        assert_eq!(status, StatusCode::CREATED, "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn same_vrc_twice_is_idempotent() {
+        let fix = fixture().await;
+        let v = vrc(RDID, PEER_RDID).await;
+        let mk = || async {
+            sign(
+                RDID,
+                authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
+            )
+            .await
+        };
+        let (s1, b1) = body_value(post(&fix, &v, Some(mk().await)).await).await;
+        let (s2, b2) = body_value(post(&fix, &v, Some(mk().await)).await).await;
+        assert_eq!(s1, StatusCode::CREATED);
+        assert_eq!(s2, StatusCode::OK);
+        assert_eq!(b1["id"], b2["id"]);
+    }
+
+    // ─── Every field of the authorization is load-bearing ───
+
+    #[tokio::test]
+    async fn rejects_missing_authorization() {
+        let fix = fixture().await;
+        let v = vrc(RDID, PEER_RDID).await;
+        assert_eq!(post(&fix, &v, None).await.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Holding the credential is not controlling the key behind it. This is
+    /// the property the old `auth.did == issuer` pin provided.
+    #[tokio::test]
+    async fn rejects_authorization_signed_by_another_key() {
+        let fix = fixture().await;
+        let v = vrc(RDID, PEER_RDID).await;
+        let mut pop = authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id);
+        // Signed by OTHER, but claiming to authorize RDID's credential.
+        pop = sign(OTHER, pop).await;
+        assert_eq!(
+            post(&fix, &v, Some(pop)).await.status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_authorization_bound_to_a_different_vrc() {
+        let fix = fixture().await;
+        let target = vrc(RDID, PEER_RDID).await;
+        let decoy = vrc(RDID, OTHER).await;
+        let pop = sign(
+            RDID,
+            authorization(&sha256_hex(&decoy), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        assert_eq!(
+            post(&fix, &target, Some(pop)).await.status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_authorization_from_another_session() {
+        let fix = fixture().await;
+        let v = vrc(RDID, PEER_RDID).await;
+        let pop = sign(
+            RDID,
+            authorization(&sha256_hex(&v), TEST_VTC_DID, "sess-someone-else"),
+        )
+        .await;
+        assert_eq!(
+            post(&fix, &v, Some(pop)).await.status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_authorization_for_another_community() {
+        let fix = fixture().await;
+        let v = vrc(RDID, PEER_RDID).await;
+        let pop = sign(
+            RDID,
+            authorization(
+                &sha256_hex(&v),
+                "did:webvh:other-vtc.example:xyz",
+                &fix.session_id,
+            ),
+        )
+        .await;
+        assert_eq!(
+            post(&fix, &v, Some(pop)).await.status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_stale_authorization() {
+        let fix = fixture().await;
+        let v = vrc(RDID, PEER_RDID).await;
+        let mut a = authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id);
+        a["issuedAt"] = json!((chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339());
+        let pop = sign(RDID, a).await;
+        assert_eq!(
+            post(&fix, &v, Some(pop)).await.status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    // ─── A relationship DID must be unique per counterparty ───
+
+    /// DTG Credentials: "each entity MUST generate a new, unique R-DID for
+    /// every single entity they connect with, even within the same community."
+    ///
+    /// This is type integrity rather than a privacy policy. A verifier reading
+    /// a pairwise edge is entitled to conclude the identifier says nothing
+    /// beyond that one relationship; a reused R-DID breaks that inference for
+    /// every reader of the graph.
+    #[tokio::test]
+    async fn rejects_a_relationship_did_reused_with_a_second_counterparty() {
+        let fix = fixture().await;
+
+        let first = vrc(RDID, PEER_RDID).await;
+        let pop = sign(
+            RDID,
+            authorization(&sha256_hex(&first), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        assert_eq!(
+            post(&fix, &first, Some(pop)).await.status(),
+            StatusCode::CREATED
+        );
+
+        // Same relationship DID, different counterparty.
+        let second = vrc(RDID, OTHER).await;
+        let pop2 = sign(
+            RDID,
+            authorization(&sha256_hex(&second), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        let (status, body) = body_value(post(&fix, &second, Some(pop2)).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    }
+
+    /// Uniqueness is per counterparty, not per credential — re-issuing to the
+    /// *same* counterparty (a renewal, a corrected claim) is not reuse.
+    #[tokio::test]
+    async fn allows_reissuing_to_the_same_counterparty() {
+        let fix = fixture().await;
+
+        let first = vrc(RDID, PEER_RDID).await;
+        let pop = sign(
+            RDID,
+            authorization(&sha256_hex(&first), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        assert_eq!(
+            post(&fix, &first, Some(pop)).await.status(),
+            StatusCode::CREATED
+        );
+
+        // Same parties, different credential body — a distinct VRC, so the
+        // idempotency hash differs and this is a genuine second publish.
+        let mut body = json!({
+            "@context": [
+                "https://www.w3.org/ns/credentials/v2",
+                "https://firstperson.network/credentials/dtg/v1"
+            ],
+            "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
+            "issuer": did_for(RDID),
+            "validFrom": "2021-06-01T00:00:00Z",
+            "credentialSubject": { "id": did_for(PEER_RDID) },
+        });
+        body["validUntil"] = json!("2999-01-01T00:00:00Z");
+        let second = sign(RDID, body).await;
+        let pop2 = sign(
+            RDID,
+            authorization(&sha256_hex(&second), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        let (status, b) = body_value(post(&fix, &second, Some(pop2)).await).await;
+        assert_eq!(status, StatusCode::CREATED, "body: {b}");
+    }
+
+    /// The public-community case. In an open-source community everyone is
+    /// known, and a member may reasonably want one identifier across every
+    /// relationship. DTG Credentials supports that — as the *attributed*
+    /// form, under the membership DID — and the uniqueness rule does not
+    /// apply to it, because an M-DID is not claiming to be pairwise.
+    ///
+    /// The member is not forced to choose between being recognised and being
+    /// conformant; they choose the form that means what they intend.
+    #[tokio::test]
+    async fn attributed_edges_may_share_one_identifier_across_counterparties() {
+        let fix = fixture().await;
+        let member = did_for(MEMBER);
+
+        for peer in [PEER_RDID, OTHER] {
+            // Issued under the member's own DID, so no authorization object —
+            // the session already proves control of it.
+            let v = sign(
+                MEMBER,
+                json!({
+                    "@context": [
+                        "https://www.w3.org/ns/credentials/v2",
+                        "https://firstperson.network/credentials/dtg/v1"
+                    ],
+                    "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
+                    "issuer": member,
+                    "validFrom": "2020-01-01T00:00:00Z",
+                    "credentialSubject": { "id": did_for(peer) },
+                }),
+            )
+            .await;
+            let (status, b) = body_value(post(&fix, &v, None).await).await;
+            // The default policy's attributed rule needs both parties to be
+            // members; only the issuer is, so this is the policy's call, not
+            // the uniqueness rule's. What matters is that it is never the
+            // "relationship DID already has an edge" rejection.
+            assert!(
+                status != StatusCode::BAD_REQUEST
+                    || !b.to_string().contains("must be unique to one counterparty"),
+                "attributed edges must not be subject to R-DID uniqueness: {b}"
+            );
+        }
+    }
+
+    // ─── Only a conformant VRC becomes a graph edge ───
+
+    /// Build an otherwise-valid, correctly-signed credential whose shape has
+    /// been altered, and assert it cannot enter the trust graph.
+    async fn assert_shape_rejected(mutate: impl Fn(&mut Value)) {
+        let fix = fixture().await;
+        let mut body = json!({
+            "@context": [
+                "https://www.w3.org/ns/credentials/v2",
+                "https://firstperson.network/credentials/dtg/v1"
+            ],
+            "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
+            "issuer": did_for(RDID),
+            "validFrom": "2020-01-01T00:00:00Z",
+            "credentialSubject": { "id": did_for(PEER_RDID) },
+        });
+        mutate(&mut body);
+        let v = sign(RDID, body).await;
+        let pop = sign(
+            RDID,
+            authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        let (status, b) = body_value(post(&fix, &v, Some(pop)).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {b}");
+    }
+
+    #[tokio::test]
+    async fn rejects_vrc_missing_the_dtg_context() {
+        assert_shape_rejected(|v| {
+            v["@context"] = json!(["https://www.w3.org/ns/credentials/v2"]);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn rejects_vrc_missing_the_dtg_base_type() {
+        assert_shape_rejected(|v| {
+            v["type"] = json!(["VerifiableCredential", "RelationshipCredential"]);
+        })
+        .await;
+    }
+
+    /// The relationships endpoint publishes relationship edges. A membership
+    /// credential is a different edge with different issuance rules.
+    #[tokio::test]
+    async fn rejects_a_credential_of_another_dtg_subtype() {
+        assert_shape_rejected(|v| {
+            v["type"] = json!([
+                "VerifiableCredential",
+                "DTGCredential",
+                "MembershipCredential"
+            ]);
+        })
+        .await;
+    }
+
+    /// Regression guard. `VerifiableRecognitionCredential` was never a DTG
+    /// credential type — there is no such thing as a recognition credential,
+    /// only a relationship credential. It survived in this repo's fixtures and
+    /// docs precisely because the publish path never inspected `type`.
+    #[tokio::test]
+    async fn rejects_the_invented_recognition_credential_type() {
+        assert_shape_rejected(|v| {
+            v["type"] = json!([
+                "VerifiableCredential",
+                "DTGCredential",
+                "VerifiableRecognitionCredential"
+            ]);
+        })
+        .await;
+    }
+
+    /// A signature the member legitimately made over some *other* object must
+    /// not be replayable here as authorization to publish.
+    #[tokio::test]
+    async fn rejects_authorization_of_the_wrong_type() {
+        let fix = fixture().await;
+        let v = vrc(RDID, PEER_RDID).await;
+        let mut a = authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id);
+        a["type"] = json!("SomeOtherSignedThing");
+        let pop = sign(RDID, a).await;
+        assert_eq!(
+            post(&fix, &v, Some(pop)).await.status(),
+            StatusCode::FORBIDDEN
+        );
+    }
 }
