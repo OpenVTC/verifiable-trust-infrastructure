@@ -5,14 +5,23 @@
 //! ## Three endpoints
 //!
 //! 1. `POST /v1/relationships` — publish a self-issued VRC.
-//!    Caller's session DID must equal the VC's `issuer`
-//!    field. The VTC verifies the data-integrity proof
-//!    against the member's resolved `#key-0`, runs
+//!    The VTC verifies the credential's data-integrity proof
+//!    against the key its `issuer` field names, then authorizes
+//!    the *publication* separately: either a publish
+//!    authorization proving the caller controls the issuing key
+//!    (see [`verify_publish_authorization`]), or — deprecated —
+//!    an `issuer` equal to the session DID. It then runs
 //!    `relationships.rego` against an enriched input
-//!    (`{ vrc, issuer_member: { did, is_current },
-//!        subject_member: { did, is_current }, action }`),
-//!    persists the row + secondary-index entries on allow,
-//!    emits `VrcPublished`.
+//!    (`{ vrc, authenticated_member: { did, is_current },
+//!        issuer: { did, pop_verified }, subject: { did },
+//!        action }`), persists the row + secondary-index
+//!    entries on allow, and emits `VrcPublished`.
+//!
+//!    Splitting issuance from publication is what lets a member
+//!    publish an edge under a pairwise relationship DID rather
+//!    than their membership DID — the privacy property DTG
+//!    Credentials asks for, and the subject of #1054. See
+//!    `docs/05-design-notes/vrc-publish-proof-of-possession.md`.
 //!
 //! 2. `GET /v1/members/{did}/relationships` — see
 //!    `src/routes/members/relationships.rs`. Owns its own
@@ -58,10 +67,18 @@ use crate::server::AppState;
 pub struct PublishBody {
     /// The self-issued VRC. Must be a JSON-LD VC body with
     /// `type` array including `VerifiableRecognitionCredential`,
-    /// an `issuer` field matching the caller's session DID,
-    /// `credentialSubject.id` naming the subject, and a
-    /// data-integrity proof.
+    /// an `issuer` field, `credentialSubject.id` naming the
+    /// subject, and a data-integrity proof.
     pub vrc: JsonValue,
+    /// Proof that the caller controls the key behind the VRC's
+    /// `issuer`, when that is not the caller's session DID —
+    /// i.e. whenever the credential is issued under a pairwise
+    /// relationship DID rather than the member's membership DID.
+    ///
+    /// See [`verify_publish_authorization`]. Required unless
+    /// `issuer` equals the session DID (the deprecated form).
+    #[serde(default)]
+    pub pop: Option<JsonValue>,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,44 +114,129 @@ pub async fn publish(
     let issuer_did = extract_did_field(vrc, "issuer")?;
     let subject_did = extract_subject_id(vrc)?;
 
-    // 2. Caller == issuer check (D1: self-issued only).
-    if auth.did != issuer_did {
+    // 2. Cheapest authorization gate first: a VRC issued under a
+    //    DID that is not the session's must carry a publish
+    //    authorization. Rejecting here keeps a caller error a
+    //    caller error — the daemon-config prerequisites below
+    //    would otherwise mask it with a 500.
+    if body.pop.is_none() && issuer_did != auth.did {
         return Err(AppError::Forbidden(format!(
-            "session DID ({}) does not match VRC issuer ({issuer_did}) — \
-             VRCs are self-issued; the VTC never mints them on a member's behalf",
-            auth.did
+            "VRC issuer ({issuer_did}) is not the session DID and no publish \
+             authorization (`pop`) was supplied — a VRC issued under a \
+             relationship DID must carry proof the caller controls it"
         )));
     }
 
-    // 3. Verify the VC's data-integrity proof against the
-    //    issuer's resolved #key-0. Daemon-config prerequisites
-    //    surface after caller validation.
+    // 3. Verify the VC's data-integrity proof against the key
+    //    the `issuer` field names. This establishes that the
+    //    credential was made by the party it names as issuer —
+    //    true whatever kind of identifier that is, and untouched
+    //    by the authorization change below.
     let resolver = state.did_resolver.as_ref().cloned().ok_or_else(|| {
         AppError::Internal("DID resolver not configured — VRC publish requires it".into())
     })?;
-    verify_vc_proof(vrc, &issuer_did, &resolver)
+    verify_di_proof(vrc, &issuer_did, &resolver)
         .await
         .map_err(|e| AppError::Validation(format!("VrcProofInvalid: {e}")))?;
 
-    // 4. Enrich both parties with `is_current` for the policy
-    //    input. A member is `current` iff they have a live ACL
-    //    row + a non-tombstoned Member row.
+    // 4. Hash the VRC. This moves ahead of policy evaluation
+    //    because the publish authorization binds to it.
+    let canon = canonicalise(vrc);
+    let digest = Sha256::digest(canon.as_bytes());
+    let vrc_sha256 = hex::encode(digest);
+
+    // 5. Authorize the *publication*, which is a separate act
+    //    from the issuance verified at step 2. Issuing a VRC and
+    //    publishing it to the community graph are different
+    //    disclosures, and the second one is the issuer's to make:
+    //    without this, any member who was ever handed a VRC could
+    //    publish someone else's edge.
+    //
+    //    Previously this was `auth.did == issuer_did`, which
+    //    forced the member's membership DID into the durable,
+    //    publishable credential. The session proves membership;
+    //    the authorization object proves control of the issuing
+    //    key; neither requires them to be the same string (#1054).
+    let pop_verified = match (&body.pop, issuer_did == auth.did) {
+        (Some(pop), _) => {
+            let aud = crate::routes::recognise::vtc_did(&state).await?;
+            verify_publish_authorization(
+                pop,
+                &issuer_did,
+                &vrc_sha256,
+                &aud,
+                &auth.session_id,
+                &resolver,
+            )
+            .await
+            .map_err(|e| AppError::Forbidden(format!("VrcPublishAuthorizationInvalid: {e}")))?;
+            true
+        }
+        // Deprecated: issuer == session DID, no authorization
+        // object. Accepted for one release so existing clients
+        // keep working while they move to pairwise identifiers.
+        (None, true) => {
+            info!(
+                issuer = %issuer_did,
+                "VRC published under the session DID with no publish authorization — \
+                 deprecated; issue under a relationship DID and send `pop` instead"
+            );
+            false
+        }
+        // Rejected at step 2; restated rather than `unreachable!` so a
+        // future edit that moves the gate cannot turn a caller error into
+        // a panicking request handler.
+        (None, false) => {
+            return Err(AppError::Forbidden(
+                "VRC issuer is not the session DID and no publish authorization \
+                 (`pop`) was supplied"
+                    .into(),
+            ));
+        }
+    };
+
+    // 6. Enrich for the policy input.
+    //
+    //    `authenticated_member` is the caller — the party whose
+    //    membership actually gates this publish. `issuer` and
+    //    `subject` are the credential's own parties, which under
+    //    pairwise identifiers are not resolvable to members and
+    //    are not meant to be.
+    //
+    //    `issuer_member` / `subject_member` are retained for
+    //    operator-authored policies written against the old
+    //    shape. For a pairwise VRC both report `is_current:
+    //    false`, so an un-updated operator policy *denies* the
+    //    publish. That is deliberate: a policy someone wrote is
+    //    not silently loosened by this change.
+    let member_current = is_current_member(&state, &auth.did).await?;
     let issuer_current = is_current_member(&state, &issuer_did).await?;
     let subject_current = is_current_member(&state, &subject_did).await?;
-    if !subject_current {
-        // Subject must at least exist (resolvable); the default
-        // policy refuses if either party isn't current, but
-        // we surface the more specific "subject unknown" 422
-        // before falling through to the generic policy 403.
-        if get_acl_entry(&state.acl_ks, &subject_did).await?.is_none() {
-            return Err(AppError::Validation(format!(
-                "subject DID {subject_did} is not a current community member"
-            )));
-        }
+
+    // The subject membership check only asks an answerable
+    // question on the deprecated form, where the subject is named
+    // by a membership DID. Under pairwise identifiers it is not
+    // just unanswerable but the wrong question: DTG Credentials
+    // §Community-Anchored ZKP is explicit that "community
+    // membership is not a precondition for issuing, holding, or
+    // presenting a VRC". The subject's consent to the edge is
+    // their publication of the reciprocal VRC, not our assertion
+    // that they exist.
+    if !pop_verified
+        && !subject_current
+        && get_acl_entry(&state.acl_ks, &subject_did).await?.is_none()
+    {
+        return Err(AppError::Validation(format!(
+            "subject DID {subject_did} is not a current community member"
+        )));
     }
 
     let policy_input = json!({
         "vrc": vrc,
+        "authenticated_member": { "did": auth.did, "is_current": member_current },
+        "issuer": { "did": issuer_did, "pop_verified": pop_verified },
+        "subject": { "did": subject_did },
+        // Deprecated shape — see above.
         "issuer_member": { "did": issuer_did, "is_current": issuer_current },
         "subject_member": { "did": subject_did, "is_current": subject_current },
         "action": "publish",
@@ -146,12 +248,7 @@ pub async fn publish(
         ));
     }
 
-    // 5. Compute hash for idempotent re-publish.
-    let canon = canonicalise(vrc);
-    let digest = Sha256::digest(canon.as_bytes());
-    let vrc_sha256 = hex::encode(digest);
-
-    // 6. Idempotency: same hash → same id.
+    // 7. Idempotency: same hash → same id.
     if let Some(existing) = find_by_hash(&state.relationships_ks, &vrc_sha256).await? {
         return Ok((
             StatusCode::OK,
@@ -164,7 +261,7 @@ pub async fn publish(
         ));
     }
 
-    // 7. Store the row + secondary-index entries.
+    // 8. Store the row + secondary-index entries.
     let id = Uuid::new_v4();
     let rel = Relationship {
         id,
@@ -181,7 +278,7 @@ pub async fn publish(
     )
     .await?;
 
-    // 8. Audit.
+    // 9. Audit.
     let edge_type = vrc
         .pointer("/credentialSubject/endorsement/type")
         .and_then(|v| v.as_str())
@@ -309,18 +406,111 @@ fn extract_subject_id(vrc: &JsonValue) -> Result<String, AppError> {
         })
 }
 
-/// Verify a VRC's data-integrity proof: bind the proof's `verificationMethod`
-/// to the issuer, then let the DI library resolve the key (via the shared
-/// [`DidVmResolver`]) and check the signature — the same path the
-/// credential-exchange + recognition verifiers take.
-async fn verify_vc_proof(
-    vrc: &JsonValue,
+/// `type` of the publish authorization object. Guarding on it stops a
+/// signature the member made over some *other* object being replayed here as
+/// authorization to publish.
+const PUBLISH_AUTHORIZATION_TYPE: &str = "VrcPublishAuthorization";
+
+/// How stale a publish authorization may be. Bounds replay inside a live
+/// session; the same tolerance is allowed for clock skew in either direction.
+const PUBLISH_AUTHORIZATION_MAX_AGE_SECS: i64 = 300;
+
+/// Verify a publish authorization: proof that the caller controls the key
+/// behind the VRC's `issuer`, bound to this request.
+///
+/// The session proves the caller is a community member. This proves the caller
+/// is the issuer of the credential being published. Keeping the two separate is
+/// what lets a member publish an edge under a pairwise relationship DID without
+/// putting their membership DID into the credential (#1054) — the VTC learns
+/// that *a* member published this edge, not which member is behind the
+/// relationship DID.
+///
+/// Every field is load-bearing:
+///
+/// | field       | prevents                                              |
+/// |-------------|-------------------------------------------------------|
+/// | `type`      | replaying a signature made over some other object     |
+/// | `vrc`       | authorizing a different credential                    |
+/// | `aud`       | replaying an authorization at another community       |
+/// | `sessionId` | replaying another member's authorization              |
+/// | `issuedAt`  | unbounded replay within one live session              |
+///
+/// **The object is verified and dropped.** It carries `sessionId`, which is
+/// attributable to a membership DID; persisting or logging it would rebuild
+/// exactly the durable membership-to-relationship linkage that publishing under
+/// a pairwise identifier exists to remove. See
+/// `docs/05-design-notes/vrc-publish-proof-of-possession.md`.
+async fn verify_publish_authorization(
+    pop: &JsonValue,
     issuer_did: &str,
+    expected_vrc_sha256: &str,
+    expected_aud: &str,
+    expected_session_id: &str,
     resolver: &DIDCacheClient,
 ) -> Result<(), String> {
+    let field = |name: &str| -> Result<String, String> {
+        pop.get(name)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| format!("authorization missing `{name}`"))
+    };
+
+    let ty = field("type")?;
+    if ty != PUBLISH_AUTHORIZATION_TYPE {
+        return Err(format!(
+            "authorization `type` must be `{PUBLISH_AUTHORIZATION_TYPE}`, got `{ty}`"
+        ));
+    }
+
+    let bound_vrc = field("vrc")?;
+    if bound_vrc != expected_vrc_sha256 {
+        return Err("authorization is bound to a different VRC".into());
+    }
+
+    let aud = field("aud")?;
+    if aud != expected_aud {
+        return Err("authorization `aud` is not this community".into());
+    }
+
+    let session_id = field("sessionId")?;
+    if session_id != expected_session_id {
+        return Err("authorization is bound to a different session".into());
+    }
+
+    let issued_at = chrono::DateTime::parse_from_rfc3339(&field("issuedAt")?)
+        .map_err(|e| format!("authorization `issuedAt` is not an RFC 3339 timestamp: {e}"))?
+        .with_timezone(&Utc);
+    let age = Utc::now().signed_duration_since(issued_at).num_seconds();
+    if age.abs() > PUBLISH_AUTHORIZATION_MAX_AGE_SECS {
+        return Err(format!(
+            "authorization `issuedAt` is outside the \
+             {PUBLISH_AUTHORIZATION_MAX_AGE_SECS}s freshness window (age {age}s)"
+        ));
+    }
+
+    // Signed by the key the VRC's `issuer` names. `check_issuer_binding`
+    // inside `verify_di_proof` is what makes this proof-of-possession rather
+    // than proof-of-anything-signed.
+    verify_di_proof(pop, issuer_did, resolver).await
+}
+
+/// Verify a data-integrity proof on a JSON document: bind the proof's
+/// `verificationMethod` to the named controller, then let the DI library
+/// resolve the key (via the shared [`DidVmResolver`]) and check the signature —
+/// the same path the credential-exchange + recognition verifiers take.
+///
+/// Used for both the VRC itself (controller = the credential's `issuer`) and
+/// the publish authorization object (controller = the same issuer, proving the
+/// caller holds the key rather than merely holding the credential).
+async fn verify_di_proof(
+    doc: &JsonValue,
+    controller_did: &str,
+    resolver: &DIDCacheClient,
+) -> Result<(), String> {
+    let vrc = doc;
     let proof_value = vrc
         .get("proof")
-        .ok_or_else(|| "VRC missing proof".to_string())?;
+        .ok_or_else(|| "document missing proof".to_string())?;
     let proof: DataIntegrityProof =
         serde_json::from_value(proof_value.clone()).map_err(|e| format!("parse proof: {e}"))?;
 
@@ -328,7 +518,7 @@ async fn verify_vc_proof(
         .get("verificationMethod")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "proof missing verificationMethod".to_string())?;
-    check_issuer_binding(verification_method, issuer_did).map_err(|e| e.to_string())?;
+    check_issuer_binding(verification_method, controller_did).map_err(|e| e.to_string())?;
 
     let mut vrc_without_proof = vrc.clone();
     if let Some(obj) = vrc_without_proof.as_object_mut() {

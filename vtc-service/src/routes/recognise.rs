@@ -270,7 +270,7 @@ pub async fn recognise(
 
 /// This VTC's own DID — the audience a recognise challenge is bound to and the
 /// `domain` the holder's VP must name.
-async fn vtc_did(state: &AppState) -> Result<String, AppError> {
+pub(crate) async fn vtc_did(state: &AppState) -> Result<String, AppError> {
     state
         .config
         .read()

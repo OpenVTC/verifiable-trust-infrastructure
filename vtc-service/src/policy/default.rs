@@ -1087,4 +1087,45 @@ mod tests {
             "relationships default must deny when one party isn't a member"
         );
     }
+
+    /// The pairwise form: neither credential party is a member, and the
+    /// publish is authorized by the session plus proof of control of the
+    /// issuing DID. This is the shape #1054 exists to allow.
+    #[test]
+    fn relationships_default_allows_pairwise_publish_with_pop() {
+        let c = compile_default(PolicyPurpose::Relationships);
+
+        let input = |member_current: bool, pop_verified: bool| {
+            json!({
+                "vrc": {},
+                "authenticated_member": { "did": "did:key:zMember", "is_current": member_current },
+                "issuer":  { "did": "did:peer:2.zR1", "pop_verified": pop_verified },
+                "subject": { "did": "did:peer:2.zR2" },
+                // Pairwise DIDs are not members; the deprecated fields say so.
+                "issuer_member":  { "did": "did:peer:2.zR1", "is_current": false },
+                "subject_member": { "did": "did:peer:2.zR2", "is_current": false },
+                "action": "publish"
+            })
+        };
+
+        let allowed = evaluate(&c, "data.vtc.relationships.allow", input(true, true)).unwrap();
+        assert!(
+            pluck_bool(&allowed),
+            "a current member proving control of the issuing DID must be allowed to publish"
+        );
+
+        let no_pop = evaluate(&c, "data.vtc.relationships.allow", input(true, false)).unwrap();
+        assert!(
+            !pluck_bool(&no_pop),
+            "without proof of control the pairwise rule must not fire, and the \
+             deprecated rule must not rescue it — neither party is a member"
+        );
+
+        let not_a_member =
+            evaluate(&c, "data.vtc.relationships.allow", input(false, true)).unwrap();
+        assert!(
+            !pluck_bool(&not_a_member),
+            "proof of control is not membership; a non-member session must be denied"
+        );
+    }
 }
