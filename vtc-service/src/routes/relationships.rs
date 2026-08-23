@@ -804,7 +804,6 @@ mod tests {
         assert_eq!(extract_subject_id(&vrc).unwrap(), "did:key:zSubject");
     }
 
-    #[test]
     /// `check_vrc_shape` must accept exactly what the catalog mints as a VRC,
     /// and reject what it mints as anything else.
     ///
