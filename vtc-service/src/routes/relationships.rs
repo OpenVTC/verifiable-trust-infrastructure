@@ -1,4 +1,4 @@
-//! VRC (Verifiable Recognition Credential) graph endpoints
+//! VRC (Verifiable Relationship Credential) graph endpoints
 //! — Phase 4 M4.6. Spec §5.4 + §6.1; planning-review D1
 //! (issuer is the *member*, not the community).
 //!
@@ -65,10 +65,13 @@ use crate::server::AppState;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PublishBody {
-    /// The self-issued VRC. Must be a JSON-LD VC body with
-    /// `type` array including `VerifiableRecognitionCredential`,
-    /// an `issuer` field, `credentialSubject.id` naming the
-    /// subject, and a data-integrity proof.
+    /// The self-issued VRC, in the DTG Credentials wire form:
+    /// `@context` carrying the W3C v2 and DTG contexts, `type`
+    /// `["VerifiableCredential", "DTGCredential",
+    /// "RelationshipCredential"]`, an `issuer`,
+    /// `credentialSubject.id` naming the subject, and a
+    /// data-integrity proof. Built by
+    /// `dtg_credentials::DTGCredential::new_vrc`.
     pub vrc: JsonValue,
     /// Proof that the caller controls the key behind the VRC's
     /// `issuer`, when that is not the caller's session DID —
@@ -114,7 +117,12 @@ pub async fn publish(
     let issuer_did = extract_did_field(vrc, "issuer")?;
     let subject_did = extract_subject_id(vrc)?;
 
-    // 2. Cheapest authorization gate first: a VRC issued under a
+    // 2. Shape: is this even a relationship credential? Checked
+    //    before anything expensive, and before authorization,
+    //    because a malformed body is a 400 whoever sent it.
+    check_vrc_shape(vrc)?;
+
+    // 3. Cheapest authorization gate first: a VRC issued under a
     //    DID that is not the session's must carry a publish
     //    authorization. Rejecting here keeps a caller error a
     //    caller error — the daemon-config prerequisites below
@@ -127,7 +135,7 @@ pub async fn publish(
         )));
     }
 
-    // 3. Verify the VC's data-integrity proof against the key
+    // 4. Verify the VC's data-integrity proof against the key
     //    the `issuer` field names. This establishes that the
     //    credential was made by the party it names as issuer —
     //    true whatever kind of identifier that is, and untouched
@@ -139,13 +147,13 @@ pub async fn publish(
         .await
         .map_err(|e| AppError::Validation(format!("VrcProofInvalid: {e}")))?;
 
-    // 4. Hash the VRC. This moves ahead of policy evaluation
+    // 5. Hash the VRC. This moves ahead of policy evaluation
     //    because the publish authorization binds to it.
     let canon = canonicalise(vrc);
     let digest = Sha256::digest(canon.as_bytes());
     let vrc_sha256 = hex::encode(digest);
 
-    // 5. Authorize the *publication*, which is a separate act
+    // 6. Authorize the *publication*, which is a separate act
     //    from the issuance verified at step 2. Issuing a VRC and
     //    publishing it to the community graph are different
     //    disclosures, and the second one is the issuer's to make:
@@ -195,7 +203,7 @@ pub async fn publish(
         }
     };
 
-    // 6. Enrich for the policy input.
+    // 7. Enrich for the policy input.
     //
     //    `authenticated_member` is the caller — the party whose
     //    membership actually gates this publish. `issuer` and
@@ -248,7 +256,7 @@ pub async fn publish(
         ));
     }
 
-    // 7. Idempotency: same hash → same id.
+    // 8. Idempotency: same hash → same id.
     if let Some(existing) = find_by_hash(&state.relationships_ks, &vrc_sha256).await? {
         return Ok((
             StatusCode::OK,
@@ -261,7 +269,7 @@ pub async fn publish(
         ));
     }
 
-    // 8. Store the row + secondary-index entries.
+    // 9. Store the row + secondary-index entries.
     let id = Uuid::new_v4();
     let rel = Relationship {
         id,
@@ -278,7 +286,7 @@ pub async fn publish(
     )
     .await?;
 
-    // 9. Audit.
+    // 10. Audit.
     let edge_type = vrc
         .pointer("/credentialSubject/endorsement/type")
         .and_then(|v| v.as_str())
@@ -404,6 +412,61 @@ fn extract_subject_id(vrc: &JsonValue) -> Result<String, AppError> {
         .ok_or_else(|| {
             AppError::Validation("VRC.credentialSubject.id missing or not a string".into())
         })
+}
+
+/// The two `@context` entries every DTG credential MUST carry
+/// (DTG Credentials §Common Structure — normative).
+const DTG_CONTEXTS: [&str; 2] = [
+    "https://www.w3.org/ns/credentials/v2",
+    "https://firstperson.network/credentials/dtg/v1",
+];
+
+/// Reject anything that is not a conformant VRC before it becomes an edge in
+/// the community's trust graph.
+///
+/// The VTC does not mint VRCs — they are self-issued — but it decides what
+/// enters the graph, and an edge is only interpretable if it says what it is.
+/// Until this existed the publish path never looked at `type` at all, so any
+/// signed JSON with an `issuer` and a `credentialSubject.id` could be stored as
+/// a relationship.
+///
+/// Classification goes through `dtg_credentials`, the same catalog
+/// `DTGCredential::new_vrc` mints from, rather than string-matching here — one
+/// definition of the wire form, shared by issuer and verifier.
+fn check_vrc_shape(vrc: &JsonValue) -> Result<(), AppError> {
+    let ctx: Vec<String> = vrc
+        .get("@context")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .ok_or_else(|| AppError::Validation("VRC `@context` missing or not an array".into()))?;
+    for required in DTG_CONTEXTS {
+        if !ctx.iter().any(|c| c == required) {
+            return Err(AppError::Validation(format!(
+                "VRC `@context` must include `{required}`"
+            )));
+        }
+    }
+
+    let types: Vec<String> = vrc
+        .get("type")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .ok_or_else(|| AppError::Validation("VRC `type` missing or not an array".into()))?;
+    for required in ["VerifiableCredential", "DTGCredential"] {
+        if !types.iter().any(|t| t == required) {
+            return Err(AppError::Validation(format!(
+                "VRC `type` must include `{required}`"
+            )));
+        }
+    }
+
+    match dtg_credentials::DTGCredentialType::try_from(types.as_slice()) {
+        Ok(dtg_credentials::DTGCredentialType::Relationship) => Ok(()),
+        Ok(other) => Err(AppError::Validation(format!(
+            "this endpoint publishes relationship edges; got a {other}"
+        ))),
+        Err(_) => Err(AppError::Validation(
+            "VRC `type` names no DTG credential subtype — expected `RelationshipCredential`".into(),
+        )),
+    }
 }
 
 /// `type` of the publish authorization object. Guarding on it stops a

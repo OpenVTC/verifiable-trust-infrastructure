@@ -186,8 +186,11 @@ async fn build_fixture() -> Fixture {
 
 fn fake_vrc(issuer: &str, subject: &str) -> Value {
     json!({
-        "@context": ["https://www.w3.org/ns/credentials/v2"],
-        "type": ["VerifiableCredential", "VerifiableRecognitionCredential"],
+        "@context": [
+            "https://www.w3.org/ns/credentials/v2",
+            "https://firstperson.network/credentials/dtg/v1"
+        ],
+        "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
         "issuer": issuer,
         "credentialSubject": {
             "id": subject,
@@ -537,8 +540,11 @@ mod pairwise {
         sign(
             issuer_seed,
             json!({
-                "@context": ["https://www.w3.org/ns/credentials/v2"],
-                "type": ["VerifiableCredential", "VerifiableRecognitionCredential"],
+                "@context": [
+                    "https://www.w3.org/ns/credentials/v2",
+                    "https://firstperson.network/credentials/dtg/v1"
+                ],
+                "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
                 "issuer": did_for(issuer_seed),
                 "validFrom": "2020-01-01T00:00:00Z",
                 "credentialSubject": {
@@ -872,6 +878,79 @@ mod pairwise {
             post(&fix, &v, Some(pop)).await.status(),
             StatusCode::FORBIDDEN
         );
+    }
+
+    // ─── Only a conformant VRC becomes a graph edge ───
+
+    /// Build an otherwise-valid, correctly-signed credential whose shape has
+    /// been altered, and assert it cannot enter the trust graph.
+    async fn assert_shape_rejected(mutate: impl Fn(&mut Value)) {
+        let fix = fixture().await;
+        let mut body = json!({
+            "@context": [
+                "https://www.w3.org/ns/credentials/v2",
+                "https://firstperson.network/credentials/dtg/v1"
+            ],
+            "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
+            "issuer": did_for(RDID),
+            "validFrom": "2020-01-01T00:00:00Z",
+            "credentialSubject": { "id": did_for(PEER_RDID) },
+        });
+        mutate(&mut body);
+        let v = sign(RDID, body).await;
+        let pop = sign(
+            RDID,
+            authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
+        )
+        .await;
+        let (status, b) = body_value(post(&fix, &v, Some(pop)).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {b}");
+    }
+
+    #[tokio::test]
+    async fn rejects_vrc_missing_the_dtg_context() {
+        assert_shape_rejected(|v| {
+            v["@context"] = json!(["https://www.w3.org/ns/credentials/v2"]);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn rejects_vrc_missing_the_dtg_base_type() {
+        assert_shape_rejected(|v| {
+            v["type"] = json!(["VerifiableCredential", "RelationshipCredential"]);
+        })
+        .await;
+    }
+
+    /// The relationships endpoint publishes relationship edges. A membership
+    /// credential is a different edge with different issuance rules.
+    #[tokio::test]
+    async fn rejects_a_credential_of_another_dtg_subtype() {
+        assert_shape_rejected(|v| {
+            v["type"] = json!([
+                "VerifiableCredential",
+                "DTGCredential",
+                "MembershipCredential"
+            ]);
+        })
+        .await;
+    }
+
+    /// Regression guard. `VerifiableRecognitionCredential` was never a DTG
+    /// credential type — there is no such thing as a recognition credential,
+    /// only a relationship credential. It survived in this repo's fixtures and
+    /// docs precisely because the publish path never inspected `type`.
+    #[tokio::test]
+    async fn rejects_the_invented_recognition_credential_type() {
+        assert_shape_rejected(|v| {
+            v["type"] = json!([
+                "VerifiableCredential",
+                "DTGCredential",
+                "VerifiableRecognitionCredential"
+            ]);
+        })
+        .await;
     }
 
     /// A signature the member legitimately made over some *other* object must

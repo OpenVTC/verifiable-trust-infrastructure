@@ -107,7 +107,7 @@ catalog (a superset of `docs/05-design-notes/vtc-mvp.md` §6.1):
 | **MembershipCredential (VMC)** | community | member | "is a member of X" | yes — prove membership without other claims |
 | **RoleCredential (Role VEC)** | community | member | proves a role (admin/moderator/issuer/member/custom) | yes |
 | **EndorsementCredential (VEC)** | community or issuer-role member | member | community-defined claims | yes |
-| **RecognitionCredential (VRC)** | member (self-issued) | another member | peer trust edge | n/a (Phase 3) |
+| **RelationshipCredential (VRC)** | member (self-issued) | another member | peer trust edge | n/a (Phase 3) |
 | **PersonhoodCredential** | personhood oracle / community | member | Sybil resistance | yes |
 
 `vtc-service/src/credentials/{vmc,vec}.rs` become thin adapters over DTG

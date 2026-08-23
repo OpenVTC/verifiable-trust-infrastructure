@@ -248,7 +248,7 @@ mod tests {
             issuer_did: issuer.into(),
             subject_did: subject.into(),
             vrc_jsonld: serde_json::json!({
-                "type": ["VerifiableCredential", "VerifiableRecognitionCredential"],
+                "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
                 "issuer": issuer,
                 "credentialSubject": { "id": subject, "endorsement": { "type": "endorses" } }
             }),

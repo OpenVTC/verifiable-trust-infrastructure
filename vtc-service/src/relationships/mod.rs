@@ -1,4 +1,4 @@
-//! VRC (Verifiable Recognition Credential) trust-graph
+//! VRC (Verifiable Relationship Credential) trust-graph
 //! storage — Phase 4 M4.5. Spec §5.4 + §6.1.
 //!
 //! ## What this module owns
