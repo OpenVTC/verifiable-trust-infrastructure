@@ -33,7 +33,9 @@ use crate::credentials::invitation_verify::{
 };
 use crate::credentials::vec::VEC_TYPE;
 use crate::credentials::vmc::VMC_TYPE;
-use crate::join::{JoinRequest, JoinStatus, JoinTransport, list_join_requests, store_join_request};
+use crate::join::{
+    JoinDecision, JoinRequest, JoinStatus, JoinTransport, list_join_requests, store_join_request,
+};
 use crate::policy::{PolicyPurpose, extract::extract_vp_claims, load_active_compiled};
 use crate::server::AppState;
 
@@ -389,9 +391,18 @@ pub async fn realize_join_verdict(
             request.status = JoinStatus::Deferred;
             request.policy_decision = Some(serde_json::to_value(&verdict)?);
         }
-        Verdict::Deny(_) => {
+        Verdict::Deny(d) => {
             request.status = JoinStatus::Rejected;
             request.policy_decision = Some(serde_json::to_value(&verdict)?);
+            // The same refusal, in the shape the applicant's poll reads.
+            // `policy_decision` keeps the whole verdict for the audit
+            // trail; this carries the part the applicant is owed, plus
+            // the decision time the verdict has no room for.
+            request.decision = Some(JoinDecision {
+                code: d.code.clone(),
+                reason: d.reason.clone(),
+                decided_at: chrono::Utc::now(),
+            });
         }
     }
     store_join_request(&state.join_requests_ks, &request).await?;

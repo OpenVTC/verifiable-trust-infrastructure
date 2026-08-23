@@ -1754,6 +1754,208 @@ decision := {"effect": "request_more", "with": {
 }
 
 // ---------------------------------------------------------------------------
+// #1052 — a rejected applicant can recover *why* from the poll.
+//
+// The correlated ceremony reply is the only place a `{code, reason}` ever
+// reached an applicant, which makes it a one-shot delivery: a dropped socket,
+// a lost reply, or a rejection an admin took hours later, and the reason was
+// gone for good. The poll is the recovery path, and it was the one path that
+// stripped the evidence — projecting `needs`/`presentationDefinition` for
+// `deferred` and bare `{requestId, status}` for `rejected`.
+//
+// Both rejection paths are covered, because they source the refusal
+// differently: the policy auto-deny has a verdict to quote, the admin reject
+// has only the operator's words.
+// ---------------------------------------------------------------------------
+
+/// Auto-deny: the poll returns the policy's own `code` and `reason`.
+#[tokio::test]
+async fn status_rejected_by_policy_returns_the_deny_code_and_reason() {
+    let fix = build_fixture().await;
+    activate_join_policy(
+        &fix,
+        r#"
+package vtc.join
+import future.keywords.if
+default decision := {"effect": "deny", "with": {
+    "code": "membership-required",
+    "reason": "this community admits members of did:web:parent.example only"
+}}
+"#,
+    )
+    .await;
+
+    let (_d, doc) = submit_doc(&json!({})).await;
+    let (_, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(verdict_effect(&body), "deny", "expected a deny: {body}");
+    let id = Uuid::parse_str(body["payload"]["requestId"].as_str().unwrap()).unwrap();
+
+    let (status, body) = post_status(&fix, id).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    let payload = tt_payload(&body);
+    assert_eq!(payload["status"], "rejected");
+    assert_eq!(
+        payload["code"], "membership-required",
+        "the policy's refusal code must survive the poll: {payload}"
+    );
+    assert_eq!(
+        payload["reason"], "this community admits members of did:web:parent.example only",
+        "the policy's reason must survive the poll: {payload}"
+    );
+    assert!(
+        payload["decidedAt"].is_string(),
+        "a rejection must say when it was decided: {payload}"
+    );
+}
+
+/// Admin reject: the poll returns the operator's reason under the stable
+/// `admin-reject` code.
+///
+/// This is the path that was unrecoverable end to end — `reject_pending`
+/// sends the applicant nothing, and the reason reached only the audit log,
+/// which no applicant can read. A code distinct from any policy code is what
+/// lets a client tell "the rules refused you, satisfy them and re-apply" from
+/// "a human refused you, re-applying changes nothing".
+#[tokio::test]
+async fn status_rejected_by_admin_returns_the_operator_reason() {
+    let fix = build_fixture().await;
+    let id = submit_pending(&fix).await;
+
+    let (status, _body) = send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/decide"),
+        DECIDE_TASK,
+        Some(&fix.admin_token),
+        Some(json!({
+            "decision": "rejected",
+            "reason": "duplicate application — see request 4b1f",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = post_status(&fix, id).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    let payload = tt_payload(&body);
+    assert_eq!(payload["status"], "rejected");
+    assert_eq!(
+        payload["code"], "admin-reject",
+        "an operator decision carries the admin code, not a policy one: {payload}"
+    );
+    assert_eq!(
+        payload["reason"], "duplicate application — see request 4b1f",
+        "the operator's reason must reach the applicant: {payload}"
+    );
+    assert!(
+        payload["decidedAt"].is_string(),
+        "a rejection must say when it was decided: {payload}"
+    );
+}
+
+/// An admin who supplies no reason yields a code and no `reason` field —
+/// never an empty string, which a client would render as a blank explanation.
+#[tokio::test]
+async fn status_rejected_by_admin_without_a_reason_omits_the_field() {
+    let fix = build_fixture().await;
+    let id = submit_pending(&fix).await;
+
+    let (status, _body) = send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/decide"),
+        DECIDE_TASK,
+        Some(&fix.admin_token),
+        Some(json!({ "decision": "rejected" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, body) = post_status(&fix, id).await;
+    let payload = tt_payload(&body);
+    assert_eq!(payload["code"], "admin-reject");
+    assert!(
+        payload.get("reason").is_none(),
+        "no reason given means the field is absent, not empty: {payload}"
+    );
+}
+
+/// `decidedAt` is the decision's time, not the document's.
+///
+/// The two are indistinguishable on an auto-deny polled immediately, which is
+/// exactly why asserting "they differ" would prove nothing. What separates
+/// them is that one is fixed and the other is not: poll twice and `issuedAt`
+/// moves — a fresh `#response` document each time — while `decidedAt` names
+/// the same moment it always will. An admin reject makes the gap arbitrary;
+/// the applicant may poll days later.
+#[tokio::test]
+async fn status_decided_at_is_the_decision_time_not_the_document_time() {
+    let fix = build_fixture().await;
+    let id = submit_pending(&fix).await;
+
+    let (status, _body) = send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/decide"),
+        DECIDE_TASK,
+        Some(&fix.admin_token),
+        Some(json!({ "decision": "rejected", "reason": "not this time" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, first) = post_status(&fix, id).await;
+    // A measurable gap, so `issuedAt` cannot coincidentally match.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let (_, second) = post_status(&fix, id).await;
+
+    let decided_first = tt_payload(&first)["decidedAt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let decided_second = tt_payload(&second)["decidedAt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        decided_first, decided_second,
+        "the decision happened once; every poll must report the same time"
+    );
+
+    let issued_first = first["issuedAt"].as_str().unwrap().to_string();
+    let issued_second = second["issuedAt"].as_str().unwrap().to_string();
+    assert_ne!(
+        issued_first, issued_second,
+        "each poll is a fresh document, so issuedAt must move — if it does \
+         not, this test cannot tell the two timestamps apart"
+    );
+    assert_ne!(
+        decided_second, issued_second,
+        "decidedAt must not be an alias for the document's issuedAt"
+    );
+}
+
+/// A non-rejected request carries no refusal fields at all — a `pending`
+/// applicant must not be shown a code or reason.
+#[tokio::test]
+async fn status_pending_carries_no_refusal_fields() {
+    let fix = build_fixture().await;
+    let id = submit_pending(&fix).await;
+
+    let (_, body) = post_status(&fix, id).await;
+    let payload = tt_payload(&body);
+    assert_eq!(payload["status"], "pending");
+    assert!(
+        payload.get("code").is_none() && payload.get("reason").is_none(),
+        "a pending request has not been refused: {payload}"
+    );
+    assert!(
+        payload.get("decidedAt").is_none(),
+        "a pending request has no decision to time: {payload}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // P0.5 — the unauthenticated join-request POSTs (submit / status)
 // must sit on the governed branch (5 rps + burst 10 per source IP), like the
 // recognise route — they run attacker-driven crypto + Rego eval and were

@@ -17,11 +17,13 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use vta_sdk::protocols::join_requests::ADMIN_REJECT_CODE;
 use vti_common::audit::{AuditEvent, JoinRequestData, JoinRequestRejectedData};
 use vti_common::error::AppError;
 
@@ -29,7 +31,7 @@ use crate::acl::VtcRole;
 use crate::auth::AdminAuth;
 use crate::ceremony::execute;
 use crate::ceremony::{EffectOutcome, EffectPlan};
-use crate::join::{JoinRequest, JoinStatus, get_join_request, store_join_request};
+use crate::join::{JoinDecision, JoinRequest, JoinStatus, get_join_request, store_join_request};
 use crate::server::AppState;
 
 const REJECT_REASON_MAX: usize = 1024;
@@ -235,6 +237,18 @@ async fn reject_pending(
         .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
 
     req.status = JoinStatus::Rejected;
+    // Record the refusal on the row, not only in the audit log. The audit
+    // trail is admin-facing; the applicant reads their own request, and
+    // until this was written the operator's reason reached them through no
+    // path at all - reject_pending emits no message and the poll returned
+    // bare {requestId, status}. ADMIN_REJECT_CODE rather than a policy
+    // code because no policy decided this: a human did, and a client that
+    // can tell the two apart knows whether re-applying could ever help.
+    req.decision = Some(JoinDecision {
+        code: ADMIN_REJECT_CODE.to_string(),
+        reason: (!reason.is_empty()).then(|| reason.clone()),
+        decided_at: Utc::now(),
+    });
     store_join_request(&state.join_requests_ks, &req).await?;
 
     audit_writer
