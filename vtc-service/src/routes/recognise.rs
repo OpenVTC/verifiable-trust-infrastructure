@@ -70,7 +70,7 @@ use crate::recognition::{
 };
 use crate::server::AppState;
 use affinidi_vc::VerifiableCredential;
-use vta_sdk::protocols::members::VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE;
+use vta_sdk::protocols::members::{ENDORSEMENT_CREDENTIAL_TYPE, MEMBERSHIP_CREDENTIAL_TYPE};
 
 /// Request body for `POST /v1/auth/recognise`. The caller supplies a
 /// holder-signed W3C Verifiable Presentation that embeds the foreign VEC and
@@ -281,27 +281,6 @@ pub(crate) async fn vtc_did(state: &AppState) -> Result<String, AppError> {
         .ok_or_else(|| AppError::Validation("VTC DID not configured".into()))
 }
 
-/// Wire type of a VEC, per DTG Credentials §VEC. Note the absence of a
-/// `Verifiable` prefix: as with `VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE`, the
-/// prefix belongs to the *concept* ("verifiable endorsement credential") and
-/// never to the wire tag.
-const ENDORSEMENT_CREDENTIAL_TYPE: &str = "EndorsementCredential";
-
-/// Type tags emitted by VTCs predating the DTG catalog adoption (`cb06fb31`),
-/// which hand-rolled credential bodies with a `Verifiable` prefix that was
-/// never a DTG type. Recognition is cross-community, so a peer may still be
-/// running one of those; accepted here and nowhere else.
-const LEGACY_TYPE_TAGS: [(&str, DTGCredentialType); 2] = [
-    (
-        "VerifiableEndorsementCredential",
-        DTGCredentialType::Endorsement,
-    ),
-    (
-        "VerifiableMembershipCredential",
-        DTGCredentialType::Membership,
-    ),
-];
-
 /// Classify an embedded credential by its `type` array.
 ///
 /// Classification goes through `dtg_credentials` — the same catalog the VTC
@@ -311,21 +290,14 @@ const LEGACY_TYPE_TAGS: [(&str, DTGCredentialType); 2] = [
 /// `"VerifiableEndorsementCredential"` while `issue_endorsement` minted
 /// `"EndorsementCredential"`, so no genuinely-issued VEC was ever routed to its
 /// slot, and cross-community recognition rejected every real presentation.
+///
+/// The catalog is the only accepted authority. Nothing here re-admits the
+/// `Verifiable`-prefixed tags that hand-rolled pre-catalog bodies carried:
+/// they were never DTG credential types, and a reference implementation that
+/// accepts a type the specification does not define reintroduces the drift
+/// this function exists to prevent.
 fn classify(types: &[String]) -> Option<DTGCredentialType> {
-    if let Ok(kind) = DTGCredentialType::try_from(types) {
-        return Some(kind);
-    }
-    for (tag, kind) in LEGACY_TYPE_TAGS {
-        if types.iter().any(|t| t == tag) {
-            tracing::warn!(
-                legacy_type = tag,
-                "peer presented a pre-catalog credential type; accepted, but the \
-                 issuing VTC should be upgraded"
-            );
-            return Some(kind);
-        }
-    }
-    None
+    DTGCredentialType::try_from(types).ok()
 }
 
 /// Pull the foreign VEC + VMC out of a VP's `verifiableCredential`, classifying
@@ -352,9 +324,7 @@ fn extract_vec_vmc(
         // ignored — the recognition gate only acts on the VEC + VMC pair.
         let (slot, label) = match classify(&cred.types) {
             Some(DTGCredentialType::Endorsement) => (&mut vec_cred, ENDORSEMENT_CREDENTIAL_TYPE),
-            Some(DTGCredentialType::Membership) => {
-                (&mut vmc_cred, VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE)
-            }
+            Some(DTGCredentialType::Membership) => (&mut vmc_cred, MEMBERSHIP_CREDENTIAL_TYPE),
             _ => continue,
         };
         if slot.replace(cred).is_some() {
@@ -368,9 +338,7 @@ fn extract_vec_vmc(
         AppError::Validation(format!("presentation has no {ENDORSEMENT_CREDENTIAL_TYPE}"))
     })?;
     let vmc = vmc_cred.ok_or_else(|| {
-        AppError::Validation(format!(
-            "presentation has no {VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE}"
-        ))
+        AppError::Validation(format!("presentation has no {MEMBERSHIP_CREDENTIAL_TYPE}"))
     })?;
     Ok((vec, vmc))
 }
@@ -683,19 +651,25 @@ mod classify_tests {
         ]))));
     }
 
-    /// Recognition is cross-community, so a peer may still be running a VTC
-    /// from before the catalog adoption. Those tags are accepted here and
-    /// nowhere else.
+    /// The `Verifiable`-prefixed tags were never DTG credential types. They
+    /// exist only as a mistake this repo made and has since corrected, and
+    /// accepting them would reintroduce the drift `classify` prevents.
     #[test]
-    fn still_accepts_pre_catalog_type_tags() {
-        assert!(is_endorsement(classify(&types(&[
-            "VerifiableCredential",
-            "VerifiableEndorsementCredential"
-        ]))));
-        assert!(is_membership(classify(&types(&[
-            "VerifiableCredential",
-            "VerifiableMembershipCredential"
-        ]))));
+    fn refuses_the_verifiable_prefixed_tags_that_were_never_dtg_types() {
+        assert!(
+            classify(&types(&[
+                "VerifiableCredential",
+                "VerifiableEndorsementCredential"
+            ]))
+            .is_none()
+        );
+        assert!(
+            classify(&types(&[
+                "VerifiableCredential",
+                "VerifiableMembershipCredential"
+            ]))
+            .is_none()
+        );
     }
 
     #[test]

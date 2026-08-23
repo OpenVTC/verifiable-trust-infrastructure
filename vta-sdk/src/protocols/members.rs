@@ -26,18 +26,29 @@ use serde_json::Value;
 /// its half of the pair — the direction is given by `issuer` /
 /// `credentialSubject.id`, not the type.
 ///
-/// The value is the canonical DTG / W3C tag `MembershipCredential` — exactly
-/// what `dtg-credentials` emits (`DTGCredentialType::Membership`) and what the
-/// VTC's own issuance stamps. The `VERIFIABLE_` prefix in the *name* is
-/// historical; the *tag* is `MembershipCredential`, not
-/// `VerifiableMembershipCredential`, so a credential built with the typed
-/// `dtg-credentials` API verifies without hand-rolling the VC JSON.
-pub const VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE: &str = "MembershipCredential";
+/// The canonical DTG tag, exactly as `dtg-credentials` emits it
+/// (`DTGCredentialType::Membership`) and as the VTC's own issuance stamps it.
+///
+/// The name previously carried a `VERIFIABLE_` prefix that the *value* never
+/// had. That gap is not cosmetic: it is how
+/// `"VerifiableEndorsementCredential"` came to be hand-rolled into the
+/// recognition path, where it matched nothing any VTC issues and silently
+/// broke cross-community recognition for every real presentation
+/// (OpenVTC/verifiable-trust-infrastructure#1062). A constant whose name
+/// disagrees with its value invites exactly that.
+pub const MEMBERSHIP_CREDENTIAL_TYPE: &str = "MembershipCredential";
+
+/// Wire `type` tag of a VEC, per DTG Credentials §VEC.
+///
+/// Sibling of [`MEMBERSHIP_CREDENTIAL_TYPE`], and here for the same reason:
+/// the recognition path had this one as a bare literal, spelled wrongly, with
+/// nothing to compare it against.
+pub const ENDORSEMENT_CREDENTIAL_TYPE: &str = "EndorsementCredential";
 
 /// VTC → member: request that the member issue and send their reciprocal VMC.
 pub const MEMBER_REQUEST_VMC_TYPE: &str = "https://trusttasks.org/spec/vtc/members/request-vmc/0.1";
 
-/// Member → VTC: a member-issued [`VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE`] VMC,
+/// Member → VTC: a member-issued [`MEMBERSHIP_CREDENTIAL_TYPE`] VMC,
 /// the member → community half of the membership pair.
 pub const MEMBER_VMC_TYPE: &str = "https://trusttasks.org/spec/vtc/members/vmc/0.1";
 

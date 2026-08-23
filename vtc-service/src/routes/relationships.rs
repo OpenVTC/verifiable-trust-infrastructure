@@ -13,7 +13,8 @@
 //!    an `issuer` equal to the session DID. It then runs
 //!    `relationships.rego` against an enriched input
 //!    (`{ vrc, authenticated_member: { did, is_current },
-//!        identifier_form, issuer: { did }, subject: { did },
+//!        identifier_form, issuer: { did, is_current },
+//!        subject: { did, is_current },
 //!        action }`), persists the row + secondary-index
 //!    entries on allow, and emits `VrcPublished`.
 //!
@@ -280,12 +281,6 @@ pub async fn publish(
     //    pairwise identifiers are not resolvable to members and
     //    are not meant to be.
     //
-    //    `issuer_member` / `subject_member` are retained for
-    //    operator-authored policies written against the old
-    //    shape. For a pairwise VRC both report `is_current:
-    //    false`, so an un-updated operator policy *denies* the
-    //    publish. That is deliberate: a policy someone wrote is
-    //    not silently loosened by this change.
     let member_current = is_current_member(&state, &auth.did).await?;
     let issuer_current = is_current_member(&state, &issuer_did).await?;
     let subject_current = is_current_member(&state, &subject_did).await?;
@@ -312,15 +307,11 @@ pub async fn publish(
         "vrc": vrc,
         "authenticated_member": { "did": auth.did, "is_current": member_current },
         "identifier_form": identifier_form.as_str(),
-        "issuer": {
-            "did": issuer_did,
-            // Retained: `pairwise` implies the authorization was verified.
-            "pop_verified": identifier_form == IdentifierForm::Pairwise,
-        },
-        "subject": { "did": subject_did },
-        // Deprecated shape — see above.
-        "issuer_member": { "did": issuer_did, "is_current": issuer_current },
-        "subject_member": { "did": subject_did, "is_current": subject_current },
+        // `is_current` on the credential'"'"'s own parties is meaningful only for
+        // the attributed form; under pairwise identifiers neither party is
+        // resolvable to a member, and is not meant to be.
+        "issuer": { "did": issuer_did, "is_current": issuer_current },
+        "subject": { "did": subject_did, "is_current": subject_current },
         "action": "publish",
     });
     let allow = evaluate_relationships_policy(&state, &policy_input).await?;

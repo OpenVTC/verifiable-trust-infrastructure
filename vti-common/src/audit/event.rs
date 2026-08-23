@@ -898,8 +898,13 @@ pub struct MembershipReciprocatedData {
 pub struct CredentialIssuedData {
     /// VC `id` URI (typically `urn:uuid:<server-allocated>`).
     pub credential_id: String,
-    /// Wire-form credential type (`"VerifiableMembershipCredential"`
-    /// for VMC, `"VerifiableEndorsementCredential"` for VEC).
+    /// Wire-form credential type — the DTG tag exactly as issued
+    /// (`"MembershipCredential"`, `"EndorsementCredential"`).
+    ///
+    /// This recorded `"MembershipCredential"` /
+    /// `"EndorsementCredential"` until the naming cleanup: tags no
+    /// credential ever carried, in the one record meant to be authoritative
+    /// after the fact.
     pub credential_type: String,
     /// RFC3339 `validFrom` from the issued VC.
     pub valid_from: String,
@@ -1590,17 +1595,14 @@ mod tests {
     fn vmc_issued_round_trip() {
         let e = AuditEvent::VmcIssued(CredentialIssuedData {
             credential_id: "urn:uuid:11111111-1111-1111-1111-111111111111".into(),
-            credential_type: "VerifiableMembershipCredential".into(),
+            credential_type: "MembershipCredential".into(),
             valid_from: "2026-05-12T00:00:00Z".into(),
             valid_until: "2026-06-11T00:00:00Z".into(),
             status_list_index: Some(42),
         });
         let v = wire_value(&e);
         assert_eq!(v["type"], "VmcIssued");
-        assert_eq!(
-            v["data"]["credentialType"],
-            "VerifiableMembershipCredential"
-        );
+        assert_eq!(v["data"]["credentialType"], "MembershipCredential");
         assert_eq!(v["data"]["statusListIndex"], 42);
         round_trip(&e);
     }
@@ -1609,7 +1611,7 @@ mod tests {
     fn vec_issued_round_trip_omits_status_list_index_when_none() {
         let e = AuditEvent::VecIssued(CredentialIssuedData {
             credential_id: "urn:uuid:22222222-2222-2222-2222-222222222222".into(),
-            credential_type: "VerifiableEndorsementCredential".into(),
+            credential_type: "EndorsementCredential".into(),
             valid_from: "2026-05-12T00:00:00Z".into(),
             valid_until: "2026-06-11T00:00:00Z".into(),
             status_list_index: None,
@@ -2044,7 +2046,7 @@ mod tests {
             (
                 AuditEvent::VmcIssued(CredentialIssuedData {
                     credential_id: "id".into(),
-                    credential_type: "VerifiableMembershipCredential".into(),
+                    credential_type: "MembershipCredential".into(),
                     valid_from: "vf".into(),
                     valid_until: "vu".into(),
                     status_list_index: None,
@@ -2054,7 +2056,7 @@ mod tests {
             (
                 AuditEvent::VecIssued(CredentialIssuedData {
                     credential_id: "id".into(),
-                    credential_type: "VerifiableEndorsementCredential".into(),
+                    credential_type: "EndorsementCredential".into(),
                     valid_from: "vf".into(),
                     valid_until: "vu".into(),
                     status_list_index: None,

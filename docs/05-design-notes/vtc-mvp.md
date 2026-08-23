@@ -530,7 +530,7 @@ consults live inputs (trust-registry queries, etc.).
 | `role_definitions` | Map roles to permissions (incl. Custom) | The matrix in §5.3 for standard roles only |
 | `cross_community_roles` | Honour external VEC role grants | **Deny-all** |
 | `cross_community_relationships` | Store external VRCs | **Deny-all** |
-| `relationships` | Store published VRCs | Store if both parties are current members |
+| `relationships` | Store published VRCs | Store if the caller is a current member (attributed form also requires both named parties to be) |
 
 ### 7.2 Activation
 
@@ -553,7 +553,7 @@ file-watching, no auto-reload.
 | `role_definitions` | `{ role, action, resource? }` |
 | `cross_community_roles` | `{ foreign_vec, target_role, vtc_state }` |
 | `cross_community_relationships` | `{ vrc, viewer_member, vtc_state }` |
-| `relationships` | `{ vrc, issuer_member, subject_member }` |
+| `relationships` | `{ vrc, authenticated_member, identifier_form, issuer, subject }` |
 
 ## 8. Trust-registry integration
 
