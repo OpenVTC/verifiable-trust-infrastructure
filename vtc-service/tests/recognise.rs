@@ -291,7 +291,7 @@ mod holder_binding {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    use vta_sdk::protocols::members::VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE;
+    use vta_sdk::protocols::members::MEMBERSHIP_CREDENTIAL_TYPE;
     use vtc_service::test_support::TestVtc;
 
     const VTC_DID: &str = "did:key:z6MkTestVTC";
@@ -378,12 +378,7 @@ mod holder_binding {
         // every VP that got as far as the credential lookup 400 with
         // "presentation has no MembershipCredential" — so the three holder-binding
         // assertions below could never be reached. Use the constant, not a literal.
-        let vmc = sign_vc(
-            issuer_seed,
-            VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE,
-            &subject_did,
-        )
-        .await;
+        let vmc = sign_vc(issuer_seed, MEMBERSHIP_CREDENTIAL_TYPE, &subject_did).await;
         let mut vp = json!({
             "@context": ["https://www.w3.org/ns/credentials/v2"],
             "type": ["VerifiablePresentation"],

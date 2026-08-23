@@ -1065,8 +1065,8 @@ mod tests {
                 "vrc": {},
                 "identifier_form": "attributed",
                 "authenticated_member": { "did": "did:key:zIssuer", "is_current": true },
-                "issuer_member": { "did": "did:key:zIssuer", "is_current": true },
-                "subject_member": { "did": "did:key:zSubject", "is_current": true },
+                "issuer": { "did": "did:key:zIssuer", "is_current": true },
+                "subject": { "did": "did:key:zSubject", "is_current": true },
                 "action": "publish"
             }),
         )
@@ -1080,8 +1080,8 @@ mod tests {
                 "vrc": {},
                 "identifier_form": "attributed",
                 "authenticated_member": { "did": "did:key:zIssuer", "is_current": true },
-                "issuer_member": { "did": "did:key:zIssuer", "is_current": true },
-                "subject_member": { "did": "did:key:zSubject", "is_current": false },
+                "issuer": { "did": "did:key:zIssuer", "is_current": true },
+                "subject": { "did": "did:key:zSubject", "is_current": false },
                 "action": "publish"
             }),
         )
@@ -1104,11 +1104,9 @@ mod tests {
                 "vrc": {},
                 "identifier_form": if pairwise { "pairwise" } else { "attributed" },
                 "authenticated_member": { "did": "did:key:zMember", "is_current": member_current },
-                "issuer":  { "did": "did:peer:2.zR1", "pop_verified": pairwise },
-                "subject": { "did": "did:peer:2.zR2" },
-                // Pairwise DIDs are not members; the deprecated fields say so.
-                "issuer_member":  { "did": "did:peer:2.zR1", "is_current": false },
-                "subject_member": { "did": "did:peer:2.zR2", "is_current": false },
+                // Pairwise DIDs are not members, and are not meant to be.
+                "issuer":  { "did": "did:peer:2.zR1", "is_current": false },
+                "subject": { "did": "did:peer:2.zR2", "is_current": false },
                 "action": "publish"
             })
         };

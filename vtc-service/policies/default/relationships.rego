@@ -48,16 +48,13 @@
 #   { vrc,
 #     authenticated_member: { did, is_current },
 #     identifier_form: "attributed" | "pairwise",
-#     issuer:  { did, pop_verified },
-#     subject: { did },
-#     issuer_member:  { did, is_current },   # deprecated shape
-#     subject_member: { did, is_current },   # deprecated shape
+#     issuer:  { did, is_current },
+#     subject: { did, is_current },
 #     action }
 #
-# `issuer_member` / `subject_member` remain for operator policies
-# written against the old shape. For a pairwise VRC both report
-# `is_current: false`, so an un-updated operator policy denies the
-# publish rather than being silently loosened.
+# `is_current` on the credential'"'"'s own parties is meaningful only
+# for the attributed form; under pairwise identifiers neither
+# party resolves to a member, and is not meant to.
 
 package vtc.relationships
 
@@ -80,6 +77,6 @@ allow if {
 allow if {
 	input.action == "publish"
 	input.identifier_form == "attributed"
-	input.issuer_member.is_current
-	input.subject_member.is_current
+	input.issuer.is_current
+	input.subject.is_current
 }

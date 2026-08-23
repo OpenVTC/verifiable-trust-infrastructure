@@ -12,7 +12,7 @@ applies_to:
 
 # VTC — VRC Publish
 
-Publishes a member-issued Verifiable Recognition Credential
+Publishes a member-issued Verifiable Relationship Credential
 (VRC) — a self-asserted trust edge from the caller to another
 member. Phase 4 M4.6; spec §5.4 + §6.1; planning-review D1
 (issuer is the *member*, not the community).

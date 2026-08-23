@@ -410,7 +410,7 @@ async fn issue_happy_path_issuer_mints_credential() {
             AuditEvent::CustomEndorsementIssued(d) if d.endorsement_type == uri => {
                 saw_issued = true;
             }
-            AuditEvent::VecIssued(d) if d.credential_type == "VerifiableEndorsementCredential" => {
+            AuditEvent::VecIssued(d) if d.credential_type == "EndorsementCredential" => {
                 saw_vec = true;
             }
             _ => {}

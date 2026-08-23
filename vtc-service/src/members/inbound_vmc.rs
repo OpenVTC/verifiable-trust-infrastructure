@@ -25,7 +25,7 @@ use uuid::Uuid;
 use vti_common::audit::{AuditEvent, MembershipReciprocatedData};
 use vti_common::error::AppError;
 
-use vta_sdk::protocols::members::VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE;
+use vta_sdk::protocols::members::MEMBERSHIP_CREDENTIAL_TYPE;
 
 use crate::credentials::vm_resolver::{DidVmResolver, check_issuer_binding};
 use crate::join::{JoinStatus, get_join_request};
@@ -47,7 +47,7 @@ pub struct MemberVmcOutcome {
 /// Verify a member-issued VMC and store it on the member's row.
 ///
 /// Checks: the member exists and is active; `vc.issuer == member_did`; `type`
-/// includes [`VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE`];
+/// includes [`MEMBERSHIP_CREDENTIAL_TYPE`];
 /// `credentialSubject.id == <this VTC's DID>`; the issuer DI proof's
 /// `verificationMethod` is under the member and verifies against the resolved
 /// key. Idempotent: re-sending the same `id` is a no-op.
@@ -190,11 +190,11 @@ async fn verify_member_vmc(
         .is_some_and(|a| {
             a.iter()
                 .filter_map(JsonValue::as_str)
-                .any(|t| t == VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE)
+                .any(|t| t == MEMBERSHIP_CREDENTIAL_TYPE)
         });
     if !has_type {
         return Err(AppError::Validation(format!(
-            "member vmc `type` must include `{VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE}`"
+            "member vmc `type` must include `{MEMBERSHIP_CREDENTIAL_TYPE}`"
         )));
     }
 

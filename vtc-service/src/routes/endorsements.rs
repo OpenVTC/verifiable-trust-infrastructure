@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::info;
 use uuid::Uuid;
+use vta_sdk::protocols::members::ENDORSEMENT_CREDENTIAL_TYPE;
 use vti_common::audit::{
     AuditEvent, CredentialIssuedData, CustomEndorsementIssuedData, CustomEndorsementRevokedData,
     StatusListFlippedData,
@@ -223,7 +224,7 @@ pub async fn issue(
             Some(&body.subject_did),
             AuditEvent::VecIssued(CredentialIssuedData {
                 credential_id: vec_id.clone(),
-                credential_type: "VerifiableEndorsementCredential".into(),
+                credential_type: ENDORSEMENT_CREDENTIAL_TYPE.into(),
                 valid_from: rfc3339(now),
                 valid_until: rfc3339(valid_until),
                 status_list_index: Some(slot),
