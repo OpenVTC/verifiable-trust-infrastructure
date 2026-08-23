@@ -327,9 +327,16 @@ mod holder_binding {
             DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite,
         };
         let issuer_did = did_for(issuer_seed);
+        // The DTG wire form, as `dtg_credentials` mints it. Hand-rolling a
+        // different shape here is what let the VEC routing bug live: the test
+        // built the type the handler matched, and neither matched what
+        // `issue_endorsement` actually issues.
         let mut vc = json!({
-            "@context": ["https://www.w3.org/ns/credentials/v2"],
-            "type": ["VerifiableCredential", vc_type],
+            "@context": [
+                "https://www.w3.org/ns/credentials/v2",
+                "https://firstperson.network/credentials/dtg/v1"
+            ],
+            "type": ["VerifiableCredential", "DTGCredential", vc_type],
             "issuer": issuer_did,
             "validFrom": "2020-01-01T00:00:00Z",
             "validUntil": "2999-01-01T00:00:00Z",
@@ -362,7 +369,7 @@ mod holder_binding {
         };
         let subject_did = did_for(subject_seed);
         let holder_did = did_for(holder_seed);
-        let vec = sign_vc(issuer_seed, "VerifiableEndorsementCredential", &subject_did).await;
+        let vec = sign_vc(issuer_seed, "EndorsementCredential", &subject_did).await;
         // The VMC's wire tag is `MembershipCredential` — NOT
         // `VerifiableMembershipCredential`. The `VERIFIABLE_` prefix lives in the
         // constant's *name* only (it's historical); the tag is what

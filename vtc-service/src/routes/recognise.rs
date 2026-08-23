@@ -47,6 +47,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::State;
 use chrono::Utc;
+use dtg_credentials::DTGCredentialType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::{info, warn};
@@ -280,6 +281,53 @@ pub(crate) async fn vtc_did(state: &AppState) -> Result<String, AppError> {
         .ok_or_else(|| AppError::Validation("VTC DID not configured".into()))
 }
 
+/// Wire type of a VEC, per DTG Credentials §VEC. Note the absence of a
+/// `Verifiable` prefix: as with `VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE`, the
+/// prefix belongs to the *concept* ("verifiable endorsement credential") and
+/// never to the wire tag.
+const ENDORSEMENT_CREDENTIAL_TYPE: &str = "EndorsementCredential";
+
+/// Type tags emitted by VTCs predating the DTG catalog adoption (`cb06fb31`),
+/// which hand-rolled credential bodies with a `Verifiable` prefix that was
+/// never a DTG type. Recognition is cross-community, so a peer may still be
+/// running one of those; accepted here and nowhere else.
+const LEGACY_TYPE_TAGS: [(&str, DTGCredentialType); 2] = [
+    (
+        "VerifiableEndorsementCredential",
+        DTGCredentialType::Endorsement,
+    ),
+    (
+        "VerifiableMembershipCredential",
+        DTGCredentialType::Membership,
+    ),
+];
+
+/// Classify an embedded credential by its `type` array.
+///
+/// Classification goes through `dtg_credentials` — the same catalog the VTC
+/// mints through — rather than comparing string literals here. A literal on
+/// this side can drift from what the catalog emits without anything failing,
+/// which is exactly what happened: this path matched
+/// `"VerifiableEndorsementCredential"` while `issue_endorsement` minted
+/// `"EndorsementCredential"`, so no genuinely-issued VEC was ever routed to its
+/// slot, and cross-community recognition rejected every real presentation.
+fn classify(types: &[String]) -> Option<DTGCredentialType> {
+    if let Ok(kind) = DTGCredentialType::try_from(types) {
+        return Some(kind);
+    }
+    for (tag, kind) in LEGACY_TYPE_TAGS {
+        if types.iter().any(|t| t == tag) {
+            tracing::warn!(
+                legacy_type = tag,
+                "peer presented a pre-catalog credential type; accepted, but the \
+                 issuing VTC should be upgraded"
+            );
+            return Some(kind);
+        }
+    }
+    None
+}
+
 /// Pull the foreign VEC + VMC out of a VP's `verifiableCredential`, classifying
 /// by `type`. Both must be present exactly once. Accepts either a single object
 /// or an array (the W3C VP shape).
@@ -302,20 +350,12 @@ fn extract_vec_vmc(
         })?;
         // Route the credential to its slot by type. Other credential types are
         // ignored — the recognition gate only acts on the VEC + VMC pair.
-        let (slot, label) = if cred
-            .types
-            .iter()
-            .any(|t| t == "VerifiableEndorsementCredential")
-        {
-            (&mut vec_cred, "VerifiableEndorsementCredential")
-        } else if cred
-            .types
-            .iter()
-            .any(|t| t == VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE)
-        {
-            (&mut vmc_cred, VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE)
-        } else {
-            continue;
+        let (slot, label) = match classify(&cred.types) {
+            Some(DTGCredentialType::Endorsement) => (&mut vec_cred, ENDORSEMENT_CREDENTIAL_TYPE),
+            Some(DTGCredentialType::Membership) => {
+                (&mut vmc_cred, VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE)
+            }
+            _ => continue,
         };
         if slot.replace(cred).is_some() {
             return Err(AppError::Validation(format!(
@@ -325,7 +365,7 @@ fn extract_vec_vmc(
     }
 
     let vec = vec_cred.ok_or_else(|| {
-        AppError::Validation("presentation has no VerifiableEndorsementCredential".into())
+        AppError::Validation(format!("presentation has no {ENDORSEMENT_CREDENTIAL_TYPE}"))
     })?;
     let vmc = vmc_cred.ok_or_else(|| {
         AppError::Validation(format!(
@@ -605,6 +645,63 @@ async fn emit_denied_audit(
         .await
     {
         warn!(error = %e, "failed to emit CrossCommunitySessionMinted (denied) envelope");
+    }
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::*;
+
+    fn types(ts: &[&str]) -> Vec<String> {
+        ts.iter().map(|t| t.to_string()).collect()
+    }
+
+    // `DTGCredentialType` derives no `PartialEq`, so these assert by pattern.
+    fn is_endorsement(t: Option<DTGCredentialType>) -> bool {
+        matches!(t, Some(DTGCredentialType::Endorsement))
+    }
+    fn is_membership(t: Option<DTGCredentialType>) -> bool {
+        matches!(t, Some(DTGCredentialType::Membership))
+    }
+
+    /// The wire form `issue_endorsement` actually mints. This is the case that
+    /// was broken: the routing predicate matched a string the catalog has
+    /// never emitted, so no genuinely-issued VEC was ever routed to its slot,
+    /// and every cross-community recognition failed with "presentation has no
+    /// VerifiableEndorsementCredential".
+    #[test]
+    fn classifies_the_wire_form_the_catalog_mints() {
+        assert!(is_endorsement(classify(&types(&[
+            "VerifiableCredential",
+            "DTGCredential",
+            "EndorsementCredential"
+        ]))));
+        assert!(is_membership(classify(&types(&[
+            "VerifiableCredential",
+            "DTGCredential",
+            "MembershipCredential"
+        ]))));
+    }
+
+    /// Recognition is cross-community, so a peer may still be running a VTC
+    /// from before the catalog adoption. Those tags are accepted here and
+    /// nowhere else.
+    #[test]
+    fn still_accepts_pre_catalog_type_tags() {
+        assert!(is_endorsement(classify(&types(&[
+            "VerifiableCredential",
+            "VerifiableEndorsementCredential"
+        ]))));
+        assert!(is_membership(classify(&types(&[
+            "VerifiableCredential",
+            "VerifiableMembershipCredential"
+        ]))));
+    }
+
+    #[test]
+    fn ignores_credentials_the_recognition_gate_does_not_act_on() {
+        assert!(classify(&types(&["VerifiableCredential"])).is_none());
+        assert!(classify(&types(&["EmailCredential"])).is_none());
     }
 }
 
