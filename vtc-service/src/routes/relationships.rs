@@ -708,9 +708,16 @@ pub async fn attach_persona(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("VRC {id} not found")))?;
 
-    // Shape first: a malformed VPC is a 400 whoever sent it, and rejecting it
-    // here costs nothing and reveals nothing about the edge.
-    check_vpc_shape(&body.vpc)?;
+    // Shape and validity window first: a malformed or expired VPC is a 400
+    // whoever sent it, and rejecting it here costs nothing and reveals nothing
+    // about the edge.
+    //
+    // The window is checked for the same reason it is on the publish path — an
+    // annotation that outlives its own credential would keep asserting a
+    // persona the issuer had stopped standing behind. `now` is read once and
+    // passed in so every check in this request evaluates at one instant.
+    let now = Utc::now();
+    check_vpc_shape(&body.vpc, now)?;
     let persona_did = extract_did_field(&body.vpc, "issuer")?;
     let vpc_subject = extract_subject_id(&body.vpc)?;
 
@@ -990,10 +997,11 @@ fn check_vrc_shape(vrc: &JsonValue, now: chrono::DateTime<Utc>) -> Result<(), Ap
 /// module existed and brought a local `check_dtg_shape` with it; keeping both
 /// would have put two definitions of "is this a DTG credential" in the tree,
 /// which is the condition #1064 was filed about.
-fn check_vpc_shape(vpc: &JsonValue) -> Result<(), AppError> {
+fn check_vpc_shape(vpc: &JsonValue, now: chrono::DateTime<Utc>) -> Result<(), AppError> {
     crate::credentials::ingress::require_dtg_type(
         vpc,
         dtg_credentials::DTGCredentialType::Persona,
+        now,
         "this endpoint attaches a persona annotation",
     )
 }
