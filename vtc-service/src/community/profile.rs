@@ -65,6 +65,93 @@ fn default_relationship_identifier() -> String {
     RELATIONSHIP_IDENTIFIER_DEFAULT.to_string()
 }
 
+/// What a community's governance asserts about personhood, and therefore
+/// whether its VMCs may be read as PHCs.
+///
+/// DTG Credentials §Personhood Credentials: "A PHC is simply a VMC issued by
+/// a VTC whose governance enforces: real human personhood; exactly one
+/// membership per person."  Those two clauses are the two booleans here.
+///
+/// ## Both halves, separately
+///
+/// They are separate fields because they are separately achievable, and a
+/// community that has one without the other should be able to say so. This
+/// daemon's in-person vetting supports the first — an administrator meets
+/// someone and issues them an identity-verification endorsement — and does
+/// nothing at all for the second. Collapsing them into one `is_phc` flag
+/// would force every such community to either overclaim or stay silent.
+///
+/// ## Declaration, not enforcement — and the honesty rule that follows
+///
+/// Like [`CommunityProfile::relationship_identifier_default`], this describes
+/// what the community's governance requires. Nothing here makes the daemon
+/// enforce anything.
+///
+/// That makes an overclaim worse than silence. Before this field, a verifier
+/// reading a `PersonhoodCredential` type had no authoritative source and knew
+/// it; a `singleMembership: true` from a community that does not enforce
+/// uniqueness gives that verifier a false one. **Do not set a flag the
+/// community's governance does not actually require** — and note that
+/// requiring it is not the same as this daemon checking it. `personhood.rego`
+/// is where a requirement becomes a gate.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct PersonhoodGovernance {
+    /// Governance requires that members are real humans.
+    ///
+    /// Defaults to `false`: a community that has not considered the question
+    /// asserts nothing, which is the only safe default for a claim a verifier
+    /// may rely on.
+    #[serde(default)]
+    pub real_human: bool,
+    /// Governance requires that each person holds at most one membership in
+    /// **this** community.
+    ///
+    /// Per-community by definition — the spec's glossary says "exactly one
+    /// membership in that VTC" — so a single community can satisfy this
+    /// without any network above it.
+    ///
+    /// This is the half that needs an anchor the community cannot supply
+    /// itself: nothing in the credential graph distinguishes one person with
+    /// two DIDs from two people. See `docs/03-vtc/personhood-and-graph.md`.
+    #[serde(default)]
+    pub single_membership: bool,
+    /// DIDs of the identity-verification providers whose credentials this
+    /// community accepts as personhood evidence.
+    ///
+    /// §Governance Considerations item 1: identity-proofing requirements
+    /// "including acceptable IDVPs and IDVCs" are the community's to define
+    /// and are "published via trust registries". A community that vets its
+    /// own members in person lists its own C-DID here — it is acting as its
+    /// own IDVP, which §IDVC permits.
+    ///
+    /// Advisory to verifiers, not a gate: `personhood.rego` decides what is
+    /// actually accepted. An empty list means the community has not published
+    /// one, not that it accepts everything.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepted_idvps: Vec<String>,
+    /// Where the governance framework this all refers to can be read.
+    ///
+    /// The ToIP Governance Metamodel the spec cites expects a human-readable
+    /// document behind these assertions. The booleans above are the
+    /// machine-readable summary; this is the thing they summarise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub governance_framework_url: Option<String>,
+}
+
+impl PersonhoodGovernance {
+    /// Whether this community's governance claims its VMCs are PHCs.
+    ///
+    /// **Both** clauses, because the spec's definition is a conjunction. A
+    /// community asserting real-human but not single-membership has members
+    /// it believes are people; it does not have personhood credentials, and
+    /// one person may hold several of them.
+    pub fn claims_phc(&self) -> bool {
+        self.real_human && self.single_membership
+    }
+}
+
 /// The singleton record. Field names are wire contract — operators
 /// + the admin UX read this shape directly.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -103,6 +190,21 @@ pub struct CommunityProfile {
     /// unreadable — which the admin-config round-trip tests caught.
     #[serde(default = "default_relationship_identifier")]
     pub relationship_identifier_default: String,
+    /// What this community's governance says about personhood.
+    ///
+    /// DTG Credentials §Personhood Credentials puts PHC status here rather
+    /// than in the credential: "PHC status is determined by governance and
+    /// trust registries, not by credential structure", and the
+    /// `PersonhoodCredential` type this daemon stamps on a vetted member's
+    /// VMC is described there as a *non-authoritative hint*. §Governance
+    /// Considerations item 2 is blunter still: "Whether a VMC qualifies as a
+    /// PHC is a governance determination, not a schema property."
+    ///
+    /// Without this field a conformant verifier had nothing to read. The
+    /// type array told it not to trust the type array, and there was no
+    /// second place to look.
+    #[serde(default)]
+    pub personhood: PersonhoodGovernance,
     pub created_at: DateTime<Utc>,
     /// Opaque per-community JSON. Capped at [`MAX_EXTENSIONS_BYTES`]
     /// when serialised. Defaults to `null` when no extension data
@@ -124,6 +226,9 @@ impl CommunityProfile {
             contact_email: None,
             language: "en".into(),
             relationship_identifier_default: RELATIONSHIP_IDENTIFIER_DEFAULT.into(),
+            // A fresh community asserts nothing about personhood. An
+            // operator turns these on when their governance says so.
+            personhood: PersonhoodGovernance::default(),
             created_at: Utc::now(),
             extensions: Value::Null,
         }
@@ -151,6 +256,12 @@ pub struct CommunityProfileUpdate {
     /// See [`CommunityProfile::relationship_identifier_default`]. Must be one
     /// of [`RELATIONSHIP_IDENTIFIER_FORMS`].
     pub relationship_identifier_default: Option<String>,
+    /// See [`PersonhoodGovernance`]. Replaced wholesale rather than merged
+    /// field-by-field: the two booleans are a conjunction the operator is
+    /// asserting together, and a partial patch that flipped one while leaving
+    /// the other at whatever it happened to be is how a community ends up
+    /// claiming PHC status it did not mean to claim.
+    pub personhood: Option<PersonhoodGovernance>,
     pub extensions: Option<Value>,
 }
 
@@ -213,7 +324,44 @@ impl CommunityProfileUpdate {
             )));
         }
 
+        // Validated with the other pre-checks, for the same reason: a
+        // governance URL is published to clients as where this community's
+        // rules can be read, and one that is not fetchable over http(s) is
+        // either a mistake or a lever — the same reasoning as `logoUrl`.
+        if let Some(p) = self.personhood.as_ref()
+            && let Some(url) = p.governance_framework_url.as_deref()
+            && !(url.starts_with("https://") || url.starts_with("http://"))
+        {
+            return Err(AppError::Validation(
+                "personhood.governanceFrameworkUrl must be an http(s) URL".into(),
+            ));
+        }
+        // Refuse the overclaim outright rather than publish it. `claims_phc`
+        // is what a verifier reads to decide whether these VMCs are PHCs, and
+        // the spec's own §Governance Considerations makes acceptable IDVPs
+        // part of what governance must publish. A community claiming PHC
+        // status while naming nobody it trusts to verify identity has not
+        // written that governance down — and a verifier cannot tell an
+        // unwritten policy from a permissive one.
+        if let Some(p) = self.personhood.as_ref()
+            && p.claims_phc()
+            && p.accepted_idvps.is_empty()
+        {
+            return Err(AppError::Validation(
+                "personhood claiming both realHuman and singleMembership must name at least \
+                 one entry in acceptedIdvps — a community acting as its own identity-\
+                 verification provider lists its own DID"
+                    .into(),
+            ));
+        }
+
         let mut changed = Vec::new();
+        if let Some(personhood) = self.personhood
+            && profile.personhood != personhood
+        {
+            profile.personhood = personhood;
+            changed.push("personhood".into());
+        }
         if let Some(form) = self.relationship_identifier_default
             && profile.relationship_identifier_default != form
         {
@@ -541,5 +689,141 @@ mod tests {
     fn profile_default_language_is_en() {
         let p = sample();
         assert_eq!(p.language, "en");
+    }
+
+    // ─── personhood governance ───────────────────────────────────────────
+
+    fn governance(real_human: bool, single_membership: bool) -> PersonhoodGovernance {
+        PersonhoodGovernance {
+            real_human,
+            single_membership,
+            accepted_idvps: vec!["did:webvh:idvp.example".into()],
+            governance_framework_url: Some("https://acme.example/governance".into()),
+        }
+    }
+
+    /// A fresh community asserts nothing. Any other default would have every
+    /// community that never considered the question publishing a claim a
+    /// verifier might rely on.
+    #[test]
+    fn a_new_community_claims_no_personhood() {
+        let p = sample();
+        assert!(!p.personhood.real_human);
+        assert!(!p.personhood.single_membership);
+        assert!(!p.personhood.claims_phc());
+        assert!(p.personhood.accepted_idvps.is_empty());
+    }
+
+    /// The spec's definition is a conjunction: "real human personhood" **and**
+    /// "exactly one membership per person". Either half alone is not a PHC —
+    /// a community with the first has members it believes are people, and one
+    /// person may hold several of their credentials.
+    #[test]
+    fn phc_needs_both_halves() {
+        assert!(!governance(false, false).claims_phc());
+        assert!(!governance(true, false).claims_phc());
+        assert!(!governance(false, true).claims_phc());
+        assert!(governance(true, true).claims_phc());
+    }
+
+    /// The honesty rule. A community claiming PHC status while naming nobody
+    /// it trusts to verify identity has not written its governance down, and
+    /// a verifier cannot tell an unwritten policy from a permissive one.
+    #[test]
+    fn a_phc_claim_must_name_an_idvp() {
+        let mut p = sample();
+        let err = CommunityProfileUpdate {
+            personhood: Some(PersonhoodGovernance {
+                accepted_idvps: vec![],
+                ..governance(true, true)
+            }),
+            ..CommunityProfileUpdate::default()
+        }
+        .apply(&mut p)
+        .expect_err("a PHC claim with no IDVP must be refused");
+
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+        assert!(
+            !p.personhood.claims_phc(),
+            "the refused claim must not have half-applied"
+        );
+    }
+
+    /// The same emptiness is fine when no PHC claim is being made — a
+    /// community may say "our members are people" without having published a
+    /// list of who may attest that.
+    #[test]
+    fn a_partial_claim_may_name_no_idvp() {
+        let mut p = sample();
+        let changed = CommunityProfileUpdate {
+            personhood: Some(PersonhoodGovernance {
+                accepted_idvps: vec![],
+                ..governance(true, false)
+            }),
+            ..CommunityProfileUpdate::default()
+        }
+        .apply(&mut p)
+        .expect("a non-PHC claim needs no IDVP list");
+
+        assert!(changed.contains(&"personhood".to_string()));
+        assert!(p.personhood.real_human);
+    }
+
+    /// A governance URL is published as where this community's rules can be
+    /// read. Same reasoning as `logoUrl`: a non-http(s) value is either a
+    /// mistake or a lever.
+    #[test]
+    fn the_governance_url_must_be_http() {
+        let mut p = sample();
+        let err = CommunityProfileUpdate {
+            personhood: Some(PersonhoodGovernance {
+                governance_framework_url: Some("javascript:alert(1)".into()),
+                ..governance(true, true)
+            }),
+            ..CommunityProfileUpdate::default()
+        }
+        .apply(&mut p)
+        .expect_err("a non-http governance URL must be refused");
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+    }
+
+    /// Replaced wholesale, not merged. Patching one boolean while the other
+    /// keeps whatever it happened to be is how a community ends up claiming
+    /// PHC status it never asserted.
+    #[test]
+    fn a_personhood_patch_replaces_rather_than_merges() {
+        let mut p = sample();
+        p.personhood = governance(true, true);
+
+        CommunityProfileUpdate {
+            personhood: Some(PersonhoodGovernance {
+                real_human: true,
+                single_membership: false,
+                accepted_idvps: vec![],
+                governance_framework_url: None,
+            }),
+            ..CommunityProfileUpdate::default()
+        }
+        .apply(&mut p)
+        .expect("downgrading a claim is always allowed");
+
+        assert!(!p.personhood.claims_phc(), "the claim must have dropped");
+        assert!(
+            p.personhood.accepted_idvps.is_empty(),
+            "the old IDVP list must not survive a replacement that omitted it"
+        );
+        assert!(p.personhood.governance_framework_url.is_none());
+    }
+
+    /// A config written before this field existed must still load — the same
+    /// property `relationshipIdentifierDefault` needed, and which the
+    /// admin-config round-trip tests caught when it was missing.
+    #[test]
+    fn a_profile_without_personhood_still_deserializes() {
+        let mut raw = serde_json::to_value(sample()).expect("profile -> json");
+        raw.as_object_mut().expect("object").remove("personhood");
+
+        let p: CommunityProfile = serde_json::from_value(raw).expect("pre-field config must load");
+        assert!(!p.personhood.claims_phc());
     }
 }

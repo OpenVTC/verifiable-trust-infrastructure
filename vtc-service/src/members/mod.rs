@@ -28,6 +28,7 @@
 
 pub mod inbound_vmc;
 pub mod match_code;
+pub mod pseudonym;
 pub mod storage;
 
 use chrono::{DateTime, Utc};

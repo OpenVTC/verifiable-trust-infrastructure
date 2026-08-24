@@ -873,6 +873,7 @@ async fn apply_profile_import(
         contact_email: Some(incoming.contact_email),
         language: Some(incoming.language),
         relationship_identifier_default: Some(incoming.relationship_identifier_default),
+        personhood: Some(incoming.personhood),
         extensions: Some(incoming.extensions),
     };
     let mut updated = current.clone();

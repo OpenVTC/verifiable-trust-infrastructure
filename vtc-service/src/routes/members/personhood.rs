@@ -420,6 +420,21 @@ pub(crate) async fn assert_inner(
         ));
     }
 
+    // 6a. One membership per person, when this community's governance says so.
+    //
+    // The switch is the community's own `personhood.singleMembership`
+    // declaration, which is deliberate: the declaration and the enforcement
+    // are the same flag, so a community cannot publish the claim without the
+    // daemon starting to check it. DTG Credentials makes PHC status a
+    // governance determination; this makes the governance determination
+    // load-bearing rather than decorative.
+    //
+    // Runs after the policy, not before. The policy decides whether the
+    // evidence is acceptable at all, and asking "has this person been here
+    // before" about evidence that was about to be rejected would leak whether
+    // a pseudonym is claimed to anyone who can present anything.
+    enforce_single_membership(state, member_did, signer.issuer_did(), &vp_claims).await?;
+
     // 7. Allocate/reuse status-list slot + mint a fresh VMC. The
     //    `list_credential_id` read here is immutable; the allocation goes
     //    through `with_locked` (P0.1) which re-reads the row under the
@@ -698,6 +713,58 @@ async fn verify_vp_proof(
 /// ```
 ///
 /// Fail-closed: any error path yields `false`.
+/// Enforce one-membership-per-person, if this community's governance claims it.
+///
+/// A no-op when `personhood.singleMembership` is unset, which is every
+/// community that has not published the claim. When it *is* set, the assertion
+/// must carry a pseudonym from a provider the community accepts, and that
+/// pseudonym must not already belong to somebody else.
+///
+/// ## Why absence is a refusal
+///
+/// A community that publishes `singleMembership: true` is telling verifiers
+/// its VMCs are PHCs. If an assertion with no pseudonym were allowed through,
+/// that member would hold a credential asserting a property nobody checked —
+/// and the community would have no way to know which of its members were
+/// covered. Refusing is the only outcome that keeps the published claim true.
+///
+/// The error names the missing thing, because an operator hitting this has
+/// almost certainly turned the flag on before arranging an IDVP, and
+/// "personhood-policy-denied" would send them to the wrong file.
+async fn enforce_single_membership(
+    state: &AppState,
+    member_did: &str,
+    community_did: &str,
+    vp_claims: &JsonValue,
+) -> Result<(), AppError> {
+    let governance = crate::community::load_profile(&state.community_ks)
+        .await?
+        .map(|p| p.personhood)
+        .unwrap_or_default();
+    if !governance.single_membership {
+        return Ok(());
+    }
+
+    let pseudonyms = crate::members::pseudonym::extract(vp_claims, &governance.accepted_idvps);
+    if pseudonyms.is_empty() {
+        return Err(AppError::Forbidden(
+            "personhood-pseudonym-missing: this community enforces one membership per person, \
+             so an assertion must carry a pseudonym from an accepted identity-verification \
+             provider (see the community profile's personhood.acceptedIdvps)"
+                .into(),
+        ));
+    }
+
+    // Every presented pseudonym is claimed, not just the first. A member may
+    // legitimately present two accepted IDVCs; if either names a person
+    // already here, they are that person.
+    for pseudonym in &pseudonyms {
+        crate::members::pseudonym::claim(&state.members_ks, community_did, pseudonym, member_did)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Evaluate the active `personhood.rego` over the presented claims.
 ///
 /// `community_did` is the DID the community signs its own credentials
@@ -744,3 +811,159 @@ fn rfc3339(t: DateTime<Utc>) -> String {
 // to surface parsed VCs without a churn-y import change.
 #[allow(dead_code)]
 type _PhantomVc = (VerifiableCredential, Arc<()>);
+
+#[cfg(test)]
+mod single_membership_tests {
+    use super::*;
+    use crate::community::{CommunityProfile, PersonhoodGovernance, store_profile};
+    use crate::test_support::TestVtc;
+
+    const COMMUNITY: &str = "did:webvh:acme.example";
+    const IDVP: &str = "did:webvh:idvp.example";
+    const ALICE: &str = "did:key:zAlice";
+    const BOB: &str = "did:key:zBob";
+
+    /// A VTC whose governance carries `governance`.
+    async fn vtc_with(governance: PersonhoodGovernance) -> TestVtc {
+        let vtc = TestVtc::builder().build().await;
+        let mut profile = CommunityProfile::new(COMMUNITY, "Acme");
+        profile.personhood = governance;
+        store_profile(&vtc.state.community_ks, &profile)
+            .await
+            .expect("seed profile");
+        vtc
+    }
+
+    fn claims_with_pseudonym(issuer: &str, pseudonym: &str) -> JsonValue {
+        json!({
+            "holder": ALICE,
+            "credentials": [{
+                "issuer": issuer,
+                "credentialSubject": { "id": ALICE, "pseudonym": pseudonym },
+            }]
+        })
+    }
+
+    fn enforcing() -> PersonhoodGovernance {
+        PersonhoodGovernance {
+            real_human: true,
+            single_membership: true,
+            accepted_idvps: vec![IDVP.into()],
+            governance_framework_url: None,
+        }
+    }
+
+    /// **The property that ties the two halves together.** A community that
+    /// has not published the claim is not silently policed — every existing
+    /// deployment keeps working exactly as before, with no pseudonym anywhere
+    /// in sight.
+    #[tokio::test]
+    async fn a_community_that_claims_nothing_enforces_nothing() {
+        let vtc = vtc_with(PersonhoodGovernance::default()).await;
+
+        enforce_single_membership(
+            &vtc.state,
+            ALICE,
+            COMMUNITY,
+            &json!({ "holder": ALICE, "credentials": [] }),
+        )
+        .await
+        .expect("no claim, no enforcement");
+    }
+
+    /// And the converse: publishing the claim turns the check on. The
+    /// declaration *is* the switch, so a community cannot advertise PHC
+    /// status to verifiers while quietly not checking it.
+    #[tokio::test]
+    async fn publishing_the_claim_turns_enforcement_on() {
+        let vtc = vtc_with(enforcing()).await;
+
+        let err = enforce_single_membership(
+            &vtc.state,
+            ALICE,
+            COMMUNITY,
+            &json!({ "holder": ALICE, "credentials": [] }),
+        )
+        .await
+        .expect_err("an enforcing community must refuse evidence it cannot check");
+
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+        assert!(
+            err.to_string().contains("personhood-pseudonym-missing"),
+            "the operator needs to be sent to acceptedIdvps, not to the rego: {err}"
+        );
+    }
+
+    /// The happy path: an accepted provider's pseudonym is claimed.
+    #[tokio::test]
+    async fn an_accepted_pseudonym_is_claimed() {
+        let vtc = vtc_with(enforcing()).await;
+
+        enforce_single_membership(
+            &vtc.state,
+            ALICE,
+            COMMUNITY,
+            &claims_with_pseudonym(IDVP, "person-1"),
+        )
+        .await
+        .expect("first assertion");
+
+        let held = crate::members::pseudonym::holder(&vtc.state.members_ks, COMMUNITY, "person-1")
+            .await
+            .expect("read")
+            .expect("claimed");
+        assert_eq!(held.member_did, ALICE);
+    }
+
+    /// The whole point: the same person, a second DID, refused.
+    #[tokio::test]
+    async fn the_same_person_cannot_join_twice() {
+        let vtc = vtc_with(enforcing()).await;
+        let claims = claims_with_pseudonym(IDVP, "person-1");
+
+        enforce_single_membership(&vtc.state, ALICE, COMMUNITY, &claims)
+            .await
+            .expect("first");
+
+        let err = enforce_single_membership(&vtc.state, BOB, COMMUNITY, &claims)
+            .await
+            .expect_err("one membership per person");
+        assert!(matches!(err, AppError::Conflict(_)), "{err:?}");
+    }
+
+    /// Asserting again as the same member is not a duplicate — a second
+    /// challenge or a renewed credential is the same human.
+    #[tokio::test]
+    async fn the_same_member_may_assert_again() {
+        let vtc = vtc_with(enforcing()).await;
+        let claims = claims_with_pseudonym(IDVP, "person-1");
+
+        enforce_single_membership(&vtc.state, ALICE, COMMUNITY, &claims)
+            .await
+            .expect("first");
+        enforce_single_membership(&vtc.state, ALICE, COMMUNITY, &claims)
+            .await
+            .expect("re-asserting is not a second person");
+    }
+
+    /// A pseudonym from an issuer the community has not published is not
+    /// evidence of anything. Without this, anyone could mint themselves an
+    /// unclaimed pseudonym and uniqueness would be decorative.
+    #[tokio::test]
+    async fn an_unaccepted_issuer_cannot_establish_uniqueness() {
+        let vtc = vtc_with(enforcing()).await;
+
+        let err = enforce_single_membership(
+            &vtc.state,
+            ALICE,
+            COMMUNITY,
+            &claims_with_pseudonym("did:key:zStranger", "person-1"),
+        )
+        .await
+        .expect_err("an unaccepted issuer proves nothing");
+        assert!(
+            err.to_string().contains("personhood-pseudonym-missing"),
+            "an unaccepted pseudonym is absent, not present-and-rejected: {err}"
+        );
+    }
+}
