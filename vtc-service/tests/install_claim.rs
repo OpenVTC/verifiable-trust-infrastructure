@@ -149,7 +149,7 @@ async fn full_ceremony_completes_end_to_end() {
         &fix.router,
         "/v1/install/claim/start",
         START_TASK,
-        json!({ "install_token": token }),
+        json!({ "installToken": token }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "start: {body}");
@@ -167,9 +167,9 @@ async fn full_ceremony_completes_end_to_end() {
         "/v1/install/claim/finish",
         FINISH_TASK,
         json!({
-            "install_token": token,
-            "registration_id": registration_id,
-            "webauthn_response": register_cred,
+            "installToken": token,
+            "registrationId": registration_id,
+            "webauthnResponse": register_cred,
         }),
     )
     .await;
@@ -188,9 +188,9 @@ async fn full_ceremony_completes_end_to_end() {
         "/v1/install/claim/finish",
         FINISH_TASK,
         json!({
-            "install_token": token,
-            "registration_id": registration_id,
-            "webauthn_response": register_cred,
+            "installToken": token,
+            "registrationId": registration_id,
+            "webauthnResponse": register_cred,
         }),
     )
     .await;
@@ -205,7 +205,7 @@ async fn full_ceremony_completes_end_to_end() {
         &fix.router,
         "/v1/install/claim/start",
         START_TASK,
-        json!({ "install_token": token }),
+        json!({ "installToken": token }),
     )
     .await;
     assert_ne!(
@@ -230,7 +230,7 @@ async fn claim_secret_happy_path_completes_ceremony() {
         &fix.router,
         "/v1/install/claim/start",
         START_TASK,
-        json!({ "install_token": token, "claim_secret": secret }),
+        json!({ "installToken": token, "claimSecret": secret }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "start with correct secret: {body}");
@@ -247,7 +247,7 @@ async fn claim_secret_missing_returns_required_code() {
         &fix.router,
         "/v1/install/claim/start",
         START_TASK,
-        json!({ "install_token": token }),
+        json!({ "installToken": token }),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
@@ -268,7 +268,7 @@ async fn claim_secret_wrong_returns_invalid_code() {
         &fix.router,
         "/v1/install/claim/start",
         START_TASK,
-        json!({ "install_token": token, "claim_secret": "WRONGWRONG" }),
+        json!({ "installToken": token, "claimSecret": "WRONGWRONG" }),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
@@ -290,7 +290,7 @@ async fn start_returns_503_when_install_signer_missing() {
         &fix.router,
         "/v1/install/claim/start",
         START_TASK,
-        json!({ "install_token": "bogus" }),
+        json!({ "installToken": "bogus" }),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -304,7 +304,7 @@ async fn start_returns_503_when_webauthn_missing() {
         &fix.router,
         "/v1/install/claim/start",
         START_TASK,
-        json!({ "install_token": token }),
+        json!({ "installToken": token }),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -321,7 +321,7 @@ async fn start_rejects_unsigned_token() {
         &fix.router,
         "/v1/install/claim/start",
         START_TASK,
-        json!({ "install_token": "not.a.real.jwt" }),
+        json!({ "installToken": "not.a.real.jwt" }),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -343,7 +343,7 @@ async fn start_rejects_unknown_jti() {
         &fix.router,
         "/v1/install/claim/start",
         START_TASK,
-        json!({ "install_token": minted.jwt }),
+        json!({ "installToken": minted.jwt }),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -358,7 +358,7 @@ async fn second_concurrent_start_within_window_is_conflict() {
         &fix.router,
         "/v1/install/claim/start",
         START_TASK,
-        json!({ "install_token": &token }),
+        json!({ "installToken": &token }),
     )
     .await;
     assert_eq!(status1, StatusCode::OK);
@@ -367,7 +367,7 @@ async fn second_concurrent_start_within_window_is_conflict() {
         &fix.router,
         "/v1/install/claim/start",
         START_TASK,
-        json!({ "install_token": &token }),
+        json!({ "installToken": &token }),
     )
     .await;
     assert_eq!(status2, StatusCode::CONFLICT);
@@ -382,7 +382,7 @@ async fn finish_rejects_mismatched_registration_id() {
         &fix.router,
         "/v1/install/claim/start",
         START_TASK,
-        json!({ "install_token": token }),
+        json!({ "installToken": token }),
     )
     .await;
     let ccr = parse_ccr(&body);
@@ -394,9 +394,9 @@ async fn finish_rejects_mismatched_registration_id() {
         "/v1/install/claim/finish",
         FINISH_TASK,
         json!({
-            "install_token": token,
-            "registration_id": Uuid::new_v4().to_string(),
-            "webauthn_response": register_cred,
+            "installToken": token,
+            "registrationId": Uuid::new_v4().to_string(),
+            "webauthnResponse": register_cred,
         }),
     )
     .await;
@@ -426,9 +426,9 @@ async fn finish_without_start_fails() {
         "/v1/install/claim/finish",
         FINISH_TASK,
         json!({
-            "install_token": token,
-            "registration_id": jti.to_string(),
-            "webauthn_response": dummy_cred,
+            "installToken": token,
+            "registrationId": jti.to_string(),
+            "webauthnResponse": dummy_cred,
         }),
     )
     .await;
@@ -450,7 +450,7 @@ async fn missing_trust_task_header_returns_400() {
                 .method("POST")
                 .uri("/v1/install/claim/start")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"install_token":"x"}"#))
+                .body(Body::from(r#"{"installToken":"x"}"#))
                 .unwrap(),
         )
         .await
@@ -465,7 +465,7 @@ async fn wrong_trust_task_header_returns_415() {
         &fix.router,
         "/v1/install/claim/start",
         FINISH_TASK, // start endpoint with finish task
-        json!({ "install_token": "x" }),
+        json!({ "installToken": "x" }),
     )
     .await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);

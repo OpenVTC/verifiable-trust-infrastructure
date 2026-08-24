@@ -555,8 +555,8 @@ async fn fresh_install_url_works_for_claim_start_after_emergency_bootstrap() {
     // time. Without the code the daemon returns 401
     // `claim_secret_required`.
     let body = json!({
-        "install_token": token,
-        "claim_secret": outcome.claim_code,
+        "installToken": token,
+        "claimSecret": outcome.claim_code,
     });
     let res = fix
         .router

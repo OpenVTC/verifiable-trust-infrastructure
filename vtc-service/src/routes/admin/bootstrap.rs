@@ -36,6 +36,7 @@ use crate::install::InstallTokenSigner;
 use crate::server::AppState;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct BootstrapRequest {
     pub setup_session_token: String,
 }

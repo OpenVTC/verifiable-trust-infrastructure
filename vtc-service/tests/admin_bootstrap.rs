@@ -143,7 +143,7 @@ async fn run_claim_ceremony(fix: &Fixture) -> (String, String) {
         &fix.router,
         "/v1/install/claim/start",
         START_TASK,
-        json!({ "install_token": token }),
+        json!({ "installToken": token }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "start: {body}");
@@ -160,9 +160,9 @@ async fn run_claim_ceremony(fix: &Fixture) -> (String, String) {
         "/v1/install/claim/finish",
         FINISH_TASK,
         json!({
-            "install_token": token,
-            "registration_id": registration_id,
-            "webauthn_response": register_cred,
+            "installToken": token,
+            "registrationId": registration_id,
+            "webauthnResponse": register_cred,
         }),
     )
     .await;
@@ -185,7 +185,7 @@ async fn full_install_to_bootstrap_succeeds() {
         &fix.router,
         "/v1/admin/bootstrap",
         BOOTSTRAP_TASK,
-        json!({ "setup_session_token": session_jwt }),
+        json!({ "setupSessionToken": session_jwt }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "bootstrap: {body}");
@@ -260,7 +260,7 @@ async fn second_bootstrap_returns_409() {
         &fix.router,
         "/v1/admin/bootstrap",
         BOOTSTRAP_TASK,
-        json!({ "setup_session_token": session_jwt_a }),
+        json!({ "setupSessionToken": session_jwt_a }),
     )
     .await;
     assert_eq!(s1, StatusCode::OK);
@@ -270,7 +270,7 @@ async fn second_bootstrap_returns_409() {
         &fix.router,
         "/v1/admin/bootstrap",
         BOOTSTRAP_TASK,
-        json!({ "setup_session_token": session_jwt_a }),
+        json!({ "setupSessionToken": session_jwt_a }),
     )
     .await;
     assert_eq!(
@@ -291,7 +291,7 @@ async fn bootstrap_rejects_unsigned_token() {
         &fix.router,
         "/v1/admin/bootstrap",
         BOOTSTRAP_TASK,
-        json!({ "setup_session_token": "not.a.real.jwt" }),
+        json!({ "setupSessionToken": "not.a.real.jwt" }),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -308,7 +308,7 @@ async fn bootstrap_rejects_install_token_as_setup_token() {
         &fix.router,
         "/v1/admin/bootstrap",
         BOOTSTRAP_TASK,
-        json!({ "setup_session_token": install_jwt }),
+        json!({ "setupSessionToken": install_jwt }),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -332,7 +332,7 @@ async fn bootstrap_rejects_when_no_passkey_user_exists() {
         &fix.router,
         "/v1/admin/bootstrap",
         BOOTSTRAP_TASK,
-        json!({ "setup_session_token": session_jwt }),
+        json!({ "setupSessionToken": session_jwt }),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -349,7 +349,7 @@ async fn bootstrap_returns_503_when_install_signer_missing() {
         &fix.router,
         "/v1/admin/bootstrap",
         BOOTSTRAP_TASK,
-        json!({ "setup_session_token": "x" }),
+        json!({ "setupSessionToken": "x" }),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -370,7 +370,7 @@ async fn bootstrap_returns_503_when_audit_writer_missing() {
         &fix.router,
         "/v1/admin/bootstrap",
         BOOTSTRAP_TASK,
-        json!({ "setup_session_token": session_jwt }),
+        json!({ "setupSessionToken": session_jwt }),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -387,7 +387,7 @@ async fn wrong_trust_task_returns_415() {
         &fix.router,
         "/v1/admin/bootstrap",
         FINISH_TASK,
-        json!({ "setup_session_token": "x" }),
+        json!({ "setupSessionToken": "x" }),
     )
     .await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
@@ -404,7 +404,7 @@ async fn missing_trust_task_returns_400() {
                 .method("POST")
                 .uri("/v1/admin/bootstrap")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"setup_session_token":"x"}"#))
+                .body(Body::from(r#"{"setupSessionToken":"x"}"#))
                 .unwrap(),
         )
         .await

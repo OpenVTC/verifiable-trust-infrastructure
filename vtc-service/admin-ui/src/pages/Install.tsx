@@ -82,8 +82,8 @@ export function Install() {
       "/v1/install/claim/start",
       TRUST_TASK_START,
       {
-        install_token: token,
-        claim_secret: code.trim() === "" ? undefined : code.trim(),
+        installToken: token,
+        claimSecret: code.trim() === "" ? undefined : code.trim(),
       },
     );
     if (start.status === 401) {
@@ -180,9 +180,9 @@ export function Install() {
       "/v1/install/claim/finish",
       TRUST_TASK_FINISH,
       {
-        install_token: token,
-        registration_id: startBody.registrationId,
-        webauthn_response: serializeRegistration(credential),
+        installToken: token,
+        registrationId: startBody.registrationId,
+        webauthnResponse: serializeRegistration(credential),
       },
     );
     if (finish.status !== 200) {
@@ -214,7 +214,12 @@ export function Install() {
     const bootstrap = await postJson(
       "/v1/admin/bootstrap",
       TRUST_TASK_BOOTSTRAP,
-      { setup_session_token: finishBody.setupSessionToken },
+      // Passed straight through. `claim/finish` returns `setupSessionToken`
+      // and `admin/bootstrap` now accepts that same name; until the request
+      // structs gained `rename_all` this line had to re-key it to
+      // `setup_session_token`, which is why a client written from the
+      // published schema could not complete the install at all.
+      { setupSessionToken: finishBody.setupSessionToken },
     );
     if (bootstrap.status !== 200 && bootstrap.status !== 409) {
       const b = bootstrap.body as { error?: string; message?: string } | null;
