@@ -440,6 +440,34 @@ async fn depart(
     match (disposition, member) {
         (Disposition::Purge, existed) => {
             delete_member(&state.members_ks, subject_did).await?;
+            // Free any personhood pseudonym this member held. Purge is the
+            // *only* departure that does — tombstone and historical keep the
+            // member row, and the person is still here. Releasing on those
+            // would let one-membership-per-person be defeated by leaving and
+            // rejoining under a fresh DID.
+            //
+            // Best-effort, deliberately: the member row is already gone, and
+            // failing the purge over a stale uniqueness claim would leave the
+            // community in a worse state than a claim nobody can spend. The
+            // operator can re-run it.
+            match crate::members::pseudonym::release_for_member(&state.members_ks, subject_did)
+                .await
+            {
+                Ok(0) => {}
+                Ok(freed) => {
+                    tracing::info!(
+                        subject = %subject_did,
+                        freed,
+                        "released personhood pseudonym claims on purge"
+                    );
+                }
+                Err(e) => tracing::warn!(
+                    subject = %subject_did,
+                    error = %e,
+                    "could not release personhood pseudonym claims — this person may be \
+                     refused if they rejoin"
+                ),
+            }
             // Only a purge removes the row; tombstone/historical keep it, so
             // they leave `list_members().len()` (and the cache) unchanged. Guard
             // on prior existence so a purge of an already-absent member doesn't

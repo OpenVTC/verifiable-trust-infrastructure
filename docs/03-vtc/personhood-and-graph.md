@@ -153,21 +153,108 @@ member is `match-code` and not `matchCode`.
 
 DTG Credentials §Personhood Credentials requires governance enforcing
 **both** real human personhood **and exactly one membership per
-person**. In-person vetting is evidence for the first only.
+person**. In-person vetting is evidence for the first only — see
+[Declaring personhood governance](#declaring-personhood-governance) for
+publishing the claim, and [One membership per
+person](#one-membership-per-person) for the second half.
 
-**The VTC does not enforce uniqueness.** Nothing stops one human joining
-twice under two DIDs and being vetted twice, and no credential presented
-by its own subject could demonstrate otherwise. A community whose
-governance depends on one-person-one-membership needs a policy that
-consults evidence from an issuer who actually checks that — a national
-eID, an existing PHC from a network that enforces it — and should treat
-the default policy as a starting point, not a personhood regime.
+### Declaring personhood governance
 
-Note also that the spec locates PHC status in **governance and trust
-registries, not in credential structure**: the `PersonhoodCredential`
-type this daemon adds to a vetted member's VMC is described there as a
-*non-authoritative hint*. A verifier following the spec reads the
-community's governance, not the type array.
+The spec puts PHC status outside the credential: *"PHC status is
+determined by governance and trust registries, not by credential
+structure"*, and the `PersonhoodCredential` type this daemon stamps on a
+vetted member's VMC is *"a non-authoritative hint"*. §Governance
+Considerations is blunter: *"Whether a VMC qualifies as a PHC is a
+governance determination, not a schema property."*
+
+So a community publishes what its governance requires, on its profile:
+
+```json
+"personhood": {
+  "realHuman": true,
+  "singleMembership": true,
+  "acceptedIdvps": ["did:webvh:idvp.example"],
+  "governanceFrameworkUrl": "https://acme.example/governance"
+}
+```
+
+This is served **unauthenticated** at `GET /v1/community/public-profile`,
+because the party who needs it is a verifier holding one of your VMCs —
+someone who is not a member and has no token.
+
+Both booleans default to `false`. A community that has not considered the
+question asserts nothing, which is the only safe default for a claim a
+verifier may act on.
+
+**Setting both requires naming at least one accepted IDVP.** A community
+claiming PHC status while naming nobody it trusts to verify identity has
+not written its governance down, and a verifier cannot tell an unwritten
+policy from a permissive one. A community that vets in person lists its
+own C-DID — §IDVC permits acting as your own identity-verification
+provider.
+
+### One membership per person
+
+`singleMembership` is not just a declaration: **setting it turns on
+enforcement.** The published claim and the check are the same switch, so a
+community cannot advertise PHC status to verifiers while quietly not
+checking it.
+
+Nothing in the credential graph distinguishes one person with two DIDs
+from two people — a member who joins twice presents two perfectly valid
+sets of evidence, and every check passes twice. The community needs an
+anchor that is stable per human, and it must come from outside.
+
+That anchor is a **pseudonym**: an IDVP that can actually deduplicate
+people — a state eID scheme, a biometric provider, a bank — derives a
+deterministic value per (person, community). The same person returning
+yields the same pseudonym; a different community yields an unlinkable
+one. This is the rate-limiting-identifier construction from [Personhood
+Credentials (Adler et al. 2024)](https://arxiv.org/abs/2408.07892), which
+the spec's PHC definition cites.
+
+The daemon reads it from either shape, and **only from an issuer in
+`acceptedIdvps`**:
+
+| Shape | Where |
+|---|---|
+| A plain IDVC | `credentialSubject.pseudonym` |
+| This community's own endorsement | `credentialSubject.endorsement.claim.pseudonym` |
+
+An assertion carrying no accepted pseudonym is refused with
+`personhood-pseudonym-missing`; one whose pseudonym another member already
+holds is refused as a conflict, worded so it does not disclose who that
+member is.
+
+**The pseudonym itself is never stored.** It is a stable per-person
+identifier, so a database full of them is the correlation target the
+construction exists to avoid. What is stored is a salted digest keyed to
+this community, which answers "is this person already here" and nothing
+else.
+
+**Claims are released on purge only** — not on revoke, and not on leaving.
+Revoking personhood withdraws the community's assertion; it is not
+evidence that the human stopped existing, and they are still a member.
+If either released the claim, one-membership-per-person would be defeated
+by revoking and rejoining under a fresh DID.
+
+#### What this still does not give you
+
+The guarantee is the IDVP's, not the community's. Uniqueness is exactly as
+good as your accepted providers' deduplication — which is why the spec
+makes acceptable IDVPs part of what governance must publish.
+
+**In-person vetting is the weak case.** When a community is its own IDVP,
+the "pseudonym" is an administrator's judgement that they have not met this
+person before. That genuinely supports one-membership-per-person in a
+community small enough for one person to hold in their head, and genuinely
+does not beyond it. Say so in your governance framework rather than
+letting the flag imply more.
+
+Finally, this is per-community by definition — the spec's glossary says
+*"exactly one membership in that VTC"*. Personhood that means something
+*across* communities is a VTN-level property; see the spec's VTN
+definition and the [First Person Network](https://www.firstperson.network/).
 
 ### Revocation
 
