@@ -20,17 +20,17 @@ export function Dashboard() {
   });
 
   const status = health.data?.status;
-  const mediatorDid = diagnostics.data?.mediator_did;
-  const vtaDid = diagnostics.data?.vta_did;
-  const registry = diagnostics.data?.registry_transport;
-  const registryStatus = diagnostics.data?.registry_status;
+  const mediatorDid = diagnostics.data?.mediatorDid;
+  const vtaDid = diagnostics.data?.vtaDid;
+  const registry = diagnostics.data?.registryTransport;
+  const registryStatus = diagnostics.data?.registryStatus;
 
   // The two queue states worth interrupting the dashboard for. Failed rows are
   // terminal — the syncer has given up, so they never clear on their own — and
   // a queue an hour behind is the spec's degraded SLI. Plain depth is not
   // trouble: a burst of joins drains.
-  const failed = diagnostics.data?.failed_count ?? 0;
-  const oldestPending = diagnostics.data?.oldest_pending_age_seconds;
+  const failed = diagnostics.data?.failedCount ?? 0;
+  const oldestPending = diagnostics.data?.oldestPendingAgeSeconds;
   const queueTrouble =
     failed > 0
       ? `${failed} sync job${failed === 1 ? "" : "s"} failed`

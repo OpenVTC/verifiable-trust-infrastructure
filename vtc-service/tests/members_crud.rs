@@ -403,6 +403,8 @@ async fn show_member_returns_joined_response() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "got {body}");
+    // `show` wraps the row as `{member: …}` (#1093).
+    let body = &body["member"];
     assert_eq!(body["did"], "did:key:zM1");
     assert_eq!(body["role"], "issuer");
     assert!(body["joinedAt"].is_string());

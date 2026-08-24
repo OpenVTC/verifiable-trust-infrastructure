@@ -52,7 +52,7 @@ export function Recognition() {
   });
 
   const result = lookup.data;
-  const oldestPending = diagnostics.data?.oldest_pending_age_seconds;
+  const oldestPending = diagnostics.data?.oldestPendingAgeSeconds;
 
   return (
     <div className="page">
@@ -75,30 +75,30 @@ export function Recognition() {
           <dl>
             <dt>Status</dt>
             <dd>
-              <code>{diagnostics.data.registry_status}</code>
+              <code>{diagnostics.data.registryStatus}</code>
             </dd>
-            {diagnostics.data.registry_transport?.did && (
+            {diagnostics.data.registryTransport?.did && (
               <>
                 <dt>Registry DID</dt>
                 <dd>
-                  <code>{diagnostics.data.registry_transport.did}</code>
+                  <code>{diagnostics.data.registryTransport.did}</code>
                   <CopyButton
-                    value={diagnostics.data.registry_transport.did}
+                    value={diagnostics.data.registryTransport.did}
                     label="Copy trust registry DID"
                     successMessage="Trust registry DID copied"
                   />
                 </dd>
               </>
             )}
-            {diagnostics.data.registry_transport?.url && (
+            {diagnostics.data.registryTransport?.url && (
               <>
                 <dt>Registry URL</dt>
                 <dd>
-                  <code>{diagnostics.data.registry_transport.url}</code>
+                  <code>{diagnostics.data.registryTransport.url}</code>
                 </dd>
               </>
             )}
-            {diagnostics.data.registry_transport && (
+            {diagnostics.data.registryTransport && (
               <>
                 {/* Advertised is the registry's own claim, read from its DID
                     document; active is what the last call chose. Shown apart
@@ -107,8 +107,8 @@ export function Recognition() {
                 <dt>Advertises</dt>
                 <dd>
                   <code>
-                    {diagnostics.data.registry_transport.advertised.length
-                      ? diagnostics.data.registry_transport.advertised
+                    {diagnostics.data.registryTransport.advertised.length
+                      ? diagnostics.data.registryTransport.advertised
                           .map(protocolName)
                           .join(", ")
                       : "(not resolved)"}
@@ -117,17 +117,17 @@ export function Recognition() {
                 <dt>Connecting over</dt>
                 <dd>
                   <code>
-                    {diagnostics.data.registry_transport.active
-                      ? protocolName(diagnostics.data.registry_transport.active)
+                    {diagnostics.data.registryTransport.active
+                      ? protocolName(diagnostics.data.registryTransport.active)
                       : "(none selected)"}
                   </code>
                 </dd>
               </>
             )}
-            {diagnostics.data.registry_transport?.error && (
+            {diagnostics.data.registryTransport?.error && (
               <>
                 <dt>Last transport error</dt>
-                <dd>{diagnostics.data.registry_transport.error}</dd>
+                <dd>{diagnostics.data.registryTransport.error}</dd>
               </>
             )}
           </dl>
@@ -139,7 +139,7 @@ export function Recognition() {
         <p className="muted">
           Member changes reach the registry through a durable queue with
           exponential backoff. These counts are the only place a stalled
-          reconciler is visible — <code>registry_status</code> reports whether
+          reconciler is visible — <code>registryStatus</code> reports whether
           the registry answers, not whether our writes are landing.
         </p>
         {diagnostics.isPending && <p className="muted">Loading…</p>}
@@ -148,7 +148,7 @@ export function Recognition() {
             <div className="stat-tiles">
               <QueueTile
                 label="Pending"
-                value={diagnostics.data.queue_depth}
+                value={diagnostics.data.queueDepth}
                 foot={
                   oldestPending === undefined
                     ? "nothing waiting"
@@ -165,27 +165,27 @@ export function Recognition() {
               />
               <QueueTile
                 label="Failed"
-                value={diagnostics.data.failed_count}
+                value={diagnostics.data.failedCount}
                 // Terminal rows: the syncer has given up on them, so unlike
                 // pending they will never clear on their own.
                 foot={
-                  diagnostics.data.failed_count > 0
+                  diagnostics.data.failedCount > 0
                     ? "given up — needs operator triage"
                     : "none"
                 }
-                tone={diagnostics.data.failed_count > 0 ? "warn" : "ok"}
+                tone={diagnostics.data.failedCount > 0 ? "warn" : "ok"}
               />
               <QueueTile
                 label="RTBF batched"
-                value={diagnostics.data.rtbf_batched_count}
+                value={diagnostics.data.rtbfBatchedCount}
                 foot="held for the daily flush"
               />
               <QueueTile
                 label="Syncer"
                 value={
-                  !diagnostics.data.syncer_enabled
+                  !diagnostics.data.syncerEnabled
                     ? "off"
-                    : diagnostics.data.syncer_running
+                    : diagnostics.data.syncerRunning
                       ? "running"
                       : "stopped"
                 }
@@ -193,19 +193,19 @@ export function Recognition() {
                 // mid-restart after a panic, or wedged. Rising restarts is the
                 // "keeps crashing" signal.
                 foot={
-                  !diagnostics.data.syncer_enabled
+                  !diagnostics.data.syncerEnabled
                     ? "no registry configured"
-                    : diagnostics.data.syncer_restarts > 0
-                      ? `${diagnostics.data.syncer_restarts} restart${
-                          diagnostics.data.syncer_restarts === 1 ? "" : "s"
+                    : diagnostics.data.syncerRestarts > 0
+                      ? `${diagnostics.data.syncerRestarts} restart${
+                          diagnostics.data.syncerRestarts === 1 ? "" : "s"
                         }`
                       : "no restarts"
                 }
                 tone={
-                  !diagnostics.data.syncer_enabled
+                  !diagnostics.data.syncerEnabled
                     ? "neutral"
-                    : diagnostics.data.syncer_running &&
-                        diagnostics.data.syncer_restarts === 0
+                    : diagnostics.data.syncerRunning &&
+                        diagnostics.data.syncerRestarts === 0
                       ? "ok"
                       : "warn"
                 }
@@ -214,20 +214,20 @@ export function Recognition() {
             <dl>
               <dt>Last success</dt>
               <dd>
-                {diagnostics.data.last_success_at
-                  ? formatIso(diagnostics.data.last_success_at)
+                {diagnostics.data.lastSuccessAt
+                  ? formatIso(diagnostics.data.lastSuccessAt)
                   : "(never)"}
               </dd>
               <dt>Last failure</dt>
               <dd>
-                {diagnostics.data.last_failure_at
-                  ? formatIso(diagnostics.data.last_failure_at)
+                {diagnostics.data.lastFailureAt
+                  ? formatIso(diagnostics.data.lastFailureAt)
                   : "(none)"}
               </dd>
-              {diagnostics.data.last_error && (
+              {diagnostics.data.lastError && (
                 <>
                   <dt>Last error</dt>
-                  <dd>{diagnostics.data.last_error}</dd>
+                  <dd>{diagnostics.data.lastError}</dd>
                 </>
               )}
             </dl>

@@ -311,7 +311,7 @@ pub async fn list(
     security(("bearer_jwt" = [])),
     params(("id" = String, Path, description = "Endorsement id")),
     responses(
-        (status = 200, description = "Endorsement", body = Endorsement),
+        (status = 200, description = "Endorsement", body = EndorsementEnvelope),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin or issuer"),
         (status = 404, description = "Endorsement not found"),
@@ -321,7 +321,7 @@ pub async fn show(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Endorsement>, AppError> {
+) -> Result<Json<EndorsementEnvelope>, AppError> {
     let acl = get_acl_entry(&state.acl_ks, &auth.did)
         .await?
         .ok_or_else(|| AppError::Forbidden("caller has no ACL row".into()))?;
@@ -333,7 +333,7 @@ pub async fn show(
     let row = get_endorsement(&state.endorsements_ks, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("endorsement {id} not found")))?;
-    Ok(Json(row))
+    Ok(Json(EndorsementEnvelope { endorsement: row }))
 }
 
 // ─── Revoke ──────────────────────────────────────────────
@@ -486,4 +486,11 @@ pub async fn revoke(
 
 fn rfc3339(t: chrono::DateTime<Utc>) -> String {
     t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// `{ endorsement: … }` — the shape `vtc/endorsements/show/0.1` publishes.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EndorsementEnvelope {
+    pub endorsement: Endorsement,
 }

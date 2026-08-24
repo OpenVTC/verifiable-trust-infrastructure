@@ -33,6 +33,7 @@ const LIST_TYPES_TASK: &str = "https://trusttasks.org/spec/vtc/endorsement-types
 const DELETE_TYPE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1";
 const ISSUE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/issue/0.1";
 const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
+const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/show/0.1";
 const ADMIN_DID: &str = "did:key:zEndAdmin";
 const ISSUER_DID: &str = "did:key:zEndIssuer";
 const MEMBER_DID: &str = "did:key:zEndMember";
@@ -591,4 +592,50 @@ async fn revoke_non_admin_non_issuer_forbidden() {
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+/// `GET /credentials/endorsements/{id}` had **no test at all** before #1093,
+/// which is how it returned the bare row past a published schema that wraps
+/// it. Issue one, read it back, and assert the envelope — `endorsement` is
+/// the member `vtc/endorsements/show/0.1` names.
+#[tokio::test]
+async fn show_wraps_the_row_in_an_endorsement_envelope() {
+    let fix = build().await;
+    let uri = "https://example.com/v1/skills/rust";
+    register_type(&fix, uri).await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/credentials/endorsements")
+        .header("authorization", format!("Bearer {}", fix.issuer_token))
+        .header("trust-task", ISSUE_TASK)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "subjectDid": SUBJECT_DID,
+                "type": uri,
+                "claim": { "level": "expert" }
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let (status, issued) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(status, StatusCode::CREATED, "{issued}");
+    let id = issued["id"].as_str().unwrap();
+
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/v1/credentials/endorsements/{id}"))
+        .header("authorization", format!("Bearer {}", fix.issuer_token))
+        .header("trust-task", SHOW_TASK)
+        .body(Body::empty())
+        .unwrap();
+    let (status, v) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+
+    // The envelope, not the bare row: `v["id"]` must be absent precisely
+    // because the row now sits one level down.
+    assert!(v["id"].is_null(), "row must not be at the top level: {v}");
+    assert_eq!(v["endorsement"]["id"], id);
+    assert_eq!(v["endorsement"]["subjectDid"], SUBJECT_DID);
 }

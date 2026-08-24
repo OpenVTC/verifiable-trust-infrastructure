@@ -49,22 +49,22 @@ export interface RegistryTransport {
 }
 
 export interface DiagnosticsResponse {
-  registry_status: string;
-  queue_depth: number;
-  rtbf_batched_count: number;
-  failed_count: number;
-  oldest_pending_age_seconds?: number;
-  last_success_at?: string;
-  last_failure_at?: string;
-  last_error?: string;
-  vta_did?: string;
-  mediator_url?: string;
-  mediator_did?: string;
-  syncer_enabled: boolean;
-  syncer_running: boolean;
-  syncer_restarts: number;
-  messaging_status?: string;
-  registry_transport?: RegistryTransport;
+  registryStatus: string;
+  queueDepth: number;
+  rtbfBatchedCount: number;
+  failedCount: number;
+  oldestPendingAgeSeconds?: number;
+  lastSuccessAt?: string;
+  lastFailureAt?: string;
+  lastError?: string;
+  vtaDid?: string;
+  mediatorUrl?: string;
+  mediatorDid?: string;
+  syncerEnabled: boolean;
+  syncerRunning: boolean;
+  syncerRestarts: number;
+  messagingStatus?: string;
+  registryTransport?: RegistryTransport;
   transports?: TransportStatus[];
 }
 

@@ -69,22 +69,21 @@ async fn diagnostics_empty_queue_reports_zero_counts() {
         .unwrap();
     let (status, v) = body_value(resp).await;
     assert_eq!(status, StatusCode::OK, "{v}");
-    assert_eq!(v["queue_depth"], 0);
-    assert_eq!(v["rtbf_batched_count"], 0);
-    assert_eq!(v["failed_count"], 0);
+    assert_eq!(v["queueDepth"], 0);
+    assert_eq!(v["rtbfBatchedCount"], 0);
+    assert_eq!(v["failedCount"], 0);
     // Default RegistryHealth state is "degraded" (no successful
     // probe yet).
-    assert_eq!(v["registry_status"], "degraded");
+    assert_eq!(v["registryStatus"], "degraded");
     assert!(
-        v.get("oldest_pending_age_seconds")
-            .is_none_or(|x| x.is_null()),
+        v.get("oldestPendingAgeSeconds").is_none_or(|x| x.is_null()),
         "empty queue → no oldest_pending_age"
     );
     // Syncer liveness is surfaced (P3.13). The test daemon has no
     // registry client, so the syncer was never spawned.
-    assert_eq!(v["syncer_enabled"], false);
-    assert_eq!(v["syncer_running"], false);
-    assert_eq!(v["syncer_restarts"], 0);
+    assert_eq!(v["syncerEnabled"], false);
+    assert_eq!(v["syncerRunning"], false);
+    assert_eq!(v["syncerRestarts"], 0);
 }
 
 #[tokio::test]
@@ -124,12 +123,12 @@ async fn diagnostics_reports_pending_rtbf_and_failed_counts() {
     assert_eq!(status, StatusCode::OK, "{v}");
     // Pending (1) + RTBF-pending (1) = queue_depth 2; Failed
     // sits outside the active queue.
-    assert_eq!(v["queue_depth"], 2);
-    assert_eq!(v["rtbf_batched_count"], 1);
-    assert_eq!(v["failed_count"], 1);
+    assert_eq!(v["queueDepth"], 2);
+    assert_eq!(v["rtbfBatchedCount"], 1);
+    assert_eq!(v["failedCount"], 1);
     // Pending (dispatchable) job's age is surfaced; RTBF row
     // doesn't count toward "stuck" SLI.
-    assert!(v["oldest_pending_age_seconds"].is_number());
+    assert!(v["oldestPendingAgeSeconds"].is_number());
 }
 
 #[tokio::test]
@@ -175,9 +174,9 @@ async fn health_payload_is_minimal_and_unauth() {
     assert!(v["version"].is_string());
     assert!(v.get("vtc_did").is_some(), "community DID stays public");
     // The recon-sensitive fields are gone from the unauth surface.
-    assert!(v.get("mediator_url").is_none(), "mediator_url leaked: {v}");
-    assert!(v.get("mediator_did").is_none(), "mediator_did leaked: {v}");
-    assert!(v.get("vta_did").is_none(), "vta_did leaked: {v}");
+    assert!(v.get("mediatorUrl").is_none(), "mediator_url leaked: {v}");
+    assert!(v.get("mediatorDid").is_none(), "mediator_did leaked: {v}");
+    assert!(v.get("vtaDid").is_none(), "vta_did leaked: {v}");
 }
 
 #[tokio::test]
@@ -198,7 +197,7 @@ async fn diagnostics_surfaces_mediator_detail_to_admin() {
         .unwrap();
     let (status, v) = body_value(resp).await;
     assert_eq!(status, StatusCode::OK, "{v}");
-    assert_eq!(v["mediator_did"], "did:key:z6MkMediator");
+    assert_eq!(v["mediatorDid"], "did:key:z6MkMediator");
 }
 
 #[tokio::test]

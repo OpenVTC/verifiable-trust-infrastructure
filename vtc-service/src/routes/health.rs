@@ -11,6 +11,14 @@ use crate::server::AppState;
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct HealthResponse {
+    // Deliberately *not* `rename_all = "camelCase"`, unlike
+    // `DiagnosticsResponse` below.
+    //
+    // `/health` is not a bound Trust Task, so no published schema describes
+    // it, and `vtc_did` is read by the default landing page
+    // (`website-default/site.js`). Renaming it would break a page this
+    // service ships, to satisfy a contract that does not exist. R3.1 governs
+    // wire types with schemas; this is an unauth status page.
     status: &'static str,
     version: &'static str,
     /// The VTC's own did:webvh, set during `vtc setup`. Kept on the
@@ -70,6 +78,7 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 /// running on-call should be able to read this without
 /// holding the super-admin role.
 #[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct DiagnosticsResponse {
     pub registry_status: String,
     pub queue_depth: u64,
