@@ -1215,7 +1215,12 @@ fn table() -> Vec<Conformance> {
             s::members::personhood::challenge::v0_1::Response,
             json!({ "did": DID }),
             // `ChallengeResponse` — routes/members/personhood.rs:138.
-            json!({ "challengeId": REQUEST_ID, "expiresAt": TS })
+            // The `ext` member carries the spoken match code. The
+            // response schema is `additionalProperties: false`, so this
+            // witness is what proves the code found a conformant home
+            // rather than a new top-level field.
+            json!({ "challengeId": REQUEST_ID, "expiresAt": TS,
+                    "ext": { crate::members::match_code::MATCH_CODE_EXT_KEY: "7F4K-2QX9" } })
         ),
         checked!(
             s::members::personhood::assert::v0_1::Payload,

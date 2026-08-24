@@ -2,9 +2,13 @@
 
 The VTC ships two member-graph features in Phase 4:
 
-- **Personhood** — an admin/issuer asserts that a member is a
-  unique human (or human-equivalent agent), backed by witness
-  evidence the operator's `personhood.rego` accepts.
+- **Personhood** — a member asserts that they are a human, backed by
+  evidence the operator's `personhood.rego` accepts: a third party's
+  witness credential, or an identity verification this community
+  performed in person. The flag lands as a `PersonhoodCredential` type
+  on the member's VMC, which is what DTG Credentials means by a PHC —
+  read [What this does and does not establish](#what-this-does-and-does-not-establish)
+  before relying on it as one.
 - **VRC graph** — members self-issue Verifiable Relationship
   Credentials declaring trust edges to other members, forming a
   community-internal trust graph.
@@ -39,14 +43,15 @@ sequenceDiagram
 
     A->>VTC: POST /v1/members/{did}/personhood/challenge
     VTC->>VTC: Store nonce in passkey_ks<br/>(10-min TTL, single-use)
-    VTC-->>A: { challenge, expiresAt }
-    A->>M: Out-of-band — share nonce
+    VTC-->>A: { challengeId, expiresAt,<br/>ext: { match-code } }
+    A->>M: Out-of-band — share challengeId
+    Note over A,M: Both derive the same 8-char code<br/>from challengeId and say it aloud
     M->>M: Assemble VP with<br/>witness credentials
     M->>VTC: POST /v1/members/{did}/personhood/assert<br/>(VP, includes challenge nonce)
     VTC->>VTC: 1) Load Member row (404 if missing)
     VTC->>VTC: 2) Consume challenge<br/>(400 on missing/expired/wrong-DID)
     VTC->>VTC: 3) Verify VP.holder == path-DID
-    VTC->>VTC: 4) Evaluate personhood.rego<br/>(WitnessCredential check by default)
+    VTC->>VTC: 4) Evaluate personhood.rego<br/>(default: WitnessCredential, or this<br/>community's own IdentityVerification)
     alt policy allows
         VTC->>VTC: Set personhood=true<br/>Set asserted_at=now
         VTC->>VTC: Re-mint VMC with new flag
@@ -62,6 +67,100 @@ Verifiable Presentation. The handler verifies the VP and discards
 it — no `personhood_evidence` JSON field, no separate signed-blob
 shape. The verify-then-discard semantics keep PII out of the
 request log.
+
+### In-person vetting
+
+The default policy accepts a second evidence shape: an
+`IdentityVerification` endorsement **this community issued to this
+member**. That is the in-person ceremony — an administrator meets the
+person, satisfies themselves that the DID they present is theirs, and
+issues the record to that DID. The member later presents it over a
+single-use challenge, and the community's own signature is the evidence.
+
+It needs no new Trust Task and no new credential type. DTG Credentials
+§Identity Verification Credentials defines an IDVC as *"any W3C VC
+satisfying a VTC/VTN's identity-proofing requirements"* and explicitly
+**not** a `DTGCredential` subtype, so a community acting as its own
+identity-verification provider is the simplest case of that. Issuing it
+through the endorsement surface means it is revocable through the
+community's existing status list, like every other endorsement.
+
+**One-time setup** — register the type:
+
+```bash
+# vtc/endorsement-types/register/0.1
+POST /v1/endorsement-types  { "typeUri": "IdentityVerification" }
+```
+
+**Per member** — after meeting them:
+
+```bash
+# vtc/endorsements/issue/0.1
+POST /v1/endorsements
+{
+  "subjectDid": "did:key:zMember...",
+  "type": "IdentityVerification",
+  "claim": { "method": "in-person-id", "verifiedBy": "did:key:zAdmin..." }
+}
+```
+
+The member then runs the normal challenge + assert flow, presenting that
+credential. Three bindings have to hold, and each is enforced by the
+default policy:
+
+| Binding | Why it is there |
+|---|---|
+| `issuer` == this community's DID | An endorsement type is a *name*, not an authority. Without this, any issuer anywhere could mint `IdentityVerification` and unlock personhood here. |
+| `credentialSubject.id` == the asserting member | The route's holder-match binds the *presenter*; this binds the *credential*, so a member cannot present a vetting record about someone else. |
+| `endorsement.type` == `IdentityVerification` | A role VEC is also community-issued and also names the member. Without the type check, every member holding a role credential would satisfy the policy — which is every member. |
+
+#### The spoken match code
+
+`challengeId` is a UUID: fine on a wire, hopeless read aloud. The
+challenge response therefore also carries an eight-character code under
+`ext["org.openvtc.match-code"]`:
+
+```json
+{
+  "challengeId": "6f1c4f9e-7c2a-4f4b-9a3e-2b1d0c5e8a77",
+  "expiresAt": "2026-08-24T10:15:00Z",
+  "ext": { "org.openvtc.match-code": "7F4K-2QX9" }
+}
+```
+
+It is **derived from the challenge id** (`SHA-256`, Crockford base32 —
+no `I`, `L`, `O` or `U`, so nothing in it is mishearable), never
+transmitted as an independent secret and never accepted as one. Both
+parties compute it from the `challengeId` they already hold and say it
+to each other; nothing checks it server-side, because there is nothing
+it could prove that `proof.challenge` does not already prove. It is a
+confirmation channel — a Bluetooth pairing code, not a password.
+
+The code rides in `ext` rather than as a top-level field because
+`vtc/members/personhood/challenge/0.1`'s response schema is
+`additionalProperties: false`; `ext` is what the framework reserves for
+ecosystem-defined members (SPEC §4.5.1), and its key pattern is why the
+member is `match-code` and not `matchCode`.
+
+#### What this does and does not establish
+
+DTG Credentials §Personhood Credentials requires governance enforcing
+**both** real human personhood **and exactly one membership per
+person**. In-person vetting is evidence for the first only.
+
+**The VTC does not enforce uniqueness.** Nothing stops one human joining
+twice under two DIDs and being vetted twice, and no credential presented
+by its own subject could demonstrate otherwise. A community whose
+governance depends on one-person-one-membership needs a policy that
+consults evidence from an issuer who actually checks that — a national
+eID, an existing PHC from a network that enforces it — and should treat
+the default policy as a starting point, not a personhood regime.
+
+Note also that the spec locates PHC status in **governance and trust
+registries, not in credential structure**: the `PersonhoodCredential`
+type this daemon adds to a vetted member's VMC is described there as a
+*non-authoritative hint*. A verifier following the spec reads the
+community's governance, not the type array.
 
 ### Revocation
 
