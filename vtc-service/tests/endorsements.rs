@@ -200,7 +200,12 @@ async fn register_happy_path() {
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, v) = body_value(resp).await;
     assert_eq!(status, StatusCode::CREATED, "{v}");
-    assert_eq!(v["typeUri"], "https://example.com/v1/skills/rust");
+    // `{endorsementType: …}` since #1059 — the row was returned bare until
+    // the witness compared the handler with its own schema.
+    assert_eq!(
+        v["endorsementType"]["typeUri"],
+        "https://example.com/v1/skills/rust"
+    );
 }
 
 #[tokio::test]

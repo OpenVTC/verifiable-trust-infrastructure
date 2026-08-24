@@ -490,7 +490,7 @@ fn uuid() -> uuid::Uuid {
 /// 3. **Unspecced members on an `additionalProperties: false` response.**
 ///    Usually the service is ahead of the spec (the ceremony verdict
 ///    envelope, `decidedAt`), occasionally behind it (`didBindingChallenge`).
-const KNOWN_DRIFT_COUNT: usize = 27;
+const KNOWN_DRIFT_COUNT: usize = 26;
 
 /// Every bound, published `spec/vtc/*` URI, with the request and response the
 /// VTC actually speaks.
@@ -580,22 +580,14 @@ fn table() -> Vec<Conformance> {
             json!({ "jti": REQUEST_ID })
         ),
         // ─── auth ────────────────────────────────────────────────────
-        drift!(
+        checked!(
             s::auth::admin_session::v0_1::Payload,
             s::auth::admin_session::v0_1::Response,
-            Side::Response,
-            // `AdminSessionRequest` — routes/auth.rs:364.
             json!({ "accessToken": "eyJhbGciOiJFZERTQSJ9.e30.sig" }),
-            // There is no response type: the handler (routes/auth.rs:401)
-            // returns 204 with an EMPTY body. `{}` is the closest JSON there
-            // is, and it already flatters the real wire form.
-            json!({}),
-            "no response body at all — the handler returns 204 and puts its \
-             result in two Set-Cookie headers, where the spec requires \
-             `{sessionId, expiresAt}`. A cookie is not a Trust Task response \
-             and no non-browser transport can read one, so this is a real \
-             hole rather than a naming mismatch: fix here by returning the \
-             body as well as the cookies"
+            // `AdminSessionResponse` — the handler returned 204 and nothing
+            // else until #1059. The cookies remain; the body is what makes
+            // the route usable by anything that is not a browser.
+            json!({ "sessionId": REQUEST_ID, "expiresAt": 1_787_500_800_u64 })
         ),
         checked!(
             s::auth::recognise::challenge::v0_1::Payload,
@@ -799,13 +791,13 @@ fn table() -> Vec<Conformance> {
                 "claimSchema": { "type": "object" },
                 "description": "Rust proficiency",
             }),
-            // The handler returns the row bare (routes/endorsement_types.rs:69).
-            endorsement_type(),
-            "response is the bare `EndorsementType`; the spec wraps it as \
-             `{endorsementType: …}`. The row also carries `createdByDid`, \
-             which the canonical component omits — that one is worth taking \
-             upstream (who registered a type is audit-relevant), the wrapper \
-             is a fix here"
+            // `RegisterResponse` — the row was returned bare until #1059.
+            json!({ "endorsementType": endorsement_type() }),
+            "the missing `{endorsementType: …}` wrapper is fixed. What remains \
+             is the row's `createdByDid`, which the canonical component does \
+             not define — taken upstream in \
+             trustoverip/dtgwg-trust-tasks-tf#260, so this closes on the next \
+             `trust-tasks-rs` release rather than on any change here"
         ),
         drift!(
             s::endorsement_types::list::v0_1::Payload,

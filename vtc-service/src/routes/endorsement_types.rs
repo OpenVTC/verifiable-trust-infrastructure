@@ -70,7 +70,7 @@ pub async fn register(
     auth: AdminAuth,
     State(state): State<AppState>,
     Json(body): Json<RegisterBody>,
-) -> Result<(StatusCode, Json<EndorsementType>), AppError> {
+) -> Result<(StatusCode, Json<RegisterResponse>), AppError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -119,7 +119,21 @@ pub async fn register(
 
     info!(type_uri = %uri, by = %auth.0.did, "endorsement type registered");
 
-    Ok((StatusCode::CREATED, Json(row)))
+    Ok((
+        StatusCode::CREATED,
+        Json(RegisterResponse {
+            endorsement_type: row,
+        }),
+    ))
+}
+
+/// `{ endorsementType: … }` — the shape `vtc/endorsement-types/register/0.1`
+/// publishes. The handler returned the bare row until #1059's witness
+/// compared it with its own schema; the row itself conformed.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterResponse {
+    pub endorsement_type: EndorsementType,
 }
 
 // ─── List ────────────────────────────────────────────────
