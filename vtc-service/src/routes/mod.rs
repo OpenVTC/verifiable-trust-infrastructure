@@ -10,7 +10,7 @@ mod community;
 pub(crate) mod did_log;
 mod directory;
 mod endorsement_types;
-mod endorsements;
+pub(crate) mod endorsements;
 mod health;
 pub(crate) mod install;
 mod invitations;
@@ -24,7 +24,7 @@ mod schemas;
 pub(crate) mod status_lists;
 pub mod trust_tasks;
 #[cfg(feature = "website")]
-mod website;
+pub(crate) mod website;
 
 use std::sync::Arc;
 
