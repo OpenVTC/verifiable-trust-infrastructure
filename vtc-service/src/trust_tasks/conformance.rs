@@ -1324,21 +1324,35 @@ fn table() -> Vec<Conformance> {
             })
         ),
         drift!(
-            s::relationships::publish::v0_1::Payload,
-            s::relationships::publish::v0_1::Response,
+            s::relationships::publish::v0_2::Payload,
+            s::relationships::publish::v0_2::Response,
             Side::Request,
-            // `PublishBody` — routes/relationships.rs:92.
-            json!({ "vrc": credential(), "pop": { "type": "DataIntegrityProof" } }),
-            // `PublishResponse` — routes/relationships.rs:113.
+            // `PublishBody` — the task payload, carried inside a Trust Task
+            // document since #1084. The witness validates payloads, so the
+            // envelope is not represented here: it is the transport this
+            // payload rides in, and the framework validates it separately.
+            json!({
+                "vrc": credential(),
+                "pop": {
+                    "type": "VrcPublishAuthorization",
+                    "documentId": REQUEST_ID,
+                    "vrcDigestMultibase": "zQmbGXRT3v1RmfWkQ7Y3Z5Uj9pKq2NcXhLd8sVtA4eB6nMw",
+                    "proof": { "type": "DataIntegrityProof" },
+                },
+            }),
+            // `PublishResponse`. The response conforms — moving to 0.2 was
+            // what fixed it, since 0.1 asked for a bare-hex `vrcSha256` this
+            // service no longer computes.
             json!({ "id": REQUEST_ID, "issuerDid": DID, "subjectDid": OTHER_DID,
-                    "vrcSha256": "3b9f0a1c8d2e4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f809a1b2c3" }),
-            "request carries `pop`, the proof-of-possession an admin supplies \
-             when publishing an edge they did not issue (#1061); the spec's \
-             payload is `{vrc}` and forbids extras. Nothing here is wrong — \
-             the spec predates the third-party publish path — so take `pop` \
-             upstream. Note the registry also publishes \
-             `relationships/publish/0.2`, which swaps `vrcSha256` for \
-             `vrcDigestMultibase`; this service still binds 0.1"
+                    "vrcDigestMultibase": "zQmbGXRT3v1RmfWkQ7Y3Z5Uj9pKq2NcXhLd8sVtA4eB6nMw" }),
+            "the request carries `pop`, which the *pinned* schema does not \
+             define. trustoverip/dtgwg-trust-tasks-tf#259 adds it and is \
+             merged, so this closes on the next `trust-tasks-rs` release \
+             rather than on any change here — the entry exists to stop that \
+             being forgotten. The response side conforms: binding 0.2 instead \
+             of 0.1 is what fixed it, because 0.1 asks for a bare-hex \
+             `vrcSha256` and this service now computes only the multibase \
+             multihash the specification names"
         ),
         checked!(
             s::relationships::revoke::v0_1::Payload,

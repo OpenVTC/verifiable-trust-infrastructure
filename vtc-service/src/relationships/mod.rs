@@ -46,6 +46,7 @@
 //! VPC is self-issued by the member under a persona DID, and the
 //! VTC only verifies and stores it.
 
+pub mod rate_limit;
 pub mod storage;
 
 use chrono::{DateTime, Utc};
@@ -85,7 +86,16 @@ pub struct Relationship {
     /// Used for idempotency: a second publish of an
     /// already-stored VRC returns the existing id (200)
     /// rather than creating a duplicate row.
-    pub vrc_sha256: String,
+    /// Digest over the RFC 8785 canonicalization of `vrc_jsonld`, as a
+    /// base58btc multibase multihash — the form DTG Credentials and
+    /// `relationships/publish/0.2` both specify.
+    ///
+    /// Was a bare lowercase-hex SHA-256 over a recursive key sort. That form
+    /// hard-coded one algorithm into the stored shape, named no base encoding,
+    /// and — worse — named no canonicalization a second implementation could
+    /// reproduce, so two conforming services could digest the same credential
+    /// differently and neither be wrong.
+    pub vrc_digest_multibase: String,
     pub created_at: DateTime<Utc>,
     /// The persona (VPC) this edge's issuer has asserted on it,
     /// if any. Absent on every edge published before #1067 and

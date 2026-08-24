@@ -636,10 +636,6 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             "https://trusttasks.org/spec/vtc/relationships/graph/0.1",
         ))
         .routes(tt(
-            routes!(relationships::publish),
-            "https://trusttasks.org/spec/vtc/relationships/publish/0.1",
-        ))
-        .routes(tt(
             routes!(relationships::revoke),
             "https://trusttasks.org/spec/vtc/relationships/revoke/0.1",
         ))
@@ -1040,6 +1036,21 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
         .routes(tt(
             routes!(recognise::recognise),
             "https://trusttasks.org/spec/vtc/auth/recognise/0.1",
+        ))
+        // Publishing a relationship edge authenticates by the Trust Task
+        // document's own proof rather than a bearer token (#1084), so it
+        // belongs on this chain for the same reason `auth/recognise` does:
+        // the handler runs DID resolution and Ed25519 verification — twice,
+        // once for the document and once for the publish authorization — all
+        // driven by attacker-supplied JSON, before it knows who is calling.
+        //
+        // The governor bounds that anonymous cost. The per-member limit in
+        // `relationships::rate_limit` bounds what an admitted member can do
+        // once the proof has told us who they are; it cannot help here,
+        // because before verification there is no member to key on.
+        .routes(tt(
+            routes!(relationships::publish),
+            "https://trusttasks.org/spec/vtc/relationships/publish/0.2",
         ))
         // The single Trust Task document endpoint (P0.5: governed unauth
         // chain). The holder-facing join ceremony verbs (submit/request,

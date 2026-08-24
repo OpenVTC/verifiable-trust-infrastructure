@@ -141,6 +141,10 @@ pub struct AppState {
     /// last-failure surface (Phase 3 M3.2). The community-
     /// profile + diagnostics handlers read this; the
     /// boot/probe paths write it.
+    /// Per-member publish rate limiting, keyed on a hashed DID. See
+    /// [`crate::relationships::rate_limit`] for why it is keyed that way and
+    /// why it lives in memory.
+    pub publish_rate_limiter: crate::relationships::rate_limit::PublishRateLimiter,
     pub registry_health: crate::registry::RegistryHealth,
     /// Liveness of the `MembershipSyncer` task (P3.13). The
     /// supervisor updates it on start / restart-after-panic; the
@@ -711,6 +715,15 @@ pub async fn run(
         consumed_invitations_ks,
         invitations_ks,
         registry_client: registry_client.clone(),
+        // Keyed on a random per-process secret: the limiter's map never
+        // leaves this process, so the key need not be stable across restarts
+        // — and a fresh one per boot means a restart cannot be used to
+        // correlate counters from before it.
+        publish_rate_limiter: crate::relationships::rate_limit::PublishRateLimiter::new({
+            let mut k = [0u8; 32];
+            rand::fill(&mut k);
+            k
+        }),
         registry_health: registry_health.clone(),
         syncer_health: crate::registry::SyncerHealth::new(),
         config: Arc::new(RwLock::new(config)),

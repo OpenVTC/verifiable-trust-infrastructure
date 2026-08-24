@@ -327,6 +327,11 @@ impl TestVtcBuilder {
         ));
 
         let state = AppState {
+            // Fixed key: a test never needs the counter to be unguessable, and
+            // a deterministic one keeps a failure reproducible.
+            publish_rate_limiter: crate::relationships::rate_limit::PublishRateLimiter::new(
+                [0x5a; 32],
+            ),
             sessions_ks,
             acl_ks,
             community_ks,

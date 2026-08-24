@@ -256,6 +256,8 @@ clap = { workspace = true }
 didwebvh-rs = { workspace = true, optional = true }
 rand = { workspace = true }
 dialoguer = { workspace = true, optional = true }
+serde_json_canonicalizer = { workspace = true }
+hmac = { workspace = true }
 sha2 = { workspace = true }
 hkdf = { workspace = true }
 x25519-dalek = { workspace = true }
@@ -302,6 +304,7 @@ affinidi-crypto = { workspace = true }
 tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
+trust-tasks-rs = { workspace = true }
 # Self-dep with `test-support` enabled so integration tests under
 # `tests/` can import `vtc_service::test_support` (`TestVtc`, `MockVtc`).
 vtc-service = { path = ".", features = ["test-support", "didcomm-harness"] }
