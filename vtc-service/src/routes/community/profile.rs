@@ -37,8 +37,23 @@ use crate::server::AppState;
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct CommunityProfileResponse {
-    /// The persisted profile fields. Flattened on the wire so
-    /// existing consumers see no shape change.
+    /// Nested, because `vtc/community/profile/show/0.1` requires a
+    /// `profile` member and is `additionalProperties: false`. This was
+    /// `#[serde(flatten)]` until #1094, which put every profile field at the
+    /// top level — where the schema permits none of them.
+    pub profile: ProfileWithStatus,
+}
+
+/// The persisted profile plus the one field that is computed per request.
+///
+/// `registryStatus` sits *inside* the profile object rather than beside it,
+/// because that is where the canonical `CommunityProfile` component defines
+/// it ("Populated on reads; not settable"). Un-flattening alone would have
+/// left it a sibling of `profile`, which the response schema forbids.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct ProfileWithStatus {
     #[serde(flatten)]
     pub profile: CommunityProfile,
     /// Trust-registry reachability — `"active"` when the last
@@ -197,8 +212,10 @@ pub async fn get_profile(
         .ok_or_else(|| AppError::NotFound("community profile not initialised".into()))?;
     let registry_status = state.registry_health.status().await;
     Ok(Json(CommunityProfileResponse {
-        profile,
-        registry_status,
+        profile: ProfileWithStatus {
+            profile,
+            registry_status,
+        },
     }))
 }
 

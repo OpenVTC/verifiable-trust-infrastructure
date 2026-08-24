@@ -64,9 +64,13 @@ const TRUST_TASK_CEREMONIES =
   "https://trusttasks.org/spec/vtc/ceremonies/list/0.1";
 
 export async function fetchCeremonies(): Promise<CeremonyManifest[]> {
-  return getJson<CeremonyManifest[]>("/v1/ceremonies", {
-    trustTask: TRUST_TASK_CEREMONIES,
-  });
+  // `vtc/ceremonies/list/0.1` wraps the array as `{ceremonies: […]}`; the
+  // daemon sent a bare array until #1094.
+  const body = await getJson<{ ceremonies: CeremonyManifest[] }>(
+    "/v1/ceremonies",
+    { trustTask: TRUST_TASK_CEREMONIES },
+  );
+  return body.ceremonies;
 }
 
 /** The default value map for a ceremony's simulator form. */

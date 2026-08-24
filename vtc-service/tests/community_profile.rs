@@ -95,6 +95,8 @@ async fn get_returns_profile_when_initialised() {
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, body) = body_value(resp).await;
     assert_eq!(status, StatusCode::OK);
+    // `show` nests the profile under `profile` (#1094).
+    let body = &body["profile"];
     assert_eq!(body["name"], "Example Community");
     assert_eq!(body["communityDid"], "did:webvh:vtc.example.com:abc");
     assert_eq!(body["language"], "en");

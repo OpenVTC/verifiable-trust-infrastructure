@@ -649,9 +649,9 @@ fn table() -> Vec<Conformance> {
             s::ceremonies::list::v0_1::Response,
             Side::Response,
             json!({}),
-            // `list` returns `Json<Vec<CeremonyManifest>>` — a top-level
-            // array (routes/ceremonies.rs:320).
-            json!([{
+            // `CeremonyListResponse` — a top-level array until #1094
+            // (routes/ceremonies.rs:320).
+            json!({ "ceremonies": [{
                 "purpose": "directory",
                 "pkg": "vtc.directory",
                 "nature": "read-only",
@@ -660,12 +660,11 @@ fn table() -> Vec<Conformance> {
                 "blurb": "A member views another member's record.",
                 "fields": [],
                 "factsTemplate": { "purpose": "directory" },
-            }]),
-            "response is a top-level array where the spec says \
-             `{ceremonies: [...]}`, and each manifest carries an unspecced \
-             `factsTemplate`. Two fixes, both here: wrap the array, and take \
-             `factsTemplate` upstream (the admin UI renders the simulator \
-             from it, so dropping it is not an option)"
+            }] }),
+            "the `{ceremonies: […]}` envelope is right as of #1094. Each \
+             manifest still carries an unspecced `factsTemplate`; that half \
+             goes upstream, because the admin UI renders the simulator from \
+             it and dropping it is not an option"
         ),
         // ─── community ───────────────────────────────────────────────
         drift!(
@@ -673,21 +672,23 @@ fn table() -> Vec<Conformance> {
             s::community::profile::show::v0_1::Response,
             Side::Response,
             json!({}),
-            // `CommunityProfileResponse` flattens the profile and appends
-            // `registryStatus` (routes/community/profile.rs:39).
+            // `CommunityProfileResponse` — nested as of #1094, with
+            // `registryStatus` inside the profile where the canonical
+            // component defines it (routes/community/profile.rs:39).
             {
                 let mut v = community_profile();
                 v.as_object_mut()
                     .expect("object")
                     .insert("registryStatus".into(), json!("active"));
-                v
+                json!({ "profile": v })
             },
-            "response flattens the profile to the top level; the spec nests \
-             it under `profile`. The flattened object then also carries \
-             `communityDid`, `createdAt` and `relationshipIdentifierDefault`, \
-             which the canonical `CommunityProfile` component does not \
-             define. Nesting is a fix here; the three extra members need to \
-             go upstream — `communityDid` in particular is the one member a \
+            "the `{profile: …}` nesting is right as of #1094, and \
+             `registryStatus` moved inside the profile object — beside it, \
+             the `additionalProperties: false` response would have rejected \
+             it. The profile still carries `communityDid`, `createdAt` and \
+             `relationshipIdentifierDefault`, which the canonical \
+             `CommunityProfile` component does not define; those three go \
+             upstream — `communityDid` in particular is the one member a \
              consumer most needs"
         ),
         drift!(
@@ -1124,12 +1125,12 @@ fn table() -> Vec<Conformance> {
             json!({ "did": DID, "role": "moderator", "label": "Ada Lovelace",
                     "publishConsent": true, "departurePreference": "historical",
                     "extensions": { "org": "acme" } }),
-            member_response(),
+            json!({ "member": member_response() }),
             "request carries `label`, which the spec's payload does not \
              define — a member's display label is editable here and \
-             unspecified upstream. Response is the bare `MemberResponse` \
-             (spec: `{member: …}`) with the same five unspecced members as \
-             `list`"
+             unspecified upstream. The response's `{member: …}` envelope is \
+             right as of #1094; the row still carries the same five unspecced \
+             members as `list`"
         ),
         checked!(
             s::members::purge::v0_1::Payload,

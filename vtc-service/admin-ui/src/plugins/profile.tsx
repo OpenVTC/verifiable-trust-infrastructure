@@ -17,11 +17,12 @@ const TRUST_TASK =
 const TRUST_TASK_UPDATE =
   "https://trusttasks.org/spec/vtc/community/profile/update/0.1";
 
-// GET /v1/community/profile wire shape: the persisted profile fields
-// are flattened at the top level (server uses `#[serde(flatten)]`),
-// alongside the live `registryStatus`. Do not look for a nested
-// `profile` object — there isn't one.
-interface ProfileResponse {
+// GET /v1/community/profile wire shape: `{profile: {…}}`, with the live
+// `registryStatus` inside the profile object — the shape
+// `vtc/community/profile/show/0.1` requires. The fields were flattened to
+// the top level until #1094, where the response schema permitted none of
+// them.
+interface Profile {
   communityDid: string;
   name: string;
   description: string;
@@ -43,16 +44,21 @@ interface ProfileUpdateRequest {
   language?: string;
 }
 
-async function getProfile(): Promise<ProfileResponse> {
-  return getJson<ProfileResponse>("/v1/community/profile", {
+interface ProfileResponse {
+  profile: Profile;
+}
+
+async function getProfile(): Promise<Profile> {
+  const body = await getJson<ProfileResponse>("/v1/community/profile", {
     trustTask: TRUST_TASK,
   });
+  return body.profile;
 }
 
 async function putProfile(body: ProfileUpdateRequest): Promise<unknown> {
   // PUT returns `{ profile, fieldsChanged }` (nested). We don't read
   // it — `onSuccess` invalidates the query, which refetches via
-  // `getProfile` and seeds the form from the flat GET shape.
+  // `getProfile` and seeds the form from the unwrapped profile.
   return putJson<unknown>("/v1/community/profile", body, {
     trustTask: TRUST_TASK_UPDATE,
   });
@@ -249,7 +255,7 @@ interface EditableFields {
 }
 
 function isDirty(
-  original: ProfileResponse,
+  original: Profile,
   draft: EditableFields,
 ): boolean {
   if (original.name !== draft.name) return true;
@@ -262,7 +268,7 @@ function isDirty(
 }
 
 function buildPatch(
-  original: ProfileResponse,
+  original: Profile,
   draft: EditableFields,
 ): ProfileUpdateRequest {
   const patch: ProfileUpdateRequest = {};

@@ -48,7 +48,7 @@ use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry};
 use crate::auth::{AdminAuth, session::now_epoch};
 use crate::error::AppError;
 use crate::members::{Disposition, Member, get_member, store_member};
-use crate::routes::members::read::MemberResponse;
+use crate::routes::members::read::{MemberEnvelope, MemberResponse};
 use crate::server::AppState;
 
 /// Serialises admin promotions per-process. Inherited from the retired
@@ -82,7 +82,7 @@ pub struct UpdateMemberRequest {
     params(("did" = String, Path, description = "Member DID")),
     request_body = UpdateMemberRequest,
     responses(
-        (status = 200, description = "Updated member record", body = MemberResponse),
+        (status = 200, description = "Updated member record", body = MemberEnvelope),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin / role change denied by policy / step-up required for role=admin"),
         (status = 404, description = "Member not found"),
@@ -94,7 +94,7 @@ pub async fn update_member(
     State(state): State<AppState>,
     Path(did): Path<String>,
     Json(req): Json<UpdateMemberRequest>,
-) -> Result<Json<MemberResponse>, AppError> {
+) -> Result<Json<MemberEnvelope>, AppError> {
     vti_common::identifier::validate_did("did", &did)?;
 
     let promoting = matches!(req.role, Some(VtcRole::Admin));
@@ -306,7 +306,11 @@ pub async fn update_member(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("member not found: {did}")))?;
 
-    Ok(Json(MemberResponse::from_pair_for_route(acl, member)))
+    // `{member: …}` — the shape `vtc/members/update/0.1` publishes, same as
+    // its `show` sibling. The row was returned bare until #1094.
+    Ok(Json(MemberEnvelope {
+        member: MemberResponse::from_pair_for_route(acl, member),
+    }))
 }
 
 // Re-export `from_pair` under a route-only alias so this module

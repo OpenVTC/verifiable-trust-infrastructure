@@ -357,6 +357,8 @@ async fn end_to_end_install_flow_phase_0_gate() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    // `show` nests the profile under `profile` (#1094).
+    let body = &body["profile"];
     assert_eq!(body["name"], "Example Community");
 
     // Verify ACL admin record matches the bootstrapped DID
