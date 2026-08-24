@@ -390,11 +390,23 @@ pub struct AdminSessionRequest {
 /// access token, which it could use directly as a bearer; this only mirrors
 /// it into the cookie the browser SPA expects. Browser-only by nature: the
 /// CSRF layer's same-origin check carries the (cookie-less) first call.
+/// `{ sessionId, expiresAt }` — the shape `vtc/auth/admin-session/0.1`
+/// publishes, and which this route did not return until #1059's witness put
+/// the handler beside its own schema.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminSessionResponse {
+    pub session_id: String,
+    /// Unix seconds, from the token's own expiry — the same value the
+    /// cookies' `Max-Age` is derived from, so the two cannot disagree.
+    pub expires_at: u64,
+}
+
 #[utoipa::path(
     post, path = "/auth/admin-session", tag = "auth",
     request_body = AdminSessionRequest,
     responses(
-        (status = 204, description = "Admin session + CSRF cookies set"),
+        (status = 200, description = "Admin session + CSRF cookies set", body = AdminSessionResponse),
         (status = 401, description = "Invalid or expired access token"),
     ),
 )]
@@ -428,7 +440,26 @@ pub async fn admin_session(
     let session_cookie = build_session_cookie(&req.access_token, max_age);
     let csrf_cookie = build_csrf_cookie(&csrf, max_age);
 
-    let mut response = StatusCode::NO_CONTENT.into_response();
+    // The spec's response is `{sessionId, expiresAt}`, and this handler
+    // returned 204 with both values only in `Set-Cookie` headers.
+    //
+    // A cookie is not a Trust Task response. Nothing but a browser can read
+    // one, so every non-browser caller — the CLIs, a DIDComm binding, any
+    // integration — could authenticate here and learn nothing about the
+    // session it had just been given. The cookies stay, because the admin SPA
+    // relies on them; the body is what makes the route usable by anything
+    // else.
+    let mut response = (
+        StatusCode::OK,
+        Json(AdminSessionResponse {
+            session_id: claims.session_id.clone(),
+            // Unix seconds, as the schema types it — the same value the
+            // cookies' `Max-Age` is derived from, so the body and the headers
+            // cannot disagree about when this session ends.
+            expires_at: claims.exp,
+        }),
+    )
+        .into_response();
     let headers = response.headers_mut();
     headers.append(
         SET_COOKIE,
@@ -1268,6 +1299,9 @@ pub async fn sign_out(
     }
     info!(did = %auth.did, session_id = %auth.session_id, "sign-out");
 
+    // Sign-out has nothing to report: the session it names is gone, so 204
+    // is the honest status and the cookie-clearing headers are the whole
+    // effect.
     let mut response = StatusCode::NO_CONTENT.into_response();
     let headers = response.headers_mut();
     let session_clear = format!(

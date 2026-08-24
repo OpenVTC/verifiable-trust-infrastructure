@@ -318,9 +318,12 @@ async fn admin_session_bridges_bearer_to_cookie_and_authenticates() {
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    // 200 with `{sessionId, expiresAt}` since #1059 — it was 204 with the
+    // result only in `Set-Cookie`, which no non-browser caller could read.
+    assert_eq!(res.status(), StatusCode::OK);
 
-    // The session cookie must be set; capture it for the follow-up call.
+    // The session cookie must still be set; capture it for the follow-up
+    // call. The body is additive — the browser path is unchanged.
     let set_cookies: Vec<String> = res
         .headers()
         .get_all(axum::http::header::SET_COOKIE)
