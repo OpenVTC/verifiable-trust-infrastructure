@@ -57,6 +57,38 @@ use crate::session::{SessionStore, TransportChoice};
 /// Default service name the `pnm` CLI stores its sessions under.
 pub const DEFAULT_SERVICE_NAME: &str = "pnm-cli";
 
+/// Prefix `pnm` stores its VTA sessions under. `cnm` uses `community:` for the
+/// same reason; neither session backend adds one for you.
+const PNM_SESSION_PREFIX: &str = "vta:";
+
+/// The keyring key a `pnm` login is stored under, given the VTA's local name.
+///
+/// `pnm` writes every session as **`vta:<slug>`** — see `vta_keyring_key` in
+/// `pnm-cli/src/config.rs` — and neither the keyring nor the file backend
+/// prefixes anything on the way in or out. So a bridge that passes the bare
+/// slug an operator typed finds no session at all and reports an
+/// *authentication* failure to somebody who is authenticated. That failure mode
+/// is worth naming because it is indistinguishable, from the operator's side,
+/// from an expired login: they run `pnm auth status`, are told they are fine,
+/// and are none the wiser.
+///
+/// Idempotent — a value already carrying the prefix is returned unchanged, so
+/// an operator who worked the bug out for themselves and passes `vta:mine`
+/// keeps working.
+///
+/// ```
+/// # use vta_sdk::agent_connect::pnm_session_key;
+/// assert_eq!(pnm_session_key("mine"), "vta:mine");
+/// assert_eq!(pnm_session_key("vta:mine"), "vta:mine");
+/// ```
+pub fn pnm_session_key(slug: &str) -> String {
+    if slug.starts_with(PNM_SESSION_PREFIX) {
+        slug.to_string()
+    } else {
+        format!("{PNM_SESSION_PREFIX}{slug}")
+    }
+}
+
 /// Which rung of the ladder a configuration selects. Resolved by
 /// [`AgentConnect::mode`] *before* any network call, so a bridge can log the
 /// mode (and refuse a mode it doesn't support) without connecting first.
@@ -512,6 +544,15 @@ mod tests {
         let bundle = load_bundle(path.to_str().unwrap()).unwrap();
         assert_eq!(bundle.did, "did:webvh:f:example.com:b");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn pnm_session_keys_carry_the_prefix_and_are_idempotent() {
+        assert_eq!(pnm_session_key("mine"), "vta:mine");
+        assert_eq!(pnm_session_key("vta:mine"), "vta:mine");
+        // A community key is `cnm`'s business, not this function's — it must
+        // not be mistaken for an already-prefixed VTA key.
+        assert_eq!(pnm_session_key("community:acme"), "vta:community:acme");
     }
 
     #[test]

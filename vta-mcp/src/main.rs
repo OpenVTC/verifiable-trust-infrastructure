@@ -34,7 +34,7 @@ use std::sync::Arc;
 use clap::Parser;
 use rmcp::ServiceExt;
 use rmcp::transport::stdio;
-use vta_sdk::agent_connect::AgentConnect;
+use vta_sdk::agent_connect::{AgentConnect, pnm_session_key};
 use vta_sdk::agent_session::{AgentConfig, AgentSession};
 use vta_sdk::client::VtaClient;
 use vta_sdk::session::TransportChoice;
@@ -193,7 +193,9 @@ fn agent_connect_from(args: &Args) -> AgentConnect {
         mediator_did: args.mediator_did.clone(),
         url: args.url.clone(),
         token: std::env::var("VTA_TOKEN").ok(),
-        session_key: args.vta.clone(),
+        // `pnm` stores sessions as `vta:<slug>`; the bare slug an operator
+        // types finds nothing. See `pnm_session_key`.
+        session_key: args.vta.as_deref().map(pnm_session_key),
         service_name: Some(args.service_name.clone()),
         sessions_dir: args.sessions_dir.clone(),
         transport: TransportChoice::Auto,
@@ -275,7 +277,9 @@ mod tests {
         assert_eq!(
             connect.mode().unwrap(),
             ConnectMode::Session {
-                key: "my-vta".into()
+                // Not "my-vta": `pnm` stores it as `vta:my-vta`, and passing
+                // the bare slug found no session at all.
+                key: "vta:my-vta".into()
             }
         );
     }
