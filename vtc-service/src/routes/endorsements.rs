@@ -342,7 +342,18 @@ pub async fn show(
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct RevokeResponse {
-    pub id: String,
+    pub endorsement_id: String,
+    pub revocation: RevocationDetail,
+    pub status_list_index: u32,
+}
+
+/// The credential the revocation applies to, and when it took effect.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct RevocationDetail {
+    pub credential_id: String,
+    pub revoked_at: String,
 }
 
 #[utoipa::path(
@@ -389,9 +400,21 @@ pub async fn revoke(
         ));
     }
 
-    // Idempotent no-op.
+    // Idempotent no-op — and it answers with the same shape as a first
+    // revoke, reading the timestamp already on the row rather than inventing
+    // a fresh one.
     if row.is_revoked() {
-        return Ok((StatusCode::OK, Json(RevokeResponse { id: id.to_string() })));
+        return Ok((
+            StatusCode::OK,
+            Json(RevokeResponse {
+                endorsement_id: id.to_string(),
+                revocation: RevocationDetail {
+                    credential_id: row.vec_id.clone(),
+                    revoked_at: rfc3339(row.revoked_at.unwrap_or_else(Utc::now)),
+                },
+                status_list_index: row.status_list_index,
+            }),
+        ));
     }
 
     // Flip the status-list bit — locked RMW so a concurrent allocate/flip
@@ -445,9 +468,20 @@ pub async fn revoke(
         by = %auth.did,
         "custom endorsement revoked"
     );
-    let _ = updated;
-
-    Ok((StatusCode::OK, Json(RevokeResponse { id: id.to_string() })))
+    // Every member the spec asks for was already in hand here: the handler
+    // replied with `{id}` alone and dropped the rest, including `updated`,
+    // which it had bound and then discarded with `let _ = updated;`.
+    Ok((
+        StatusCode::OK,
+        Json(RevokeResponse {
+            endorsement_id: id.to_string(),
+            revocation: RevocationDetail {
+                credential_id: row.vec_id.clone(),
+                revoked_at: rfc3339(updated.revoked_at.unwrap_or_else(Utc::now)),
+            },
+            status_list_index: row.status_list_index,
+        }),
+    ))
 }
 
 fn rfc3339(t: chrono::DateTime<Utc>) -> String {

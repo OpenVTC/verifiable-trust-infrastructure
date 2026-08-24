@@ -328,7 +328,9 @@ async fn list_removed_returns_tombstoned_members_and_purge_deletes_them() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let removed = body.as_array().unwrap();
+    // `{removed: [...]}` since #1059 — the handler returned a bare array
+    // until the witness compared it with its published schema.
+    let removed = body["removed"].as_array().unwrap();
     assert_eq!(removed.len(), 1);
     assert_eq!(removed[0]["did"], "did:key:zGone");
     assert_eq!(removed[0]["status"], "removed");
@@ -355,7 +357,7 @@ async fn list_removed_returns_tombstoned_members_and_purge_deletes_them() {
         None,
     )
     .await;
-    assert!(body.as_array().unwrap().is_empty());
+    assert!(body["removed"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]

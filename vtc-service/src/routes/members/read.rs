@@ -227,7 +227,7 @@ pub struct RemovedMember {
 pub async fn list_removed(
     _auth: AdminAuth,
     State(state): State<AppState>,
-) -> Result<Json<Vec<RemovedMember>>, AppError> {
+) -> Result<Json<RemovedMembersResponse>, AppError> {
     let mut removed: Vec<RemovedMember> = crate::members::list_members(&state.members_ks)
         .await?
         .into_iter()
@@ -241,7 +241,16 @@ pub async fn list_removed(
         })
         .collect();
     removed.sort_by_key(|b| std::cmp::Reverse(b.removed_at));
-    Ok(Json(removed))
+    Ok(Json(RemovedMembersResponse { removed }))
+}
+
+/// `{ removed: [...] }` — the shape `vtc/members/removed/0.1` publishes.
+///
+/// The handler returned a top-level array until #1059's witness compared it
+/// with its schema. The rows themselves always conformed.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct RemovedMembersResponse {
+    pub removed: Vec<RemovedMember>,
 }
 
 // ---------------------------------------------------------------------------

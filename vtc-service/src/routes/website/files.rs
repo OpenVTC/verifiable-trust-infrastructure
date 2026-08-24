@@ -342,7 +342,7 @@ pub async fn delete(
     _admin: AdminAuth,
     State(state): State<AppState>,
     AxumPath(path): AxumPath<String>,
-) -> Result<StatusCode, AppError> {
+) -> Result<Json<DeleteResponse>, AppError> {
     let resolved = resolve_or_400(&state, &path).await?;
     tokio::fs::remove_file(&resolved)
         .await
@@ -357,7 +357,20 @@ pub async fn delete(
             )
             .await;
     }
-    Ok(StatusCode::OK)
+    Ok(Json(DeleteResponse {
+        path,
+        deleted: true,
+    }))
+}
+
+/// `{ path, deleted }` — the shape `vtc/website/files/delete/0.1` publishes.
+/// The handler returned 200 with zero bytes until #1059, discarding both
+/// values it had in hand. `deleted` is always true here: the remove is
+/// propagated as an error above if it fails.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct DeleteResponse {
+    pub path: String,
+    pub deleted: bool,
 }
 
 /// Map a [`PathError`] from the create-path validator to the HTTP

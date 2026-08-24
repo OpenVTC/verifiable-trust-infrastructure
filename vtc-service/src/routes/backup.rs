@@ -8,7 +8,7 @@
 
 use axum::Json;
 use axum::extract::State;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::auth::SuperAdminAuth;
 use crate::backup::{self, BackupEnvelope, ImportResult};
@@ -28,6 +28,16 @@ pub struct ExportRequest {
     /// can be large and carry plaintext DIDs.
     #[serde(default)]
     pub include_audit: bool,
+}
+
+/// `{ envelope: … }` — the shape `vtc/backup/export/0.1` publishes.
+///
+/// The handler returned the bare `BackupEnvelope` until #1059's witness put it
+/// beside its own schema. The inner object always conformed member for member;
+/// only the wrapper was missing.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ExportResponse {
+    pub envelope: BackupEnvelope,
 }
 
 /// `POST /v1/backup/import` body.
@@ -59,7 +69,7 @@ pub async fn export(
     SuperAdminAuth(auth): SuperAdminAuth,
     State(state): State<AppState>,
     Json(req): Json<ExportRequest>,
-) -> Result<Json<BackupEnvelope>, AppError> {
+) -> Result<Json<ExportResponse>, AppError> {
     let store = create_secret_store(&*state.config.read().await)?;
     let envelope =
         backup::export_backup(&state, store.as_ref(), &req.password, req.include_audit).await?;
@@ -75,7 +85,7 @@ pub async fn export(
             )
             .await?;
     }
-    Ok(Json(envelope))
+    Ok(Json(ExportResponse { envelope }))
 }
 
 #[utoipa::path(

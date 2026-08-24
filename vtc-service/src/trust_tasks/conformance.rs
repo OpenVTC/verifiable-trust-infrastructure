@@ -490,7 +490,7 @@ fn uuid() -> uuid::Uuid {
 /// 3. **Unspecced members on an `additionalProperties: false` response.**
 ///    Usually the service is ahead of the spec (the ceremony verdict
 ///    envelope, `decidedAt`), occasionally behind it (`didBindingChallenge`).
-const KNOWN_DRIFT_COUNT: usize = 31;
+const KNOWN_DRIFT_COUNT: usize = 27;
 
 /// Every bound, published `spec/vtc/*` URI, with the request and response the
 /// VTC actually speaks.
@@ -629,17 +629,13 @@ fn table() -> Vec<Conformance> {
              for taking upstream rather than changing here"
         ),
         // ─── backup ──────────────────────────────────────────────────
-        drift!(
+        checked!(
             s::backup::export::v0_1::Payload,
             s::backup::export::v0_1::Response,
-            Side::Response,
-            // `ExportRequest` — routes/backup.rs:24.
+            // `ExportRequest` — routes/backup.rs.
             json!({ "password": "correct-horse-battery-staple", "includeAudit": true }),
-            // The handler returns the envelope bare (routes/backup.rs:58).
-            backup_envelope(),
-            "response is the bare `BackupEnvelope`; the spec wraps it as \
-             `{envelope: …}`. Envelope-only mismatch — the inner object \
-             conforms member for member — so fix here"
+            // `ExportResponse` — the envelope was returned bare until #1059.
+            json!({ "envelope": backup_envelope() })
         ),
         checked!(
             s::backup::import::v0_1::Payload,
@@ -1149,17 +1145,14 @@ fn table() -> Vec<Conformance> {
             json!({ "did": DID }),
             json!({ "did": DID, "disposition": "purge", "removed": true })
         ),
-        drift!(
+        checked!(
             s::members::removed::v0_1::Payload,
             s::members::removed::v0_1::Response,
-            Side::Response,
             json!({}),
-            // `list_removed` returns `Json<Vec<RemovedMember>>` — a
-            // top-level array (routes/members/read.rs:227).
-            json!([{ "did": DID, "removedAt": TS, "statusListIndex": 77, "status": "removed" }]),
-            "response is a top-level array where the spec says \
-             `{removed: [...]}`. The rows themselves conform. Envelope-only, \
-             so this is a fix here"
+            // `RemovedMembersResponse` — a top-level array until #1059.
+            json!({ "removed": [
+                { "did": DID, "removedAt": TS, "statusListIndex": 77, "status": "removed" }
+            ] })
         ),
         checked!(
             s::members::renew::v0_1::Payload,
@@ -1383,42 +1376,39 @@ fn table() -> Vec<Conformance> {
              the sweep finding a task I had first written as `checked!`: the \
              wrapper conforms and I stopped reading there"
         ),
-        drift!(
+        checked!(
             s::website::files::delete::v0_1::Payload,
             s::website::files::delete::v0_1::Response,
-            Side::Response,
             json!({ "path": "assets/old-logo.png" }),
-            // The handler returns a bare `StatusCode::OK` — zero bytes
-            // (routes/website/files.rs:341). `{}` flatters it.
-            json!({}),
-            "no response body: the handler returns 200 with zero bytes where \
-             the spec requires `{path, deleted}`. Fix here — both values are \
-             in hand at the point it replies"
+            // `DeleteResponse` — 200 with zero bytes until #1059.
+            json!({ "path": "assets/old-logo.png", "deleted": true })
         ),
         drift!(
             s::website::generations::list::v0_1::Payload,
             s::website::generations::list::v0_1::Response,
             Side::Response,
             json!({}),
-            // `list` returns `Json<Vec<GenerationEntry>>` — a top-level
-            // array (routes/website/generations.rs:20).
-            json!([{ "generation": 1, "isCurrent": false,
-                     "deployedAt": 1_755_860_400_u64, "sizeBytes": 1_048_576_u64 }]),
-            "response is a top-level array where the spec says \
-             `{generations: [...]}`. Envelope-only; fix here"
+            // `GenerationsResponse` — the envelope is fixed; the rows are not.
+            json!({ "generations": [
+                { "generation": 1, "isCurrent": false,
+                  "deployedAt": 1_755_860_400_u64, "sizeBytes": 1_048_576_u64 }
+            ] }),
+            "the missing `{generations: […]}` envelope is fixed. The rows are \
+             not, and the entry that called this envelope-only was wrong: the \
+             spec's row carries `generation` and `current`, while the service \
+             sends `isCurrent` for `current` and adds `deployedAt` and \
+             `sizeBytes`. One rename here, and two members that are worth \
+             having — take them upstream rather than dropping them"
         ),
-        drift!(
+        checked!(
             s::website::rollback::v0_1::Payload,
             s::website::rollback::v0_1::Response,
-            Side::Response,
             // The generation is a path segment, typed `u32` there and
-            // `string` in the spec (routes/website/generations.rs:43).
+            // `string` in the spec — a separate, unfixed mismatch.
             json!({ "generation": "1" }),
-            json!({}),
-            "no response body: the handler returns 200 with zero bytes where \
-             the spec requires `{generation, current, noop}`. It even \
-             computes `noop` (the `from != gen_num` guard that decides \
-             whether to write an audit event) and then discards it. Fix here"
+            // `RollbackResponse` — 200 with zero bytes until #1059, which
+            // discarded a `noop` it had already computed.
+            json!({ "generation": "1", "current": true, "noop": false })
         ),
     ]
 }
