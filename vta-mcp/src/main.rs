@@ -129,6 +129,14 @@ async fn main() -> anyhow::Result<()> {
     // see `vta_sdk::crypto_init`. Without this, rustls 0.23 panics on
     // backend auto-detection when both backends are compiled in.
     vta_sdk::crypto_init::install_default_crypto_provider();
+    // Register the platform keyring store before any session is read. The
+    // `keyring` feature compiles a backend in; this is what gives it somewhere
+    // to look. Exits with a diagnostic if no store is usable, matching `pnm`
+    // and `cnm` — a session read from a store that will not open returns
+    // `None`, which is indistinguishable from "never logged in": the bridge
+    // would not fall back, it would forget.
+    #[cfg(feature = "keyring")]
+    vta_sdk::keyring_init::install_default_store_or_exit("vta-mcp");
 
     // stdout is the MCP JSON-RPC channel — logs MUST go to stderr.
     tracing_subscriber::fmt()
