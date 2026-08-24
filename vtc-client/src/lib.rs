@@ -125,8 +125,14 @@ pub struct MemberRecord {
 }
 
 /// One page of a cursor-paginated VTC listing. Mirrors the server's
-/// `Paginated<T>` (`items` + `next_cursor`); `total_estimate` is ignored.
+/// `Paginated<T>` (`items` + `nextCursor`); `totalEstimate` is ignored.
+///
+/// The wire names are camelCase, as R3.1 requires and as the published Trust
+/// Task schemas have always said. The server sent `next_cursor` until the
+/// conformance witness (#1059) caught it; this mirror had followed the server
+/// rather than the schema, so both were wrong together and neither noticed.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Page<T> {
     items: Vec<T>,
     next_cursor: Option<String>,
@@ -669,7 +675,7 @@ mod tests {
                 "personhood": false,
                 "joinedViaInvitation": true
             }],
-            "next_cursor": null
+            "nextCursor": null
         });
         let page: Page<MemberRecord> = serde_json::from_value(json).unwrap();
         assert_eq!(page.items.len(), 1);

@@ -401,11 +401,15 @@ fn backup_envelope() -> Value {
     })
 }
 
-/// The `Paginated<T>` wrapper as `vti-common/src/pagination/mod.rs:131`
-/// serialises it. The struct carries **no** `rename_all`, so the wrapper's
-/// own members are snake_case while the items inside are camelCase.
+/// The `Paginated<T>` wrapper as `vti-common/src/pagination/mod.rs` serialises
+/// it — camelCase throughout, wrapper and items alike.
+///
+/// The wrapper carried no `rename_all` until this witness caught it, so it sent
+/// `next_cursor` / `total_estimate` against schemas that have always said
+/// `nextCursor` / `totalEstimate`. One missing attribute, five drifting list
+/// tasks, and a direct R3.1 violation of the same class as #656/#658.
 fn paginated(items: Value) -> Value {
-    json!({ "items": items, "next_cursor": "eyJsYXN0S2V5Ijoi", "total_estimate": 12 })
+    json!({ "items": items, "nextCursor": "eyJsYXN0S2V5Ijoi", "totalEstimate": 12 })
 }
 
 /// A `JoinRequest` as `join/mod.rs:81` serialises one. No member carries
@@ -472,14 +476,21 @@ fn uuid() -> uuid::Uuid {
 /// 1. **No response envelope.** The spec wraps the payload
 ///    (`{ "member": … }`, `{ "removed": [ … ] }`, `{ "envelope": … }`) and the
 ///    handler returns the bare object or a bare array. 12 entries.
-/// 2. **`Paginated<T>` is snake_case** (`vti-common/src/pagination/mod.rs:131`
-///    has no `rename_all`), so every list task sends `next_cursor` where the
-///    spec says `nextCursor`. 5 entries, one fix — and a direct R3.1
-///    violation, the same casing-drift class as #656/#658.
+/// 2. ~~**`Paginated<T>` is snake_case**~~ — **fixed.** The wrapper had no
+///    `rename_all`, so every list task sent `next_cursor` where the spec says
+///    `nextCursor`: a direct R3.1 violation of the same casing-drift class as
+///    #656/#658. One attribute in `vti-common` closed it for all five.
+///
+///    Only `relationships/list` became *fully* conforming, because it was the
+///    only one whose drift was the wrapper alone — the spec types its `items`
+///    as free objects. The other four still diverge at row level and keep
+///    their entries, now describing only what is left. Worth noting when
+///    reading a drift count: closing a shared root cause moves four entries
+///    without closing them.
 /// 3. **Unspecced members on an `additionalProperties: false` response.**
 ///    Usually the service is ahead of the spec (the ceremony verdict
 ///    envelope, `decidedAt`), occasionally behind it (`didBindingChallenge`).
-const KNOWN_DRIFT_COUNT: usize = 33;
+const KNOWN_DRIFT_COUNT: usize = 32;
 
 /// Every bound, published `spec/vtc/*` URI, with the request and response the
 /// VTC actually speaks.
@@ -810,12 +821,11 @@ fn table() -> Vec<Conformance> {
             Side::Response,
             json!({ "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
             paginated(json!([endorsement_type()])),
-            "`Paginated<T>` (vti-common/src/pagination/mod.rs:131) carries no \
-             `rename_all`, so the page wrapper sends `next_cursor` / \
-             `total_estimate` where the spec says `nextCursor` / \
-             `totalEstimate`; the items also carry the unspecced \
-             `createdByDid`. The wrapper is one R3.1 fix here that clears \
-             five list tasks at once"
+            "the items carry the unspecced `createdByDid` against an \
+             `additionalProperties: false` response. The wrapper's snake_case \
+             casing was the other half of this entry and is now fixed in \
+             `vti-common`; what remains is a row-level decision — publish \
+             `createdByDid` upstream, or stop sending it"
         ),
         checked!(
             s::endorsement_types::delete::v0_1::Payload,
@@ -858,7 +868,7 @@ fn table() -> Vec<Conformance> {
             json!({ "subjectDid": DID, "typeUri": "https://skills.example.com/v1/rust",
                     "includeRevoked": true, "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
             paginated(json!([endorsement()])),
-            "snake_case `Paginated` wrapper, and the rows are this service's \
+            "the wrapper's casing is fixed; what remains is that the rows are this service's \
              `Endorsement` (endorsements/mod.rs:41) — `id` / \
              `endorsementType` / `issuerDid` / `vecId` / `createdAt` — not \
              the spec's (`endorsementId` / `typeUri` / `issued`). Same model \
@@ -970,7 +980,7 @@ fn table() -> Vec<Conformance> {
             Side::Response,
             json!({ "status": "pending", "cursor": "eyJsYXN0S2V5Ijoi", "limit": 25 }),
             paginated(json!([join_request()])),
-            "snake_case `Paginated` wrapper, and each row carries `vpClaims` \
+            "the wrapper's casing is fixed; what remains is that each row carries `vpClaims` \
              and `decision`, which the canonical `JoinRequest` component does \
              not define. `decision` is the admin-reject detail #1058 added — \
              the same members that drifted on `status/0.1`, in a second \
@@ -1104,7 +1114,7 @@ fn table() -> Vec<Conformance> {
             Side::Response,
             json!({ "role": "member", "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
             paginated(json!([member_response()])),
-            "snake_case `Paginated` wrapper, and `MemberResponse` \
+            "the wrapper's casing is fixed; what remains is that `MemberResponse` \
              (routes/members/read.rs:29) carries five members the canonical \
              component does not define: `personhood`, \
              `personhoodAssertedAt`, `joinedViaInvitation`, `memberVmcId`, \
@@ -1297,10 +1307,9 @@ fn table() -> Vec<Conformance> {
              genuinely useful diagnostics and should go upstream"
         ),
         // ─── relationships ───────────────────────────────────────────
-        drift!(
+        checked!(
             s::relationships::list::v0_1::Payload,
             s::relationships::list::v0_1::Response,
-            Side::Response,
             json!({ "did": DID, "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
             // `Relationship` — relationships/mod.rs:59. The spec types the
             // items as free objects, so only the wrapper diverges.
@@ -1311,10 +1320,7 @@ fn table() -> Vec<Conformance> {
                 "vrcJsonld": credential(),
                 "vrcSha256": "3b9f0a1c8d2e4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f809a1b2c3",
                 "createdAt": TS,
-            }])),
-            "snake_case `Paginated` wrapper only — the rows conform, since \
-             the spec types `items` as free objects. Cleared by the one R3.1 \
-             fix in vti-common"
+            }]))
         ),
         checked!(
             s::relationships::graph::v0_1::Payload,

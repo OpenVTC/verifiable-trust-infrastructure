@@ -10,7 +10,7 @@
 //! → 200 OK
 //! {
 //!   "items":          [...],
-//!   "next_cursor":    "<opaque>" | null,
+//!   "nextCursor":     "<opaque>" | null,
 //!   "total_estimate": <u64 | null>
 //! }
 //! ```
@@ -129,6 +129,7 @@ impl PaginationParams {
 /// (`None` when the caller has reached the end), and an optional
 /// total-count estimate.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Paginated<T> {
     pub items: Vec<T>,
