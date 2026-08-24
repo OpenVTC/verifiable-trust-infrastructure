@@ -13,7 +13,11 @@
 //! 2. `POST .../personhood/assert` — accepts a VP signed by the
 //!    member's `#key-0`. Flow:
 //!    - Consume the challenge (single-use; refuses on missing /
-//!      expired / wrong-DID).
+//!      expired / wrong-DID). The challenge must appear **both** at
+//!      `proof.challenge` (what the published task names) and at
+//!      top-level `nonce` (what the holder's signature actually
+//!      covers) — see step 1a in [`assert_inner`] for why one
+//!      without the other is not a binding at all.
 //!    - Verify the VP's `DataIntegrityProof` against the
 //!      member's resolved `#key-0`.
 //!    - Verify each embedded VC's proof against its issuer's
@@ -47,6 +51,16 @@
 //! - **Revoke**: Admin OR caller's session DID matches path DID.
 //!   Self-revoke is canonical (RTBF-style "I no longer want this
 //!   claim asserted").
+//!
+//! ## Not only REST
+//!
+//! `challenge` and `assert` are also routed by the messaging Trust
+//! Task dispatcher (`crate::trust_tasks`), so a member client that
+//! speaks DIDComm or TSP and holds no bearer token — `openvtc` — can
+//! run the ceremony. Both transports call the same
+//! [`challenge_inner`] / [`assert_inner`]; only the caller-identity
+//! gate differs, because a session and a proven sender are different
+//! things. See the handlers there for what each one checks.
 
 use std::sync::Arc;
 
@@ -163,10 +177,27 @@ pub async fn challenge(
     State(state): State<AppState>,
     Path(member_did): Path<String>,
 ) -> Result<(StatusCode, Json<ChallengeResponse>), AppError> {
-    vti_common::identifier::validate_did("did", &member_did)?;
+    Ok((
+        StatusCode::OK,
+        Json(challenge_inner(&state, &member_did).await?),
+    ))
+}
+
+/// Mint a personhood challenge for `member_did`.
+///
+/// Transport-free so both front ends share one implementation: the REST
+/// route above, and the `members/personhood/challenge` Trust Task the
+/// messaging dispatcher routes. A member on DIDComm or TSP is running
+/// the same ceremony as a member on REST, and a divergence between the
+/// two would be a security difference nothing tests.
+pub(crate) async fn challenge_inner(
+    state: &AppState,
+    member_did: &str,
+) -> Result<ChallengeResponse, AppError> {
+    vti_common::identifier::validate_did("did", member_did)?;
     // Member must exist — minting a challenge for a non-member
     // is operator-confusing and serves no purpose.
-    let _ = get_acl_entry(&state.acl_ks, &member_did)
+    let _ = get_acl_entry(&state.acl_ks, member_did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("no ACL row for {member_did}")))?;
 
@@ -174,10 +205,10 @@ pub async fn challenge(
     let expires_at = Utc::now() + chrono::Duration::seconds(CHALLENGE_TTL_SECS);
     let chal = PersonhoodChallenge {
         id,
-        member_did: member_did.clone(),
+        member_did: member_did.to_string(),
         expires_at,
     };
-    store_challenge(&state, &chal).await?;
+    store_challenge(state, &chal).await?;
 
     // Derived, not stored: any holder of the challenge id computes the
     // same code, so there is nothing here to persist or to check later.
@@ -194,14 +225,11 @@ pub async fn challenge(
         "personhood challenge minted"
     );
 
-    Ok((
-        StatusCode::OK,
-        Json(ChallengeResponse {
-            challenge_id: id,
-            expires_at,
-            ext: json!({ match_code::MATCH_CODE_EXT_KEY: code }),
-        }),
-    ))
+    Ok(ChallengeResponse {
+        challenge_id: id,
+        expires_at,
+        ext: json!({ match_code::MATCH_CODE_EXT_KEY: code }),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -246,18 +274,41 @@ pub async fn assert(
     Path(member_did): Path<String>,
     Json(body): Json<AssertBody>,
 ) -> Result<(StatusCode, Json<AssertResponse>), AppError> {
-    vti_common::identifier::validate_did("did", &member_did)?;
+    Ok((
+        StatusCode::OK,
+        Json(assert_inner(&state, &member_did, &body.presentation).await?),
+    ))
+}
+
+/// Verify a personhood presentation and, if the active policy allows it,
+/// set the flag and re-issue the member's credentials.
+///
+/// Transport-free, for the same reason as [`challenge_inner`]: the REST
+/// route and the `members/personhood/assert` Trust Task must be the same
+/// ceremony, not two implementations that agree today.
+///
+/// Note what is deliberately *not* a parameter — the caller's identity.
+/// `assert/0.1` §Authorization makes the presentation the gate: holder
+/// equality binds the assertion to the party it is about, and the
+/// single-use challenge binds it to this exchange. Neither is a claim
+/// about who delivered the bytes, so a relaying transport does not get a
+/// say here.
+pub(crate) async fn assert_inner(
+    state: &AppState,
+    member_did: &str,
+    presentation: &JsonValue,
+) -> Result<AssertResponse, AppError> {
+    vti_common::identifier::validate_did("did", member_did)?;
     // Load Member row first — `404` for an unknown subject
     // is the most actionable failure mode.
-    let mut member = get_member(&state.members_ks, &member_did)
+    let mut member = get_member(&state.members_ks, member_did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("no Member row for {member_did}")))?;
 
     // 1. Extract + consume the challenge before any daemon-
     //    config checks so malformed callers can't observe a
     //    500 (which would otherwise mask their own bad input).
-    let proof = body
-        .presentation
+    let proof = presentation
         .get("proof")
         .ok_or_else(|| AppError::Validation("presentation missing proof block".into()))?;
     let challenge_str = proof
@@ -267,7 +318,43 @@ pub async fn assert(
     let challenge_id: Uuid = challenge_str
         .parse()
         .map_err(|e| AppError::Validation(format!("proof.challenge not a UUID: {e}")))?;
-    let chal = take_challenge(&state, challenge_id)
+
+    // 1a. The challenge must also appear **inside the signed body**.
+    //
+    // `assert/0.1` §Authorization says the challenge binding "establishes
+    // that this presentation was made for this exchange, and is what stops
+    // one captured and replayed into another". W3C Data Integrity gets that
+    // by canonicalising the proof options alongside the document, so
+    // `challenge` is signed — but `affinidi_data_integrity`'s
+    // `DataIntegrityProof` has no `challenge` field, and
+    // [`verify_vp_proof`] verifies over the VP with the whole `proof` block
+    // removed. So `proof.challenge` alone is **unsigned**: anyone holding a
+    // captured VP could mint a fresh challenge for that member, swap the
+    // value in, and replay it — the signature would still verify, because
+    // it never covered the challenge.
+    //
+    // Requiring the same value at top-level `nonce` closes that. `nonce` is
+    // outside the proof block, so it *is* covered by the holder's
+    // signature, and it is the field `vta_sdk::vp::build_di_vp` already
+    // emits. A presentation is now bound to its exchange by something the
+    // holder actually signed.
+    let nonce = presentation
+        .get("nonce")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            AppError::Validation(
+                "presentation missing `nonce` — the challenge must appear inside the signed \
+                 body, not only in the unsigned proof block"
+                    .into(),
+            )
+        })?;
+    if nonce != challenge_str {
+        return Err(AppError::Validation(format!(
+            "presentation nonce ({nonce}) != proof.challenge ({challenge_str}) — the signed \
+             and unsigned copies of the challenge disagree"
+        )));
+    }
+    let chal = take_challenge(state, challenge_id)
         .await?
         .ok_or_else(|| AppError::Validation("challenge not found or already consumed".into()))?;
     if chal.member_did != member_did {
@@ -280,15 +367,19 @@ pub async fn assert(
         return Err(AppError::Validation("challenge expired".into()));
     }
 
-    // 2. Verify the VP's holder field matches.
-    let holder = body
-        .presentation
+    // 2. Verify the VP's holder field matches. `assert/0.1`
+    //    §Authorization: holder equality is what establishes that the
+    //    assertion is about the party making it, and it does not
+    //    substitute for the challenge binding above — a consumer
+    //    checking only one of the two accepts either replays or
+    //    assertions made on someone else's behalf.
+    let holder = presentation
         .get("holder")
         .and_then(|v| v.as_str())
         .ok_or_else(|| AppError::Validation("presentation missing holder".into()))?;
     if holder != member_did {
         return Err(AppError::Validation(format!(
-            "presentation holder ({holder}) != path-DID ({member_did})"
+            "presentation holder ({holder}) != subject DID ({member_did})"
         )));
     }
 
@@ -310,7 +401,7 @@ pub async fn assert(
 
     // 3. Verify the VP's data-integrity proof against the
     //    member's resolved #key-0.
-    verify_vp_proof(&body.presentation, &member_did, &resolver)
+    verify_vp_proof(presentation, member_did, &resolver)
         .await
         .map_err(|e| AppError::Forbidden(format!("personhood-proof-invalid: {e}")))?;
 
@@ -318,11 +409,11 @@ pub async fn assert(
     //    embedded-VC proofs are surfaced to the policy via
     //    extract but not verified at the route — operators
     //    wanting strict VC verification upload custom rego.)
-    let vp_claims = extract_vp_claims(&body.presentation);
+    let vp_claims = extract_vp_claims(presentation);
 
     // 6. Run personhood.rego.
     let allow =
-        evaluate_personhood_assert(&state, &member_did, signer.issuer_did(), &vp_claims).await?;
+        evaluate_personhood_assert(state, member_did, signer.issuer_did(), &vp_claims).await?;
     if !allow {
         return Err(AppError::Forbidden(
             "personhood-policy-denied: active personhood.rego rejected the assertion".into(),
@@ -362,19 +453,19 @@ pub async fn assert(
     let vmc_id = format!("urn:uuid:{}", Uuid::new_v4());
     let vmc = build_vmc(
         signer,
-        VmcParams::new(&member_did)
+        VmcParams::new(member_did)
             .with_id(vmc_id.clone())
             .with_status_ref(status_ref)
             .with_personhood(true),
     )
     .await?;
     let vec_id = format!("urn:uuid:{}", Uuid::new_v4());
-    let acl_row = get_acl_entry(&state.acl_ks, &member_did)
+    let acl_row = get_acl_entry(&state.acl_ks, member_did)
         .await?
         .ok_or_else(|| AppError::Internal("ACL row disappeared mid-assert".into()))?;
     let role_vec = build_role_vec(
         signer,
-        RoleVecParams::new(&member_did, acl_row.role.clone()).with_id(vec_id.clone()),
+        RoleVecParams::new(member_did, acl_row.role.clone()).with_id(vec_id.clone()),
     )
     .await?;
 
@@ -389,8 +480,8 @@ pub async fn assert(
     // 9. Audit.
     audit_writer
         .write(
-            &member_did,
-            Some(&member_did),
+            member_did,
+            Some(member_did),
             AuditEvent::PersonhoodAsserted(PersonhoodAssertedData {
                 vmc_id: vmc_id.clone(),
                 asserted_at: rfc3339(now),
@@ -400,17 +491,14 @@ pub async fn assert(
 
     info!(member_did = %member_did, "personhood asserted");
 
-    Ok((
-        StatusCode::OK,
-        Json(AssertResponse {
-            did: member_did,
-            personhood: true,
-            vmc: serde_json::to_value(&vmc)
-                .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?,
-            role_vec: serde_json::to_value(&role_vec)
-                .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?,
-        }),
-    ))
+    Ok(AssertResponse {
+        did: member_did.to_string(),
+        personhood: true,
+        vmc: serde_json::to_value(&vmc)
+            .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?,
+        role_vec: serde_json::to_value(&role_vec)
+            .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?,
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,13 @@
 //! `show` verbs stay on their existing JWT-gated REST routes and are *not*
 //! routed here. `present` belongs to the `credential-exchange` family and is
 //! handled there.
+//!
+//! The personhood pair (`members/personhood/{challenge,assert}`) is the
+//! member-facing half of a family whose `revoke` verb stays operator-side on
+//! REST. Both carry their own gate — challenge requires the caller to be a
+//! member, assert requires the sender to *be* the subject — because "an
+//! authenticated session", which is what the REST routes rest on, has no
+//! equivalent on a transport that only proves who sent the bytes.
 
 // `pub(crate)` only so sibling modules' tests can take the framework error
 // version from `framework_error_type_uri()` rather than each naming it. The
@@ -46,6 +53,7 @@ pub(crate) mod helpers;
 mod conformance;
 
 use serde_json::Value;
+use trust_tasks_rs::specs::vtc::members::personhood::{assert::v0_1 as pa, challenge::v0_1 as pc};
 use trust_tasks_rs::{RejectReason, TrustTask};
 
 use vti_common::error::AppError;
@@ -132,6 +140,8 @@ pub(crate) async fn dispatch_trust_task_core(
         jr::JOIN_REQUEST_STATUS_TYPE => handle_status(state, ctx, doc).await,
         jr::MEMBER_SELF_REMOVE_TYPE => handle_self_remove(state, ctx, doc).await,
         mem::MEMBER_VMC_TYPE => handle_member_vmc(state, ctx, doc).await,
+        PERSONHOOD_CHALLENGE_TYPE => handle_personhood_challenge(state, ctx, doc).await,
+        PERSONHOOD_ASSERT_TYPE => handle_personhood_assert(state, ctx, doc).await,
         other => reject_with(
             &doc,
             RejectReason::UnsupportedType {
@@ -155,7 +165,17 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     jr::JOIN_REQUEST_STATUS_TYPE,
     jr::MEMBER_SELF_REMOVE_TYPE,
     mem::MEMBER_VMC_TYPE,
+    PERSONHOOD_CHALLENGE_TYPE,
+    PERSONHOOD_ASSERT_TYPE,
 ];
+
+/// `vtc/members/personhood/challenge/0.1` — mint the single-use nonce
+/// the assert presentation must be bound to.
+pub(crate) const PERSONHOOD_CHALLENGE_TYPE: &str =
+    <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/members/personhood/assert/0.1` — present the evidence.
+pub(crate) const PERSONHOOD_ASSERT_TYPE: &str = <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Resolve the proven holder DID for a holder-bound verb. DIDComm → the
 /// authcrypt sender; REST → the document proof signer. When the document
@@ -404,6 +424,114 @@ async fn handle_self_remove(
     }
 }
 
+// ─── personhood ──────────────────────────────────────────────────────────
+
+/// `vtc/members/personhood/challenge/0.1` — mint the single-use nonce the
+/// assert presentation must carry.
+///
+/// The caller must be a member of this community: over REST the route sits
+/// behind `AuthClaims`, and the membership check here is what that means on
+/// a transport with no session. The *subject* may be another member, which
+/// is the in-person ceremony — an administrator mints the challenge, reads
+/// the derived match code to the person in front of them, and that person's
+/// own client answers it.
+///
+/// Minting for someone else confers nothing on its own. The nonce is bound
+/// to the subject DID, and the only thing that can spend it is a
+/// presentation signed by that DID's key.
+async fn handle_personhood_challenge(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let caller = match resolve_holder(ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    let body: pc::Payload = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+
+    // Membership check on the *caller*, standing in for the REST route's
+    // session. A stranger who can reach the mediator is not a member.
+    match crate::acl::get_acl_entry(&state.acl_ks, &caller).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return reject_with(
+                &doc,
+                RejectReason::PermissionDenied {
+                    reason: format!("{caller} is not a member of this community"),
+                },
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+
+    match crate::routes::members::personhood::challenge_inner(state, &body.did).await {
+        Ok(res) => success_response(&doc, res),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/members/personhood/assert/0.1` — present the evidence and, if the
+/// community's policy accepts it, take the personhood flag.
+///
+/// The proven sender must be the subject. `assert/0.1` declares
+/// `exposure.actsAsSubject: true` — "the asserting member is the subject …
+/// exercising their own authority over their own personhood state" — so on
+/// a transport that proves who sent the bytes, the party executing is the
+/// party being asserted about.
+///
+/// That check is belt-and-braces rather than the gate. The gate is the
+/// presentation, exactly as the published task says: its `holder` must
+/// equal the subject and its `proof.challenge` must be the paired nonce,
+/// and [`challenge_inner`](crate::routes::members::personhood::challenge_inner)'s
+/// counterpart enforces both regardless of who relayed the document.
+async fn handle_personhood_assert(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let caller = match resolve_holder(ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    let body: pa::Payload = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+
+    if *body.did != caller {
+        return reject_with(
+            &doc,
+            RejectReason::PermissionDenied {
+                reason: format!(
+                    "personhood is asserted by its subject; {caller} cannot assert for {}",
+                    *body.did
+                ),
+            },
+        );
+    }
+
+    let presentation = match serde_json::to_value(&body.presentation) {
+        Ok(v) => v,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("presentation is not representable as JSON: {e}"),
+                },
+            );
+        }
+    };
+
+    match crate::routes::members::personhood::assert_inner(state, &body.did, &presentation).await {
+        Ok(res) => success_response(&doc, res),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
 /// `members/vmc/0.1` as a Trust Task document — a member submits their
 /// reciprocal VMC (the member → community half of the membership pair),
 /// optionally closing an approved join request via `requestId` (the retired
@@ -469,22 +597,34 @@ async fn handle_member_vmc(
 mod tests {
     use super::*;
 
-    /// Every URI the dispatcher declares as routed must be one of the SDK's
-    /// member-facing request URIs, and vice-versa — so a new verb can't be
-    /// added to one side without the other.
+    /// Every URI the dispatcher declares as routed must be a member-facing
+    /// request URI declared elsewhere, and vice-versa — so a new verb can't
+    /// be added to one side without the other.
+    ///
+    /// The two personhood entries come from `trust_tasks_rs::specs` rather
+    /// than `vta_sdk::protocols`: they have no hand-written SDK constant
+    /// because their wire types are generated from the published schema.
+    /// Naming the generated `TYPE_URI` keeps the same property — the URI
+    /// this dispatcher answers on is the one the spec publishes, not a
+    /// string that happens to match today.
     #[test]
     fn dispatcher_routes_every_dispatched_uri() {
-        let sdk = [
+        let declared = [
             jr::JOIN_REQUEST_SUBMIT_TYPE,
             jr::JOIN_REQUEST_MANIFEST_TYPE,
             jr::JOIN_REQUEST_STATUS_TYPE,
             jr::MEMBER_SELF_REMOVE_TYPE,
             mem::MEMBER_VMC_TYPE,
+            <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ];
         for u in DISPATCHED_URIS {
-            assert!(sdk.contains(u), "dispatched URI not a known SDK URI: {u}");
+            assert!(
+                declared.contains(u),
+                "dispatched URI is not a declared request URI: {u}"
+            );
         }
-        assert_eq!(DISPATCHED_URIS.len(), sdk.len());
+        assert_eq!(DISPATCHED_URIS.len(), declared.len());
     }
 
     /// The request URIs must parse as framework `TypeUri`s (the `/spec/`
@@ -509,6 +649,145 @@ mod tests {
             assert!(
                 DISPATCHED_URIS.contains(&u),
                 "member verb not reachable over TSP: {u}"
+            );
+        }
+    }
+
+    /// The whole point of routing personhood here: a member client that
+    /// speaks Trust Tasks over messaging can run the ceremony. Before this,
+    /// personhood was REST-only, so `openvtc` — which talks to the VTC over
+    /// DIDComm/TSP and holds no bearer token — could not reach it at all.
+    #[test]
+    fn personhood_verbs_are_dispatched() {
+        for u in [PERSONHOOD_CHALLENGE_TYPE, PERSONHOOD_ASSERT_TYPE] {
+            assert!(
+                DISPATCHED_URIS.contains(&u),
+                "personhood verb not reachable over TSP: {u}"
+            );
+        }
+    }
+
+    mod personhood {
+        use super::*;
+        use crate::acl::{VtcAclEntry, VtcRole, store_acl_entry};
+        use crate::test_support::TestVtc;
+        use serde_json::json;
+
+        const MEMBER: &str = "did:key:zPersonhoodMember";
+        const STRANGER: &str = "did:key:zNotAMember";
+
+        async fn fixture() -> TestVtc {
+            let vtc = TestVtc::builder().with_signers(true).build().await;
+            store_acl_entry(
+                &vtc.state.acl_ks,
+                &VtcAclEntry {
+                    did: MEMBER.into(),
+                    role: VtcRole::Member,
+                    label: None,
+                    allowed_contexts: vec![],
+                    created_at: 0,
+                    created_by: "did:key:vtc-install".into(),
+                    updated_at: None,
+                    updated_by: None,
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("seed member ACL");
+            vtc
+        }
+
+        /// The fixture leaves `vtc_did` unset, so `validate_basic`'s
+        /// recipient binding is skipped — these tests are about the
+        /// per-verb auth the handlers add, not the framework envelope
+        /// checks that run ahead of every verb alike.
+        fn document(type_uri: &str, payload: serde_json::Value) -> Vec<u8> {
+            let doc = TrustTask::new(
+                uuid::Uuid::new_v4().to_string(),
+                type_uri.parse().expect("dispatched URI parses as TypeUri"),
+                payload,
+            );
+            serde_json::to_vec(&doc).expect("serialize document")
+        }
+
+        /// The reply body as text. `TrustTaskOutcome` keeps raw bytes so the
+        /// wire output is byte-identical to direct serialisation.
+        fn rendered(out: &TrustTaskOutcome) -> String {
+            String::from_utf8_lossy(&out.body).into_owned()
+        }
+
+        /// Happy path over messaging: a member mints their own challenge and
+        /// the reply carries the spoken match code, same as over REST.
+        #[tokio::test]
+        async fn a_member_can_mint_a_challenge_over_messaging() {
+            let vtc = fixture().await;
+            let out = dispatch_trust_task_core(
+                &vtc.state,
+                &JoinAuthCtx::didcomm(MEMBER.into()),
+                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+            )
+            .await;
+
+            let body = rendered(&out);
+            assert!(
+                body.contains("challengeId"),
+                "expected a challenge in the reply, got: {body}"
+            );
+            assert!(
+                body.contains(crate::members::match_code::MATCH_CODE_EXT_KEY),
+                "the messaging reply must carry the match code the REST reply does, got: {body}"
+            );
+        }
+
+        /// The membership check standing in for the REST route's session.
+        /// Without it, anyone who can reach the mediator could mint
+        /// challenges against this community's members.
+        #[tokio::test]
+        async fn a_stranger_cannot_mint_a_challenge() {
+            let vtc = fixture().await;
+            let out = dispatch_trust_task_core(
+                &vtc.state,
+                &JoinAuthCtx::didcomm(STRANGER.into()),
+                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+            )
+            .await;
+
+            let body = rendered(&out);
+            assert!(
+                !body.contains("challengeId"),
+                "a non-member minted a challenge: {body}"
+            );
+            assert!(
+                body.contains("not a member"),
+                "expected a permission refusal naming membership, got: {body}"
+            );
+        }
+
+        /// `assert/0.1` declares `actsAsSubject: true`. On a transport that
+        /// proves the sender, one member must not be able to assert
+        /// personhood in another's name — even though the presentation gate
+        /// would also stop them, because a caller should be refused before
+        /// the daemon starts verifying someone else's credentials.
+        #[tokio::test]
+        async fn one_member_cannot_assert_personhood_for_another() {
+            let vtc = fixture().await;
+            let out = dispatch_trust_task_core(
+                &vtc.state,
+                &JoinAuthCtx::didcomm(STRANGER.into()),
+                &document(
+                    PERSONHOOD_ASSERT_TYPE,
+                    json!({
+                        "did": MEMBER,
+                        "presentation": { "type": ["VerifiablePresentation"], "holder": MEMBER },
+                    }),
+                ),
+            )
+            .await;
+
+            let body = rendered(&out);
+            assert!(
+                body.contains("asserted by its subject"),
+                "expected the subject-binding refusal, got: {body}"
             );
         }
     }

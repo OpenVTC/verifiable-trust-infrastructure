@@ -277,12 +277,15 @@ async fn assert_without_did_resolver_returns_500() {
     let (_, v) = body_value(resp).await;
     let challenge_id = v["challengeId"].as_str().unwrap().to_string();
 
+    // Both copies of the challenge, so this reaches the resolver rather
+    // than stopping at the signed-nonce check.
     let body = json!({
         "presentation": {
             "@context": ["https://www.w3.org/ns/credentials/v2"],
             "type": ["VerifiablePresentation"],
             "holder": MEMBER_DID,
             "verifiableCredential": [],
+            "nonce": challenge_id,
             "proof": {
                 "type": "DataIntegrityProof",
                 "cryptosuite": "eddsa-jcs-2022",
@@ -306,34 +309,90 @@ async fn assert_without_did_resolver_returns_500() {
     assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
-#[tokio::test]
-async fn assert_with_unknown_challenge_returns_400() {
-    let fix = build_fixture().await;
-    let body = json!({
-        "presentation": {
-            "@context": ["https://www.w3.org/ns/credentials/v2"],
-            "type": ["VerifiablePresentation"],
-            "holder": MEMBER_DID,
-            "proof": {
-                "type": "DataIntegrityProof",
-                "cryptosuite": "eddsa-jcs-2022",
-                "verificationMethod": format!("{MEMBER_DID}#key-0"),
-                "challenge": uuid::Uuid::new_v4().to_string(),
-                "proofValue": "z00",
-            }
+/// A presentation carrying the challenge in both required places. `nonce`
+/// is the signed copy, `proof.challenge` the one the published task names;
+/// see `assert_inner` step 1a for why both are demanded.
+fn presentation_with(challenge: &str, nonce: &str) -> serde_json::Value {
+    json!({
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        "type": ["VerifiablePresentation"],
+        "holder": MEMBER_DID,
+        "nonce": nonce,
+        "proof": {
+            "type": "DataIntegrityProof",
+            "cryptosuite": "eddsa-jcs-2022",
+            "verificationMethod": format!("{MEMBER_DID}#key-0"),
+            "challenge": challenge,
+            "proofValue": "z00",
         }
-    });
+    })
+}
+
+async fn post_assert(fix: &Fixture, presentation: serde_json::Value) -> StatusCode {
     let req = Request::builder()
         .method("POST")
         .uri(format!("/v1/members/{MEMBER_DID}/personhood"))
         .header("authorization", format!("Bearer {}", fix.member_token))
         .header("trust-task", ASSERT_TASK)
         .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
+        .body(Body::from(
+            json!({ "presentation": presentation }).to_string(),
+        ))
         .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    fix.router.clone().oneshot(req).await.unwrap().status()
+}
+
+#[tokio::test]
+async fn assert_with_unknown_challenge_returns_400() {
+    let fix = build_fixture().await;
+    let unknown = uuid::Uuid::new_v4().to_string();
     // AppError::Validation → 400 in this workspace.
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        post_assert(&fix, presentation_with(&unknown, &unknown)).await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+/// The replay defence. `proof.challenge` sits inside the proof block, which
+/// `verify_vp_proof` strips before verifying — so it is not covered by the
+/// holder's signature. A captured presentation could otherwise be replayed
+/// against a freshly-minted challenge by swapping that one unsigned field.
+///
+/// Refusing a presentation with no signed `nonce` is what makes the
+/// challenge an actual binding rather than a decoration.
+#[tokio::test]
+async fn assert_without_a_signed_nonce_is_refused() {
+    let fix = build_fixture().await;
+    let mut presentation = presentation_with(
+        &uuid::Uuid::new_v4().to_string(),
+        &uuid::Uuid::new_v4().to_string(),
+    );
+    presentation
+        .as_object_mut()
+        .expect("presentation object")
+        .remove("nonce");
+
+    assert_eq!(
+        post_assert(&fix, presentation).await,
+        StatusCode::BAD_REQUEST,
+        "a presentation whose challenge appears only in the unsigned proof block must be refused"
+    );
+}
+
+/// The same defence from the other side: a captured presentation whose
+/// unsigned `proof.challenge` has been swapped for a fresh one no longer
+/// agrees with the signed `nonce` it was made with.
+#[tokio::test]
+async fn assert_with_mismatched_signed_and_unsigned_challenge_is_refused() {
+    let fix = build_fixture().await;
+    let captured_nonce = uuid::Uuid::new_v4().to_string();
+    let swapped_challenge = uuid::Uuid::new_v4().to_string();
+
+    assert_eq!(
+        post_assert(&fix, presentation_with(&swapped_challenge, &captured_nonce)).await,
+        StatusCode::BAD_REQUEST,
+        "swapping the unsigned challenge on a captured presentation must be refused"
+    );
 }
 
 // ─── Revoke endpoint ───────────────────────────────────────
