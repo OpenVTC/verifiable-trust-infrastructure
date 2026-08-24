@@ -114,6 +114,23 @@ mod tests {
         assert_eq!(derive(id), derive(id));
     }
 
+    /// **The cross-implementation pin.** A member's client derives this code
+    /// independently — `openvtc-core`'s `personhood::match_code` pins the
+    /// same vector — because the whole mechanism is that both sides compute
+    /// the same characters from the same challenge id.
+    ///
+    /// Nothing else would catch the two drifting apart. Change the domain
+    /// tag, the alphabet, or the bit order on either side and you still get
+    /// eight plausible characters; they simply never match, which reads to
+    /// the two people in the room as "this is the wrong ceremony" rather
+    /// than "your software disagrees with itself". Two repos pinning one
+    /// vector is what turns that into a failing test.
+    #[test]
+    fn derivation_matches_the_vector_the_client_pins() {
+        let id = Uuid::parse_str("6f1c4f9e-7c2a-4f4b-9a3e-2b1d0c5e8a77").expect("uuid");
+        assert_eq!(derive(id), "5CY1-GZEE");
+    }
+
     /// Shape a human reads aloud: `XXXX-XXXX`, all characters from
     /// Crockford's alphabet.
     #[test]
