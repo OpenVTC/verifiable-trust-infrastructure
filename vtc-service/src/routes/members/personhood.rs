@@ -69,7 +69,7 @@ use crate::auth::AuthClaims;
 use crate::credentials::{
     CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
 };
-use crate::members::{get_member, store_member};
+use crate::members::{get_member, match_code, store_member};
 use crate::policy::{
     PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy,
     extract::extract_vp_claims, get_active_policy_id, get_policy,
@@ -138,6 +138,12 @@ async fn take_challenge(
 pub struct ChallengeResponse {
     pub challenge_id: Uuid,
     pub expires_at: DateTime<Utc>,
+    /// Vendor-namespaced extension members (SPEC §4.5.1). Carries
+    /// [`match_code::MATCH_CODE_EXT_KEY`] — the eight characters the
+    /// admin and the member read to each other to confirm they are
+    /// looking at the same ceremony. See [`crate::members::match_code`]
+    /// for why the code rides here rather than as a top-level field.
+    pub ext: JsonValue,
 }
 
 /// POST /members/{did}/personhood/challenge — mint a personhood challenge.
@@ -173,9 +179,18 @@ pub async fn challenge(
     };
     store_challenge(&state, &chal).await?;
 
+    // Derived, not stored: any holder of the challenge id computes the
+    // same code, so there is nothing here to persist or to check later.
+    let code = match_code::derive(id);
+
     info!(
         member_did = %member_did,
         challenge_id = %id,
+        // The code is a function of the challenge id, which is already
+        // on this line — logging it leaks nothing further, and an
+        // operator reading the journal can see what the member was
+        // asked to confirm.
+        match_code = %code,
         "personhood challenge minted"
     );
 
@@ -184,6 +199,7 @@ pub async fn challenge(
         Json(ChallengeResponse {
             challenge_id: id,
             expires_at,
+            ext: json!({ match_code::MATCH_CODE_EXT_KEY: code }),
         }),
     ))
 }
@@ -305,7 +321,8 @@ pub async fn assert(
     let vp_claims = extract_vp_claims(&body.presentation);
 
     // 6. Run personhood.rego.
-    let allow = evaluate_personhood_assert(&state, &member_did, &vp_claims).await?;
+    let allow =
+        evaluate_personhood_assert(&state, &member_did, signer.issuer_did(), &vp_claims).await?;
     if !allow {
         return Err(AppError::Forbidden(
             "personhood-policy-denied: active personhood.rego rejected the assertion".into(),
@@ -593,9 +610,19 @@ async fn verify_vp_proof(
 /// ```
 ///
 /// Fail-closed: any error path yields `false`.
+/// Evaluate the active `personhood.rego` over the presented claims.
+///
+/// `community_did` is the DID the community signs its own credentials
+/// with. It is passed in — rather than left for the policy to hardcode —
+/// because the default policy's identity-verification rule has to
+/// distinguish "this community vetted the applicant" from "*somebody*
+/// issued a credential that says `IdentityVerification`". Without the
+/// comparison, any issuer in the world could mint the endorsement that
+/// unlocks personhood here.
 async fn evaluate_personhood_assert(
     state: &AppState,
     applicant_did: &str,
+    community_did: &str,
     vp_claims: &JsonValue,
 ) -> Result<bool, AppError> {
     let Some(id) =
@@ -610,6 +637,7 @@ async fn evaluate_personhood_assert(
     let compiled = compile_policy(&policy.rego_source, policy.id)?;
     let input = json!({
         "applicant_did": applicant_did,
+        "community_did": community_did,
         "vp_claims": vp_claims,
     });
     let result = evaluate_policy(&compiled, "data.vtc.personhood.allow", input)?;

@@ -297,8 +297,19 @@ async fn evaluate_personhood(
         Some(t) => json!((chrono::Utc::now() - t).num_seconds().max(0)),
         None => JsonValue::Null,
     };
+    // `community_did` is carried here too, even though renewal presents
+    // no credentials for the identity-verification rule to match. One
+    // policy module serves both call sites, so a rule that reads
+    // `input.community_did` must not become undefined — and therefore
+    // silently unsatisfiable — the moment renewal evaluates it.
+    let community_did = state
+        .credential_signer
+        .as_ref()
+        .map(|s| JsonValue::from(s.issuer_did()))
+        .unwrap_or(JsonValue::Null);
     let input = json!({
         "applicant_did": member.did,
+        "community_did": community_did,
         "current_personhood": member.personhood,
         "asserted_at_seconds_ago": asserted_at_seconds_ago,
         "vp_claims": { "holder": member.did, "credentials": [] },

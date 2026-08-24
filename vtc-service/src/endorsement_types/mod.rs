@@ -34,6 +34,29 @@ pub use storage::{
 /// across the reservation boundary aren't broken).
 pub const RESERVED_TYPE_URIS: &[&str] = &["CommunityRole"];
 
+/// The endorsement type the default `personhood.rego` accepts as
+/// in-person vetting evidence.
+///
+/// Deliberately **not** in [`RESERVED_TYPE_URIS`]. Reserved means
+/// "operators may not register this", and the whole flow depends on an
+/// operator registering it: `vtc/endorsement-types/register/0.1` first,
+/// then `vtc/endorsements/issue/0.1` to each vetted member. Reserving it
+/// would make the issuance path refuse the very credential the policy
+/// looks for.
+///
+/// It is a constant here so the Rust side, the default policy module and
+/// the operator docs cannot drift apart — the failure mode of a
+/// mismatched string is a community that vets members correctly and then
+/// denies every assertion, with nothing in the logs naming the typo.
+/// [`crate::policy::default`]'s tests pin the two together.
+///
+/// The name is the DTG spec's, not ours: §Identity Verification
+/// Credentials defines an IDVC as any W3C VC meeting a community's
+/// identity-proofing requirements, explicitly *not* a `DTGCredential`
+/// subtype. Issuing it as an endorsement keeps it a plain W3C VC that
+/// happens to be revocable through the community's existing status list.
+pub const IDENTITY_VERIFICATION_TYPE_URI: &str = "IdentityVerification";
+
 /// A registered endorsement type. Stored verbatim; the
 /// registrar route enforces validation at insert time.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

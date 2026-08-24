@@ -881,6 +881,261 @@ mod tests {
         );
     }
 
+    /// Build the in-person vetting evidence: an endorsement the
+    /// community issued to the applicant recording that a human verified
+    /// their identity. Parameterised on issuer / subject / type so each
+    /// test below can break exactly one of the three bindings.
+    fn vetting_input(issuer: &str, subject: &str, endorsement_type: &str) -> serde_json::Value {
+        json!({
+            "applicant_did": "did:key:zApplicant",
+            "community_did": "did:webvh:community.example",
+            "vp_claims": {
+                "holder": "did:key:zApplicant",
+                "credentials": [
+                    {
+                        "type": ["VerifiableCredential", "EndorsementCredential"],
+                        "issuer": issuer,
+                        "credentialSubject": {
+                            "id": subject,
+                            "endorsement": {
+                                "type": endorsement_type,
+                                "communityDid": "did:webvh:community.example"
+                            }
+                        }
+                    }
+                ]
+            }
+        })
+    }
+
+    /// The happy path for the in-person ceremony: the admin met the
+    /// person, issued them an identity-verification endorsement, and the
+    /// member presents it over a challenge.
+    #[test]
+    fn personhood_default_allows_community_issued_identity_verification() {
+        let c = compile_default(PolicyPurpose::Personhood);
+        let r = evaluate(
+            &c,
+            "data.vtc.personhood.allow",
+            vetting_input(
+                "did:webvh:community.example",
+                "did:key:zApplicant",
+                crate::endorsement_types::IDENTITY_VERIFICATION_TYPE_URI,
+            ),
+        )
+        .unwrap();
+        assert!(
+            pluck_bool(&r),
+            "this community's own identity-verification endorsement must allow"
+        );
+    }
+
+    /// The binding that matters most. An endorsement type is a *name*,
+    /// and names are not authority — without the issuer comparison, any
+    /// issuer anywhere could mint `IdentityVerification` and unlock
+    /// personhood in a community that never met the applicant.
+    #[test]
+    fn personhood_default_denies_identity_verification_from_foreign_issuer() {
+        let c = compile_default(PolicyPurpose::Personhood);
+        let r = evaluate(
+            &c,
+            "data.vtc.personhood.allow",
+            vetting_input(
+                "did:webvh:someone-else.example",
+                "did:key:zApplicant",
+                crate::endorsement_types::IDENTITY_VERIFICATION_TYPE_URI,
+            ),
+        )
+        .unwrap();
+        assert!(
+            !pluck_bool(&r),
+            "an identity-verification endorsement from another issuer must not allow"
+        );
+    }
+
+    /// The credential must name the party asserting. The route's
+    /// holder-match binds the presenter; this binds the credential, so a
+    /// member cannot present the vetting record of a different member.
+    #[test]
+    fn personhood_default_denies_identity_verification_about_someone_else() {
+        let c = compile_default(PolicyPurpose::Personhood);
+        let r = evaluate(
+            &c,
+            "data.vtc.personhood.allow",
+            vetting_input(
+                "did:webvh:community.example",
+                "did:key:zSomebodyElse",
+                crate::endorsement_types::IDENTITY_VERIFICATION_TYPE_URI,
+            ),
+        )
+        .unwrap();
+        assert!(
+            !pluck_bool(&r),
+            "a vetting record about another member must not allow"
+        );
+    }
+
+    /// A role VEC is community-issued and names the member too. If the
+    /// type check were dropped, every member holding a role credential
+    /// would satisfy the personhood policy — which is every member.
+    #[test]
+    fn personhood_default_denies_community_issued_role_endorsement() {
+        let c = compile_default(PolicyPurpose::Personhood);
+        let r = evaluate(
+            &c,
+            "data.vtc.personhood.allow",
+            vetting_input(
+                "did:webvh:community.example",
+                "did:key:zApplicant",
+                "CommunityRole",
+            ),
+        )
+        .unwrap();
+        assert!(
+            !pluck_bool(&r),
+            "a role grant must not double as evidence that someone was met in person"
+        );
+    }
+
+    /// The seam that no other test crosses: a credential the **real
+    /// builder** signed, projected by the **real extractor**, judged by
+    /// the **real policy**.
+    ///
+    /// Every other test here hand-writes the `vp_claims` JSON, which
+    /// means they all agree with each other about a shape none of them
+    /// obtained from the code that actually produces it. If
+    /// `build_custom_endorsement` ever moved `endorsement` out of
+    /// `credentialSubject`, or `extract_vp_claims` stopped copying
+    /// `credentialSubject` verbatim, those tests would keep passing and
+    /// every in-person vetting in production would be denied — with a
+    /// `personhood-policy-denied` and nothing naming the cause.
+    #[tokio::test]
+    async fn real_endorsement_credential_satisfies_the_vetting_rule() {
+        use crate::credentials::{
+            CredentialStatusRef, CustomEndorsementParams, LocalSigner, build_custom_endorsement,
+        };
+        use crate::policy::extract::extract_vp_claims;
+
+        const COMMUNITY_DID: &str = "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG";
+        const APPLICANT_DID: &str = "did:key:zApplicant";
+
+        let signer = LocalSigner::from_ed25519_seed(COMMUNITY_DID.into(), &[7u8; 32]);
+        let vc = build_custom_endorsement(
+            &signer,
+            CustomEndorsementParams::new(
+                APPLICANT_DID,
+                crate::endorsement_types::IDENTITY_VERIFICATION_TYPE_URI,
+                json!({ "method": "in-person-id", "verifiedBy": "did:key:zAdmin" }),
+                CredentialStatusRef::revocation(
+                    "https://vtc.example.com/v1/status-lists/revocation",
+                    4,
+                ),
+            ),
+        )
+        .await
+        .expect("build identity-verification endorsement");
+
+        // Wrap it the way a member's client would, then project it the
+        // way the assert route does.
+        let vp = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiablePresentation"],
+            "holder": APPLICANT_DID,
+            "verifiableCredential": [serde_json::to_value(&vc).expect("vc -> json")],
+        });
+        let vp_claims = extract_vp_claims(&vp);
+
+        let c = compile_default(PolicyPurpose::Personhood);
+        let r = evaluate(
+            &c,
+            "data.vtc.personhood.allow",
+            json!({
+                "applicant_did": APPLICANT_DID,
+                "community_did": COMMUNITY_DID,
+                "vp_claims": vp_claims,
+            }),
+        )
+        .unwrap();
+        assert!(
+            pluck_bool(&r),
+            "a real community-signed identity-verification endorsement must satisfy \
+             the default personhood policy; builder and policy have drifted"
+        );
+    }
+
+    /// The same real credential, judged against a *different* community.
+    /// Pairs with the test above: it proves the issuer comparison is
+    /// doing work on the real shape, not just on hand-written JSON where
+    /// `issuer` might be a string in one place and an object in another.
+    #[tokio::test]
+    async fn real_endorsement_credential_is_rejected_by_another_community() {
+        use crate::credentials::{
+            CredentialStatusRef, CustomEndorsementParams, LocalSigner, build_custom_endorsement,
+        };
+        use crate::policy::extract::extract_vp_claims;
+
+        const ISSUING_COMMUNITY: &str = "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG";
+        const APPLICANT_DID: &str = "did:key:zApplicant";
+
+        let signer = LocalSigner::from_ed25519_seed(ISSUING_COMMUNITY.into(), &[7u8; 32]);
+        let vc = build_custom_endorsement(
+            &signer,
+            CustomEndorsementParams::new(
+                APPLICANT_DID,
+                crate::endorsement_types::IDENTITY_VERIFICATION_TYPE_URI,
+                json!({ "method": "in-person-id" }),
+                CredentialStatusRef::revocation(
+                    "https://other.example.com/v1/status-lists/revocation",
+                    1,
+                ),
+            ),
+        )
+        .await
+        .expect("build identity-verification endorsement");
+
+        let vp = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiablePresentation"],
+            "holder": APPLICANT_DID,
+            "verifiableCredential": [serde_json::to_value(&vc).expect("vc -> json")],
+        });
+
+        let c = compile_default(PolicyPurpose::Personhood);
+        let r = evaluate(
+            &c,
+            "data.vtc.personhood.allow",
+            json!({
+                "applicant_did": APPLICANT_DID,
+                // A different community is doing the evaluating.
+                "community_did": "did:key:zSomeOtherCommunity",
+                "vp_claims": extract_vp_claims(&vp),
+            }),
+        )
+        .unwrap();
+        assert!(
+            !pluck_bool(&r),
+            "one community's vetting must not confer personhood in another"
+        );
+    }
+
+    /// The policy module and the Rust constant name the same type. A
+    /// mismatch here is silent in the worst way: vetting succeeds, the
+    /// credential is issued, and every assertion is then denied with
+    /// nothing in the logs naming the typo.
+    #[test]
+    fn personhood_rego_and_rust_agree_on_the_vetting_type_uri() {
+        let source = super::default_source(PolicyPurpose::Personhood);
+        let expected = format!(
+            "cred.credentialSubject.endorsement.type == \"{}\"",
+            crate::endorsement_types::IDENTITY_VERIFICATION_TYPE_URI
+        );
+        assert!(
+            source.contains(&expected),
+            "personhood.rego must match on {}; the constant and the module have drifted",
+            crate::endorsement_types::IDENTITY_VERIFICATION_TYPE_URI
+        );
+    }
+
     #[test]
     fn personhood_default_preserves_current_true_on_renewal() {
         // Renewal-time re-eval: when current_personhood is
