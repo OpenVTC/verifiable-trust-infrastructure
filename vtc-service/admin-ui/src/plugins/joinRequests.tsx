@@ -43,7 +43,7 @@ interface JoinRequestRow {
 
 interface JoinRequestsPage {
   items: JoinRequestRow[];
-  next_cursor: string | null;
+  nextCursor: string | null;
   total_estimate?: number;
 }
 
@@ -221,8 +221,8 @@ function JoinRequestsList() {
           <button
             type="button"
             className="secondary"
-            disabled={!query.data?.next_cursor}
-            onClick={() => setCursor(query.data?.next_cursor ?? null)}
+            disabled={!query.data?.nextCursor}
+            onClick={() => setCursor(query.data?.nextCursor ?? null)}
           >
             Next page <ArrowRight size={12} aria-hidden="true" />
           </button>
