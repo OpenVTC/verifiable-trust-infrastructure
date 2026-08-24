@@ -96,6 +96,8 @@ pub mod approvals;
 #[cfg(feature = "acl-setup")]
 pub mod acl_setup;
 #[cfg(feature = "session")]
+pub mod agent_connect;
+#[cfg(feature = "session")]
 pub mod agent_session;
 #[cfg(feature = "attest-verify")]
 pub mod attestation;
