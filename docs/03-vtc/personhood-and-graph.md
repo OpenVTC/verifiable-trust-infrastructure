@@ -96,13 +96,20 @@ POST /v1/endorsement-types  { "typeUri": "IdentityVerification" }
 
 ```bash
 # vtc/endorsements/issue/0.1
-POST /v1/endorsements
+POST /v1/credentials/endorsements
 {
   "subjectDid": "did:key:zMember...",
   "type": "IdentityVerification",
   "claim": { "method": "in-person-id", "verifiedBy": "did:key:zAdmin..." }
 }
 ```
+
+The `claim` body is free-form and opaque to the policy — the default
+rule reads only the endorsement's `type`, its issuer and its subject, so
+what an operator records about *how* they verified is theirs to decide.
+Issuance is admin-or-issuer gated and consumes a revocation status-list
+slot, so withdrawing a vetting later is a `DELETE` on the endorsement
+rather than anything personhood-specific.
 
 The member then runs the normal challenge + assert flow, presenting that
 credential. Three bindings have to hold, and each is enforced by the
