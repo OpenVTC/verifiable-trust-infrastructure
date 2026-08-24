@@ -497,3 +497,57 @@ mod tests {
         }
     }
 }
+
+/// Digest of a JSON document in the form DTG Credentials specifies: SHA-256
+/// over the RFC 8785 (JCS) canonicalization, wrapped as a multihash
+/// (`sha2-256`, header `0x12`, length `0x20`) and multibase-encoded base58btc.
+///
+/// Computed over the document **as submitted**, not over a re-serialisation of
+/// a parsed model. A credential may carry members the local model does not
+/// know, and digesting the model would silently drop them — leaving this
+/// service and its peer computing different digests for the same credential
+/// and neither able to see why.
+///
+/// The same recipe `dtg_credentials::DTGCredential::digest_multibase` uses, and
+/// the same one `_framework/0.3#/$defs/DigestMultibase` describes.
+pub fn digest_multibase(doc: &JsonValue) -> Result<String, AppError> {
+    use sha2::{Digest, Sha256};
+    let canonical = serde_json_canonicalizer::to_vec(doc)
+        .map_err(|e| AppError::Validation(format!("credential is not canonicalizable: {e}")))?;
+    let mut multihash = Vec::with_capacity(34);
+    multihash.extend_from_slice(&[0x12, 0x20]);
+    multihash.extend_from_slice(&Sha256::digest(&canonical));
+    Ok(multibase::encode(multibase::Base::Base58Btc, multihash))
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+
+    /// The digest is over the canonical form, so member order in the submitted
+    /// JSON cannot change it — which is the whole point of naming RFC 8785
+    /// rather than "SHA-256 of the credential".
+    #[test]
+    fn member_order_does_not_change_the_digest() {
+        let a = serde_json::json!({ "b": 1, "a": { "y": 2, "x": 3 } });
+        let b = serde_json::json!({ "a": { "x": 3, "y": 2 }, "b": 1 });
+        assert_eq!(digest_multibase(&a).unwrap(), digest_multibase(&b).unwrap());
+    }
+
+    /// base58btc multibase, so the value always leads with `z`.
+    #[test]
+    fn is_base58btc_multibase() {
+        let d = digest_multibase(&serde_json::json!({ "a": 1 })).unwrap();
+        assert!(
+            d.starts_with('z'),
+            "expected a base58btc multibase, got {d}"
+        );
+    }
+
+    #[test]
+    fn different_documents_digest_differently() {
+        let a = digest_multibase(&serde_json::json!({ "a": 1 })).unwrap();
+        let b = digest_multibase(&serde_json::json!({ "a": 2 })).unwrap();
+        assert_ne!(a, b);
+    }
+}

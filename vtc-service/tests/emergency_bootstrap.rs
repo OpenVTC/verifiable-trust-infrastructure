@@ -296,6 +296,9 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
     );
 
     let state = AppState {
+        publish_rate_limiter: vtc_service::relationships::rate_limit::PublishRateLimiter::new(
+            [0x5a; 32],
+        ),
         sessions_ks,
         acl_ks: acl_ks.clone(),
         community_ks,

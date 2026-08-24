@@ -52,8 +52,8 @@ use axum::http::StatusCode;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
-use sha2::{Digest, Sha256};
 use tracing::info;
+use trust_tasks_rs::TrustTask as TrustTaskDoc;
 use uuid::Uuid;
 use vti_common::audit::{AuditEvent, VpcAnnotationData, VrcPublishedData, VrcRevokedData};
 use vti_common::error::AppError;
@@ -125,7 +125,7 @@ pub struct PublishResponse {
     pub id: Uuid,
     pub issuer_did: String,
     pub subject_did: String,
-    pub vrc_sha256: String,
+    pub vrc_digest_multibase: String,
 }
 
 #[utoipa::path(
@@ -139,10 +139,55 @@ pub struct PublishResponse {
     ),
 )]
 pub async fn publish(
-    auth: AuthClaims,
     State(state): State<AppState>,
-    Json(body): Json<PublishBody>,
-) -> Result<(StatusCode, Json<PublishResponse>), AppError> {
+    Json(doc): Json<TrustTaskDoc<JsonValue>>,
+) -> Result<(StatusCode, Json<TrustTaskDoc<PublishResponse>>), AppError> {
+    let now = Utc::now();
+    let vtc_did = crate::routes::recognise::vtc_did(&state).await?;
+
+    // 0. Framework validation, before anything task-specific:
+    //    expiry, audience binding, and the spec's own policy
+    //    (SPEC §7.2). A document that fails here is malformed as
+    //    a Trust Task, whatever its payload says.
+    doc.validate_basic(now, &vtc_did)
+        .map_err(|e| AppError::Validation(format!("malformed Trust Task document: {e}")))?;
+
+    // 0b. The document's proof authenticates this request. There is
+    //     no bearer token on this route.
+    //
+    //     A proof is the better answer to "who is calling": it is
+    //     transport-independent, and unlike a token it cannot be
+    //     used by whoever captured it. What a session gave that a
+    //     proof does not is *immediate revocation* — a signed-out
+    //     session stops working on the next request, where a proof
+    //     has no such handle. Publishing is therefore governed by
+    //     ACL membership rather than session state, which is the
+    //     deliberate consequence: a member who has signed out but
+    //     not been removed is still a member, and it is not obvious
+    //     they should be barred from publishing an edge they hold
+    //     the key for. Removing them from the community does stop
+    //     them immediately, because `is_current_member` reads the
+    //     ACL live.
+    let signer_did = vti_common::auth::di_proof::verify_trust_task_proof(&doc)
+        .await
+        .map_err(|e| AppError::Forbidden(format!("document proof: {e}")))?;
+
+    // 0c. Per-DID rate limiting, keyed on the HMAC of the signer
+    //     rather than the DID itself — the discipline the audit
+    //     writer already applies, so the counter does not double as
+    //     a live register of who is active in this community.
+    //
+    //     It runs *after* proof verification, because the DID does
+    //     not exist until the proof is checked; it therefore cannot
+    //     bound the cost of verification. That is the per-IP
+    //     governor's job, and this route now sits behind it. Two
+    //     different controls: one protects the server from anonymous
+    //     load, this protects the graph from an admitted member.
+    enforce_publish_rate_limit(&state, &signer_did).await?;
+
+    let body: PublishBody = serde_json::from_value(doc.payload.clone())
+        .map_err(|e| AppError::Validation(format!("invalid publish payload: {e}")))?;
+
     // 1. Parse the VC's core fields without going through the
     //    typed `VerifiableCredential` — VRCs carry a few
     //    extensions the typed parser doesn't know about, and
@@ -156,9 +201,8 @@ pub async fn publish(
     //    expensive, and before authorization, because a
     //    malformed or expired body is a 400 whoever sent it.
     //
-    //    `now` is read once and passed in rather than read
-    //    inside the check, so a test can choose the instant.
-    let now = Utc::now();
+    //    `now` was read once at the top of the handler, so every
+    //    check in this request evaluates at one instant.
     check_vrc_shape(vrc, now)?;
 
     // 3. Cheapest authorization gate first: a VRC issued under a
@@ -166,9 +210,9 @@ pub async fn publish(
     //    authorization. Rejecting here keeps a caller error a
     //    caller error — the daemon-config prerequisites below
     //    would otherwise mask it with a 500.
-    if body.pop.is_none() && issuer_did != auth.did {
+    if body.pop.is_none() && issuer_did != signer_did {
         return Err(AppError::Forbidden(format!(
-            "VRC issuer ({issuer_did}) is not the session DID and no publish \
+            "VRC issuer ({issuer_did}) is not the document signer and no publish \
              authorization (`pop`) was supplied — a VRC issued under a \
              relationship DID must carry proof the caller controls it"
         )));
@@ -188,9 +232,7 @@ pub async fn publish(
 
     // 5. Hash the VRC. This moves ahead of policy evaluation
     //    because the publish authorization binds to it.
-    let canon = canonicalise(vrc);
-    let digest = Sha256::digest(canon.as_bytes());
-    let vrc_sha256 = hex::encode(digest);
+    let vrc_digest_multibase = crate::credentials::ingress::digest_multibase(vrc)?;
 
     // 6. Authorize the *publication*, which is a separate act
     //    from the issuance verified at step 2. Issuing a VRC and
@@ -222,19 +264,12 @@ pub async fn publish(
     //    The community declares which it expects; the member
     //    decides each time. Only the *claim* is enforced here —
     //    see the uniqueness check below.
-    let identifier_form = match (&body.pop, issuer_did == auth.did) {
+    let identifier_form = match (&body.pop, issuer_did == signer_did) {
         (Some(pop), _) => {
-            let aud = crate::routes::recognise::vtc_did(&state).await?;
-            verify_publish_authorization(
-                pop,
-                &issuer_did,
-                &vrc_sha256,
-                &aud,
-                &auth.session_id,
-                &resolver,
-            )
-            .await
-            .map_err(|e| AppError::Forbidden(format!("VrcPublishAuthorizationInvalid: {e}")))?;
+            let vrc_digest = crate::credentials::ingress::digest_multibase(vrc)?;
+            verify_publish_authorization(pop, &issuer_did, &doc.id, &vrc_digest, &resolver)
+                .await
+                .map_err(|e| AppError::Forbidden(format!("VrcPublishAuthorizationInvalid: {e}")))?;
             IdentifierForm::Pairwise
         }
         (None, true) => IdentifierForm::Attributed,
@@ -243,8 +278,8 @@ pub async fn publish(
         // a panicking request handler.
         (None, false) => {
             return Err(AppError::Forbidden(
-                "VRC issuer is not the session DID and no publish authorization \
-                 (`pop`) was supplied"
+                "VRC issuer is not the document signer and no publish \
+                 authorization (`pop`) was supplied"
                     .into(),
             ));
         }
@@ -294,7 +329,7 @@ pub async fn publish(
     //    pairwise identifiers are not resolvable to members and
     //    are not meant to be.
     //
-    let member_current = is_current_member(&state, &auth.did).await?;
+    let member_current = is_current_member(&state, &signer_did).await?;
     let issuer_current = is_current_member(&state, &issuer_did).await?;
     let subject_current = is_current_member(&state, &subject_did).await?;
 
@@ -318,7 +353,7 @@ pub async fn publish(
 
     let policy_input = json!({
         "vrc": vrc,
-        "authenticated_member": { "did": auth.did, "is_current": member_current },
+        "authenticated_member": { "did": signer_did, "is_current": member_current },
         "identifier_form": identifier_form.as_str(),
         // `is_current` on the credential'"'"'s own parties is meaningful only for
         // the attributed form; under pairwise identifiers neither party is
@@ -335,15 +370,22 @@ pub async fn publish(
     }
 
     // 8. Idempotency: same hash → same id.
-    if let Some(existing) = find_by_hash(&state.relationships_ks, &vrc_sha256).await? {
+    if let Some(existing) = find_by_hash(&state.relationships_ks, &vrc_digest_multibase).await? {
+        // A response is itself a Trust Task document: `respond_with` swaps
+        // issuer and recipient, stamps the `#response` type, and carries the
+        // request's `threadId` (or its `id` when it had none) so the two
+        // halves of the exchange correlate — SPEC §4.4.1, §4.9.
         return Ok((
             StatusCode::OK,
-            Json(PublishResponse {
-                id: existing.id,
-                issuer_did: existing.issuer_did,
-                subject_did: existing.subject_did,
-                vrc_sha256: existing.vrc_sha256,
-            }),
+            Json(doc.respond_with(
+                Uuid::new_v4().to_string(),
+                PublishResponse {
+                    id: existing.id,
+                    issuer_did: existing.issuer_did,
+                    subject_did: existing.subject_did,
+                    vrc_digest_multibase: existing.vrc_digest_multibase,
+                },
+            )),
         ));
     }
 
@@ -354,7 +396,7 @@ pub async fn publish(
         issuer_did: issuer_did.clone(),
         subject_did: subject_did.clone(),
         vrc_jsonld: vrc.clone(),
-        vrc_sha256: vrc_sha256.clone(),
+        vrc_digest_multibase: vrc_digest_multibase.clone(),
         created_at: Utc::now(),
         // A persona is asserted separately, against an edge that already
         // exists — see [`attach_persona`].
@@ -405,7 +447,9 @@ pub async fn publish(
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
-                &auth.did,
+                // The proven signer, which is now what "the member" means on
+                // this route.
+                &signer_did,
                 Some(&subject_did),
                 AuditEvent::VrcPublished(VrcPublishedData {
                     vrc_id: id.to_string(),
@@ -425,12 +469,15 @@ pub async fn publish(
 
     Ok((
         StatusCode::CREATED,
-        Json(PublishResponse {
-            id,
-            issuer_did,
-            subject_did,
-            vrc_sha256,
-        }),
+        Json(doc.respond_with(
+            Uuid::new_v4().to_string(),
+            PublishResponse {
+                id,
+                issuer_did,
+                subject_did,
+                vrc_digest_multibase,
+            },
+        )),
     ))
 }
 
@@ -748,11 +795,15 @@ pub async fn attach_persona(
 
     if let Some(pop) = &body.pop {
         let aud = crate::routes::recognise::vtc_did(&state).await?;
-        let vpc_sha256 = hex::encode(Sha256::digest(canonicalise(&body.vpc).as_bytes()));
+        // Same digest form as the publish authorization and the stored row:
+        // RFC 8785, multihash, base58btc. This was a bare hex SHA-256 over a
+        // recursive key sort, which no second implementation could reproduce
+        // from a specification.
+        let vpc_digest = crate::credentials::ingress::digest_multibase(&body.vpc)?;
         check_authorization_envelope(pop, VPC_ATTACH_AUTHORIZATION_TYPE, &aud, &auth.session_id)
             .and_then(|()| {
-                let bound = authorization_field(pop, "vpc")?;
-                if bound != vpc_sha256 {
+                let bound = authorization_field(pop, "vpcDigestMultibase")?;
+                if bound != vpc_digest {
                     return Err("authorization is bound to a different VPC".into());
                 }
                 let edge = authorization_field(pop, "relationship")?;
@@ -1006,58 +1057,96 @@ fn check_vpc_shape(vpc: &JsonValue, now: chrono::DateTime<Utc>) -> Result<(), Ap
     )
 }
 
+/// Bound how fast one member can publish.
+///
+/// The limiter and the reasoning behind it live in
+/// [`crate::relationships::rate_limit`]; this is the route's use of it.
+async fn enforce_publish_rate_limit(state: &AppState, did: &str) -> Result<(), AppError> {
+    if state
+        .publish_rate_limiter
+        .check_and_record(did, Utc::now())
+        .await
+    {
+        return Ok(());
+    }
+    Err(AppError::Validation(format!(
+        "rate limit: a member may publish at most {} relationship credentials \
+         per {}s",
+        crate::relationships::rate_limit::MAX_PER_WINDOW,
+        crate::relationships::rate_limit::WINDOW_SECS,
+    )))
+}
+
 /// `type` of the publish authorization object. Guarding on it stops a
 /// signature the member made over some *other* object being replayed here as
 /// authorization to publish.
 const PUBLISH_AUTHORIZATION_TYPE: &str = "VrcPublishAuthorization";
 
-/// How stale a publish authorization may be. Bounds replay inside a live
-/// session; the same tolerance is allowed for clock skew in either direction.
+/// How stale an authorization envelope may be. Still used by the VPC and
+/// revoke authorizations, which carry their own `issuedAt`; the publish
+/// authorization no longer does, because the document it rides in has one
+/// and `validate_basic` already enforces the document's expiry.
 const PUBLISH_AUTHORIZATION_MAX_AGE_SECS: i64 = 300;
 
 /// Verify a publish authorization: proof that the caller controls the key
-/// behind the VRC's `issuer`, bound to this request.
+/// behind the VRC's `issuer`, bound to this document and this credential.
 ///
-/// The session proves the caller is a community member. This proves the caller
-/// is the issuer of the credential being published. Keeping the two separate is
-/// what lets a member publish an edge under a pairwise relationship DID without
-/// putting their membership DID into the credential (#1054) — the VTC learns
-/// that *a* member published this edge, not which member is behind the
-/// relationship DID.
+/// The document's own proof says a member sent this request. This says
+/// somebody controls the key that issued the credential inside it. Both are
+/// needed, because an edge may be published under a relationship DID that
+/// names nobody: without this, any member ever handed a VRC could publish
+/// another party's edge, and issuing a credential is a different disclosure
+/// from publishing it to a community's graph.
 ///
-/// Every field is load-bearing:
+/// Shape per `vtc/relationships/publish` (trustoverip/dtgwg-trust-tasks-tf#259):
 ///
-/// | field       | prevents                                              |
-/// |-------------|-------------------------------------------------------|
-/// | `type`      | replaying a signature made over some other object     |
-/// | `vrc`       | authorizing a different credential                    |
-/// | `aud`       | replaying an authorization at another community       |
-/// | `sessionId` | replaying another member's authorization              |
-/// | `issuedAt`  | unbounded replay within one live session              |
+/// | field                 | prevents                                        |
+/// |-----------------------|-------------------------------------------------|
+/// | `type`                | a signature over some other object being replayed |
+/// | `documentId`          | replay into a different document                 |
+/// | `vrcDigestMultibase`  | being moved to a different credential            |
 ///
-/// **The object is verified and dropped.** It carries `sessionId`, which is
-/// attributable to a membership DID; persisting or logging it would rebuild
-/// exactly the durable membership-to-relationship linkage that publishing under
-/// a pairwise identifier exists to remove. See
-/// `docs/05-design-notes/vrc-publish-proof-of-possession.md`.
+/// **This is a different argument from the one it replaces.** The earlier form
+/// bound to a REST session id, so a captured authorization was unusable by
+/// another member because it named their session. Binding to the document is
+/// available on every transport and is narrower — a session spans many
+/// documents — but the document `id` is minted by the client, so a captured
+/// authorization replayed inside a forged document carrying the same `id`
+/// still verifies. That buys an attacker nothing: `vrcDigestMultibase` pins
+/// the credential, and the stored edge carries the VRC's own issuer and
+/// subject rather than the publisher's, so the forgery republishes a
+/// credential that was already theirs to republish. The property holds; it
+/// holds for a different reason, and that reason is worth writing down rather
+/// than assuming the two are equivalent.
+///
+/// **Verified and discarded.** Retaining it would accumulate a durable link
+/// between a member and a relationship DID that names nobody — the correlation
+/// publishing under a relationship DID exists to avoid.
 async fn verify_publish_authorization(
     pop: &JsonValue,
     issuer_did: &str,
-    expected_vrc_sha256: &str,
-    expected_aud: &str,
-    expected_session_id: &str,
+    expected_document_id: &str,
+    expected_vrc_digest: &str,
     resolver: &DIDCacheClient,
 ) -> Result<(), String> {
-    check_authorization_envelope(
-        pop,
-        PUBLISH_AUTHORIZATION_TYPE,
-        expected_aud,
-        expected_session_id,
-    )?;
+    let field = |name: &str| -> Result<String, String> {
+        pop.get(name)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| format!("authorization missing `{name}`"))
+    };
 
-    let bound_vrc = authorization_field(pop, "vrc")?;
-    if bound_vrc != expected_vrc_sha256 {
-        return Err("authorization is bound to a different VRC".into());
+    let ty = field("type")?;
+    if ty != PUBLISH_AUTHORIZATION_TYPE {
+        return Err(format!(
+            "authorization `type` must be `{PUBLISH_AUTHORIZATION_TYPE}`, got `{ty}`"
+        ));
+    }
+    if field("documentId")? != expected_document_id {
+        return Err("authorization is bound to a different document".into());
+    }
+    if field("vrcDigestMultibase")? != expected_vrc_digest {
+        return Err("authorization is bound to a different credential".into());
     }
 
     // Signed by the key the VRC's `issuer` names. `check_issuer_binding`
@@ -1188,31 +1277,6 @@ async fn evaluate_relationships_policy(
         .pointer("/result/0/expressions/0/value")
         .and_then(|v| v.as_bool())
         .unwrap_or(false))
-}
-
-/// Canonicalise the VRC JSON for the SHA-256 hash. JCS
-/// (RFC 8785) is the W3C-standard canonical form for VC
-/// signing, but the data-integrity layer already canonicalises
-/// during proof verification; for our local idempotency check
-/// we only need a *deterministic* form, not a *standard* one.
-/// `serde_json` sorts keys lexicographically when serialising
-/// from a `BTreeMap` — we convert + serialise to get that.
-fn canonicalise(v: &JsonValue) -> String {
-    fn into_sorted(v: JsonValue) -> JsonValue {
-        match v {
-            JsonValue::Object(m) => {
-                let mut sorted: std::collections::BTreeMap<String, JsonValue> =
-                    std::collections::BTreeMap::new();
-                for (k, val) in m {
-                    sorted.insert(k, into_sorted(val));
-                }
-                serde_json::to_value(sorted).expect("sorted object is JSON-able")
-            }
-            JsonValue::Array(arr) => JsonValue::Array(arr.into_iter().map(into_sorted).collect()),
-            other => other,
-        }
-    }
-    serde_json::to_string(&into_sorted(v.clone())).unwrap_or_else(|_| "{}".into())
 }
 
 // ── Connections graph (admin) ──────────────────────────────────────────────
@@ -1476,13 +1540,6 @@ mod tests {
             .expect("the same VRC inside its window is publishable");
     }
 
-    #[test]
-    fn canonicalise_is_key_order_stable() {
-        let a = json!({ "b": 1, "a": 2, "c": { "y": 5, "x": 4 } });
-        let b = json!({ "a": 2, "c": { "x": 4, "y": 5 }, "b": 1 });
-        assert_eq!(canonicalise(&a), canonicalise(&b));
-    }
-
     // ─── Half-edges vs complete edges ───────────────────────
     //
     // A DTG edge is two VRCs, one each way. These pin the rule that says which
@@ -1507,13 +1564,14 @@ mod tests {
             None,
         );
         let vrc_jsonld = serde_json::to_value(vrc.credential()).expect("VRC serialises");
-        let vrc_sha256 = hex::encode(Sha256::digest(canonicalise(&vrc_jsonld).as_bytes()));
+        let vrc_digest_multibase =
+            crate::credentials::ingress::digest_multibase(&vrc_jsonld).unwrap();
         Relationship {
             id: Uuid::new_v4(),
             issuer_did: issuer.into(),
             subject_did: subject.into(),
             vrc_jsonld,
-            vrc_sha256,
+            vrc_digest_multibase,
             created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, minute, 0).unwrap(),
             // These fixtures exercise the half/complete grouping, which is
             // independent of whether a persona was asserted. The persona

@@ -121,14 +121,14 @@ pub async fn delete_relationship(
 /// of the same VRC body returns the existing id.
 pub async fn find_by_hash(
     primary: &KeyspaceHandle,
-    vrc_sha256: &str,
+    vrc_digest_multibase: &str,
 ) -> Result<Option<Relationship>, AppError> {
     let pairs = primary
         .prefix_iter_raw(RELATIONSHIPS_PREFIX.to_vec())
         .await?;
     for (_k, v) in pairs {
         if let Ok(rel) = decode(&v)
-            && rel.vrc_sha256 == vrc_sha256
+            && rel.vrc_digest_multibase == vrc_digest_multibase
         {
             return Ok(Some(rel));
         }
@@ -299,7 +299,7 @@ mod tests {
                 "issuer": issuer,
                 "credentialSubject": { "id": subject, "endorsement": { "type": "endorses" } }
             }),
-            vrc_sha256: format!("{:x}", id.as_u128()),
+            vrc_digest_multibase: format!("{:x}", id.as_u128()),
             created_at: Utc::now(),
             persona: None,
         }
@@ -326,7 +326,7 @@ mod tests {
             "issuerDid": "did:key:zA",
             "subjectDid": "did:key:zB",
             "vrcJsonld": { "type": ["VerifiableCredential"] },
-            "vrcSha256": "deadbeef",
+            "vrcDigestMultibase": "deadbeef",
             "createdAt": "2026-01-01T00:00:00Z",
         });
         let rel = decode(raw.to_string().as_bytes()).expect("pre-#1067 row must decode");
@@ -423,7 +423,7 @@ mod tests {
     async fn find_by_hash_returns_existing_row() {
         let (primary, index, _audit, _dir) = temp_kss().await;
         let mut rel = fresh("did:key:zA", "did:key:zB");
-        rel.vrc_sha256 = "deadbeef".into();
+        rel.vrc_digest_multibase = "deadbeef".into();
         store_relationship(&primary, &index, &rel).await.unwrap();
         let got = find_by_hash(&primary, "deadbeef").await.unwrap();
         assert_eq!(got.map(|r| r.id), Some(rel.id));

@@ -71,6 +71,9 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
     let webauthn = public_url.map(|u| Arc::new(build_webauthn(u).expect("build webauthn")));
 
     let state = AppState {
+        publish_rate_limiter: vtc_service::relationships::rate_limit::PublishRateLimiter::new(
+            [0x5a; 32],
+        ),
         sessions_ks,
         acl_ks,
         community_ks,

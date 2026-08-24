@@ -200,6 +200,7 @@ url = "2"
 
 # Cryptography
 ed25519-dalek = "3"
+serde_json_canonicalizer = "0.3"
 sha2 = "0.11"
 # Constant-time byte equality. Used wherever we compare a
 # server-stored hash against a caller-supplied value (e.g.

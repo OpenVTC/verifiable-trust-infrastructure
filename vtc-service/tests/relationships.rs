@@ -33,7 +33,7 @@ use vtc_service::status_list;
 use vtc_service::test_support::TestVtc;
 
 const PUBLIC_URL: &str = "https://vtc.example.com";
-const PUBLISH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/publish/0.1";
+const PUBLISH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/publish/0.2";
 const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/list/0.1";
 const GRAPH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/graph/0.1";
 const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/revoke/0.1";
@@ -215,61 +215,28 @@ async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
 }
 
 // ─── Publish ─────────────────────────────────────────────
-
-#[tokio::test]
-async fn publish_rejects_caller_not_issuer() {
-    let fix = build_fixture().await;
-    // Subject member tries to publish a VRC issued by someone else.
-    let vrc = fake_vrc(ISSUER_DID, SUBJECT_DID);
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/relationships")
-        .header("authorization", format!("Bearer {}", fix.subject_token))
-        .header("trust-task", PUBLISH_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(json!({ "vrc": vrc }).to_string()))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
-async fn publish_returns_500_when_resolver_unconfigured() {
-    let fix = build_fixture().await;
-    let vrc = fake_vrc(ISSUER_DID, SUBJECT_DID);
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/relationships")
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", PUBLISH_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(json!({ "vrc": vrc }).to_string()))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    // Caller passes the issuer == VC.issuer gate; resolver
-    // path is next + the fixture has did_resolver: None.
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-}
-
-#[tokio::test]
-async fn publish_rejects_malformed_vrc() {
-    let fix = build_fixture().await;
-    // No `issuer` field → 400 (Validation).
-    let vrc = json!({
-        "@context": ["https://www.w3.org/ns/credentials/v2"],
-        "credentialSubject": { "id": SUBJECT_DID }
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/relationships")
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", PUBLISH_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(json!({ "vrc": vrc }).to_string()))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-}
+//
+// The publish tests live in the `pairwise` module below, which has real key
+// material. This module's fixture uses placeholder DIDs (`did:key:zVrcIssuer`)
+// that no key backs, and since #1084 the route authenticates by the Trust Task
+// document's own proof — so a fixture that cannot sign cannot reach the
+// handler at all.
+//
+// Three tests were retired rather than moved:
+//
+// - `publish_rejects_caller_not_issuer` asserted that a session DID differing
+//   from the VRC issuer is refused. There is no session DID any more. Its
+//   successor is `pairwise::rejects_a_document_signed_by_a_non_member`, which
+//   tests the property that survived: a proof is not membership.
+// - `publish_rejects_malformed_vrc` is covered, and more thoroughly, by the
+//   shape tests in `pairwise` — they mint through the `dtg-credentials`
+//   catalog and check each part of the DTG common structure separately.
+// - `publish_returns_500_when_resolver_unconfigured` asserted a daemon
+//   misconfiguration surfaces after caller validation. That ordering is now
+//   enforced earlier and differently: the document's proof is verified before
+//   anything reads the resolver, so a resolver-less daemon refuses the caller
+//   before it reaches its own missing dependency. Asserting the old 500 would
+//   pin an ordering the change deliberately reversed.
 
 // ─── Revoke ──────────────────────────────────────────────
 
@@ -280,7 +247,7 @@ async fn seed_relationship(fix: &Fixture, issuer: &str, subject: &str) -> Uuid {
         issuer_did: issuer.into(),
         subject_did: subject.into(),
         vrc_jsonld: fake_vrc(issuer, subject),
-        vrc_sha256: format!("seed-{id}"),
+        vrc_digest_multibase: format!("seed-{id}"),
         created_at: chrono::Utc::now(),
         persona: None,
     };
@@ -731,64 +698,111 @@ mod pairwise {
         }
     }
 
-    fn sha256_hex(v: &Value) -> String {
-        use sha2::{Digest, Sha256};
-        // Mirrors the handler's `canonicalise`: recursive key sort.
-        fn sorted(v: Value) -> Value {
-            match v {
-                Value::Object(m) => serde_json::to_value(
-                    m.into_iter()
-                        .map(|(k, val)| (k, sorted(val)))
-                        .collect::<std::collections::BTreeMap<_, _>>(),
-                )
-                .unwrap(),
-                Value::Array(a) => Value::Array(a.into_iter().map(sorted).collect()),
-                other => other,
-            }
-        }
-        hex::encode(Sha256::digest(sorted(v.clone()).to_string().as_bytes()))
-    }
-
     /// Publish a pairwise edge `issuer_seed -> subject_seed`, return its id.
     /// Shared by the `persona` and `revocation` suites below, both of which
     /// need an already-published pairwise edge to act on.
     async fn publish_edge(fix: &Pw, issuer_seed: u8, subject_seed: u8) -> Uuid {
         let v = vrc(issuer_seed, subject_seed).await;
-        let pop = sign(
-            issuer_seed,
-            authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
-        )
-        .await;
-        let (status, body) = body_value(post(fix, &v, Some(pop)).await).await;
+        let doc_id = Uuid::new_v4().to_string();
+        let pop = sign(issuer_seed, authorization(&doc_id, &vrc_digest(&v))).await;
+        let (status, body) = body_value(post_with(fix, &v, Some(pop), &doc_id).await).await;
         assert_eq!(status, StatusCode::CREATED, "seed publish failed: {body}");
-        Uuid::parse_str(body["id"].as_str().unwrap()).unwrap()
+        // The response is a `#response` document now, so the task's own
+        // members live under `payload`.
+        Uuid::parse_str(body["payload"]["id"].as_str().unwrap()).unwrap()
     }
 
     /// A well-formed publish authorization, before signing.
-    fn authorization(vrc_hash: &str, aud: &str, session_id: &str) -> Value {
+    /// A publish authorization, before signing. Bound to the document it will
+    /// ride in and to the credential it authorizes — no session, no audience,
+    /// no timestamp: the document carries all three of its own.
+    fn authorization(document_id: &str, vrc_digest: &str) -> Value {
         json!({
             "type": "VrcPublishAuthorization",
-            "vrc": vrc_hash,
-            "aud": aud,
-            "sessionId": session_id,
-            "issuedAt": chrono::Utc::now().to_rfc3339(),
+            "documentId": document_id,
+            "vrcDigestMultibase": vrc_digest,
         })
     }
 
-    async fn post(fix: &Pw, vrc: &Value, pop: Option<Value>) -> axum::response::Response {
-        let mut body = json!({ "vrc": vrc });
-        if let Some(p) = pop {
-            body["pop"] = p;
-        }
+    /// The digest the authorization binds to: SHA-256 over the RFC 8785
+    /// canonicalization, as a base58btc multibase multihash. Computed here the
+    /// long way rather than by calling the handler's helper, so a change to
+    /// that helper has to be matched here deliberately instead of agreeing
+    /// with itself.
+    fn vrc_digest(v: &Value) -> String {
+        use sha2::{Digest, Sha256};
+        let canonical = serde_json_canonicalizer::to_vec(v).unwrap();
+        let mut mh = vec![0x12u8, 0x20];
+        mh.extend_from_slice(&Sha256::digest(&canonical));
+        multibase::encode(multibase::Base::Base58Btc, mh)
+    }
+
+    /// Wrap a payload in a Trust Task document signed by `signer`.
+    ///
+    /// The route requires the document's own proof and takes the signer from
+    /// it rather than from the bearer token, so every publish test now
+    /// exercises two independent proofs: this one, and the authorization's.
+    async fn document(signer: u8, id: &str, payload: Value) -> Value {
+        // Round-trip through `TrustTask` before signing.
+        //
+        // The service verifies the proof over the document as *it*
+        // reconstructs it — `verify_trust_task_proof` deserialises into
+        // `TrustTask<Value>`, clears the proof and verifies over that
+        // serialisation. Signing hand-written JSON instead would sign
+        // different bytes (member order, omitted optionals) and every
+        // signature would fail for a reason that has nothing to do with the
+        // key. Signing the round-tripped form is what makes these tests
+        // exercise the real path.
+        let raw = json!({
+            "id": id,
+            "type": PUBLISH_TASK,
+            "issuer": did_for(signer),
+            "recipient": TEST_VTC_DID,
+            "issuedAt": chrono::Utc::now().to_rfc3339(),
+            "payload": payload,
+        });
+        let parsed: trust_tasks_rs::TrustTask<Value> =
+            serde_json::from_value(raw).expect("a well-formed Trust Task document");
+        sign(signer, serde_json::to_value(&parsed).unwrap()).await
+    }
+
+    async fn post_doc(fix: &Pw, doc: Value) -> axum::response::Response {
         let req = Request::builder()
             .method("POST")
             .uri("/v1/relationships")
             .header("authorization", format!("Bearer {}", fix.token))
             .header("trust-task", PUBLISH_TASK)
             .header("content-type", "application/json")
-            .body(Body::from(body.to_string()))
+            .body(Body::from(doc.to_string()))
             .unwrap();
         fix.router.clone().oneshot(req).await.unwrap()
+    }
+
+    /// Publish `vrc`, minting the document id first so an authorization can
+    /// bind to it. `mk_pop` receives that id.
+    async fn post_with(
+        fix: &Pw,
+        vrc: &Value,
+        pop: Option<Value>,
+        doc_id: &str,
+    ) -> axum::response::Response {
+        let mut payload = json!({ "vrc": vrc });
+        if let Some(p) = pop {
+            payload["pop"] = p;
+        }
+        post_doc(fix, document(MEMBER, doc_id, payload).await).await
+    }
+
+    /// The ordinary case: mint an id, authorize with the relationship key,
+    /// publish.
+    async fn post(fix: &Pw, vrc: &Value, with_pop: bool) -> axum::response::Response {
+        let doc_id = Uuid::new_v4().to_string();
+        let pop = if with_pop {
+            Some(sign(RDID, authorization(&doc_id, &vrc_digest(vrc))).await)
+        } else {
+            None
+        };
+        post_with(fix, vrc, pop, &doc_id).await
     }
 
     /// The happy path #1054 exists to enable: the published row names only
@@ -797,16 +811,16 @@ mod pairwise {
     async fn publishes_under_a_relationship_did() {
         let fix = fixture().await;
         let v = vrc(RDID, PEER_RDID).await;
-        let pop = sign(
-            RDID,
-            authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
-        )
-        .await;
-
-        let (status, body) = body_value(post(&fix, &v, Some(pop)).await).await;
+        let (status, body) = body_value(post(&fix, &v, true).await).await;
         assert_eq!(status, StatusCode::CREATED, "body: {body}");
-        assert_eq!(body["issuerDid"], did_for(RDID));
-        assert_eq!(body["subjectDid"], did_for(PEER_RDID));
+        // The response is a `#response` Trust Task document, so the task's
+        // own members are under `payload`.
+        assert_eq!(body["payload"]["issuerDid"], did_for(RDID));
+        assert_eq!(body["payload"]["subjectDid"], did_for(PEER_RDID));
+        // …and the envelope correlates the two halves of the exchange.
+        assert!(body["threadId"].is_string(), "response carries a threadId");
+        assert_eq!(body["issuer"], TEST_VTC_DID, "issuer and recipient swap");
+        assert_eq!(body["recipient"], did_for(MEMBER));
 
         // The stored row must carry no trace of the publishing member.
         let rows = vtc_service::relationships::list_all(&fix.relationships_ks)
@@ -833,15 +847,7 @@ mod pairwise {
     async fn authorization_is_never_persisted_to_the_audit_trail() {
         let fix = fixture().await;
         let v = vrc(RDID, PEER_RDID).await;
-        let pop = sign(
-            RDID,
-            authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
-        )
-        .await;
-        assert_eq!(
-            post(&fix, &v, Some(pop)).await.status(),
-            StatusCode::CREATED
-        );
+        assert_eq!(post(&fix, &v, true).await.status(), StatusCode::CREATED);
 
         let pairs = fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
         let mut saw_publish = false;
@@ -871,15 +877,7 @@ mod pairwise {
     async fn audit_attributes_the_publication_to_the_member_not_the_relationship_did() {
         let fix = fixture().await;
         let v = vrc(RDID, PEER_RDID).await;
-        let pop = sign(
-            RDID,
-            authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
-        )
-        .await;
-        assert_eq!(
-            post(&fix, &v, Some(pop)).await.status(),
-            StatusCode::CREATED
-        );
+        assert_eq!(post(&fix, &v, true).await.status(), StatusCode::CREATED);
 
         let pairs = fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
         let mut saw = false;
@@ -909,12 +907,7 @@ mod pairwise {
     async fn subject_need_not_be_a_member() {
         let fix = fixture().await;
         let v = vrc(RDID, OTHER).await;
-        let pop = sign(
-            RDID,
-            authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
-        )
-        .await;
-        let (status, body) = body_value(post(&fix, &v, Some(pop)).await).await;
+        let (status, body) = body_value(post(&fix, &v, true).await).await;
         assert_eq!(status, StatusCode::CREATED, "body: {body}");
     }
 
@@ -922,18 +915,15 @@ mod pairwise {
     async fn same_vrc_twice_is_idempotent() {
         let fix = fixture().await;
         let v = vrc(RDID, PEER_RDID).await;
-        let mk = || async {
-            sign(
-                RDID,
-                authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
-            )
-            .await
-        };
-        let (s1, b1) = body_value(post(&fix, &v, Some(mk().await)).await).await;
-        let (s2, b2) = body_value(post(&fix, &v, Some(mk().await)).await).await;
+        // Two publishes, two documents, two authorizations — each bound to
+        // its own document. Idempotency is keyed on the credential, so the
+        // second is recognised as the same edge despite everything around it
+        // differing.
+        let (s1, b1) = body_value(post(&fix, &v, true).await).await;
+        let (s2, b2) = body_value(post(&fix, &v, true).await).await;
         assert_eq!(s1, StatusCode::CREATED);
         assert_eq!(s2, StatusCode::OK);
-        assert_eq!(b1["id"], b2["id"]);
+        assert_eq!(b1["payload"]["id"], b2["payload"]["id"]);
     }
 
     // ─── Every field of the authorization is load-bearing ───
@@ -942,85 +932,132 @@ mod pairwise {
     async fn rejects_missing_authorization() {
         let fix = fixture().await;
         let v = vrc(RDID, PEER_RDID).await;
-        assert_eq!(post(&fix, &v, None).await.status(), StatusCode::FORBIDDEN);
+        assert_eq!(post(&fix, &v, false).await.status(), StatusCode::FORBIDDEN);
     }
 
     /// Holding the credential is not controlling the key behind it. This is
-    /// the property the old `auth.did == issuer` pin provided.
+    /// the property the issuer pin provided before #1054 replaced it.
     #[tokio::test]
     async fn rejects_authorization_signed_by_another_key() {
         let fix = fixture().await;
         let v = vrc(RDID, PEER_RDID).await;
-        let mut pop = authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id);
-        // Signed by OTHER, but claiming to authorize RDID's credential.
-        pop = sign(OTHER, pop).await;
+        let doc_id = Uuid::new_v4().to_string();
+        // Correct in every respect except who signed it.
+        let pop = sign(OTHER, authorization(&doc_id, &vrc_digest(&v))).await;
         assert_eq!(
-            post(&fix, &v, Some(pop)).await.status(),
+            post_with(&fix, &v, Some(pop), &doc_id).await.status(),
             StatusCode::FORBIDDEN
         );
     }
 
     #[tokio::test]
-    async fn rejects_authorization_bound_to_a_different_vrc() {
+    async fn rejects_authorization_bound_to_a_different_credential() {
         let fix = fixture().await;
         let target = vrc(RDID, PEER_RDID).await;
         let decoy = vrc(RDID, OTHER).await;
-        let pop = sign(
-            RDID,
-            authorization(&sha256_hex(&decoy), TEST_VTC_DID, &fix.session_id),
-        )
-        .await;
+        let doc_id = Uuid::new_v4().to_string();
+        let pop = sign(RDID, authorization(&doc_id, &vrc_digest(&decoy))).await;
         assert_eq!(
-            post(&fix, &target, Some(pop)).await.status(),
+            post_with(&fix, &target, Some(pop), &doc_id).await.status(),
             StatusCode::FORBIDDEN
         );
     }
 
+    /// Replaces `rejects_authorization_from_another_session`.
+    ///
+    /// The authorization used to bind to the caller's REST session, so a
+    /// captured one was unusable by another member because it named their
+    /// session. It now binds to the document (#259), which is available on
+    /// every transport and narrower — a session spans many documents. This is
+    /// the same threat, tested where the binding now lives.
     #[tokio::test]
-    async fn rejects_authorization_from_another_session() {
+    async fn rejects_an_authorization_replayed_in_another_document() {
         let fix = fixture().await;
         let v = vrc(RDID, PEER_RDID).await;
-        let pop = sign(
-            RDID,
-            authorization(&sha256_hex(&v), TEST_VTC_DID, "sess-someone-else"),
-        )
-        .await;
+        // Minted for one document...
+        let minted_for = Uuid::new_v4().to_string();
+        let pop = sign(RDID, authorization(&minted_for, &vrc_digest(&v))).await;
+        // ...and presented inside another.
+        let sent_in = Uuid::new_v4().to_string();
+        assert_ne!(minted_for, sent_in);
         assert_eq!(
-            post(&fix, &v, Some(pop)).await.status(),
+            post_with(&fix, &v, Some(pop), &sent_in).await.status(),
             StatusCode::FORBIDDEN
         );
     }
 
+    /// Replaces `rejects_authorization_for_another_community`.
+    ///
+    /// The authorization used to carry its own `aud`. It no longer does,
+    /// because the document carries `recipient` and the framework enforces it
+    /// — so this now tests that `validate_basic` is actually wired in, which
+    /// nothing else does.
     #[tokio::test]
-    async fn rejects_authorization_for_another_community() {
+    async fn rejects_a_document_addressed_to_another_community() {
         let fix = fixture().await;
         let v = vrc(RDID, PEER_RDID).await;
-        let pop = sign(
-            RDID,
-            authorization(
-                &sha256_hex(&v),
-                "did:webvh:other-vtc.example:xyz",
-                &fix.session_id,
-            ),
-        )
+        let doc_id = Uuid::new_v4().to_string();
+        let pop = sign(RDID, authorization(&doc_id, &vrc_digest(&v))).await;
+        let mut doc = document(MEMBER, &doc_id, json!({ "vrc": v, "pop": pop })).await;
+        doc["recipient"] = json!("did:webvh:other-vtc.example:xyz");
+        // Re-signed, so the failure is the audience and not a broken proof.
+        let doc = sign(MEMBER, {
+            let mut d = doc;
+            d.as_object_mut().unwrap().remove("proof");
+            d
+        })
         .await;
-        assert_eq!(
-            post(&fix, &v, Some(pop)).await.status(),
-            StatusCode::FORBIDDEN
-        );
+        let (status, body) = body_value(post_doc(&fix, doc).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
     }
 
+    /// Replaces `rejects_stale_authorization`.
+    ///
+    /// Freshness was the authorization's own `issuedAt` with a window. The
+    /// document carries `expiresAt` and the framework enforces it, so the
+    /// bound moved rather than disappeared.
     #[tokio::test]
-    async fn rejects_stale_authorization() {
+    async fn rejects_an_expired_document() {
         let fix = fixture().await;
         let v = vrc(RDID, PEER_RDID).await;
-        let mut a = authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id);
-        a["issuedAt"] = json!((chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339());
-        let pop = sign(RDID, a).await;
-        assert_eq!(
-            post(&fix, &v, Some(pop)).await.status(),
-            StatusCode::FORBIDDEN
-        );
+        let doc_id = Uuid::new_v4().to_string();
+        let pop = sign(RDID, authorization(&doc_id, &vrc_digest(&v))).await;
+        let mut doc = document(MEMBER, &doc_id, json!({ "vrc": v, "pop": pop })).await;
+        doc["expiresAt"] = json!((chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339());
+        let doc = sign(MEMBER, {
+            let mut d = doc;
+            d.as_object_mut().unwrap().remove("proof");
+            d
+        })
+        .await;
+        let (status, body) = body_value(post_doc(&fix, doc).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    }
+
+    /// The document's proof is what authenticates this route — there is no
+    /// bearer token to fall back on (#1084).
+    #[tokio::test]
+    async fn rejects_a_document_with_no_proof() {
+        let fix = fixture().await;
+        let v = vrc(RDID, PEER_RDID).await;
+        let doc_id = Uuid::new_v4().to_string();
+        let pop = sign(RDID, authorization(&doc_id, &vrc_digest(&v))).await;
+        let mut doc = document(MEMBER, &doc_id, json!({ "vrc": v, "pop": pop })).await;
+        doc.as_object_mut().unwrap().remove("proof");
+        assert_eq!(post_doc(&fix, doc).await.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// A document signed by someone who is not a member of this community is
+    /// refused by the policy, not by the proof — the proof is perfectly good.
+    #[tokio::test]
+    async fn rejects_a_document_signed_by_a_non_member() {
+        let fix = fixture().await;
+        let v = vrc(RDID, PEER_RDID).await;
+        let doc_id = Uuid::new_v4().to_string();
+        let pop = sign(RDID, authorization(&doc_id, &vrc_digest(&v))).await;
+        // OTHER holds no ACL row in this community.
+        let doc = document(OTHER, &doc_id, json!({ "vrc": v, "pop": pop })).await;
+        assert_eq!(post_doc(&fix, doc).await.status(), StatusCode::FORBIDDEN);
     }
 
     // ─── A relationship DID must be unique per counterparty ───
@@ -1037,24 +1074,11 @@ mod pairwise {
         let fix = fixture().await;
 
         let first = vrc(RDID, PEER_RDID).await;
-        let pop = sign(
-            RDID,
-            authorization(&sha256_hex(&first), TEST_VTC_DID, &fix.session_id),
-        )
-        .await;
-        assert_eq!(
-            post(&fix, &first, Some(pop)).await.status(),
-            StatusCode::CREATED
-        );
+        assert_eq!(post(&fix, &first, true).await.status(), StatusCode::CREATED);
 
         // Same relationship DID, different counterparty.
         let second = vrc(RDID, OTHER).await;
-        let pop2 = sign(
-            RDID,
-            authorization(&sha256_hex(&second), TEST_VTC_DID, &fix.session_id),
-        )
-        .await;
-        let (status, body) = body_value(post(&fix, &second, Some(pop2)).await).await;
+        let (status, body) = body_value(post(&fix, &second, true).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
     }
 
@@ -1065,15 +1089,7 @@ mod pairwise {
         let fix = fixture().await;
 
         let first = vrc(RDID, PEER_RDID).await;
-        let pop = sign(
-            RDID,
-            authorization(&sha256_hex(&first), TEST_VTC_DID, &fix.session_id),
-        )
-        .await;
-        assert_eq!(
-            post(&fix, &first, Some(pop)).await.status(),
-            StatusCode::CREATED
-        );
+        assert_eq!(post(&fix, &first, true).await.status(), StatusCode::CREATED);
 
         // Same parties, different credential body — a distinct VRC, so the
         // idempotency hash differs and this is a genuine second publish.
@@ -1089,12 +1105,7 @@ mod pairwise {
         });
         body["validUntil"] = json!("2999-01-01T00:00:00Z");
         let second = sign(RDID, body).await;
-        let pop2 = sign(
-            RDID,
-            authorization(&sha256_hex(&second), TEST_VTC_DID, &fix.session_id),
-        )
-        .await;
-        let (status, b) = body_value(post(&fix, &second, Some(pop2)).await).await;
+        let (status, b) = body_value(post(&fix, &second, true).await).await;
         assert_eq!(status, StatusCode::CREATED, "body: {b}");
     }
 
@@ -1128,7 +1139,7 @@ mod pairwise {
                 }),
             )
             .await;
-            let (status, b) = body_value(post(&fix, &v, None).await).await;
+            let (status, b) = body_value(post(&fix, &v, false).await).await;
             // The default policy's attributed rule needs both parties to be
             // members; only the issuer is, so this is the policy's call, not
             // the uniqueness rule's. What matters is that it is never the
@@ -1159,12 +1170,7 @@ mod pairwise {
         });
         mutate(&mut body);
         let v = sign(RDID, body).await;
-        let pop = sign(
-            RDID,
-            authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
-        )
-        .await;
-        let (status, b) = body_value(post(&fix, &v, Some(pop)).await).await;
+        let (status, b) = body_value(post(&fix, &v, true).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "body: {b}");
     }
 
@@ -1220,11 +1226,14 @@ mod pairwise {
     async fn rejects_authorization_of_the_wrong_type() {
         let fix = fixture().await;
         let v = vrc(RDID, PEER_RDID).await;
-        let mut a = authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id);
+        let doc_id = Uuid::new_v4().to_string();
+        // Valid in every respect except the one member that says what it
+        // authorizes.
+        let mut a = authorization(&doc_id, &vrc_digest(&v));
         a["type"] = json!("SomeOtherSignedThing");
         let pop = sign(RDID, a).await;
         assert_eq!(
-            post(&fix, &v, Some(pop)).await.status(),
+            post_with(&fix, &v, Some(pop), &doc_id).await.status(),
             StatusCode::FORBIDDEN
         );
     }
@@ -1268,10 +1277,12 @@ mod pairwise {
             .await
         }
 
-        fn attach_authorization(vpc_hash: &str, edge: Uuid, session_id: &str) -> Value {
+        fn attach_authorization(vpc_digest: &str, edge: Uuid, session_id: &str) -> Value {
             json!({
                 "type": "VpcAttachAuthorization",
-                "vpc": vpc_hash,
+                // Multibase multihash over the RFC 8785 canonicalization, the
+                // same digest form the publish path and the stored row use.
+                "vpcDigestMultibase": vpc_digest,
                 "relationship": edge.to_string(),
                 "aud": TEST_VTC_DID,
                 "sessionId": session_id,
@@ -1334,7 +1345,7 @@ mod pairwise {
             let v = vpc(persona_seed, counterparty_seed).await;
             let pop = sign(
                 RDID,
-                attach_authorization(&sha256_hex(&v), edge, &fix.session_id),
+                attach_authorization(&vrc_digest(&v), edge, &fix.session_id),
             )
             .await;
             let (status, body) = attach(fix, edge, &v, Some(pop)).await;
@@ -1455,7 +1466,7 @@ mod pairwise {
             let v = vpc(PERSONA, PEER2_RDID).await;
             let pop = sign(
                 RDID2,
-                attach_authorization(&sha256_hex(&v), e2, &fix.session_id),
+                attach_authorization(&vrc_digest(&v), e2, &fix.session_id),
             )
             .await;
             let (status, body) = attach(&fix, e2, &v, Some(pop)).await;
@@ -1484,7 +1495,7 @@ mod pairwise {
             let v = vpc(PERSONA, PEER_RDID).await;
             let pop = sign(
                 OTHER,
-                attach_authorization(&sha256_hex(&v), edge, &fix.session_id),
+                attach_authorization(&vrc_digest(&v), edge, &fix.session_id),
             )
             .await;
             let (status, body) = attach(&fix, edge, &v, Some(pop)).await;
@@ -1513,7 +1524,7 @@ mod pairwise {
             let v = vpc(PERSONA, PEER2_RDID).await;
             let pop = sign(
                 RDID2,
-                attach_authorization(&sha256_hex(&v), e1, &fix.session_id),
+                attach_authorization(&vrc_digest(&v), e1, &fix.session_id),
             )
             .await;
             let (status, body) = attach(&fix, e2, &v, Some(pop)).await;
@@ -1529,7 +1540,7 @@ mod pairwise {
             let not_a_vpc = vrc(PERSONA, PEER_RDID).await;
             let pop = sign(
                 RDID,
-                attach_authorization(&sha256_hex(&not_a_vpc), edge, &fix.session_id),
+                attach_authorization(&vrc_digest(&not_a_vpc), edge, &fix.session_id),
             )
             .await;
             let (status, body) = attach(&fix, edge, &not_a_vpc, Some(pop)).await;
@@ -1545,7 +1556,7 @@ mod pairwise {
             let v = vpc(PERSONA, OTHER).await;
             let pop = sign(
                 RDID,
-                attach_authorization(&sha256_hex(&v), edge, &fix.session_id),
+                attach_authorization(&vrc_digest(&v), edge, &fix.session_id),
             )
             .await;
             let (status, body) = attach(&fix, edge, &v, Some(pop)).await;
@@ -1582,7 +1593,7 @@ mod pairwise {
 
             let pop = sign(
                 RDID,
-                attach_authorization(&sha256_hex(&v), edge, &fix.session_id),
+                attach_authorization(&vrc_digest(&v), edge, &fix.session_id),
             )
             .await;
             let (status, body) = detach(&fix, edge, Some(pop)).await;
@@ -1627,7 +1638,7 @@ mod pairwise {
             let missing = Uuid::new_v4();
             let pop = sign(
                 RDID,
-                attach_authorization(&sha256_hex(&v), missing, &fix.session_id),
+                attach_authorization(&vrc_digest(&v), missing, &fix.session_id),
             )
             .await;
             let (status, _) = attach(&fix, missing, &v, Some(pop)).await;
@@ -1840,9 +1851,11 @@ mod pairwise {
             let fix = fixture().await;
             let v = vrc(RDID, PEER_RDID).await;
             let edge = publish_edge(&fix, RDID, PEER_RDID).await;
+            // A genuine publish authorization, in its current shape, offered
+            // where a revoke authorization is wanted.
             let stolen = sign(
                 RDID,
-                authorization(&sha256_hex(&v), TEST_VTC_DID, &fix.session_id),
+                authorization(&Uuid::new_v4().to_string(), &vrc_digest(&v)),
             )
             .await;
             let (status, body) = delete_edge(&fix, edge, Some(stolen)).await;
