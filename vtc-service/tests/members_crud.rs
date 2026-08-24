@@ -463,6 +463,8 @@ async fn patch_member_role_member_to_moderator_succeeds_and_emits_audit() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "got {body}");
+    // `update` wraps the row as `{member: …}` (#1094).
+    let body = &body["member"];
     assert_eq!(body["role"], "moderator");
 
     // Confirm the on-disk ACL row reflects the change.
@@ -538,6 +540,8 @@ async fn patch_member_role_admin_promotes_with_a_live_step_up() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "got {body}");
+    // `update` wraps the row as `{member: …}` (#1094).
+    let body = &body["member"];
     assert_eq!(body["role"], "admin");
 
     let entry = vtc_service::acl::get_acl_entry(&fix.acl_ks, "did:key:zM1")
@@ -565,6 +569,8 @@ async fn patch_member_profile_only_emits_member_updated() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "got {body}");
+    // `update` wraps the row as `{member: …}` (#1094).
+    let body = &body["member"];
     assert_eq!(body["publishConsent"], true);
     assert_eq!(body["departurePreference"], "purge");
     // Role unchanged.
@@ -652,6 +658,8 @@ async fn promoting_an_existing_admin_is_an_idempotent_no_op() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "got {body}");
+    // `update` wraps the row as `{member: …}` (#1094).
+    let body = &body["member"];
     assert_eq!(body["role"], "admin");
 
     let entry = vtc_service::acl::get_acl_entry(&fix.acl_ks, "did:key:zSecondAdmin")

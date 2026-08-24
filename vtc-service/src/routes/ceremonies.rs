@@ -313,12 +313,24 @@ fn manifests() -> Vec<CeremonyManifest> {
     get, path = "/ceremonies", tag = "ceremonies",
     security(("bearer_jwt" = [])),
     responses(
-        (status = 200, description = "Ceremony manifests", body = [CeremonyManifest]),
+        (status = 200, description = "Ceremony manifests", body = CeremonyListResponse),
         (status = 401, description = "Missing or invalid bearer token"),
     ),
 )]
-pub async fn list(_claims: AuthClaims) -> Json<Vec<CeremonyManifest>> {
-    Json(manifests())
+pub async fn list(_claims: AuthClaims) -> Json<CeremonyListResponse> {
+    Json(CeremonyListResponse {
+        ceremonies: manifests(),
+    })
+}
+
+/// `{ ceremonies: […] }` — the shape `vtc/ceremonies/list/0.1` publishes. The
+/// handler sent a top-level array until #1094. An array cannot grow a sibling
+/// member later without breaking every reader; the envelope is why the spec
+/// asks for one.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CeremonyListResponse {
+    pub ceremonies: Vec<CeremonyManifest>,
 }
 
 #[cfg(test)]
