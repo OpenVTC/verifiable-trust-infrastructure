@@ -68,6 +68,20 @@ pub struct PublicCommunityProfile {
     pub contact_email: Option<String>,
     pub language: String,
     pub created_at: DateTime<Utc>,
+    /// What this community's governance asserts about personhood.
+    ///
+    /// Published **unauthenticated, on purpose**. DTG Credentials puts PHC
+    /// status in "governance and trust registries, not credential structure",
+    /// so the party who needs this is a verifier holding one of this
+    /// community's VMCs — someone who is not a member, has no token, and may
+    /// have no relationship with the community at all. Behind auth it would
+    /// answer the question only for people who did not need to ask it.
+    ///
+    /// This is the *community's own claim about itself*. A verifier deciding
+    /// how much it is worth reads the trust registry, which is what the spec
+    /// calls authoritative; this is the self-published copy, and it is here so
+    /// the claim is resolvable at all rather than so it is trusted.
+    pub personhood: crate::community::PersonhoodGovernance,
     /// The community's DIDComm mediator DID, if one is configured.
     /// Sourced from the live daemon config (same as `/health`), not
     /// the persisted profile row.
@@ -155,6 +169,7 @@ pub async fn get_public_profile(
         contact_email: profile.contact_email,
         language: profile.language,
         created_at: profile.created_at,
+        personhood: profile.personhood,
         mediator_did,
         transports,
     }))

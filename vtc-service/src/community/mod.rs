@@ -11,5 +11,5 @@ pub mod profile;
 
 pub use profile::{
     CommunityProfile, CommunityProfileUpdate, MAX_EXTENSIONS_BYTES, PROFILE_STORAGE_KEY,
-    load_profile, store_profile,
+    PersonhoodGovernance, load_profile, store_profile,
 };
