@@ -34,10 +34,10 @@ use std::sync::Arc;
 use clap::Parser;
 use rmcp::ServiceExt;
 use rmcp::transport::stdio;
+use vta_sdk::agent_connect::AgentConnect;
 use vta_sdk::agent_session::{AgentConfig, AgentSession};
 use vta_sdk::client::VtaClient;
-use vta_sdk::did_secrets::DidSecretsBundle;
-use vta_sdk::session::SessionStore;
+use vta_sdk::session::TransportChoice;
 
 use server::VtaMcp;
 
@@ -181,191 +181,102 @@ async fn main() -> anyhow::Result<()> {
     served
 }
 
-/// Resolve the four did:key DIDComm-mode params. Returns `Some(..)` when all
-/// four are set, `None` when none are, and an error when only some are — so a
-/// half-configured invocation fails fast instead of silently falling through to
-/// another auth mode.
-fn didkey_didcomm_params(
-    agent_did: Option<String>,
-    agent_key: Option<String>,
-    vta_did: Option<String>,
-    mediator_did: Option<String>,
-) -> anyhow::Result<Option<(String, String, String, String)>> {
-    match (agent_did, agent_key, vta_did, mediator_did) {
-        (Some(a), Some(k), Some(v), Some(m)) => Ok(Some((a, k, v, m))),
-        (None, None, None, None) => Ok(None),
-        _ => anyhow::bail!(
-            "did:key DIDComm mode needs all of --agent-did, --agent-key, \
-             --vta-did, --mediator-did (or none of them)"
-        ),
+/// Translate the CLI/env args into the SDK's connect ladder. Keeping this a
+/// pure mapping (no I/O) is what lets the test below assert the *mode* a set of
+/// flags selects without a VTA to connect to.
+fn agent_connect_from(args: &Args) -> AgentConnect {
+    AgentConnect {
+        agent_secrets: args.agent_secrets.clone(),
+        agent_did: args.agent_did.clone(),
+        agent_key: args.agent_key.clone(),
+        vta_did: args.vta_did.clone(),
+        mediator_did: args.mediator_did.clone(),
+        url: args.url.clone(),
+        token: std::env::var("VTA_TOKEN").ok(),
+        session_key: args.vta.clone(),
+        service_name: Some(args.service_name.clone()),
+        sessions_dir: args.sessions_dir.clone(),
+        transport: TransportChoice::Auto,
     }
-}
-
-/// Load a [`DidSecretsBundle`] from the `--agent-secrets` argument, which is
-/// either a path to a JSON file or the inline JSON itself. A value that parses
-/// as JSON is taken inline; otherwise it is read as a file path.
-fn load_agent_bundle(raw: &str) -> anyhow::Result<DidSecretsBundle> {
-    let json = if std::path::Path::new(raw).exists() {
-        std::fs::read_to_string(raw)
-            .map_err(|e| anyhow::anyhow!("reading agent secrets bundle from `{raw}`: {e}"))?
-    } else {
-        raw.to_string()
-    };
-    serde_json::from_str(&json).map_err(|e| {
-        anyhow::anyhow!("parsing agent secrets bundle (path or inline JSON expected): {e}")
-    })
 }
 
 /// Build an authenticated [`VtaClient`] from the args/env (see module docs).
+///
+/// The four-rung ladder itself lives in `vta_sdk::agent_connect` — every
+/// agent-side bridge needs the same one, and a second copy is how they drift.
 async fn build_client(args: &Args) -> anyhow::Result<VtaClient> {
-    // The two DIDComm agent-identity modes are mutually exclusive.
-    if args.agent_secrets.is_some() && (args.agent_did.is_some() || args.agent_key.is_some()) {
-        anyhow::bail!(
-            "--agent-secrets (did:webvh bundle) and --agent-did/--agent-key (did:key) are \
-             mutually exclusive — pass one identity, not both"
-        );
-    }
-
-    // did:webvh DIDComm mode: authenticate a scoped agent via a hosted-DID
-    // secrets bundle (#key-0 Ed25519 + #key-1 X25519). Requires --vta-did +
-    // --mediator-did. Takes precedence when configured.
-    if let Some(raw) = args.agent_secrets.as_deref() {
-        let bundle = load_agent_bundle(raw)?;
-        let (vta_did, mediator_did) = match (args.vta_did.as_deref(), args.mediator_did.as_deref())
-        {
-            (Some(v), Some(m)) => (v, m),
-            _ => anyhow::bail!(
-                "did:webvh DIDComm mode (--agent-secrets) needs --vta-did and --mediator-did"
-            ),
-        };
-        tracing::info!(agent_did = %bundle.did, %mediator_did, "using did:webvh DIDComm mode");
-        return VtaClient::connect_didcomm_bundle(&bundle, vta_did, mediator_did, args.url.clone())
-            .await
-            .map_err(|e| anyhow::anyhow!("connecting to VTA over DIDComm: {e}"));
-    }
-
-    // did:key DIDComm mode: authenticate a scoped agent did:key directly over
-    // DIDComm (the canonical transport — works against DIDComm-only VTAs that
-    // expose no REST endpoint). Takes precedence when fully configured.
-    if let Some((agent_did, agent_key, vta_did, mediator_did)) = didkey_didcomm_params(
-        args.agent_did.clone(),
-        args.agent_key.clone(),
-        args.vta_did.clone(),
-        args.mediator_did.clone(),
-    )? {
-        tracing::info!(%agent_did, %mediator_did, "using did:key DIDComm mode");
-        return VtaClient::connect_didcomm(
-            &agent_did,
-            &agent_key,
-            &vta_did,
-            &mediator_did,
-            args.url.clone(),
-        )
+    let connect = agent_connect_from(args);
+    let mode = connect.mode()?;
+    tracing::info!(mode = mode.label(), "connecting to VTA");
+    connect
+        .connect()
         .await
-        .map_err(|e| anyhow::anyhow!("connecting to VTA over DIDComm: {e}"));
-    }
-
-    // Token mode: explicit URL + bearer token.
-    if let (Some(url), Ok(token)) = (args.url.as_deref(), std::env::var("VTA_TOKEN"))
-        && !token.is_empty()
-    {
-        let client = VtaClient::new(url);
-        client.set_token_async(token).await;
-        tracing::info!(%url, "using token-mode REST client");
-        return Ok(client);
-    }
-
-    // Session mode: reuse an existing pnm/cnm login (auto-refreshing).
-    let key = args.vta.as_deref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "no session selected: pass --vta <slug> (an existing `pnm` login) \
-             or set VTA_URL + VTA_TOKEN"
-        )
-    })?;
-    let sessions_dir = match &args.sessions_dir {
-        Some(d) => d.clone(),
-        None => default_sessions_dir()?,
-    };
-    tracing::info!(
-        key,
-        service = args.service_name,
-        "using session-mode client"
-    );
-    SessionStore::new(&args.service_name, sessions_dir)
-        .connect(key, args.url.as_deref(), None)
-        .await
-        .map_err(|e| anyhow::anyhow!("connecting to VTA: {e}"))
-}
-
-fn default_sessions_dir() -> anyhow::Result<PathBuf> {
-    let home =
-        std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set; pass --sessions-dir"))?;
-    Ok(PathBuf::from(home).join(".config").join("pnm"))
+        .map_err(|e| anyhow::anyhow!("connecting to VTA ({}): {e}", mode.label()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vta_sdk::agent_connect::ConnectMode;
+
+    /// Args with everything unset — the base every case below varies from.
+    fn args() -> Args {
+        Args::parse_from(["vta-mcp"])
+    }
 
     #[test]
-    fn didkey_didcomm_params_all_set_returns_some() {
-        let got = didkey_didcomm_params(
-            Some("did:key:zAgent".into()),
-            Some("zKey".into()),
-            Some("did:key:zVta".into()),
-            Some("did:key:zMed".into()),
-        )
-        .unwrap();
+    fn didkey_flags_select_didkey_didcomm_mode() {
+        let mut a = args();
+        a.agent_did = Some("did:key:zAgent".into());
+        a.agent_key = Some("zKey".into());
+        a.vta_did = Some("did:key:zVta".into());
+        a.mediator_did = Some("did:key:zMed".into());
         assert_eq!(
-            got,
-            Some((
-                "did:key:zAgent".into(),
-                "zKey".into(),
-                "did:key:zVta".into(),
-                "did:key:zMed".into(),
-            ))
+            agent_connect_from(&a).mode().unwrap(),
+            ConnectMode::DidKey {
+                agent_did: "did:key:zAgent".into(),
+                mediator_did: "did:key:zMed".into(),
+            }
         );
     }
 
     #[test]
-    fn didkey_didcomm_params_none_set_returns_none() {
-        assert_eq!(didkey_didcomm_params(None, None, None, None).unwrap(), None);
-    }
-
-    #[test]
-    fn load_agent_bundle_parses_inline_json() {
-        let json = r#"{"did":"did:webvh:abc:example.com:a","secrets":[
-            {"key_id":"did:webvh:abc:example.com:a#key-0","key_type":"ed25519","private_key_multibase":"z6Mksign"}
-        ]}"#;
-        let bundle = load_agent_bundle(json).unwrap();
-        assert_eq!(bundle.did, "did:webvh:abc:example.com:a");
-        assert_eq!(bundle.secrets.len(), 1);
+    fn agent_secrets_flag_selects_the_bundle_mode() {
+        let mut a = args();
+        a.agent_secrets = Some(r#"{"did":"did:webvh:abc:example.com:a","secrets":[]}"#.into());
+        a.vta_did = Some("did:key:zVta".into());
+        a.mediator_did = Some("did:key:zMed".into());
         assert_eq!(
-            bundle.secrets[0].key_id,
-            "did:webvh:abc:example.com:a#key-0"
+            agent_connect_from(&a).mode().unwrap(),
+            ConnectMode::DidWebvhBundle {
+                agent_did: "did:webvh:abc:example.com:a".into(),
+                mediator_did: "did:key:zMed".into(),
+            }
         );
     }
 
     #[test]
-    fn load_agent_bundle_reads_file_path() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("vta-mcp-bundle-{}.json", std::process::id()));
-        std::fs::write(&path, r#"{"did":"did:webvh:f:example.com:b","secrets":[]}"#).unwrap();
-        let bundle = load_agent_bundle(path.to_str().unwrap()).unwrap();
-        assert_eq!(bundle.did, "did:webvh:f:example.com:b");
-        assert!(bundle.secrets.is_empty());
-        let _ = std::fs::remove_file(&path);
+    fn a_half_configured_agent_identity_fails_rather_than_using_the_session() {
+        let mut a = args();
+        a.agent_did = Some("did:key:zAgent".into());
+        a.vta = Some("my-vta".into());
+        let err = agent_connect_from(&a).mode().unwrap_err();
+        assert!(err.to_string().contains("agent_key"), "{err}");
     }
 
     #[test]
-    fn didkey_didcomm_params_partial_is_error() {
-        let err = didkey_didcomm_params(
-            Some("did:key:zAgent".into()),
-            None,
-            Some("did:key:zVta".into()),
-            None,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("all of"));
+    fn the_vta_slug_alone_selects_session_mode() {
+        let mut a = args();
+        a.vta = Some("my-vta".into());
+        // Guard against a `VTA_TOKEN` in the developer's own environment
+        // silently turning this into the token rung.
+        let mut connect = agent_connect_from(&a);
+        connect.token = None;
+        assert_eq!(
+            connect.mode().unwrap(),
+            ConnectMode::Session {
+                key: "my-vta".into()
+            }
+        );
     }
 }
