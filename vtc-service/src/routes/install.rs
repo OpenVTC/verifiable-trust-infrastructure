@@ -62,6 +62,7 @@ use crate::server::AppState;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ClaimStartRequest {
     pub install_token: String,
     /// Out-of-band claim code the operator received alongside the
@@ -90,6 +91,7 @@ pub struct ClaimStartResponse {
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ClaimFinishRequest {
     pub install_token: String,
     pub registration_id: String,

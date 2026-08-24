@@ -217,7 +217,7 @@ async fn end_to_end_install_flow_phase_0_gate() {
         "/v1/install/claim/start",
         CLAIM_START_TASK,
         None,
-        Some(json!({ "install_token": install_token })),
+        Some(json!({ "installToken": install_token })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "claim/start: {body}");
@@ -237,9 +237,9 @@ async fn end_to_end_install_flow_phase_0_gate() {
         CLAIM_FINISH_TASK,
         None,
         Some(json!({
-            "install_token": install_token,
-            "registration_id": registration_id,
-            "webauthn_response": register_cred,
+            "installToken": install_token,
+            "registrationId": registration_id,
+            "webauthnResponse": register_cred,
         })),
     )
     .await;
@@ -257,7 +257,7 @@ async fn end_to_end_install_flow_phase_0_gate() {
         "/v1/admin/bootstrap",
         BOOTSTRAP_TASK,
         None,
-        Some(json!({ "setup_session_token": setup_session_token })),
+        Some(json!({ "setupSessionToken": setup_session_token })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "bootstrap: {body}");
@@ -309,6 +309,9 @@ async fn end_to_end_install_flow_phase_0_gate() {
         ENROLL_FINISH_TASK,
         Some(&admin_token),
         Some(json!({
+            // `RegisterFinishRequest` (routes/admin/passkeys.rs) has no
+            // `rename_all`, so this endpoint is still snake_case. It is a
+            // separate divergence from the install-claim ones fixed here.
             "registration_id": reg_id,
             "register_response": register_response,
             "uv_response": uv_response,
@@ -412,7 +415,7 @@ async fn end_to_end_install_flow_phase_0_gate() {
         "/v1/install/claim/start",
         CLAIM_START_TASK,
         None,
-        Some(json!({ "install_token": install_token })),
+        Some(json!({ "installToken": install_token })),
     )
     .await;
     assert_eq!(

@@ -490,7 +490,7 @@ fn uuid() -> uuid::Uuid {
 /// 3. **Unspecced members on an `additionalProperties: false` response.**
 ///    Usually the service is ahead of the spec (the ceremony verdict
 ///    envelope, `decidedAt`), occasionally behind it (`didBindingChallenge`).
-const KNOWN_DRIFT_COUNT: usize = 32;
+const KNOWN_DRIFT_COUNT: usize = 31;
 
 /// Every bound, published `spec/vtc/*` URI, with the request and response the
 /// VTC actually speaks.
@@ -529,20 +529,16 @@ fn table() -> Vec<Conformance> {
 
     vec![
         // ─── admin ───────────────────────────────────────────────────
-        drift!(
+        checked!(
             s::admin::bootstrap::v0_1::Payload,
             s::admin::bootstrap::v0_1::Response,
-            Side::Request,
-            // `BootstrapRequest` (routes/admin/bootstrap.rs:38) has no
-            // `rename_all`, so the single member is snake_case.
-            json!({ "setup_session_token": "eyJhbGciOiJFZERTQSJ9.e30.sig" }),
-            json!({ "adminDid": OTHER_DID, "eventId": REQUEST_ID }),
-            "request member is `setup_session_token`; the spec names \
-             `setupSessionToken` and forbids extras. A conforming client's \
-             body deserialises as a missing required field. R3.1 casing \
-             drift — fix here (add `rename_all = \"camelCase\"`), not \
-             upstream; it also breaks the admin SPA's post and needs that \
-             changed in the same commit"
+            // `BootstrapRequest` — routes/admin/bootstrap.rs. Sent
+            // `setup_session_token` until it gained `rename_all`, so a
+            // conforming client's body failed as a missing required field —
+            // and `claim/finish` had been handing that client a
+            // `setupSessionToken` to send.
+            json!({ "setupSessionToken": "eyJhbGciOiJFZERTQSJ9.e30.sig" }),
+            json!({ "adminDid": OTHER_DID, "eventId": REQUEST_ID })
         ),
         checked!(
             s::admin::invites::create::v0_1::Payload,
@@ -905,18 +901,18 @@ fn table() -> Vec<Conformance> {
             s::install::claim::start::v0_1::Response,
             Side::Both,
             // `ClaimStartRequest` — routes/install.rs:65. No `rename_all`.
-            json!({ "install_token": "eyJhbGciOiJFZERTQSJ9.e30.sig",
-                    "claim_secret": "K7QW-3M2X-9PLD" }),
+            json!({ "installToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
+                    "claimSecret": "K7QW-3M2X-9PLD" }),
             // `ClaimStartResponse` — routes/install.rs:81.
             json!({ "registrationId": REQUEST_ID, "options": { "publicKey": {} } }),
-            "request members are snake_case (`install_token`) and it carries \
-             `claim_secret`, which the spec does not define at all — the \
+            "the request carries \
+             `claimSecret`, which the spec does not define at all — the \
              claim secret is the second factor on the install URL, so the \
              spec is missing a real member. The response omits \
              `didBindingChallenge`, which the spec REQUIRES: this service \
              binds the admin DID at `claim/finish` instead, so the member has \
-             nowhere to come from. Casing is a fix here; the two structural \
-             halves need the spec and the flow reconciled"
+             nowhere to come from. The casing half is fixed; the two \
+             structural halves need the spec and the flow reconciled"
         ),
         drift!(
             s::install::claim::finish::v0_1::Payload,
@@ -924,19 +920,20 @@ fn table() -> Vec<Conformance> {
             Side::Request,
             // `ClaimFinishRequest` — routes/install.rs:93. No `rename_all`.
             json!({
-                "install_token": "eyJhbGciOiJFZERTQSJ9.e30.sig",
-                "registration_id": REQUEST_ID,
-                "webauthn_response": { "id": "AX6nVQ8s", "type": "public-key" },
+                "installToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
+                "registrationId": REQUEST_ID,
+                "webauthnResponse": { "id": "AX6nVQ8s", "type": "public-key" },
             }),
             // `ClaimFinishResponse` — routes/install.rs:103.
             json!({ "adminDid": OTHER_DID, "setupSessionToken": "eyJhbGciOiJFZERTQSJ9.e30.sig" }),
-            "request members are snake_case, and the spec's fourth required \
+            "the spec's fourth required \
              member `didBindingSignature` is absent — the passkey attestation \
              is the only binding this service checks. Same reconciliation as \
-             `claim/start`: R3.1 casing is a fix here, the missing signature \
-             is a design question. Note the response's `setupSessionToken` is \
-             camelCase and feeds `admin/bootstrap`, which then reads it back \
-             as `setup_session_token`"
+             `claim/start`: the casing half is fixed, the missing signature \
+             is a design question. The response's `setupSessionToken` now \
+             feeds an `admin/bootstrap` that accepts that same name — until \
+             both were fixed, the service issued one spelling and demanded \
+             the other, and only the SPA's hand re-keying bridged it"
         ),
         // ─── invitations ─────────────────────────────────────────────
         checked!(
