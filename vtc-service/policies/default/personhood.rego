@@ -108,11 +108,20 @@ allow if {
 # Note what this rule does **not** establish. DTG Credentials
 # §Personhood Credentials requires governance enforcing *both* real
 # human personhood *and* exactly one membership per person. This rule
-# is evidence for the first only; uniqueness is not something a
-# credential presented by its own subject can demonstrate, and this
-# daemon does not enforce it. A community whose governance depends on
-# one-membership-per-person needs a rule that consults evidence from an
-# issuer who checks that — see `docs/03-vtc/personhood-and-graph.md`.
+# is evidence for the first only — uniqueness is not something a
+# credential presented by its own subject can demonstrate.
+#
+# The second half is **not** a policy rule and cannot be written as one.
+# It lives at the route, gated on the community's own
+# `personhood.singleMembership` declaration, and works by claiming a
+# pseudonym issued by a provider the community published in
+# `personhood.acceptedIdvps`. A rego rule cannot do it: deciding whether
+# a pseudonym is already spoken for is a read against stored state, which
+# a policy evaluated over one presentation has no access to.
+#
+# So a community wanting one-membership-per-person turns that flag on
+# rather than editing this file — see
+# `docs/03-vtc/personhood-and-graph.md`.
 allow if {
 	some i
 	cred := input.vp_claims.credentials[i]
