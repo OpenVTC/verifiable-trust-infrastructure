@@ -114,6 +114,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use chrono::DateTime;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
@@ -490,7 +491,7 @@ fn uuid() -> uuid::Uuid {
 /// 3. **Unspecced members on an `additionalProperties: false` response.**
 ///    Usually the service is ahead of the spec (the ceremony verdict
 ///    envelope, `decidedAt`), occasionally behind it (`didBindingChallenge`).
-const KNOWN_DRIFT_COUNT: usize = 26;
+const KNOWN_DRIFT_COUNT: usize = 25;
 
 /// Every bound, published `spec/vtc/*` URI, with the request and response the
 /// VTC actually speaks.
@@ -869,20 +870,30 @@ fn table() -> Vec<Conformance> {
              members are still this service's spelling. Same model \
              disagreement as `issue`; fix the family together"
         ),
-        drift!(
+        checked!(
             s::endorsements::revoke::v0_1::Payload,
             s::endorsements::revoke::v0_1::Response,
-            Side::Response,
             json!({ "endorsementId": "11111111-1111-4111-8111-111111111111",
                     "reason": "issued in error" }),
-            // `RevokeResponse` — routes/endorsements.rs:344.
-            json!({ "id": "11111111-1111-4111-8111-111111111111" }),
-            "response is `{id}`; the spec requires `{endorsementId, \
-             revocation: {credentialId, revokedAt}, statusListIndex}`. The \
-             service holds all four values at the point it replies — it \
-             flipped the status-list bit to get there — so this is a fix \
-             here, and a caller currently cannot tell a fresh revocation \
-             from an idempotent repeat"
+            // Serialised from the **real** `RevokeResponse`, not hand-written.
+            //
+            // This entry sat in the drift table describing a `{id}` response
+            // that #1082 had already replaced, because its hand-written
+            // fixture was never updated with the handler. The witness proves
+            // the *fixture* diverges, not the handler, so a stale fixture
+            // keeps a fixed route in the table forever and the count
+            // over-reports. Building the fixture from the type the handler
+            // actually returns closes that gap for this row: change the
+            // struct and this fixture changes with it.
+            serde_json::to_value(crate::routes::endorsements::RevokeResponse {
+                endorsement_id: "11111111-1111-4111-8111-111111111111".into(),
+                revocation: crate::routes::endorsements::RevocationDetail {
+                    credential_id: "urn:uuid:22222222-2222-4222-8222-222222222222".into(),
+                    revoked_at: "2026-08-23T09:00:00Z".into(),
+                },
+                status_list_index: 7,
+            })
+            .expect("RevokeResponse serialises")
         ),
         // ─── install ─────────────────────────────────────────────────
         drift!(
@@ -1363,28 +1374,30 @@ fn table() -> Vec<Conformance> {
             s::website::files::list::v0_1::Response,
             Side::Response,
             json!({ "cursor": "assets/logo.png", "limit": 50 }),
-            // `ListResponse` / `FileEntry` — routes/website/files.rs:47 / :38.
-            // The wrapper is the one list response in this service that is
-            // NOT a `Paginated<T>`, so it does say `nextCursor`; the rows are
-            // where it goes wrong.
-            json!({
-                "items": [{
-                    "path": "index.html",
-                    "sizeBytes": 2048,
-                    "etag": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                    "modifiedAt": 1_755_946_800_u64,
+            // Serialised from the real `ListResponse` / `FileEntry`, per the
+            // `endorsements/revoke` note below — a hand-written fixture is
+            // what let that row describe a shape the handler had stopped
+            // sending.
+            serde_json::to_value(crate::routes::website::files::ListResponse {
+                items: vec![crate::routes::website::files::FileEntry {
+                    path: "index.html".into(),
+                    size: 2048,
+                    etag: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
+                    modified_at: DateTime::from_timestamp(1_755_946_800, 0)
+                        .expect("fixture timestamp"),
                 }],
-                "nextCursor": "styles/main.css",
-            }),
-            "each row sends `sizeBytes` where the item schema requires \
-             `size`, and adds an unspecced `etag`; the item is \
-             `additionalProperties: false`, so a conforming consumer sees a \
-             missing required member and an unknown one. `modifiedAt` also \
-             differs in kind — unix seconds here, `format: date-time` in the \
-             spec — which no serde check would catch and this one does not \
-             either, since format assertion is off by default. This entry is \
-             the sweep finding a task I had first written as `checked!`: the \
-             wrapper conforms and I stopped reading there"
+                next_cursor: Some("styles/main.css".into()),
+            })
+            .expect("ListResponse serialises"),
+            "`size` and `modifiedAt` are both right as of #1095 — the row \
+             sent `sizeBytes` for the one required member a listing exists \
+             to report, and a unix `u64` where the schema says `type: \
+             string, format: date-time`, a mismatch in kind and not merely \
+             in format. What remains is the unspecced `etag` against an \
+             `additionalProperties: false` item. It is the same SHA-256 the \
+             `show` handler sends as an `ETag` header, so it lets a client \
+             detect a change without downloading — worth taking upstream, \
+             not dropping"
         ),
         checked!(
             s::website::files::delete::v0_1::Payload,
@@ -1398,17 +1411,23 @@ fn table() -> Vec<Conformance> {
             s::website::generations::list::v0_1::Response,
             Side::Response,
             json!({}),
-            // `GenerationsResponse` — the envelope is fixed; the rows are not.
-            json!({ "generations": [
-                { "generation": 1, "isCurrent": false,
-                  "deployedAt": 1_755_860_400_u64, "sizeBytes": 1_048_576_u64 }
-            ] }),
-            "the missing `{generations: […]}` envelope is fixed. The rows are \
-             not, and the entry that called this envelope-only was wrong: the \
-             spec's row carries `generation` and `current`, while the service \
-             sends `isCurrent` for `current` and adds `deployedAt` and \
-             `sizeBytes`. One rename here, and two members that are worth \
-             having — take them upstream rather than dropping them"
+            // Serialised from the real `GenerationsResponse` / `GenerationRow`.
+            serde_json::to_value(crate::routes::website::generations::GenerationsResponse {
+                generations: vec![crate::routes::website::generations::GenerationRow {
+                    generation: "1".into(),
+                    current: false,
+                    deployed_at: 1_755_860_400,
+                    size_bytes: 1_048_576,
+                }],
+            })
+            .expect("GenerationsResponse serialises"),
+            "`current` and the `generation` type are both right as of #1095 \
+             — the row named `current` as `isCurrent` and sent the raw `u32` \
+             where the schema says `type: string`, which `rollback` had \
+             always stringified. What remains is the unspecced `deployedAt` \
+             and `sizeBytes` against an `additionalProperties: false` item; \
+             a rollback target is not much use without knowing when it was \
+             deployed or how big it is, so those go upstream"
         ),
         checked!(
             s::website::rollback::v0_1::Payload,

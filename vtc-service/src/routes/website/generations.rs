@@ -36,7 +36,10 @@ pub async fn list(
         ));
     }
 
-    let generations = list_managed_generations(&root_dir)?;
+    let generations = list_managed_generations(&root_dir)?
+        .into_iter()
+        .map(GenerationRow::from)
+        .collect();
     Ok(Json(GenerationsResponse { generations }))
 }
 
@@ -45,12 +48,42 @@ pub async fn list(
 /// compared it with its schema; the rows always conformed.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct GenerationsResponse {
-    // `GenerationEntry` comes from the website module and derives no
-    // `ToSchema`; typed as an opaque object here rather than deriving it
-    // there, which would pull utoipa into a module that has no other use for
-    // it. The wire shape is unaffected.
-    #[schema(value_type = Vec<Object>)]
-    pub generations: Vec<GenerationEntry>,
+    pub generations: Vec<GenerationRow>,
+}
+
+/// One row of the listing, as the item schema names it.
+///
+/// A wire type distinct from the stored [`GenerationEntry`] because the two
+/// disagree on purpose: a generation is a `u32` in storage, where arithmetic
+/// and ordering want a number, and a string on the wire, where the schema
+/// types it as one. `rollback` has always drawn that line the same way
+/// (`gen_num.to_string()`); this listing sent the raw `u32` and named
+/// `current` as `isCurrent` until #1095.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationRow {
+    /// Decimal, matching `rollback` — not `gen-N`, which is the directory
+    /// name rather than the label the API has ever used.
+    pub generation: String,
+    pub current: bool,
+    /// Unspecced upstream, and the item is `additionalProperties: false`, so
+    /// these two are the half of this entry that still diverges. Both are
+    /// worth having — a rollback target is not much use without knowing when
+    /// it was deployed or how big it is — so they go upstream rather than in
+    /// the bin.
+    pub deployed_at: u64,
+    pub size_bytes: u64,
+}
+
+impl From<GenerationEntry> for GenerationRow {
+    fn from(e: GenerationEntry) -> Self {
+        Self {
+            generation: e.generation.to_string(),
+            current: e.is_current,
+            deployed_at: e.deployed_at,
+            size_bytes: e.size_bytes,
+        }
+    }
 }
 
 pub async fn rollback(

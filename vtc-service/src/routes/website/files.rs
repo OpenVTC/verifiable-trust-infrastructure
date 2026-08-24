@@ -13,6 +13,7 @@ use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -37,9 +38,19 @@ pub struct ListQuery {
 #[serde(rename_all = "camelCase")]
 pub struct FileEntry {
     pub path: String,
-    pub size_bytes: u64,
+    /// `size`, not `sizeBytes` — the name the item schema requires. It was
+    /// `sizeBytes` until #1095, so the one member a listing exists to report
+    /// was absent under the name a conforming consumer looks for.
+    pub size: u64,
+    /// A SHA-256 over the file's contents. Unspecced upstream and the item is
+    /// `additionalProperties: false`, so this is the half of the entry that
+    /// still diverges — it is real, useful data (the same hash the `show`
+    /// handler sends as an `ETag` header, letting a client detect a change
+    /// without downloading), so it goes upstream rather than in the bin.
     pub etag: String,
-    pub modified_at: u64,
+    /// `format: date-time`, not unix seconds. This was a `u64` until #1095 —
+    /// a type mismatch, not merely a format one: the schema says `string`.
+    pub modified_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize)]
@@ -113,8 +124,8 @@ struct FileMeta {
     rel: String,
     /// Absolute path, for reading the file when its etag is finally computed.
     abs: PathBuf,
-    size_bytes: u64,
-    modified_at: u64,
+    size: u64,
+    modified_at: DateTime<Utc>,
 }
 
 /// Walk `root` and collect metadata for every servable file. Blocking (one
@@ -160,16 +171,19 @@ fn collect_file_meta(root: &Path, blocklist: &[String]) -> Result<Vec<FileMeta>,
             }
             let rel = path.strip_prefix(root).unwrap_or(&path);
             let rel_str = rel.to_string_lossy().replace('\\', "/");
+            // A file whose mtime the platform will not report lists as the
+            // epoch rather than dropping out of the listing entirely — the
+            // same choice the `u64` form made, now spelled as a timestamp.
             let modified_at = meta
                 .modified()
                 .ok()
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+                .and_then(|d| DateTime::from_timestamp(d.as_secs() as i64, 0))
+                .unwrap_or(DateTime::UNIX_EPOCH);
             out.push(FileMeta {
                 rel: rel_str,
                 abs: path,
-                size_bytes: meta.len(),
+                size: meta.len(),
                 modified_at,
             });
         }
@@ -188,7 +202,7 @@ fn hash_window(window: Vec<FileMeta>) -> Vec<FileEntry> {
             let bytes = std::fs::read(&m.abs).ok()?;
             Some(FileEntry {
                 path: m.rel,
-                size_bytes: m.size_bytes,
+                size: m.size,
                 etag: hex::encode(Sha256::digest(&bytes)),
                 modified_at: m.modified_at,
             })
@@ -457,11 +471,7 @@ mod tests {
         let rels: Vec<&str> = metas.iter().map(|m| m.rel.as_str()).collect();
         assert_eq!(rels, vec!["assets/app.js", "index.html"]);
         assert_eq!(
-            metas
-                .iter()
-                .find(|m| m.rel == "index.html")
-                .unwrap()
-                .size_bytes,
+            metas.iter().find(|m| m.rel == "index.html").unwrap().size,
             11
         );
 
@@ -470,6 +480,6 @@ mod tests {
         assert_eq!(entries.len(), 2);
         let idx = entries.iter().find(|e| e.path == "index.html").unwrap();
         assert_eq!(idx.etag, hex::encode(Sha256::digest(b"<h1>hi</h1>")));
-        assert_eq!(idx.size_bytes, 11);
+        assert_eq!(idx.size, 11);
     }
 }
