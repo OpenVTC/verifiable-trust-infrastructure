@@ -404,16 +404,24 @@ fn load_bundle(raw: &str) -> Result<DidSecretsBundle, VtaError> {
     })
 }
 
-/// `~/.config/pnm`, the directory `pnm` stores sessions in by default.
+/// Where `pnm` stores its sessions by default.
+///
+/// **`dirs::config_dir()/pnm`, which is not `~/.config/pnm` everywhere.** On
+/// macOS it is `~/Library/Application Support/pnm`; on Windows, `%APPDATA%\pnm`.
+/// `pnm` itself uses `dirs::config_dir()` — see `config_dir` in
+/// `pnm-cli/src/config.rs` — so a bridge that assumes the XDG path finds no
+/// session on either platform and reports an *authentication* failure to an
+/// operator who is authenticated. That is indistinguishable, from their side,
+/// from an expired login: they run `pnm auth status`, are told they are fine,
+/// and are none the wiser.
 fn default_sessions_dir() -> Result<PathBuf, VtaError> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| {
+    Ok(dirs::config_dir()
+        .ok_or_else(|| {
             VtaError::Validation(
-                "HOME (or USERPROFILE) is not set; set sessions_dir explicitly".into(),
+                "could not determine the user config directory; set sessions_dir explicitly".into(),
             )
-        })?;
-    Ok(PathBuf::from(home).join(".config").join("pnm"))
+        })?
+        .join("pnm"))
 }
 
 #[cfg(test)]
@@ -544,6 +552,19 @@ mod tests {
         let bundle = load_bundle(path.to_str().unwrap()).unwrap();
         assert_eq!(bundle.did, "did:webvh:f:example.com:b");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_default_sessions_dir_follows_pnm_rather_than_assuming_xdg() {
+        // `pnm` uses `dirs::config_dir()`, which is NOT `~/.config` on macOS or
+        // Windows. Assuming XDG found no session on either, and reported it as
+        // an authentication failure.
+        let dir = default_sessions_dir().expect("a config dir");
+        assert_eq!(dir.file_name().expect("pnm"), "pnm");
+        assert_eq!(
+            dir.parent().expect("parent"),
+            dirs::config_dir().expect("config dir")
+        );
     }
 
     #[test]

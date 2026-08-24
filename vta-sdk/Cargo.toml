@@ -98,6 +98,9 @@ client = [
 session = [
   "client",
   "didcomm",
+  # `default_sessions_dir` must agree with where `pnm` actually writes, which
+  # is `dirs::config_dir()` — not the XDG path on macOS or Windows.
+  "dep:dirs",
   "dep:affinidi-did-resolver-cache-sdk",
   "dep:tokio",
   # Rotation of a temp-provisioned did:key on first successful auth needs
@@ -226,6 +229,7 @@ affinidi-openid4vp = { workspace = true }
 affinidi-openid4vci = { workspace = true }
 base64 = { workspace = true }
 multibase = { workspace = true }
+dirs = { version = "6", optional = true }
 thiserror = { workspace = true }
 url = { workspace = true }
 affinidi-tdk = { workspace = true, optional = true }

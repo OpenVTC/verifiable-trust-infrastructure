@@ -67,8 +67,10 @@ Two modes:
   sessions as `vta:<slug>` and `vta_sdk::agent_connect::pnm_session_key` adds
   that prefix. Passing an already-prefixed value also works.
   Options: `--service-name` (default `pnm-cli`), `--sessions-dir` (default
-  `~/.config/pnm`), `--url` (override the resolved REST URL). All have `VTA_MCP_*`
-  env equivalents.
+  `dirs::config_dir()/pnm` — `~/Library/Application Support/pnm` on macOS,
+  `%APPDATA%\pnm` on Windows, `~/.config/pnm` on Linux, matching where `pnm`
+  itself writes), `--url` (override the resolved REST URL). All have
+  `VTA_MCP_*` env equivalents.
 
 - **Token** — a REST client with a bearer token (simple; for testing /
   short-lived use; no auto-refresh):

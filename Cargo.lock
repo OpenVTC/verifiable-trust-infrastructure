@@ -9420,6 +9420,7 @@ dependencies = [
  "curve25519-dalek",
  "dbus-secret-service-keyring-store",
  "didwebvh-rs",
+ "dirs",
  "ed25519-dalek",
  "futures-util",
  "getrandom 0.4.3",
