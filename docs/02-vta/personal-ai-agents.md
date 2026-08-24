@@ -217,7 +217,54 @@ pnm approvals require https://trusttasks.org/spec/acl/grant/0.1 --reauth
 When a gated op is initiated, the agent's request returns a step-up challenge;
 the operator approves with a passkey (`auth/passkey-login`), and the op proceeds.
 
-## Step 6 — Credentials (optional)
+## Step 6 — Agent memory (optional, but the reason most agents want a VTA)
+
+An agent that forgets everything between runs is a tool. The VTA carries a
+per-context key/value store for what an agent should remember about its user —
+`vta/memory/{put,list,delete}/0.1` — and because it lives on the VTA rather than
+in the agent runtime, the memory survives the runtime being replaced, is audited
+(`memory.put` / `.list` / `.delete`), and is included in the VTA's encrypted
+backups.
+
+The gate is **context access**, not a capability: `require_context(contextId)`,
+the same check the context-scoped key tasks use. That makes the trust context
+the isolation boundary — a context-A agent cannot read, write, or delete
+context-B memory — and it means the least-privilege grant for a memory-only
+agent is an ACL entry with role `application` naming exactly one context.
+
+```bash
+# One context per agent (or per domain) — this is the isolation boundary.
+pnm contexts create --name my-agent-memory
+
+# Least privilege: NOT admin. For `admin` an empty allowed-contexts list means
+# *unrestricted*; for every other role it means authorized nowhere.
+pnm acl create --did <agent did:key> --role application --contexts my-agent-memory
+```
+
+From a client, `VtaClient::{memory_put, memory_list, memory_delete}` drive the
+three tasks through the generic Trust-Task dispatcher, so they ride TSP, DIDComm
+or REST according to what both DID documents advertise — the agent writes no
+transport code.
+
+Two boundaries worth stating before anything is stored here:
+
+- **Memory is not a secret store.** Tokens, passwords and keys belong in the
+  secrets vault; credentials belong in the credential vault. Those are gated on
+  `VaultRead` / `VaultWrite` / `CredentialWrite` for a reason.
+- **Memory is not application state.** `memory/list/0.1` returns *every* entry
+  in the context — no version, no precondition, no cursor — and, the argument
+  that settles it, *"forget everything" has to stay a safe thing for a user to
+  ask an agent*, which it cannot be if account state lives there. Use
+  `vta/app-state/*/1.0` (versioned, namespaced, with a change feed) instead. See
+  `docs/05-design-notes/appstate-store.md`.
+
+That same "no prefix, no cursor, no search" shape means **retrieval is the
+client's job**: structure the key, keep a short description in the value to rank
+on, and return summaries rather than whole bodies. A worked example is
+[`vta-agent-memory`](https://github.com/OpenVTC/vta-agent-memory), a Claude Code
+plugin built on these three tasks.
+
+## Step 7 — Credentials (optional)
 
 If the agent must hold or present Verifiable Credentials, the
 `credential_exchange` Trust Task slice + `sealed_transfer` are already available.
@@ -238,6 +285,8 @@ Lower priority unless your agents do credential work.
 | `pnm device …` / `pnm vault …` CLI     | **Added** (this change) — `VtaClient::{device_*,vault_*}` + `pnm` commands, both transports |
 | Sealed vault upsert/release            | **Added** — `seal_vault_secret` / `open_sealed_secret` on the DIDComm session |
 | `pnm acl --capabilities` flag          | **Gap** (deferred Phase 3) — capabilities derive from role / are set at `device/register` |
+| Agent memory Trust Tasks               | Exists (`trust_tasks/memory.rs`, `VtaClient::memory_*`) — context-gated, audited |
+| Agent-side connect ladder              | Exists (`vta_sdk::agent_connect::AgentConnect`) — one way in for every agent bridge |
 
 ## References
 
@@ -247,3 +296,5 @@ Lower priority unless your agents do credential work.
 - Trust Tasks (device/vault/push): `vta-service/src/trust_tasks/`,
   `vta-sdk/src/trust_tasks.rs`
 - Mobile/agent architecture (push topology): `docs/05-design-notes/mobile-agent-architecture.md`
+- Agent memory vs. application state: `docs/05-design-notes/appstate-store.md` §1
+- Agent-side connect ladder: `vta-sdk/src/agent_connect.rs`

@@ -11,6 +11,10 @@ maps one-to-one onto the session's `VtaClient`. Transport is **stdio** (the host
 spawns the binary and speaks JSON-RPC over stdin/stdout); all logging goes to
 stderr.
 
+The four ways in below are not implemented here — they are
+`vta_sdk::agent_connect::AgentConnect`, shared with every other agent-side
+bridge. `build_client` is a pure args → `AgentConnect` mapping.
+
 ## Tools
 
 The **full** VTA management surface is reachable via two generic tools, plus
