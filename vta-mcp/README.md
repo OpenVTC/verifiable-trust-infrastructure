@@ -109,6 +109,11 @@ same DIDComm session).
 ## Notes
 
 - Build: `cargo build -p vta-mcp` (or `--release`). `publish = false`.
+- **Session mode needs the `keyring` feature**, which is on by default. It is
+  what compiles a session backend in; without one, `SessionStore` reads return
+  `None` and the bridge reports "not authenticated" whatever the state of your
+  login. Build `--no-default-features` only if you are using token or DIDComm
+  mode.
 - The agent's least-privilege capability set comes from its VTA **role** / ACL —
   the MCP server inherits whatever the authenticated identity is allowed to do.
 - See `docs/02-vta/personal-ai-agents.md` for the broader agent-enablement story.

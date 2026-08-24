@@ -9,6 +9,16 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# Session mode reads a `pnm`/`cnm` login out of the OS keyring, and without a
+# session backend compiled in it cannot read anything at all — it fails with
+# "this build has no session store compiled in". That made the default auth
+# mode, and the one this crate's README documents first, impossible. On by
+# default, exactly as `pnm-cli` and `cnm-cli` have it.
+default = ["keyring"]
+keyring = ["vta-sdk/keyring"]
+config-session = ["vta-sdk/config-session"]
+
 [dependencies]
 # `acl-setup` makes `DIDCommSession::connect` set this client's mediator ACL to
 # accept-all on connect (`vta_sdk::acl_setup::set_client_acl_on_connection`).
