@@ -863,10 +863,10 @@ fn table() -> Vec<Conformance> {
             s::endorsements::show::v0_1::Response,
             Side::Response,
             json!({ "endorsementId": "11111111-1111-4111-8111-111111111111" }),
-            endorsement(),
-            "bare row where the spec says `{endorsement: …}`, and the row's \
-             members are this service's spelling. Same model disagreement as \
-             `issue`; fix the family together"
+            json!({ "endorsement": endorsement() }),
+            "the `{endorsement: …}` envelope is right as of #1093; the row's \
+             members are still this service's spelling. Same model \
+             disagreement as `issue`; fix the family together"
         ),
         drift!(
             s::endorsements::revoke::v0_1::Payload,
@@ -976,9 +976,9 @@ fn table() -> Vec<Conformance> {
             s::join_requests::show::v0_1::Response,
             Side::Response,
             json!({ "id": REQUEST_ID }),
-            join_request(),
-            "bare `JoinRequest` where the spec says `{request: …}`, plus the \
-             same unspecced `vpClaims` / `decision` as `list`"
+            json!({ "request": join_request() }),
+            "the `{request: …}` envelope is right as of #1093; the row still \
+             carries the same unspecced `vpClaims` / `decision` as `list`"
         ),
         drift!(
             s::join_requests::decide::v0_1::Payload,
@@ -1112,9 +1112,9 @@ fn table() -> Vec<Conformance> {
             s::members::show::v0_1::Response,
             Side::Response,
             json!({ "did": DID }),
-            member_response(),
-            "bare `MemberResponse` where the spec says `{member: …}`, plus \
-             the same five unspecced members as `list`"
+            json!({ "member": member_response() }),
+            "the `{member: …}` envelope is right as of #1093; the row still \
+             carries the same five unspecced members as `list`"
         ),
         drift!(
             s::members::update::v0_1::Payload,
@@ -1270,28 +1270,26 @@ fn table() -> Vec<Conformance> {
             s::registry::diagnostics::v0_1::Response,
             Side::Response,
             json!({}),
-            // `DiagnosticsResponse` — routes/health.rs:73. No `rename_all`.
+            // `DiagnosticsResponse` — routes/health.rs:73, camelCase as of #1093.
             json!({
-                "registry_status": "active",
-                "queue_depth": 3,
-                "rtbf_batched_count": 1,
-                "failed_count": 0,
-                "oldest_pending_age_seconds": 42,
-                "last_success_at": TS,
-                "syncer_enabled": true,
-                "syncer_running": true,
-                "syncer_restarts": 0,
-                "messaging_status": "connected",
+                "registryStatus": "active",
+                "queueDepth": 3,
+                "rtbfBatchedCount": 1,
+                "failedCount": 0,
+                "oldestPendingAgeSeconds": 42,
+                "lastSuccessAt": TS,
+                "syncerEnabled": true,
+                "syncerRunning": true,
+                "syncerRestarts": 0,
+                "messagingStatus": "connected",
                 "transports": [{ "protocol": "rest", "advertised": true, "serviceable": true }],
             }),
-            "every member is snake_case (`registry_status` for \
-             `registryStatus`), so not one of the four required members is \
-             present under the name the spec gives it — the worst single row \
-             in this table. Nine further members (`syncer_*`, \
-             `messaging_status`, `transports`, `registry_transport`, \
-             `vta_did`, `mediator_*`) have no counterpart in the spec at \
-             all. R3.1 casing is a fix here; the transport/messaging half is \
-             genuinely useful diagnostics and should go upstream"
+            "R3.1 casing fixed in #1093 — all four required members now \
+             reach the wire under the spec's name. Nine further members \
+             (`syncer*`, `messagingStatus`, `transports`, \
+             `registryTransport`, `vtaDid`, `mediator*`) still have no \
+             counterpart in the spec at all; that half is genuinely useful \
+             diagnostics and should go upstream, not be deleted"
         ),
         // ─── relationships ───────────────────────────────────────────
         checked!(

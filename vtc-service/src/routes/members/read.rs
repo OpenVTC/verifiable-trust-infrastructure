@@ -263,7 +263,7 @@ pub struct RemovedMembersResponse {
     security(("bearer_jwt" = [])),
     params(("did" = String, Path, description = "Member DID")),
     responses(
-        (status = 200, description = "Member record", body = MemberResponse),
+        (status = 200, description = "Member record", body = MemberEnvelope),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
         (status = 404, description = "Member not found"),
@@ -273,7 +273,7 @@ pub async fn show_member(
     _auth: AdminAuth,
     State(state): State<AppState>,
     Path(did): Path<String>,
-) -> Result<Json<MemberResponse>, AppError> {
+) -> Result<Json<MemberEnvelope>, AppError> {
     vti_common::identifier::validate_did("did", &did)?;
     let member = get_member(&state.members_ks, &did)
         .await?
@@ -283,7 +283,9 @@ pub async fn show_member(
         // surface as 404 because the *member* isn't presentable.
         AppError::NotFound(format!("member not found (no ACL row): {did}"))
     })?;
-    Ok(Json(MemberResponse::from_pair(acl, member)))
+    Ok(Json(MemberEnvelope {
+        member: MemberResponse::from_pair(acl, member),
+    }))
 }
 
 /// Unused-listing helper kept to ensure `list_acl_entries` stays
@@ -298,4 +300,12 @@ pub(crate) async fn list_admin_dids(state: &AppState) -> Result<Vec<String>, App
         .filter(|e| matches!(e.role, VtcRole::Admin))
         .map(|e| e.did)
         .collect())
+}
+
+/// `{ member: … }` — the shape `vtc/members/show/0.1` publishes. The row was
+/// returned bare until #1093; the row itself always conformed.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberEnvelope {
+    pub member: MemberResponse,
 }

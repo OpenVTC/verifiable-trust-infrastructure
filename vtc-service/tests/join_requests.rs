@@ -469,6 +469,8 @@ async fn show_returns_full_request_including_vp() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "got {body}");
+    // `show` wraps the row as `{request: …}` (#1093).
+    let body = &body["request"];
     assert_eq!(body["status"], "pending");
     assert!(body["vp"].is_object());
 }
@@ -914,6 +916,8 @@ async fn rest_submit_under_default_join_policy_lands_pending_with_vp_claims() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    // `show` wraps the row as `{request: …}` (#1093).
+    let row = &row["request"];
     assert_eq!(row["status"], "pending");
     assert!(
         row["policyDecision"].is_null(),
@@ -958,6 +962,8 @@ async fn rest_submit_under_deny_all_policy_persists_rejected_with_decision() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    // `show` wraps the row as `{request: …}` (#1093).
+    let row = &row["request"];
     assert_eq!(row["status"], "rejected");
     // `policyDecision` now carries the four-valued verdict the policy
     // returned — a deny with the policy's code.

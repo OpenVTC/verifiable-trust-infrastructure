@@ -3,7 +3,7 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use vti_common::error::AppError;
@@ -73,7 +73,7 @@ pub async fn list_join_requests(
     security(("bearer_jwt" = [])),
     params(("id" = String, Path, description = "Join request id")),
     responses(
-        (status = 200, description = "Join request", body = JoinRequest),
+        (status = 200, description = "Join request", body = JoinRequestEnvelope),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
         (status = 404, description = "Join request not found"),
@@ -83,9 +83,16 @@ pub async fn show_join_request(
     _admin: AdminAuth,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<JoinRequest>, AppError> {
+) -> Result<Json<JoinRequestEnvelope>, AppError> {
     let req = get_join_request(&state.join_requests_ks, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("join request not found: {id}")))?;
-    Ok(Json(req))
+    Ok(Json(JoinRequestEnvelope { request: req }))
+}
+
+/// `{ request: … }` — the shape `vtc/join-requests/show/0.1` publishes.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinRequestEnvelope {
+    pub request: JoinRequest,
 }
