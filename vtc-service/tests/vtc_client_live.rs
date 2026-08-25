@@ -154,7 +154,7 @@ async fn join_queue_reads_and_decide_reaches_the_handler() {
 }
 
 /// The applicant side, end to end: `submit_join` signs a
-/// `join-requests/submit/0.1` document with the applicant's holder key, posts it
+/// `join-requests/submit/0.2` document with the applicant's holder key, posts it
 /// to the document endpoint with **no bearer token**, and gets the community's
 /// verdict back.
 ///

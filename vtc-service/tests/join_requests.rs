@@ -35,7 +35,7 @@ use vtc_service::test_support::TestVtc;
 const RP_ORIGIN: &str = "https://vtc.example.com";
 // The holder-facing verbs are now Trust Task **document** types (the `/spec/`
 // canonical form the dispatcher routes on).
-const SUBMIT_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.1";
+const SUBMIT_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.2";
 // `accept` is retired — the join close-the-loop is `members/vmc` with a
 // `requestId` (one credential-delivery path).
 const VMC_TASK: &str = "https://trusttasks.org/spec/vtc/members/vmc/0.1";
@@ -1746,8 +1746,11 @@ decision := {"effect": "request_more", "with": {
     let (_, body) = post_tt(&fix.router, doc).await;
     assert_eq!(
         verdict_effect(&body),
-        "request_more",
-        "expected request_more verdict: {body}"
+        // The policy at line 1737 authors `request_more` — Rego idiom — and
+        // the wire publishes `requestMore`, per SPEC §4.10 rule 4. The two
+        // vocabularies differ on purpose; `VerdictEffect` is the boundary.
+        "requestMore",
+        "expected requestMore verdict: {body}"
     );
     let id = Uuid::parse_str(body["payload"]["requestId"].as_str().unwrap()).unwrap();
 

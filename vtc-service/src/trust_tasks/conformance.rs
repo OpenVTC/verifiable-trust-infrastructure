@@ -230,6 +230,13 @@ struct Witness {
 /// Named per side rather than "something fails" so a debt entry cannot pass
 /// on the wrong evidence — the failure mode the VTA's module docs record for
 /// `acl/update`, where an assertion held for an unrelated reason.
+/// Unconstructed while the drift table is empty. Kept, with the macro below,
+/// because they are the vocabulary for *recording* a divergence — and a table
+/// with no way to say "this diverges, on this side, for this reason" invites
+/// the next author to leave a real divergence unrecorded rather than write the
+/// machinery back. Deleting them would make the zero look permanent instead of
+/// current.
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Side {
     Request,
@@ -260,6 +267,7 @@ enum Conformance {
     /// silently tolerated. Every entry names the drift precisely enough that
     /// the fix needs no re-diagnosis, and carries real fixtures so the sweep
     /// can assert the drift is still there.
+    #[allow(dead_code)]
     KnownDrift {
         reason: &'static str,
         side: Side,
@@ -295,6 +303,7 @@ macro_rules! checked {
 
 /// An annotated divergence. Same fixtures as [`checked!`], plus the side that
 /// is expected to fail and why.
+#[allow(unused_macros)]
 macro_rules! drift {
     ($p:ty, $r:ty, $side:expr, $req:expr, $resp:expr, $reason:expr) => {
         Conformance::KnownDrift {
@@ -511,61 +520,51 @@ fn uuid() -> uuid::Uuid {
 /// not grow unnoticed — the same discipline `UNPUBLISHED_CANONICAL_OK` in
 /// `tests/trust_task_manifest.rs` applies to unpublished URIs.
 ///
-/// **2 of 58**, from 33 when the sweep landed. What is left is not a backlog
-/// of shapes to correct — it is two decisions, and neither is this service's
-/// to make alone:
+/// **0 of 58.** Every Trust Task this service binds now speaks the schema it
+/// publishes, on both sides.
 ///
-/// 1. ~~**`install/claim/start` + `install/claim/finish`**~~ — **closed.**
-///    Worth recording how, because the ledger got this one backwards for a
-///    day. The schemas REQUIRED a `didBindingChallenge` /
-///    `didBindingSignature` pair, this service sent neither, and the entry
-///    was written up — by me — as "the only place the service is behind the
-///    spec on a security control". It was the reverse. The binding was built
-///    in 2026-05, found *test-passable but impossible in a production
-///    browser* (WebAuthn never exposes the credential private key), and
-///    removed. The specification was written two months **later**, still
-///    requiring it, and nothing ever sent or read those members in any
-///    repository. `0.2` (trustoverip/dtgwg-trust-tasks-tf#263) drops them.
+/// It was 33 when the sweep landed on 2026-08-24. Keeping the constant at zero
+/// is the point: it can no longer shrink, so the only thing it can do is catch
+/// a regression, which is what an asserted count is for. A new task that
+/// diverges must add a `drift!` entry and raise this deliberately.
 ///
-///    The lesson is not "the spec was wrong". It is that *"the schema
-///    requires X and the service omits X"* is a true sentence that says
-///    nothing about which side is at fault, and reads as an accusation
-///    against the implementation. Check the history of both before writing
-///    the note.
+/// **How the 33 actually closed**, because the distribution is not what the
+/// sweep predicted:
 ///
-/// 2. **`auth/recognise`** — the payload is two loose credentials; this
-///    service takes one holder-signed VP that embeds both and binds a nonce
-///    and this community's DID as `domain`. The VP carries a holder-binding
-///    proof two loose credentials cannot, so the service's shape is arguably
-///    the stronger one. Changing it upstream replaces a required member, so
-///    it needs a `0.2`, not an in-place edit.
-/// 3. **`join-requests/submit`** — the response is `{requestId, status}` with
-///    `status` a `const: "pending"`; this service returns a four-valued
-///    verdict (allow / deny / refer / request_more) that `pending` can
-///    express one of. Also a replacement, so also a `0.2`.
+/// - **10** by correcting this service's wire shapes — missing envelopes,
+///   wrong member names, a `null` where the schema said `object`.
+/// - **19** on dependency bumps alone, because the specs had already moved and
+///   these notes had not.
+/// - **4** by correcting the *specification*, not the service, once it turned
+///   out the published shape was the weaker one: a binding no browser can
+///   produce, a payload that was a replayable impersonation token, and a
+///   `const` that could express one of four outcomes.
 ///
-/// The three shapes the sweep started with are gone: no route returns a bare
-/// row where its schema wraps one, none sends a wrong member name or type,
-/// and the unspecced members are published (#261, #262).
+/// That last group is the one worth remembering. A conformance table makes
+/// divergence visible but says nothing about which side is wrong, and the
+/// sentence *"the schema requires X and the service omits X"* reads as an
+/// accusation against the implementation. Twice it was the schema. Once —
+/// `install/claim` — the requirement had been built, found impossible in a
+/// browser, and removed two months **before** the specification demanding it
+/// was written, and this table recorded that as the service being behind on a
+/// security control.
 ///
-/// **Two lessons the count itself cannot carry, both learned the hard way.**
+/// **Two failure modes to expect if you extend this table.**
 ///
-/// **Read the pin before believing a note.** Nine entries closed on the
-/// 0.11.2 → 0.11.8 bump alone and ten more on 0.11.10, because the specs had
-/// moved and these notes had not. This table catches the service drifting
+/// *Read the pin before believing a note.* This catches the service drifting
 /// from the spec and is blind to the spec moving toward the service.
 ///
-/// **A hand-written fixture can understate as well as overstate.** #1097
-/// promoted `config/export` and `config/import` on a `community_profile()`
-/// that omitted `personhood` — a false green, the one direction this table
-/// must never fail in. Fixtures built from the real types cannot do that;
-/// roughly twenty remain hand-written.
+/// *A hand-written fixture can understate as well as overstate.* #1097
+/// promoted two entries on a fixture that omitted a member the real type
+/// always sends — a false green, the one direction this table must never fail
+/// in. Fixtures built from the real types cannot do that; roughly twenty
+/// remain hand-written.
 ///
 /// To re-measure rather than re-read: add a throwaway test that walks
-/// `table()` printing the actual parse or schema error for every
-/// `KnownDrift`. `invalid type: string, expected struct IssuedCredential` is
-/// a sentence no amount of re-reading prose will produce.
-const KNOWN_DRIFT_COUNT: usize = 2;
+/// `table()` printing the actual parse or schema error for every entry.
+/// `invalid type: string, expected struct IssuedCredential` is a sentence no
+/// amount of re-reading prose will produce.
+const KNOWN_DRIFT_COUNT: usize = 0;
 
 /// Every bound, published `spec/vtc/*` URI, with the request and response the
 /// VTC actually speaks.
@@ -672,10 +671,9 @@ fn table() -> Vec<Conformance> {
             // `expiresAt` is unix seconds, which is what the spec types.
             json!({ "nonce": "b7c1e0a94f2d4e8ab5c36f01d9e27a3c", "expiresAt": 1_787_654_400_u64 })
         ),
-        drift!(
-            s::auth::recognise::v0_1::Payload,
-            s::auth::recognise::v0_1::Response,
-            Side::Request,
+        checked!(
+            s::auth::recognise::v0_2::Payload,
+            s::auth::recognise::v0_2::Response,
             // `RecogniseRequest` — routes/recognise.rs:82.
             json!({ "presentation": { "type": ["VerifiablePresentation"], "nonce": "b7c1e0" } }),
             // `RecogniseResponse` — routes/recognise.rs:102.
@@ -687,13 +685,7 @@ fn table() -> Vec<Conformance> {
                     "foreignIssuerDid": "did:web:peer.example",
                     "mappedRole": "member",
                 },
-            }),
-            "the spec's payload is two credentials (`vec` + `vmc`, both \
-             required); this service takes one `presentation` VP and pulls \
-             both out of it. Neither shape is obviously wrong — the VP form \
-             carries the holder-binding proof the recognition gate needs, \
-             which two loose credentials do not — so this one is a candidate \
-             for taking upstream rather than changing here"
+            })
         ),
         // ─── backup ──────────────────────────────────────────────────
         checked!(
@@ -1008,10 +1000,9 @@ fn table() -> Vec<Conformance> {
                 }],
             })
         ),
-        drift!(
-            s::join_requests::submit::v0_1::Payload,
-            s::join_requests::submit::v0_1::Response,
-            Side::Response,
+        checked!(
+            s::join_requests::submit::v0_2::Payload,
+            s::join_requests::submit::v0_2::Response,
             // From the SDK producer type, with `extensions` left at its
             // `Default` — the shape a minimal client actually sends.
             to_v(jr::JoinRequestSubmitBody {
@@ -1026,19 +1017,7 @@ fn table() -> Vec<Conformance> {
                 uuid(),
                 "admin-review",
                 "queued for an admin decision (approve/reject)",
-            )),
-            "#1059's first named divergence, CONFIRMED, and the request side \
-             diverges too. Response: the dispatcher returns `VerdictResponse` \
-             — `{requestId, verdict}` — where the spec requires \
-             `{requestId, status}` with `status` a `const: \"pending\"`. The \
-             required `status` is absent and `verdict` is unspecced. The \
-             verdict envelope superseded the published shape and was never \
-             taken upstream, and it is the better design (a submit can \
-             allow / deny / refer / request_more, and `pending` can express \
-             only one of those), so the fix belongs upstream. The request \
-             half — an unset `extensions` serialising as `null` against a \
-             schema that types it `object` — was the one-line vta-sdk fix \
-             this note asked for, applied in #1099"
+            ))
         ),
         checked!(
             s::join_requests::status::v0_1::Payload,
