@@ -173,12 +173,13 @@ async fn grant_with_the_same_role_rewrites_the_entry() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "rewrite, not create: {body}");
-    assert_eq!(body["scopes"], json!(["ctx-a", "ctx-b"]));
+    // `{entry: …}` — the shape these tasks publish (#1109).
+    assert_eq!(body["entry"]["scopes"], json!(["ctx-a", "ctx-b"]));
     assert!(
-        body["updatedAt"].as_str().is_some(),
+        body["entry"]["updatedAt"].as_str().is_some(),
         "a rewrite must stamp updatedAt: {body}"
     );
-    assert_eq!(body["updatedBy"], "did:key:z6MkAdmin");
+    assert_eq!(body["entry"]["updatedBy"], "did:key:z6MkAdmin");
 }
 
 #[tokio::test]
@@ -214,8 +215,9 @@ async fn change_role_enforces_the_from_role_guard() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["role"], "moderator");
-    assert!(body["updatedAt"].as_str().is_some(), "{body}");
+    // `{entry: …}` — the shape these tasks publish (#1109).
+    assert_eq!(body["entry"]["role"], "moderator");
+    assert!(body["entry"]["updatedAt"].as_str().is_some(), "{body}");
 }
 
 /// Canonical revoke has two modes. `scopes` reduces; omitting it
@@ -247,7 +249,8 @@ async fn revoke_with_scopes_reduces_rather_than_removes() {
     // The entry must survive, minus that one scope.
     let (status, body) = call(&fix, "GET", "/v1/acl/did:key:z6MkErin", SHOW, &token, None).await;
     assert_eq!(status, StatusCode::OK, "entry must survive: {body}");
-    assert_eq!(body["scopes"], json!(["ctx-b"]));
+    // `{entry: …}` — the shape these tasks publish (#1109).
+    assert_eq!(body["entry"]["scopes"], json!(["ctx-b"]));
 }
 
 #[tokio::test]
@@ -293,7 +296,8 @@ async fn revoking_every_scope_is_refused_rather_than_unscoping() {
 
     let (status, body) = call(&fix, "GET", "/v1/acl/did:key:z6MkGina", SHOW, &token, None).await;
     assert_eq!(status, StatusCode::OK, "entry must be untouched: {body}");
-    assert_eq!(body["scopes"], json!(["ctx-a"]));
+    // `{entry: …}` — the shape these tasks publish (#1109).
+    assert_eq!(body["entry"]["scopes"], json!(["ctx-a"]));
 }
 
 #[tokio::test]

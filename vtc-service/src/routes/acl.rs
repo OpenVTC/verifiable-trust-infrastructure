@@ -54,6 +54,22 @@ pub struct AclEntryResponse {
     pub expires_at: Option<String>,
 }
 
+/// `{ entry: … }` — the shape `acl/{grant,show,change-role}/0.1` publish.
+///
+/// All three returned the row bare until #1109. The row itself always
+/// conformed; only the wrapper was missing, which is the same envelope defect
+/// the VTC family carried on eight tasks. It went unseen here for longer
+/// because the shared `spec/{acl,audit,auth,config,policy}/*` families are
+/// outside the conformance table's census — a stated limit, since both daemons
+/// serve them — so no fixture ever described these responses. The
+/// response-conformance layer needed no census: it validated what the handler
+/// sent.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AclEntryEnvelope {
+    pub entry: AclEntryResponse,
+}
+
 /// Unix epoch seconds → RFC3339, for canonical `date-time` fields.
 fn epoch_to_rfc3339(secs: u64) -> String {
     chrono::DateTime::from_timestamp(secs as i64, 0)
@@ -258,7 +274,7 @@ pub struct GrantEntry {
     security(("bearer_jwt" = [])),
     request_body = CreateAclRequest,
     responses(
-        (status = 201, description = "ACL entry created", body = AclEntryResponse),
+        (status = 201, description = "ACL entry created", body = AclEntryEnvelope),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller lacks manage authority"),
     ),
@@ -267,7 +283,7 @@ pub async fn create_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
     Json(req): Json<CreateAclRequest>,
-) -> Result<(StatusCode, Json<AclEntryResponse>), AppError> {
+) -> Result<(StatusCode, Json<AclEntryEnvelope>), AppError> {
     let req_entry = req.entry;
     // Block non-admin callers from granting Admin — role + context
     // bound checks must run before we touch storage.
@@ -340,7 +356,12 @@ pub async fn create_acl(
         created = status == StatusCode::CREATED,
         "ACL entry granted",
     );
-    Ok((status, Json(AclEntryResponse::from(entry))))
+    Ok((
+        status,
+        Json(AclEntryEnvelope {
+            entry: AclEntryResponse::from(entry),
+        }),
+    ))
 }
 
 // ---------- GET /acl/{did} ----------
@@ -351,7 +372,7 @@ pub async fn create_acl(
     security(("bearer_jwt" = [])),
     params(("did" = String, Path, description = "Subject DID")),
     responses(
-        (status = 200, description = "ACL entry", body = AclEntryResponse),
+        (status = 200, description = "ACL entry", body = AclEntryEnvelope),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller lacks manage authority"),
         (status = 404, description = "ACL entry not found"),
@@ -361,7 +382,7 @@ pub async fn get_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
     Path(did): Path<String>,
-) -> Result<Json<AclEntryResponse>, AppError> {
+) -> Result<Json<AclEntryEnvelope>, AppError> {
     let acl = state.acl_ks.clone();
     let entry = get_acl_entry(&acl, &did)
         .await?
@@ -372,7 +393,9 @@ pub async fn get_acl(
         )));
     }
     info!(did = %did, "ACL entry retrieved");
-    Ok(Json(AclEntryResponse::from(entry)))
+    Ok(Json(AclEntryEnvelope {
+        entry: AclEntryResponse::from(entry),
+    }))
 }
 
 // ---------- PATCH /acl/{did} ----------
@@ -408,7 +431,7 @@ pub struct UpdateAclRequest {
     params(("did" = String, Path, description = "Subject DID")),
     request_body = UpdateAclRequest,
     responses(
-        (status = 200, description = "Updated ACL entry", body = AclEntryResponse),
+        (status = 200, description = "Updated ACL entry", body = AclEntryEnvelope),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
         (status = 404, description = "ACL entry not found"),
@@ -422,7 +445,7 @@ pub async fn update_acl(
     State(state): State<AppState>,
     Path(did): Path<String>,
     Json(req): Json<UpdateAclRequest>,
-) -> Result<Json<AclEntryResponse>, AppError> {
+) -> Result<Json<AclEntryEnvelope>, AppError> {
     let acl = state.acl_ks.clone();
     let mut entry = get_acl_entry(&acl, &did)
         .await?
@@ -505,7 +528,9 @@ pub async fn update_acl(
         reason = req.reason.as_deref().unwrap_or(""),
         "ACL role changed",
     );
-    Ok(Json(AclEntryResponse::from(entry)))
+    Ok(Json(AclEntryEnvelope {
+        entry: AclEntryResponse::from(entry),
+    }))
 }
 
 // ---------- DELETE /acl/{did} ----------
