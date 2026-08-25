@@ -36,6 +36,7 @@ use vtc_service::test_support::TestVtc;
 const PUBLIC_URL: &str = "https://vtc.example.com";
 const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/vtc/members/personhood/challenge/0.1";
 const ASSERT_TASK: &str = "https://trusttasks.org/spec/vtc/members/personhood/assert/0.1";
+const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/members/personhood/revoke/0.1";
 const MEMBER_DID: &str = "did:key:zPerson1";
 const OTHER_MEMBER_DID: &str = "did:key:zPerson2";
 const ADMIN_DID: &str = "did:key:zPersonAdmin";
@@ -414,7 +415,7 @@ async fn revoke_admin_flips_member_row_and_emits_audit() {
         .method("DELETE")
         .uri(format!("/v1/members/{MEMBER_DID}/personhood"))
         .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", ASSERT_TASK)
+        .header("trust-task", REVOKE_TASK)
         .body(Body::empty())
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
@@ -462,7 +463,7 @@ async fn revoke_self_emits_audit_reason_self() {
         .method("DELETE")
         .uri(format!("/v1/members/{MEMBER_DID}/personhood"))
         .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", ASSERT_TASK)
+        .header("trust-task", REVOKE_TASK)
         .body(Body::empty())
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
@@ -500,7 +501,7 @@ async fn revoke_unauthorized_when_member_revokes_someone_else() {
         .method("DELETE")
         .uri(format!("/v1/members/{OTHER_MEMBER_DID}/personhood"))
         .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", ASSERT_TASK)
+        .header("trust-task", REVOKE_TASK)
         .body(Body::empty())
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
@@ -516,7 +517,7 @@ async fn revoke_already_false_is_idempotent_noop() {
         .method("DELETE")
         .uri(format!("/v1/members/{MEMBER_DID}/personhood"))
         .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", ASSERT_TASK)
+        .header("trust-task", REVOKE_TASK)
         .body(Body::empty())
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
@@ -548,7 +549,7 @@ async fn revoke_returns_404_for_unknown_member() {
         .method("DELETE")
         .uri("/v1/members/did:key:zStranger/personhood")
         .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", ASSERT_TASK)
+        .header("trust-task", REVOKE_TASK)
         .body(Body::empty())
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();

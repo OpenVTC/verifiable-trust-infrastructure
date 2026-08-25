@@ -1160,15 +1160,28 @@ fn table() -> Vec<Conformance> {
             s::members::personhood::assert::v0_1::Response,
             // `AssertBody` — routes/members/personhood.rs:196.
             json!({ "did": DID, "presentation": { "type": ["VerifiablePresentation"] } }),
-            // `AssertResponse` — routes/members/personhood.rs:206. NOTE the
-            // DELETE on the same mount answers with `personhood: false`,
-            // which is `members/personhood/revoke/0.1`'s shape, not this
-            // one's — the two verbs share a Trust Task because the router
-            // has no per-method selector here. That collapse is #710's
-            // shared-mount workaround, not a conformance defect of this URI,
-            // so the witness carries the POST.
+            // `AssertResponse` — routes/members/personhood.rs:206.
+            //
+            // This note used to explain that the DELETE on the same mount
+            // answered under *this* URI with `personhood: false`, and called
+            // the collapse a shared-mount workaround rather than a defect of
+            // this task. That was honest and it was also the problem: the
+            // witness carried the POST, so nothing here ever saw the DELETE,
+            // and a client was told the wrong task for the document it got.
+            // The response-conformance layer saw it on real traffic. #1108
+            // gives each verb its own task; `revoke` is witnessed below.
             json!({ "did": DID, "personhood": true,
                     "vmc": credential(), "roleVec": credential() })
+        ),
+        checked!(
+            s::members::personhood::revoke::v0_1::Payload,
+            s::members::personhood::revoke::v0_1::Response,
+            json!({ "did": DID }),
+            // `RevokeResponse` — routes/members/personhood.rs:526. `vmc` and
+            // `roleVec` are `skip_serializing_if`, so a revoke that re-mints
+            // nothing sends neither; the component makes both optional and
+            // pins `personhood` to `const false`.
+            json!({ "did": DID, "personhood": false })
         ),
         checked!(
             s::members::vmc::v0_1::Payload,
