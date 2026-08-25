@@ -430,23 +430,40 @@ fn join_request() -> Value {
     })
 }
 
-/// An `Endorsement` row as `endorsements/mod.rs:41` serialises one.
-fn endorsement() -> Value {
-    // Serialised from the real `EndorsementRow`, not hand-written — see the
-    // `endorsements/revoke` note in the table (#1095) for why that matters.
-    serde_json::to_value(crate::routes::endorsements::EndorsementRow {
+const VEC_ID: &str = "urn:uuid:11111111-1111-4111-8111-111111111111";
+
+/// One row, with whatever issuance receipt the caller can supply.
+///
+/// Serialised from the real `EndorsementRow`, not hand-written — see the
+/// `endorsements/revoke` note in the table (#1095) for why that matters.
+fn endorsement_row(
+    issued: crate::routes::endorsements::IssuedCredential,
+) -> crate::routes::endorsements::EndorsementRow {
+    crate::routes::endorsements::EndorsementRow {
         endorsement_id: "11111111-1111-4111-8111-111111111111"
             .parse()
             .expect("fixture uuid"),
         type_uri: "https://skills.example.com/v1/rust".into(),
         subject_did: DID.into(),
-        issued: TS.parse().expect("fixture timestamp"),
+        issued,
         status_list_index: 42,
         claim: json!({ "level": "expert" }),
         revoked_at: None,
-        issuer_did: COMMUNITY_DID.into(),
-        vec_id: "urn:uuid:11111111-1111-4111-8111-111111111111".into(),
-    })
+    }
+}
+
+/// The row a `list` / `show` sends: the handle and the mint time. `credential`
+/// and `expiresAt` are required by the component but are not on the stored
+/// row, so only `issue` can fill them.
+fn endorsement() -> Value {
+    serde_json::to_value(endorsement_row(
+        crate::routes::endorsements::IssuedCredential {
+            credential_id: VEC_ID.into(),
+            credential: None,
+            expires_at: None,
+            issued_at: Some(TS.parse().expect("fixture timestamp")),
+        },
+    ))
     .expect("EndorsementRow serialises")
 }
 
@@ -502,7 +519,7 @@ fn uuid() -> uuid::Uuid {
 /// while these notes still described the older schemas. A note that says
 /// "take it upstream" can be stale in the good direction; check the released
 /// schema before writing the spec PR it asks for.
-const KNOWN_DRIFT_COUNT: usize = 16;
+const KNOWN_DRIFT_COUNT: usize = 15;
 
 /// Every bound, published `spec/vtc/*` URI, with the request and response the
 /// VTC actually speaks.
@@ -816,10 +833,9 @@ fn table() -> Vec<Conformance> {
             json!({ "typeUri": "https://skills.example.com/v1/rust" })
         ),
         // ─── endorsements ────────────────────────────────────────────
-        drift!(
+        checked!(
             s::endorsements::issue::v0_1::Payload,
             s::endorsements::issue::v0_1::Response,
-            Side::Response,
             // `IssueBody` — routes/endorsements.rs:57, `typeUri` as of #1096.
             json!({
                 "subjectDid": DID,
@@ -827,20 +843,18 @@ fn table() -> Vec<Conformance> {
                 "claim": { "level": "expert" },
                 "validitySeconds": 2_592_000_u64,
             }),
-            // `IssueResponse` — routes/endorsements.rs:70.
-            json!({
-                "endorsement": endorsement(),
-                "vec": credential(),
-            }),
-            "the request conforms as of #1096 — it named the type `type` \
-             against a spec that says `typeUri`. The response now returns \
-             the row under `endorsement`, so the model disagreement the old \
-             note described is settled in the spec's favour. What remains is \
-             `vec`, the signed credential, against an \
-             `additionalProperties: false` response whose `Endorsement` \
-             component has nowhere to put a credential. Handing back the VC \
-             it just minted is the point of an issue call, so it stays and \
-             the gap goes upstream"
+            // `IssueResponse` with the receipt filled — `issue` is the one
+            // route holding the credential and its expiry, so it is the one
+            // that can supply `credential` and `expiresAt`.
+            serde_json::to_value(crate::routes::endorsements::IssueResponse {
+                endorsement: endorsement_row(crate::routes::endorsements::IssuedCredential {
+                    credential_id: VEC_ID.into(),
+                    credential: Some(credential()),
+                    expires_at: Some(TS.parse().expect("fixture timestamp")),
+                    issued_at: Some(TS.parse().expect("fixture timestamp")),
+                },),
+            })
+            .expect("IssueResponse serialises")
         ),
         drift!(
             s::endorsements::list::v0_1::Payload,
@@ -849,13 +863,16 @@ fn table() -> Vec<Conformance> {
             json!({ "subjectDid": DID, "typeUri": "https://skills.example.com/v1/rust",
                     "includeRevoked": true, "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
             paginated(json!([endorsement()])),
-            "the rows speak the canonical `Endorsement` component as of \
-             #1096 — `endorsementId` / `typeUri` / `issued`, where they said \
-             `id` / `endorsementType` / `createdAt`. What remains is the \
-             unspecced `issuerDid` and `vecId` against an \
-             `additionalProperties: false` component; `vecId` is the \
-             `credentialId` a revocation echoes, so a caller needs it to \
-             revoke what it just listed. Both go upstream"
+            "one member missing, and it is a storage question rather than a \
+             spec one. `issued` is an `IssuedCredential` receipt — #1096 \
+             misread it as a timestamp and sent `createdAt`; #1098 corrects \
+             that. The receipt requires `credential` and `expiresAt`, and \
+             the stored `Endorsement` keeps neither: the keyspace holds the \
+             `vecId` and the mint time, never the signed VEC or its expiry. \
+             So this row sends the handle and `issuedAt` and stops. Closing \
+             it means storing the credential and its expiry on the row — a \
+             migration, deliberately not bundled into a wire fix. \
+             `endorsements/issue` conforms because it has just minted both"
         ),
         drift!(
             s::endorsements::show::v0_1::Payload,
@@ -863,9 +880,10 @@ fn table() -> Vec<Conformance> {
             Side::Response,
             json!({ "endorsementId": "11111111-1111-4111-8111-111111111111" }),
             json!({ "endorsement": endorsement() }),
-            "the envelope was fixed in #1093 and the row's members in \
-             #1096. What remains is the same unspecced `issuerDid` / \
-             `vecId` as `list` — one upstream change closes both"
+            "the envelope was fixed in #1093, the row's names in #1096 and \
+             the `issued` receipt in #1098. What remains is the same missing \
+             `credential` / `expiresAt` as `list`, for the same reason: \
+             neither is on the stored row. One storage change closes both"
         ),
         checked!(
             s::endorsements::revoke::v0_1::Payload,
