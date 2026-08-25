@@ -471,32 +471,38 @@ fn uuid() -> uuid::Uuid {
 /// not grow unnoticed — the same discipline `UNPUBLISHED_CANONICAL_OK` in
 /// `tests/trust_task_manifest.rs` applies to unpublished URIs.
 ///
-/// **33 of 58.** #1059 named two and said it had not audited the rest; the
-/// sweep says the rest are worse than the two. Nothing here was fixed in the
-/// change that added this file, and that is deliberate: the issue's own plan
-/// is to land the ledger first and "decide, separately and with the list in
-/// hand, which drifts get fixed by correcting the service and which by taking
-/// the shape upstream". Most of these are one of three recurring shapes, and
-/// the disposition differs per shape:
+/// **16 of 58**, from 33 when the sweep landed. #1059 named two and said it
+/// had not audited the rest; the sweep said the rest were worse than the two.
+/// The plan was to land the ledger first and "decide, separately and with the
+/// list in hand, which drifts get fixed by correcting the service and which by
+/// taking the shape upstream". That is what happened:
 ///
-/// 1. **No response envelope.** The spec wraps the payload
-///    (`{ "member": … }`, `{ "removed": [ … ] }`, `{ "envelope": … }`) and the
-///    handler returns the bare object or a bare array. 12 entries.
-/// 2. ~~**`Paginated<T>` is snake_case**~~ — **fixed.** The wrapper had no
-///    `rename_all`, so every list task sent `next_cursor` where the spec says
-///    `nextCursor`: a direct R3.1 violation of the same casing-drift class as
-///    #656/#658. One attribute in `vti-common` closed it for all five.
+/// 1. **No response envelope** — the spec wraps the payload
+///    (`{member: …}`, `{removed: […]}`, `{envelope: …}`) and the handler
+///    returned the bare object or array. **Closed.** No VTC route now returns
+///    a bare row or array where its schema wraps one (#1082, #1093, #1094).
+/// 2. **`Paginated<T>` was snake_case** — one `rename_all` in `vti-common`
+///    closed the wrapper for all five list tasks. Worth noting when reading a
+///    drift count: closing a shared root cause moves entries without
+///    necessarily closing them; four kept their rows at row level, and later
+///    changes closed those separately.
+/// 3. **Wrong member names or types** — `sizeBytes` for `size`, `isCurrent`
+///    for `current`, unix seconds for `format: date-time`, and the whole
+///    endorsement row model. **Closed** (#1095, #1096).
+/// 4. **Unspecced members on an `additionalProperties: false` response.** What
+///    is left is nearly all this, and it is mostly the service being *ahead*
+///    of the spec rather than wrong: `etag`, `factsTemplate`, `deployedAt`,
+///    `vecId`, the diagnostics transport half, and `vec` — the credential an
+///    issue call hands back, which the spec's `Endorsement` component has
+///    nowhere to put. These close upstream, not here.
 ///
-///    Only `relationships/list` became *fully* conforming, because it was the
-///    only one whose drift was the wrapper alone — the spec types its `items`
-///    as free objects. The other four still diverge at row level and keep
-///    their entries, now describing only what is left. Worth noting when
-///    reading a drift count: closing a shared root cause moves four entries
-///    without closing them.
-/// 3. **Unspecced members on an `additionalProperties: false` response.**
-///    Usually the service is ahead of the spec (the ceremony verdict
-///    envelope, `decidedAt`), occasionally behind it (`didBindingChallenge`).
-const KNOWN_DRIFT_COUNT: usize = 25;
+/// **Read the pin before reading this number.** Nine entries closed on the
+/// `trust-tasks-rs` 0.11.2 → 0.11.8 bump alone, because
+/// trustoverip/dtgwg-trust-tasks-tf#256–#260 had already merged and shipped
+/// while these notes still described the older schemas. A note that says
+/// "take it upstream" can be stale in the good direction; check the released
+/// schema before writing the spec PR it asks for.
+const KNOWN_DRIFT_COUNT: usize = 16;
 
 /// Every bound, published `spec/vtc/*` URI, with the request and response the
 /// VTC actually speaks.
@@ -700,7 +706,7 @@ fn table() -> Vec<Conformance> {
         drift!(
             s::community::profile::update::v0_1::Payload,
             s::community::profile::update::v0_1::Response,
-            Side::Both,
+            Side::Response,
             // `CommunityProfileUpdate` — community/profile.rs:144.
             json!({
                 "name": "Example Community",
@@ -714,18 +720,18 @@ fn table() -> Vec<Conformance> {
             }),
             // `UpdateProfileResponse` — routes/community/profile.rs:196.
             json!({ "profile": community_profile(), "fieldsChanged": ["name", "logoUrl"] }),
-            "both sides carry `relationshipIdentifierDefault`, which the \
-             spec's payload and `CommunityProfile` component both omit, and \
-             the response adds `fieldsChanged`. The response DOES nest under \
-             `profile` — unlike its sibling `show` — so the two verbs of one \
-             family disagree with each other as well as with the spec. All \
-             three members are real and worth having: take them upstream"
+            "the request conforms as of trust-tasks-rs 0.11.8, which carries \
+             `relationshipIdentifierDefault` from \
+             trustoverip/dtgwg-trust-tasks-tf#257. What remains is the \
+             response's `fieldsChanged` and, inside the profile, \
+             `communityDid` and `createdAt` — the two members #257 did not \
+             cover. Those go upstream and close this row together with \
+             `show`"
         ),
         // ─── config ──────────────────────────────────────────────────
-        drift!(
+        checked!(
             s::config::export::v0_1::Payload,
             s::config::export::v0_1::Response,
-            Side::Response,
             json!({}),
             // `ExportResponse` / `ConfigExportDocument` —
             // routes/admin/config.rs:476 / :460.
@@ -736,17 +742,11 @@ fn table() -> Vec<Conformance> {
                     "communityProfile": community_profile(),
                     "configOverrides": { "log.level": "debug", "server.port": 8200 },
                 }
-            }),
-            "the embedded profile carries `relationshipIdentifierDefault`, \
-             which `CommunityProfileSnapshot` does not define \
-             (`additionalProperties: false`). Same root cause as \
-             `community/profile/*`: one member missing from the canonical \
-             component. Take it upstream once, and three tasks stop drifting"
+            })
         ),
-        drift!(
+        checked!(
             s::config::import::v0_1::Payload,
             s::config::import::v0_1::Response,
-            Side::Request,
             // `ImportRequest` — routes/admin/config.rs:524. The document is
             // whatever `export` handed back, so it carries the same extra
             // member.
@@ -766,11 +766,7 @@ fn table() -> Vec<Conformance> {
                 "overrideChanges": [{ "key": "log.level", "newValue": "warn" }],
                 "pendingRestart": ["server.port"],
                 "rejected": [{ "key": "bogus.key", "reason": "unknown config key" }],
-            }),
-            "request-side half of the `config/export` drift: an import \
-             replays the document an export produced, so it carries the same \
-             unspecced `relationshipIdentifierDefault`. The response \
-             conforms. One upstream fix clears both"
+            })
         ),
         // ─── directory ───────────────────────────────────────────────
         checked!(
@@ -788,10 +784,9 @@ fn table() -> Vec<Conformance> {
             })
         ),
         // ─── endorsement-types ───────────────────────────────────────
-        drift!(
+        checked!(
             s::endorsement_types::register::v0_1::Payload,
             s::endorsement_types::register::v0_1::Response,
-            Side::Response,
             // `RegisterBody` — routes/endorsement_types.rs:51.
             json!({
                 "typeUri": "https://skills.example.com/v1/rust",
@@ -799,12 +794,7 @@ fn table() -> Vec<Conformance> {
                 "description": "Rust proficiency",
             }),
             // `RegisterResponse` — the row was returned bare until #1059.
-            json!({ "endorsementType": endorsement_type() }),
-            "the missing `{endorsementType: …}` wrapper is fixed. What remains \
-             is the row's `createdByDid`, which the canonical component does \
-             not define — taken upstream in \
-             trustoverip/dtgwg-trust-tasks-tf#260, so this closes on the next \
-             `trust-tasks-rs` release rather than on any change here"
+            json!({ "endorsementType": endorsement_type() })
         ),
         drift!(
             s::endorsement_types::list::v0_1::Payload,
@@ -999,10 +989,9 @@ fn table() -> Vec<Conformance> {
             "the `{request: …}` envelope is right as of #1093; the row still \
              carries the same unspecced `vpClaims` / `decision` as `list`"
         ),
-        drift!(
+        checked!(
             s::join_requests::decide::v0_1::Payload,
             s::join_requests::decide::v0_1::Response,
-            Side::Response,
             // `DecideBody` — routes/join_requests/decide.rs:54; `id` is the
             // path segment and is consumable in the body.
             json!({ "id": REQUEST_ID, "decision": "approved", "reason": "verified out of band" }),
@@ -1011,13 +1000,7 @@ fn table() -> Vec<Conformance> {
             // them and DOES conform, which is exactly why the witness has to
             // carry the approve arm.
             json!({ "requestId": REQUEST_ID, "status": "approved",
-                    "vmc": credential(), "roleVec": credential() }),
-            "the approve arm returns the issued `vmc` and `roleVec`, which \
-             the spec's response does not define. The reject arm conforms, so \
-             a witness built from a rejection would have passed green over \
-             this — worth knowing when reading the rest of the table. \
-             Delivering the credentials inline on the admin's approve saves \
-             the applicant a round trip: take it upstream"
+                    "vmc": credential(), "roleVec": credential() })
         ),
         checked!(
             s::join_requests::manifest::v0_1::Payload,
@@ -1067,10 +1050,9 @@ fn table() -> Vec<Conformance> {
              Option class that shipped `keys/create/0.1` broken. That half is \
              a one-line fix in vta-sdk"
         ),
-        drift!(
+        checked!(
             s::join_requests::status::v0_1::Payload,
             s::join_requests::status::v0_1::Response,
-            Side::Both,
             // The id-less poll: `requestId` is `Option` and omitted
             // (vta-sdk/src/protocols/join_requests.rs:164).
             to_v(jr::JoinRequestStatusBody { request_id: None }),
@@ -1088,19 +1070,7 @@ fn table() -> Vec<Conformance> {
                         .expect("fixture ts")
                         .with_timezone(&chrono::Utc),
                 ),
-            }),
-            "#1059's second named divergence, CONFIRMED, with one correction \
-             and one addition. Response: `code`, `reason` and `decidedAt` \
-             (#1058) are not in the spec's response, which is \
-             `additionalProperties: false` — but only a REJECTED request \
-             carries them; a pending poll conforms. So the drift is \
-             conditional, and a witness built from a pending response would \
-             have passed green over it. Request: the spec's payload requires \
-             `requestId`, and this service deliberately makes it optional — \
-             an applicant whose first reply was lost holds no id and the \
-             id-less poll is the only form it can use. Both belong upstream: \
-             the refusal detail and the id-less poll are the right \
-             behaviours and the published schema is behind them"
+            })
         ),
         // ─── members ─────────────────────────────────────────────────
         checked!(
@@ -1112,43 +1082,26 @@ fn table() -> Vec<Conformance> {
             // `RemoveResponse` — routes/members/remove.rs:53.
             json!({ "did": DID, "disposition": "purge", "removed": true })
         ),
-        drift!(
+        checked!(
             s::members::list::v0_1::Payload,
             s::members::list::v0_1::Response,
-            Side::Response,
             json!({ "role": "member", "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
-            paginated(json!([member_response()])),
-            "the wrapper's casing is fixed; what remains is that `MemberResponse` \
-             (routes/members/read.rs:29) carries five members the canonical \
-             component does not define: `personhood`, \
-             `personhoodAssertedAt`, `joinedViaInvitation`, `memberVmcId`, \
-             `memberVmcReceivedAt`. All five are real state a consumer needs \
-             — personhood in particular gates recognition — so the component \
-             is behind: take them upstream. The wrapper is the R3.1 fix here"
+            paginated(json!([member_response()]))
         ),
-        drift!(
+        checked!(
             s::members::show::v0_1::Payload,
             s::members::show::v0_1::Response,
-            Side::Response,
             json!({ "did": DID }),
-            json!({ "member": member_response() }),
-            "the `{member: …}` envelope is right as of #1093; the row still \
-             carries the same five unspecced members as `list`"
+            json!({ "member": member_response() })
         ),
-        drift!(
+        checked!(
             s::members::update::v0_1::Payload,
             s::members::update::v0_1::Response,
-            Side::Both,
             // `UpdateMemberRequest` — routes/members/update.rs:61.
             json!({ "did": DID, "role": "moderator", "label": "Ada Lovelace",
                     "publishConsent": true, "departurePreference": "historical",
                     "extensions": { "org": "acme" } }),
-            json!({ "member": member_response() }),
-            "request carries `label`, which the spec's payload does not \
-             define — a member's display label is editable here and \
-             unspecified upstream. The response's `{member: …}` envelope is \
-             right as of #1094; the row still carries the same five unspecced \
-             members as `list`"
+            json!({ "member": member_response() })
         ),
         checked!(
             s::members::purge::v0_1::Payload,
@@ -1337,10 +1290,9 @@ fn table() -> Vec<Conformance> {
                             "subjectDid": OTHER_DID, "createdAt": TS }],
             })
         ),
-        drift!(
+        checked!(
             s::relationships::publish::v0_2::Payload,
             s::relationships::publish::v0_2::Response,
-            Side::Request,
             // `PublishBody` — the task payload, carried inside a Trust Task
             // document since #1084. The witness validates payloads, so the
             // envelope is not represented here: it is the transport this
@@ -1358,15 +1310,7 @@ fn table() -> Vec<Conformance> {
             // what fixed it, since 0.1 asked for a bare-hex `vrcSha256` this
             // service no longer computes.
             json!({ "id": REQUEST_ID, "issuerDid": DID, "subjectDid": OTHER_DID,
-                    "vrcDigestMultibase": "zQmbGXRT3v1RmfWkQ7Y3Z5Uj9pKq2NcXhLd8sVtA4eB6nMw" }),
-            "the request carries `pop`, which the *pinned* schema does not \
-             define. trustoverip/dtgwg-trust-tasks-tf#259 adds it and is \
-             merged, so this closes on the next `trust-tasks-rs` release \
-             rather than on any change here — the entry exists to stop that \
-             being forgotten. The response side conforms: binding 0.2 instead \
-             of 0.1 is what fixed it, because 0.1 asks for a bare-hex \
-             `vrcSha256` and this service now computes only the multibase \
-             multihash the specification names"
+                    "vrcDigestMultibase": "zQmbGXRT3v1RmfWkQ7Y3Z5Uj9pKq2NcXhLd8sVtA4eB6nMw" })
         ),
         checked!(
             s::relationships::revoke::v0_1::Payload,
