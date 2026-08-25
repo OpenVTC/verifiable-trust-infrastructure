@@ -365,19 +365,26 @@ fn member_response() -> Value {
 /// The `CommunityProfile` this service serialises
 /// (`community/profile.rs:73`). Carried by profile show/update and by the
 /// config export document.
+/// The `CommunityProfile` this service serialises.
+///
+/// Built from the **real struct**, not hand-written. The hand-written version
+/// omitted `personhood`, which the type always serialises — and that omission
+/// promoted `config/export` and `config/import` to `checked!` in #1097 on a
+/// shape the service does not send. A fixture can understate as easily as it
+/// can overstate, and understating is the dangerous direction: it makes a
+/// non-conformant route look green. Constructing the type means the compiler
+/// refuses to let this drift again.
 fn community_profile() -> Value {
-    json!({
-        "communityDid": COMMUNITY_DID,
-        "name": "Example Community",
-        "description": "A demo community.",
-        "logoUrl": "https://community.example/logo.png",
-        "publicUrl": "https://community.example",
-        "contactEmail": "ops@community.example",
-        "language": "en",
-        "relationshipIdentifierDefault": "pairwise",
-        "createdAt": TS,
-        "extensions": { "tier": "gold" },
-    })
+    let mut p = crate::community::CommunityProfile::new(COMMUNITY_DID, "Example Community");
+    p.description = "A demo community.".into();
+    p.logo_url = Some("https://community.example/logo.png".into());
+    p.public_url = Some("https://community.example".into());
+    p.contact_email = Some("ops@community.example".into());
+    p.language = "en".into();
+    p.relationship_identifier_default = "pairwise".into();
+    p.created_at = TS.parse().expect("fixture timestamp");
+    p.extensions = json!({ "tier": "gold" });
+    serde_json::to_value(p).expect("CommunityProfile serialises")
 }
 
 /// The `BackupEnvelope` (`backup.rs:63`) — canonical, and the same object on
@@ -523,13 +530,22 @@ fn uuid() -> uuid::Uuid {
 ///    issue call hands back, which the spec's `Endorsement` component has
 ///    nowhere to put. These close upstream, not here.
 ///
+/// **A hand-written fixture can understate as well as overstate.** #1097
+/// promoted `config/export` and `config/import` to `checked!` on a
+/// `community_profile()` that omitted `personhood` — a member the real type
+/// always serialises. That is a *false green*: a non-conformant route
+/// reported as conforming, which is the one direction this table must never
+/// fail in. The fixture is now built from the struct, so the compiler
+/// refuses the omission; do the same for any fixture you touch. Roughly
+/// twenty remain hand-written.
+///
 /// **Read the pin before reading this number.** Nine entries closed on the
 /// `trust-tasks-rs` 0.11.2 → 0.11.8 bump alone, because
 /// trustoverip/dtgwg-trust-tasks-tf#256–#260 had already merged and shipped
 /// while these notes still described the older schemas. A note that says
 /// "take it upstream" can be stale in the good direction; check the released
 /// schema before writing the spec PR it asks for.
-const KNOWN_DRIFT_COUNT: usize = 12;
+const KNOWN_DRIFT_COUNT: usize = 14;
 
 /// Every bound, published `spec/vtc/*` URI, with the request and response the
 /// VTC actually speaks.
@@ -724,12 +740,17 @@ fn table() -> Vec<Conformance> {
             "the `{profile: …}` nesting is right as of #1094, and \
              `registryStatus` moved inside the profile object — beside it, \
              the `additionalProperties: false` response would have rejected \
-             it. What remains is `communityDid` and `createdAt` inside the \
-             profile, which the canonical `CommunityProfile` component does \
-             not define. `relationshipIdentifierDefault` was the third and \
-             is defined as of trust-tasks-rs 0.11.8. `communityDid` is the \
-             one member a consumer most needs; both go upstream and close \
-             this row together with `update`"
+             it. What remains is `communityDid`, `createdAt` and \
+             `personhood`, none of which the canonical `CommunityProfile` \
+             component defines. `personhood` is taken upstream in \
+             trustoverip/dtgwg-trust-tasks-tf#261. The other two are a \
+             design question rather than a missing member: that component is \
+             the **update-facing** view and omits `communityDid` on purpose, \
+             so that a patch cannot re-point a community's identity — \
+             `config-portability`'s `CommunityProfileSnapshot` says so in \
+             prose. A read needs the DID and an update must refuse it, so \
+             the fix is a read-shaped view for `show`, not another member on \
+             the update view"
         ),
         drift!(
             s::community::profile::update::v0_1::Payload,
@@ -751,17 +772,19 @@ fn table() -> Vec<Conformance> {
             "the request conforms as of trust-tasks-rs 0.11.8, which carries \
              `relationshipIdentifierDefault` from \
              trustoverip/dtgwg-trust-tasks-tf#257. What remains is \
-             `communityDid` and `createdAt` inside the profile — the two \
-             members #257 did not cover. `fieldsChanged` is *not* a \
-             divergence: the response schema defines it, and an earlier \
-             version of this note said otherwise because a serde parse stops \
-             at the first unknown member and never reaches the rest. Those \
-             two go upstream and close this row together with `show`"
+             `communityDid`, `createdAt` and `personhood` inside the \
+             profile; `personhood` is taken upstream in #261 and the other \
+             two are the read-vs-update view question described on `show`. \
+             `fieldsChanged` is *not* a divergence: the response schema \
+             defines it, and an earlier version of this note said otherwise \
+             because a serde parse stops at the first unknown member and \
+             never reaches the rest"
         ),
         // ─── config ──────────────────────────────────────────────────
-        checked!(
+        drift!(
             s::config::export::v0_1::Payload,
             s::config::export::v0_1::Response,
+            Side::Response,
             json!({}),
             // `ExportResponse` / `ConfigExportDocument` —
             // routes/admin/config.rs:476 / :460.
@@ -772,11 +795,20 @@ fn table() -> Vec<Conformance> {
                     "communityProfile": community_profile(),
                     "configOverrides": { "log.level": "debug", "server.port": 8200 },
                 }
-            })
+            }),
+            "the embedded profile carries `personhood`, which \
+             `CommunityProfileSnapshot` does not define (`additionalProperties: \
+             false`). This entry was promoted to `checked!` in #1097 on a \
+             fixture that omitted the member — a false green, and the \
+             opposite failure to the stale notes that PR fixed: a hand-written \
+             fixture can understate what the service sends as easily as it \
+             can overstate it. Closes on the trust-tasks-rs release carrying \
+             trustoverip/dtgwg-trust-tasks-tf#261"
         ),
-        checked!(
+        drift!(
             s::config::import::v0_1::Payload,
             s::config::import::v0_1::Response,
+            Side::Request,
             // `ImportRequest` — routes/admin/config.rs:524. The document is
             // whatever `export` handed back, so it carries the same extra
             // member.
@@ -796,7 +828,12 @@ fn table() -> Vec<Conformance> {
                 "overrideChanges": [{ "key": "log.level", "newValue": "warn" }],
                 "pendingRestart": ["server.port"],
                 "rejected": [{ "key": "bogus.key", "reason": "unknown config key" }],
-            })
+            }),
+            "request-side half of the `config/export` drift: an import replays \
+             the document an export produced, so it carries the same \
+             unspecced `personhood`. Same false green from #1097, same \
+             cause, and the same upstream PR closes both — \
+             trustoverip/dtgwg-trust-tasks-tf#261"
         ),
         // ─── directory ───────────────────────────────────────────────
         checked!(
