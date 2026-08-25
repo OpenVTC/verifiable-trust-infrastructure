@@ -20,7 +20,7 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::info;
@@ -56,7 +56,10 @@ const CLAIM_MAX_BYTES: usize = 8 * 1024;
 #[derive(utoipa::ToSchema)]
 pub struct IssueBody {
     pub subject_did: String,
-    #[serde(rename = "type")]
+    /// `typeUri`, the name the payload schema gives it. This carried an
+    /// explicit `#[serde(rename = "type")]` until #1096 — a deliberate
+    /// rename that simply disagreed with the spec.
+    #[serde(rename = "typeUri")]
     pub endorsement_type: String,
     pub claim: JsonValue,
     /// Optional override; defaults to 30d.
@@ -64,12 +67,65 @@ pub struct IssueBody {
     pub validity_seconds: Option<u64>,
 }
 
+/// One endorsement as the canonical `Endorsement` component names it.
+///
+/// A wire type distinct from the stored [`Endorsement`] because renaming the
+/// stored fields would rewrite the persisted fjall rows — `Endorsement`
+/// derives `Deserialize` and serialises `camelCase`, so `id` /
+/// `endorsementType` / `createdAt` are the on-disk keys of every row already
+/// written. Mapping at the boundary keeps the wire correct without a data
+/// migration, the same split `GenerationRow` uses (#1095).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct EndorsementRow {
+    /// `endorsementId`, stored as `id`.
+    pub endorsement_id: Uuid,
+    /// `typeUri`, stored as `endorsementType`.
+    pub type_uri: String,
+    pub subject_did: String,
+    /// `issued`, stored as `createdAt`.
+    pub issued: DateTime<Utc>,
+    pub status_list_index: u32,
+    pub claim: JsonValue,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<DateTime<Utc>>,
+    /// Unspecced upstream, against an `additionalProperties: false`
+    /// component — the half of this family that still diverges. `vecId` is
+    /// the `credentialId` a revocation receipt echoes, so a caller needs it
+    /// to revoke what it just read; `issuerDid` is the community DID, kept
+    /// on the row so a listing need not re-look up the signer. Both go
+    /// upstream rather than in the bin.
+    pub issuer_did: String,
+    pub vec_id: String,
+}
+
+impl From<Endorsement> for EndorsementRow {
+    fn from(e: Endorsement) -> Self {
+        Self {
+            endorsement_id: e.id,
+            type_uri: e.endorsement_type,
+            subject_did: e.subject_did,
+            issued: e.created_at,
+            status_list_index: e.status_list_index,
+            claim: e.claim,
+            revoked_at: e.revoked_at,
+            issuer_did: e.issuer_did,
+            vec_id: e.vec_id,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct IssueResponse {
-    pub id: Uuid,
-    pub vec_id: String,
+    pub endorsement: EndorsementRow,
+    /// The signed credential just minted. Unspecced, and the response is
+    /// `additionalProperties: false`, so this is what keeps `issue` in the
+    /// drift table — the spec's `Endorsement` component has nowhere to put a
+    /// credential. Handing back the VC is the point of an issue call, so it
+    /// stays and the gap goes upstream.
     pub vec: JsonValue,
 }
 
@@ -245,8 +301,10 @@ pub async fn issue(
     Ok((
         StatusCode::CREATED,
         Json(IssueResponse {
-            id,
-            vec_id,
+            // The row just stored, mapped to the names the canonical
+            // `Endorsement` component uses. `id` and `vecId` were the whole
+            // response until #1096; both live on the row now.
+            endorsement: end.into(),
             vec: vec_value,
         }),
     ))
@@ -267,7 +325,7 @@ pub struct ListQuery {
     security(("bearer_jwt" = [])),
     params(ListQuery),
     responses(
-        (status = 200, description = "Paginated list of endorsements", body = Paginated<Endorsement>),
+        (status = 200, description = "Paginated list of endorsements", body = Paginated<EndorsementRow>),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin or issuer"),
     ),
@@ -276,7 +334,7 @@ pub async fn list(
     auth: AuthClaims,
     State(state): State<AppState>,
     Query(query): Query<ListQuery>,
-) -> Result<Json<Paginated<Endorsement>>, AppError> {
+) -> Result<Json<Paginated<EndorsementRow>>, AppError> {
     let acl = get_acl_entry(&state.acl_ks, &auth.did)
         .await?
         .ok_or_else(|| AppError::Forbidden("caller has no ACL row".into()))?;
@@ -301,7 +359,7 @@ pub async fn list(
         .map_err(|e| AppError::Validation(format!("invalid cursor: {e}")))?;
     let page =
         list_endorsements(&state.endorsements_ks, &audit_key, cursor.as_ref(), limit).await?;
-    Ok(Json(page))
+    Ok(Json(page.map_items(EndorsementRow::from)))
 }
 
 // ─── Show ────────────────────────────────────────────────
@@ -333,7 +391,9 @@ pub async fn show(
     let row = get_endorsement(&state.endorsements_ks, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("endorsement {id} not found")))?;
-    Ok(Json(EndorsementEnvelope { endorsement: row }))
+    Ok(Json(EndorsementEnvelope {
+        endorsement: row.into(),
+    }))
 }
 
 // ─── Revoke ──────────────────────────────────────────────
@@ -492,5 +552,5 @@ fn rfc3339(t: chrono::DateTime<Utc>) -> String {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct EndorsementEnvelope {
-    pub endorsement: Endorsement,
+    pub endorsement: EndorsementRow,
 }

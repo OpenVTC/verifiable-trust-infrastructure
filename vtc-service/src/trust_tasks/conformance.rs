@@ -432,17 +432,22 @@ fn join_request() -> Value {
 
 /// An `Endorsement` row as `endorsements/mod.rs:41` serialises one.
 fn endorsement() -> Value {
-    json!({
-        "id": "11111111-1111-4111-8111-111111111111",
-        "endorsementType": "https://skills.example.com/v1/rust",
-        "issuerDid": COMMUNITY_DID,
-        "subjectDid": DID,
-        "claim": { "level": "expert" },
-        "statusListIndex": 42,
-        "vecId": "urn:uuid:11111111-1111-4111-8111-111111111111",
-        "createdAt": TS,
-        "revokedAt": null,
+    // Serialised from the real `EndorsementRow`, not hand-written — see the
+    // `endorsements/revoke` note in the table (#1095) for why that matters.
+    serde_json::to_value(crate::routes::endorsements::EndorsementRow {
+        endorsement_id: "11111111-1111-4111-8111-111111111111"
+            .parse()
+            .expect("fixture uuid"),
+        type_uri: "https://skills.example.com/v1/rust".into(),
+        subject_did: DID.into(),
+        issued: TS.parse().expect("fixture timestamp"),
+        status_list_index: 42,
+        claim: json!({ "level": "expert" }),
+        revoked_at: None,
+        issuer_did: COMMUNITY_DID.into(),
+        vec_id: "urn:uuid:11111111-1111-4111-8111-111111111111".into(),
     })
+    .expect("EndorsementRow serialises")
 }
 
 /// An `EndorsementType` row as `endorsement_types/mod.rs:42` serialises one.
@@ -824,28 +829,28 @@ fn table() -> Vec<Conformance> {
         drift!(
             s::endorsements::issue::v0_1::Payload,
             s::endorsements::issue::v0_1::Response,
-            Side::Both,
-            // `IssueBody` — routes/endorsements.rs:57. `endorsement_type` is
-            // renamed to `type`, and the rename beats `rename_all`.
+            Side::Response,
+            // `IssueBody` — routes/endorsements.rs:57, `typeUri` as of #1096.
             json!({
                 "subjectDid": DID,
-                "type": "https://skills.example.com/v1/rust",
+                "typeUri": "https://skills.example.com/v1/rust",
                 "claim": { "level": "expert" },
                 "validitySeconds": 2_592_000_u64,
             }),
             // `IssueResponse` — routes/endorsements.rs:70.
             json!({
-                "id": "11111111-1111-4111-8111-111111111111",
-                "vecId": "urn:uuid:11111111-1111-4111-8111-111111111111",
+                "endorsement": endorsement(),
                 "vec": credential(),
             }),
-            "the request names the endorsement type `type`; the spec names it \
-             `typeUri`. The response is `{id, vecId, vec}` against a spec \
-             that says `{endorsement: {endorsementId, typeUri, subjectDid, \
-             issued, statusListIndex}}` — a different model, not a naming \
-             slip: the spec returns the stored row with the credential \
-             nested under `issued`, this returns the credential and two ids. \
-             Needs a decision on which model wins before either side moves"
+            "the request conforms as of #1096 — it named the type `type` \
+             against a spec that says `typeUri`. The response now returns \
+             the row under `endorsement`, so the model disagreement the old \
+             note described is settled in the spec's favour. What remains is \
+             `vec`, the signed credential, against an \
+             `additionalProperties: false` response whose `Endorsement` \
+             component has nowhere to put a credential. Handing back the VC \
+             it just minted is the point of an issue call, so it stays and \
+             the gap goes upstream"
         ),
         drift!(
             s::endorsements::list::v0_1::Payload,
@@ -854,11 +859,13 @@ fn table() -> Vec<Conformance> {
             json!({ "subjectDid": DID, "typeUri": "https://skills.example.com/v1/rust",
                     "includeRevoked": true, "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
             paginated(json!([endorsement()])),
-            "the wrapper's casing is fixed; what remains is that the rows are this service's \
-             `Endorsement` (endorsements/mod.rs:41) — `id` / \
-             `endorsementType` / `issuerDid` / `vecId` / `createdAt` — not \
-             the spec's (`endorsementId` / `typeUri` / `issued`). Same model \
-             disagreement as `issue`"
+            "the rows speak the canonical `Endorsement` component as of \
+             #1096 — `endorsementId` / `typeUri` / `issued`, where they said \
+             `id` / `endorsementType` / `createdAt`. What remains is the \
+             unspecced `issuerDid` and `vecId` against an \
+             `additionalProperties: false` component; `vecId` is the \
+             `credentialId` a revocation echoes, so a caller needs it to \
+             revoke what it just listed. Both go upstream"
         ),
         drift!(
             s::endorsements::show::v0_1::Payload,
@@ -866,9 +873,9 @@ fn table() -> Vec<Conformance> {
             Side::Response,
             json!({ "endorsementId": "11111111-1111-4111-8111-111111111111" }),
             json!({ "endorsement": endorsement() }),
-            "the `{endorsement: …}` envelope is right as of #1093; the row's \
-             members are still this service's spelling. Same model \
-             disagreement as `issue`; fix the family together"
+            "the envelope was fixed in #1093 and the row's members in \
+             #1096. What remains is the same unspecced `issuerDid` / \
+             `vecId` as `list` — one upstream change closes both"
         ),
         checked!(
             s::endorsements::revoke::v0_1::Payload,

@@ -347,7 +347,7 @@ async fn issue_rejects_unregistered_type() {
         .body(Body::from(
             json!({
                 "subjectDid": SUBJECT_DID,
-                "type": "https://unregistered.example/t",
+                "typeUri": "https://unregistered.example/t",
                 "claim": { "x": 1 }
             })
             .to_string(),
@@ -370,7 +370,7 @@ async fn issue_rejects_non_issuer_non_admin() {
         .body(Body::from(
             json!({
                 "subjectDid": SUBJECT_DID,
-                "type": "https://example.com/v1/skills/rust",
+                "typeUri": "https://example.com/v1/skills/rust",
                 "claim": { "level": "expert" }
             })
             .to_string(),
@@ -394,7 +394,7 @@ async fn issue_happy_path_issuer_mints_credential() {
         .body(Body::from(
             json!({
                 "subjectDid": SUBJECT_DID,
-                "type": uri,
+                "typeUri": uri,
                 "claim": { "level": "expert", "since": "2020" }
             })
             .to_string(),
@@ -403,7 +403,7 @@ async fn issue_happy_path_issuer_mints_credential() {
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, v) = body_value(resp).await;
     assert_eq!(status, StatusCode::CREATED, "{v}");
-    assert!(v["id"].is_string());
+    assert!(v["endorsement"]["endorsementId"].is_string());
     assert!(v["vec"].is_object());
 
     // Audit: CustomEndorsementIssued + VecIssued both emitted.
@@ -440,7 +440,7 @@ async fn issue_rejects_unknown_subject() {
         .body(Body::from(
             json!({
                 "subjectDid": "did:key:zStranger",
-                "type": uri,
+                "typeUri": uri,
                 "claim": { "x": 1 }
             })
             .to_string(),
@@ -465,7 +465,7 @@ async fn delete_type_refused_while_live_endorsement_exists() {
         .body(Body::from(
             json!({
                 "subjectDid": SUBJECT_DID,
-                "type": uri,
+                "typeUri": uri,
                 "claim": { "level": "expert" }
             })
             .to_string(),
@@ -501,11 +501,14 @@ async fn revoke_issuer_can_retract() {
         .header("trust-task", ISSUE_TASK)
         .header("content-type", "application/json")
         .body(Body::from(
-            json!({ "subjectDid": SUBJECT_DID, "type": uri, "claim": { "x": 1 } }).to_string(),
+            json!({ "subjectDid": SUBJECT_DID, "typeUri": uri, "claim": { "x": 1 } }).to_string(),
         ))
         .unwrap();
     let (_, v) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    let id = v["id"].as_str().unwrap().to_string();
+    let id = v["endorsement"]["endorsementId"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let req = Request::builder()
         .method("DELETE")
@@ -546,11 +549,14 @@ async fn revoke_idempotent_on_already_revoked() {
         .header("trust-task", ISSUE_TASK)
         .header("content-type", "application/json")
         .body(Body::from(
-            json!({ "subjectDid": SUBJECT_DID, "type": uri, "claim": { "x": 1 } }).to_string(),
+            json!({ "subjectDid": SUBJECT_DID, "typeUri": uri, "claim": { "x": 1 } }).to_string(),
         ))
         .unwrap();
     let (_, v) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    let id = v["id"].as_str().unwrap().to_string();
+    let id = v["endorsement"]["endorsementId"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     for _ in 0..2 {
         let req = Request::builder()
@@ -577,11 +583,14 @@ async fn revoke_non_admin_non_issuer_forbidden() {
         .header("trust-task", ISSUE_TASK)
         .header("content-type", "application/json")
         .body(Body::from(
-            json!({ "subjectDid": SUBJECT_DID, "type": uri, "claim": { "x": 1 } }).to_string(),
+            json!({ "subjectDid": SUBJECT_DID, "typeUri": uri, "claim": { "x": 1 } }).to_string(),
         ))
         .unwrap();
     let (_, v) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    let id = v["id"].as_str().unwrap().to_string();
+    let id = v["endorsement"]["endorsementId"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let req = Request::builder()
         .method("DELETE")
@@ -613,7 +622,7 @@ async fn show_wraps_the_row_in_an_endorsement_envelope() {
         .body(Body::from(
             json!({
                 "subjectDid": SUBJECT_DID,
-                "type": uri,
+                "typeUri": uri,
                 "claim": { "level": "expert" }
             })
             .to_string(),
@@ -621,7 +630,7 @@ async fn show_wraps_the_row_in_an_endorsement_envelope() {
         .unwrap();
     let (status, issued) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
     assert_eq!(status, StatusCode::CREATED, "{issued}");
-    let id = issued["id"].as_str().unwrap();
+    let id = issued["endorsement"]["endorsementId"].as_str().unwrap();
 
     let req = Request::builder()
         .method("GET")
@@ -636,6 +645,6 @@ async fn show_wraps_the_row_in_an_endorsement_envelope() {
     // The envelope, not the bare row: `v["id"]` must be absent precisely
     // because the row now sits one level down.
     assert!(v["id"].is_null(), "row must not be at the top level: {v}");
-    assert_eq!(v["endorsement"]["id"], id);
+    assert_eq!(v["endorsement"]["endorsementId"], id);
     assert_eq!(v["endorsement"]["subjectDid"], SUBJECT_DID);
 }
