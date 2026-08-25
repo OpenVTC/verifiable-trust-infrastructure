@@ -84,41 +84,38 @@ pub struct EndorsementRow {
     /// `typeUri`, stored as `endorsementType`.
     pub type_uri: String,
     pub subject_did: String,
-    /// The issuance receipt — **not** a timestamp.
+    /// A reference to the issued credential — **not** a timestamp.
     ///
     /// #1096 read `issued` as "when it was issued" and mapped `createdAt`
-    /// onto it, so this member went out as an RFC 3339 string where the
-    /// component requires an object. `IssuedCredential` is where `vecId` and
-    /// the signed credential belong; #1096 called both of those unspecced
-    /// and proposed taking them upstream, which was wrong — the spec had a
-    /// home for each all along.
-    pub issued: IssuedCredential,
+    /// onto it, so this went out as an RFC 3339 string where the component
+    /// requires an object.
+    pub issued: CredentialReference,
     pub status_list_index: u32,
     pub claim: JsonValue,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
-/// The registry-wide issuance receipt: the handle, the credential, and when
-/// it lapses.
+/// A pointer to the issued VEC: its identifier and lifetime, not its bytes.
 ///
-/// `credential` and `expiresAt` are required by the component but are **not
-/// on the stored row** — the `Endorsement` keyspace holds `vecId` and the
-/// mint time, never the signed VEC or its expiry. So `issue`, which has just
-/// minted both, fills the receipt completely, and `list` / `show` cannot.
-/// They send what they hold and stay in the drift table until the row grows
-/// those two members (a storage change and a migration, deliberately not
-/// bundled into a wire fix).
+/// #1098 mapped this to the registry-wide `IssuedCredential`, whose
+/// `credential` and `expiresAt` are required and neither of which is on the
+/// stored row — so `list` and `show` could not fill it and stayed
+/// non-conformant. That turned out to be the component being used in the
+/// wrong place rather than a gap in this service: `IssuedCredential` is
+/// scoped to the moment of minting, and a listing is not an issuance event.
+/// trustoverip/dtgwg-trust-tasks-tf#262 splits the two, and this is the read
+/// side of that split. The credential itself now rides on the `issue`
+/// response alone, which is the one call whose caller cannot get it any
+/// other way.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct IssuedCredential {
+pub struct CredentialReference {
     pub credential_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub credential: Option<JsonValue>,
+    pub issued_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub issued_at: Option<DateTime<Utc>>,
 }
 
 impl From<Endorsement> for EndorsementRow {
@@ -127,12 +124,11 @@ impl From<Endorsement> for EndorsementRow {
             endorsement_id: e.id,
             type_uri: e.endorsement_type,
             subject_did: e.subject_did,
-            issued: IssuedCredential {
+            issued: CredentialReference {
                 credential_id: e.vec_id,
-                // Neither is on the stored row; only `issue` can fill them.
-                credential: None,
-                expires_at: None,
                 issued_at: Some(e.created_at),
+                // Not on the stored row; `issue` reports it directly.
+                expires_at: None,
             },
             status_list_index: e.status_list_index,
             claim: e.claim,
@@ -145,13 +141,11 @@ impl From<Endorsement> for EndorsementRow {
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct IssueResponse {
-    /// The whole response. The signed credential rides inside
-    /// `endorsement.issued.credential`, where the component puts it — #1096
-    /// sent it as a top-level `vec` sibling and recorded the resulting
-    /// divergence as an upstream gap, having misread `issued` as a
-    /// timestamp. The response is `additionalProperties: false`, so that
-    /// sibling could never have been right.
     pub endorsement: EndorsementRow,
+    /// The signed credential just minted, which only this call can hand
+    /// back. A read carries `endorsement.issued` — the reference — instead,
+    /// so a page of fifty endorsements does not embed fifty credentials.
+    pub credential: JsonValue,
 }
 
 #[utoipa::path(
@@ -327,18 +321,15 @@ pub async fn issue(
         StatusCode::CREATED,
         Json(IssueResponse {
             endorsement: EndorsementRow {
-                // `issue` is the one route that holds the whole receipt: it
-                // just minted the credential and computed its expiry, so it
-                // fills `credential` and `expiresAt` where `list` / `show`
-                // can only send the handle and the mint time.
-                issued: IssuedCredential {
+                // `issue` knows the expiry it just computed; a read does not.
+                issued: CredentialReference {
                     credential_id: vec_id,
-                    credential: Some(vec_value),
-                    expires_at: Some(valid_until),
                     issued_at: Some(now),
+                    expires_at: Some(valid_until),
                 },
                 ..end.into()
             },
+            credential: vec_value,
         }),
     ))
 }

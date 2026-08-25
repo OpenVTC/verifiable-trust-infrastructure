@@ -385,14 +385,21 @@ mod tests {
         // it: PUT through it must be rejected by the nearest-existing-
         // ancestor canonicalisation, even though the target file
         // doesn't exist yet.
-        let outside = _d.path().parent().unwrap().join("vtc-escape-target");
-        std::fs::create_dir_all(&outside).unwrap();
-        symlink(&outside, root.join("link")).unwrap();
+        //
+        // The escape target gets its own `TempDir` rather than a fixed name
+        // beside this one. It used to be `<system tmp>/vtc-escape-target` —
+        // a shared path every concurrent run of this test raced on, and the
+        // test removed it on the way out, so two test binaries could delete
+        // each other's target mid-assertion. That made the test fail under
+        // `cargo test --workspace` and pass in isolation, which reads as
+        // flakiness rather than as the shared-fixture bug it was.
+        let outside_dir = tempfile::tempdir().expect("tempdir");
+        let outside = outside_dir.path();
+        symlink(outside, root.join("link")).unwrap();
 
         let err = canonical_within_root_for_create(&root, "/link/pwned.html", &block())
             .expect_err("symlinked ancestor must be rejected");
         assert_eq!(err, PathError::Escape);
         assert!(!outside.join("pwned.html").exists());
-        let _ = std::fs::remove_dir_all(&outside);
     }
 }
