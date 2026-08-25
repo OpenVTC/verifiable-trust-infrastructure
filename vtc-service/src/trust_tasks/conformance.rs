@@ -234,6 +234,14 @@ struct Witness {
 enum Side {
     Request,
     Response,
+    /// Unconstructed as of #1102, because every both-sided entry closed —
+    /// kept because `Side` is the vocabulary for describing a divergence, and
+    /// deleting a legitimate case because today's table happens not to use it
+    /// pushes the next author toward the wrong one. Recording a both-sided
+    /// drift as `Response` is precisely the mis-diagnosis
+    /// `known_drift_entries_still_diverge_where_they_say_they_do` exists to
+    /// catch, and it caught it twice while this table was being built.
+    #[allow(dead_code)]
     Both,
 }
 
@@ -454,7 +462,7 @@ const VEC_ID: &str = "urn:uuid:11111111-1111-4111-8111-111111111111";
 /// Serialised from the real `EndorsementRow`, not hand-written — see the
 /// `endorsements/revoke` note in the table (#1095) for why that matters.
 fn endorsement_row(
-    issued: crate::routes::endorsements::IssuedCredential,
+    issued: crate::routes::endorsements::CredentialReference,
 ) -> crate::routes::endorsements::EndorsementRow {
     crate::routes::endorsements::EndorsementRow {
         endorsement_id: "11111111-1111-4111-8111-111111111111"
@@ -469,16 +477,14 @@ fn endorsement_row(
     }
 }
 
-/// The row a `list` / `show` sends: the handle and the mint time. `credential`
-/// and `expiresAt` are required by the component but are not on the stored
-/// row, so only `issue` can fill them.
+/// The row a `list` / `show` sends: the handle and the mint time. The expiry
+/// is not on the stored row, and the credential itself rides on `issue` alone.
 fn endorsement() -> Value {
     serde_json::to_value(endorsement_row(
-        crate::routes::endorsements::IssuedCredential {
+        crate::routes::endorsements::CredentialReference {
             credential_id: VEC_ID.into(),
-            credential: None,
-            expires_at: None,
             issued_at: Some(TS.parse().expect("fixture timestamp")),
+            expires_at: None,
         },
     ))
     .expect("EndorsementRow serialises")
@@ -505,47 +511,52 @@ fn uuid() -> uuid::Uuid {
 /// not grow unnoticed — the same discipline `UNPUBLISHED_CANONICAL_OK` in
 /// `tests/trust_task_manifest.rs` applies to unpublished URIs.
 ///
-/// **16 of 58**, from 33 when the sweep landed. #1059 named two and said it
-/// had not audited the rest; the sweep said the rest were worse than the two.
-/// The plan was to land the ledger first and "decide, separately and with the
-/// list in hand, which drifts get fixed by correcting the service and which by
-/// taking the shape upstream". That is what happened:
+/// **4 of 58**, from 33 when the sweep landed. What is left is no longer a
+/// backlog of shapes to correct — it is four decisions, and three of them are
+/// not this service's to make alone:
 ///
-/// 1. **No response envelope** — the spec wraps the payload
-///    (`{member: …}`, `{removed: […]}`, `{envelope: …}`) and the handler
-///    returned the bare object or array. **Closed.** No VTC route now returns
-///    a bare row or array where its schema wraps one (#1082, #1093, #1094).
-/// 2. **`Paginated<T>` was snake_case** — one `rename_all` in `vti-common`
-///    closed the wrapper for all five list tasks. Worth noting when reading a
-///    drift count: closing a shared root cause moves entries without
-///    necessarily closing them; four kept their rows at row level, and later
-///    changes closed those separately.
-/// 3. **Wrong member names or types** — `sizeBytes` for `size`, `isCurrent`
-///    for `current`, unix seconds for `format: date-time`, and the whole
-///    endorsement row model. **Closed** (#1095, #1096).
-/// 4. **Unspecced members on an `additionalProperties: false` response.** What
-///    is left is nearly all this, and it is mostly the service being *ahead*
-///    of the spec rather than wrong: `etag`, `factsTemplate`, `deployedAt`,
-///    `vecId`, the diagnostics transport half, and `vec` — the credential an
-///    issue call hands back, which the spec's `Endorsement` component has
-///    nowhere to put. These close upstream, not here.
+/// 1. **`install/claim/start` + `install/claim/finish`** — the schemas
+///    REQUIRE a `didBindingChallenge` / `didBindingSignature` pair that binds
+///    the candidate `did:key` by proof of possession. This service checks the
+///    passkey attestation alone and issues no challenge. **This is the only
+///    entry where the service is behind the spec on a security control**, and
+///    the fix is here, not upstream. It was deliberately left out of
+///    trustoverip/dtgwg-trust-tasks-tf#262 rather than deleting a required
+///    member so that we would conform — which is the direction that would
+///    have made the ledger green and the system weaker.
+/// 2. **`auth/recognise`** — the payload is two loose credentials; this
+///    service takes one holder-signed VP that embeds both and binds a nonce
+///    and this community's DID as `domain`. The VP carries a holder-binding
+///    proof two loose credentials cannot, so the service's shape is arguably
+///    the stronger one. Changing it upstream replaces a required member, so
+///    it needs a `0.2`, not an in-place edit.
+/// 3. **`join-requests/submit`** — the response is `{requestId, status}` with
+///    `status` a `const: "pending"`; this service returns a four-valued
+///    verdict (allow / deny / refer / request_more) that `pending` can
+///    express one of. Also a replacement, so also a `0.2`.
+///
+/// The three shapes the sweep started with are gone: no route returns a bare
+/// row where its schema wraps one, none sends a wrong member name or type,
+/// and the unspecced members are published (#261, #262).
+///
+/// **Two lessons the count itself cannot carry, both learned the hard way.**
+///
+/// **Read the pin before believing a note.** Nine entries closed on the
+/// 0.11.2 → 0.11.8 bump alone and ten more on 0.11.10, because the specs had
+/// moved and these notes had not. This table catches the service drifting
+/// from the spec and is blind to the spec moving toward the service.
 ///
 /// **A hand-written fixture can understate as well as overstate.** #1097
-/// promoted `config/export` and `config/import` to `checked!` on a
-/// `community_profile()` that omitted `personhood` — a member the real type
-/// always serialises. That is a *false green*: a non-conformant route
-/// reported as conforming, which is the one direction this table must never
-/// fail in. The fixture is now built from the struct, so the compiler
-/// refuses the omission; do the same for any fixture you touch. Roughly
-/// twenty remain hand-written.
+/// promoted `config/export` and `config/import` on a `community_profile()`
+/// that omitted `personhood` — a false green, the one direction this table
+/// must never fail in. Fixtures built from the real types cannot do that;
+/// roughly twenty remain hand-written.
 ///
-/// **Read the pin before reading this number.** Nine entries closed on the
-/// `trust-tasks-rs` 0.11.2 → 0.11.8 bump alone, because
-/// trustoverip/dtgwg-trust-tasks-tf#256–#260 had already merged and shipped
-/// while these notes still described the older schemas. A note that says
-/// "take it upstream" can be stale in the good direction; check the released
-/// schema before writing the spec PR it asks for.
-const KNOWN_DRIFT_COUNT: usize = 14;
+/// To re-measure rather than re-read: add a throwaway test that walks
+/// `table()` printing the actual parse or schema error for every
+/// `KnownDrift`. `invalid type: string, expected struct IssuedCredential` is
+/// a sentence no amount of re-reading prose will produce.
+const KNOWN_DRIFT_COUNT: usize = 4;
 
 /// Every bound, published `spec/vtc/*` URI, with the request and response the
 /// VTC actually speaks.
@@ -699,10 +710,9 @@ fn table() -> Vec<Conformance> {
             })
         ),
         // ─── ceremonies ──────────────────────────────────────────────
-        drift!(
+        checked!(
             s::ceremonies::list::v0_1::Payload,
             s::ceremonies::list::v0_1::Response,
-            Side::Response,
             json!({}),
             // `CeremonyListResponse` — a top-level array until #1094
             // (routes/ceremonies.rs:320).
@@ -715,17 +725,12 @@ fn table() -> Vec<Conformance> {
                 "blurb": "A member views another member's record.",
                 "fields": [],
                 "factsTemplate": { "purpose": "directory" },
-            }] }),
-            "the `{ceremonies: […]}` envelope is right as of #1094. Each \
-             manifest still carries an unspecced `factsTemplate`; that half \
-             goes upstream, because the admin UI renders the simulator from \
-             it and dropping it is not an option"
+            }] })
         ),
         // ─── community ───────────────────────────────────────────────
-        drift!(
+        checked!(
             s::community::profile::show::v0_1::Payload,
             s::community::profile::show::v0_1::Response,
-            Side::Response,
             json!({}),
             // `CommunityProfileResponse` — nested as of #1094, with
             // `registryStatus` inside the profile where the canonical
@@ -736,26 +741,11 @@ fn table() -> Vec<Conformance> {
                     .expect("object")
                     .insert("registryStatus".into(), json!("active"));
                 json!({ "profile": v })
-            },
-            "the `{profile: …}` nesting is right as of #1094, and \
-             `registryStatus` moved inside the profile object — beside it, \
-             the `additionalProperties: false` response would have rejected \
-             it. What remains is `communityDid`, `createdAt` and \
-             `personhood`, none of which the canonical `CommunityProfile` \
-             component defines. `personhood` is taken upstream in \
-             trustoverip/dtgwg-trust-tasks-tf#261. The other two are a \
-             design question rather than a missing member: that component is \
-             the **update-facing** view and omits `communityDid` on purpose, \
-             so that a patch cannot re-point a community's identity — \
-             `config-portability`'s `CommunityProfileSnapshot` says so in \
-             prose. A read needs the DID and an update must refuse it, so \
-             the fix is a read-shaped view for `show`, not another member on \
-             the update view"
+            }
         ),
-        drift!(
+        checked!(
             s::community::profile::update::v0_1::Payload,
             s::community::profile::update::v0_1::Response,
-            Side::Response,
             // `CommunityProfileUpdate` — community/profile.rs:144.
             json!({
                 "name": "Example Community",
@@ -768,23 +758,12 @@ fn table() -> Vec<Conformance> {
                 "extensions": { "tier": "gold" },
             }),
             // `UpdateProfileResponse` — routes/community/profile.rs:196.
-            json!({ "profile": community_profile(), "fieldsChanged": ["name", "logoUrl"] }),
-            "the request conforms as of trust-tasks-rs 0.11.8, which carries \
-             `relationshipIdentifierDefault` from \
-             trustoverip/dtgwg-trust-tasks-tf#257. What remains is \
-             `communityDid`, `createdAt` and `personhood` inside the \
-             profile; `personhood` is taken upstream in #261 and the other \
-             two are the read-vs-update view question described on `show`. \
-             `fieldsChanged` is *not* a divergence: the response schema \
-             defines it, and an earlier version of this note said otherwise \
-             because a serde parse stops at the first unknown member and \
-             never reaches the rest"
+            json!({ "profile": community_profile(), "fieldsChanged": ["name", "logoUrl"] })
         ),
         // ─── config ──────────────────────────────────────────────────
-        drift!(
+        checked!(
             s::config::export::v0_1::Payload,
             s::config::export::v0_1::Response,
-            Side::Response,
             json!({}),
             // `ExportResponse` / `ConfigExportDocument` —
             // routes/admin/config.rs:476 / :460.
@@ -795,20 +774,11 @@ fn table() -> Vec<Conformance> {
                     "communityProfile": community_profile(),
                     "configOverrides": { "log.level": "debug", "server.port": 8200 },
                 }
-            }),
-            "the embedded profile carries `personhood`, which \
-             `CommunityProfileSnapshot` does not define (`additionalProperties: \
-             false`). This entry was promoted to `checked!` in #1097 on a \
-             fixture that omitted the member — a false green, and the \
-             opposite failure to the stale notes that PR fixed: a hand-written \
-             fixture can understate what the service sends as easily as it \
-             can overstate it. Closes on the trust-tasks-rs release carrying \
-             trustoverip/dtgwg-trust-tasks-tf#261"
+            })
         ),
-        drift!(
+        checked!(
             s::config::import::v0_1::Payload,
             s::config::import::v0_1::Response,
-            Side::Request,
             // `ImportRequest` — routes/admin/config.rs:524. The document is
             // whatever `export` handed back, so it carries the same extra
             // member.
@@ -828,12 +798,7 @@ fn table() -> Vec<Conformance> {
                 "overrideChanges": [{ "key": "log.level", "newValue": "warn" }],
                 "pendingRestart": ["server.port"],
                 "rejected": [{ "key": "bogus.key", "reason": "unknown config key" }],
-            }),
-            "request-side half of the `config/export` drift: an import replays \
-             the document an export produced, so it carries the same \
-             unspecced `personhood`. Same false green from #1097, same \
-             cause, and the same upstream PR closes both — \
-             trustoverip/dtgwg-trust-tasks-tf#261"
+            })
         ),
         // ─── directory ───────────────────────────────────────────────
         checked!(
@@ -887,47 +852,30 @@ fn table() -> Vec<Conformance> {
                 "claim": { "level": "expert" },
                 "validitySeconds": 2_592_000_u64,
             }),
-            // `IssueResponse` with the receipt filled — `issue` is the one
-            // route holding the credential and its expiry, so it is the one
-            // that can supply `credential` and `expiresAt`.
+            // `issue` is the one route that holds the credential and the
+            // expiry it just computed; a read sends neither.
             serde_json::to_value(crate::routes::endorsements::IssueResponse {
-                endorsement: endorsement_row(crate::routes::endorsements::IssuedCredential {
+                endorsement: endorsement_row(crate::routes::endorsements::CredentialReference {
                     credential_id: VEC_ID.into(),
-                    credential: Some(credential()),
-                    expires_at: Some(TS.parse().expect("fixture timestamp")),
                     issued_at: Some(TS.parse().expect("fixture timestamp")),
-                },),
+                    expires_at: Some(TS.parse().expect("fixture timestamp")),
+                }),
+                credential: credential(),
             })
             .expect("IssueResponse serialises")
         ),
-        drift!(
+        checked!(
             s::endorsements::list::v0_1::Payload,
             s::endorsements::list::v0_1::Response,
-            Side::Response,
             json!({ "subjectDid": DID, "typeUri": "https://skills.example.com/v1/rust",
                     "includeRevoked": true, "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
-            paginated(json!([endorsement()])),
-            "one member missing, and it is a storage question rather than a \
-             spec one. `issued` is an `IssuedCredential` receipt — #1096 \
-             misread it as a timestamp and sent `createdAt`; #1098 corrects \
-             that. The receipt requires `credential` and `expiresAt`, and \
-             the stored `Endorsement` keeps neither: the keyspace holds the \
-             `vecId` and the mint time, never the signed VEC or its expiry. \
-             So this row sends the handle and `issuedAt` and stops. Closing \
-             it means storing the credential and its expiry on the row — a \
-             migration, deliberately not bundled into a wire fix. \
-             `endorsements/issue` conforms because it has just minted both"
+            paginated(json!([endorsement()]))
         ),
-        drift!(
+        checked!(
             s::endorsements::show::v0_1::Payload,
             s::endorsements::show::v0_1::Response,
-            Side::Response,
             json!({ "endorsementId": "11111111-1111-4111-8111-111111111111" }),
-            json!({ "endorsement": endorsement() }),
-            "the envelope was fixed in #1093, the row's names in #1096 and \
-             the `issued` receipt in #1098. What remains is the same missing \
-             `credential` / `expiresAt` as `list`, for the same reason: \
-             neither is on the stored row. One storage change closes both"
+            json!({ "endorsement": endorsement() })
         ),
         checked!(
             s::endorsements::revoke::v0_1::Payload,
@@ -958,20 +906,22 @@ fn table() -> Vec<Conformance> {
         drift!(
             s::install::claim::start::v0_1::Payload,
             s::install::claim::start::v0_1::Response,
-            Side::Both,
+            Side::Response,
             // `ClaimStartRequest` — routes/install.rs:65. No `rename_all`.
             json!({ "installToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
                     "claimSecret": "K7QW-3M2X-9PLD" }),
             // `ClaimStartResponse` — routes/install.rs:81.
             json!({ "registrationId": REQUEST_ID, "options": { "publicKey": {} } }),
-            "the request carries \
-             `claimSecret`, which the spec does not define at all — the \
-             claim secret is the second factor on the install URL, so the \
-             spec is missing a real member. The response omits \
-             `didBindingChallenge`, which the spec REQUIRES: this service \
-             binds the admin DID at `claim/finish` instead, so the member has \
-             nowhere to come from. The casing half is fixed; the two \
-             structural halves need the spec and the flow reconciled"
+            "the request conforms as of trust-tasks-rs 0.11.10, which \
+             carries `claimSecret` from \
+             trustoverip/dtgwg-trust-tasks-tf#262. The response still omits \
+             `didBindingChallenge`, which the schema REQUIRES — and that \
+             half is this service being **behind** a security control, not \
+             the spec being wrong. The task binds the candidate `did:key` by \
+             having it sign a challenge; this service checks the passkey \
+             attestation alone and never issues one. #262 deliberately left \
+             it alone rather than deleting a required member so we could \
+             conform: the fix belongs here"
         ),
         drift!(
             s::install::claim::finish::v0_1::Payload,
@@ -1288,10 +1238,9 @@ fn table() -> Vec<Conformance> {
                     "registryConfigured": true, "error": "registry unreachable" })
         ),
         // ─── registry ────────────────────────────────────────────────
-        drift!(
+        checked!(
             s::registry::diagnostics::v0_1::Payload,
             s::registry::diagnostics::v0_1::Response,
-            Side::Response,
             json!({}),
             // `DiagnosticsResponse` — routes/health.rs:73, camelCase as of #1093.
             json!({
@@ -1306,13 +1255,7 @@ fn table() -> Vec<Conformance> {
                 "syncerRestarts": 0,
                 "messagingStatus": "connected",
                 "transports": [{ "protocol": "rest", "advertised": true, "serviceable": true }],
-            }),
-            "R3.1 casing fixed in #1093 — all four required members now \
-             reach the wire under the spec's name. Nine further members \
-             (`syncer*`, `messagingStatus`, `transports`, \
-             `registryTransport`, `vtaDid`, `mediator*`) still have no \
-             counterpart in the spec at all; that half is genuinely useful \
-             diagnostics and should go upstream, not be deleted"
+            })
         ),
         // ─── relationships ───────────────────────────────────────────
         checked!(
@@ -1371,10 +1314,9 @@ fn table() -> Vec<Conformance> {
             json!({ "id": REQUEST_ID })
         ),
         // ─── website ─────────────────────────────────────────────────
-        drift!(
+        checked!(
             s::website::files::list::v0_1::Payload,
             s::website::files::list::v0_1::Response,
-            Side::Response,
             json!({ "cursor": "assets/logo.png", "limit": 50 }),
             // Serialised from the real `ListResponse` / `FileEntry`, per the
             // `endorsements/revoke` note below — a hand-written fixture is
@@ -1390,16 +1332,7 @@ fn table() -> Vec<Conformance> {
                 }],
                 next_cursor: Some("styles/main.css".into()),
             })
-            .expect("ListResponse serialises"),
-            "`size` and `modifiedAt` are both right as of #1095 — the row \
-             sent `sizeBytes` for the one required member a listing exists \
-             to report, and a unix `u64` where the schema says `type: \
-             string, format: date-time`, a mismatch in kind and not merely \
-             in format. What remains is the unspecced `etag` against an \
-             `additionalProperties: false` item. It is the same SHA-256 the \
-             `show` handler sends as an `ETag` header, so it lets a client \
-             detect a change without downloading — worth taking upstream, \
-             not dropping"
+            .expect("ListResponse serialises")
         ),
         checked!(
             s::website::files::delete::v0_1::Payload,
@@ -1408,28 +1341,20 @@ fn table() -> Vec<Conformance> {
             // `DeleteResponse` — 200 with zero bytes until #1059.
             json!({ "path": "assets/old-logo.png", "deleted": true })
         ),
-        drift!(
+        checked!(
             s::website::generations::list::v0_1::Payload,
             s::website::generations::list::v0_1::Response,
-            Side::Response,
             json!({}),
             // Serialised from the real `GenerationsResponse` / `GenerationRow`.
             serde_json::to_value(crate::routes::website::generations::GenerationsResponse {
                 generations: vec![crate::routes::website::generations::GenerationRow {
                     generation: "1".into(),
                     current: false,
-                    deployed_at: 1_755_860_400,
+                    deployed_at: TS.parse().expect("fixture timestamp"),
                     size_bytes: 1_048_576,
                 }],
             })
-            .expect("GenerationsResponse serialises"),
-            "`current` and the `generation` type are both right as of #1095 \
-             — the row named `current` as `isCurrent` and sent the raw `u32` \
-             where the schema says `type: string`, which `rollback` had \
-             always stringified. What remains is the unspecced `deployedAt` \
-             and `sizeBytes` against an `additionalProperties: false` item; \
-             a rollback target is not much use without knowing when it was \
-             deployed or how big it is, so those go upstream"
+            .expect("GenerationsResponse serialises")
         ),
         checked!(
             s::website::rollback::v0_1::Payload,

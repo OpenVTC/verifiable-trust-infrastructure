@@ -8,6 +8,7 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use vti_common::audit::{AuditEvent, WebsiteGenerationRolledBackData};
@@ -66,12 +67,10 @@ pub struct GenerationRow {
     /// name rather than the label the API has ever used.
     pub generation: String,
     pub current: bool,
-    /// Unspecced upstream, and the item is `additionalProperties: false`, so
-    /// these two are the half of this entry that still diverges. Both are
-    /// worth having — a rollback target is not much use without knowing when
-    /// it was deployed or how big it is — so they go upstream rather than in
-    /// the bin.
-    pub deployed_at: u64,
+    /// Both went upstream in trustoverip/dtgwg-trust-tasks-tf#262 — a
+    /// rollback target is not much use without knowing when it was deployed
+    /// or how big it is.
+    pub deployed_at: DateTime<Utc>,
     pub size_bytes: u64,
 }
 
@@ -80,7 +79,10 @@ impl From<GenerationEntry> for GenerationRow {
         Self {
             generation: e.generation.to_string(),
             current: e.is_current,
-            deployed_at: e.deployed_at,
+            // RFC 3339, as the item schema types it — the stored row keeps
+            // unix seconds. `website/files/list` drew the same line in #1095.
+            deployed_at: DateTime::from_timestamp(e.deployed_at as i64, 0)
+                .unwrap_or(DateTime::UNIX_EPOCH),
             size_bytes: e.size_bytes,
         }
     }
