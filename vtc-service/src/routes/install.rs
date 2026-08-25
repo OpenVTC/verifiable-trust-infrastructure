@@ -4,8 +4,8 @@
 //! Implements **M0.5.2** of the VTC MVP Phase 0 plan. The flow:
 //!
 //! ```text
-//! operator  ──install_token──▶  start  ──ccr+did_binding_challenge──▶ operator
-//! operator  ──finish(webauthn_response, did_binding_signature)──▶  finish
+//! operator  ──install_token──▶  start  ──registration_id + ccr──▶ operator
+//! operator  ──finish(webauthn_response)──▶  finish
 //! finish    ──admin_did + setup_session_token──▶  operator
 //! ```
 //!
@@ -27,6 +27,18 @@
 //! binding signature). The previous design required a raw Ed25519
 //! signature over a server challenge, which is impossible to produce
 //! in a real browser (WebAuthn never exposes the private key).
+//!
+//! That reasoning lived only here until 2026-08. The published task
+//! kept requiring the binding for two months after it was removed, and
+//! the conformance sweep then read the gap as this service being behind
+//! the spec on a security control — the opposite of what happened.
+//! `install/claim/{start,finish}/0.2`
+//! (trustoverip/dtgwg-trust-tasks-tf#263) drops it and carries the
+//! argument in the specification itself. Claiming admin under a DID the
+//! operator *already* controls is a separate, genuinely non-redundant
+//! proof — ownership of a verification method in that DID's **active**
+//! document, resolved live and signed outside the WebAuthn ceremony —
+//! and is named there as a future version rather than approximated.
 //!
 //! Per-row state machine is the only gate on claim. A second
 //! `start` on the same token after a successful `finish` returns

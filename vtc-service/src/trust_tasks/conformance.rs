@@ -511,19 +511,28 @@ fn uuid() -> uuid::Uuid {
 /// not grow unnoticed — the same discipline `UNPUBLISHED_CANONICAL_OK` in
 /// `tests/trust_task_manifest.rs` applies to unpublished URIs.
 ///
-/// **4 of 58**, from 33 when the sweep landed. What is left is no longer a
-/// backlog of shapes to correct — it is four decisions, and three of them are
-/// not this service's to make alone:
+/// **2 of 58**, from 33 when the sweep landed. What is left is not a backlog
+/// of shapes to correct — it is two decisions, and neither is this service's
+/// to make alone:
 ///
-/// 1. **`install/claim/start` + `install/claim/finish`** — the schemas
-///    REQUIRE a `didBindingChallenge` / `didBindingSignature` pair that binds
-///    the candidate `did:key` by proof of possession. This service checks the
-///    passkey attestation alone and issues no challenge. **This is the only
-///    entry where the service is behind the spec on a security control**, and
-///    the fix is here, not upstream. It was deliberately left out of
-///    trustoverip/dtgwg-trust-tasks-tf#262 rather than deleting a required
-///    member so that we would conform — which is the direction that would
-///    have made the ledger green and the system weaker.
+/// 1. ~~**`install/claim/start` + `install/claim/finish`**~~ — **closed.**
+///    Worth recording how, because the ledger got this one backwards for a
+///    day. The schemas REQUIRED a `didBindingChallenge` /
+///    `didBindingSignature` pair, this service sent neither, and the entry
+///    was written up — by me — as "the only place the service is behind the
+///    spec on a security control". It was the reverse. The binding was built
+///    in 2026-05, found *test-passable but impossible in a production
+///    browser* (WebAuthn never exposes the credential private key), and
+///    removed. The specification was written two months **later**, still
+///    requiring it, and nothing ever sent or read those members in any
+///    repository. `0.2` (trustoverip/dtgwg-trust-tasks-tf#263) drops them.
+///
+///    The lesson is not "the spec was wrong". It is that *"the schema
+///    requires X and the service omits X"* is a true sentence that says
+///    nothing about which side is at fault, and reads as an accusation
+///    against the implementation. Check the history of both before writing
+///    the note.
+///
 /// 2. **`auth/recognise`** — the payload is two loose credentials; this
 ///    service takes one holder-signed VP that embeds both and binds a nonce
 ///    and this community's DID as `domain`. The VP carries a holder-binding
@@ -556,7 +565,7 @@ fn uuid() -> uuid::Uuid {
 /// `table()` printing the actual parse or schema error for every
 /// `KnownDrift`. `invalid type: string, expected struct IssuedCredential` is
 /// a sentence no amount of re-reading prose will produce.
-const KNOWN_DRIFT_COUNT: usize = 4;
+const KNOWN_DRIFT_COUNT: usize = 2;
 
 /// Every bound, published `spec/vtc/*` URI, with the request and response the
 /// VTC actually speaks.
@@ -903,30 +912,18 @@ fn table() -> Vec<Conformance> {
             .expect("RevokeResponse serialises")
         ),
         // ─── install ─────────────────────────────────────────────────
-        drift!(
-            s::install::claim::start::v0_1::Payload,
-            s::install::claim::start::v0_1::Response,
-            Side::Response,
+        checked!(
+            s::install::claim::start::v0_2::Payload,
+            s::install::claim::start::v0_2::Response,
             // `ClaimStartRequest` — routes/install.rs:65. No `rename_all`.
             json!({ "installToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
                     "claimSecret": "K7QW-3M2X-9PLD" }),
             // `ClaimStartResponse` — routes/install.rs:81.
-            json!({ "registrationId": REQUEST_ID, "options": { "publicKey": {} } }),
-            "the request conforms as of trust-tasks-rs 0.11.10, which \
-             carries `claimSecret` from \
-             trustoverip/dtgwg-trust-tasks-tf#262. The response still omits \
-             `didBindingChallenge`, which the schema REQUIRES — and that \
-             half is this service being **behind** a security control, not \
-             the spec being wrong. The task binds the candidate `did:key` by \
-             having it sign a challenge; this service checks the passkey \
-             attestation alone and never issues one. #262 deliberately left \
-             it alone rather than deleting a required member so we could \
-             conform: the fix belongs here"
+            json!({ "registrationId": REQUEST_ID, "options": { "publicKey": {} } })
         ),
-        drift!(
-            s::install::claim::finish::v0_1::Payload,
-            s::install::claim::finish::v0_1::Response,
-            Side::Request,
+        checked!(
+            s::install::claim::finish::v0_2::Payload,
+            s::install::claim::finish::v0_2::Response,
             // `ClaimFinishRequest` — routes/install.rs:93. No `rename_all`.
             json!({
                 "installToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
@@ -934,15 +931,7 @@ fn table() -> Vec<Conformance> {
                 "webauthnResponse": { "id": "AX6nVQ8s", "type": "public-key" },
             }),
             // `ClaimFinishResponse` — routes/install.rs:103.
-            json!({ "adminDid": OTHER_DID, "setupSessionToken": "eyJhbGciOiJFZERTQSJ9.e30.sig" }),
-            "the spec's fourth required \
-             member `didBindingSignature` is absent — the passkey attestation \
-             is the only binding this service checks. Same reconciliation as \
-             `claim/start`: the casing half is fixed, the missing signature \
-             is a design question. The response's `setupSessionToken` now \
-             feeds an `admin/bootstrap` that accepts that same name — until \
-             both were fixed, the service issued one spelling and demanded \
-             the other, and only the SPA's hand re-keying bridged it"
+            json!({ "adminDid": OTHER_DID, "setupSessionToken": "eyJhbGciOiJFZERTQSJ9.e30.sig" })
         ),
         // ─── invitations ─────────────────────────────────────────────
         checked!(

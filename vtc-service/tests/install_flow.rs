@@ -42,8 +42,8 @@ use common::webauthn_harness::SoftEd25519Authenticator;
 const RP_ORIGIN: &str = "https://vtc.example.com";
 
 // Trust Tasks ------------------------------------------------------
-const CLAIM_START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/start/0.1";
-const CLAIM_FINISH_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/finish/0.1";
+const CLAIM_START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/start/0.2";
+const CLAIM_FINISH_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/finish/0.2";
 const BOOTSTRAP_TASK: &str = "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1";
 const ENROLL_START_TASK: &str = "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2";
 const ENROLL_FINISH_TASK: &str = "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2";
