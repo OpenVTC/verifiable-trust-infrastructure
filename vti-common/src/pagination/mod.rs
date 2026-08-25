@@ -138,6 +138,23 @@ pub struct Paginated<T> {
     pub total_estimate: Option<u64>,
 }
 
+impl<T> Paginated<T> {
+    /// Map every item to a different type, carrying the cursor and estimate
+    /// through untouched.
+    ///
+    /// For routes whose stored row and wire row are deliberately different
+    /// types — a listing that must publish the names its schema gives while
+    /// storage keeps the names already on disk. Rebuilding the wrapper by
+    /// hand at each call site is where a `next_cursor` gets dropped.
+    pub fn map_items<U, F: FnMut(T) -> U>(self, f: F) -> Paginated<U> {
+        Paginated {
+            items: self.items.into_iter().map(f).collect(),
+            next_cursor: self.next_cursor,
+            total_estimate: self.total_estimate,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Cursor — internal payload + signed wire form
 // ---------------------------------------------------------------------------
