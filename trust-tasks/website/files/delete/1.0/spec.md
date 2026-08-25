@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/website/files/delete/1.0
 title: VTC — Website file delete
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/website/files/delete/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
