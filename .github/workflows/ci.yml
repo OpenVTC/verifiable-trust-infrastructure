@@ -428,7 +428,16 @@ jobs:
     # this workspace (every crate is 0.x); what matters is that it is KNOWN, so
     # the release moves the compatibility field instead of shipping it as a
     # patch. release-plz enforces that automatically from the same signal.
-    name: semver checks
+    #
+    # The name says "report" because the check list is the only place most
+    # people meet this job, and there it is a bare name next to a red cross.
+    # Called "semver checks" it is indistinguishable from a gate that broke —
+    # which led to a serious proposal to delete it, on the reasoning that a
+    # check failing on every PR protects nothing. The reasoning was sound; the
+    # premise was wrong, and the premise came from the name. A job whose red is
+    # expected should say so where the red is displayed, not only in a comment
+    # nobody opens.
+    name: semver report (informational — never blocks)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
