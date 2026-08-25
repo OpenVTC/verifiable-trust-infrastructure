@@ -101,7 +101,13 @@ pub struct JoinRequest {
     pub status: JoinStatus,
     /// Set by Phase 2's policy step on approve / reject. Always
     /// `None` in Phase 1.
-    #[serde(default)]
+    ///
+    /// Omitted rather than sent as `null`: the canonical `JoinRequest`
+    /// component types this `object`, not `["object", "null"]` as it does
+    /// the neighbouring `vpClaims` and `decision`. It is not required, so
+    /// absent is the conforming way to say "no policy decision" — `null` is
+    /// a type error. It went out as `null` until #1099.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_decision: Option<JsonValue>,
     /// Whether the applicant consents to being published in the
     /// community's trust-registry record (spec §8). Default
