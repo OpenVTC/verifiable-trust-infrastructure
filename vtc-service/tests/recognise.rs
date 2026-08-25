@@ -295,7 +295,7 @@ mod holder_binding {
     use vtc_service::test_support::TestVtc;
 
     const VTC_DID: &str = "did:key:z6MkTestVTC";
-    const RECOGNISE_TASK: &str = "https://trusttasks.org/spec/vtc/auth/recognise/0.1";
+    const RECOGNISE_TASK: &str = "https://trusttasks.org/spec/vtc/auth/recognise/0.2";
     const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/vtc/auth/recognise/challenge/0.1";
 
     async fn test_vtc() -> TestVtc {

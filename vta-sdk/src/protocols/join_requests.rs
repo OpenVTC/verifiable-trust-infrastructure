@@ -43,12 +43,12 @@ use uuid::Uuid;
 /// Trust Task `type` for a join-request submission (the ceremony `request`
 /// verb). Payload [`JoinRequestSubmitBody`]; response [`VerdictResponse`].
 pub const JOIN_REQUEST_SUBMIT_TYPE: &str =
-    "https://trusttasks.org/spec/vtc/join-requests/submit/0.1";
+    "https://trusttasks.org/spec/vtc/join-requests/submit/0.2";
 
 /// `#response` variant of [`JOIN_REQUEST_SUBMIT_TYPE`] — the type of the
 /// success document `respond_with` mints; carries a [`VerdictResponse`].
 pub const JOIN_REQUEST_SUBMIT_RESPONSE_TYPE: &str =
-    "https://trusttasks.org/spec/vtc/join-requests/submit/0.1#response";
+    "https://trusttasks.org/spec/vtc/join-requests/submit/0.2#response";
 
 /// Reply `type` used by the **credential-exchange** join close-the-loop
 /// (`credential-exchange/present`), which results in a join and echoes this
@@ -236,8 +236,20 @@ pub const ADMIN_REJECT_CODE: &str = "admin-reject";
 /// **refused** a well-formed, verified request — it is NOT how framework
 /// errors (invalid VIC, expired, malformed) are signalled; those are
 /// `trust-task-error` documents (see the module docs).
+/// Serialises **lowerCamelCase** — `requestMore`, not `request_more` — because
+/// a verdict effect is a specification-defined decision value, which
+/// SPEC §4.10 rule 4 says is lowerCamelCase, and
+/// `vtc/_shared/0.1/ceremony#VerdictEffect` enumerates it that way.
+///
+/// The snake_case form is kept as a deserialisation alias on purpose. Rego is
+/// where verdicts are *authored* — operator-written policy returns
+/// `{"effect": "request_more", …}` — and snake_case is that language's idiom,
+/// not a mistake to correct. The two vocabularies are allowed to differ; this
+/// type is the boundary where the policy's spelling becomes the wire's, the
+/// same split `EndorsementRow` and `GenerationRow` draw between storage and
+/// wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum VerdictEffect {
     /// Admitted. `with` carries the granted role + obligations and the
@@ -250,6 +262,7 @@ pub enum VerdictEffect {
     Refer,
     /// More evidence required. `with` carries `needs` +
     /// `presentationDefinition`; the applicant continues over `present`.
+    #[serde(alias = "request_more")]
     RequestMore,
 }
 

@@ -171,7 +171,7 @@ mod tests {
         (did, multibase::encode(multibase::Base::Base58Btc, &buf))
     }
 
-    const TYPE: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.1";
+    const TYPE: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.2";
 
     /// The signed document verifies under the same `did:key` resolver both
     /// services use, and carries issuer + recipient.

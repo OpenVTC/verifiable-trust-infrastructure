@@ -1035,7 +1035,7 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
         ))
         .routes(tt(
             routes!(recognise::recognise),
-            "https://trusttasks.org/spec/vtc/auth/recognise/0.1",
+            "https://trusttasks.org/spec/vtc/auth/recognise/0.2",
         ))
         // Publishing a relationship edge authenticates by the Trust Task
         // document's own proof rather than a bearer token (#1084), so it
