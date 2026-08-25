@@ -102,9 +102,12 @@ pub const PURPOSE_EXT_KEY: &str = "org.openvtc.purpose";
 /// - `updatedAt` is the activation time when the row has been
 ///   activated, else its creation time. A VTC revision is immutable, so
 ///   activation is the only thing that can change it after write.
-/// - `sha256` / `authorDid` / the intrinsic `purpose` have no canonical
+/// - `sha256` / `author-did` / the intrinsic `purpose` have no canonical
 ///   home and ride in `ext` (the canonical type is
-///   `additionalProperties: false`).
+///   `additionalProperties: false`). Every `ext` key is spelled in the
+///   lowercase-and-hyphen form SPEC §4.5.1 requires — a capital letter makes
+///   the key itself invalid, which is a framework violation rather than a
+///   style preference.
 ///
 /// `appliesTo` / `priority` / `enabled` are deliberately **not**
 /// emitted: VTC does no `appliesTo`/`priority` selection, and emitting
@@ -139,7 +142,13 @@ impl From<&Policy> for PolicyModuleResponse {
             ext: serde_json::json!({
                 PURPOSE_EXT_KEY: p.purpose.as_str(),
                 "org.openvtc.sha256": hex::encode(p.sha256),
-                "org.openvtc.authorDid": p.author_did,
+                // `author-did`, not `authorDid`. SPEC §4.5.1 constrains every
+                // immediate `ext` key to `^[a-z][a-z0-9-]*(\.[a-z0-9-]+)+$`,
+                // so the capital `D` made this key invalid — the one key of
+                // the five here that did not match, and invalid for the
+                // framework rather than merely off-convention. Hyphenated to
+                // match the `match-code` and `step-up` keys already in use.
+                "org.openvtc.author-did": p.author_did,
             }),
         }
     }
