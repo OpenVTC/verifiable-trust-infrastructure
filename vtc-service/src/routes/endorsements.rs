@@ -84,20 +84,41 @@ pub struct EndorsementRow {
     /// `typeUri`, stored as `endorsementType`.
     pub type_uri: String,
     pub subject_did: String,
-    /// `issued`, stored as `createdAt`.
-    pub issued: DateTime<Utc>,
+    /// The issuance receipt — **not** a timestamp.
+    ///
+    /// #1096 read `issued` as "when it was issued" and mapped `createdAt`
+    /// onto it, so this member went out as an RFC 3339 string where the
+    /// component requires an object. `IssuedCredential` is where `vecId` and
+    /// the signed credential belong; #1096 called both of those unspecced
+    /// and proposed taking them upstream, which was wrong — the spec had a
+    /// home for each all along.
+    pub issued: IssuedCredential,
     pub status_list_index: u32,
     pub claim: JsonValue,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<DateTime<Utc>>,
-    /// Unspecced upstream, against an `additionalProperties: false`
-    /// component — the half of this family that still diverges. `vecId` is
-    /// the `credentialId` a revocation receipt echoes, so a caller needs it
-    /// to revoke what it just read; `issuerDid` is the community DID, kept
-    /// on the row so a listing need not re-look up the signer. Both go
-    /// upstream rather than in the bin.
-    pub issuer_did: String,
-    pub vec_id: String,
+}
+
+/// The registry-wide issuance receipt: the handle, the credential, and when
+/// it lapses.
+///
+/// `credential` and `expiresAt` are required by the component but are **not
+/// on the stored row** — the `Endorsement` keyspace holds `vecId` and the
+/// mint time, never the signed VEC or its expiry. So `issue`, which has just
+/// minted both, fills the receipt completely, and `list` / `show` cannot.
+/// They send what they hold and stay in the drift table until the row grows
+/// those two members (a storage change and a migration, deliberately not
+/// bundled into a wire fix).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IssuedCredential {
+    pub credential_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential: Option<JsonValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issued_at: Option<DateTime<Utc>>,
 }
 
 impl From<Endorsement> for EndorsementRow {
@@ -106,12 +127,16 @@ impl From<Endorsement> for EndorsementRow {
             endorsement_id: e.id,
             type_uri: e.endorsement_type,
             subject_did: e.subject_did,
-            issued: e.created_at,
+            issued: IssuedCredential {
+                credential_id: e.vec_id,
+                // Neither is on the stored row; only `issue` can fill them.
+                credential: None,
+                expires_at: None,
+                issued_at: Some(e.created_at),
+            },
             status_list_index: e.status_list_index,
             claim: e.claim,
             revoked_at: e.revoked_at,
-            issuer_did: e.issuer_did,
-            vec_id: e.vec_id,
         }
     }
 }
@@ -120,13 +145,13 @@ impl From<Endorsement> for EndorsementRow {
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct IssueResponse {
+    /// The whole response. The signed credential rides inside
+    /// `endorsement.issued.credential`, where the component puts it — #1096
+    /// sent it as a top-level `vec` sibling and recorded the resulting
+    /// divergence as an upstream gap, having misread `issued` as a
+    /// timestamp. The response is `additionalProperties: false`, so that
+    /// sibling could never have been right.
     pub endorsement: EndorsementRow,
-    /// The signed credential just minted. Unspecced, and the response is
-    /// `additionalProperties: false`, so this is what keeps `issue` in the
-    /// drift table — the spec's `Endorsement` component has nowhere to put a
-    /// credential. Handing back the VC is the point of an issue call, so it
-    /// stays and the gap goes upstream.
-    pub vec: JsonValue,
 }
 
 #[utoipa::path(
@@ -301,11 +326,19 @@ pub async fn issue(
     Ok((
         StatusCode::CREATED,
         Json(IssueResponse {
-            // The row just stored, mapped to the names the canonical
-            // `Endorsement` component uses. `id` and `vecId` were the whole
-            // response until #1096; both live on the row now.
-            endorsement: end.into(),
-            vec: vec_value,
+            endorsement: EndorsementRow {
+                // `issue` is the one route that holds the whole receipt: it
+                // just minted the credential and computed its expiry, so it
+                // fills `credential` and `expiresAt` where `list` / `show`
+                // can only send the handle and the mint time.
+                issued: IssuedCredential {
+                    credential_id: vec_id,
+                    credential: Some(vec_value),
+                    expires_at: Some(valid_until),
+                    issued_at: Some(now),
+                },
+                ..end.into()
+            },
         }),
     ))
 }

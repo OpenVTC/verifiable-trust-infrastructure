@@ -404,7 +404,18 @@ async fn issue_happy_path_issuer_mints_credential() {
     let (status, v) = body_value(resp).await;
     assert_eq!(status, StatusCode::CREATED, "{v}");
     assert!(v["endorsement"]["endorsementId"].is_string());
-    assert!(v["vec"].is_object());
+    // The credential rides inside the issuance receipt, where the
+    // `IssuedCredential` component puts it — it was a top-level `vec`
+    // sibling until #1098, against an `additionalProperties: false`
+    // response that could never have accepted one.
+    let issued = &v["endorsement"]["issued"];
+    assert!(v["vec"].is_null(), "credential must not be a sibling: {v}");
+    assert!(issued["credential"].is_object(), "got {v}");
+    let cred_id = issued["credentialId"].as_str().expect("credentialId");
+    assert!(cred_id.starts_with("urn:uuid:"), "got {cred_id}");
+    // The receipt's handle names the credential it carries.
+    assert_eq!(issued["credential"]["id"], issued["credentialId"]);
+    assert!(issued["expiresAt"].is_string(), "got {v}");
 
     // Audit: CustomEndorsementIssued + VecIssued both emitted.
     let pairs = fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
