@@ -85,7 +85,13 @@ pub struct JoinRequestSubmitBody {
     pub vp: JsonValue,
     #[serde(default)]
     pub registry_consent: bool,
-    #[serde(default)]
+    /// Omitted rather than sent as `null` when unset. The payload schema
+    /// types this `object`, so a `null` is a type error and not an empty
+    /// value; `extensions` is not required, so absent is how a client says
+    /// it has none. A bare `#[serde(default)]` `JsonValue` serialises
+    /// `Value::Null`, which is what a minimal client sent until #1099 — the
+    /// same null-into-`Option` class that shipped `keys/create/0.1` broken.
+    #[serde(default, skip_serializing_if = "JsonValue::is_null")]
     pub extensions: JsonValue,
 }
 

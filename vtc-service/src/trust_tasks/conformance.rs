@@ -409,13 +409,24 @@ fn backup_envelope() -> Value {
 /// `next_cursor` / `total_estimate` against schemas that have always said
 /// `nextCursor` / `totalEstimate`. One missing attribute, five drifting list
 /// tasks, and a direct R3.1 violation of the same class as #656/#658.
+/// The `Paginated<T>` wrapper as this service emits one.
+///
+/// No `totalEstimate`: the member is `skip_serializing_if = "Option::is_none"`
+/// and nothing in the workspace ever sets it to `Some`, so it never reaches
+/// the wire. This fixture carried an invented `12` until #1099, which made
+/// conforming routes look non-conformant against the list schemas that do not
+/// define it.
 fn paginated(items: Value) -> Value {
-    json!({ "items": items, "nextCursor": "eyJsYXN0S2V5Ijoi", "totalEstimate": 12 })
+    json!({ "items": items, "nextCursor": "eyJsYXN0S2V5Ijoi" })
 }
 
 /// A `JoinRequest` as `join/mod.rs:81` serialises one. No member carries
 /// `skip_serializing_if`, so all ten are always on the wire.
 fn join_request() -> Value {
+    // `policyDecision` is absent, not `null` — the component types it
+    // `object` where it types `vpClaims` and `decision` `["object", "null"]`,
+    // so a `null` there is a type error rather than an empty value. The row
+    // sent one until #1099.
     json!({
         "id": REQUEST_ID,
         "applicantDid": DID,
@@ -423,7 +434,6 @@ fn join_request() -> Value {
         "vpClaims": { "email": "ada@example.com" },
         "submittedAt": TS,
         "status": "pending",
-        "policyDecision": null,
         "registryConsent": true,
         "extensions": { "org": "acme" },
         "decision": null,
@@ -519,7 +529,7 @@ fn uuid() -> uuid::Uuid {
 /// while these notes still described the older schemas. A note that says
 /// "take it upstream" can be stale in the good direction; check the released
 /// schema before writing the spec PR it asks for.
-const KNOWN_DRIFT_COUNT: usize = 15;
+const KNOWN_DRIFT_COUNT: usize = 12;
 
 /// Every bound, published `spec/vtc/*` URI, with the request and response the
 /// VTC actually speaks.
@@ -714,11 +724,12 @@ fn table() -> Vec<Conformance> {
             "the `{profile: …}` nesting is right as of #1094, and \
              `registryStatus` moved inside the profile object — beside it, \
              the `additionalProperties: false` response would have rejected \
-             it. The profile still carries `communityDid`, `createdAt` and \
-             `relationshipIdentifierDefault`, which the canonical \
-             `CommunityProfile` component does not define; those three go \
-             upstream — `communityDid` in particular is the one member a \
-             consumer most needs"
+             it. What remains is `communityDid` and `createdAt` inside the \
+             profile, which the canonical `CommunityProfile` component does \
+             not define. `relationshipIdentifierDefault` was the third and \
+             is defined as of trust-tasks-rs 0.11.8. `communityDid` is the \
+             one member a consumer most needs; both go upstream and close \
+             this row together with `update`"
         ),
         drift!(
             s::community::profile::update::v0_1::Payload,
@@ -739,11 +750,13 @@ fn table() -> Vec<Conformance> {
             json!({ "profile": community_profile(), "fieldsChanged": ["name", "logoUrl"] }),
             "the request conforms as of trust-tasks-rs 0.11.8, which carries \
              `relationshipIdentifierDefault` from \
-             trustoverip/dtgwg-trust-tasks-tf#257. What remains is the \
-             response's `fieldsChanged` and, inside the profile, \
-             `communityDid` and `createdAt` — the two members #257 did not \
-             cover. Those go upstream and close this row together with \
-             `show`"
+             trustoverip/dtgwg-trust-tasks-tf#257. What remains is \
+             `communityDid` and `createdAt` inside the profile — the two \
+             members #257 did not cover. `fieldsChanged` is *not* a \
+             divergence: the response schema defines it, and an earlier \
+             version of this note said otherwise because a serde parse stops \
+             at the first unknown member and never reaches the rest. Those \
+             two go upstream and close this row together with `show`"
         ),
         // ─── config ──────────────────────────────────────────────────
         checked!(
@@ -813,17 +826,11 @@ fn table() -> Vec<Conformance> {
             // `RegisterResponse` — the row was returned bare until #1059.
             json!({ "endorsementType": endorsement_type() })
         ),
-        drift!(
+        checked!(
             s::endorsement_types::list::v0_1::Payload,
             s::endorsement_types::list::v0_1::Response,
-            Side::Response,
             json!({ "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
-            paginated(json!([endorsement_type()])),
-            "the items carry the unspecced `createdByDid` against an \
-             `additionalProperties: false` response. The wrapper's snake_case \
-             casing was the other half of this entry and is now fixed in \
-             `vti-common`; what remains is a row-level decision — publish \
-             `createdByDid` upstream, or stop sending it"
+            paginated(json!([endorsement_type()]))
         ),
         checked!(
             s::endorsement_types::delete::v0_1::Payload,
@@ -986,26 +993,17 @@ fn table() -> Vec<Conformance> {
                     "revokedAt": TS, "newlyRevoked": true })
         ),
         // ─── join-requests ───────────────────────────────────────────
-        drift!(
+        checked!(
             s::join_requests::list::v0_1::Payload,
             s::join_requests::list::v0_1::Response,
-            Side::Response,
             json!({ "status": "pending", "cursor": "eyJsYXN0S2V5Ijoi", "limit": 25 }),
-            paginated(json!([join_request()])),
-            "the wrapper's casing is fixed; what remains is that each row carries `vpClaims` \
-             and `decision`, which the canonical `JoinRequest` component does \
-             not define. `decision` is the admin-reject detail #1058 added — \
-             the same members that drifted on `status/0.1`, in a second \
-             place. Take the component upstream once and both stop"
+            paginated(json!([join_request()]))
         ),
-        drift!(
+        checked!(
             s::join_requests::show::v0_1::Payload,
             s::join_requests::show::v0_1::Response,
-            Side::Response,
             json!({ "id": REQUEST_ID }),
-            json!({ "request": join_request() }),
-            "the `{request: …}` envelope is right as of #1093; the row still \
-             carries the same unspecced `vpClaims` / `decision` as `list`"
+            json!({ "request": join_request() })
         ),
         checked!(
             s::join_requests::decide::v0_1::Payload,
@@ -1037,7 +1035,7 @@ fn table() -> Vec<Conformance> {
         drift!(
             s::join_requests::submit::v0_1::Payload,
             s::join_requests::submit::v0_1::Response,
-            Side::Both,
+            Side::Response,
             // From the SDK producer type, with `extensions` left at its
             // `Default` — the shape a minimal client actually sends.
             to_v(jr::JoinRequestSubmitBody {
@@ -1061,12 +1059,10 @@ fn table() -> Vec<Conformance> {
              verdict envelope superseded the published shape and was never \
              taken upstream, and it is the better design (a submit can \
              allow / deny / refer / request_more, and `pending` can express \
-             only one of those), so the fix belongs upstream. Request: \
-             `JoinRequestSubmitBody.extensions` is `#[serde(default)]` with \
-             no `skip_serializing_if`, so an unset `extensions` serialises as \
-             `null` and the schema types it `object` — the same null-into-\
-             Option class that shipped `keys/create/0.1` broken. That half is \
-             a one-line fix in vta-sdk"
+             only one of those), so the fix belongs upstream. The request \
+             half — an unset `extensions` serialising as `null` against a \
+             schema that types it `object` — was the one-line vta-sdk fix \
+             this note asked for, applied in #1099"
         ),
         checked!(
             s::join_requests::status::v0_1::Payload,
