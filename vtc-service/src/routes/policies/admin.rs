@@ -162,9 +162,16 @@ pub struct ActivateResponse {
     /// Canonical name for the id of the policy now in force.
     pub activated: Uuid,
     pub purpose: PolicyPurpose,
-    /// VTC extension: the activated module's source hash, so an
-    /// operator can confirm what went live without a second fetch.
-    pub sha256: String,
+    /// The activated module's source hash, under `ext`.
+    ///
+    /// It was a top-level `sha256` until #1110 — and its own doc called it a
+    /// "VTC extension", which is exactly what the framework's `ext` slot is
+    /// for. The response is `additionalProperties: false`, so an extension
+    /// carried beside the canonical members is not an extension, it is a
+    /// violation; `ext` is the sanctioned place and costs one level of
+    /// nesting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ext: Option<JsonValue>,
     /// Predecessor active policy id for this purpose. `null` for
     /// the first activation under a given purpose.
     pub previous_policy_id: Option<Uuid>,
@@ -387,7 +394,9 @@ pub async fn activate(
     Ok(Json(ActivateResponse {
         activated: id,
         purpose: policy.purpose,
-        sha256: sha256_hex,
+        ext: Some(serde_json::json!({
+            "org.openvtc": { "sha256": sha256_hex }
+        })),
         previous_policy_id: previous,
     }))
 }
