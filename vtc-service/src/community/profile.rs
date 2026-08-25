@@ -209,7 +209,15 @@ pub struct CommunityProfile {
     /// Opaque per-community JSON. Capped at [`MAX_EXTENSIONS_BYTES`]
     /// when serialised. Defaults to `null` when no extension data
     /// is set.
-    #[serde(default)]
+    ///
+    /// Omitted from the wire when null. The canonical `CommunityProfile`
+    /// component types this `object` and does not require it, so absent is the
+    /// conforming way to say "none" and `null` is a type error. It went out as
+    /// `null` until #1107 — the conformance fixture set a non-empty object, so
+    /// a hand-chosen value hid it even after the fixture was built from this
+    /// very struct. Deriving a fixture from the real type only helps for the
+    /// members you do not then hand-set.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     pub extensions: Value,
 }
 

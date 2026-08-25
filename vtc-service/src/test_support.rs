@@ -20,6 +20,8 @@
 
 #![cfg(any(test, feature = "test-support"))]
 
+pub mod response_conformance;
+
 use std::sync::Arc;
 
 use base64::Engine;
@@ -380,7 +382,16 @@ impl TestVtcBuilder {
             didcomm: Arc::new(tokio::sync::OnceCell::new()),
         };
 
-        let router = crate::routes::router().with_state(state.clone());
+        // Every response a test provokes is validated against its Trust
+        // Task's published `#response` schema. Here rather than in each
+        // `tests/*.rs` because each is its own crate with its own `send`
+        // helper — one layer at the single point they all build a router
+        // covers all of them, and the next test added inherits it.
+        let router = crate::routes::router()
+            .layer(axum::middleware::from_fn(
+                response_conformance::validate_response,
+            ))
+            .with_state(state.clone());
 
         TestVtc {
             router,
