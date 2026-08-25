@@ -21,9 +21,9 @@ import {
 } from "@/lib/webauthn";
 
 const TRUST_TASK_START =
-  "https://trusttasks.org/spec/vtc/install/claim/start/0.1";
+  "https://trusttasks.org/spec/vtc/install/claim/start/0.2";
 const TRUST_TASK_FINISH =
-  "https://trusttasks.org/spec/vtc/install/claim/finish/0.1";
+  "https://trusttasks.org/spec/vtc/install/claim/finish/0.2";
 const TRUST_TASK_BOOTSTRAP =
   "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1";
 

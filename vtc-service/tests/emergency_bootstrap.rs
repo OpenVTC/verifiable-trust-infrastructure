@@ -59,7 +59,7 @@ use vtc_service::server::AppState;
 use vtc_service::setup::VtcKeyBundle;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const CLAIM_START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/start/0.1";
+const CLAIM_START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/start/0.2";
 
 fn init_jwt_provider() {
     use std::sync::Once;
