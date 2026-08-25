@@ -150,13 +150,35 @@ pub struct AuditEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     pub schema_version: u32,
-    /// Hex, matching the encoding `audit/verify` uses for `head` — a
-    /// caller comparing the two must not have to reconcile hex against
-    /// the base64 the stored envelope uses.
+    /// Multibase-wrapped multihash, which is what the canonical schema's
+    /// digest pattern accepts: `^(z[1-9A-HJ-NP-Za-km-z]+|u[A-Za-z0-9_-]+)$`.
+    ///
+    /// These were bare hex until #1110, chosen so a caller need not reconcile
+    /// against the base64 the *stored* envelope uses. That reasoning was about
+    /// two internal encodings and overlooked the third — the one the published
+    /// schema requires. A bare digest is also self-describing in neither its
+    /// hash function nor its encoding, which is the problem multihash and
+    /// multibase each exist to solve.
+    ///
+    /// The chain is untouched: the stored envelope still holds `[u8; 32]` and
+    /// hashes over bytes. This is the wire view only.
     pub prev_hash: String,
     pub entry_hash: String,
     pub detail: serde_json::Value,
     pub ext: serde_json::Value,
+}
+
+/// A raw SHA-256 digest as multibase-wrapped multihash — `0x12 0x20` then the
+/// 32 bytes, base58btc.
+///
+/// The same recipe `credentials::ingress::digest_multibase` uses; that one
+/// digests a JSON document, this one wraps a digest already computed over the
+/// audit chain's bytes.
+fn digest_multibase(hash: &[u8; 32]) -> String {
+    let mut multihash = Vec::with_capacity(34);
+    multihash.extend_from_slice(&[0x12, 0x20]);
+    multihash.extend_from_slice(hash);
+    multibase::encode(multibase::Base::Base58Btc, multihash)
 }
 
 impl From<&AuditEnvelope> for AuditEntry {
@@ -175,15 +197,19 @@ impl From<&AuditEnvelope> for AuditEntry {
             actor: env.actor_did_plain.clone(),
             target: env.target_did_plain.clone(),
             schema_version: env.schema_version,
-            prev_hash: hex::encode(env.prev_hash),
-            entry_hash: hex::encode(env.entry_hash),
+            prev_hash: digest_multibase(&env.prev_hash),
+            entry_hash: digest_multibase(&env.entry_hash),
             detail,
+            // `org.openvtc`, not `vtc`. SPEC §4.5.1 requires each immediate
+            // `ext` key to be a reverse-DNS namespace — at least two segments,
+            // `^[a-z][a-z0-9-]*(\.[a-z0-9-]+)+$` — and a bare `vtc` claims a
+            // name nobody owns, which is the collision the rule prevents.
             ext: serde_json::json!({
-                "vtc": {
+                "org.openvtc": {
                     "eventVersion": env.event_version,
                     "auditKeyId": env.audit_key_id.to_string(),
-                    "actorDidHash": hex::encode(env.actor_did_hash),
-                    "targetDidHash": env.target_did_hash.map(hex::encode),
+                    "actorDidHash": digest_multibase(&env.actor_did_hash),
+                    "targetDidHash": env.target_did_hash.as_ref().map(digest_multibase),
                 }
             }),
         }
@@ -356,7 +382,16 @@ pub struct VerifyResponse {
     pub chain_break: Option<ChainBreakReport>,
     /// Signed-checkpoint verification (#708) — the half of this endpoint that
     /// a store-level adversary cannot satisfy.
-    pub checkpoints: CheckpointReport,
+    ///
+    /// Carried under `ext` since #1110. The canonical response is
+    /// `additionalProperties: false` and defines no checkpoint member, so a
+    /// top-level one made every verify response non-conformant. This is
+    /// genuinely load-bearing evidence rather than a nicety, so it is not
+    /// dropped — `ext` is the framework's sanctioned slot for exactly this,
+    /// and the member is worth proposing upstream so it need not live in an
+    /// extension at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ext: Option<serde_json::Value>,
 }
 
 /// Signed-checkpoint verification result.
@@ -706,9 +741,13 @@ pub async fn verify_audit_chain(
         entries_verified: verifier.verified(),
         legacy_skipped: verifier.skipped_legacy(),
         unparseable_skipped: unparseable,
-        head: verifier.head().map(hex::encode),
+        // Multibase, matching `audit/list`'s hashes — the two are meant to be
+        // compared, and the schema requires this form on both.
+        head: verifier.head().as_ref().map(digest_multibase),
         chain_break,
-        checkpoints,
+        ext: Some(serde_json::json!({
+            "org.openvtc": { "checkpoints": checkpoints }
+        })),
     };
 
     // Warn, not info, on failure: a broken audit chain is the kind of

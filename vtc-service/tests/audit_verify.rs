@@ -117,9 +117,14 @@ async fn a_real_chain_verifies_and_reports_its_head() {
     );
     assert_eq!(body["legacySkipped"], 0);
     assert_eq!(body["unparseableSkipped"], 0);
+    // Multibase-wrapped multihash: `z` (base58btc) over `0x12 0x20` + the 32
+    // digest bytes. Asserting the prefix and a plausible length says what the
+    // encoding *is*; the previous `len() == 64` only said "some hex-ish
+    // string", which a base64 digest of the wrong thing would also satisfy.
+    let head = body["head"].as_str().expect("head present");
     assert!(
-        body["head"].as_str().is_some_and(|h| h.len() == 64),
-        "head is a hex-encoded SHA-256"
+        head.starts_with('z') && head.len() > 40,
+        "head must be a base58btc multibase multihash, got {head}"
     );
 }
 
@@ -264,7 +269,11 @@ async fn a_log_with_no_checkpoints_says_so_rather_than_looking_clean() {
     assert_eq!(body["verified"], true, "body: {body}");
     // ...but nothing has attested to it, and that must be visible.
     assert_eq!(
-        body["checkpoints"]["status"], "noCheckpoints",
+        // Checkpoints ride in `ext`: the canonical verify response is
+        // `additionalProperties: false` and defines no checkpoint member
+        // (#1110). Worth taking upstream so they need not be an extension.
+        body["ext"]["org.openvtc"]["checkpoints"]["status"],
+        "noCheckpoints",
         "body: {body}"
     );
 }
@@ -283,9 +292,18 @@ async fn a_checkpointed_log_verifies_as_consistent() {
     let (status, body) = verify(&fix, &token).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["verified"], true, "body: {body}");
-    assert_eq!(body["checkpoints"]["status"], "consistent", "body: {body}");
-    assert_eq!(body["checkpoints"]["verifiedCheckpoints"], 1);
-    assert_eq!(body["checkpoints"]["unattestedEntries"], 0);
+    assert_eq!(
+        body["ext"]["org.openvtc"]["checkpoints"]["status"], "consistent",
+        "body: {body}"
+    );
+    assert_eq!(
+        body["ext"]["org.openvtc"]["checkpoints"]["verifiedCheckpoints"],
+        1
+    );
+    assert_eq!(
+        body["ext"]["org.openvtc"]["checkpoints"]["unattestedEntries"],
+        0
+    );
 }
 
 /// **The whole point of #708.**
@@ -323,10 +341,16 @@ async fn truncating_the_log_is_caught_even_though_the_chain_still_verifies() {
         body["verified"], true,
         "a truncated prefix is still a valid chain — that is the whole problem: {body}"
     );
-    assert_eq!(body["checkpoints"]["status"], "truncated", "body: {body}");
-    assert_eq!(body["checkpoints"]["attestedEntries"], attested);
+    assert_eq!(
+        body["ext"]["org.openvtc"]["checkpoints"]["status"], "truncated",
+        "body: {body}"
+    );
+    assert_eq!(
+        body["ext"]["org.openvtc"]["checkpoints"]["attestedEntries"],
+        attested
+    );
     assert!(
-        body["checkpoints"]["detail"]
+        body["ext"]["org.openvtc"]["checkpoints"]["detail"]
             .as_str()
             .unwrap_or_default()
             .contains("TRUNCATION"),
@@ -363,9 +387,12 @@ async fn deleting_a_checkpoint_is_itself_detected() {
 
     let (status, body) = verify(&fix, &token).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["checkpoints"]["status"], "chainBroken", "body: {body}");
+    assert_eq!(
+        body["ext"]["org.openvtc"]["checkpoints"]["status"], "chainBroken",
+        "body: {body}"
+    );
     assert!(
-        body["checkpoints"]["detail"]
+        body["ext"]["org.openvtc"]["checkpoints"]["detail"]
             .as_str()
             .unwrap_or_default()
             .contains("deleted"),
@@ -405,9 +432,12 @@ async fn a_checkpoint_forged_with_a_foreign_key_is_rejected() {
 
     let (status, body) = verify(&fix, &token).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["checkpoints"]["status"], "chainBroken", "body: {body}");
+    assert_eq!(
+        body["ext"]["org.openvtc"]["checkpoints"]["status"], "chainBroken",
+        "body: {body}"
+    );
     assert!(
-        body["checkpoints"]["detail"]
+        body["ext"]["org.openvtc"]["checkpoints"]["detail"]
             .as_str()
             .unwrap_or_default()
             .contains("invalid signature"),
@@ -428,10 +458,19 @@ async fn entries_written_after_a_checkpoint_are_reported_as_unattested() {
 
     let (status, body) = verify(&fix, &token).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["checkpoints"]["status"], "consistent", "body: {body}");
-    assert_eq!(body["checkpoints"]["attestedEntries"], cp.entry_count);
+    assert_eq!(
+        body["ext"]["org.openvtc"]["checkpoints"]["status"], "consistent",
+        "body: {body}"
+    );
+    assert_eq!(
+        body["ext"]["org.openvtc"]["checkpoints"]["attestedEntries"],
+        cp.entry_count
+    );
     assert!(
-        body["checkpoints"]["unattestedEntries"].as_u64().unwrap() >= 3,
+        body["ext"]["org.openvtc"]["checkpoints"]["unattestedEntries"]
+            .as_u64()
+            .unwrap()
+            >= 3,
         "the post-checkpoint tail must be surfaced: {body}"
     );
 }
@@ -446,9 +485,12 @@ async fn a_vtc_with_no_signing_key_cannot_claim_checkpoint_health() {
 
     let (status, body) = verify(&fix, &token).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["checkpoints"]["status"], "chainBroken", "body: {body}");
+    assert_eq!(
+        body["ext"]["org.openvtc"]["checkpoints"]["status"], "chainBroken",
+        "body: {body}"
+    );
     assert!(
-        body["checkpoints"]["detail"]
+        body["ext"]["org.openvtc"]["checkpoints"]["detail"]
             .as_str()
             .unwrap_or_default()
             .contains("no community signing key"),
@@ -503,11 +545,13 @@ async fn a_checkpoint_naming_an_unknown_key_is_not_verified_against_the_live_one
     let (status, body) = verify(&fix, &token).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        body["checkpoints"]["status"], "chainBroken",
+        body["ext"]["org.openvtc"]["checkpoints"]["status"], "chainBroken",
         "a checkpoint naming a key the signer does not own must not verify \
          against the live key: {body}"
     );
-    let detail = body["checkpoints"]["detail"].as_str().unwrap_or_default();
+    let detail = body["ext"]["org.openvtc"]["checkpoints"]["detail"]
+        .as_str()
+        .unwrap_or_default();
     assert!(
         detail.contains("key-retired") && detail.contains("could not be resolved"),
         "the finding must name the unresolvable key and say so, rather than \

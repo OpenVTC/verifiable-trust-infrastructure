@@ -110,7 +110,7 @@ async fn response_and_entries_are_the_canonical_shape() {
     assert!(entry.get("actor_did_hash").is_none(), "{entry}");
     assert!(entry.get("timestamp").is_none(), "{entry}");
     assert!(
-        entry["ext"]["vtc"].get("actorDidHash").is_some(),
+        entry["ext"]["org.openvtc"].get("actorDidHash").is_some(),
         "keyed hash should ride in ext: {entry}"
     );
     // action is the serde tag; detail is the variant payload.
@@ -118,10 +118,15 @@ async fn response_and_entries_are_the_canonical_shape() {
     assert!(entry["detail"].is_object(), "{entry}");
 }
 
-/// `verify` reports `head` as hex; a caller comparing it against the
-/// newest entry's `entryHash` must not have to reconcile encodings.
+/// `verify`'s `head` and `list`'s newest `entryHash` must be the same string.
+///
+/// The invariant is that the two agree, not what they are encoded as — this
+/// test was named `..._are_hex_...` and its doc asserted hex, which is how a
+/// test comes to pin an encoding nobody chose deliberately. Both are now
+/// multibase-wrapped multihash, which is what the canonical schema's digest
+/// pattern accepts; the agreement is unchanged and is the thing worth testing.
 #[tokio::test]
-async fn entry_hashes_are_hex_matching_audit_verify_head() {
+async fn entry_hash_and_audit_verify_head_agree() {
     let fix = build().await;
     let token = super_admin_token(&fix).await;
     seed(&fix, &token, 2).await;
