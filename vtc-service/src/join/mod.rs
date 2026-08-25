@@ -118,7 +118,12 @@ pub struct JoinRequest {
     /// Community-defined extensions slot (spec §3-M). Bounded by
     /// `JOIN_REQUEST_EXTENSIONS_MAX_BYTES` (16 KiB) at the route
     /// layer.
-    #[serde(default)]
+    /// Omitted when null. The canonical `JoinRequest` component types this
+    /// `object` and does not require it, so absent is how "none" is spelled
+    /// and `null` is a type error — the same shape as `policyDecision` in
+    /// #1099. Found by the response-conformance layer on real traffic; the
+    /// fixture set a non-empty object and so never saw it.
+    #[serde(default, skip_serializing_if = "JsonValue::is_null")]
     pub extensions: JsonValue,
     /// Why this request was refused, for the applicant.
     ///

@@ -613,14 +613,27 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(members::personhood::challenge),
             "https://trusttasks.org/spec/vtc/members/personhood/challenge/0.1",
         ))
+        // POST and DELETE each carry their own task. They shared
+        // `personhood/assert/0.1` "pending per-method selectors" — a
+        // workaround that outlived its reason: `task_routes` has supported
+        // one task per verb on a shared path since
+        // `per_method_tasks_on_one_path_are_enforced_independently` landed in
+        // `vti_common::trust_task::openapi`, and registering the path twice
+        // merges the operations rather than overwriting them.
+        //
+        // It was not cosmetic. A revoke replied under the *assert* task, so a
+        // client was told the wrong task for the document it received, and
+        // the response could not satisfy the schema it claimed: assert
+        // requires `personhood: const true` plus `vmc` and `roleVec`, and a
+        // revoke legitimately sends `false` with neither. The
+        // response-conformance layer found it on real traffic.
         .routes(tt(
-            routes!(members::personhood::assert, members::personhood::revoke), // POST + DELETE share `personhood/assert/1.0` at
-            // the router layer pending per-method selectors;
-            // the standalone `personhood/revoke/1.0` Trust Task
-            // exists on disk + in index.json so the soft-gate
-            // surface stays complete. (Same workaround as
-            // members/{did}'s show + update + admin-remove.)
+            routes!(members::personhood::assert),
             "https://trusttasks.org/spec/vtc/members/personhood/assert/0.1",
+        ))
+        .routes(tt(
+            routes!(members::personhood::revoke),
+            "https://trusttasks.org/spec/vtc/members/personhood/revoke/0.1",
         ))
         // Phase 4 M4.6 — VRC trust-graph endpoints. The
         // per-member list mounts under /v1/members/{did}/
