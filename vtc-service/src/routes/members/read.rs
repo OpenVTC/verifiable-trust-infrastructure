@@ -36,6 +36,16 @@ pub struct MemberResponse {
     pub status_list_index: Option<u32>,
     pub current_vmc_id: Option<String>,
     pub current_role_vec_id: Option<String>,
+    /// Serialised as `{}` when the member has none.
+    ///
+    /// The canonical component makes `extensions` **required** and types it
+    /// `object`, so `null` is a violation and omitting it is a violation too —
+    /// an empty object is the only conforming way to say "none". A stored
+    /// member that never had extensions holds `JsonValue::Null`, and this went
+    /// out as `null` until #1107. The conformance fixture set
+    /// `{"org": "acme"}`, so a hand-typed non-empty object hid it; the
+    /// response-conformance layer on real traffic is what surfaced it.
+    #[serde(serialize_with = "empty_object_if_null")]
     pub extensions: JsonValue,
     /// Personhood flag (Phase 4 M4.1). Surfaces the Member row's
     /// `personhood` field. Read-only on this response —
@@ -64,6 +74,18 @@ pub struct MemberResponse {
     /// [`Self::member_vmc_id`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_vmc_received_at: Option<DateTime<Utc>>,
+}
+
+/// Serialise `JsonValue::Null` as `{}`.
+///
+/// For members the spec requires and types `object`: absent and null are both
+/// refused, so the empty object is the only conforming spelling of "none".
+fn empty_object_if_null<S: serde::Serializer>(v: &JsonValue, s: S) -> Result<S::Ok, S::Error> {
+    use serde::Serialize;
+    match v {
+        JsonValue::Null => serde_json::Map::new().serialize(s),
+        other => other.serialize(s),
+    }
 }
 
 impl MemberResponse {
