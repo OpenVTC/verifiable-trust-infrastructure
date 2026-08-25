@@ -76,7 +76,7 @@ Layer 4 (the spine + consumers):
 | `vta-cli-common` | Shared CLI command implementations — both CLIs are thin wrappers |
 | `pnm-cli` | Personal Network Manager (single-VTA operator) |
 | `cnm-cli` | Community Network Manager (multi-community operator) |
-| `vta-mcp` | Model Context Protocol server bridging a VTA's agent capabilities (signing oracle, vault, device, discovery) to MCP tools over stdio, so any MCP host (Claude Desktop, agent frameworks) can use a VTA with no custom code. `publish = false` |
+| `vta-mcp` | Model Context Protocol server bridging a VTA's agent capabilities (signing oracle, vault, device, discovery) to MCP tools over stdio, so any MCP host (Claude Desktop, agent frameworks) can use a VTA with no custom code. Carries a **local per-operation guard** (`guard.rs`) because an MCP host approves a *tool*, not a call — once `vta_call` is approved every Trust Task URI rides that approval — plus stderr/JSONL call logging (`observability.rs`). Docs: `docs/02-vta/vta-mcp.md`. `publish = false` |
 | `didcomm-test` | Standalone DIDComm connectivity harness (test tool, `publish = false`) |
 
 Hot spots to know about (file size in source lines, sorted descending):

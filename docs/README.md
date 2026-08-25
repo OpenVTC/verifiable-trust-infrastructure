@@ -49,6 +49,7 @@ VTA via the `vtc-host` DID template.
 | Pick where to store the master seed | [VTA secret backends](02-vta/secret-backends.md) |
 | Deploy a VTA inside a Nitro Enclave | [TEE architecture](02-vta/tee-architecture.md) |
 | Build an app that uses a VTA | [VTA integration guide](02-vta/integration-guide.md) |
+| Use a VTA from Claude Code / Claude Desktop | [vta-mcp](02-vta/vta-mcp.md) |
 | Provision a mediator / webvh-host / custom integration | [Provision-integration](02-vta/provision-integration.md) |
 | Require a second person to approve an operation | [Approvals](02-vta/approvals.md) |
 | Understand the consent ceremony (DTTE) end to end | [Task consent](02-vta/task-consent.md) |
@@ -115,8 +116,15 @@ How to operate, deploy, and integrate against a VTA.
   [task-consent-infographic.html](02-vta/task-consent-infographic.html).
 - **[DID:WebVH update](02-vta/did-webvh-update.md)** — log-entry
   format, rotation, hosting.
+- **[Personal AI agents](02-vta/personal-ai-agents.md)** — provisioning
+  an agent its own identity, context, capabilities and kill switch.
+- **[vta-mcp](02-vta/vta-mcp.md)** — using a VTA from an MCP host
+  (Claude Code, Claude Desktop, an agent framework): what it exposes,
+  the security model, hardening flags, and how to see what it is doing.
 - **[Setup example](02-vta/examples/vta-setup.example.toml)** —
   worked TOML for `vta setup --from`.
+- **[Example: agent memory + vta-mcp](02-vta/examples/agent-memory-with-vta-mcp.md)** —
+  two MCP servers, two identities, two contexts, one VTA.
 
 ### Part III — VTC
 

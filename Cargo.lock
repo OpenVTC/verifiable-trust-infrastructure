@@ -6992,6 +6992,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
  "uuid",
 ]
 
@@ -9329,6 +9330,7 @@ name = "vta-mcp"
 version = "0.1.5"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "rmcp",
  "schemars 1.2.2",
