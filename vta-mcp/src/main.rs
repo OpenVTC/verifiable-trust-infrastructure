@@ -25,7 +25,15 @@
 //!   the "log in with pnm, then run vta-mcp" path.
 //! - **Token**: set `VTA_URL` + `VTA_TOKEN` for a REST client with a bearer
 //!   token (simple, for testing / short-lived use; no auto-refresh; REST only).
+//!
+//! Security posture: the VTA is the authority — every call is gated there on
+//! the bridge identity's role, ACL and context scope. On top of that this
+//! process applies a **local** policy ([`guard`]), because an MCP host approves
+//! a *tool* and `vta_call` is one tool that reaches the entire management
+//! surface. See `docs/02-vta/vta-mcp.md`.
 
+mod guard;
+mod observability;
 mod server;
 
 use std::path::PathBuf;
@@ -34,12 +42,14 @@ use std::sync::Arc;
 use clap::Parser;
 use rmcp::ServiceExt;
 use rmcp::transport::stdio;
-use vta_sdk::agent_connect::{AgentConnect, pnm_session_key};
+use vta_sdk::agent_connect::{AgentConnect, ConnectMode, pnm_session_key};
 use vta_sdk::agent_session::{AgentConfig, AgentSession};
 use vta_sdk::client::VtaClient;
 use vta_sdk::session::TransportChoice;
 
-use server::VtaMcp;
+use guard::{ConfirmLevel, Guard};
+use observability::{LogFormat, Recorder};
+use server::{BridgeIdentity, VtaMcp};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -84,7 +94,8 @@ struct Args {
     agent_did: Option<String>,
 
     /// Agent Ed25519 signing key (multibase) for did:key DIDComm mode. Stays in
-    /// this process; never sent over MCP.
+    /// this process; never sent over MCP. Prefer the environment variable — a
+    /// command-line argument is readable by every process on the machine.
     #[arg(long, env = "VTA_MCP_AGENT_KEY")]
     agent_key: Option<String>,
 
@@ -98,8 +109,8 @@ struct Args {
 
     /// Register this bridge as an `ai-agent` device at startup, so it appears in
     /// `pnm device list` and can be revoked with `pnm device {disable,wipe}`.
-    /// Only use this when vta-mcp runs as a *dedicated* agent identity — it
-    /// attaches a device binding to the authenticated DID's ACL entry. Idempotent.
+    /// Refused in session mode — it would attach a device binding to the
+    /// *operator's* ACL entry. Idempotent.
     #[arg(long, env = "VTA_MCP_ENROLL")]
     enroll: bool,
 
@@ -113,7 +124,7 @@ struct Args {
     holder_did: Option<String>,
 
     /// Holder Ed25519 signing key (multibase) for `issue_vp`. Stays in this
-    /// process; never sent over MCP.
+    /// process; never sent over MCP. Prefer the environment variable.
     #[arg(long, env = "VTA_MCP_HOLDER_KEY")]
     holder_key: Option<String>,
 
@@ -121,6 +132,44 @@ struct Args {
     /// `verificationMethod` (`{holder_did}#{fragment}`).
     #[arg(long, env = "VTA_MCP_HOLDER_VM_FRAGMENT", default_value = "key-0")]
     holder_vm_fragment: String,
+
+    /// Refuse every operation that is not read-only. The strongest single
+    /// setting: the bridge can inspect the VTA and nothing else, whatever its
+    /// ACL would permit.
+    #[arg(long, env = "VTA_MCP_READ_ONLY")]
+    read_only: bool,
+
+    /// Only permit operations matching these slug globs (`acl/*`,
+    /// `vta/memory/*`, or an exact slug). Repeatable; comma-separated in the
+    /// environment variable. When set, everything else is refused.
+    #[arg(long, env = "VTA_MCP_ALLOW", value_delimiter = ',')]
+    allow: Vec<String>,
+
+    /// Always refuse operations matching these slug globs. Checked before
+    /// `--allow`, so a deny cannot be undone by an allow.
+    #[arg(long, env = "VTA_MCP_DENY", value_delimiter = ',')]
+    deny: Vec<String>,
+
+    /// Which operations need a human to approve them, via MCP elicitation:
+    /// `never`, `destructive` (default), `sensitive` (also signing, secret
+    /// release, ACL changes) or `always`.
+    #[arg(long, env = "VTA_MCP_CONFIRM", default_value = "destructive")]
+    confirm: String,
+
+    /// stderr log level for this crate (`error`, `warn`, `info`, `debug`,
+    /// `trace`). `RUST_LOG`, when set, wins.
+    #[arg(long, env = "VTA_MCP_LOG_LEVEL", default_value = "info")]
+    log_level: String,
+
+    /// stderr log format: `text` (default) or `json`.
+    #[arg(long, env = "VTA_MCP_LOG_FORMAT", default_value = "text")]
+    log_format: String,
+
+    /// Append a redacted JSON record of every call to this file (created
+    /// owner-only). Independent of the stderr log, and the only record that
+    /// outlives the process.
+    #[arg(long, env = "VTA_MCP_AUDIT_LOG")]
+    audit_log: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -138,26 +187,190 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "keyring")]
     vta_sdk::keyring_init::install_default_store_or_exit("vta-mcp");
 
-    // stdout is the MCP JSON-RPC channel — logs MUST go to stderr.
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     let args = Args::parse();
-    let client = build_client(&args).await?;
 
-    // Wrap the connected client in an AgentSession — the unified handle the MCP
-    // tools route through. Optionally enroll as a managed device first (one-shot,
-    // before serving — never concurrently with tool RPCs on a DIDComm session).
+    // stdout is the MCP JSON-RPC channel — logs MUST go to stderr. Installed
+    // before anything else can want to log, and *on* by default: a bridge that
+    // says nothing unless RUST_LOG happens to be set is one nobody can debug.
+    let log_format = LogFormat::parse(&args.log_format).map_err(|e| anyhow::anyhow!(e))?;
+    observability::init_tracing(&args.log_level, log_format);
+
+    // Two kinds of startup failure, handled differently on purpose:
+    //
+    // - **Policy** (an unparseable `--confirm`, an audit log that will not
+    //   open) is fatal. Degrading here would run the bridge under a policy the
+    //   operator did not ask for, which is the one outcome worse than not
+    //   starting.
+    // - **Connectivity** (no auth configured, mediator unreachable, expired
+    //   session) serves in degraded mode below, because those are the field
+    //   failures and an exited server is invisible to the model.
+    let guard = Guard {
+        read_only: args.read_only,
+        allow: args.allow.clone(),
+        deny: args.deny.clone(),
+        confirm: ConfirmLevel::parse(&args.confirm).map_err(|e| anyhow::anyhow!(e))?,
+    };
+    let recorder = match &args.audit_log {
+        Some(path) => Arc::new(
+            Recorder::with_file(path)
+                .map_err(|e| anyhow::anyhow!("opening --audit-log {}: {e}", path.display()))?,
+        ),
+        None => Arc::new(Recorder::default()),
+    };
+
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        policy = %guard.summary(),
+        audit_log = recorder
+            .audit_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "-".into()),
+        "vta-mcp starting"
+    );
+    warn_about_argv_secrets();
+    let connect = agent_connect_from(&args);
+    let holder = holder_identity(&args);
+
+    // A misconfigured rung — nothing set at all, a typo'd env var, three of the
+    // four did:key fields — is the single most common way this bridge fails,
+    // and it fails before any network call. Serve it degraded like any other
+    // connection failure so the operator can *ask* what went wrong.
+    let mode = match connect.mode() {
+        Ok(mode) => mode,
+        Err(e) => {
+            let message = format!("no usable VTA credentials: {e}");
+            tracing::error!(error = %message, "serving in degraded mode — tools will report this");
+            let identity = BridgeIdentity {
+                // Not the empty string a `Default` would leave: `vta_status`
+                // renders this, and a blank mode reads as a bug in the bridge
+                // rather than as the operator having configured nothing.
+                mode: "unconfigured".to_string(),
+                ..BridgeIdentity::default()
+            };
+            return serve(
+                VtaMcp::degraded(message, holder, identity, guard, recorder),
+                None,
+            )
+            .await;
+        }
+    };
+    let identity = identity_of(&args, &mode);
+
+    if args.enroll && !mode.is_dedicated_agent() {
+        // Enrolment attaches a device binding to the *authenticated* DID's ACL
+        // entry. In session mode that DID is the operator's, so `--enroll`
+        // would silently bind this bridge to an operator credential — and the
+        // binding is awkward to undo. Refuse rather than do the wrong thing.
+        anyhow::bail!(
+            "--enroll needs a dedicated agent identity, but this bridge is running in {} mode. \
+             Run it with --agent-did/--agent-key (or --agent-secrets) so the device binding \
+             attaches to the agent's own ACL entry, or drop --enroll.",
+            mode.label()
+        );
+    }
+
+    tracing::info!(
+        mode = mode.label(),
+        dedicated_agent = mode.is_dedicated_agent(),
+        agent_did = identity.agent_did.as_deref().unwrap_or("-"),
+        vta_did = identity.vta_did.as_deref().unwrap_or("-"),
+        "connecting to VTA"
+    );
+    if !mode.is_dedicated_agent() {
+        // Worth saying out loud every boot: in session mode the model on the
+        // other end of the pipe holds whatever the operator holds, which for a
+        // `pnm` admin login is everything.
+        tracing::warn!(
+            mode = mode.label(),
+            "this bridge holds an operator credential, not a scoped agent identity — every tool \
+             runs with the operator's role and ACL. See docs/02-vta/vta-mcp.md for the \
+             least-privilege setup."
+        );
+    }
+
+    // Connect, but never let a failed connect stop the server from serving.
+    // An MCP server that exits before speaking the protocol shows up in the
+    // host as *no tools at all*, so the operator gets an empty tool list and no
+    // explanation. Degraded mode keeps `vta_status` answering.
+    let attached = match connect.connect().await {
+        Ok(client) => attach(client, &args).await,
+        Err(e) => Err(format!("connecting to VTA ({}): {e}", mode.label())),
+    };
+    let (bridge, session) = match attached {
+        Ok(agent) => {
+            tracing::info!("connected to VTA; serving MCP over stdio");
+            (
+                VtaMcp::new(agent.clone(), holder, identity, guard, recorder),
+                Some(agent),
+            )
+        }
+        Err(message) => {
+            tracing::error!(error = %message, "serving in degraded mode — tools will report this");
+            (
+                VtaMcp::degraded(message, holder, identity, guard, recorder),
+                None,
+            )
+        }
+    };
+    serve(bridge, session).await
+}
+
+/// Serve MCP over stdio until the host disconnects, then tear the DIDComm
+/// session down.
+///
+/// The teardown is why `session` is passed separately: a DIDComm `VtaClient`
+/// owns a live, auto-reconnecting mediator socket that `Drop` cannot close, so
+/// leaking it trips a debug-assert and duels the mediator on reconnect. Serve
+/// and wait, then `shutdown()` unconditionally (idempotent, a no-op for
+/// REST/token clients) *before* propagating any error — a bare `?` on
+/// `waiting()` would skip the cleanup on the common EOF/disconnect path.
+async fn serve(bridge: VtaMcp, session: Option<Arc<AgentSession>>) -> anyhow::Result<()> {
+    let served = async {
+        let service = bridge.serve(stdio()).await?;
+        service.waiting().await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    if let Some(agent) = session {
+        agent.shutdown().await;
+    }
+    served
+}
+
+/// Wrap the connected client in an `AgentSession` — the unified handle the MCP
+/// tools route through. Optionally enroll as a managed device first (one-shot,
+/// before serving — never concurrently with tool RPCs on a DIDComm session).
+///
+/// A failed enrolment is returned, not logged and shrugged off. The operator
+/// asked for the bridge to be revocable through `pnm device disable`; serving
+/// anyway would hand them a bridge that quietly is not.
+async fn attach(client: VtaClient, args: &Args) -> Result<Arc<AgentSession>, String> {
     let agent = AgentSession::from_client(client, AgentConfig::for_attach(&args.device_name));
+    if args.enroll
+        && let Err(e) = agent.ensure_enrolled().await
+    {
+        // Tear the session down before returning. The degraded path drops this
+        // `AgentSession`, and a dropped DIDComm client leaves a live,
+        // auto-reconnecting mediator socket behind — one duelling socket per
+        // start, holding the mediator's one-per-DID slot.
+        agent.shutdown().await;
+        return Err(format!(
+            "enrolling as device '{}': {e}. The bridge asked to be revocable via \
+             `pnm device disable`, so it will not serve without that binding — fix the \
+             enrolment or drop --enroll.",
+            args.device_name
+        ));
+    }
     if args.enroll {
-        agent.ensure_enrolled().await?;
         tracing::info!(device = %args.device_name, "vta-mcp enrolled as a managed device");
     }
-    // Optional holder identity for the `issue_vp` tool (signs presentations
-    // locally; the key never crosses MCP).
-    let holder = match (&args.holder_did, &args.holder_key) {
+    Ok(Arc::new(agent))
+}
+
+/// Optional holder identity for the `issue_vp` tool (signs presentations
+/// locally; the key never crosses MCP).
+fn holder_identity(args: &Args) -> Option<Arc<server::HolderIdentity>> {
+    match (&args.holder_did, &args.holder_key) {
         (Some(did), Some(key)) => {
             tracing::info!(%did, "issue_vp enabled with configured holder identity");
             Some(Arc::new(server::HolderIdentity {
@@ -167,26 +380,54 @@ async fn main() -> anyhow::Result<()> {
             }))
         }
         _ => None,
-    };
-
-    tracing::info!("vta-mcp connected to VTA; serving MCP over stdio");
-
-    // Keep a handle so the client's DIDComm session can be closed cleanly once
-    // serving ends — however it ends. A DIDComm `VtaClient` owns a live,
-    // auto-reconnecting mediator socket that `Drop` can't close; leaking it
-    // trips a debug-assert and duels the mediator on reconnect. We run serve +
-    // wait, then `shutdown()` unconditionally (idempotent, a no-op for
-    // REST/token clients) *before* propagating any error — a bare `?` on
-    // `waiting()` would skip the cleanup on the common EOF/disconnect path.
-    let agent = Arc::new(agent);
-    let served = async {
-        let service = VtaMcp::new(agent.clone(), holder).serve(stdio()).await?;
-        service.waiting().await?;
-        Ok::<(), anyhow::Error>(())
     }
-    .await;
-    agent.shutdown().await;
-    served
+}
+
+/// What the bridge will report about itself, resolved before connecting so it
+/// is available even when the connect fails.
+fn identity_of(args: &Args, mode: &ConnectMode) -> BridgeIdentity {
+    let (agent_did, mediator_did) = match mode {
+        ConnectMode::DidWebvhBundle {
+            agent_did,
+            mediator_did,
+        }
+        | ConnectMode::DidKey {
+            agent_did,
+            mediator_did,
+        } => (Some(agent_did.clone()), Some(mediator_did.clone())),
+        _ => (None, args.mediator_did.clone()),
+    };
+    BridgeIdentity {
+        mode: mode.label().to_string(),
+        agent_did,
+        vta_did: args.vta_did.clone(),
+        mediator_did,
+        dedicated_agent: mode.is_dedicated_agent(),
+    }
+}
+
+/// Warn when key material arrived as a command-line argument.
+///
+/// `/proc/<pid>/cmdline` and `ps` are readable by other processes on the same
+/// machine; the environment is not, on any platform this runs on. The flags
+/// stay supported — an operator scripting a one-off should not have to export
+/// variables — but they should know.
+fn warn_about_argv_secrets() {
+    const SECRET_FLAGS: &[&str] = &["--agent-key", "--holder-key", "--agent-secrets"];
+    let args: Vec<String> = std::env::args().collect();
+    for flag in SECRET_FLAGS {
+        if args
+            .iter()
+            .any(|a| a == flag || a.starts_with(&format!("{flag}=")))
+        {
+            tracing::warn!(
+                flag,
+                "key material passed as a command-line argument is visible to every process on \
+                 this machine (ps / /proc/<pid>/cmdline) — prefer the matching VTA_MCP_* \
+                 environment variable, or a file path for --agent-secrets"
+            );
+        }
+    }
 }
 
 /// Translate the CLI/env args into the SDK's connect ladder. Keeping this a
@@ -210,24 +451,9 @@ fn agent_connect_from(args: &Args) -> AgentConnect {
     }
 }
 
-/// Build an authenticated [`VtaClient`] from the args/env (see module docs).
-///
-/// The four-rung ladder itself lives in `vta_sdk::agent_connect` — every
-/// agent-side bridge needs the same one, and a second copy is how they drift.
-async fn build_client(args: &Args) -> anyhow::Result<VtaClient> {
-    let connect = agent_connect_from(args);
-    let mode = connect.mode()?;
-    tracing::info!(mode = mode.label(), "connecting to VTA");
-    connect
-        .connect()
-        .await
-        .map_err(|e| anyhow::anyhow!("connecting to VTA ({}): {e}", mode.label()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vta_sdk::agent_connect::ConnectMode;
 
     /// Args with everything unset — the base every case below varies from.
     fn args() -> Args {
@@ -290,5 +516,60 @@ mod tests {
                 key: "vta:my-vta".into()
             }
         );
+    }
+
+    #[test]
+    fn the_default_policy_is_confirm_destructive_and_nothing_else() {
+        let a = args();
+        assert!(!a.read_only);
+        assert!(a.allow.is_empty());
+        assert!(a.deny.is_empty());
+        assert_eq!(
+            ConfirmLevel::parse(&a.confirm).unwrap(),
+            ConfirmLevel::Destructive
+        );
+    }
+
+    #[test]
+    fn allow_and_deny_accept_repeated_and_comma_separated_values() {
+        let a = Args::parse_from([
+            "vta-mcp",
+            "--allow",
+            "vta/memory/*",
+            "--allow",
+            "acl/list",
+            "--deny",
+            "vta/seeds/*,vta/backup/*",
+        ]);
+        assert_eq!(a.allow, ["vta/memory/*", "acl/list"]);
+        assert_eq!(a.deny, ["vta/seeds/*", "vta/backup/*"]);
+    }
+
+    #[test]
+    fn identity_carries_the_agent_did_in_didcomm_modes() {
+        let mut a = args();
+        a.agent_did = Some("did:key:zAgent".into());
+        a.agent_key = Some("zKey".into());
+        a.vta_did = Some("did:webvh:example.com:vta".into());
+        a.mediator_did = Some("did:key:zMed".into());
+        let mode = agent_connect_from(&a).mode().unwrap();
+        let identity = identity_of(&a, &mode);
+        assert_eq!(identity.agent_did.as_deref(), Some("did:key:zAgent"));
+        assert_eq!(
+            identity.vta_did.as_deref(),
+            Some("did:webvh:example.com:vta")
+        );
+        assert!(identity.dedicated_agent);
+    }
+
+    #[test]
+    fn session_mode_is_not_a_dedicated_agent() {
+        let mut a = args();
+        a.vta = Some("my-vta".into());
+        let mut connect = agent_connect_from(&a);
+        connect.token = None;
+        let mode = connect.mode().unwrap();
+        // The fact `--enroll` is refused on, and the startup warning fires on.
+        assert!(!identity_of(&a, &mode).dedicated_agent);
     }
 }

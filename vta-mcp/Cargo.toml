@@ -25,8 +25,14 @@ config-session = ["vta-sdk/config-session"]
 # Without it the MCP server's ACL is never configured and the mediator silently
 # drops message types it was not told to accept.
 vta-sdk = { path = "../vta-sdk", version = "0.28", features = ["client", "session", "sealed-transfer", "didcomm", "vp", "crypto-provider", "acl-setup"] }
-rmcp = { version = "3", features = ["server", "transport-io", "macros", "schemars"] }
+# `elicitation` is what lets the bridge put a destructive operation back in
+# front of a human. An MCP host approves a *tool*; once `vta_call` is approved,
+# every Trust Task URI rides that one approval, so per-operation consent has to
+# be asked for from this side. Without the feature there is no `Peer::elicit`
+# and `--confirm` could only ever deny.
+rmcp = { version = "3", features = ["server", "transport-io", "macros", "schemars", "elicitation"] }
 schemars = "1"
+chrono = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

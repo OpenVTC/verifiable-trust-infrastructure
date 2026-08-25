@@ -150,7 +150,7 @@ pnm vault release <entry-id>                     # opens the sealed reply, print
 pnm vault sign-trust-task --file envelope.json   # sign as the entry's principal
 
 # What did the agent do? (the agent's DID is the audit actor)
-pnm audit --actor <agent-did>
+pnm audit list --actor <agent-did>
 ```
 
 `vault upsert` and `vault release` seal/open `didcomm-authcrypt` envelopes with
@@ -298,3 +298,5 @@ Lower priority unless your agents do credential work.
 - Mobile/agent architecture (push topology): `docs/05-design-notes/mobile-agent-architecture.md`
 - Agent memory vs. application state: `docs/05-design-notes/appstate-store.md` §1
 - Agent-side connect ladder: `vta-sdk/src/agent_connect.rs`
+- Using a VTA from an MCP host: [vta-mcp](vta-mcp.md), and the worked
+  two-server example [agent memory + vta-mcp](examples/agent-memory-with-vta-mcp.md)
