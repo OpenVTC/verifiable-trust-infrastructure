@@ -38,13 +38,41 @@ pub enum DiProofError {
     VerifyFailed(String),
 }
 
+impl DiProofError {
+    /// The underlying verifier detail, for the operator's log only.
+    ///
+    /// Deliberately not reachable through [`Display`]: that rendering goes on
+    /// the wire, and this is exactly what Framework 0.5.0 forbids putting
+    /// there. Log it beside the rejection; never return it.
+    #[must_use]
+    pub fn cause(&self) -> Option<&str> {
+        match self {
+            Self::VerifyFailed(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 impl std::fmt::Display for DiProofError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoProof => write!(f, "document has no proof"),
             Self::NotDataIntegrity => write!(f, "proof is not a Data Integrity proof"),
             Self::NoDid => write!(f, "proof verificationMethod carries no DID"),
-            Self::VerifyFailed(e) => write!(f, "proof verification failed: {e}"),
+            // Framework 0.5.0, *What a `message` May Not Say*: a `message`
+            // MUST NOT reveal "resolver, verifier, or key-status internals",
+            // normative for every code rather than for `identityMismatch`
+            // alone. This `Display` reaches the wire through
+            // `PermissionDenied { reason }`, so interpolating the underlying
+            // verifier error published which cryptosuite ran, whether the key
+            // resolved, and how it failed — to a party that is, on the
+            // unauthenticated routes, not yet anybody.
+            //
+            // The producer needs to know its proof did not verify and that
+            // retrying unchanged will not help. It does not need to know why,
+            // and every additional word is an oracle. The cause is available
+            // to the operator through [`Self::cause`].
+            Self::VerifyFailed(_) => write!(f, "proof verification failed"),
         }
     }
 }
