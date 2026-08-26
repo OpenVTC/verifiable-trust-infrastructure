@@ -206,7 +206,13 @@ async fn hosted_agent_name_context(
         .map_err(|e| UpdateDidWebvhError::Forbidden(e.to_string()))?;
 
     if record.server_id == "serverless" {
-        return Err(UpdateDidWebvhError::Publish(
+        // `InvalidDocument`, not `Publish`. `Publish` renders as
+        // `internalError` with `retryable: true`, which tells the producer to
+        // send the identical request again — and it will fail identically every
+        // time, because a serverless DID does not become hosted by waiting. The
+        // caller has to register it with a server first, which is an action, not
+        // a delay.
+        return Err(UpdateDidWebvhError::InvalidDocument(
             "agent names require a hosted DID; this DID is serverless \
              (register it with a server first)"
                 .to_string(),
