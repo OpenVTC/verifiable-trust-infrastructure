@@ -18,6 +18,10 @@
 
 #![cfg(any(test, feature = "test-support"))]
 
+/// Validates real dispatch output against published response schemas. See the
+/// module docs for why it sits at the spine rather than in middleware.
+pub mod response_conformance;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
