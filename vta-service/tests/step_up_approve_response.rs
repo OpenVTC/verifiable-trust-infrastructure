@@ -126,6 +126,7 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
     let doc_json = json!({
         "id": "approve-resp-itest-1",
         "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": "did:key:z6MkTestVTA",
         "payload": {
@@ -286,6 +287,7 @@ async fn did_signed_approve_response_0_2_elevates_session_to_aal2() {
     let doc_json = json!({
         "id": "approve-resp-itest-0-2",
         "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.2",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": "did:key:z6MkTestVTA",
         "payload": {
@@ -394,6 +396,7 @@ async fn trust_task_acl_mutation_requires_step_up() {
     let doc = json!({
         "id": "acl-create-itest-1",
         "type": "https://trusttasks.org/spec/acl/grant/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": ctx.vta_did,
         "payload": {
@@ -507,6 +510,7 @@ async fn v0_2_minted_request_completes_with_a_0_1_flavored_response() {
     let gated = json!({
         "id": "acl-create-roundtrip-1",
         "type": "https://trusttasks.org/spec/acl/grant/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": ctx.vta_did,
         "payload": {
@@ -555,6 +559,7 @@ async fn v0_2_minted_request_completes_with_a_0_1_flavored_response() {
     let doc_json = json!({
         "id": "approve-resp-roundtrip-1",
         "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": ctx.vta_did,
         "payload": {
@@ -698,6 +703,7 @@ async fn delegated_approve_response_elevates_the_subjects_session() {
     let doc_json = json!({
         "id": "approve-resp-delegated-1",
         "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": approver_did,
         "recipient": "did:key:z6MkTestVTA",
         "payload": {
@@ -840,6 +846,7 @@ async fn unauthorized_approver_cannot_elevate() {
     let doc_json = json!({
         "id": "approve-resp-rogue-1",
         "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": rogue_did,
         "recipient": "did:key:z6MkTestVTA",
         "payload": {

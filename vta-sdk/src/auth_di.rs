@@ -271,6 +271,7 @@ mod tests {
         let wrapped = json!({
             "id": "urn:uuid:1",
             "type": "https://trusttasks.org/spec/auth/authenticate/0.1#response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": tokens,
         });
         let unwrapped = parse_auth_response(&wrapped.to_string()).expect("trust-task");

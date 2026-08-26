@@ -285,6 +285,7 @@ fn build_envelope_document(
         // The task type lives HERE, on the document — never on the DIDComm
         // message, which is always the envelope type.
         "type": task,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         // Addressed to the host, per SPEC §4.8. did-hosting does not enforce
         // `recipient` on the DID-management bridge (it authorizes the authcrypt
         // sender), but an unaddressed document is one a stricter peer is
@@ -979,6 +980,7 @@ mod envelope_binding_tests {
         let reply = json!({
             "id": "urn:uuid:2",
             "type": TASK_DID_CHECK_NAME_RESPONSE,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "available": true, "reserved": true, "record": { "mnemonic": "bob" } },
         });
         let payload = unwrap_envelope_reply(reply, TASK_DID_CHECK_NAME_RESPONSE)
@@ -999,6 +1001,7 @@ mod envelope_binding_tests {
         let reply = json!({
             "id": "urn:uuid:3",
             "type": TASK_DID_PROBLEM_REPORT,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "code": "e.p.did.path-unavailable", "comment": "taken" },
         });
         let err = unwrap_envelope_reply(reply, TASK_DID_CHECK_NAME_RESPONSE)
@@ -1019,6 +1022,7 @@ mod envelope_binding_tests {
             let reply = json!({
                 "id": "urn:uuid:4",
                 "type": format!("https://trusttasks.org/spec/trust-task-error/{version}"),
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 "payload": { "code": "malformedRequest", "message": "nope" },
             });
             let err = unwrap_envelope_reply(reply, TASK_DID_CHECK_NAME_RESPONSE)
@@ -1039,6 +1043,7 @@ mod envelope_binding_tests {
         let reply = json!({
             "id": "urn:uuid:5",
             "type": "https://trusttasks.org/spec/did-management/did/delete/0.1#response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "deleted": true },
         });
         let err = unwrap_envelope_reply(reply, TASK_DID_CHECK_NAME_RESPONSE)

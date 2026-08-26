@@ -555,37 +555,37 @@ async fn dispatch_trust_task_inner(
 /// long its duplicate-execution record must be kept.
 ///
 /// The two are **one** decision, which is why `trust_tasks_rs` passes them as a
-/// single `ConsumeChecks` argument and why `retain_until` below is derived from
-/// this rather than from a TTL of its own. SPEC §7.2 (*Bounding the record*)
-/// makes the acceptance window and the record's retention the same bound: a
-/// consumer "MUST NOT accept for execution a document older than the window
-/// over which it retains records".
+/// single `ConsumeChecks` argument and why `retain_until` is derived from this
+/// rather than from a TTL of its own. SPEC §7.2 (*Bounding the record*) makes
+/// the acceptance window and the record's retention the same bound: a consumer
+/// "**MUST NOT** accept for execution a document older than the window over
+/// which it retains records".
 ///
-/// # Why there is no `max_age` yet
+/// # Why a window at all
 ///
-/// This applies `FreshnessPolicy::default()` — the two internal-consistency
-/// rules, which no conforming producer can fail — and **no acceptance window**.
-/// The record is bounded by [`InMemoryReplayGuard`]'s capacity instead, which
-/// is what the retired `replay::check_and_record` did too, so this is parity
-/// rather than a regression.
+/// #1126 shipped this without one, leaving the record bounded by
+/// [`InMemoryReplayGuard`]'s capacity. That is not "no expiry so entries live
+/// forever" — it is LRU, which makes the window **load-dependent**: quiet
+/// service, effectively unbounded protection; busy service, an eviction horizon
+/// that can fall *below* any sensible acceptance window, so a replay arriving
+/// after its `id` was evicted executes a second time. The defence was weakest
+/// exactly when the service was busiest, which is the wrong way round and is
+/// what this closes.
 ///
-/// A window was implemented and measured first. `with_max_age(10 minutes)`,
-/// applied only to consequential tasks, failed **41 assertions across 10
-/// suites** with `expired` — not because the policy is wrong, but because the
-/// suite is full of documents stamped with fixed `issuedAt` values hours or
-/// days in the past, which no real producer sends. Fixing those is the right
-/// change and it is not this one: it alters what the service accepts, and that
-/// belongs in a change whose subject is the window, with the mediator-queue
-/// and clock-skew budget argued on its own terms. The library's own
-/// `DEFAULT_MAX_AGE` is five minutes, so the real question is whether this
-/// deployment's transports buffer for longer — a question about deployments,
-/// not about tests.
+/// # Why ten minutes
 ///
-/// Until then the guard still does the work that matters: it refuses a second
-/// execution, it distinguishes a retry from a conflict by digest, and it
-/// answers a retry with the prior result.
+/// The library's `DEFAULT_MAX_AGE` is five, "long enough to survive a mediator
+/// queue, a retry with backoff, and a modest clock disagreement". This service
+/// routes over a mediator that can hold a message while a recipient reconnects,
+/// so it takes double that — the same 600s the retired
+/// `replay::check_and_record` used as its dedup TTL, now bounding acceptance as
+/// well as retention so the two cannot drift apart.
+///
+/// A deployment whose transport buffers for longer must widen this **and** the
+/// guard's retention together; §7.2 makes them one bound, and widening either
+/// alone reintroduces exactly the gap above.
 fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
-    trust_tasks_rs::FreshnessPolicy::default()
+    trust_tasks_rs::FreshnessPolicy::default().with_max_age(chrono::TimeDelta::minutes(10))
 }
 
 /// The duplicate-execution record of SPEC §7.2 item 11.
@@ -1514,7 +1514,7 @@ mod tests {
             "type": "https://trusttasks.org/spec/auth/revoke-session/0.1",
             "issuer": "did:example:alice",
             "recipient": "did:example:vta",
-            "issuedAt": "2026-05-20T00:00:00Z",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "session_id": "sess-1" }
         });
         let bytes = serde_json::to_vec(&canonical).unwrap();
@@ -1531,7 +1531,7 @@ mod tests {
             "type": "https://trusttasks.org/vta/auth/revoke-session/1.0",
             "issuer": "did:example:alice",
             "recipient": "did:example:vta",
-            "issuedAt": "2026-05-20T00:00:00Z",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "session_id": "sess-1" }
         });
         let bytes = serde_json::to_vec(&flat).unwrap();
@@ -1819,7 +1819,7 @@ mod payload_validation_tests {
             "type": WEBVH_UPDATE,
             "issuer": "did:key:zTestAdmin",
             "recipient": "did:example:vta",
-            "issuedAt": "2026-07-14T00:00:00Z",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": payload,
         }))
         .expect("valid trust task")
@@ -2043,7 +2043,7 @@ mod superseded_task_dispatch_tests {
             "type": type_uri,
             "issuer": "did:key:zTestAdmin",
             "recipient": vta_did,
-            "issuedAt": "2026-08-22T00:00:00Z",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": payload,
         }))
         .unwrap();
@@ -2149,6 +2149,7 @@ mod freshness_bounds {
         let mut v = json!({
             "id": "urn:uuid:11111111-1111-1111-1111-111111111111",
             "type": vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "issuer": "did:key:zTestAdmin",
             "payload": {},
         });
@@ -2232,7 +2233,7 @@ mod replay_guard {
             "type": type_uri,
             "issuer": "did:key:zTestAdmin",
             "recipient": vta_did,
-            "issuedAt": chrono::Utc::now().to_rfc3339(),
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": payload,
         }))
         .expect("envelope");
@@ -2312,6 +2313,7 @@ mod replay_guard {
             serde_json::to_vec(&json!({
                 "id": "urn:uuid:5eaf00d0-0000-4000-8000-0000000c0nf1",
                 "type": vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0,
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 "issuer": "did:key:zTestAdmin",
                 "recipient": vta_did,
                 // Differing only here is deliberate and is exactly §8.4's
@@ -2385,7 +2387,7 @@ mod response_coverage {
             "type": uri,
             "issuer": "did:key:zTestAdmin",
             "recipient": vta_did,
-            "issuedAt": "2026-08-26T00:00:00Z",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": payload,
         }))
         .expect("envelope serialises");

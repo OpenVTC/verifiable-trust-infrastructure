@@ -378,6 +378,7 @@ async fn maybe_wake_consent_approver(
         let approve_request = serde_json::json!({
             "id": format!("urn:uuid:{}", Uuid::new_v4()),
             "type": CONSENT_APPROVE_REQUEST_TYPE,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "subject": subject, "scope": scope, "challenge": challenge },
         });
         let pending = crate::messaging::registry::PendingResponse {

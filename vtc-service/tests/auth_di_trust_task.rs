@@ -268,6 +268,7 @@ async fn unsigned_authenticate_document_is_not_claimed_by_the_di_path() {
     let unsigned = json!({
         "id": "urn:uuid:unsigned-1",
         "type": AUTHENTICATE_TASK,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "payload": { "challenge": challenge, "sessionId": session_id },
     });

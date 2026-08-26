@@ -1684,6 +1684,7 @@ async fn post_status_signed_by(fix: &Fixture, seed: &[u8; 32], id: Uuid) -> (Sta
 fn manifest_doc() -> Value {
     json!({
         "type": MANIFEST_TASK,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
         "recipient": vtc_service::test_support::TEST_VTC_DID,
         "expiresAt": "2099-01-01T00:00:00Z",

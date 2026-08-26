@@ -1399,6 +1399,7 @@ mod tests {
         let doc = json!({
             "id": "urn:uuid:reply",
             "type": "https://trusttasks.org/spec/registry/record/put/0.1#response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "threadId": "urn:uuid:request",
             "payload": { "ok": true, "created": true },
         });
@@ -1431,6 +1432,7 @@ mod tests {
         let request = serde_json::to_vec(&json!({
             "id": "urn:uuid:req",
             "type": "https://trusttasks.org/spec/registry/record/query/0.1",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {},
         }))
         .unwrap();
@@ -1441,6 +1443,7 @@ mod tests {
         let unthreaded = serde_json::to_vec(&json!({
             "id": "urn:uuid:resp",
             "type": "https://trusttasks.org/spec/registry/record/put/0.1#response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "ok": true },
         }))
         .unwrap();
@@ -1459,6 +1462,7 @@ mod tests {
         let error = serde_json::to_vec(&json!({
             "id": "urn:uuid:err",
             "type": crate::trust_tasks::helpers::framework_error_type_uri().to_string(),
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "threadId": "urn:uuid:request",
             "payload": { "code": "permissionDenied" },
         }))

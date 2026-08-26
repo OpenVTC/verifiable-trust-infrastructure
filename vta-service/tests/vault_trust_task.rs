@@ -49,7 +49,7 @@ fn unsigned_envelope() -> Value {
         "type": "https://trusttasks.org/spec/acl/list/0.1",
         "issuer": "did:key:zTestIssuer",
         "recipient": "did:key:zTestRecipient",
-        "issuedAt": "2026-07-14T00:00:00Z",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": {}
     })
 }
@@ -125,6 +125,7 @@ async fn post_vault(
     let doc = json!({
         "id": format!("tt-{}", uuid::Uuid::new_v4()),
         "type": uri,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": holder_did(),
         "recipient": "did:key:z6MkTestVTA",
         "payload": payload,

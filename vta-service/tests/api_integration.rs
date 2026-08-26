@@ -331,6 +331,7 @@ async fn trust_tasks_require_auth() {
             json!({
                 "id": "urn:uuid:2a1b3c4d-5e6f-4071-8293-a4b5c6d7e8f0",
                 "type": "https://trusttasks.org/spec/trust-task-discovery/0.1",
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 "payload": {},
             }),
         ))
@@ -357,6 +358,7 @@ async fn trust_task_discovery_reports_dispatched_tasks() {
             json!({
                 "id": "urn:uuid:4c3d5e6f-7081-4293-a4b5-c6d7e8f90123",
                 "type": "https://trusttasks.org/spec/trust-task-discovery/0.1",
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 "payload": { "patterns": ["acl/*"] },
             }),
         ))
@@ -394,6 +396,7 @@ async fn trust_task_discovery_defaults_to_everything() {
             json!({
                 "id": "urn:uuid:5d4e6f70-8192-43a4-b5c6-d7e8f9012345",
                 "type": "https://trusttasks.org/spec/trust-task-discovery/0.1",
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 "payload": {},
             }),
         ))
@@ -2204,6 +2207,7 @@ async fn keys_import_trust_task_refuses_cleartext_over_rest() {
             json!({
                 "id": "urn:uuid:6f1b2c3d-4e5f-4061-8293-a4b5c6d7e8f9",
                 "type": "https://trusttasks.org/spec/keys/import/0.1",
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                 "payload": {
                     "keyType": "ed25519",
                     "privateKeyMultibase": "z6MkDeadbeefDeadbeefDeadbeef",

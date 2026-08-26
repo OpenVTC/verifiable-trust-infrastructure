@@ -555,6 +555,7 @@ async fn ensure_token_valid_refreshes_expired_access_token() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
             "type": "urn:test:response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {"fields": []}
         })))
         .expect(1)
@@ -652,6 +653,7 @@ async fn ensure_token_valid_full_reauth_when_refresh_expired() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
             "type": "urn:test:response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {"fields": []}
         })))
         .expect(1)
@@ -748,6 +750,7 @@ async fn ensure_token_valid_falls_through_when_refresh_fails() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
             "type": "urn:test:response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {"fields": []}
         })))
         .expect(1)

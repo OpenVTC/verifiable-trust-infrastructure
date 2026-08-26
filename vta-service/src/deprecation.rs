@@ -801,6 +801,7 @@ mod superseded_task_tests {
         let mut body = serde_json::to_vec(&serde_json::json!({
             "id": "urn:uuid:1",
             "type": "https://trusttasks.org/spec/device/list/0.1#response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "devices": [] },
         }))
         .unwrap();
@@ -824,6 +825,7 @@ mod superseded_task_tests {
         let original = serde_json::json!({
             "id": "urn:uuid:1",
             "type": "https://trusttasks.org/spec/device/list/0.1#response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {},
             "proof": { "type": "DataIntegrityProof" },
         });
@@ -849,6 +851,7 @@ mod superseded_task_tests {
         let mut body = serde_json::to_vec(&serde_json::json!({
             "id": "urn:uuid:1",
             "type": "x",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {},
         }))
         .unwrap();

@@ -376,7 +376,7 @@ mod tests {
             "type": type_uri,
             "issuer": APPROVER,
             "recipient": "did:example:vta",
-            "issuedAt": "2026-08-08T21:56:00Z",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "challenge": "n", "payloadDigest": "d", "decision": "approve" },
         }))
         .unwrap()

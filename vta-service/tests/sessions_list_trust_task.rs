@@ -103,6 +103,7 @@ async fn sessions_list_returns_only_callers_active_sessions() {
     let doc = json!({
         "id": "urn:uuid:sessions-list-itest-1",
         "type": "https://trusttasks.org/spec/auth/sessions/list/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": "did:key:z6MkTestVTA",
         "payload": {},
@@ -161,6 +162,7 @@ async fn sessions_list_without_bearer_is_unauthorized() {
     let doc = json!({
         "id": "urn:uuid:sessions-list-itest-2",
         "type": "https://trusttasks.org/spec/auth/sessions/list/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": "did:key:z6MkAnon",
         "recipient": "did:key:z6MkTestVTA",
         "payload": {},

@@ -224,6 +224,7 @@ impl VtaClient {
         let doc = serde_json::json!({
             "id": format!("urn:uuid:{}", Uuid::new_v4()),
             "type": type_uri,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": payload_value,
         });
 

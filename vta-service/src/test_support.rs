@@ -1251,7 +1251,7 @@ impl StubWebvhHost {
                 "session": {
                     "id": "stub-session",
                     "subject": "did:webvh:stub:vta",
-                    "issuedAt": "2026-01-01T00:00:00Z",
+                    "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                     "expiresAt": "2026-01-02T00:00:00Z",
                 },
                 "tokens": {

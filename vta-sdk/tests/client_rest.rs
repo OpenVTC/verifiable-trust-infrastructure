@@ -45,6 +45,7 @@ fn tt_ok(payload: Value) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(json!({
         "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
         "type": "urn:test:response",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": payload,
     }))
 }
@@ -109,6 +110,7 @@ async fn mount_json(
     let resp = ResponseTemplate::new(status).set_body_json(json!({
         "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
         "type": "urn:test:response",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": body,
     }));
     Mock::given(method("POST"))
@@ -805,6 +807,7 @@ async fn swap_acl_sends_the_canonical_task_over_rest() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "urn:uuid:0000",
             "type": "https://trusttasks.org/spec/acl/swap-key/0.1#response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {
                 "entry": acl_entry_json("did:key:zNew"),
                 "previousSubject": "did:key:zOld",
