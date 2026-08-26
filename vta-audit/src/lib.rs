@@ -87,6 +87,47 @@ pub async fn record(
     .await
 }
 
+/// How much operator-supplied `detail` an audit row keeps.
+///
+/// Framework 0.5.0 requires every free-text member to carry a bound, on the
+/// reasoning that free text is "where personal data arrives in a task declaring
+/// it ingests none, where a secret arrives pasted by someone asked for a
+/// reason" — and it is unbounded cost. Here the cost is worse than wire bytes:
+/// this row goes into a **hash-chained, append-only** log, so an oversized
+/// `detail` is permanent. It cannot be trimmed later without breaking the
+/// chain that makes the log evidence.
+///
+/// 4096 characters is generous for a `reason` a human typed and small against
+/// the chain.
+pub const DETAIL_MAX_CHARS: usize = 4096;
+
+/// Truncate an over-long `detail`, marking that it was cut.
+///
+/// Truncated rather than rejected, deliberately. This function runs *after* the
+/// operation it records has already happened, so refusing the row would trade
+/// an over-long reason for **no audit record at all** — losing the evidence to
+/// protect its formatting. Truncation keeps the row, the actor, the action and
+/// the outcome, which is what the log is for.
+///
+/// Cut on a character boundary: slicing bytes would panic mid-codepoint on the
+/// first operator who wrote a reason in a language this workspace did not
+/// anticipate.
+fn bound_detail(detail: &str) -> String {
+    if detail.chars().count() <= DETAIL_MAX_CHARS {
+        return detail.to_string();
+    }
+    const MARK: &str = "… [truncated]";
+    let kept: String = detail
+        .chars()
+        .take(DETAIL_MAX_CHARS - MARK.chars().count())
+        .collect();
+    tracing::warn!(
+        original_chars = detail.chars().count(),
+        "audit detail exceeded {DETAIL_MAX_CHARS} characters and was truncated"
+    );
+    format!("{kept}{MARK}")
+}
+
 /// Like [`record`], but also persists an operator-supplied `detail` (e.g. the
 /// `reason` on a `vault.delete`/`vault.archive`). Kept as a separate function
 /// so the existing `record(...)` call sites stay untouched.
@@ -116,7 +157,7 @@ pub async fn record_with_detail(
         outcome: outcome.to_string(),
         channel: channel.map(String::from),
         context_id: context_id.map(String::from),
-        detail: detail.map(String::from),
+        detail: detail.map(bound_detail),
     };
 
     // The storage key is the sink's business — a keyspace derives one, an
@@ -222,4 +263,44 @@ pub async fn cleanup_expired_logs(
     }
 
     Ok(removed)
+}
+
+#[cfg(test)]
+mod detail_bound {
+    use super::*;
+
+    #[test]
+    fn a_short_detail_is_untouched() {
+        assert_eq!(
+            bound_detail("archived on operator request"),
+            "archived on operator request"
+        );
+    }
+
+    #[test]
+    fn an_oversized_detail_is_truncated_and_marked() {
+        let out = bound_detail(&"x".repeat(DETAIL_MAX_CHARS * 2));
+        assert!(
+            out.chars().count() <= DETAIL_MAX_CHARS,
+            "{}",
+            out.chars().count()
+        );
+        assert!(
+            out.ends_with("… [truncated]"),
+            "a silently shortened reason reads as the operator's own words: {out}"
+        );
+    }
+
+    /// Cut on a character boundary, not a byte one.
+    ///
+    /// Slicing bytes panics mid-codepoint, and it would do so on the first
+    /// operator who wrote a reason in a language this workspace did not
+    /// anticipate — an audit path is the worst possible place to learn that.
+    #[test]
+    fn truncation_does_not_split_a_codepoint() {
+        // Four bytes per character, so a byte-slice at any odd offset panics.
+        let out = bound_detail(&"𝄞".repeat(DETAIL_MAX_CHARS * 2));
+        assert!(out.chars().count() <= DETAIL_MAX_CHARS);
+        assert!(out.starts_with('𝄞'));
+    }
 }
