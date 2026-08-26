@@ -479,7 +479,14 @@ pub(crate) async fn dispatch_trust_task_core(
     // an HTTP-layer check would be blind to both. Compiled out of production
     // builds; see `test_support::response_conformance`.
     #[cfg(any(test, feature = "test-support"))]
-    crate::test_support::response_conformance::observe(outcome.status, &outcome.body);
+    let outcome =
+        match crate::test_support::response_conformance::observe(outcome.status, &outcome.body) {
+            Some(body) => TrustTaskOutcome {
+                status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                body,
+            },
+            None => outcome,
+        };
     outcome
 }
 
