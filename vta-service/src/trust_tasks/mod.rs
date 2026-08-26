@@ -2565,6 +2565,31 @@ mod response_coverage {
         // asserted in `revoke_all_is_refused_as_unsupported_not_malformed`.
     }
 
+    /// The credential issuance path.
+    ///
+    /// `vta/passkey-vms/*` is deliberately not here: those tasks require a
+    /// **VTA-managed** DID ("DID not found or not VTA-managed"), and this
+    /// fixture's `did:key` signing identity is not one — the same constraint
+    /// that puts `agent-name/*` in the stub-host test. There is also no
+    /// `VtaClient` method for them, so covering them means dispatching raw
+    /// against a minted DID.
+    #[tokio::test]
+    async fn credentials_issue() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        // Needs the VTA's `#key-0`, which this fixture provisions — that is
+        // what `build_signing_test_app_state` is for.
+        ok(
+            &state,
+            t::TASK_VTA_CREDENTIALS_ISSUE_0_1,
+            json!({
+                "holder": "did:key:z6MkCoverageHolder",
+                "claims": { "role": "coverage" },
+                "validitySeconds": 3600,
+            }),
+        )
+        .await;
+    }
+
     /// The runtime service-management read paths.
     ///
     /// Only the reads: `enable`/`update`/`disable`/`rollback` publish a new
