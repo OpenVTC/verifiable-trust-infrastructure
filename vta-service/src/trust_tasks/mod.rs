@@ -2436,6 +2436,71 @@ mod response_coverage {
         .await;
     }
 
+    /// The runtime service-management read paths.
+    ///
+    /// Only the reads: `enable`/`update`/`disable`/`rollback` publish a new
+    /// WebVH LogEntry and run a live DIDComm handshake against the running
+    /// service, so their success path needs the mediator-backed harness rather
+    /// than this fixture. Covering the reads is what the gate can see today.
+    #[tokio::test]
+    async fn services_read_paths() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        ok(&state, t::TASK_SERVICES_LIST_1_0, json!({})).await;
+        ok(
+            &state,
+            t::TASK_SERVICES_GET_1_0,
+            json!({ "service": "rest" }),
+        )
+        .await;
+        // Drain is DIDComm-only and empty here; an empty list is still a
+        // response shape, and an empty one is the shape most likely to be got
+        // wrong (`[]` against absent).
+        ok(&state, t::TASK_SERVICES_DRAIN_LIST_1_0, json!({})).await;
+    }
+
+    /// The webvh read paths that need no hosting server.
+    ///
+    /// `dids/{create,delete,register-with-server,rotate-keys}`, every
+    /// `servers/*` task, and — less obviously — every `agent-name/*` task
+    /// reach out to or require a hosting server, so their success paths belong
+    /// with the stub-host tests rather than here.
+    #[tokio::test]
+    async fn webvh_read_paths() {
+        let (state, _dir) = build_signing_test_app_state().await;
+
+        // Seed a webvh record. Agent names are keyed on one, and the VTA's own
+        // `did:key` is not — it is a self-resolving signing identity, not a
+        // hosted DID. Seeding also makes `dids/list` answer with content rather
+        // than an empty array, which is the more interesting response shape.
+        let did = "did:webvh:example.com:coverage";
+        let record = vta_sdk::webvh::WebvhDidRecord {
+            did: did.to_string(),
+            server_id: "serverless".into(),
+            mnemonic: "coverage-slot".into(),
+            scid: "scid-coverage".into(),
+            context_id: "cov-webvh".into(),
+            portable: false,
+            log_entry_count: 1,
+            pre_rotation_count: 0,
+            next_fragment_id: 1,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        crate::webvh_store::store_did(&state.webvh_ks, &record)
+            .await
+            .expect("seed the webvh record");
+
+        ok(&state, t::TASK_WEBVH_DIDS_LIST_1_0, json!({})).await;
+
+        // `agent-name/*` is deliberately NOT covered here, and the reason is
+        // not obvious: the names are local records, but every one of those
+        // tasks refuses a **serverless** DID ("agent names require a hosted
+        // DID"). A seeded record is serverless unless a hosting server is
+        // registered, so covering them means standing up the stub host — which
+        // is where the rest of the webvh write paths already live.
+        let _ = did;
+    }
+
     /// The DID-template family: the operator surface that every
     /// provision-integration flow renders from.
     #[tokio::test]
