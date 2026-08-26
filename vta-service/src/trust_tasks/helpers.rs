@@ -113,15 +113,34 @@ pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> Trus
                 details: None,
             }
         }
-        // Hand the framework the *cause*, not the rendered error. Both
-        // `AppError::Internal` and `RejectReason::InternalError` render as
-        // "internal error: {…}", so passing the outer `Display` in put the
-        // prefix on twice and the operator dialog read "internal error:
-        // internal error: log entry has no update_keys". Every other arm above
-        // pairs a differently-worded reason with its variant, so only this one
-        // stutters — and only this one is fixed here.
-        AppError::Internal(cause) => RejectReason::InternalError { reason: cause },
-        _ => RejectReason::InternalError { reason: message },
+        // Framework 0.5.0, *What a `message` May Not Say*: a `message` MUST NOT
+        // reveal consumer-internal state. That rule is now normative for every
+        // code, and `internalError` is where this service leaked hardest — the
+        // cause went out verbatim, so a caller learned things like "ATM not
+        // configured — server cannot pack DIDComm envelopes" or "log entry has
+        // no update_keys": the deployment's shape, its configuration, and which
+        // internal invariant just broke.
+        //
+        // The producer needs one fact from an `internalError`: the failure was
+        // not its doing, so re-sending an identical document may work. The
+        // cause is what the *operator* needs, and it goes to the log where the
+        // operator is.
+        //
+        // Every other arm above is safe to pass through: they describe the
+        // caller's own request back to it (`not found`, `malformed`,
+        // `permission denied`), which is not consumer-internal state.
+        AppError::Internal(cause) => {
+            tracing::error!(cause = %cause, "trust task failed with an internal error");
+            RejectReason::InternalError {
+                reason: OPAQUE_INTERNAL_ERROR.to_string(),
+            }
+        }
+        other => {
+            tracing::error!(cause = %other, "trust task failed with an internal error");
+            RejectReason::InternalError {
+                reason: OPAQUE_INTERNAL_ERROR.to_string(),
+            }
+        }
     };
     reject_with(doc, reason)
 }
@@ -129,6 +148,15 @@ pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> Trus
 /// Build a routed rejection document for the given reason and wrap it
 /// in an HTTP response. The framework computes the status code from
 /// the reject's standard code.
+/// What an `internalError` says on the wire.
+///
+/// Fixed text on purpose. Framework 0.5.0 forbids revealing consumer-internal
+/// state in a `message`, and an internal failure's cause is nothing but that.
+/// It tells the producer the one thing it can act on — the failure was not its
+/// document's fault — and nothing an unauthenticated caller could probe with.
+pub(super) const OPAQUE_INTERNAL_ERROR: &str =
+    "the consumer could not complete this task; the request itself was accepted";
+
 pub(super) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> TrustTaskOutcome {
     let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), reason);
     error_response(routed)
@@ -277,21 +305,54 @@ mod tests {
             .to_string()
     }
 
-    /// The framework already says "internal error"; so does `AppError::Internal`.
-    /// Rendering the outer error into the reason put the prefix on twice, and the
-    /// operator's dialog read "internal error: internal error: log entry has no
-    /// update_keys". The cause is what the framework wants, not the rendering.
+    /// An `internalError` says nothing about the consumer's internals.
+    ///
+    /// Framework 0.5.0, *What a `message` May Not Say*: a `message` MUST NOT
+    /// reveal consumer-internal state, now normative for every code. This
+    /// service used to pass the cause through verbatim, so a caller — on the
+    /// unauthenticated routes, not yet anybody — learned the deployment's
+    /// shape from its failures.
+    ///
+    /// The earlier version of this test asserted the opposite, that the cause
+    /// *was* on the wire; its subject was a doubled "internal error:" prefix,
+    /// which the fixed text also settles.
     #[test]
-    fn an_internal_error_does_not_say_internal_error_twice() {
+    fn an_internal_error_reveals_no_internal_state() {
+        let secret = "log entry has no update_keys";
         let message = message_of(app_error_to_reject(
             &doc(),
-            AppError::Internal("log entry has no update_keys".into()),
+            AppError::Internal(secret.into()),
         ));
-        assert_eq!(message, "internal error: log entry has no update_keys");
+        assert!(
+            !message.contains(secret),
+            "the cause must reach the operator's log, never the wire: {message}"
+        );
+        assert!(
+            message.contains(OPAQUE_INTERNAL_ERROR),
+            "the producer still needs to be told the failure was not its \
+             document's doing: {message}"
+        );
         assert!(
             !message.contains("internal error: internal error"),
             "{message}"
         );
+    }
+
+    /// Every `AppError` that is not a caller-facing class lands on the same
+    /// opaque text, not just `Internal`.
+    ///
+    /// The catch-all arm was the quieter leak: it rendered whatever `Display`
+    /// the error happened to have, so a variant added later would start
+    /// publishing itself without anyone choosing to.
+    #[test]
+    fn the_catch_all_arm_is_opaque_too() {
+        let message = message_of(app_error_to_reject(
+            &doc(),
+            AppError::SecretStore("vault backend at 10.0.0.7 refused the token".into()),
+        ));
+        assert!(!message.contains("10.0.0.7"), "{message}");
+        assert!(!message.contains("vault backend"), "{message}");
+        assert!(message.contains(OPAQUE_INTERNAL_ERROR), "{message}");
     }
 
     /// The unrouted body-parse error must claim the same document type as a
