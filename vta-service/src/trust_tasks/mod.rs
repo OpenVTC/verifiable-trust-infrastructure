@@ -2327,10 +2327,22 @@ mod response_coverage {
         let p = ok(
             &state,
             t::TASK_KEYS_CREATE_0_1,
-            json!({ "keyType": "ed25519", "internal": true, "label": "unexportable" }),
+            // `keyId` is supplied by the caller now, as `keys/create/0.1`
+            // publishes it. An internal key has no derivation path to be named
+            // after, so this is the only name it can have.
+            json!({
+                "keyType": "ed25519",
+                "internal": true,
+                "keyId": "cov-unexportable",
+                "label": "unexportable",
+            }),
         )
         .await;
         let record = p.get("key").unwrap_or(&p);
+        assert_eq!(
+            record["keyId"], "cov-unexportable",
+            "the caller's `keyId` must be honoured, not replaced: {p}"
+        );
         assert_eq!(
             record["origin"], "internal",
             "the key must come back marked internal — a `derived` here is \

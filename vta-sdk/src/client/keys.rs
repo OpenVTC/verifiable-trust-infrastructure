@@ -43,6 +43,7 @@ impl VtaClient {
         // meaningless to any other maintainer.
         let body = crate::protocols::key_management::create::CreateKeyBody {
             internal: req.internal,
+            key_id: req.key_id.clone(),
             key_type: req.key_type.clone(),
             derivation_path: req.derivation_path.clone(),
             mnemonic: req.mnemonic.clone(),
