@@ -64,7 +64,14 @@ async fn whoami_status(
         .with_jti(jti);
     let token = ctx.jwt_keys.encode(&claims).unwrap();
     let doc = serde_json::json!({
-        "id": "urn:uuid:jti-pin-itest",
+        // A fresh id per call. These are distinct requests, not replays, and
+        // SPEC §7.2 item 11 keys the duplicate-execution record on the document
+        // `id` **alone** — "transport request identifiers, transport message
+        // identifiers, and execution handles MUST NOT substitute". Reusing one
+        // literal across calls worked only while this service keyed on
+        // `(actor, id)`, which is the deviation the `ReplayGuard` adoption
+        // closed; a real producer mints a fresh id per request anyway.
+        "id": format!("urn:uuid:jti-pin-itest-{}", uuid::Uuid::new_v4()),
         "type": "https://trusttasks.org/spec/auth/whoami/0.1",
         "issuer": did,
         "recipient": "did:key:z6MkTestVTA",
