@@ -389,8 +389,12 @@ async fn rest_submit_dedups_an_open_request_for_the_same_applicant() {
 #[tokio::test]
 async fn rest_submit_rejects_a_foreign_recipient() {
     // The replay binding is the document `recipient`: a document addressed to a
-    // different community is rejected `wrongRecipient` (403), replacing the
+    // different community is rejected `wrongRecipient` (422), replacing the
     // bespoke `audience` field.
+    //
+    // 422, not 403: the HTTPS binding spec §4 puts every "understood,
+    // well-formed, and refused" code in one flat bucket, so a prober cannot
+    // tell wrongRecipient from expired from proofInvalid by status line alone.
     let fix = build_fixture().await;
     let vp = json!({});
     let (_did, mut doc) = submit_doc(&vp).await;
@@ -399,7 +403,7 @@ async fn rest_submit_rejects_a_foreign_recipient() {
     let (status, body) = post_tt(&fix.router, doc).await;
     assert_eq!(
         status,
-        StatusCode::FORBIDDEN,
+        StatusCode::UNPROCESSABLE_ENTITY,
         "a document addressed to another community must be rejected: {body}"
     );
     assert_eq!(tt_error_code(&body), "wrongRecipient");
@@ -408,7 +412,8 @@ async fn rest_submit_rejects_a_foreign_recipient() {
 #[tokio::test]
 async fn rest_submit_rejects_an_expired_document() {
     // Freshness is the document `expiresAt`: a stale (expired) document is
-    // rejected `expired` (400), replacing the bespoke `created` window.
+    // rejected `expired` (422), replacing the bespoke `created` window. Same
+    // flat bucket as `wrongRecipient` above — see that test for why.
     let fix = build_fixture().await;
     let vp = json!({});
     let (_did, mut doc) = submit_doc(&vp).await;
@@ -417,7 +422,7 @@ async fn rest_submit_rejects_an_expired_document() {
     let (status, body) = post_tt(&fix.router, doc).await;
     assert_eq!(
         status,
-        StatusCode::BAD_REQUEST,
+        StatusCode::UNPROCESSABLE_ENTITY,
         "an expired document must be rejected: {body}"
     );
     assert_eq!(tt_error_code(&body), "expired");
