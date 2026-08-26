@@ -443,12 +443,19 @@ async fn audit_cursor_is_bound_to_its_filters() {
 /// into `dids/get`.
 ///
 /// This is the compatibility claim the fold rests on, and it is exactly
-/// the kind that fails silently. The merged response flattens the
-/// record and adds an optional `log`, making it a superset of both old
-/// shapes — but "superset" only helps because neither client type sets
-/// `deny_unknown_fields`. If either did, or if the flatten were dropped
-/// for a nested `record` object, both calls would fail at runtime while
-/// every mocked test stayed green.
+/// the kind that fails silently. The merged response flattened the
+/// record and added an optional `log`, making it a superset of both old
+/// shapes — but "superset" only helped because neither client type sets
+/// `deny_unknown_fields`.
+///
+/// **The flatten has since been dropped for a nested `record`**, which is
+/// the second failure this comment predicted, and it happened for a reason
+/// the comment did not anticipate: a flattened record cannot satisfy a
+/// response that is `additionalProperties: false`, so the shape that was a
+/// superset of both *old* client types was readable by no *conforming* one.
+/// Both client methods now project the envelope, and this test still asserts
+/// what it always did — that values survive rather than merely parse, which
+/// is what makes it catch the runtime break the comment warned of.
 #[tokio::test]
 async fn webvh_get_did_round_trips_after_the_get_log_fold() {
     use vta_sdk::webvh::WebvhDidRecord;
@@ -513,12 +520,16 @@ async fn webvh_get_did_round_trips_after_the_get_log_fold() {
         }
     };
     let without = raw("").await;
-    assert_eq!(without["did"], did);
+    // Under `record`, not at the top level — the REST route shares its
+    // response type with the Trust Task, so both surfaces moved together.
+    assert_eq!(without["record"]["did"], did);
     assert!(
         without.get("log").is_none(),
         "the log must be omitted unless requested: {without}"
     );
     let with = raw("?includeLog=true").await;
+    // `log` is a sibling of `record`, not a member of it: it is not part of
+    // the record the VTA stores, it is the DID's own history.
     assert_eq!(
         with["log"], "{\"state\":{}}",
         "includeLog=true must return the log: {with}"
@@ -533,7 +544,7 @@ async fn webvh_get_did_round_trips_after_the_get_log_fold() {
     assert_eq!(
         log.log.as_deref(),
         Some("{\"state\":{}}"),
-        "the log must survive the merge into the flattened record"
+        "the log must survive the merge into the record envelope"
     );
 }
 

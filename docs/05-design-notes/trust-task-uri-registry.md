@@ -196,7 +196,7 @@ dispatcher's `KNOWN_FEATURE_GATED_URIS` allowlist for builds where
 | `spec/vta/webvh/dids/list/1.0` | DIDs hosted/known to this VTA | implemented |
 | `spec/vta/webvh/dids/create/1.0` | Mint new DID via template + register with host | implemented |
 | `spec/vta/webvh/dids/get/1.0` | | implemented |
-| ~`spec/vta/webvh/dids/get-log/1.0`~ | `GET /webvh/dids/{did}/log` (authed) | **folded into `dids/get/1.0`** — same `{did}`, same lookup, same context check; the representation is now the `includeLog` flag. The REST path stays (its response is a superset of the old `{did, log}`) |
+| ~`spec/vta/webvh/dids/get-log/1.0`~ | `GET /webvh/dids/{did}/log` (authed) | **folded into `dids/get/1.0`** — same `{did}`, same lookup, same context check; the representation is now the `includeLog` flag. The REST path stays. Its response was a flat superset of the old `{did, log}` until the record moved under `record` to match the published schema, which no client could read while it was flattened |
 | ~`spec/vta/webvh/dids/get-log-public/1.0`~ | `GET /did/{did}/log` (unauthed mirror) | **REST-only forever** (load-bearing as the DID-resolver failover path; wrapping it in a trust-task envelope would defeat the failover) |
 | `spec/vta/webvh/dids/delete/1.0` | | implemented |
 | `spec/vta/webvh/dids/update/1.0` | DID-doc patch (trust-task envelope carries `did` in payload — no path) | implemented |

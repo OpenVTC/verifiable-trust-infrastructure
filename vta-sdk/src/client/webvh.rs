@@ -10,6 +10,8 @@ use crate::error::VtaError;
 use crate::protocols::did_management;
 #[cfg(feature = "client")]
 use crate::protocols::did_management::agent_name;
+#[cfg(feature = "client")]
+use crate::protocols::did_management::get::GetDidWebvhResultBody;
 
 #[cfg(feature = "client")]
 impl VtaClient {
@@ -203,27 +205,42 @@ impl VtaClient {
     }
 
     pub async fn get_did_webvh(&self, did: &str) -> Result<crate::webvh::WebvhDidRecord, VtaError> {
-        // `spec/vta/webvh/dids/get/1.0` returns the record flattened (a
-        // strict superset of the bare `WebvhDidRecord`), so the same decode
-        // serves both legs.
-        self.rpc_tt(
-            crate::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
-            serde_json::json!({ "did": did }),
-            30,
-        )
-        .await
+        // `spec/vta/webvh/dids/get/1.0` carries the record under `record`, so
+        // decode the envelope and hand back the record itself — this method's
+        // return type is the record, and callers should not have to know the
+        // task grew a `log` sibling.
+        //
+        // It decoded straight into `WebvhDidRecord` while the response was
+        // flattened. That worked only because `WebvhDidRecord` does not set
+        // `deny_unknown_fields`, which is precisely the fragility
+        // `webvh_get_did_round_trips_after_the_get_log_fold` was written to
+        // warn about.
+        let body: GetDidWebvhResultBody = self
+            .rpc_tt(
+                crate::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
+                serde_json::json!({ "did": did }),
+                30,
+            )
+            .await?;
+        Ok(body.record)
     }
 
     pub async fn get_did_webvh_log(&self, did: &str) -> Result<GetDidLogResponse, VtaError> {
         // The dedicated get-log task folded into `dids/get` + `includeLog`
-        // (see `GetDidWebvhBody`); the flattened response is a superset of
-        // `GetDidLogResponse`, so the decode is unchanged.
-        self.rpc_tt(
-            crate::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
-            serde_json::json!({ "did": did, "includeLog": true }),
-            30,
-        )
-        .await
+        // (see `GetDidWebvhBody`). `did` now lives on the nested record and
+        // `log` beside it, so this projects the envelope onto the two-member
+        // shape this method has always returned.
+        let body: GetDidWebvhResultBody = self
+            .rpc_tt(
+                crate::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
+                serde_json::json!({ "did": did, "includeLog": true }),
+                30,
+            )
+            .await?;
+        Ok(GetDidLogResponse {
+            did: body.record.did,
+            log: body.log,
+        })
     }
 
     pub async fn delete_did_webvh(&self, did: &str) -> Result<(), VtaError> {
