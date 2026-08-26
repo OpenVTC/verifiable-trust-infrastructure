@@ -69,23 +69,15 @@ use std::sync::{Mutex, OnceLock};
 /// observes.
 pub const KNOWN_VIOLATIONS: &[(&str, &str)] = &[
     (
-        "https://trusttasks.org/spec/vta/webvh/dids/get/1.0",
-        "returns its eleven members flat; the schema requires them under \
-         `record`, which is a required property the response omits entirely",
-    ),
-    (
         "https://trusttasks.org/spec/vault/get/0.1",
         "leaks `status` / `graceUntil` / `deletedAt` — the archival lifecycle \
-         was added to the storage row and never to the wire contract",
+         was added to the storage row and never to the wire contract. Blocked \
+         on trust-tasks-rs 0.11.16, which carries the upstream amendment \
+         (dtgwg-trust-tasks-tf#268) adding those members to `VaultEntry`",
     ),
     (
         "https://trusttasks.org/spec/vault/list/0.1",
-        "the same three lifecycle members as `vault/get/0.1`",
-    ),
-    (
-        "https://trusttasks.org/spec/provision/integration/0.2",
-        "sends `null` for two members the schema types as `string`; the \
-         `null`-for-absent class, which wants `skip_serializing_if`",
+        "the same lifecycle members as `vault/get/0.1`, and the same blocker",
     ),
 ];
 
@@ -206,7 +198,7 @@ mod tests {
     fn the_inventory_is_still_accurate() {
         assert_eq!(
             KNOWN_VIOLATIONS.len(),
-            4,
+            2,
             "the known-violation inventory changed. Fixed one? Remove its entry \
              and lower this. Found a new one? That is a defect to fix, not an \
              entry to add — this list records what was already true when the \

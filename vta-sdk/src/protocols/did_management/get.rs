@@ -25,14 +25,24 @@ pub struct GetDidWebvhBody {
 
 /// Response for `spec/vta/webvh/dids/get/1.0`.
 ///
-/// The record is flattened, so this is a strict **superset** of both
-/// shapes it replaces — the bare `WebvhDidRecord` this task used to
-/// return, and the `{did, log}` of the retired `dids/get-log`. Callers
-/// of either keep reading the fields they already read.
+/// The record is carried under `record`, as `spec/vta/webvh/dids/get/1.0`
+/// requires.
+///
+/// It was `#[serde(flatten)]` from #849 until now, to make the folded task a
+/// strict superset of the two shapes it replaced — the bare `WebvhDidRecord`
+/// this task returned, and the `{did, log}` of the retired `dids/get-log`. That
+/// bought a migration window at a price nothing had measured: a flattened
+/// record cannot satisfy a response that is `additionalProperties: false`, so
+/// **no conforming client could read any of the eleven members**, and the `ext`
+/// slot was unreachable too.
+///
+/// Its own sibling is the argument. `dids/list` carries the same component
+/// under `dids` and has always conformed, so flattening made `get` the one
+/// outlier in its family — and a `log` member at the top level beside a
+/// flattened record is a name collision waiting for the record to grow one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GetDidWebvhResultBody {
-    #[serde(flatten)]
     pub record: WebvhDidRecord,
     /// The raw `did.jsonl`, when `includeLog` was set.
     ///

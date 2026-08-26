@@ -173,7 +173,16 @@ pub struct ProvisionSummary {
     /// Name of the admin template, when one was used (i.e. the
     /// request used `adminTemplate` rollover *or* the `AdminRotation`
     /// ask).
-    #[serde(default, alias = "admin_template_name")]
+    ///
+    /// Omitted rather than sent as `null`: the schema types it `string`, and
+    /// its three `Option<String>` siblings above already skip. It was the odd
+    /// one out, which is why `provision/integration/0.2` could not satisfy its
+    /// own response schema.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "admin_template_name"
+    )]
     pub admin_template_name: Option<String>,
     #[serde(alias = "bundle_id_hex")]
     pub bundle_id_hex: String,
@@ -186,7 +195,13 @@ pub struct ProvisionSummary {
     /// means self-hosted at the URL — i.e. no `WEBVH_SERVER` template
     /// var was set, or it was explicitly null. Older VTAs that
     /// pre-date this field omit it on the wire; deserialize as `None`.
-    #[serde(default, alias = "webvh_server_id")]
+    /// Omitted rather than sent as `null`, for the same reason as
+    /// `admin_template_name`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "webvh_server_id"
+    )]
     pub webvh_server_id: Option<String>,
     /// `true` when the target context didn't exist before this call
     /// and was created inline because the caller passed
