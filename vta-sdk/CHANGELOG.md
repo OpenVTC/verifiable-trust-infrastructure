@@ -2,6 +2,536 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.29.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.28.0...vta-sdk-v0.29.0) — 2026-08-26
+
+
+### Added
+
+- **sdk**: Extract the agent-side connect ladder into vta_sdk::agent_connect ([#1081](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1081))
+
+* feat(sdk): extract the agent-side connect ladder into vta_sdk::agent_connect
+
+  Every tool that runs beside a user and talks to their VTA on their behalf
+  needs the same four ways in — did:webvh bundle, scoped did:key, bearer
+  token, existing pnm session — in the same order, with the same fail-fast
+  rules. That ladder existed only inside vta-mcp's main.rs, so the next
+  bridge had to copy 110 lines or invent a fifth way in.
+
+  `AgentConnect` is that ladder as SDK surface. `mode()` resolves the rung
+  with no I/O, so a bridge can log it (and refuse a rung it does not
+  support) before connecting; `connect()` returns the authenticated
+  VtaClient. Session mode keeps TransportChoice::Auto, so it inherits the
+  workspace preference order (TSP > DIDComm > REST) from what both DID
+  documents advertise.
+
+  Two rules are enforced rather than documented, both carried over from the
+  vta-mcp original: the two DIDComm identity modes are mutually exclusive,
+  and a half-configured rung errors naming the missing fields instead of
+  falling through to session mode — a bridge silently authenticating as the
+  operator rather than as its scoped agent identity is the failure that
+  matters here. ConnectMode::is_dedicated_agent() makes the same
+  distinction available to callers deciding whether to enroll as a device.
+
+  vta-mcp is refactored onto it, which is what proves the extraction: its
+  build_client is now a pure args -> AgentConnect mapping plus a connect,
+  and its tests assert which rung a set of flags selects.
+
+- **vtc**: Tell a member when the community removes them ([#1060](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1060))
+
+Removal was the most consequential thing a community does to a member and the
+  one it delivered with the least information — none. There was no outbound
+  message on any removal path. The only signal a removed member could observe was
+  a side effect: the revocation bit on their membership credential flipping. They
+  inferred their own removal from a status list and learned nothing about why.
+
+  `vtc/members/removal-notice/0.1` (published upstream as
+  trustoverip/dtgwg-trust-tasks-tf#256) now goes out from both admin paths,
+  carrying the deciding administrator, the moment the decision took effect, the
+  resolved disposition, and the operator's reason.
+
+  **Signed, because the recipient is not the audience.** Authcrypt already proves
+  the sender to the member. But this is the one member-facing message whose value
+  lies in showing it to somebody else — an appeal, a dispute, another community
+  weighing a rejected applicant. Forwarded, an unsigned notice is an assertion
+  anyone could have written. So it is a Trust Task document with a Data Integrity
+  proof, packed in the trust-task envelope — note `TRUST_TASK_ENVELOPE_TYPE`, not
+  the task URI, which is a mistake this workspace has made before and which a
+  conformant peer rejects silently.
+
+  **Thirty days, because there is no second route.** `resolve_auth_role` refuses
+  any DID without an ACL row and removal hard-deletes it, so a removed member
+  cannot authenticate at all: every authenticated route, including any poll that
+  might have served the notice, closes at the moment the removal lands. The act
+  this reports is the act that ends their ability to ask about it. `send_to_member`
+  already had a durable outbox, so this needed a deadline parameter rather than
+  new machinery — `send_to_member_by`, with the six existing callers keeping the
+  24h default.
+
+  A member offline beyond the window still never learns. No window fixes that; the
+  honest fix is a retrieval path not gated on an ACL row, which is a larger design
+  than this. Stated in the spec and in the constant's doc comment rather than left
+  for someone to discover.
+
+  **Never for a self-leave.** `remove_inner` serves both the admin path and the
+  DIDComm self-leave. A member who chose to leave already has their receipt, and
+  telling them they were "removed" is a different and worse thing to be told.
+
+  **Best-effort.** The notice never fails the removal. That has already happened
+  and is durable; refusing the operator's request because the notice could not be
+  *queued* would leave the member removed and the operator believing they were
+  not. Failures log loudly — and log "queued", not "sent", because a DIDComm `Ok`
+  means the mediator accepted the frame and nothing more (R1.1).
+
+  Seven tests. Four unit: payload shape, a blank reason omitted rather than sent
+  as an empty string, the two codes distinguishable, and the payload validated
+  against the *published* schema — the check that catches the implementation
+  drifting from the spec it claims to implement.
+
+  Three end-to-end over a real mediator, because only a peer holding the document
+  demonstrates the feature: an admin removal arrives signed with its reason and
+  deciding admin, a purge says it was a purge, and a self-leave sends nothing. Two
+  of them first failed on `no active removal policy`, which was the paths
+  differing exactly as specified — a purge deliberately skips the removal policy,
+  which is why that one passed before the fixture seeded any.
+
+- **app-state**: A third store for versioned, namespaced application state ([#1051](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1051))
+
+Applications built on a VTA have had nowhere to keep versioned metadata.
+  Adds `vta/app-state/{get,put,list,delete,get-many,put-many}/1.0` — a store
+  beside the secrets vault and the credential vault, for JSON an application
+  owns and the VTA does not interpret.
+
+  Records are addressed `(contextId, namespace, key)`. The namespace scopes one
+  application so several tools can share a context without colliding, and is the
+  seam a per-namespace grant would later use — which is why it is part of the
+  address rather than a prefix convention on the key. In 1.0 a namespace is
+  collision avoidance and NOT a trust boundary: an application with write access
+  to a context reaches every namespace in it, and the `put` and `delete` specs
+  say so normatively. Isolation means separate contexts.
+
+  Deliberately not built on `vta/memory/*`. `MemoryItem` is `{key, value}` with
+  nothing to hang a precondition on, and its `list` returns the whole context —
+  but the argument that settles it is that "forget everything" has to stay a safe
+  thing to ask an agent, which it cannot be if account state lives there.
+
+  Three properties are why this is a store rather than a field on an existing one.
+
+  **One counter per `(contextId, namespace)`, not per record.** A record's
+  `version` is the counter value its most recent write took, so one number is
+  simultaneously the optimistic-concurrency token `expectedVersion` compares
+  against and the watermark `sinceVersion` compares against. A per-record counter
+  serves the first but cannot serve the second — two records' counters are not
+  comparable, so no single number means "everything after this point" — and would
+  have forced a second sequence kept consistent by hand. The cost is that a
+  record's version jumps by whatever its neighbours consumed, which the wire
+  contract states: versions are opaque and monotonic, never an edit count.
+
+  **A failed precondition returns the current version AND value.** A bare
+  rejection obliges a re-read, and the re-read races the next write; the pattern
+  has no fixed point under contention. Returning the winner's view removes the
+  race rather than narrowing it, and the spec makes it normative.
+
+  **Delete leaves a versioned tombstone, and the tombstones are reaped.** Without
+  one, a consumer pulling from a watermark learns of every create and update and
+  never of a deletion, so deleted records resurrect on its next rebuild.
+  Retention is `app_state.tombstone_retention_days` (default 30, matching the
+  vault's `grace_days`) — a destructive window is an operator's choice, not a
+  constant — and `list` advertises the configured value, since a consumer
+  schedules against that number. The sweeper runs from the storage thread beside
+  the ACL/consent/vault sweepers.
+
+  The sweeper reaps a *prefix*, not a set: each namespace walks its tombstones in
+  version order and stops at the first still inside the window. Reaping a later
+  tombstone while leaving an earlier one would make the reap watermark
+  unstateable — no single number would describe what survives, which is precisely
+  what `watermarkTooOld` has to be able to say. `0` days disables reaping, and
+  that is enforced at the call site rather than as a zero cutoff, which would mean
+  the opposite.
+
+  Version reservation is fsynced and re-seals the TEE integrity manifest, for the
+  reason `vti_common::store::counter` gives for BIP-32 counters: a counter
+  surviving only in the journal buffer can be re-derived after a crash and reissue
+  a used value. Here a reused version means two records collide on one `appv:`
+  index key, so one disappears from the change feed and every incremental consumer
+  misses that change permanently, silently. A batch reserves a block and pays one
+  fsync rather than N; writes that then fail leave gaps, which are safe and
+  tested.
+
+  Retry safety: reads are `ReadOnly`, `delete` is `RetrySafe` (a second delete
+  finds a tombstone and deliberately takes no new version, so a watcher sees
+  nothing), and `put`/`put-many` are `Keyed` — a `put` without `expectedVersion`
+  does not converge, and the class is per URI, not per payload.
+
+  Blobs are deliberately out of scope in 1.0; adding a `blobRef` is additive.
+
+  Concurrency is a process-local lock per namespace, not a store-layer
+  compare-and-swap. fjall takes an exclusive database lock so two processes cannot
+  share a store, and the vsock protocol has no atomic opcode — its
+  `insert_if_absent`/`swap` are already non-atomic fallbacks. A CAS today would be
+  atomic exactly where the lock suffices and a warn-and-fallback exactly where it
+  would need to be real. Recorded in the design note with what would change that.
+
+  Schemas published upstream as trustoverip/dtgwg-trust-tasks-tf#252 and #253;
+  this depends on the released trust-tasks-rs 0.11.2, pinned to a minimum patch so
+  an older resolve fails as a stale dependency rather than as unspecced URIs.
+  Conformance witnesses cover all six URIs, so nothing enters
+  `UNSPECCED_DISPATCHED_URIS`.
+
+
+
+### Changed
+
+- Delete the Verifiable-prefixed credential tags that were never DTG types ([#1071](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1071))
+
+`VerifiableMembershipCredential` and `VerifiableEndorsementCredential` are not
+  DTG credential types and never were. The specification defines seven concrete
+  subtypes; neither is among them, and nothing in this stack has ever issued
+  either. They survived as a name, a pair of literals and a compatibility shim,
+  and between them they broke cross-community recognition for every real
+  presentation ([#1062](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1062)).
+
+  Four places, one cause.
+
+  **The SDK constant.** `VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE` held the value
+  `"MembershipCredential"`, with a doc comment explaining that the prefix in the
+  name was historical and the tag did not have it. A constant whose name
+  disagrees with its value is an invitation, and it was taken: someone reading
+  the name hand-rolled `"VerifiableEndorsementCredential"` into the recognition
+  path, where it matched nothing. Renamed to `MEMBERSHIP_CREDENTIAL_TYPE`, and
+  `ENDORSEMENT_CREDENTIAL_TYPE` added beside it so the VEC tag has a home rather
+  than being a literal at the point of use.
+
+  **The compatibility shim.** #1063 added `LEGACY_TYPE_TAGS`, accepting both
+  prefixed tags from peers predating the catalog adoption. Nothing is published,
+  so no such peer exists — and a reference implementation that accepts a type the
+  specification does not define reintroduces exactly the drift the function it
+  sits in was written to prevent. Removed; the test that pinned the behaviour now
+  pins its refusal.
+
+  **The audit trail.** Emitted envelopes recorded `credential_type:
+  "VerifiableMembershipCredential"` / `"VerifiableEndorsementCredential"` — tags
+  no credential ever carried, in the one record meant to be authoritative after
+  the fact. They now record what was issued.
+
+  **The policy input.** `issuer_member` / `subject_member` were carried alongside
+  `issuer` / `subject` for operator policies written against the pre-#1061 shape.
+  There are no deployed operator policies to preserve, and two spellings of one
+  concept is how the concept drifts. The duplicates are gone and the surviving
+  fields carry `is_current`.
+
+
+
+### Fixed
+
+- **vta**: Three of the four responses the conformance layer found ([#1114](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1114))
+
+Closes three of the four violations #1113 reported. The fourth is the vault
+  pair, blocked on trust-tasks-rs 0.11.16 (dtgwg-trust-tasks-tf#268).
+
+  `vta/webvh/dids/get/1.0` carried its record under `#[serde(flatten)]` since
+  #849, to make the folded task a strict superset of the two shapes it replaced.
+  That superset was readable by no conforming client: the response is
+  `additionalProperties: false`, so a flattened record fails on all eleven
+  members and the `ext` slot is unreachable. Its sibling settles which side
+  moves — `dids/list` carries the same component nested under `dids` and has
+  always conformed, so flattening made `get` the outlier in its own family.
+
+  Both SDK client methods decoded the flat shape straight into
+  `WebvhDidRecord`, so the workspace compiled clean while the wire broke. They
+  now project the envelope. `webvh_get_did_round_trips_after_the_get_log_fold`
+  predicted exactly this in its doc comment and caught it.
+
+  `provision/integration/0.2` sent `null` for `adminTemplateName` and
+  `webvhServerId`, the only two of five `Option<String>` members without
+  `skip_serializing_if`.
+
+- **vtc**: A null the schema forbids, and three fixtures that lied ([#1099](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1099))
+
+Four entries close, and three of the four closed because the **ledger was
+  wrong**, not because anything about the service changed. Drift **15 → 12**,
+  with `join-requests/submit` narrowed from both sides to response-only.
+
+  Found by making the conformance probe print the *actual* parse error for
+  every drift entry rather than re-reading the notes — the same technique that
+  surfaced the #1098 defect. The notes are prose and can be wrong in either
+  direction; the schemas cannot.
+
+  ## One real bug: a `null` where the schema says `object`
+
+  `JoinRequest.policyDecision` is `Option<JsonValue>` with `#[serde(default)]`
+  and no `skip_serializing_if`, so it went out as `"policyDecision": null` on
+  every row that had no policy decision — which is every row in Phase 1.
+
+  The component types it **`object`**, not `["object", "null"]` as it types the
+  neighbouring `vpClaims` and `decision`. It is not required, so *absent* is
+  how you say "no policy decision"; `null` is a type error. Now omitted.
+
+  `JoinRequestSubmitBody.extensions` in `vta-sdk` had the identical shape — a
+  bare `#[serde(default)]` `JsonValue` serialising `Value::Null` against a
+  schema that types it `object`, so a minimal client's submit was
+  non-conformant. The existing note had diagnosed this exactly and called it "a
+  one-line fix in vta-sdk"; this is that line.
+
+  Both are the null-into-`Option` class that shipped `keys/create/0.1` broken.
+
+  ## Three fixtures that lied
+
+  **`totalEstimate` was invented.** The `paginated()` helper hand-wrote
+  `"totalEstimate": 12`. Nothing in the workspace ever sets `total_estimate` to
+  `Some` — it is `skip_serializing_if = "Option::is_none"` and every producer
+  passes `None`, so it has never reached the wire. The fixture made
+  `endorsement-types/list` look non-conformant against a schema that simply
+  does not define the member.
+
+  **`endorsement-types/list`'s note blamed `createdByDid`**, which has been
+  defined upstream since 0.11.8. The real error was the invented
+  `totalEstimate`. Entry now `checked!`.
+
+  **`community/profile/*`'s notes over-claimed.** `show` listed
+  `relationshipIdentifierDefault` among its unspecced members — defined as of
+  0.11.8. `update` claimed `fieldsChanged` was a divergence; the response
+  schema defines it. That one is worth naming precisely, because it is a trap
+  in how the probe reads: **a serde parse stops at the first unknown member and
+  never reaches the rest**, so everything a note lists after the first is
+  inference, not evidence. Both notes now say only what the schema actually
+  refuses.
+
+  ## What the remaining twelve are
+
+  With the notes corrected, the residue is short and honest:
+
+  - `communityDid` / `createdAt` on `CommunityProfile` — 2 entries, one change
+  - `credential` / `expiresAt` not on the stored endorsement row — 2 entries,
+    a storage decision (see #1098)
+  - `factsTemplate`, `etag`, `deployedAt`/`sizeBytes`, the diagnostics
+    transport half — 4 entries, service ahead of spec
+  - `auth/recognise`, `install/claim/start`, `install/claim/finish`,
+    `join-requests/submit` — 4 entries, genuine design questions
+
+  ## Gates
+
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo test --workspace --no-fail-fast` — the whole workspace, since this
+    touches `vta-sdk`
+  - `cargo fmt --all --check`
+
+- **sdk**: Look for pnm sessions where pnm actually writes them ([#1087](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1087))
+- **mcp**: Look the pnm session up under the key pnm actually writes ([#1083](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1083))
+
+`vta-mcp --vta <slug>` — the invocation its own README documents — could
+  never find a session. `pnm` stores every login under the keyring key
+  `vta:<slug>` (`vta_keyring_key`, pnm-cli/src/config.rs), `cnm` uses
+  `community:<slug>` for the same reason, and neither session backend adds
+  a prefix on the way in or out. vta-mcp passed the bare slug, so the
+  lookup missed and the operator was told they were not authenticated.
+
+  That failure mode is worth naming: from the operator's side it is
+  indistinguishable from an expired login. They run `pnm auth status`, are
+  told they are fine, and are none the wiser.
+
+  The rule now has one definition, `agent_connect::pnm_session_key`, next
+  to the connect ladder both agent-side bridges share — a second consumer
+  (the agent-memory service) hit exactly this. It is idempotent, so an
+  operator who worked the bug out and passes `vta:mine` keeps working.
+
+- **vtc**: Tell a rejected applicant why, on the one path built to recover it ([#1058](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1058))
+
+`project_status` projected `needs` / `presentationDefinition` for a
+  `Deferred` request and bare `{requestId, status}` for a `Rejected` one.
+  The evidence existed on both rejection paths and neither reached the
+  applicant through the poll.
+
+  The correlated `VerdictResponse` was the only place a `{code, reason}`
+  ever reached an applicant, which makes it a one-shot delivery: a socket
+  that was down, a reply that was lost, or a rejection an admin took hours
+  later, and the reason was unrecoverable. The poll is the natural recovery
+  path and it was the one path that deliberately stripped it. An
+  admin-rejected applicant could never learn why at all — `reject_pending`
+  emits no message to them, and the operator's reason reached only the
+  audit log, which no applicant can read.
+
+  Both paths now write one `JoinRequest::decision` field — code, optional
+  reason, and the decision's own timestamp — and the poll projects it. One
+  field rather than two, because the whole failure was two producers of the
+  same fact drifting apart. It is deliberately *not* `policy_decision`: an
+  operator's decision is not a policy verdict, and recording it as one
+  would make the audit trail lie about where the refusal came from. The
+  admin path carries `ADMIN_REJECT_CODE` ("admin-reject"), which is what
+  lets a client tell "the rules refused you, satisfy them and re-apply"
+  from "a human refused you, re-applying changes nothing".
+
+  `decidedAt` is separate from the response document's `issuedAt` because
+  `issuedAt` is when *this document* was produced. For an admin reject the
+  two diverge by however long the applicant takes to poll. The test proves
+  the distinction the only way it can be proved: poll twice, and `issuedAt`
+  moves while `decidedAt` names the same moment.
+
+  Rows rejected before this existed are not abandoned. An auto-deny always
+  wrote the serialized `Deny` verdict, so `decision_for_applicant` falls
+  back to it — recovering the code and reason, and reporting `decided_at:
+  None` rather than back-filling a timestamp that would tell the applicant
+  they were rejected the instant they polled. A legacy *admin* reject has
+  nothing to recover and answers exactly as it did before.
+
+  Also adds `VerdictResponse::deny`, which the issue asked for alongside:
+  the deny shape had `allow` and `refer` constructors but was hand-assembled
+  at its one call site, and this change gave it a second producer.
+
+
+
+### Chore
+
+- **vtc**: Recognise and submit 0.2 — drift reaches zero ([#1105](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1105))
+
+Retargets `auth/recognise` and `join-requests/submit` to the `0.2` versions
+  published by trustoverip/dtgwg-trust-tasks-tf#264.
+
+  **Drift 2 → 0.** Every Trust Task this service binds now speaks the schema it
+  publishes, on both sides. It was 33 when the sweep landed yesterday.
+
+  ## Why these two moved the spec rather than the service
+
+  Both were recorded as "the service's shape is arguably stronger". Reading them
+  properly, one was not arguable at all.
+
+  **`auth/recognise/0.1` took `{vec, vmc}` — a replayable impersonation token.**
+  Both credentials are bearer artifacts, so anyone who obtained the pair from a
+  relayed join, an audit log, a backup or a compromised device held everything
+  the payload required, and the recognising community could not distinguish the
+  subject from someone holding a copy. No proof of key possession, no freshness,
+  no audience binding: one captured pair worked at every community that
+  recognised the issuer, indefinitely. This service has required a holder-signed
+  presentation — nonce, `domain`, holder-is-subject — since P0.2. `0.2` publishes
+  that.
+
+  **`join-requests/submit/0.1` returned `status: const "pending"`** where a
+  submission has four outcomes. `0.2` returns a verdict.
+
+  ## One real find in the retarget
+
+  `VerdictEffect` serialised **`request_more`**, but I had specced `requestMore`
+  in #264, and SPEC §4.10 rule 4 is explicit that specification-defined decision
+  values are lowerCamelCase. So the wire was wrong.
+
+  The fix is not to change either vocabulary wholesale, because there are two of
+  them and both are correct in their own language:
+
+  - **Rego authors verdicts.** Operator-written policy returns
+    `{"effect": "request_more", …}`, and snake_case is that language's idiom —
+    `vtc-service/policies/default/join.rego` and every deployed policy alongside
+    it. Re-casing there would break operator policies to satisfy a wire rule
+    that does not govern them.
+  - **The wire publishes `requestMore`**, per §4.10 and the new
+    `vtc/_shared/0.1/ceremony#VerdictEffect`.
+
+  `VerdictEffect` is the boundary: it now serialises camelCase and keeps
+  `#[serde(alias = "request_more")]` so anything producing the policy spelling
+  still deserialises. That is the same storage-versus-wire split `EndorsementRow`
+  ([#1096](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1096)) and `GenerationRow` ([#1095](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1095)) draw, applied to a policy vocabulary
+  instead of a keyspace.
+
+  The test that caught it now demonstrates the boundary instead of hiding it —
+  its inline Rego authors `request_more`, and it asserts the wire says
+  `requestMore`, with a comment saying why both are right.
+
+  ## The table at zero
+
+  `KNOWN_DRIFT_COUNT` stays asserted at `0`. It can no longer shrink, so the only
+  thing it can do is catch a regression — which is what an asserted count is for.
+  A new task that diverges must add a `drift!` entry and raise it deliberately.
+
+  The `drift!` macro, `Side`, and `Conformance::KnownDrift` are now unconstructed
+  and kept with `#[allow(dead_code)]` rather than deleted. They are the
+  vocabulary for *recording* a divergence, and a table with no way to say "this
+  diverges, on this side, for this reason" invites the next author to leave a
+  real divergence unrecorded rather than write the machinery back. Deleting them
+  would make the zero look permanent instead of current.
+
+  ## The header, rewritten
+
+  It described a 33-entry backlog. It now records how the 33 actually closed,
+  because the distribution is not what the sweep predicted:
+
+  | | |
+  |---|---|
+  | **10** | by correcting this service's wire shapes |
+  | **19** | on dependency bumps alone — the specs had moved and the notes had not |
+  | **4** | by correcting the **specification**, once the published shape turned out to be the weaker one |
+
+  That last group is the one worth remembering. A conformance table makes
+  divergence visible and says nothing about which side is wrong, and *"the schema
+  requires X and the service omits X"* reads as an accusation against the
+  implementation. Twice it was the schema. Once — `install/claim` — the
+  requirement had been built, found impossible in a browser, and removed two
+  months **before** the specification demanding it was written, and this table
+  recorded that as the service being behind on a security control.
+
+  ## Gates
+
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo test --workspace --no-fail-fast`
+  - `cargo fmt --all --check`
+
+- **deps**: Bring every dependency to latest, collapsing two duplicates ([#1055](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1055))
+
+`cargo outdated` reported 13 direct dependencies behind and `cargo update`
+  had 36 compatible updates waiting. Both are now clear: `cargo outdated`
+  reports "All dependencies are up to date".
+
+  Two of these were not cosmetic.
+
+  **p256 was duplicated in the build.** Our crates declared `0.13` while
+  `affinidi-crypto` — reached through `affinidi-data-integrity` and the TDK —
+  already pulled `0.14`, so the graph carried two copies of a curve
+  implementation. The lock now holds a single `p256 0.14.0`. The bump brings
+  `elliptic-curve` 0.14 and `ecdsa` 0.17, which rename the SEC1 family:
+  `EncodedPoint` -> `Sec1Point`, `From/ToEncodedPoint` -> `From/ToSec1Point`.
+  Renamed across `vta-keys`, `vta-service` and `vti-webauthn`.
+
+  **tokio-tungstenite was load-bearing, not incidental.** `vta-mobile-core`
+  depends on it solely as a feature enabler: iOS has no native trust store, so
+  `rustls-tls-webpki-roots` has to be on graph-wide or the mediator WebSocket
+  fails with "no native root CA certificates found". Features unify per major
+  version, so the declaration only works while it matches the version
+  `affinidi-messaging-sdk` pulls — and the SDK moved to 0.30 in this refresh.
+  Updating everything *except* this one would have stranded the enabler and
+  broken iOS `wss://` silently.
+
+  The rest:
+
+  - `rcgen` 0.13 -> 0.14 (dev). `signed_by` takes an `Issuer` rather than a
+    `(certificate, key)` pair, and `self_signed` borrows instead of consuming.
+    The mdoc IACA test helper builds its issuer with `Issuer::from_params`,
+    which is also a more direct statement of what it wanted.
+  - `syn` 2 -> 3 (dev). No source change; syn 3 was already in the graph via
+    `trust-tasks-rs`.
+  - `rmcp` 1.7 -> 3.1.4. Two majors, one rename: `Content` -> `ContentBlock`.
+    The `#[tool_router]` / `#[tool_handler]` macro surface the crate is built
+    on is unchanged.
+  - 36 lockfile updates, including `trust-tasks-rs` 0.11.3 (the corrected
+    `vta/app-state` error taxonomy from dtgwg-trust-tasks-tf#253) and the AWS
+    SDK set. `rustls-pemfile`, one of the unmaintained crates `cargo audit`
+    flags, drops out of the graph entirely.
+
+  Two deliberate choices where the shortest path was worse:
+
+  `vti-webauthn` keeps parse-then-validate rather than collapsing to the
+  one-shot `PublicKey::from_sec1_bytes`. That call merges "malformed SEC1
+  encoding" and "valid encoding, point not on the curve" into one error, and
+  those say different things to whoever reads the log — a broken client versus
+  a point somebody chose.
+
+  BIP-32 P-256 derivation replaces the now-deprecated `FieldBytes::from_slice`
+  with `TryFrom` and a real error arm. The input is a fixed 32-byte window of a
+  SHA-512 HMAC so it cannot fail, but the length check is now explicit rather
+  than resting on a panic inside a deprecated helper.
+
+  Unchanged and still suppressed: the four `cargo audit` advisories ignored in
+  `deny.toml`, all transitive through the AWS SDK's hyper 0.14 / rustls 0.21
+  path. `cargo deny check advisories` passes.
+
+
+
 ## [0.28.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.27.0...vta-sdk-v0.28.0) — 2026-08-22
 
 

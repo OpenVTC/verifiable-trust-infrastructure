@@ -2,6 +2,47 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.4.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.3.11...vtc-client-v0.4.0) — 2026-08-26
+
+
+### Fixed
+
+- **common**: Send the pagination wrapper in camelCase, as the schemas always said ([#1078](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1078))
+
+`Paginated<T>` carried no `rename_all`, so every list task sent `next_cursor`
+  and `total_estimate` against published schemas that say `nextCursor` and
+  `totalEstimate`. A direct R3.1 violation, and the same casing-drift class as
+  #656/#658 — where an empty `allowed_contexts` silently minted a super-admin.
+
+  Nothing caught it because nothing compared the two. The service sent one
+  spelling, `vtc-client` mirrored the service rather than the schema, and the
+  admin SPA typed its fields from the service too. All three agreed with each
+  other and none agreed with the contract. The conformance witness added in
+  #1076 is what finally put them side by side.
+
+  Four consumers move together: the wrapper in `vti-common`, `vtc-client`'s
+  `Page<T>`, and the `joinRequests` and `members` admin plugins. `audit.tsx`
+  reads a `cursor` member of a different shape and is untouched.
+
+  ## The count goes 33 → 32, not 33 → 28
+
+  The witness refused 28 and accepted 32, which is the useful part of this
+  change and the reason the module doc is rewritten rather than decremented.
+
+  Five entries cited the wrapper. Only `relationships/list` becomes fully
+  conforming, because it was the only one whose drift was the wrapper alone —
+  its spec types `items` as free objects. The other four still diverge at row
+  level (`createdByDid`, `vpClaims`, `MemberResponse` members) and keep their
+  entries, now describing only what is left rather than restating a casing bug
+  that is fixed.
+
+  Closing a shared root cause moves four entries without closing them. A drift
+  count that fell by five would have implied more progress than happened, and
+  `known_drift_entries_still_diverge_where_they_say_they_do` is what stopped it
+  saying so.
+
+
+
 ## [0.3.11](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.3.10...vtc-client-v0.3.11) — 2026-08-22
 
 

@@ -13,7 +13,7 @@ name = "didcomm-test"
 path = "src/main.rs"
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.28", features = ["didcomm", "crypto-provider"] }
+vta-sdk = { path = "../vta-sdk", version = "0.29", features = ["didcomm", "crypto-provider"] }
 affinidi-tdk = { workspace = true }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 tokio = { workspace = true }
@@ -26,7 +26,7 @@ ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 # SLIP-0010 key derivation (`vti_common::slip10`) — the harness re-derives the
 # same keys the VTA does, from the same seed and paths.
-vti-common = { path = "../vti-common", version = "0.13" }
+vti-common = { path = "../vti-common", version = "0.14" }
 
 [lints]
 workspace = true
