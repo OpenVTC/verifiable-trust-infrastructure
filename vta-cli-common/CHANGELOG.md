@@ -2,6 +2,9 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.11.5](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.11.4...vta-cli-common-v0.11.5) — 2026-08-26
+
+
 ## [0.11.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.11.3...vta-cli-common-v0.11.4) — 2026-08-22
 
 

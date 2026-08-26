@@ -2,6 +2,71 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.4.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.3.4...vta-vault-v0.4.0) — 2026-08-26
+
+
+### Chore
+
+- **deps**: Bring every dependency to latest, collapsing two duplicates ([#1055](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1055))
+
+`cargo outdated` reported 13 direct dependencies behind and `cargo update`
+  had 36 compatible updates waiting. Both are now clear: `cargo outdated`
+  reports "All dependencies are up to date".
+
+  Two of these were not cosmetic.
+
+  **p256 was duplicated in the build.** Our crates declared `0.13` while
+  `affinidi-crypto` — reached through `affinidi-data-integrity` and the TDK —
+  already pulled `0.14`, so the graph carried two copies of a curve
+  implementation. The lock now holds a single `p256 0.14.0`. The bump brings
+  `elliptic-curve` 0.14 and `ecdsa` 0.17, which rename the SEC1 family:
+  `EncodedPoint` -> `Sec1Point`, `From/ToEncodedPoint` -> `From/ToSec1Point`.
+  Renamed across `vta-keys`, `vta-service` and `vti-webauthn`.
+
+  **tokio-tungstenite was load-bearing, not incidental.** `vta-mobile-core`
+  depends on it solely as a feature enabler: iOS has no native trust store, so
+  `rustls-tls-webpki-roots` has to be on graph-wide or the mediator WebSocket
+  fails with "no native root CA certificates found". Features unify per major
+  version, so the declaration only works while it matches the version
+  `affinidi-messaging-sdk` pulls — and the SDK moved to 0.30 in this refresh.
+  Updating everything *except* this one would have stranded the enabler and
+  broken iOS `wss://` silently.
+
+  The rest:
+
+  - `rcgen` 0.13 -> 0.14 (dev). `signed_by` takes an `Issuer` rather than a
+    `(certificate, key)` pair, and `self_signed` borrows instead of consuming.
+    The mdoc IACA test helper builds its issuer with `Issuer::from_params`,
+    which is also a more direct statement of what it wanted.
+  - `syn` 2 -> 3 (dev). No source change; syn 3 was already in the graph via
+    `trust-tasks-rs`.
+  - `rmcp` 1.7 -> 3.1.4. Two majors, one rename: `Content` -> `ContentBlock`.
+    The `#[tool_router]` / `#[tool_handler]` macro surface the crate is built
+    on is unchanged.
+  - 36 lockfile updates, including `trust-tasks-rs` 0.11.3 (the corrected
+    `vta/app-state` error taxonomy from dtgwg-trust-tasks-tf#253) and the AWS
+    SDK set. `rustls-pemfile`, one of the unmaintained crates `cargo audit`
+    flags, drops out of the graph entirely.
+
+  Two deliberate choices where the shortest path was worse:
+
+  `vti-webauthn` keeps parse-then-validate rather than collapsing to the
+  one-shot `PublicKey::from_sec1_bytes`. That call merges "malformed SEC1
+  encoding" and "valid encoding, point not on the curve" into one error, and
+  those say different things to whoever reads the log — a broken client versus
+  a point somebody chose.
+
+  BIP-32 P-256 derivation replaces the now-deprecated `FieldBytes::from_slice`
+  with `TryFrom` and a real error arm. The input is a fixed 32-byte window of a
+  SHA-512 HMAC so it cannot fail, but the length check is now explicit rather
+  than resting on a panic inside a deprecated helper.
+
+  Unchanged and still suppressed: the four `cargo audit` advisories ignored in
+  `deny.toml`, all transitive through the AWS SDK's hyper 0.14 / rustls 0.21
+  path. `cargo deny check advisories` passes.
+
+
+
 ## [0.3.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.3.3...vta-vault-v0.3.4) — 2026-08-22
 
 

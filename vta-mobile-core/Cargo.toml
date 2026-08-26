@@ -72,7 +72,7 @@ affinidi-messaging-didcomm = "0.15"
 # lookup the approval sheets render through. Costs a DID resolution plus an
 # outbound fetch per claimed name, which is why the app resolves lazily and
 # caches; see `crate::display_name`.
-vta-sdk = { path = "../vta-sdk", version = "0.28", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.29", features = [
   "session",
   "tsp",
   "agent-names",

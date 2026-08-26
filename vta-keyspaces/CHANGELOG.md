@@ -2,6 +2,96 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.2.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.2.0...vta-keyspaces-v0.2.1) — 2026-08-26
+
+
+### Added
+
+- **app-state**: A third store for versioned, namespaced application state ([#1051](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1051))
+
+Applications built on a VTA have had nowhere to keep versioned metadata.
+  Adds `vta/app-state/{get,put,list,delete,get-many,put-many}/1.0` — a store
+  beside the secrets vault and the credential vault, for JSON an application
+  owns and the VTA does not interpret.
+
+  Records are addressed `(contextId, namespace, key)`. The namespace scopes one
+  application so several tools can share a context without colliding, and is the
+  seam a per-namespace grant would later use — which is why it is part of the
+  address rather than a prefix convention on the key. In 1.0 a namespace is
+  collision avoidance and NOT a trust boundary: an application with write access
+  to a context reaches every namespace in it, and the `put` and `delete` specs
+  say so normatively. Isolation means separate contexts.
+
+  Deliberately not built on `vta/memory/*`. `MemoryItem` is `{key, value}` with
+  nothing to hang a precondition on, and its `list` returns the whole context —
+  but the argument that settles it is that "forget everything" has to stay a safe
+  thing to ask an agent, which it cannot be if account state lives there.
+
+  Three properties are why this is a store rather than a field on an existing one.
+
+  **One counter per `(contextId, namespace)`, not per record.** A record's
+  `version` is the counter value its most recent write took, so one number is
+  simultaneously the optimistic-concurrency token `expectedVersion` compares
+  against and the watermark `sinceVersion` compares against. A per-record counter
+  serves the first but cannot serve the second — two records' counters are not
+  comparable, so no single number means "everything after this point" — and would
+  have forced a second sequence kept consistent by hand. The cost is that a
+  record's version jumps by whatever its neighbours consumed, which the wire
+  contract states: versions are opaque and monotonic, never an edit count.
+
+  **A failed precondition returns the current version AND value.** A bare
+  rejection obliges a re-read, and the re-read races the next write; the pattern
+  has no fixed point under contention. Returning the winner's view removes the
+  race rather than narrowing it, and the spec makes it normative.
+
+  **Delete leaves a versioned tombstone, and the tombstones are reaped.** Without
+  one, a consumer pulling from a watermark learns of every create and update and
+  never of a deletion, so deleted records resurrect on its next rebuild.
+  Retention is `app_state.tombstone_retention_days` (default 30, matching the
+  vault's `grace_days`) — a destructive window is an operator's choice, not a
+  constant — and `list` advertises the configured value, since a consumer
+  schedules against that number. The sweeper runs from the storage thread beside
+  the ACL/consent/vault sweepers.
+
+  The sweeper reaps a *prefix*, not a set: each namespace walks its tombstones in
+  version order and stops at the first still inside the window. Reaping a later
+  tombstone while leaving an earlier one would make the reap watermark
+  unstateable — no single number would describe what survives, which is precisely
+  what `watermarkTooOld` has to be able to say. `0` days disables reaping, and
+  that is enforced at the call site rather than as a zero cutoff, which would mean
+  the opposite.
+
+  Version reservation is fsynced and re-seals the TEE integrity manifest, for the
+  reason `vti_common::store::counter` gives for BIP-32 counters: a counter
+  surviving only in the journal buffer can be re-derived after a crash and reissue
+  a used value. Here a reused version means two records collide on one `appv:`
+  index key, so one disappears from the change feed and every incremental consumer
+  misses that change permanently, silently. A batch reserves a block and pays one
+  fsync rather than N; writes that then fail leave gaps, which are safe and
+  tested.
+
+  Retry safety: reads are `ReadOnly`, `delete` is `RetrySafe` (a second delete
+  finds a tombstone and deliberately takes no new version, so a watcher sees
+  nothing), and `put`/`put-many` are `Keyed` — a `put` without `expectedVersion`
+  does not converge, and the class is per URI, not per payload.
+
+  Blobs are deliberately out of scope in 1.0; adding a `blobRef` is additive.
+
+  Concurrency is a process-local lock per namespace, not a store-layer
+  compare-and-swap. fjall takes an exclusive database lock so two processes cannot
+  share a store, and the vsock protocol has no atomic opcode — its
+  `insert_if_absent`/`swap` are already non-atomic fallbacks. A CAS today would be
+  atomic exactly where the lock suffices and a warn-and-fallback exactly where it
+  would need to be real. Recorded in the design note with what would change that.
+
+  Schemas published upstream as trustoverip/dtgwg-trust-tasks-tf#252 and #253;
+  this depends on the released trust-tasks-rs 0.11.2, pinned to a minimum patch so
+  an older resolve fails as a stale dependency rather than as unspecced URIs.
+  Conformance witnesses cover all six URIs, so nothing enters
+  `UNSPECCED_DISPATCHED_URIS`.
+
+
+
 ## [0.2.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.1.5...vta-keyspaces-v0.2.0) — 2026-08-20
 
 

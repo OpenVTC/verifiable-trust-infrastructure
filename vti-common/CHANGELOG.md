@@ -2,6 +2,364 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.14.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.13.2...vti-common-v0.14.0) — 2026-08-26
+
+
+### Added
+
+- **vtc**: Implement the VPC as the deliberate-correlation mechanism on an edge ([#1074](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1074))
+
+* feat(vtc): implement the VPC as the deliberate-correlation mechanism on an edge
+
+  `PersonaCredential` appeared nowhere in this repo and
+  `DTGCredential::new_vpc` was never called, so the P-DID had no
+  implementation and the word "persona" drifted onto the membership DID for
+  want of anything to anchor it ([#1067](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1067)).
+
+  What the absence cost, concretely. After the publish proof-of-possession
+  change ([#1054](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1054)) a member had exactly two settings: publish under a pairwise
+  relationship DID and correlate with nothing, or publish under the
+  membership DID and correlate with everything, permanently, for anyone who
+  retains the credential. DTG Credentials §Privacy Considerations 3 says
+  correlation "should occur only through the holder's deliberate assertion of
+  a persona (via a VPC) or an M-DID". The precise instrument was missing, so
+  members had only the blunt one.
+
+  This adds the VTC half of it: `POST` / `DELETE
+  /v1/relationships/{id}/persona` (`vtc-service/src/routes/relationships.rs`).
+  A VPC is an *annotation* credential — it creates no graph structure, it
+  attaches to structure that already exists — so there is no "publish a VPC",
+  only "attach this persona to that edge", and the annotation is stored on the
+  edge row (`vtc-service/src/relationships/mod.rs`) rather than in a keyspace
+  of its own. The P-DID surfaces on `GET /v1/relationships/graph` as
+  `personaDid`, which is where the correlation becomes visible; an annotation
+  nothing reads would leave #1067 in the state it describes.
+
+  trustoverip/dtgwg-cred-spec#9 asks how a VPC binds to a specific
+  relationship and is open. Nothing here answers it. A VPC names its persona
+  (`issuer`) and the counterparty (`credentialSubject.id`) and not the
+  relationship DID the persona used, so it does not identify an edge on its
+  own.
+
+  Rather than add a field to the credential and present that as the
+  resolution, the binding is made at the request level:
+
+  1. the caller names the edge by id in the URL;
+  2. the caller proves control of that edge's `issuerDid`, with the same
+     proof-of-possession construction publishing the edge required;
+  3. the VPC's `credentialSubject.id` must equal the edge's `subjectDid`.
+
+  (2) is what makes it safe — the only party who could have published this
+  edge is the only party who can annotate it, so no new trust is extended.
+  (3) is a consistency check, not a binding. If #9 lands an in-credential
+  binding (a `digest` over the VRC, as the VWC already has), the endpoint can
+  require it as well without changing the stored shape.
+
+  Stated limitation: the spec says a VPC's subject is "typically the R-DID or
+  M-DID used in the relationship". A VPC naming the counterparty's M-DID, on
+  an edge whose `subjectDid` is their R-DID, fails check (3) and is rejected.
+  That case is real and needs the same #9 answer; guessing would mean
+  accepting a VPC naming a party the VTC cannot tie to the edge, which is the
+  problem restated.
+
+  - **No uniqueness check on the P-DID**, in direct contrast to the R-DID rule
+    the publish path enforces unconditionally. A relationship DID that recurs
+    across counterparties is a defect; a persona DID that recurs is the entire
+    purpose of the credential.
+  - **Detach is in scope.** A privacy mechanism that cannot be reversed is
+    worse than none, so withdrawing a persona is as available as asserting one
+    — and gated identically, or anyone could strip another member's persona.
+    The two authorization `type` values are distinct so neither can stand in
+    for the other.
+  - **No `persona.rego`.** Attach is gated on a live member session plus proof
+    of control of the edge's issuer. A community that already decides whether
+    an edge may be published has not obviously earned a second say over what
+    its issuer calls themselves. Additive if that is wrong.
+  - **No P-DID secondary index.** "List every edge of persona P" is answerable
+    from the admin graph; an enumeration surface deserves its own design
+    rather than falling out of an index write.
+  - **`new_vpc` is used in a wire-shape test, not a mint path**
+    (`vtc-service/src/credentials/dtg.rs`). The VTC has no key that may
+    legitimately sign a VPC — it is self-issued by a person — so there is no
+    `issue_persona`. Pinning the catalog's VPC shape matters more here than
+    for the credentials the VTC does mint: drift changes what we *accept*, and
+    the failure mode is every conformant VPC in the ecosystem being rejected
+    by a VTC that still compiles and still passes its own tests.
+  - **Audit** (`VpcAttached` / `VpcDetached`, `vti-common/src/audit/event.rs`)
+    records the P-DID with the authenticated member as actor — the same
+    attribution decision, and the same accepted residual, as VRC publish. The
+    `info!` on both paths carries the persona and not the member.
+
+  `vtc/relationships/persona/0.1` is bound ahead of its publication in the
+  upstream Trust Task registry and recorded in `UNPUBLISHED_CANONICAL_OK`
+  (`vtc-service/tests/trust_task_manifest.rs`) — the first entry the
+  `spec/vtc/` family has had. Deliberate: a payload schema authored now would
+  encode this request-level binding as if #9 were closed.
+
+  Design note: `docs/05-design-notes/vpc-persona-annotation.md`.
+
+- **vtc**: Let a member publish a relationship edge without naming themselves in it ([#1061](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1061))
+
+* feat(vtc)!: let a member publish a relationship edge without naming themselves in it
+
+  Publishing a VRC required the credential's `issuer` to equal the caller's
+  session DID. That one line is why a member's membership DID ends up inside
+  the durable, publishable credential — and the community graph built from
+  those credentials is a correlatable member-to-member edge set. DTG
+  Credentials asks for the opposite: R-DIDs are RECOMMENDED, unique per
+  counterparty "even within the same community", and M-DID edges are a
+  bootstrapping allowance to migrate away from.
+
+  The pin was conflating two properties. The first — the VRC was made by the
+  party it names as issuer — is provided by the data-integrity proof and is
+  untouched here. The second — the party publishing it is the party that
+  issued it — is what the pin actually provided, and it is worth keeping:
+  issuance and publication are different disclosures, and appearing in the
+  community graph should be the issuer's disclosure to make, not that of
+  whoever happens to hold a copy.
+
+  So the pin is replaced rather than removed. The session proves community
+  membership; a publish authorization signed by the issuing key proves control
+  of it. Neither requires them to be the same string.
+
+  The authorization binds to `{type, vrc-hash, aud, sessionId, issuedAt}`, each
+  field covering a distinct replay: signatures made over other objects, other
+  credentials, other communities, other members' sessions, and unbounded reuse
+  within a live session. It is verified and dropped — never stored, logged or
+  audited, because it carries `sessionId` and persisting that would rebuild the
+  exact membership-to-relationship linkage pairwise identifiers exist to
+  remove. Two tests assert that directly, on the stored row and on the audit
+  store, since it is the kind of property a later debug log undoes silently.
+
+  The subject-must-be-a-member check is dropped on the pairwise path. It is not
+  merely unanswerable once the subject is an R-DID; DTG Credentials is explicit
+  that "community membership is not a precondition for issuing, holding, or
+  presenting a VRC". The subject's consent to the edge is their publication of
+  the reciprocal VRC — the two-VRC edge model — not this community's assertion
+  that they exist.
+
+- **app-state**: A third store for versioned, namespaced application state ([#1051](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1051))
+
+Applications built on a VTA have had nowhere to keep versioned metadata.
+  Adds `vta/app-state/{get,put,list,delete,get-many,put-many}/1.0` — a store
+  beside the secrets vault and the credential vault, for JSON an application
+  owns and the VTA does not interpret.
+
+  Records are addressed `(contextId, namespace, key)`. The namespace scopes one
+  application so several tools can share a context without colliding, and is the
+  seam a per-namespace grant would later use — which is why it is part of the
+  address rather than a prefix convention on the key. In 1.0 a namespace is
+  collision avoidance and NOT a trust boundary: an application with write access
+  to a context reaches every namespace in it, and the `put` and `delete` specs
+  say so normatively. Isolation means separate contexts.
+
+  Deliberately not built on `vta/memory/*`. `MemoryItem` is `{key, value}` with
+  nothing to hang a precondition on, and its `list` returns the whole context —
+  but the argument that settles it is that "forget everything" has to stay a safe
+  thing to ask an agent, which it cannot be if account state lives there.
+
+  Three properties are why this is a store rather than a field on an existing one.
+
+  **One counter per `(contextId, namespace)`, not per record.** A record's
+  `version` is the counter value its most recent write took, so one number is
+  simultaneously the optimistic-concurrency token `expectedVersion` compares
+  against and the watermark `sinceVersion` compares against. A per-record counter
+  serves the first but cannot serve the second — two records' counters are not
+  comparable, so no single number means "everything after this point" — and would
+  have forced a second sequence kept consistent by hand. The cost is that a
+  record's version jumps by whatever its neighbours consumed, which the wire
+  contract states: versions are opaque and monotonic, never an edit count.
+
+  **A failed precondition returns the current version AND value.** A bare
+  rejection obliges a re-read, and the re-read races the next write; the pattern
+  has no fixed point under contention. Returning the winner's view removes the
+  race rather than narrowing it, and the spec makes it normative.
+
+  **Delete leaves a versioned tombstone, and the tombstones are reaped.** Without
+  one, a consumer pulling from a watermark learns of every create and update and
+  never of a deletion, so deleted records resurrect on its next rebuild.
+  Retention is `app_state.tombstone_retention_days` (default 30, matching the
+  vault's `grace_days`) — a destructive window is an operator's choice, not a
+  constant — and `list` advertises the configured value, since a consumer
+  schedules against that number. The sweeper runs from the storage thread beside
+  the ACL/consent/vault sweepers.
+
+  The sweeper reaps a *prefix*, not a set: each namespace walks its tombstones in
+  version order and stops at the first still inside the window. Reaping a later
+  tombstone while leaving an earlier one would make the reap watermark
+  unstateable — no single number would describe what survives, which is precisely
+  what `watermarkTooOld` has to be able to say. `0` days disables reaping, and
+  that is enforced at the call site rather than as a zero cutoff, which would mean
+  the opposite.
+
+  Version reservation is fsynced and re-seals the TEE integrity manifest, for the
+  reason `vti_common::store::counter` gives for BIP-32 counters: a counter
+  surviving only in the journal buffer can be re-derived after a crash and reissue
+  a used value. Here a reused version means two records collide on one `appv:`
+  index key, so one disappears from the change feed and every incremental consumer
+  misses that change permanently, silently. A batch reserves a block and pays one
+  fsync rather than N; writes that then fail leave gaps, which are safe and
+  tested.
+
+  Retry safety: reads are `ReadOnly`, `delete` is `RetrySafe` (a second delete
+  finds a tombstone and deliberately takes no new version, so a watcher sees
+  nothing), and `put`/`put-many` are `Keyed` — a `put` without `expectedVersion`
+  does not converge, and the class is per URI, not per payload.
+
+  Blobs are deliberately out of scope in 1.0; adding a `blobRef` is additive.
+
+  Concurrency is a process-local lock per namespace, not a store-layer
+  compare-and-swap. fjall takes an exclusive database lock so two processes cannot
+  share a store, and the vsock protocol has no atomic opcode — its
+  `insert_if_absent`/`swap` are already non-atomic fallbacks. A CAS today would be
+  atomic exactly where the lock suffices and a warn-and-fallback exactly where it
+  would need to be real. Recorded in the design note with what would change that.
+
+  Schemas published upstream as trustoverip/dtgwg-trust-tasks-tf#252 and #253;
+  this depends on the released trust-tasks-rs 0.11.2, pinned to a minimum patch so
+  an older resolve fails as a stale dependency rather than as unspecced URIs.
+  Conformance witnesses cover all six URIs, so nothing enters
+  `UNSPECCED_DISPATCHED_URIS`.
+
+
+
+### Changed
+
+- Delete the Verifiable-prefixed credential tags that were never DTG types ([#1071](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1071))
+
+`VerifiableMembershipCredential` and `VerifiableEndorsementCredential` are not
+  DTG credential types and never were. The specification defines seven concrete
+  subtypes; neither is among them, and nothing in this stack has ever issued
+  either. They survived as a name, a pair of literals and a compatibility shim,
+  and between them they broke cross-community recognition for every real
+  presentation ([#1062](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1062)).
+
+  Four places, one cause.
+
+  **The SDK constant.** `VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE` held the value
+  `"MembershipCredential"`, with a doc comment explaining that the prefix in the
+  name was historical and the tag did not have it. A constant whose name
+  disagrees with its value is an invitation, and it was taken: someone reading
+  the name hand-rolled `"VerifiableEndorsementCredential"` into the recognition
+  path, where it matched nothing. Renamed to `MEMBERSHIP_CREDENTIAL_TYPE`, and
+  `ENDORSEMENT_CREDENTIAL_TYPE` added beside it so the VEC tag has a home rather
+  than being a literal at the point of use.
+
+  **The compatibility shim.** #1063 added `LEGACY_TYPE_TAGS`, accepting both
+  prefixed tags from peers predating the catalog adoption. Nothing is published,
+  so no such peer exists — and a reference implementation that accepts a type the
+  specification does not define reintroduces exactly the drift the function it
+  sits in was written to prevent. Removed; the test that pinned the behaviour now
+  pins its refusal.
+
+  **The audit trail.** Emitted envelopes recorded `credential_type:
+  "VerifiableMembershipCredential"` / `"VerifiableEndorsementCredential"` — tags
+  no credential ever carried, in the one record meant to be authoritative after
+  the fact. They now record what was issued.
+
+  **The policy input.** `issuer_member` / `subject_member` were carried alongside
+  `issuer` / `subject` for operator policies written against the pre-#1061 shape.
+  There are no deployed operator policies to preserve, and two spellings of one
+  concept is how the concept drifts. The duplicates are gone and the surviving
+  fields carry `is_current`.
+
+
+
+### Fixed
+
+- **vtc**: Follow the spec on every auth response, and close the conformance gate ([#1112](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1112))
+
+* test(vtc)!: make response conformance fail the build
+
+  Until now the layer reported and a green suite was not evidence of
+  conformance — #1107's own memory note said to grep the run rather than trust
+  the exit code, which is a signal nobody has to obey.
+
+  A violation outside the allowlist now returns 500 with the schema error, so the
+  test that provoked it fails on its own status assertion and prints the reason.
+  Chosen over panicking in middleware, which surfaces at the call site as a
+  transport error and says nothing about which task or why.
+
+  The allowlist is eight `auth/*` tasks with ALLOWED_COUNT asserted beside them —
+  the same discipline as KNOWN_DRIFT_COUNT, because the cheapest way to make a
+  failing check pass is to add a line to a list nobody watches. An allowlisted
+  violation is still reported, pinned by a test: a list that suppressed the
+  evidence would mean rediscovering each entry before it could be closed.
+
+  Two existing guards caught mistakes of mine on the first run. The allowlist
+  named login/{start,finish}/0.1 where the service binds 0.2 — built from the
+  violation output rather than the route mounts — and the manifest guard flagged a
+  fake `trusttasks.org/spec/` URI in a new unit test, correctly, since binding
+  such a URI asserts the registry serves it.
+
+  Also retargets relationships/{list,graph} to the 0.2s from
+  trustoverip/dtgwg-trust-tasks-tf#266, and fixes a seeder that wrote
+  `seed-{uuid}` into `vrcDigestMultibase` — unique per row, and so a suite
+  structurally blind to digest format.
+
+  The VTC family is now clean; every remaining violation is `auth/*`.
+
+- **vtc**: Speak the endorsement model the spec defines ([#1096](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1096))
+
+The endorsement family — `issue`, `list`, `show` — spoke a different model
+  from the one the spec defines. Three renames, one per row, and a request
+  member that had been deliberately renamed away from the spec's name.
+
+  | canonical `Endorsement` | this service sent |
+  |---|---|
+  | `endorsementId` | `id` |
+  | `typeUri` | `endorsementType` |
+  | `issued` | `createdAt` |
+  | `subjectDid`, `statusListIndex`, `claim`, `revokedAt` | already matched |
+
+  ## Mapping at the boundary, not renaming storage
+
+  The stored `Endorsement` derives `Deserialize` and serialises `camelCase`,
+  so `id` / `endorsementType` / `createdAt` are the on-disk keys of every row
+  already written. Renaming those fields would rewrite the persisted fjall
+  format and need a migration — for a naming problem that only exists on the
+  wire.
+
+  So `EndorsementRow` is a wire type mapping from the stored row, the same
+  split `GenerationRow` uses ([#1095](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1095)). Storage keeps the names it has; the API
+  publishes the names the spec gives.
+
+- **common**: Send the pagination wrapper in camelCase, as the schemas always said ([#1078](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1078))
+
+`Paginated<T>` carried no `rename_all`, so every list task sent `next_cursor`
+  and `total_estimate` against published schemas that say `nextCursor` and
+  `totalEstimate`. A direct R3.1 violation, and the same casing-drift class as
+  #656/#658 — where an empty `allowed_contexts` silently minted a super-admin.
+
+  Nothing caught it because nothing compared the two. The service sent one
+  spelling, `vtc-client` mirrored the service rather than the schema, and the
+  admin SPA typed its fields from the service too. All three agreed with each
+  other and none agreed with the contract. The conformance witness added in
+  #1076 is what finally put them side by side.
+
+  Four consumers move together: the wrapper in `vti-common`, `vtc-client`'s
+  `Page<T>`, and the `joinRequests` and `members` admin plugins. `audit.tsx`
+  reads a `cursor` member of a different shape and is untouched.
+
+  ## The count goes 33 → 32, not 33 → 28
+
+  The witness refused 28 and accepted 32, which is the useful part of this
+  change and the reason the module doc is rewritten rather than decremented.
+
+  Five entries cited the wrapper. Only `relationships/list` becomes fully
+  conforming, because it was the only one whose drift was the wrapper alone —
+  its spec types `items` as free objects. The other four still diverge at row
+  level (`createdByDid`, `vpClaims`, `MemberResponse` members) and keep their
+  entries, now describing only what is left rather than restating a casing bug
+  that is fixed.
+
+  Closing a shared root cause moves four entries without closing them. A drift
+  count that fell by five would have implied more progress than happened, and
+  `known_drift_entries_still_diverge_where_they_say_they_do` is what stopped it
+  saying so.
+
+
+
 ## [0.13.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.13.1...vti-common-v0.13.2) — 2026-08-22
 
 

@@ -2,6 +2,374 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.20.0...vta-service-v0.21.0) — 2026-08-26
+
+
+### Added
+
+- **vta**: Framework 0.5.0 freshness bounds at the dispatch spine ([#1117](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1117))
+
+Framework 0.5.0 Consumer Requirements item 13. A consumer MUST reject a
+  document whose `issuedAt` is ahead of its own clock beyond its skew tolerance,
+  and one whose `expiresAt` is at or before its `issuedAt`.
+
+  Both are `malformedRequest`, never `expired`, and that distinction is the
+  substance of the rule: `expired` names a document that was once acceptable and
+  no longer is, so it tells the producer to wait when what it must do is reissue.
+  Neither of these was acceptable at any instant.
+
+  The rule makes the duplicate-execution record of item 11 implementable. That
+  record is bounded only if every accepted document can be placed in a window,
+  and both shapes escape every window while still looking acceptable: a future
+  `issuedAt` sits in a window that has not opened and re-enters it as the clock
+  advances, and an `expiresAt` at or before issuance describes an interval that
+  never contained an instant.
+
+  This is a stand-in and says so. `trust-tasks-rs` 0.12.0
+  (dtgwg-trust-tasks-tf#274) ships `FreshnessPolicy` and
+  `TrustTask::validate_freshness`, which implement these two rules identically —
+  same 60s skew — and add the `max_age` window and the `ReplayGuard` item 11
+  needs. The 0.12 bump is blocked on an external crate: `affinidi-messaging-sdk`
+  0.19.12 pins `trust-tasks-rs ^0.11` and `vta_sdk::acl_setup` hands it a
+  generated `MediatorAcl`, so two nodes in one graph fail to compile with
+  `expected MediatorAcl, found a different MediatorAcl`. The four sibling
+  trust-tasks crates have published 0.12-compatible releases; the messaging SDK
+  has not.
+
+  The module doc names the blocker and the replacement call, and the tests are
+  written against behaviour rather than this implementation, so they survive the
+  swap unchanged and are the check that it was faithful.
+
+- **app-state**: A third store for versioned, namespaced application state ([#1051](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1051))
+
+Applications built on a VTA have had nowhere to keep versioned metadata.
+  Adds `vta/app-state/{get,put,list,delete,get-many,put-many}/1.0` — a store
+  beside the secrets vault and the credential vault, for JSON an application
+  owns and the VTA does not interpret.
+
+  Records are addressed `(contextId, namespace, key)`. The namespace scopes one
+  application so several tools can share a context without colliding, and is the
+  seam a per-namespace grant would later use — which is why it is part of the
+  address rather than a prefix convention on the key. In 1.0 a namespace is
+  collision avoidance and NOT a trust boundary: an application with write access
+  to a context reaches every namespace in it, and the `put` and `delete` specs
+  say so normatively. Isolation means separate contexts.
+
+  Deliberately not built on `vta/memory/*`. `MemoryItem` is `{key, value}` with
+  nothing to hang a precondition on, and its `list` returns the whole context —
+  but the argument that settles it is that "forget everything" has to stay a safe
+  thing to ask an agent, which it cannot be if account state lives there.
+
+  Three properties are why this is a store rather than a field on an existing one.
+
+  **One counter per `(contextId, namespace)`, not per record.** A record's
+  `version` is the counter value its most recent write took, so one number is
+  simultaneously the optimistic-concurrency token `expectedVersion` compares
+  against and the watermark `sinceVersion` compares against. A per-record counter
+  serves the first but cannot serve the second — two records' counters are not
+  comparable, so no single number means "everything after this point" — and would
+  have forced a second sequence kept consistent by hand. The cost is that a
+  record's version jumps by whatever its neighbours consumed, which the wire
+  contract states: versions are opaque and monotonic, never an edit count.
+
+  **A failed precondition returns the current version AND value.** A bare
+  rejection obliges a re-read, and the re-read races the next write; the pattern
+  has no fixed point under contention. Returning the winner's view removes the
+  race rather than narrowing it, and the spec makes it normative.
+
+  **Delete leaves a versioned tombstone, and the tombstones are reaped.** Without
+  one, a consumer pulling from a watermark learns of every create and update and
+  never of a deletion, so deleted records resurrect on its next rebuild.
+  Retention is `app_state.tombstone_retention_days` (default 30, matching the
+  vault's `grace_days`) — a destructive window is an operator's choice, not a
+  constant — and `list` advertises the configured value, since a consumer
+  schedules against that number. The sweeper runs from the storage thread beside
+  the ACL/consent/vault sweepers.
+
+  The sweeper reaps a *prefix*, not a set: each namespace walks its tombstones in
+  version order and stops at the first still inside the window. Reaping a later
+  tombstone while leaving an earlier one would make the reap watermark
+  unstateable — no single number would describe what survives, which is precisely
+  what `watermarkTooOld` has to be able to say. `0` days disables reaping, and
+  that is enforced at the call site rather than as a zero cutoff, which would mean
+  the opposite.
+
+  Version reservation is fsynced and re-seals the TEE integrity manifest, for the
+  reason `vti_common::store::counter` gives for BIP-32 counters: a counter
+  surviving only in the journal buffer can be re-derived after a crash and reissue
+  a used value. Here a reused version means two records collide on one `appv:`
+  index key, so one disappears from the change feed and every incremental consumer
+  misses that change permanently, silently. A batch reserves a block and pays one
+  fsync rather than N; writes that then fail leave gaps, which are safe and
+  tested.
+
+  Retry safety: reads are `ReadOnly`, `delete` is `RetrySafe` (a second delete
+  finds a tombstone and deliberately takes no new version, so a watcher sees
+  nothing), and `put`/`put-many` are `Keyed` — a `put` without `expectedVersion`
+  does not converge, and the class is per URI, not per payload.
+
+  Blobs are deliberately out of scope in 1.0; adding a `blobRef` is additive.
+
+  Concurrency is a process-local lock per namespace, not a store-layer
+  compare-and-swap. fjall takes an exclusive database lock so two processes cannot
+  share a store, and the vsock protocol has no atomic opcode — its
+  `insert_if_absent`/`swap` are already non-atomic fallbacks. A CAS today would be
+  atomic exactly where the lock suffices and a warn-and-fallback exactly where it
+  would need to be real. Recorded in the design note with what would change that.
+
+  Schemas published upstream as trustoverip/dtgwg-trust-tasks-tf#252 and #253;
+  this depends on the released trust-tasks-rs 0.11.2, pinned to a minimum patch so
+  an older resolve fails as a stale dependency rather than as unspecced URIs.
+  Conformance witnesses cover all six URIs, so nothing enters
+  `UNSPECCED_DISPATCHED_URIS`.
+
+- **audit**: Make the audit destination a deployment choice, not a protocol one ([#1049](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1049))
+
+`AuditLogEntry` is `{id, timestamp, action, actor, resource, outcome, channel,
+  contextId, detail}` — no signature, no hash chain. The log corroborates what
+  happened; it cannot prove it, and a compromised VTA can rewrite its own history.
+  The canonical `AuditEnvelope` already names the members that would change that
+  (`prevHash`, `entryHash`, `schemaVersion`) and records why this maintainer omits
+  them: its log is flat and unchained.
+
+  This does not add tamper-evidence, deliberately. It adds the seam, so an
+  operator who needs a stronger guarantee implements one — an append-only file, a
+  transparency log, a blockchain anchor, a hash chain filling in those three
+  members — without the VTA committing to any scheme. Closes #1031.
+
+  ## The shape
+
+- **service**: Retire routes and Trust Tasks on evidence, not on a hand audit ([#1047](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1047))
+
+Two gaps in how this workspace retires things, both surfaced while retiring
+  `vta/discovery/capabilities/1.0` (#1043, #1044). Closes #1045.
+
+  ## The superseded-route table had no guard
+
+  `deprecation.rs` maps legacy REST routes to the Trust Task that supersedes them
+  so that removal can be gated on observed usage dropping to zero. #1042 deleted
+  `GET /capabilities` and left its row behind — a row matching a path that can
+  never be hit again reads zero forever, which is exactly the signal the table
+  exists to produce, emitted about something already deleted. It was noticed by
+  accident and removed by hand in #1044, because nothing tied the table to the
+  live router.
+
+  `every_superseded_row_names_a_live_route` now walks the assembled router and
+  asserts every row matches a live route. It asserts on `MatchedPath` rather than
+  on a status code, because `MatchedPath` is what `mark_superseded` matches on: a
+  row spelling a parameter differently — `/acl/{id}` where the router registered
+  `/acl/{did}` — attaches no header and counts nothing while the route goes on
+  answering, and a status-only probe reads green over that. The failure text says
+  which way to fix it. The reverse direction is deliberately not asserted; a live
+  route absent from the table is legitimate, and `deprecation.rs` already records
+  which routes are excluded and why.
+
+  ## Trust Task URIs had no deprecation path at all
+
+  A task could be retired only by deleting it, and the only evidence available was
+  a source audit — grep the repos we can see and reason about the rest. That was
+  defensible for one task with zero consumers anywhere and does not generalise;
+  the next retirement may be one somebody is calling.
+
+  `SUPERSEDED_TASKS` gives them the route mechanism:
+  `deprecated_trust_task_requests_total` labelled by URI, the successor named in
+  the response so a client can act rather than guess, and removal on an observed
+  zero. Seeded with the eleven dispatched URIs already carrying `#[deprecated]` in
+  `vta_sdk::trust_tasks` — attributes that told a Rust caller to migrate, told a
+  wire caller nothing, and left no instrument saying whether anyone was still
+  sending them.
+
+  Checked against the framework first. The *registry* has the concept
+  (`status: retired` + `supersededBy`, how twelve `messaging/*` tasks were retired
+  upstream), but `trust-tasks-rs` 0.11 exposes none of it: `schema_index` is
+  URI → payload schema and nothing else, `Payload` carries no lifecycle constant,
+  and `trust-task-discovery/0.1`'s expanded `supportedTypes` entry is closed over
+  `{type, requiredExt}`. So this is invention rather than adoption; the vocabulary
+  matches the registry's so that adopting a published signal later is a rename.
+
+  The notice rides the response document's **top level**, not `payload.ext`. The
+  framework envelope keeps unrecognized top-level members in `TrustTask::extra`
+  and SPEC §7.1/§7.2 tells consumers to preserve rather than reject them, so a
+  member there cannot break a client that has never heard of it. `payload` can
+  make no such promise: every published payload schema is
+  `additionalProperties: false`, the generated `Response` types are
+  `deny_unknown_fields`, and the conformance sweep validates against both. This is
+  the Trust-Task analogue of putting the REST signal in a header — beside the
+  answer rather than inside it. A document carrying a `proof` is left untouched.
+
+  ## Both tables are now pinned to what they describe
+
+  `superseded_tasks_are_dispatched` refuses a row nothing routes (that reads zero
+  forever, same defect as the dangling route row), `superseded_task_successors_are
+  _served` refuses a successor this VTA does not serve (a notice that sends a
+  migrating client onto an unsupported type), and
+  `every_dual_accepted_spec_marks_its_0_1_form_superseded` pins
+  `wire_v0_2::WIRE_SPECS_V0_2` against `SUPERSEDED_TASKS`, so a new dual-accept
+  cannot land without an instrument on the form it replaces.
+
+  Not covered, and said so in the source rather than papered over:
+  `auth/passkey/login/{start,finish}/0.1` are deprecated but reach neither
+  instrument. They are REST-routed on paths the route table excludes on purpose,
+  and one path serves both versions with the delta inside the body, so separating
+  them needs a counter in those two handlers.
+
+  Two things the tests found rather than confirmed. The signal is attached in
+  `dispatch_trust_task_inner` wrapping every exit out of the checks, not after
+  them — the spine has a dozen early returns, and a URI going quiet because its
+  callers are all being rejected before the hook would read as "nobody sends this
+  any more"; the first version had exactly that hole and the rejection test caught
+  it. And that split is `Box::pin`ed: the callee's state machine inlines every
+  handler's future through `dispatch_typed`, and awaiting it by value overflowed
+  the test-thread stack in `tests/mock_vta.rs` under `cargo test --workspace`,
+  where feature unification builds more of vta-service than `-p vta-service` does.
+
+
+
+### Fixed
+
+- **vta**: Three of the four responses the conformance layer found ([#1114](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1114))
+
+Closes three of the four violations #1113 reported. The fourth is the vault
+  pair, blocked on trust-tasks-rs 0.11.16 (dtgwg-trust-tasks-tf#268).
+
+  `vta/webvh/dids/get/1.0` carried its record under `#[serde(flatten)]` since
+  #849, to make the folded task a strict superset of the two shapes it replaced.
+  That superset was readable by no conforming client: the response is
+  `additionalProperties: false`, so a flattened record fails on all eleven
+  members and the `ext` slot is unreachable. Its sibling settles which side
+  moves — `dids/list` carries the same component nested under `dids` and has
+  always conformed, so flattening made `get` the outlier in its own family.
+
+  Both SDK client methods decoded the flat shape straight into
+  `WebvhDidRecord`, so the workspace compiled clean while the wire broke. They
+  now project the envelope. `webvh_get_did_round_trips_after_the_get_log_fold`
+  predicted exactly this in its doc comment and caught it.
+
+  `provision/integration/0.2` sent `null` for `adminTemplateName` and
+  `webvhServerId`, the only two of five `Option<String>` members without
+  `skip_serializing_if`.
+
+- **vtc**: Follow the spec on every auth response, and close the conformance gate ([#1112](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1112))
+
+* test(vtc)!: make response conformance fail the build
+
+  Until now the layer reported and a green suite was not evidence of
+  conformance — #1107's own memory note said to grep the run rather than trust
+  the exit code, which is a signal nobody has to obey.
+
+  A violation outside the allowlist now returns 500 with the schema error, so the
+  test that provoked it fails on its own status assertion and prints the reason.
+  Chosen over panicking in middleware, which surfaces at the call site as a
+  transport error and says nothing about which task or why.
+
+  The allowlist is eight `auth/*` tasks with ALLOWED_COUNT asserted beside them —
+  the same discipline as KNOWN_DRIFT_COUNT, because the cheapest way to make a
+  failing check pass is to add a line to a list nobody watches. An allowlisted
+  violation is still reported, pinned by a test: a list that suppressed the
+  evidence would mean rediscovering each entry before it could be closed.
+
+  Two existing guards caught mistakes of mine on the first run. The allowlist
+  named login/{start,finish}/0.1 where the service binds 0.2 — built from the
+  violation output rather than the route mounts — and the manifest guard flagged a
+  fake `trusttasks.org/spec/` URI in a new unit test, correctly, since binding
+  such a URI asserts the registry serves it.
+
+  Also retargets relationships/{list,graph} to the 0.2s from
+  trustoverip/dtgwg-trust-tasks-tf#266, and fixes a seeder that wrote
+  `seed-{uuid}` into `vrcDigestMultibase` — unique per row, and so a suite
+  structurally blind to digest format.
+
+  The VTC family is now clean; every remaining violation is `auth/*`.
+
+- **service**: Make AppStateParts non-exhaustive so adding a field stops being a break ([#1057](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1057))
+
+`AppState` was marked `#[non_exhaustive]` in #1024 for a defect this struct
+  has too, and the two are constructed side by side. `AppStateParts` is all
+  public fields with no private field and no constructor guard, so any crate
+  could write an `AppStateParts { .. }` literal — including the
+  functional-update form — which made *adding a field* a source break under
+  `constructible_struct_adds_field`.
+
+  Not hypothetical, and recent: #1049 added `audit_sink`, and #1051 nearly added
+  `app_state_locks` before the break was spotted and routed around by taking the
+  value off the built `AppState` instead. That workaround was the right call for
+  a feature PR, but it treated the symptom.
+
+  Construction inside this crate is unaffected. Outside it, `Default` plus field
+  assignment replaces the literal:
+
+      let mut parts = AppStateParts::default();
+      parts.audit_sink = Some(sink);
+
+  `tests/audit_sink.rs` now does exactly that. It is worth noting *why* that file
+  had to change: an integration test is a separate crate, so it was the first
+  thing the attribute broke — which makes it a fair proxy for what a consumer
+  has to do, and a standing check that the supported shape keeps working.
+
+
+
+### Chore
+
+- **deps**: Bring every dependency to latest, collapsing two duplicates ([#1055](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1055))
+
+`cargo outdated` reported 13 direct dependencies behind and `cargo update`
+  had 36 compatible updates waiting. Both are now clear: `cargo outdated`
+  reports "All dependencies are up to date".
+
+  Two of these were not cosmetic.
+
+  **p256 was duplicated in the build.** Our crates declared `0.13` while
+  `affinidi-crypto` — reached through `affinidi-data-integrity` and the TDK —
+  already pulled `0.14`, so the graph carried two copies of a curve
+  implementation. The lock now holds a single `p256 0.14.0`. The bump brings
+  `elliptic-curve` 0.14 and `ecdsa` 0.17, which rename the SEC1 family:
+  `EncodedPoint` -> `Sec1Point`, `From/ToEncodedPoint` -> `From/ToSec1Point`.
+  Renamed across `vta-keys`, `vta-service` and `vti-webauthn`.
+
+  **tokio-tungstenite was load-bearing, not incidental.** `vta-mobile-core`
+  depends on it solely as a feature enabler: iOS has no native trust store, so
+  `rustls-tls-webpki-roots` has to be on graph-wide or the mediator WebSocket
+  fails with "no native root CA certificates found". Features unify per major
+  version, so the declaration only works while it matches the version
+  `affinidi-messaging-sdk` pulls — and the SDK moved to 0.30 in this refresh.
+  Updating everything *except* this one would have stranded the enabler and
+  broken iOS `wss://` silently.
+
+  The rest:
+
+  - `rcgen` 0.13 -> 0.14 (dev). `signed_by` takes an `Issuer` rather than a
+    `(certificate, key)` pair, and `self_signed` borrows instead of consuming.
+    The mdoc IACA test helper builds its issuer with `Issuer::from_params`,
+    which is also a more direct statement of what it wanted.
+  - `syn` 2 -> 3 (dev). No source change; syn 3 was already in the graph via
+    `trust-tasks-rs`.
+  - `rmcp` 1.7 -> 3.1.4. Two majors, one rename: `Content` -> `ContentBlock`.
+    The `#[tool_router]` / `#[tool_handler]` macro surface the crate is built
+    on is unchanged.
+  - 36 lockfile updates, including `trust-tasks-rs` 0.11.3 (the corrected
+    `vta/app-state` error taxonomy from dtgwg-trust-tasks-tf#253) and the AWS
+    SDK set. `rustls-pemfile`, one of the unmaintained crates `cargo audit`
+    flags, drops out of the graph entirely.
+
+  Two deliberate choices where the shortest path was worse:
+
+  `vti-webauthn` keeps parse-then-validate rather than collapsing to the
+  one-shot `PublicKey::from_sec1_bytes`. That call merges "malformed SEC1
+  encoding" and "valid encoding, point not on the curve" into one error, and
+  those say different things to whoever reads the log — a broken client versus
+  a point somebody chose.
+
+  BIP-32 P-256 derivation replaces the now-deprecated `FieldBytes::from_slice`
+  with `TryFrom` and a real error arm. The input is a fixed 32-byte window of a
+  SHA-512 HMAC so it cannot fail, but the length check is now explicit rather
+  than resting on a panic inside a deprecated helper.
+
+  Unchanged and still suppressed: the four `cargo audit` advisories ignored in
+  `deny.toml`, all transitive through the AWS SDK's hyper 0.14 / rustls 0.21
+  path. `cargo deny check advisories` passes.
+
+
+
 ## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.19.0...vta-service-v0.20.0) — 2026-08-22
 
 

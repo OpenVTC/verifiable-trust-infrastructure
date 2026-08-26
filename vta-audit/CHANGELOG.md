@@ -2,6 +2,29 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.2.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.1.10...vta-audit-v0.2.0) — 2026-08-26
+
+
+### Added
+
+- **audit**: Make the audit destination a deployment choice, not a protocol one ([#1049](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1049))
+
+`AuditLogEntry` is `{id, timestamp, action, actor, resource, outcome, channel,
+  contextId, detail}` — no signature, no hash chain. The log corroborates what
+  happened; it cannot prove it, and a compromised VTA can rewrite its own history.
+  The canonical `AuditEnvelope` already names the members that would change that
+  (`prevHash`, `entryHash`, `schemaVersion`) and records why this maintainer omits
+  them: its log is flat and unchained.
+
+  This does not add tamper-evidence, deliberately. It adds the seam, so an
+  operator who needs a stronger guarantee implements one — an append-only file, a
+  transparency log, a blockchain anchor, a hash chain filling in those three
+  members — without the VTA committing to any scheme. Closes #1031.
+
+  ## The shape
+
+
+
 ## [0.1.10](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.1.9...vta-audit-v0.1.10) — 2026-08-22
 
 
