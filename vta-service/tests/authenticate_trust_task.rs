@@ -77,6 +77,7 @@ fn signed_authenticate_doc(
     let doc_json = json!({
         "id": "urn:uuid:authn-itest-1",
         "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": "did:key:z6MkTestVTA",
         "payload": { "challenge": challenge, "sessionId": session_id },
@@ -285,6 +286,7 @@ async fn tt_challenge_returns_tt_response_doc() {
     let doc = json!({
         "id": "urn:uuid:challenge-itest-1",
         "type": "https://trusttasks.org/spec/auth/challenge/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": "did:key:z6MkTestVTA",
         "payload": { "subject": did },

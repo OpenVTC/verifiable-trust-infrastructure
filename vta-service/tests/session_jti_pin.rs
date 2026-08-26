@@ -73,6 +73,7 @@ async fn whoami_status(
         // closed; a real producer mints a fresh id per request anyway.
         "id": format!("urn:uuid:jti-pin-itest-{}", uuid::Uuid::new_v4()),
         "type": "https://trusttasks.org/spec/auth/whoami/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": "did:key:z6MkTestVTA",
         "payload": {},

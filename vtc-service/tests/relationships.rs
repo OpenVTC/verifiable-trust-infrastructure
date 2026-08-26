@@ -770,7 +770,7 @@ mod pairwise {
             "type": PUBLISH_TASK,
             "issuer": did_for(signer),
             "recipient": TEST_VTC_DID,
-            "issuedAt": chrono::Utc::now().to_rfc3339(),
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": payload,
         });
         let parsed: trust_tasks_rs::TrustTask<Value> =
@@ -1298,7 +1298,7 @@ mod pairwise {
                 "relationship": edge.to_string(),
                 "aud": TEST_VTC_DID,
                 "sessionId": session_id,
-                "issuedAt": chrono::Utc::now().to_rfc3339(),
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             })
         }
 
@@ -1308,7 +1308,7 @@ mod pairwise {
                 "relationship": edge.to_string(),
                 "aud": TEST_VTC_DID,
                 "sessionId": session_id,
-                "issuedAt": chrono::Utc::now().to_rfc3339(),
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             })
         }
 
@@ -1691,7 +1691,7 @@ mod pairwise {
                 "relationship": edge.to_string(),
                 "aud": TEST_VTC_DID,
                 "sessionId": session_id,
-                "issuedAt": chrono::Utc::now().to_rfc3339(),
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             })
         }
 

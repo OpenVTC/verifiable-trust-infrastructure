@@ -66,6 +66,7 @@ async fn whoami_reports_live_session_acr_not_stale_token() {
     let doc = json!({
         "id": "urn:uuid:whoami-itest-1",
         "type": "https://trusttasks.org/spec/auth/whoami/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": "did:key:z6MkTestVTA",
         "payload": {},
@@ -123,6 +124,7 @@ async fn whoami_without_bearer_is_unauthorized() {
     let doc = json!({
         "id": "urn:uuid:whoami-itest-2",
         "type": "https://trusttasks.org/spec/auth/whoami/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": "did:key:z6MkAnon",
         "recipient": "did:key:z6MkTestVTA",
         "payload": {},

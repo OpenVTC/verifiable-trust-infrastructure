@@ -668,7 +668,7 @@ mod didcomm_harness {
             "id": format!("urn:uuid:{}", Uuid::new_v4()),
             "issuer": issuer,
             "recipient": recipient,
-            "issuedAt": "2026-01-01T00:00:00Z",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "expiresAt": "2099-01-01T00:00:00Z",
             "payload": payload,
         })

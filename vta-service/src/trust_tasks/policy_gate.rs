@@ -778,7 +778,7 @@ mod tests {
             "type": type_uri,
             "issuer": "did:key:zTestAdmin",
             "recipient": "did:example:vta",
-            "issuedAt": "2026-05-20T00:00:00Z",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "contextId": "default" }
         }))
         .expect("valid trust task")

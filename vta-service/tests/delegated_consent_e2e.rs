@@ -115,7 +115,7 @@ fn envelope(type_uri: &str, issuer: &str, recipient: &str, payload: Value) -> Va
         "type": type_uri,
         "issuer": issuer,
         "recipient": recipient,
-        "issuedAt": "2026-07-14T00:00:00Z",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": payload,
     })
 }

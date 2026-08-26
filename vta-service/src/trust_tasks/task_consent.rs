@@ -485,7 +485,7 @@ mod tests {
             "type": vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1,
             "issuer": approver,
             "recipient": vta_did,
-            "issuedAt": "2026-08-08T21:56:00Z",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {
                 "challenge": challenge,
                 "payloadDigest": wire_digest,

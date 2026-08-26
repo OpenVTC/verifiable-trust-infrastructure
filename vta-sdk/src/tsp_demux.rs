@@ -231,6 +231,7 @@ mod tests {
         json!({
             "id": "urn:uuid:reply",
             "type": "https://trusttasks.org/spec/messaging/ping/0.1#response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "threadId": thread_id,
             "payload": { "ok": true },
         })
@@ -265,6 +266,7 @@ mod tests {
         let push = json!({
             "id": "urn:uuid:pushed",
             "type": "https://trusttasks.org/spec/task-consent/request/0.1",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "taskId": "t1" },
         });
         assert!(!correlates(

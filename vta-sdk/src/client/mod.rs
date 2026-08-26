@@ -2465,6 +2465,7 @@ mod tests {
         let doc = serde_json::json!({
             "id": "urn:uuid:abc",
             "type": "https://trusttasks.org/spec/device/list/0.1#response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "devices": [], "truncated": false }
         });
         let out = VtaClient::extract_trust_task_payload(doc).unwrap();
@@ -2557,6 +2558,7 @@ fn build_task_document(type_uri: &str, payload: serde_json::Value) -> serde_json
     let mut doc = serde_json::json!({
         "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
         "type": type_uri,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": payload,
     });
     if let Some(key) = crate::idempotency::current_key()

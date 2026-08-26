@@ -439,6 +439,7 @@ fn refresh_doc(refresh_token: &str) -> Value {
     json!({
         "id": "urn:uuid:11111111-2222-3333-4444-555555555555",
         "type": REFRESH_TYPE,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": { "refreshToken": refresh_token },
     })
 }
@@ -622,6 +623,7 @@ async fn rest_refresh_rejects_a_malformed_payload() {
         json!({
             "id": "urn:uuid:99999999-9999-9999-9999-999999999999",
             "type": REFRESH_TYPE,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "refresh_token": "wrong-casing" },
         }),
     )

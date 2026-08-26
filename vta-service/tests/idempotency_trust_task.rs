@@ -67,6 +67,7 @@ fn create_doc(envelope_id: &str, label: &str, idempotency_key: Option<&str>) -> 
     let mut doc = json!({
         "id": format!("urn:uuid:{envelope_id}"),
         "type": KEYS_CREATE,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": CALLER,
         "recipient": "did:key:z6MkTestVTA",
         "payload": {
@@ -105,6 +106,7 @@ async fn key_count(router: &axum::Router, token: &str) -> usize {
     let doc = json!({
         "id": format!("urn:uuid:{}", uuid_ish()),
         "type": KEYS_LIST,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": CALLER,
         "recipient": "did:key:z6MkTestVTA",
         "payload": { "contextId": CONTEXT },
@@ -265,6 +267,7 @@ async fn the_same_key_on_a_different_task_is_refused() {
     let other = json!({
         "id": "urn:uuid:e2",
         "type": "https://trusttasks.org/spec/vta/webvh/dids/create/1.0",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": CALLER,
         "recipient": "did:key:z6MkTestVTA",
         "idempotencyKey": "urn:uuid:idem-cross",
@@ -302,6 +305,7 @@ async fn a_key_on_a_retry_safe_task_is_ignored_not_rejected() {
     let doc = json!({
         "id": "urn:uuid:g1",
         "type": KEYS_LIST,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": CALLER,
         "recipient": "did:key:z6MkTestVTA",
         "idempotencyKey": "urn:uuid:idem-on-a-read",

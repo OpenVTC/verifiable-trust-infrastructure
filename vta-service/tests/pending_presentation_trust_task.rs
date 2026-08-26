@@ -104,6 +104,7 @@ fn tt(id: &str, type_uri: &str, issuer: &str, payload: Value) -> Value {
     json!({
         "id": id,
         "type": type_uri,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": issuer,
         "recipient": "did:key:z6MkTestVTA",
         "payload": payload,

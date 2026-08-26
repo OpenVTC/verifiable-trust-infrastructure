@@ -890,6 +890,7 @@ pub(super) async fn trigger_gateway_wake(
     let wake_doc = json!({
         "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
         "type": "https://trusttasks.org/spec/push/wake/0.2",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": vta_did,
         "recipient": wake.gateway,
         "payload": {
@@ -1285,6 +1286,7 @@ mod tests {
         let doc_json = json!({
             "id": "approve-resp-1",
             "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "issuer": subject,
             "recipient": "did:web:vta.example",
             "payload": {
@@ -1407,6 +1409,7 @@ mod envelope_push_tests {
         let approve_request = json!({
             "id": "urn:uuid:11111111-1111-1111-1111-111111111111",
             "type": super::STEP_UP_APPROVE_REQUEST_TYPE,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "issuer": "did:key:zVta",
             "payload": { "subject": CALLER, "challenge": "c" },
         });

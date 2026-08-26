@@ -434,6 +434,7 @@ mod tests {
         let doc = serde_json::json!({
             "id": "urn:uuid:1",
             "type": "https://trusttasks.org/spec/device/list/0.1#response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "issuer": "did:web:vta",
             "recipient": "did:key:zClient",
             "payload": {
@@ -476,6 +477,7 @@ mod tests {
         let doc = serde_json::json!({
             "id": "urn:uuid:2",
             "type": "https://trusttasks.org/spec/trust-task-error/0.3",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": { "code": "permission_denied", "reason": "nope" }
         });
         let outcome = TrustTaskOutcome {
@@ -521,6 +523,7 @@ mod tests {
         let doc = serde_json::json!({
             "id": "urn:uuid:9",
             "type": "https://trusttasks.org/spec/vault/list/0.1#response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {
                 "entries": [
                     { "id": "v1", "label": "oauth-tokens", "secretKind": "oauth-tokens",
@@ -555,6 +558,7 @@ mod tests {
         let doc = serde_json::json!({
             "id": "urn:uuid:7",
             "type": "https://trusttasks.org/spec/vault/release/0.1#response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {
                 "sealedSecret": { "envelope": "didcomm-authcrypt", "jwe": "opaque.jwe.bytes" },
                 "secretKind": "oauth-tokens",
@@ -587,6 +591,7 @@ mod tests {
         let doc = serde_json::json!({
             "id": "urn:uuid:8",
             "type": "https://trusttasks.org/spec/vault/proxy-login/0.1#response",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {
                 "sealedSessionBlob": { "envelope": "didcomm-authcrypt", "jwe": "opaque" },
                 "sessionId": "s1",
