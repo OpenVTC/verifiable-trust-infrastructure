@@ -157,7 +157,56 @@ pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> Trus
 pub(super) const OPAQUE_INTERNAL_ERROR: &str =
     "the consumer could not complete this task; the request itself was accepted";
 
+/// Framework 0.5.0, *Bounding `details`*: where a specification declares no
+/// bound, 4096 bytes of JCS and 16 immediate members apply.
+const DETAILS_MAX_JCS_BYTES: usize = 4096;
+/// Companion to [`DETAILS_MAX_JCS_BYTES`].
+const DETAILS_MAX_MEMBERS: usize = 16;
+
+/// Drop a `details` that exceeds the framework's bound, keeping the `code`.
+///
+/// `details` was the one error-payload member with no size bound, and it
+/// travels in the direction no producer-side bound reaches — the producer set
+/// a body limit on what it *sent*, and nothing limits what comes back. This
+/// service had a live instance: a policy denial puts the Rego module's
+/// `explanation` on the wire, and that string is written by whoever authored
+/// the policy, with no length anybody checked.
+///
+/// An oversized `details` is **ignored, never grounds to discard the `code`** —
+/// the code is what the receiving party actually needs, and dropping the whole
+/// rejection because its annex was too long would turn a verbose policy into an
+/// unexplained failure.
+fn bound_details(details: Option<Value>) -> Option<Value> {
+    let details = details?;
+    let too_many_members = details
+        .as_object()
+        .is_some_and(|o| o.len() > DETAILS_MAX_MEMBERS);
+    let too_large = serde_json_canonicalizer::to_string(&details)
+        .map(|jcs| jcs.len() > DETAILS_MAX_JCS_BYTES)
+        // Uncanonicalisable is worse than oversized: it cannot be bounded, so
+        // it does not go out.
+        .unwrap_or(true);
+    if too_many_members || too_large {
+        tracing::warn!(
+            members = details.as_object().map(serde_json::Map::len),
+            "error `details` exceeds the framework bound and was dropped; the code still went out"
+        );
+        return None;
+    }
+    Some(details)
+}
+
 pub(super) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> TrustTaskOutcome {
+    // Bound `details` here rather than at each of the thirty construction
+    // sites: this is the one funnel every rejection passes through, so a new
+    // site cannot be added that skips the check.
+    let reason = match reason {
+        RejectReason::TaskFailed { reason, details } => RejectReason::TaskFailed {
+            reason,
+            details: bound_details(details),
+        },
+        other => other,
+    };
     let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), reason);
     error_response(routed)
 }
@@ -303,6 +352,70 @@ mod tests {
             .as_str()
             .expect("payload carries a message")
             .to_string()
+    }
+
+    /// An oversized `details` is dropped, and the `code` still goes out.
+    ///
+    /// The live instance this bound exists for: a policy denial puts the Rego
+    /// module's `explanation` on the wire, and that string is authored by
+    /// whoever wrote the policy with no length anybody checks.
+    #[test]
+    fn an_oversized_details_is_dropped_but_the_code_survives() {
+        let huge = serde_json::json!({ "explanation": "x".repeat(DETAILS_MAX_JCS_BYTES + 1) });
+        let outcome = reject_with(
+            &doc(),
+            RejectReason::TaskFailed {
+                reason: "policy denied".into(),
+                details: Some(huge),
+            },
+        );
+        let parsed: Value = serde_json::from_slice(&outcome.body).expect("error doc");
+        assert_eq!(
+            parsed["payload"]["code"], "taskFailed",
+            "an oversized annex must never cost the code: {parsed}"
+        );
+        assert!(
+            parsed["payload"].get("details").is_none_or(Value::is_null),
+            "the oversized details must not go out: {parsed}"
+        );
+    }
+
+    /// Too many members is the other half of the bound, and is not implied by
+    /// the byte count — sixteen short members are small and still refused.
+    #[test]
+    fn a_details_with_too_many_members_is_dropped() {
+        let mut wide = serde_json::Map::new();
+        for i in 0..=DETAILS_MAX_MEMBERS {
+            wide.insert(format!("k{i}"), serde_json::json!(1));
+        }
+        let outcome = reject_with(
+            &doc(),
+            RejectReason::TaskFailed {
+                reason: "policy denied".into(),
+                details: Some(Value::Object(wide)),
+            },
+        );
+        let parsed: Value = serde_json::from_slice(&outcome.body).expect("error doc");
+        assert_eq!(parsed["payload"]["code"], "taskFailed");
+        assert!(parsed["payload"].get("details").is_none_or(Value::is_null));
+    }
+
+    /// A `details` inside the bound is untouched — the bound must not become a
+    /// reason nothing useful is ever returned.
+    #[test]
+    fn a_small_details_still_goes_out() {
+        let outcome = reject_with(
+            &doc(),
+            RejectReason::TaskFailed {
+                reason: "policy denied".into(),
+                details: Some(serde_json::json!({ "reason": "auth:consent_required" })),
+            },
+        );
+        let parsed: Value = serde_json::from_slice(&outcome.body).expect("error doc");
+        assert_eq!(
+            parsed["payload"]["details"]["reason"], "auth:consent_required",
+            "{parsed}"
+        );
     }
 
     /// An `internalError` says nothing about the consumer's internals.
