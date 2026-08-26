@@ -2436,6 +2436,112 @@ mod response_coverage {
         .await;
     }
 
+    /// The DID-template family: the operator surface that every
+    /// provision-integration flow renders from.
+    #[tokio::test]
+    async fn did_templates_lifecycle() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "cov-templates").await;
+
+        // A minimal template. `document` is the DID-document shape with
+        // `{TOKEN}` placeholders the renderer fills; `requiredVars` is what the
+        // renderer will insist on, so keeping it to one keeps `render` honest
+        // without making the fixture about template authoring.
+        let template = json!({
+            "schemaVersion": 1,
+            "name": "cov-template",
+            "kind": "app",
+            "requiredVars": ["LABEL"],
+            // `document.id` must be the `{DID}` placeholder: the renderer
+            // fills it with the DID it mints, and a template that hardcoded an
+            // id would mint every integration the same identity.
+            "document": {
+                "id": "{DID}",
+                "service": [{ "id": "#cov", "type": "VTARest", "serviceEndpoint": "{LABEL}" }],
+            },
+        });
+
+        ok(
+            &state,
+            t::TASK_DID_TEMPLATES_CREATE_2_0,
+            json!({ "contextId": "cov-templates", "template": template }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_DID_TEMPLATES_LIST_2_0,
+            json!({ "contextId": "cov-templates" }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_DID_TEMPLATES_GET_2_0,
+            json!({ "contextId": "cov-templates", "name": "cov-template" }),
+        )
+        .await;
+
+        let mut updated = template.clone();
+        updated["description"] = json!("renamed");
+        ok(
+            &state,
+            t::TASK_DID_TEMPLATES_UPDATE_2_0,
+            json!({ "contextId": "cov-templates", "name": "cov-template", "template": updated }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_DID_TEMPLATES_RENDER_2_0,
+            json!({
+                "contextId": "cov-templates",
+                "name": "cov-template",
+                // `DID` is a reserved var, not a template bug: `create`
+                // requires `document.id` to be the `{DID}` placeholder, and the
+                // caller supplies the minted DID at render time.
+                "vars": { "LABEL": "https://cov.example", "DID": "did:key:z6MkCovRender" },
+            }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_DID_TEMPLATES_DELETE_2_0,
+            json!({ "contextId": "cov-templates", "name": "cov-template" }),
+        )
+        .await;
+    }
+
+    /// The policy family. `upsert` is `0.2` and `get`/`delete` are `0.1`, which
+    /// is why they are covered together rather than by version.
+    #[tokio::test]
+    async fn policy_lifecycle() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "cov-policy").await;
+
+        let created = ok(
+            &state,
+            t::TASK_POLICY_UPSERT_0_2,
+            json!({
+                "name": "cov-policy",
+                // The smallest Rego module that loads: a package and one rule.
+                "module": "package vta.cov\n\ndefault allow := false\n",
+            }),
+        )
+        .await;
+        let id = created["policy"]["id"]
+            .as_str()
+            .or_else(|| created["id"].as_str())
+            .unwrap_or_else(|| panic!("upsert must name the policy it stored: {created}"))
+            .to_owned();
+
+        ok(&state, t::TASK_POLICY_LIST_0_2, json!({})).await;
+        ok(&state, t::TASK_POLICY_GET_0_1, json!({ "id": id })).await;
+        ok(
+            &state,
+            t::TASK_POLICY_DELETE_0_1,
+            json!({ "id": id, "reason": "coverage" }),
+        )
+        .await;
+    }
+
     /// The context family's read and write paths.
     #[tokio::test]
     async fn contexts_lifecycle() {
