@@ -164,38 +164,98 @@ pub fn observed_tasks() -> Vec<String> {
         .collect()
 }
 
-/// Note a task as exercised, and append it to the run-wide coverage file when
-/// `TRUST_TASK_OBSERVED_FILE` names one.
+/// Note a task as exercised, and write it to this process's own coverage file
+/// when `TRUST_TASK_OBSERVED_DIR` names a directory.
 ///
 /// The file exists because a coverage figure is a property of a **run**, not of
-/// a process, and every binary under `tests/` is its own process — thirty-five
-/// of them on the VTC, twenty-seven here. An in-memory set answers "what did
-/// *this* binary touch", which is not the question.
+/// a process, and every binary under `tests/` is its own process — twenty-eight
+/// here, thirty-five on the VTC. An in-memory set answers "what did *this*
+/// binary touch", which is not the question.
 ///
-/// Appends are `O_APPEND` one line at a time, which is atomic below `PIPE_BUF`
-/// for a URI, so concurrent binaries interleave lines rather than corrupt them.
-/// Duplicates are expected and the reader dedupes; writing once per process per
-/// URI just keeps the file small.
+/// **One file per process, not one shared file.** The first version of this
+/// appended every observation to a single path, on the reasoning that `O_APPEND`
+/// writes below `PIPE_BUF` are atomic and so concurrent binaries would interleave
+/// lines rather than corrupt them. Atomicity was never the failure mode:
+/// observations went *missing* instead, intermittently and always in whole
+/// binaries — the same suite reported 31 tasks on one run and 33 on the next,
+/// off identical code, with `client_round_trip`'s twelve present or absent as a
+/// block. Rather than keep reasoning about append semantics under
+/// twenty-eight writers, this removes the shared writer: nothing contends,
+/// because no two processes touch the same file.
 fn record_observed(task: &str) {
-    {
-        let mut seen = observed().lock().expect("observed lock");
-        if !seen.insert(task.to_owned()) {
-            return;
-        }
-    }
-    let Ok(path) = std::env::var("TRUST_TASK_OBSERVED_FILE") else {
+    // Note the in-memory set first, but do NOT let it gate the write: the two
+    // record different things, and conflating them cost a real bug. Marking a
+    // task seen and then failing to write it means the write is never retried,
+    // because every later dispatch of that task takes the early return — one
+    // transient failure loses the task for the whole process, silently, in the
+    // direction that under-reports.
+    let first_time = observed()
+        .lock()
+        .expect("observed lock")
+        .insert(task.to_owned());
+    let Ok(dir) = std::env::var("TRUST_TASK_OBSERVED_DIR") else {
         return;
     };
+    if !first_time && already_written(task) {
+        return;
+    }
     use std::io::Write;
     // Best-effort: a coverage file that cannot be written must never fail a
-    // test run. The script that sets the variable checks the file itself.
-    if let Ok(mut f) = std::fs::OpenOptions::new()
+    // test run. The script that sets the variable checks the directory itself.
+    // Named for the test binary, not just the pid, so a coverage file is
+    // attributable: "which binary stopped observing this task" is the first
+    // question asked of a number that moved, and a bare pid cannot answer it.
+    let binary = std::env::args()
+        .next()
+        .and_then(|a| {
+            std::path::Path::new(&a)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "unknown".to_owned());
+    let path = std::path::Path::new(&dir).join(format!("{binary}.{}.tasks", std::process::id()));
+    // One `write_all` of a pre-formatted line, never `writeln!`.
+    //
+    // `writeln!` on an unbuffered `File` can issue the text and the newline as
+    // two separate `write` syscalls, and test binaries run their tests on many
+    // threads — so two threads interleave *between* those calls and produce a
+    // line like `…/acl/grant/0.1#response…/dids/get/1.0#response`. Both tasks
+    // are then lost, because the reporter matches whole lines. That is what
+    // made this figure jitter: three or four mangled lines per run, and the
+    // count moving by exactly the tasks they swallowed.
+    //
+    // `O_APPEND` makes a single `write` atomic against other appenders, so
+    // formatting the newline into the buffer first is what actually buys the
+    // atomicity the append mode promises.
+    let line = format!("{task}\n");
+    match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
     {
-        let _ = writeln!(f, "{task}");
+        Ok(mut f) => {
+            if f.write_all(line.as_bytes()).is_ok() {
+                written()
+                    .lock()
+                    .expect("written lock")
+                    .insert(task.to_owned());
+            }
+        }
+        // Loud, because a coverage figure that silently under-reports is the
+        // exact failure this whole module exists to stop happening elsewhere.
+        Err(e) => eprintln!("TRUST-TASK COVERAGE: cannot write {}: {e}", path.display()),
     }
+}
+
+/// Tasks this process has successfully written to its coverage file.
+static WRITTEN: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+
+fn written() -> &'static Mutex<BTreeSet<String>> {
+    WRITTEN.get_or_init(|| Mutex::new(BTreeSet::new()))
+}
+
+fn already_written(task: &str) -> bool {
+    written().lock().expect("written lock").contains(task)
 }
 
 /// The check itself, separated so it is unit-testable without a dispatcher.
@@ -245,14 +305,32 @@ pub fn checkable_tasks() -> Vec<&'static str> {
 #[test]
 #[ignore = "needs a suite run first; driven by scripts/trust-task-coverage.sh"]
 fn report_task_coverage() {
-    let path = std::env::var("TRUST_TASK_OBSERVED_FILE")
-        .expect("set TRUST_TASK_OBSERVED_FILE, or run scripts/trust-task-coverage.sh");
-    let seen: BTreeSet<String> = std::fs::read_to_string(&path)
-        .unwrap_or_default()
-        .lines()
-        .map(|l| l.trim().to_owned())
-        .filter(|l| !l.is_empty())
-        .collect();
+    let dir = std::env::var("TRUST_TASK_OBSERVED_DIR")
+        .expect("set TRUST_TASK_OBSERVED_DIR, or run scripts/trust-task-coverage.sh");
+    let entries = std::fs::read_dir(&dir).expect("the observed directory must exist");
+    let mut files = 0usize;
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for e in entries.flatten() {
+        if e.path().extension().is_none_or(|x| x != "tasks") {
+            continue;
+        }
+        files += 1;
+        for line in std::fs::read_to_string(e.path())
+            .unwrap_or_default()
+            .lines()
+        {
+            let l = line.trim();
+            if !l.is_empty() {
+                seen.insert(l.to_owned());
+            }
+        }
+    }
+    assert!(
+        files > 0,
+        "no coverage files in {dir} — the suite either did not run or did not \
+         see TRUST_TASK_OBSERVED_DIR, and a coverage figure over zero files \
+         would read as 0% rather than as 'not measured'"
+    );
 
     let checkable = checkable_tasks();
     // The file records the `#response` URI the document carried; the census

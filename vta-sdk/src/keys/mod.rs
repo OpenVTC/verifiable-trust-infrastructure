@@ -69,10 +69,22 @@ pub struct KeyRecord {
     pub status: KeyStatus,
     #[serde(alias = "public_key")]
     pub public_key: String,
+    /// Absent when unset, never `null`.
+    ///
+    /// The shared `KeyRecord` component types this `string`, so `null` is a
+    /// type error rather than a spelling of "no label" — and this component is
+    /// returned by `keys/{list,create,show,import,rename,revoke}`, so one
+    /// missing `skip_serializing_if` here is a violation on six tasks at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    #[serde(default, alias = "context_id")]
+    /// Absent when unset, never `null`. **Absence is not "every scope"** — the
+    /// spec is explicit that a key with no context is reachable only by a
+    /// caller with unrestricted authority, which is the workspace's own
+    /// act-scope rule.
+    #[serde(default, alias = "context_id", skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
-    #[serde(default, alias = "seed_id")]
+    /// Absent when unset, never `null`; the component types it `integer`.
+    #[serde(default, alias = "seed_id", skip_serializing_if = "Option::is_none")]
     pub seed_id: Option<u32>,
     #[serde(default = "default_derived")]
     pub origin: KeyOrigin,

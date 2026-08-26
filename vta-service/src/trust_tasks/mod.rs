@@ -1940,3 +1940,120 @@ mod superseded_task_dispatch_tests {
         );
     }
 }
+
+/// Exercise the happy path of tasks the suite otherwise never reaches.
+///
+/// These are not tests of handler *logic* — every arm has that in its owning
+/// operations module. They exist so the response-conformance gate in
+/// `test_support::response_conformance` gets to look at each task's real
+/// success response at all.
+///
+/// The gap they close is the one `scripts/trust-task-coverage.sh` measures: the
+/// gate was validating 29 of 109 checkable tasks, and the seventy-odd it had
+/// never seen included the signing oracle. A gate that has never observed
+/// `keys/sign` is not evidence about `keys/sign`.
+///
+/// Each test asserts a success document came back and lets the layer do the
+/// schema work — a violation replaces the response, so the `type` assertion
+/// below is what fails when a shape drifts.
+#[cfg(test)]
+mod response_coverage {
+    use super::*;
+    use base64::Engine;
+    use serde_json::json;
+    use vta_sdk::trust_tasks as t;
+
+    use crate::test_support::build_signing_test_app_state;
+
+    /// Dispatch as a super-admin and require a success document back.
+    ///
+    /// Returns the response `payload` so a test can chain (e.g. take a key id
+    /// out of `keys/create` and sign with it).
+    async fn ok(state: &crate::server::AppState, uri: &str, payload: Value) -> Value {
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let body = serde_json::to_vec(&json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": uri,
+            "issuer": "did:key:zTestAdmin",
+            "recipient": vta_did,
+            "issuedAt": "2026-08-26T00:00:00Z",
+            "payload": payload,
+        }))
+        .expect("envelope serialises");
+
+        let outcome = super::dispatch_trust_task_core(
+            state,
+            &crate::test_support::super_admin_claims(),
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        assert_eq!(
+            doc["type"],
+            format!("{uri}#response"),
+            "expected a success response from {uri}, got: {doc}"
+        );
+        doc["payload"].clone()
+    }
+
+    /// Mint a key and return its id, so the read/sign/rename paths have a real
+    /// subject rather than the VTA's own signing key (which they must not
+    /// rename or revoke).
+    async fn a_key(state: &crate::server::AppState, label: &str) -> String {
+        let p = ok(
+            state,
+            t::TASK_KEYS_CREATE_0_1,
+            json!({ "keyType": "ed25519", "derivationPath": "m/26'/2'/0'/0'", "label": label }),
+        )
+        .await;
+        p["key"]["keyId"]
+            .as_str()
+            .or_else(|| p["keyId"].as_str())
+            .unwrap_or_else(|| panic!("keys/create must name the key it made: {p}"))
+            .to_owned()
+    }
+
+    #[tokio::test]
+    async fn keys_show_and_sign() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let key_id = a_key(&state, "coverage-show-sign").await;
+
+        ok(&state, t::TASK_KEYS_SHOW_0_1, json!({ "keyId": key_id })).await;
+
+        // The signing oracle. `payload` is base64url without padding, and the
+        // maintainer signs those bytes verbatim.
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"coverage");
+        ok(
+            &state,
+            t::TASK_KEYS_SIGN_0_1,
+            json!({ "keyId": key_id, "payload": payload, "algorithm": "EdDSA" }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn keys_rename_then_revoke() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let key_id = a_key(&state, "coverage-rename").await;
+
+        // `newKeyId` is an identifier, not a path — `/` is rejected, and the
+        // key id defaults to the derivation path, so it cannot be reused here.
+        let renamed = "coverage-renamed-key".to_string();
+        ok(
+            &state,
+            t::TASK_KEYS_RENAME_0_1,
+            json!({ "keyId": key_id, "newKeyId": renamed }),
+        )
+        .await;
+
+        // Revoke last: it is terminal, and revoking under the new id also
+        // proves the rename took on the record rather than only in the reply.
+        ok(
+            &state,
+            t::TASK_KEYS_REVOKE_0_1,
+            json!({ "keyId": renamed, "reason": "coverage" }),
+        )
+        .await;
+    }
+}
