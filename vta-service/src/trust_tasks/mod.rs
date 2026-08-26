@@ -2177,6 +2177,114 @@ mod response_coverage {
             .to_owned()
     }
 
+    /// A context to hang scoped state off. Also covers
+    /// `vta/contexts/create/1.0`.
+    async fn a_context(state: &crate::server::AppState, id: &str) {
+        ok(
+            state,
+            t::TASK_CONTEXTS_CREATE_1_0,
+            json!({ "id": id, "name": id }),
+        )
+        .await;
+    }
+
+    /// The context family's read and write paths.
+    #[tokio::test]
+    async fn contexts_lifecycle() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "cov-contexts").await;
+        ok(&state, t::TASK_CONTEXTS_LIST_1_0, json!({})).await;
+        ok(
+            &state,
+            t::TASK_CONTEXTS_GET_1_0,
+            json!({ "id": "cov-contexts" }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_CONTEXTS_UPDATE_1_0,
+            json!({ "id": "cov-contexts", "name": "renamed" }),
+        )
+        .await;
+        // Preview before delete: the pair exists so an operator can see what a
+        // delete would take with it, so cover them in that order.
+        ok(
+            &state,
+            t::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
+            json!({ "id": "cov-contexts" }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_CONTEXTS_DELETE_1_0,
+            json!({ "id": "cov-contexts" }),
+        )
+        .await;
+    }
+
+    /// The app-state key/value family, single and batch.
+    #[tokio::test]
+    async fn app_state_lifecycle() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "cov-appstate").await;
+        let base = json!({ "contextId": "cov-appstate", "namespace": "cov", "key": "k1" });
+
+        let mut put = base.clone();
+        put["value"] = json!({ "hello": "world" });
+        ok(&state, t::TASK_VTA_APP_STATE_PUT_1_0, put).await;
+        ok(&state, t::TASK_VTA_APP_STATE_GET_1_0, base.clone()).await;
+        ok(
+            &state,
+            t::TASK_VTA_APP_STATE_LIST_1_0,
+            json!({ "contextId": "cov-appstate", "includeValues": true }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_VTA_APP_STATE_PUT_MANY_1_0,
+            json!({
+                "contextId": "cov-appstate",
+                "namespace": "cov",
+                // `writes`, not `entries` — and each write is a put payload
+                // minus the context and namespace the batch supplies.
+                "writes": [{ "key": "k2", "value": {"n": 1} }],
+            }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_VTA_APP_STATE_GET_MANY_1_0,
+            json!({ "contextId": "cov-appstate", "namespace": "cov", "keys": ["k1", "k2"] }),
+        )
+        .await;
+        ok(&state, t::TASK_VTA_APP_STATE_DELETE_1_0, base).await;
+    }
+
+    /// The agent-memory family.
+    #[tokio::test]
+    async fn memory_lifecycle() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "cov-memory").await;
+        ok(
+            &state,
+            t::TASK_VTA_MEMORY_PUT_0_1,
+            json!({ "contextId": "cov-memory", "key": "m1", "value": "remembered" }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_VTA_MEMORY_LIST_0_1,
+            json!({ "contextId": "cov-memory" }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_VTA_MEMORY_DELETE_0_1,
+            json!({ "contextId": "cov-memory", "key": "m1" }),
+        )
+        .await;
+    }
+
     #[tokio::test]
     async fn keys_show_and_sign() {
         let (state, _dir) = build_signing_test_app_state().await;
