@@ -469,10 +469,18 @@ pub(crate) async fn dispatch_trust_task_core(
     body: &[u8],
     confidentiality: transport::TransportConfidentiality,
 ) -> TrustTaskOutcome {
-    transport::with_confidentiality(confidentiality, async move {
+    let outcome = transport::with_confidentiality(confidentiality, async move {
         dispatch_trust_task_inner(state, auth, body).await
     })
-    .await
+    .await;
+    // Observe the real response against the schema its own `type` names. Here
+    // rather than in the REST route because REST is one of three transports
+    // through this function — DIDComm and TSP read `outcome.body` directly, and
+    // an HTTP-layer check would be blind to both. Compiled out of production
+    // builds; see `test_support::response_conformance`.
+    #[cfg(any(test, feature = "test-support"))]
+    crate::test_support::response_conformance::observe(outcome.status, &outcome.body);
+    outcome
 }
 
 /// The dispatch spine proper. Split from [`dispatch_trust_task_core`] only so
