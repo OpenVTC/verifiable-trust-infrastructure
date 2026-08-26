@@ -85,7 +85,19 @@ impl CapabilityWriter for DidcommCapabilityWriter {
         }
 
         match tokio::time::timeout(self.reply_timeout, receiver).await {
-            Ok(Ok(reply)) => capability_client::classify_git_trust_reply(&reply).ok_or_else(|| {
+            // The thread the reply must answer. `capability-client` 0.11 made
+            // this an explicit argument rather than assuming correlation had
+            // already happened: acting on an uncorrelated reply lets whichever
+            // document arrives next decide the fate of a write it has nothing
+            // to do with. Here the `replies` registry already keys the waiter
+            // on `doc.id`, so this is defence in depth — and it is the library's
+            // own SPEC §4.9 rule (`threadId`, falling back to `id`) rather than
+            // this call site's guess at it.
+            Ok(Ok(reply)) => capability_client::classify_git_trust_reply(
+                &reply,
+                capability_client::correlation_thread(&doc),
+            )
+            .ok_or_else(|| {
                 // A reply we correlated but can't classify is a contract bug on
                 // the registry side; retrying can't fix it, but treating it as
                 // permanent would strand the job — surface transient + loud.
