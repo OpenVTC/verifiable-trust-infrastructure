@@ -33,6 +33,17 @@ use vtc_service::test_support::TestVtc;
 
 use common::webauthn_harness::SoftEd25519Authenticator;
 
+/// Re-wrap the inner WebAuthn options as webauthn-rs's `{publicKey: …}`.
+///
+/// `enroll/start/0.2` and its siblings send the *inner* options — the value a
+/// browser passes as `create({ publicKey: … })` — because that is what the
+/// canonical `CredentialCreationOptions` describes. The soft-authenticator
+/// harness deserialises webauthn-rs's wrapper type, so the test does the same
+/// re-wrap a real client does, one line before calling the authenticator.
+fn wrap_options<T: serde::de::DeserializeOwned>(inner: &serde_json::Value) -> T {
+    serde_json::from_value(serde_json::json!({ "publicKey": inner })).expect("options re-wrap")
+}
+
 const RP_ORIGIN: &str = "https://vtc.example.com";
 // Canonical `auth/passkey/*` tasks (trust-tasks-tf#145). Each ceremony leg
 // carries its own task; the retired `admin/passkeys/{register,revoke}/1.0`
@@ -262,9 +273,12 @@ async fn list_returns_bootstrap_passkey() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let arr = body["passkeys"].as_array().unwrap();
+    // `credentials`, the name `auth/passkey/list/0.1` publishes (#1112).
+    let arr = body["credentials"].as_array().unwrap();
     assert_eq!(arr.len(), 1);
-    assert_eq!(arr[0]["label"], "install");
+    // `deviceLabel`, the name the shared `RegisteredCredential` component
+    // publishes — `label` was the storage row's name, never the wire's.
+    assert_eq!(arr[0]["deviceLabel"], "install");
 }
 
 #[tokio::test]
@@ -318,11 +332,9 @@ async fn register_succeeds_with_step_up_uv() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "start: {body}");
-    let registration_id = body["registrationId"].as_str().unwrap().to_string();
-    let register_options: CreationChallengeResponse =
-        serde_json::from_value(body["registerOptions"].clone()).unwrap();
-    let uv_options: RequestChallengeResponse =
-        serde_json::from_value(body["uvOptions"].clone()).unwrap();
+    let registration_id = body["enrollmentId"].as_str().unwrap().to_string();
+    let register_options: CreationChallengeResponse = wrap_options(&body["options"]);
+    let uv_options: RequestChallengeResponse = wrap_options(&body["uvOptions"]);
 
     // harness signs both
     let (register_response, _new_pub) = fix.authenticator.register(&register_options, RP_ORIGIN);
@@ -408,9 +420,8 @@ async fn register_rejects_when_uv_signed_by_wrong_authenticator() {
         Some(json!({})),
     )
     .await;
-    let registration_id = body["registrationId"].as_str().unwrap().to_string();
-    let register_options: CreationChallengeResponse =
-        serde_json::from_value(body["registerOptions"].clone()).unwrap();
+    let registration_id = body["enrollmentId"].as_str().unwrap().to_string();
+    let register_options: CreationChallengeResponse = wrap_options(&body["options"]);
 
     // New device produced by the legitimate harness (so the register
     // half passes), but the UV signed by a foreign authenticator
@@ -452,8 +463,7 @@ async fn register_rejects_when_uv_signed_by_wrong_authenticator() {
     // Approach: take the start's UV options + the foreign cred id
     // and craft an obviously-wrong PublicKeyCredential. The server
     // will fail signature verification.
-    let uv_options: RequestChallengeResponse =
-        serde_json::from_value(body["uvOptions"].clone()).unwrap();
+    let uv_options: RequestChallengeResponse = wrap_options(&body["uvOptions"]);
     let cred_id_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(uv_options.public_key.allow_credentials[0].id.as_ref() as &[u8]);
     let bogus_uv = json!({
@@ -513,8 +523,7 @@ async fn revoke_last_passkey_returns_409_last_passkey_protected() {
     .await;
     assert_eq!(status, StatusCode::OK, "revoke start: {body}");
     let revocation_id = body["revocationId"].as_str().unwrap().to_string();
-    let uv_options: RequestChallengeResponse =
-        serde_json::from_value(body["uvOptions"].clone()).unwrap();
+    let uv_options: RequestChallengeResponse = wrap_options(&body["uvOptions"]);
     let uv_response = fix.authenticator.authenticate(&uv_options, RP_ORIGIN);
 
     // finish — must be rejected with 409 because this would leave 0 passkeys
@@ -550,11 +559,9 @@ async fn revoke_after_register_succeeds_and_emits_audit_event() {
         Some(json!({})),
     )
     .await;
-    let reg_id = body["registrationId"].as_str().unwrap().to_string();
-    let register_options: CreationChallengeResponse =
-        serde_json::from_value(body["registerOptions"].clone()).unwrap();
-    let uv_options: RequestChallengeResponse =
-        serde_json::from_value(body["uvOptions"].clone()).unwrap();
+    let reg_id = body["enrollmentId"].as_str().unwrap().to_string();
+    let register_options: CreationChallengeResponse = wrap_options(&body["options"]);
+    let uv_options: RequestChallengeResponse = wrap_options(&body["uvOptions"]);
     let (register_response, _) = fix.authenticator.register(&register_options, RP_ORIGIN);
     let uv_response = fix.authenticator.authenticate(&uv_options, RP_ORIGIN);
     let (status, body) = request(
@@ -599,8 +606,7 @@ async fn revoke_after_register_succeeds_and_emits_audit_event() {
     )
     .await;
     let revocation_id = body["revocationId"].as_str().unwrap().to_string();
-    let uv_options: RequestChallengeResponse =
-        serde_json::from_value(body["uvOptions"].clone()).unwrap();
+    let uv_options: RequestChallengeResponse = wrap_options(&body["uvOptions"]);
     let uv_response = fix.authenticator.authenticate(&uv_options, RP_ORIGIN);
 
     let (status, body) = request(
@@ -727,11 +733,9 @@ async fn register_returns_503_when_audit_writer_missing() {
         Some(json!({})),
     )
     .await;
-    let registration_id = body["registrationId"].as_str().unwrap().to_string();
-    let register_options: CreationChallengeResponse =
-        serde_json::from_value(body["registerOptions"].clone()).unwrap();
-    let uv_options: RequestChallengeResponse =
-        serde_json::from_value(body["uvOptions"].clone()).unwrap();
+    let registration_id = body["enrollmentId"].as_str().unwrap().to_string();
+    let register_options: CreationChallengeResponse = wrap_options(&body["options"]);
+    let uv_options: RequestChallengeResponse = wrap_options(&body["uvOptions"]);
     let (register_response, _) = fix.authenticator.register(&register_options, RP_ORIGIN);
     let uv_response = fix.authenticator.authenticate(&uv_options, RP_ORIGIN);
     let (status, _body) = request(

@@ -2011,6 +2011,7 @@ mod tests {
             allowed_contexts: vec!["ctx-a".to_string()],
             session_id: "test-session".into(),
             access_expires_at: 0,
+            issued_at: 0,
             amr: Vec::new(),
             acr: String::new(),
         };
@@ -2036,6 +2037,7 @@ mod tests {
             allowed_contexts: vec!["ctx-b".to_string()],
             session_id: "test-session".into(),
             access_expires_at: 0,
+            issued_at: 0,
             amr: Vec::new(),
             acr: String::new(),
         };

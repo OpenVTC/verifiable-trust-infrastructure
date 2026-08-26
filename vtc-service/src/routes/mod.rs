@@ -19,7 +19,7 @@ pub(crate) mod members;
 pub(crate) mod policies;
 pub mod recognise;
 mod recognition_admin;
-mod relationships;
+pub(crate) mod relationships;
 mod schemas;
 pub(crate) mod status_lists;
 pub mod trust_tasks;
@@ -641,12 +641,12 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // (same path-trie precedence as personhood).
         .routes(tt(
             routes!(members::relationships::list),
-            "https://trusttasks.org/spec/vtc/relationships/list/0.1",
+            "https://trusttasks.org/spec/vtc/relationships/list/0.2",
         ))
         // Admin connections-graph view — the member-relationship (VRC) graph.
         .routes(tt(
             routes!(relationships::graph),
-            "https://trusttasks.org/spec/vtc/relationships/graph/0.1",
+            "https://trusttasks.org/spec/vtc/relationships/graph/0.2",
         ))
         .routes(tt(
             routes!(relationships::revoke),

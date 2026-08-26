@@ -179,6 +179,11 @@ pub async fn auth_from_did(
         session_id: session.session_id,
         // Intrinsic-sender auth carries no JWT, hence no access-token expiry.
         access_expires_at: 0,
+        // The session's own creation, not "now". These sessions are persistent
+        // and DID-keyed, so every message from a peer resolves the same row —
+        // stamping the arrival time would make each message look like a fresh
+        // login, which is the opposite of what this row exists to record.
+        issued_at: session.created_at,
         // Trust the session's persisted assurance level. A freshly-created
         // session is `aal1` with a single `did` factor; an elevated one reports
         // `aal2` until its window lapses.

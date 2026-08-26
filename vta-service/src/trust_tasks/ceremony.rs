@@ -154,8 +154,10 @@ pub(crate) fn ceremony_claims(sender_did: &str) -> AuthClaims {
         allowed_contexts: Vec::new(),
         session_id: sender_did.to_string(),
         // No JWT, hence no access-token expiry — same as every other
-        // intrinsic-sender caller.
+        // intrinsic-sender caller. `issued_at` is 0 for the stronger reason
+        // that no session row exists at all: there is nothing that was issued.
         access_expires_at: 0,
+        issued_at: 0,
         amr: vec!["did".to_string()],
         acr: "aal1".to_string(),
     }

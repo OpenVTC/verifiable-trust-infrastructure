@@ -39,6 +39,13 @@ pub struct AuthClaims {
     /// `whoami`-style endpoints can return the access-token
     /// lifetime without re-decoding.
     pub access_expires_at: u64,
+    /// JWT `iat` claim — Unix-second issue time.
+    ///
+    /// Carried for the same reason as `access_expires_at`: the canonical
+    /// `Session` component makes `issuedAt` **required**, and a `whoami` that
+    /// cannot say when the session began describes a session only half way.
+    /// The value was always in the token; it simply was not surfaced.
+    pub issued_at: u64,
     /// Authentication Methods References per [RFC 8176]. Mirrors
     /// `Claims.amr` from the bearer JWT. Handlers gating sensitive
     /// operations check this to decide whether a step-up is needed.
@@ -182,6 +189,7 @@ async fn authenticate_token<S: AuthState>(
                 allowed_contexts: claims.contexts,
                 session_id: claims.session_id,
                 access_expires_at: claims.exp,
+                issued_at: claims.iat,
                 amr: claims.amr,
                 acr: claims.acr,
             },
@@ -229,9 +237,12 @@ impl AuthClaims {
             // CLI synthesis bypasses the session store entirely.
             // The sentinel session_id matches the DID format and
             // `access_expires_at: 0` makes the synthesized claim
-            // visibly "no real expiry" to any log scraper.
+            // visibly "no real expiry" to any log scraper, and
+            // `issued_at: 0` follows the same convention — there is
+            // no JWT here, so there is no `iat` to carry.
             session_id: format!("cli:{channel}"),
             access_expires_at: 0,
+            issued_at: 0,
             // CLI synthesis is a process-local trust boundary; the auth
             // method is the OS user, not a wire factor. Surface `"cli"`
             // in amr so a downstream auditor distinguishes synthesized

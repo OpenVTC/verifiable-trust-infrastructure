@@ -371,6 +371,7 @@ mod tests {
             // shape used by `AuthClaims::synthesize` for DIDComm-only
             // callers in the codebase.
             access_expires_at: 0,
+            issued_at: 0,
             amr: vec!["synth".into()],
             acr: String::new(),
         }

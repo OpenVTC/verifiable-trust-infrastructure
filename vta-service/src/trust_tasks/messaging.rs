@@ -90,6 +90,7 @@ mod tests {
             allowed_contexts: vec![],
             session_id: "didcomm:did:key:zPinger".into(),
             access_expires_at: 0,
+            issued_at: 0,
             amr: vec!["did".into()],
             acr: "aal1".into(),
         };

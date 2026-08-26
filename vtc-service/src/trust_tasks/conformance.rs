@@ -1240,30 +1240,53 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── relationships ───────────────────────────────────────────
         checked!(
-            s::relationships::list::v0_1::Payload,
-            s::relationships::list::v0_1::Response,
+            s::relationships::list::v0_2::Payload,
+            s::relationships::list::v0_2::Response,
             json!({ "did": DID, "cursor": "eyJsYXN0S2V5Ijoi", "limit": 50 }),
-            // `Relationship` — relationships/mod.rs:59. The spec types the
-            // items as free objects, so only the wrapper diverges.
+            // This fixture said `vrcSha256` — the `0.1` member — while the
+            // service had already moved to a multibase digest. The table
+            // called the task conformant on that basis for as long as both
+            // were wrong together, which is what a hand-written fixture buys
+            // you. `0.2` (trustoverip/dtgwg-trust-tasks-tf#266) publishes the
+            // multibase form the service sends.
             paginated(json!([{
                 "id": REQUEST_ID,
                 "issuerDid": DID,
                 "subjectDid": OTHER_DID,
                 "vrcJsonld": credential(),
-                "vrcSha256": "3b9f0a1c8d2e4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f809a1b2c3",
+                "vrcDigestMultibase": "zQmbGXRT3v1RmfWkQ7Y3Z5Uj9pKq2NcXhLd8sVtA4eB6nMw",
                 "createdAt": TS,
             }]))
         ),
         checked!(
-            s::relationships::graph::v0_1::Payload,
-            s::relationships::graph::v0_1::Response,
+            s::relationships::graph::v0_2::Payload,
+            s::relationships::graph::v0_2::Response,
             json!({}),
-            // `RelationshipsGraph` — routes/relationships.rs:773.
-            json!({
-                "nodes": [{ "did": DID }, { "did": OTHER_DID }],
-                "edges": [{ "id": REQUEST_ID, "issuerDid": DID,
-                            "subjectDid": OTHER_DID, "createdAt": TS }],
+            // Serialised from the real graph types. The hand-written version
+            // described `0.1`'s flat edge — one row per credential — which
+            // the service has never emitted: it groups halves by endpoint
+            // pair and says whether the edge is reciprocated. Two wrongs
+            // agreeing is what let this read as conformant.
+            serde_json::to_value(crate::routes::relationships::RelationshipsGraph {
+                nodes: vec![
+                    crate::routes::relationships::GraphNode { did: DID.into() },
+                    crate::routes::relationships::GraphNode {
+                        did: OTHER_DID.into()
+                    },
+                ],
+                edges: vec![crate::routes::relationships::GraphEdge {
+                    endpoints: vec![DID.into(), OTHER_DID.into()],
+                    halves: vec![crate::routes::relationships::GraphHalf {
+                        id: REQUEST_ID.into(),
+                        issuer_did: DID.into(),
+                        subject_did: OTHER_DID.into(),
+                        created_at: TS.into(),
+                        persona_did: None,
+                    }],
+                    complete: false,
+                }],
             })
+            .expect("RelationshipsGraph serialises")
         ),
         checked!(
             s::relationships::publish::v0_2::Payload,

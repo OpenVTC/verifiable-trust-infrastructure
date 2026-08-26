@@ -354,7 +354,9 @@ async fn admin_session_bridges_bearer_to_cookie_and_authenticates() {
     assert_eq!(res.status(), StatusCode::OK);
     let who: Value =
         serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(who["did"].as_str(), Some(holder.as_str()));
+    // `auth/whoami/0.1` answers with the canonical `Session`, whose subject
+    // member is `subject`. The flat `did` was this service's own shape.
+    assert_eq!(who["session"]["subject"].as_str(), Some(holder.as_str()));
 }
 
 #[tokio::test]

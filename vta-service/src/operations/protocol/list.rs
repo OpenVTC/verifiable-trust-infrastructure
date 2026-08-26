@@ -215,6 +215,7 @@ mod tests {
             allowed_contexts: vec!["vta".into()],
             session_id: "test-session".into(),
             access_expires_at: 0,
+            issued_at: 0,
             amr: Vec::new(),
             acr: String::new(),
         };

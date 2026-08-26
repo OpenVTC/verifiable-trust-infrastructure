@@ -34,8 +34,8 @@ use vtc_service::test_support::TestVtc;
 
 const PUBLIC_URL: &str = "https://vtc.example.com";
 const PUBLISH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/publish/0.2";
-const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/list/0.1";
-const GRAPH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/graph/0.1";
+const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/list/0.2";
+const GRAPH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/graph/0.2";
 const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/revoke/0.1";
 const ISSUER_DID: &str = "did:key:zVrcIssuer";
 const SUBJECT_DID: &str = "did:key:zVrcSubject";
@@ -247,7 +247,19 @@ async fn seed_relationship(fix: &Fixture, issuer: &str, subject: &str) -> Uuid {
         issuer_did: issuer.into(),
         subject_did: subject.into(),
         vrc_jsonld: fake_vrc(issuer, subject),
-        vrc_digest_multibase: format!("seed-{id}"),
+        // A real multibase-wrapped multihash over the seeded credential, not
+        // `seed-{id}`. The placeholder was unique per row, which is all the
+        // storage layer needed — and it meant no test ever exercised a digest
+        // that looked like a digest, so the response-conformance layer found
+        // the format mismatch that the whole suite had been blind to.
+        vrc_digest_multibase: {
+            use sha2::{Digest, Sha256};
+            let canonical = serde_json_canonicalizer::to_vec(&fake_vrc(issuer, subject))
+                .expect("canonicalizable");
+            let mut mh = vec![0x12, 0x20];
+            mh.extend_from_slice(&Sha256::digest(&canonical));
+            multibase::encode(multibase::Base::Base58Btc, mh)
+        },
         created_at: chrono::Utc::now(),
         persona: None,
     };
@@ -1256,7 +1268,7 @@ mod pairwise {
         const GRAPH_ADMIN: u8 = 0x7A;
 
         const PERSONA_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/persona/0.1";
-        const GRAPH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/graph/0.1";
+        const GRAPH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/graph/0.2";
 
         /// A signed VPC: issued under `persona_seed`'s P-DID, naming
         /// `counterparty_seed` as the subject. DTG Credentials §VPC.

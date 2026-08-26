@@ -45,11 +45,33 @@ use axum::body::{Body, Bytes};
 use axum::http::{Request, Response, StatusCode};
 use axum::middleware::Next;
 
+/// Tasks whose responses are known not to conform, and may not fail the build
+/// yet.
+///
+/// **This list may only shrink.** It is the same discipline as
+/// `KNOWN_DRIFT_COUNT` in `trust_tasks::conformance`, for the same reason: a
+/// tolerated defect that nothing counts becomes a permanent one. Every entry
+/// names a task and why it is still here, and
+/// `the_allowlist_only_shrinks` fails if the count goes up.
+///
+/// **The list is empty.** Every route this suite exercises now conforms to the
+/// schema its task publishes, so the layer is an unconditional gate rather than
+/// a report with exceptions. The machinery stays because the discipline is the
+/// point: a task that starts failing must be *fixed*, and if it genuinely
+/// cannot be, adding it back here is a visible decision that shows up in a
+/// diff — not a silent one.
+const ALLOWED: &[&str] = &[];
+
+/// The number of allowlisted tasks, asserted so the list cannot grow quietly.
+pub const ALLOWED_COUNT: usize = 0;
+
 /// Violations observed during a test run, for the harness to assert on.
 ///
 /// Collected rather than panicked on inside the layer: a panic in middleware
 /// surfaces as a transport error at the call site, which reads as "the request
-/// failed" and hides what actually went wrong.
+/// failed" and hides what actually went wrong. The failure is raised at the
+/// end of the request instead, as a `500` carrying the reason, so the test
+/// that provoked it is the test that fails.
 static VIOLATIONS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
 fn violations() -> &'static Mutex<Vec<String>> {
@@ -89,32 +111,122 @@ pub async fn validate_response(req: Request<Body>, next: Next) -> Response<Body>
         Err(_) => return Response::from_parts(parts, Body::empty()),
     };
 
-    check(&task, parts.status, &bytes);
-    Response::from_parts(parts, Body::from(bytes))
+    match check(&task, parts.status, &bytes) {
+        None => Response::from_parts(parts, Body::from(bytes)),
+        // Replace the response rather than panic. A panic in middleware
+        // surfaces at the call site as a transport error — "the request
+        // failed" — which says nothing about why. A 500 carrying the schema
+        // error makes the test that provoked it fail on its own status
+        // assertion, and print the reason.
+        Some(msg) => Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "error": "responseSchemaViolation",
+                    "message": msg,
+                })
+                .to_string(),
+            ))
+            .expect("static response builds"),
+    }
 }
 
 /// The check itself, separated so it is unit-testable without a router.
-fn check(task: &str, status: StatusCode, bytes: &Bytes) {
+///
+/// Returns the failure message when the response does not conform **and** the
+/// task is not allowlisted; `None` otherwise.
+fn check(task: &str, status: StatusCode, bytes: &Bytes) -> Option<String> {
     // 204 and an empty body carry no payload to validate.
     if status == StatusCode::NO_CONTENT || bytes.is_empty() {
-        return;
+        return None;
     }
-    let Some(schema) = trust_tasks_rs::schema_index::schema_for(&format!("{task}#response")) else {
-        return;
-    };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
-        return;
-    };
+    let schema = trust_tasks_rs::schema_index::schema_for(&format!("{task}#response"))?;
+    let value = serde_json::from_slice::<serde_json::Value>(bytes).ok()?;
     // A Trust Task *document* carries its payload under `payload`; a bare REST
     // response is the payload itself. Validate whichever this is, so the layer
     // works across both bindings without the test having to say which.
     let payload = value.get("payload").unwrap_or(&value);
-    if let Err(e) = trust_tasks_rs::validate::against_schema(schema, payload) {
-        let msg = format!("{task}: {e}");
-        // Printed as well as collected. A violation that only accumulates in a
-        // static is invisible to `cargo test`, which is how a conformance
-        // signal quietly stops being one.
-        eprintln!("RESPONSE-CONFORMANCE VIOLATION  {msg}");
-        violations().lock().expect("violations lock").push(msg);
+    let Err(e) = trust_tasks_rs::validate::against_schema(schema, payload) else {
+        return None;
+    };
+    let msg = format!("{task}: {e}");
+    eprintln!("RESPONSE-CONFORMANCE VIOLATION  {msg}");
+    violations()
+        .lock()
+        .expect("violations lock")
+        .push(msg.clone());
+    if ALLOWED.contains(&task) {
+        return None;
+    }
+    Some(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The allowlist may only shrink.
+    ///
+    /// Asserted for the same reason `KNOWN_DRIFT_COUNT` is: a tolerated defect
+    /// that nothing counts becomes a permanent one, and the cheapest way to
+    /// make a failing check pass is to add a line to a list nobody is
+    /// watching. Closing an entry means deleting it *and* lowering this.
+    #[test]
+    fn the_allowlist_only_shrinks() {
+        assert_eq!(
+            ALLOWED.len(),
+            ALLOWED_COUNT,
+            "the response-conformance allowlist changed. Removing a task? \
+             Lower ALLOWED_COUNT with it. Adding one? That needs a reason in \
+             review, not a quiet edit — a route whose response does not match \
+             its published schema is a defect, and this list exists to record \
+             the ones already known, not to absorb new ones."
+        );
+    }
+
+    /// A violation is *recorded* as well as raised.
+    ///
+    /// The two are separate on purpose. Raising fails the one test that
+    /// provoked it; recording is what lets a run be swept for every violation
+    /// at once, which is how the original inventory of 134 was taken. If the
+    /// allowlist ever gains an entry again, that entry is reported and not
+    /// raised — recording is the half that keeps it visible.
+    #[test]
+    fn a_violation_is_recorded_as_well_as_raised() {
+        clear_violations();
+        let out = check(
+            "https://trusttasks.org/spec/auth/whoami/0.1",
+            StatusCode::OK,
+            &Bytes::from_static(b"{\"nope\":1}"),
+        );
+        assert!(
+            out.is_some(),
+            "a non-allowlisted violation must fail the build"
+        );
+        assert_eq!(
+            observed_violations().len(),
+            1,
+            "it must also be recorded, or a run cannot be swept for all of them"
+        );
+    }
+
+    /// A task with no published schema is not a violation. Treating "unknown"
+    /// as "bad" would fail loudest on the routes this build understands least.
+    #[test]
+    fn an_unknown_task_is_not_a_violation() {
+        assert!(
+            check(
+                // Deliberately not a `trusttasks.org/spec/` URI:
+                // `every_bound_canonical_task_exists_in_the_registry` scans
+                // this crate for bound canonical URIs and would read a fake
+                // one here as a real binding — which it did, on the first
+                // run of this test.
+                "https://example.invalid/not/a/task/9.9",
+                StatusCode::OK,
+                &Bytes::from_static(b"{}"),
+            )
+            .is_none()
+        );
     }
 }
