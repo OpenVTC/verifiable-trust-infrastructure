@@ -244,7 +244,7 @@ futures-util = { workspace = true, optional = true }
 # `TspPingSession` needs. Depend on the same crate directly (Cargo unifies to
 # one instance, the one `affinidi_tdk::messaging` re-exports) so the `tsp`
 # feature can turn its `tsp` on — mirrors what `vta-service` does.
-affinidi-messaging-sdk = { version = "0.19", optional = true, default-features = false }
+affinidi-messaging-sdk = { version = "0.20", optional = true, default-features = false }
 reqwest = { workspace = true, optional = true }
 # Only for `crypto_init` (the aws-lc-rs CryptoProvider installer).
 rustls = { workspace = true, optional = true }

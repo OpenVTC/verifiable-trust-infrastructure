@@ -84,7 +84,7 @@ uniffi = "0.28"
 # `unpack` rejects plaintext / anoncrypt / forged-`from` envelopes by default.
 # `0.8` would let a fresh resolve on a clean checkout land on a pre-fix 0.8.x,
 # silently moving sender authentication back out of the library. Do not relax it.
-affinidi-tdk = "0.8.5"
+affinidi-tdk = "0.9"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -244,9 +244,9 @@ aws-lc-rs = "1.16"
 # than fail quietly — but it would fail as "you are serving unspecced URIs",
 # which reads as an implementation fault instead of a stale dependency. The
 # pin makes the resolver say the true thing instead.
-trust-tasks-rs = { version = "0.11.17", default-features = false, features = ["validate"] }
-trust-tasks-capability-client = "0.9"
-trust-tasks-https = { version = "0.10", default-features = false, features = ["server", "client", "jwt"] }
+trust-tasks-rs = { version = "0.12", default-features = false, features = ["validate"] }
+trust-tasks-capability-client = "0.11"
+trust-tasks-https = { version = "0.12", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
 # and the `pack_trust_task`/`unpack_trust_task` pair that enforce it.
@@ -257,8 +257,8 @@ trust-tasks-https = { version = "0.10", default-features = false, features = ["s
 # A conformant peer rejects that, silently, because "not an envelope" is
 # indistinguishable from "not addressed to me". One constant, from the crate
 # that defines it.
-trust-tasks-didcomm = { version = "0.10", default-features = false }
-trust-tasks-proof = { version = "0.10", default-features = false, features = ["affinidi"] }
+trust-tasks-didcomm = { version = "0.12", default-features = false }
+trust-tasks-proof = { version = "0.11", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }
@@ -451,3 +451,4 @@ type_complexity = "allow"
 # ever reports one, the fix is the same choice we faced here: patch it (fast,
 # and it will break again on the next minor bump) or cut the dependency edge
 # upstream (slower, permanent).
+
