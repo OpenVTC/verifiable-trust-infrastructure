@@ -150,6 +150,26 @@ pub struct PendingTaskConsent {
     pub exclude_requester: bool,
     /// Nonce the approver echoes + signs, binding the decision to this request.
     pub challenge: String,
+    /// Freshly-minted correlator for this ceremony, used as the `threadId` on
+    /// the documents it produces.
+    ///
+    /// Framework 0.5.0 (*Identifier correlation and linkability*) requires
+    /// `id`, `threadId` and `ceremony.enactment` to be "freshly minted and
+    /// unguessable" and **MUST NOT** be derived from subject data. The granted
+    /// notice used to thread on [`wire_digest`], which is derived from the task
+    /// payload — salted, so not recoverable, but still a function of the
+    /// content and the same string the documents carry as `payloadDigest`.
+    ///
+    /// A mediator sees `threadId` as routing metadata. With the digest there it
+    /// could link the refusal, the approval pushes and the notice into one
+    /// ceremony *and* tie them to the payload digest it forwards, which is the
+    /// linkage the rule exists to remove.
+    ///
+    /// `#[serde(default)]` so a pending written before this field existed still
+    /// loads; such a record correlates on an empty string, which is no worse
+    /// than the notice being unthreaded.
+    #[serde(default)]
+    pub correlator: String,
     /// Distinct approver DIDs who have approved so far.
     pub approvals: Vec<String>,
     /// The prior state the effects shown to the approver were computed against.
@@ -527,6 +547,7 @@ mod tests {
         PendingTaskConsent {
             digest: digest.into(),
             wire_digest: format!("wire-{digest}"),
+            correlator: "urn:uuid:test-correlator".into(),
             state_pin: None,
             guards: Default::default(),
             type_uri: "https://…/dids/update/1.0".into(),

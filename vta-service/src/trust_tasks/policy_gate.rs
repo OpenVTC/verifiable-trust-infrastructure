@@ -627,6 +627,10 @@ async fn consent_gate(
             // The salted digest: what the approver signs, and what the two
             // screens compare. The internal one never leaves this process.
             "payloadDigest": pending.wire_digest,
+            // What the granted notice will be threaded on. The requester needs
+            // it to correlate, and it is deliberately *not* the digest: see
+            // `PendingTaskConsent::correlator`.
+            "correlator": pending.correlator,
             "challenge": pending.challenge,
             "approverSet": require.approver_set,
             "minApprovals": min_approvals,
@@ -725,6 +729,11 @@ async fn mint_pending(
     let pending = consent::PendingTaskConsent {
         digest,
         wire_digest,
+        // A correlator of its own, not the digest. Framework 0.5.0 requires a
+        // `threadId` to be freshly minted; deriving one from the payload hands
+        // a mediator the link between the routing metadata it sees and the
+        // digest it forwards.
+        correlator: format!("urn:uuid:{}", Uuid::new_v4()),
         type_uri: type_uri.to_string(),
         requester_did: auth.did.clone(),
         approver_set: require.approver_set.clone(),

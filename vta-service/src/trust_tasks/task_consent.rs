@@ -354,6 +354,7 @@ pub(super) async fn handle_decision(
             state,
             &updated.requester_did,
             &updated.wire_digest,
+            &updated.correlator,
             &updated.type_uri,
         )
         .await;
@@ -460,6 +461,7 @@ mod tests {
             &consent::PendingTaskConsent {
                 digest: digest.clone(),
                 wire_digest: wire_digest.clone(),
+                correlator: "urn:uuid:test-correlator".into(),
                 type_uri: TYPE_URI.into(),
                 requester_did: REQUESTER.into(),
                 approver_set: "webvh-approvers".into(),
@@ -547,6 +549,7 @@ mod tests {
         consent::PendingTaskConsent {
             digest: "d".into(),
             wire_digest: "w".into(),
+            correlator: "urn:uuid:test-correlator".into(),
             type_uri: "https://…/dids/update/1.0".into(),
             requester_did: "did:key:zAgent".into(),
             approver_set: "openvtc-admins".into(),

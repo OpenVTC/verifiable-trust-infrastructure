@@ -351,15 +351,31 @@ jobs:
 
       - uses: actions/cache@v5
         with:
+          # `target/` is deliberately NOT cached here any more.
+          #
+          # It was, keyed on `hashFiles('**/Cargo.lock')` with a prefix
+          # `restore-keys` fallback — and every crate in this workspace is a
+          # **path** dependency, so changing one member's source does not move
+          # `Cargo.lock` and therefore does not move the key. A PR that edits
+          # `vta-policy` and nothing else restores `main`'s `target/`
+          # byte-for-byte, and `cargo check` reuses the stale `vta-policy`
+          # artifact: the build then fails on the *new* code with
+          # `no field ... on type ...`, naming a field that is right there in
+          # the source.
+          #
+          # That is a false red on a green tree, and it is the worst kind: it
+          # points at the author's own diff. It failed #1133 exactly this way,
+          # which a clean-room checkout of the same commit compiled without
+          # complaint.
+          #
+          # The registry and git caches stay: they are content-addressed by
+          # package version, so a stale entry is impossible by construction.
+          # `cargo check` on a warm registry is under two minutes, which is not
+          # worth a class of failure that costs an afternoon to disbelieve.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-msrv-${{ steps.msrv.outputs.msrv }}-${{ hashFiles('**/Cargo.lock') }}
-          # Deliberately NO `${{ runner.os }}-cargo-` fallback. This job runs a
-          # different toolchain, so another job's `target/` is unusable to it —
-          # the shared key only ever restored gigabytes it could not link
-          # against, onto a disk that then had to hold this job's own build too.
           restore-keys: |
             ${{ runner.os }}-cargo-msrv-${{ steps.msrv.outputs.msrv }}-
 

@@ -307,6 +307,10 @@ pub(super) async fn push_granted(
     state: &AppState,
     #[cfg_attr(not(feature = "didcomm"), allow(unused))] requester: &str,
     #[cfg_attr(not(feature = "didcomm"), allow(unused))] wire_digest: &str,
+    // The ceremony's minted correlator, used as the notice's `threadId`.
+    // Deliberately separate from `wire_digest`, which stays the payload digest
+    // the notice carries in its body — see `PendingTaskConsent::correlator`.
+    #[cfg_attr(not(feature = "didcomm"), allow(unused))] correlator: &str,
     #[cfg_attr(not(feature = "didcomm"), allow(unused))] type_uri: &str,
 ) {
     let mediator_did = {
@@ -338,7 +342,7 @@ pub(super) async fn push_granted(
         let mut body = serde_json::json!({
             "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
             "type": TASK_CONSENT_GRANTED_0_1,
-            "threadId": wire_digest,
+            "threadId": correlator,
             "recipient": requester,
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": {
@@ -369,7 +373,7 @@ pub(super) async fn push_granted(
                 message_type: TRUST_TASK_ENVELOPE_TYPE.to_string(),
                 recipient_did: requester.to_string(),
                 body: body.clone(),
-                thread_id: Some(wire_digest.to_string()),
+                thread_id: Some(correlator.to_string()),
             };
             if let Err(e) = state
                 .mediator_registry
@@ -446,6 +450,7 @@ mod tests {
             &state,
             REQUESTER,
             "digest-abc",
+            "urn:uuid:correlator-abc",
             "https://example.org/task/1.0",
         )
         .await;
@@ -467,6 +472,69 @@ mod tests {
         assert_eq!(
             pushed[0].body["payload"]["payloadDigest"].as_str(),
             Some("digest-abc")
+        );
+    }
+
+    /// The notice's `threadId` is the minted correlator, never the digest.
+    ///
+    /// Framework 0.5.0 (*Identifier correlation and linkability*) requires a
+    /// `threadId` to be freshly minted and forbids deriving one from subject
+    /// data. This notice used to thread on `wire_digest` — salted, so not
+    /// recoverable, but still a function of the payload and the *same string*
+    /// the document carries as `payloadDigest`.
+    ///
+    /// A mediator sees `threadId` as routing metadata. With the digest there it
+    /// could tie the routing it performs to the digest it forwards and link
+    /// every counterparty in the ceremony, which is the linkage the rule exists
+    /// to remove. The body still carries `payloadDigest`, so a requester that
+    /// matches on the digest is unaffected.
+    #[tokio::test]
+    async fn the_notice_threads_on_the_correlator_not_the_digest() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        state
+            .mediator_registry
+            .record_activate(MediatorBinding {
+                mediator_did: MEDIATOR.into(),
+                endpoint: "https://mediator.test".into(),
+            })
+            .await;
+        {
+            let mut cfg = state.config.write().await;
+            cfg.messaging = Some(vti_common::config::MessagingConfig {
+                mediator_url: String::new(),
+                mediator_did: MEDIATOR.into(),
+                mediator_host: None,
+                setup_acl: false,
+                drain_inbox_on_start: false,
+            });
+        }
+
+        super::push_granted(
+            &state,
+            REQUESTER,
+            "digest-abc",
+            "urn:uuid:correlator-abc",
+            "https://example.org/task/1.0",
+        )
+        .await;
+
+        let pushed = state.mediator_registry.take_outbound(MEDIATOR).await;
+        let one = pushed.first().expect("a notice was pushed");
+        assert_eq!(
+            one.thread_id.as_deref(),
+            Some("urn:uuid:correlator-abc"),
+            "the envelope must thread on the minted correlator"
+        );
+        assert_eq!(
+            one.body["threadId"], "urn:uuid:correlator-abc",
+            "and so must the document: {}",
+            one.body
+        );
+        assert_eq!(
+            one.body["payload"]["payloadDigest"], "digest-abc",
+            "the body still carries the digest, so a requester matching on it \
+             is unaffected: {}",
+            one.body
         );
     }
 }
