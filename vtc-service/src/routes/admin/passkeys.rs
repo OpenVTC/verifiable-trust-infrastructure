@@ -33,7 +33,7 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::info;
@@ -45,10 +45,7 @@ use vti_common::auth::passkey::store::{
     store_registration_state, take_auth_state, take_registration_state,
 };
 use vti_common::error::AppError;
-use webauthn_rs::prelude::{
-    CreationChallengeResponse, Passkey, PublicKeyCredential, RegisterPublicKeyCredential,
-    RequestChallengeResponse, Webauthn,
-};
+use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCredential, Webauthn};
 
 use crate::acl::admin::{AdminEntry, RegisteredPasskey, get_admin_entry, store_admin_entry};
 use crate::server::AppState;
@@ -69,22 +66,83 @@ static ADMIN_PASSKEY_LOCK: Mutex<()> = Mutex::const_new(());
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct ListResponse {
-    pub passkeys: Vec<RegisteredPasskey>,
+    /// `credentials`, the name `auth/passkey/list/0.1` publishes. It was
+    /// `passkeys` until #1112 — the same object under a name the schema does
+    /// not define, so no conforming client could find it.
+    pub credentials: Vec<RegisteredCredential>,
+}
+
+/// The wire view of a passkey, as `auth/passkey/list/0.1` publishes it.
+///
+/// Separate from [`RegisteredPasskey`] because that type is a **storage row**:
+/// it is `Deserialize`d out of the `admin:<did>` record, so its member names
+/// are the on-disk format and renaming them would orphan every passkey already
+/// enrolled. The two shapes disagree in exactly the two ways the schema cares
+/// about, and both differences are the storage row's to keep:
+///
+/// - `label` is published as `deviceLabel`, and is **absent** rather than empty
+///   when nobody chose one. The schema is explicit that a consumer must not
+///   synthesize a label, "because an invented one is indistinguishable from a
+///   chosen one to somebody deciding which credential to revoke" — and `""` is
+///   an invented one.
+/// - `lastUsedAt` is omitted when unset. Sending `null` is a type error against
+///   a `date-time` member, and the schema notes it deliberately does not
+///   distinguish "never used" from "not tracked", since no binding could carry
+///   the difference anyway.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct RegisteredCredential {
+    pub credential_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_label: Option<String>,
+    pub transports: Vec<String>,
+    pub registered_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+impl From<&RegisteredPasskey> for RegisteredCredential {
+    fn from(p: &RegisteredPasskey) -> Self {
+        Self {
+            credential_id: p.credential_id.clone(),
+            device_label: (!p.label.is_empty()).then(|| p.label.clone()),
+            transports: p.transports.clone(),
+            registered_at: p.registered_at,
+            last_used_at: p.last_used_at,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct RegisterStartResponse {
-    /// Opaque id the operator passes back to `register/finish`.
-    pub registration_id: String,
-    /// `navigator.credentials.create()` options — EdDSA-restricted.
+    /// Opaque id the operator passes back to `enroll/finish`.
+    ///
+    /// `enrollmentId`, the name the task publishes — it was `registrationId`
+    /// until #1112.
+    pub enrollment_id: String,
+    /// The value for `navigator.credentials.create({ publicKey: … })`.
+    ///
+    /// The **inner** options, not webauthn-rs's `{publicKey: …}` wrapper.
+    /// `CredentialCreationOptions` in the published schema describes itself as
+    /// "server-issued options for `navigator.credentials.create({ publicKey:
+    /// ... })`" — the value that goes *inside* the key, not the object
+    /// containing it.
+    ///
+    /// The wrapper was pure ceremony: the admin SPA unwrapped it with
+    /// `start.registerOptions.publicKey` and immediately re-wrapped it as
+    /// `create({ publicKey: … })`. Sending the inner object means the client
+    /// writes `create({ publicKey: start.options })` and nothing is undone on
+    /// the way.
     #[schema(value_type = Object)]
-    pub register_options: CreationChallengeResponse,
-    /// `navigator.credentials.get()` options for the step-up UV
-    /// assertion against an existing passkey.
+    pub options: webauthn_rs_proto::PublicKeyCredentialCreationOptions,
+    /// The value for `navigator.credentials.get({ publicKey: … })` for the
+    /// step-up assertion against an existing passkey. Unwrapped for the same
+    /// reason as `options`.
     #[schema(value_type = Object)]
-    pub uv_options: RequestChallengeResponse,
+    pub uv_options: webauthn_rs_proto::PublicKeyCredentialRequestOptions,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -105,6 +163,17 @@ pub struct RegisterFinishRequest {
 #[derive(utoipa::ToSchema)]
 pub struct RegisterFinishResponse {
     pub credential_id: String,
+    /// The DID this passkey now authenticates.
+    ///
+    /// Required by `auth/passkey/enroll/finish/0.2` and absent until #1112.
+    /// A caller enrolling on behalf of someone else had no way to confirm
+    /// *whose* credential it just created — the response named the credential
+    /// and not the subject, which is the half that matters for an audit trail.
+    pub subject: String,
+    /// When the credential was registered. Required by the task, and the same
+    /// instant recorded on the stored `RegisteredPasskey`, so a client need
+    /// not re-list to learn it.
+    pub registered_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -118,7 +187,10 @@ pub struct RevokeStartRequest {
 pub struct RevokeStartResponse {
     pub revocation_id: String,
     #[schema(value_type = Object)]
-    pub uv_options: RequestChallengeResponse,
+    /// Unwrapped, as everywhere else in this family — the value for
+    /// `navigator.credentials.get({ publicKey: … })`.
+    #[schema(value_type = Object)]
+    pub uv_options: webauthn_rs_proto::PublicKeyCredentialRequestOptions,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -133,6 +205,16 @@ pub struct RevokeFinishRequest {
 #[derive(utoipa::ToSchema)]
 pub struct RevokeFinishResponse {
     pub credential_id: String,
+    /// When the credential was revoked.
+    pub revoked_at: DateTime<Utc>,
+    /// How many passkeys the subject has left.
+    ///
+    /// Required by `auth/passkey/revoke/finish/0.1` and absent until #1112.
+    /// It is the number the caller most needs and the one this endpoint is
+    /// uniquely placed to give: the last-passkey guard refuses to leave an
+    /// admin at zero, so a client that cannot see the count cannot tell
+    /// whether the next revoke will succeed without attempting it.
+    pub remaining: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +247,7 @@ pub async fn list(
         .await?
         .ok_or_else(|| AppError::NotFound("no admin entry for caller".into()))?;
     Ok(Json(ListResponse {
-        passkeys: entry.passkeys,
+        credentials: entry.passkeys.iter().map(Into::into).collect(),
     }))
 }
 
@@ -218,9 +300,9 @@ pub async fn register_start(
     info!(%did, %registration_id, "passkey register ceremony started");
 
     Ok(Json(RegisterStartResponse {
-        registration_id,
-        register_options,
-        uv_options,
+        enrollment_id: registration_id,
+        options: register_options.public_key,
+        uv_options: uv_options.public_key,
     }))
 }
 
@@ -277,11 +359,12 @@ pub async fn register_finish(
     let mut admin_entry = get_admin_entry(&state.passkey_ks, &did)
         .await?
         .unwrap_or_else(|| AdminEntry::new(did.clone()));
+    let registered_at = Utc::now();
     admin_entry.passkeys.push(RegisteredPasskey {
         credential_id: new_cred_id_hex.clone(),
         label: req.label.clone(),
         transports: req.transports.clone(),
-        registered_at: Utc::now(),
+        registered_at,
         last_used_at: None,
     });
     store_admin_entry(&state.passkey_ks, &admin_entry).await?;
@@ -304,6 +387,8 @@ pub async fn register_finish(
         StatusCode::OK,
         Json(RegisterFinishResponse {
             credential_id: new_cred_id_hex,
+            subject: did.clone(),
+            registered_at,
         }),
     ))
 }
@@ -368,7 +453,7 @@ pub async fn revoke_start(
 
     Ok(Json(RevokeStartResponse {
         revocation_id,
-        uv_options,
+        uv_options: uv_options.public_key,
     }))
 }
 
@@ -475,6 +560,8 @@ pub async fn revoke_finish(
 
     Ok(Json(RevokeFinishResponse {
         credential_id: target_cred_id,
+        revoked_at: Utc::now(),
+        remaining: admin_entry.passkeys.len(),
     }))
 }
 

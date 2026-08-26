@@ -54,25 +54,16 @@ use axum::middleware::Next;
 /// names a task and why it is still here, and
 /// `the_allowlist_only_shrinks` fails if the count goes up.
 ///
-/// Every entry below is an `auth/*` task in the shared families both daemons
-/// serve. The models genuinely differ — `passkeys` against `credentials`,
-/// and `whoami`'s session shape needs an `issuedAt` this service does not
-/// currently carry — so closing them means deciding whose shape is canonical
-/// and, where the spec cannot serve one of the daemons, amending the spec
-/// carefully rather than bending either implementation to fit.
-const ALLOWED: &[&str] = &[
-    "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2",
-    "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2",
-    "https://trusttasks.org/spec/auth/passkey/login/start/0.2",
-    "https://trusttasks.org/spec/auth/passkey/login/finish/0.2",
-    "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1",
-    "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1",
-    "https://trusttasks.org/spec/auth/passkey/list/0.1",
-    "https://trusttasks.org/spec/auth/whoami/0.1",
-];
+/// **The list is empty.** Every route this suite exercises now conforms to the
+/// schema its task publishes, so the layer is an unconditional gate rather than
+/// a report with exceptions. The machinery stays because the discipline is the
+/// point: a task that starts failing must be *fixed*, and if it genuinely
+/// cannot be, adding it back here is a visible decision that shows up in a
+/// diff — not a silent one.
+const ALLOWED: &[&str] = &[];
 
 /// The number of allowlisted tasks, asserted so the list cannot grow quietly.
-pub const ALLOWED_COUNT: usize = 8;
+pub const ALLOWED_COUNT: usize = 0;
 
 /// Violations observed during a test run, for the harness to assert on.
 ///
@@ -194,22 +185,29 @@ mod tests {
         );
     }
 
-    /// An allowlisted task is still *reported*, just not fatal — otherwise
-    /// closing one would mean first discovering it all over again.
+    /// A violation is *recorded* as well as raised.
+    ///
+    /// The two are separate on purpose. Raising fails the one test that
+    /// provoked it; recording is what lets a run be swept for every violation
+    /// at once, which is how the original inventory of 134 was taken. If the
+    /// allowlist ever gains an entry again, that entry is reported and not
+    /// raised — recording is the half that keeps it visible.
     #[test]
-    fn an_allowlisted_violation_is_recorded_but_not_fatal() {
+    fn a_violation_is_recorded_as_well_as_raised() {
         clear_violations();
-        let before = observed_violations().len();
         let out = check(
             "https://trusttasks.org/spec/auth/whoami/0.1",
             StatusCode::OK,
             &Bytes::from_static(b"{\"nope\":1}"),
         );
-        assert!(out.is_none(), "an allowlisted task must not fail the build");
+        assert!(
+            out.is_some(),
+            "a non-allowlisted violation must fail the build"
+        );
         assert_eq!(
             observed_violations().len(),
-            before + 1,
-            "it must still be recorded, or the allowlist hides the work"
+            1,
+            "it must also be recorded, or a run cannot be swept for all of them"
         );
     }
 

@@ -2,6 +2,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::auth::passkey::login::start::v0_2 as start_spec;
@@ -495,7 +496,11 @@ pub async fn admin_session(
 pub struct PasskeyLoginStartResponse {
     pub auth_id: String,
     #[schema(value_type = Object)]
-    pub options: webauthn_rs::prelude::RequestChallengeResponse,
+    /// The value for `navigator.credentials.get({ publicKey: … })` — the
+    /// inner options, not webauthn-rs's `{publicKey: …}` wrapper. See
+    /// `admin::passkeys::RegisterStartResponse::options` for why the wrapper
+    /// went.
+    pub options: webauthn_rs_proto::PublicKeyCredentialRequestOptions,
 }
 
 /// Request body for `passkey-login/start`, per
@@ -627,7 +632,7 @@ pub async fn passkey_login_start(
 
     Ok(Json(PasskeyLoginStartResponse {
         auth_id,
-        options: rcr,
+        options: rcr.public_key,
     }))
 }
 
@@ -775,7 +780,13 @@ pub async fn passkey_login_finish(
     let csrf = hex::encode(csrf_bytes);
     let csrf_cookie = build_csrf_cookie(&csrf, max_age);
 
-    let resp = AuthenticateResponse {
+    let resp = PasskeyLoginResponse {
+        // Required by `login/finish/0.2`, and not merely decorative: `start`
+        // decides the purpose, so the client learns which branch answered only
+        // from this member. Without it a caller must infer the branch from the
+        // presence of `tokens`, which is exactly the shape-sniffing the enum
+        // exists to remove.
+        purpose: "login".to_string(),
         session: WireSession {
             id: session_id.clone(),
             subject: user.did.clone(),
@@ -837,6 +848,22 @@ async fn credentials_for(
 /// one passkey gesture from authorising every future privileged operation on
 /// the session.
 const STEP_UP_ELEVATION_TTL_SECS: u64 = 900; // 15m
+
+/// `purpose: login` response — a new session plus its tokens.
+///
+/// Not `AuthenticateResponse`, which this handler used to reuse: that type
+/// serves `auth/authenticate/0.1`, whose schema is closed and has no `purpose`.
+/// One struct cannot satisfy both tasks, and reusing it here is what left
+/// `login/finish/0.2` short of a required member — the two responses look alike
+/// but answer different questions.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyLoginResponse {
+    /// Always `"login"`. The sibling of [`PasskeyStepUpResponse::purpose`].
+    pub purpose: String,
+    pub session: WireSession,
+    pub tokens: TokenBundle,
+}
 
 /// `purpose: stepUp` response — the elevated session, no tokens. Per
 /// `spec/auth/passkey/login/finish/0.2`: the caller's existing tokens remain
@@ -1224,11 +1251,39 @@ impl From<Session> for SessionSummary {
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct WhoamiResponse {
-    pub did: String,
-    pub role: String,
-    pub session_id: String,
-    pub access_expires_at: u64,
-    pub allowed_contexts: Vec<String>,
+    /// The caller's session, under the member the task publishes.
+    ///
+    /// This response was a flat `{did, role, sessionId, accessExpiresAt,
+    /// allowedContexts}` until #1112 — every member outside the canonical
+    /// vocabulary, on a response that is `additionalProperties: false`. No
+    /// conforming client could read any of it.
+    pub session: SessionView,
+    /// The caller's roles. Plural because the component says so: a single
+    /// role is one entry, and a deployment that grows to several does not
+    /// need a new response shape.
+    pub roles: Vec<String>,
+    /// The contexts this session may act in — `allowedContexts` under the
+    /// canonical name.
+    pub scopes: Vec<String>,
+}
+
+/// The canonical `Session` shape.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionView {
+    pub id: String,
+    /// The DID this session authenticates.
+    pub subject: String,
+    /// When the session was issued — the JWT's `iat`, required by the
+    /// component and simply never surfaced before.
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    /// Authentication methods per RFC 8176, when the token records any.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub amr: Vec<String>,
+    /// Authentication context class per OIDC Core §2, when recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acr: Option<String>,
 }
 
 /// `GET /v1/auth/whoami` — returns the caller's identity claims
@@ -1245,12 +1300,24 @@ pub struct WhoamiResponse {
 )]
 pub async fn whoami(auth: AuthClaims) -> Json<WhoamiResponse> {
     Json(WhoamiResponse {
-        did: auth.did,
-        role: auth.role.to_string(),
-        session_id: auth.session_id,
-        access_expires_at: auth.access_expires_at,
-        allowed_contexts: auth.allowed_contexts,
+        session: SessionView {
+            id: auth.session_id,
+            subject: auth.did,
+            issued_at: epoch_to_datetime(auth.issued_at),
+            expires_at: epoch_to_datetime(auth.access_expires_at),
+            amr: auth.amr,
+            acr: Some(auth.acr).filter(|a| !a.is_empty()),
+        },
+        roles: vec![auth.role.to_string()],
+        scopes: auth.allowed_contexts,
     })
+}
+
+/// Unix seconds to a `DateTime`, for the `format: date-time` members the
+/// canonical components use. Out-of-range input clamps to the epoch rather
+/// than panicking — a malformed timestamp should not take the endpoint down.
+fn epoch_to_datetime(secs: u64) -> DateTime<Utc> {
+    DateTime::from_timestamp(secs as i64, 0).unwrap_or(DateTime::UNIX_EPOCH)
 }
 
 // ---------- POST /auth/sign-out ----------

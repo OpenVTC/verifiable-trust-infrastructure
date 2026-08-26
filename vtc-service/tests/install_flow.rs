@@ -39,6 +39,17 @@ use vtc_service::test_support::TestVtc;
 
 use common::webauthn_harness::SoftEd25519Authenticator;
 
+/// Re-wrap the inner WebAuthn options as webauthn-rs's `{publicKey: …}`.
+///
+/// The `auth/passkey/*/start` tasks send the *inner* options — the value a
+/// browser passes as `get({ publicKey: … })` — because that is what the
+/// canonical `CredentialRequestOptions` component describes. The
+/// soft-authenticator harness deserialises webauthn-rs's wrapper type, so the
+/// test does the same re-wrap a real client does.
+fn wrap_options<T: serde::de::DeserializeOwned>(inner: &serde_json::Value) -> T {
+    serde_json::from_value(serde_json::json!({ "publicKey": inner })).expect("options re-wrap")
+}
+
 const RP_ORIGIN: &str = "https://vtc.example.com";
 
 // Trust Tasks ------------------------------------------------------
@@ -221,6 +232,8 @@ async fn end_to_end_install_flow_phase_0_gate() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "claim/start: {body}");
+    // `install/claim/start` is untouched by this PR: it is not one of the
+    // `auth/passkey/*` tasks, and it still sends the wrapper under `options`.
     let registration_id = body["registrationId"].as_str().unwrap().to_string();
     let ccr: CreationChallengeResponse = serde_json::from_value(body["options"].clone()).unwrap();
 
@@ -293,11 +306,9 @@ async fn end_to_end_install_flow_phase_0_gate() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "register/start: {body}");
-    let reg_id = body["registrationId"].as_str().unwrap().to_string();
-    let register_options: CreationChallengeResponse =
-        serde_json::from_value(body["registerOptions"].clone()).unwrap();
-    let uv_options: RequestChallengeResponse =
-        serde_json::from_value(body["uvOptions"].clone()).unwrap();
+    let reg_id = body["enrollmentId"].as_str().unwrap().to_string();
+    let register_options: CreationChallengeResponse = wrap_options(&body["options"]);
+    let uv_options: RequestChallengeResponse = wrap_options(&body["uvOptions"]);
 
     let (register_response, _new_pub) = authenticator.register(&register_options, RP_ORIGIN);
     let uv_response = authenticator.authenticate(&uv_options, RP_ORIGIN);
@@ -335,11 +346,12 @@ async fn end_to_end_install_flow_phase_0_gate() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let passkeys = body["passkeys"].as_array().unwrap();
+    // `credentials`, the name `auth/passkey/list/0.1` publishes (#1112).
+    let passkeys = body["credentials"].as_array().unwrap();
     assert_eq!(passkeys.len(), 2, "expected 2 passkeys, got {passkeys:?}");
     let labels: std::collections::HashSet<_> = passkeys
         .iter()
-        .map(|p| p["label"].as_str().unwrap().to_string())
+        .map(|p| p["deviceLabel"].as_str().unwrap().to_string())
         .collect();
     assert!(labels.contains("install"));
     assert!(labels.contains("second device"));

@@ -40,6 +40,17 @@ use vtc_service::test_support::TestVtc;
 
 use common::webauthn_harness::SoftEd25519Authenticator;
 
+/// Re-wrap the inner WebAuthn options as webauthn-rs's `{publicKey: …}`.
+///
+/// The `auth/passkey/*/start` tasks send the *inner* options — the value a
+/// browser passes as `get({ publicKey: … })` — because that is what the
+/// canonical `CredentialRequestOptions` component describes. The
+/// soft-authenticator harness deserialises webauthn-rs's wrapper type, so the
+/// test does the same re-wrap a real client does.
+fn wrap_options<T: serde::de::DeserializeOwned>(inner: &serde_json::Value) -> T {
+    serde_json::from_value(serde_json::json!({ "publicKey": inner })).expect("options re-wrap")
+}
+
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const START_TASK: &str = "https://trusttasks.org/spec/auth/passkey/login/start/0.2";
 const FINISH_TASK: &str = "https://trusttasks.org/spec/auth/passkey/login/finish/0.2";
@@ -243,8 +254,7 @@ async fn step_up_elevates_the_session_in_place() {
     let (status, body) = step_up_start(&fix, Some(&token)).await;
     assert_eq!(status, StatusCode::OK, "start: {body}");
     let auth_id = body["authId"].as_str().unwrap().to_string();
-    let options: RequestChallengeResponse =
-        serde_json::from_value(body["options"].clone()).unwrap();
+    let options: RequestChallengeResponse = wrap_options(&body["options"]);
     let assertion = fix.authenticator.authenticate(&options, RP_ORIGIN);
 
     let (status, body) = request(
@@ -323,8 +333,7 @@ async fn step_up_refuses_another_subjects_passkey() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "other start: {other_body}");
-    let other_options: RequestChallengeResponse =
-        serde_json::from_value(other_body["options"].clone()).unwrap();
+    let other_options: RequestChallengeResponse = wrap_options(&other_body["options"]);
     let foreign_assertion = fix.authenticator.authenticate(&other_options, RP_ORIGIN);
 
     // Spend the *step-up* auth_id with the foreign assertion. The WebAuthn
@@ -354,8 +363,7 @@ async fn step_up_is_bound_to_the_session_that_started_it() {
     let (status, body) = step_up_start(&fix, Some(&bound_token)).await;
     assert_eq!(status, StatusCode::OK, "start: {body}");
     let auth_id = body["authId"].as_str().unwrap().to_string();
-    let options: RequestChallengeResponse =
-        serde_json::from_value(body["options"].clone()).unwrap();
+    let options: RequestChallengeResponse = wrap_options(&body["options"]);
     let assertion = fix.authenticator.authenticate(&options, RP_ORIGIN);
 
     let (status, _body) = request(
@@ -413,8 +421,7 @@ async fn plain_login_is_unchanged_by_the_purpose_field() {
     .await;
     assert_eq!(status, StatusCode::OK, "start: {body}");
     let auth_id = body["authId"].as_str().unwrap().to_string();
-    let options: RequestChallengeResponse =
-        serde_json::from_value(body["options"].clone()).unwrap();
+    let options: RequestChallengeResponse = wrap_options(&body["options"]);
     let assertion = fix.authenticator.authenticate(&options, RP_ORIGIN);
 
     let (status, body) = request(
@@ -486,8 +493,7 @@ async fn a_step_up_authorises_the_promotion_it_was_run_for() {
     let (status, body) = step_up_start(&fix, Some(&token)).await;
     assert_eq!(status, StatusCode::OK, "start: {body}");
     let auth_id = body["authId"].as_str().unwrap().to_string();
-    let options: RequestChallengeResponse =
-        serde_json::from_value(body["options"].clone()).unwrap();
+    let options: RequestChallengeResponse = wrap_options(&body["options"]);
     let assertion = fix.authenticator.authenticate(&options, RP_ORIGIN);
     let (status, _) = request(
         &fix.router,
@@ -523,8 +529,7 @@ async fn a_step_up_ceremony_cannot_be_replayed() {
     let (status, body) = step_up_start(&fix, Some(&token)).await;
     assert_eq!(status, StatusCode::OK, "start: {body}");
     let auth_id = body["authId"].as_str().unwrap().to_string();
-    let options: RequestChallengeResponse =
-        serde_json::from_value(body["options"].clone()).unwrap();
+    let options: RequestChallengeResponse = wrap_options(&body["options"]);
     let assertion = fix.authenticator.authenticate(&options, RP_ORIGIN);
 
     let finish = json!({ "auth_id": auth_id, "credential": assertion });

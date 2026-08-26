@@ -15,6 +15,7 @@ mod auth_enforcement {
             allowed_contexts: vec![],
             session_id: "test-session".into(),
             access_expires_at: 0,
+            issued_at: 0,
             amr: Vec::new(),
             acr: String::new(),
         }
@@ -27,6 +28,7 @@ mod auth_enforcement {
             allowed_contexts: vec!["ctx1".into()],
             session_id: "test-session".into(),
             access_expires_at: 0,
+            issued_at: 0,
             amr: Vec::new(),
             acr: String::new(),
         }
@@ -39,6 +41,7 @@ mod auth_enforcement {
             allowed_contexts: vec![],
             session_id: "test-session".into(),
             access_expires_at: 0,
+            issued_at: 0,
             amr: Vec::new(),
             acr: String::new(),
         }
@@ -51,6 +54,7 @@ mod auth_enforcement {
             allowed_contexts: vec!["ctx1".into()],
             session_id: "test-session".into(),
             access_expires_at: 0,
+            issued_at: 0,
             amr: Vec::new(),
             acr: String::new(),
         }
@@ -121,6 +125,7 @@ mod auth_enforcement {
             allowed_contexts: vec!["ctx1".into()],
             session_id: "test-session".into(),
             access_expires_at: 0,
+            issued_at: 0,
             amr: Vec::new(),
             acr: String::new(),
         }
@@ -133,6 +138,7 @@ mod auth_enforcement {
             allowed_contexts: vec![],
             session_id: "test-session".into(),
             access_expires_at: 0,
+            issued_at: 0,
             amr: Vec::new(),
             acr: String::new(),
         }
@@ -236,6 +242,7 @@ mod acl_validation {
             allowed_contexts: vec![],
             session_id: "test-session".into(),
             access_expires_at: 0,
+            issued_at: 0,
             amr: Vec::new(),
             acr: String::new(),
         }

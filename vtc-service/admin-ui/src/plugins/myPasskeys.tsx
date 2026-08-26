@@ -37,27 +37,36 @@ const TRUST_TASK_REVOKE_FINISH =
   "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1";
 
 
-interface RegisteredPasskey {
+// The shared `RegisteredCredential` component of `auth/passkey/list/0.1`.
+// `deviceLabel` and `lastUsedAt` are both genuinely optional: the schema is
+// explicit that a consumer must not invent a label, "because an invented one is
+// indistinguishable from a chosen one to somebody deciding which credential to
+// revoke", so an unlabelled credential renders as unlabelled.
+interface RegisteredCredential {
   credentialId: string;
-  label: string;
+  deviceLabel?: string;
   transports: string[];
   registeredAt: string;
-  lastUsedAt: string | null;
+  lastUsedAt?: string;
 }
 
 interface ListResponse {
-  passkeys: RegisteredPasskey[];
+  credentials: RegisteredCredential[];
 }
 
+// `enroll/start/0.2` sends the *inner* WebAuthn options — the value that goes
+// in `navigator.credentials.create({ publicKey: … })` — not the wrapper. The
+// daemon used to send `{publicKey: …}` and this file unwrapped it only to
+// re-wrap it one line later; #1112 removed that round trip.
 interface RegisterStartResponse {
-  registrationId: string;
-  registerOptions: { publicKey: JsonPublicKeyOptions };
-  uvOptions: { publicKey: JsonPublicKeyOptions };
+  enrollmentId: string;
+  options: JsonPublicKeyOptions;
+  uvOptions: JsonPublicKeyOptions;
 }
 
 interface RevokeStartResponse {
   revocationId: string;
-  uvOptions: { publicKey: JsonPublicKeyOptions };
+  uvOptions: JsonPublicKeyOptions;
 }
 
 async function fetchPasskeys(): Promise<ListResponse> {
@@ -80,7 +89,7 @@ async function registerPasskey(args: {
   );
 
   const createPublicKey = decodePublicKeyOptions(
-    start.registerOptions.publicKey,
+    start.options,
   ) as PublicKeyCredentialCreationOptions;
   const newCred = (await navigator.credentials.create({
     publicKey: createPublicKey,
@@ -90,7 +99,7 @@ async function registerPasskey(args: {
   }
 
   const uvPublicKey = decodePublicKeyOptions(
-    start.uvOptions.publicKey,
+    start.uvOptions,
   ) as PublicKeyCredentialRequestOptions;
   const uvCred = (await navigator.credentials.get({
     publicKey: uvPublicKey,
@@ -102,7 +111,7 @@ async function registerPasskey(args: {
   await postJson<unknown>(
     "/v1/admin/passkeys/register/finish",
     {
-      registration_id: start.registrationId,
+      registration_id: start.enrollmentId,
       register_response: serializeRegistration(newCred),
       uv_response: serializeAssertion(uvCred),
       label: args.label,
@@ -122,7 +131,7 @@ async function revokePasskey(args: {
   );
 
   const uvPublicKey = decodePublicKeyOptions(
-    start.uvOptions.publicKey,
+    start.uvOptions,
   ) as PublicKeyCredentialRequestOptions;
   const uvCred = (await navigator.credentials.get({
     publicKey: uvPublicKey,
@@ -168,7 +177,7 @@ export function MyPasskeys() {
     },
   });
 
-  const passkeys = query.data?.passkeys ?? [];
+  const passkeys = query.data?.credentials ?? [];
   const onlyOne = passkeys.length === 1;
 
   return (
@@ -295,7 +304,7 @@ export function MyPasskeys() {
             )}
             {passkeys.map((p) => (
               <tr key={p.credentialId}>
-                <td>{p.label}</td>
+                <td>{p.deviceLabel ?? <span className="muted">—</span>}</td>
                 <td>
                   <code className="truncate" title={p.credentialId}>
                     {p.credentialId}
@@ -321,7 +330,9 @@ export function MyPasskeys() {
                     }
                     onClick={async () => {
                       const ok = await confirm({
-                        title: `Revoke "${p.label}"?`,
+                        title: p.deviceLabel
+                          ? `Revoke "${p.deviceLabel}"?`
+                          : "Revoke this passkey?",
                         message:
                           "You'll need to verify with another passkey. The revoked passkey can no longer sign in.",
                         confirmLabel: "Revoke",
