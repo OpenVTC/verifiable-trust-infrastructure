@@ -364,11 +364,9 @@ didcomm_handler!(
         operations::keys::CreateKeyParams {
             internal: body.internal.unwrap_or(false),
             key_type: body.key_type,
-            derivation_path: if body.derivation_path.is_empty() {
-                None
-            } else {
-                Some(body.derivation_path)
-            },
+            // Straight through: the wire member is optional now, so the
+            // empty-string-means-absent dance this used to do is gone.
+            derivation_path: body.derivation_path,
             key_id: None,
             mnemonic: body.mnemonic,
             label: body.label,

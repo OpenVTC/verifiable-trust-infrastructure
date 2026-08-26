@@ -932,7 +932,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(CreateKeyBody {
                     internal: None,
                     key_type: KeyType::Ed25519,
-                    derivation_path: "m/26'/2'/0'/1'".into(),
+                    derivation_path: Some("m/26'/2'/0'/1'".into()),
                     mnemonic: None,
                     label: Some("app signing key".into()),
                     context_id: Some("app".into()),

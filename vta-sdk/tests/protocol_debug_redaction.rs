@@ -85,7 +85,7 @@ fn create_key_body_debug_redacts_mnemonic() {
     let body = CreateKeyBody {
         internal: None,
         key_type: vta_sdk::keys::KeyType::Ed25519,
-        derivation_path: "m/0'".into(),
+        derivation_path: Some("m/0'".into()),
         mnemonic: Some(MARKER.into()),
         label: Some("test".into()),
         context_id: Some("ctx".into()),

@@ -2032,6 +2032,89 @@ mod response_coverage {
         .await;
     }
 
+    /// An internal key is actually internal.
+    ///
+    /// This is the assertion whose absence let `pnm keys create --internal`
+    /// lie. The CLI prints a non-recoverable-key warning, requires the operator
+    /// to type "i understand this key cannot be recovered", and then called a
+    /// client that built its wire body with `internal: None` hardcoded — so the
+    /// operator was handed an ordinary seed-derived key that *is* in backups
+    /// and *is* exportable, believing the opposite.
+    ///
+    /// It could not have worked even if the client had forwarded the flag:
+    /// `keys/create/0.1` was `additionalProperties: false` with no `internal`
+    /// member, so the dispatch spine rejected the document. The capability
+    /// existed at both ends and was unreachable over the wire, which is what
+    /// dtgwg-trust-tasks-tf#269 fixed.
+    ///
+    /// `origin` is the check that matters, and it is the one the CLI already
+    /// makes: a maintainer that ignored the member returns `derived`, and that
+    /// difference is the only reliable signal the request was honoured.
+    #[tokio::test]
+    async fn an_internal_key_is_actually_internal() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let p = ok(
+            &state,
+            t::TASK_KEYS_CREATE_0_1,
+            json!({ "keyType": "ed25519", "internal": true, "label": "unexportable" }),
+        )
+        .await;
+        let record = p.get("key").unwrap_or(&p);
+        assert_eq!(
+            record["origin"], "internal",
+            "the key must come back marked internal — a `derived` here is \
+             exactly the silent downgrade the operator was warned about and \
+             did not get: {p}"
+        );
+        // An internal key derives from no seed, and the shared `KeyRecord`
+        // component says `derivationPath` is the path "the key was derived at,
+        // when `origin` is `derived`", absent otherwise. This service instead
+        // records the sentinel string `"internal"`, with a comment saying it
+        // "names the origin instead, so a reader cannot mistake it for
+        // something re-derivable" — reasoning that predates `origin` gaining
+        // an `internal` value (dtgwg-trust-tasks-tf#269), which now carries
+        // that fact properly.
+        //
+        // Asserted as-is rather than fixed here: making `KeyRecord`'s
+        // `derivation_path` an `Option` touches 84 construction sites and is
+        // its own change. Worth knowing that the response-conformance gate
+        // cannot catch this — the schema types the member `string`, so a
+        // sentinel validates cleanly. It is a semantic divergence, and only a
+        // reader notices.
+        assert_eq!(
+            record["derivationPath"], "internal",
+            "the sentinel is the current behaviour; when `derivationPath` \
+             becomes optional this should assert absence instead: {p}"
+        );
+    }
+
+    /// A create with no `derivationPath` succeeds.
+    ///
+    /// The spec says "omitting it leaves the choice to the custodian", and the
+    /// operation layer has always auto-derived from the context. Only the wire
+    /// type disagreed, so a conforming client that omitted it got
+    /// `malformedRequest` — and the SDK hid that by sending `""`.
+    #[tokio::test]
+    async fn a_create_without_a_derivation_path_succeeds() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        // The context has to exist: with no path *and* no context there is
+        // nothing for the custodian to derive from, which the operation layer
+        // refuses on its own terms. Creating it also covers
+        // `vta/contexts/create/1.0`.
+        ok(
+            &state,
+            t::TASK_CONTEXTS_CREATE_1_0,
+            json!({ "id": "coverage-ctx", "name": "Coverage" }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_KEYS_CREATE_0_1,
+            json!({ "keyType": "ed25519", "contextId": "coverage-ctx" }),
+        )
+        .await;
+    }
+
     #[tokio::test]
     async fn keys_rename_then_revoke() {
         let (state, _dir) = build_signing_test_app_state().await;

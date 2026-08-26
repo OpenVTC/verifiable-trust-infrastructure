@@ -28,10 +28,23 @@ impl VtaClient {
         // registry had a member for it, so it was one rename away from
         // silently dropping the create-from-a-phrase path (see #884's
         // `update_acl`, the same failure with different members).
+        // `internal` and `derivation_path` are forwarded, not dropped.
+        //
+        // `internal` was hardcoded `None` here while `CreateKeyRequest::internal`
+        // was never read, so `pnm keys create --internal` printed its whole
+        // non-recoverable-key warning, made the operator type "i understand this
+        // key cannot be recovered", and then minted an ordinary derived key —
+        // one that *is* in backups and *is* exportable. The operator was told
+        // the opposite of what happened.
+        //
+        // `derivation_path` was `unwrap_or_default()`, sending `""` for absent.
+        // The operation layer reads `""` as absent, so it worked; but the wire
+        // then carried a member the caller never set, and the empty string is
+        // meaningless to any other maintainer.
         let body = crate::protocols::key_management::create::CreateKeyBody {
-            internal: None,
+            internal: req.internal,
             key_type: req.key_type.clone(),
-            derivation_path: req.derivation_path.clone().unwrap_or_default(),
+            derivation_path: req.derivation_path.clone(),
             mnemonic: req.mnemonic.clone(),
             label: req.label.clone(),
             context_id: req.context_id.clone(),

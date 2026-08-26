@@ -9,8 +9,22 @@ use crate::keys::{KeyOrigin, KeyStatus, KeyType};
 pub struct CreateKeyBody {
     #[serde(alias = "key_type")]
     pub key_type: KeyType,
-    #[serde(alias = "derivation_path")]
-    pub derivation_path: String,
+    /// Optional, as `keys/create/0.1` says: "omitting it leaves the choice to
+    /// the custodian".
+    ///
+    /// It was a required `String` here, so a conforming client that omitted it
+    /// got `malformedRequest` — and `VtaClient::create_key` papered over that
+    /// by sending `""`, which the operation layer then treats as absent. The
+    /// operation layer was always right: `CreateKeyParams::derivation_path` is
+    /// an `Option` and auto-derives from the context when unset. Only this wire
+    /// type disagreed, and it is also incoherent with `internal`, which derives
+    /// from no seed and records no path at all.
+    #[serde(
+        default,
+        alias = "derivation_path",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub derivation_path: Option<String>,
     /// An unset member must be **absent**, never `null` — `keys/create/0.1`
     /// types each of these as `"string"`, and none of them accepts null. See
     /// the `an_unset_member_is_absent_from_the_wire_not_null` test below.
@@ -25,6 +39,12 @@ pub struct CreateKeyBody {
     /// Absent or `false` keeps today's behaviour exactly. `true` mints a key
     /// from the system CSPRNG that is never exported, never backed up, and
     /// **cannot be recovered** — see `vta_keys::internal`.
+    ///
+    /// Published in `keys/create/0.1` as of `trust-tasks-rs` 0.11.17
+    /// (dtgwg-trust-tasks-tf#269). Before that the request schema was
+    /// `additionalProperties: false` with no such member, so the dispatch
+    /// spine rejected any document carrying it — the capability existed at
+    /// both ends and was unreachable over the wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub internal: Option<bool>,
 }
@@ -117,7 +137,7 @@ mod null_member_tests {
         let minimal = CreateKeyBody {
             internal: None,
             key_type: KeyType::Ed25519,
-            derivation_path: String::new(),
+            derivation_path: None,
             mnemonic: None,
             label: None,
             context_id: None,
@@ -125,8 +145,13 @@ mod null_member_tests {
 
         assert_eq!(
             serde_json::to_value(&minimal).expect("serialises"),
-            serde_json::json!({"keyType": "ed25519", "derivationPath": ""}),
-            "an unset member must be absent, not null"
+            serde_json::json!({"keyType": "ed25519"}),
+            "an unset member must be absent — not null, and not an empty \
+             string. This assertion used to require `derivationPath: \"\"`, \
+             which contradicted the test's own name: the empty string is a \
+             value the caller never chose, and it reached the wire only \
+             because the member was a required `String` here while the \
+             specification and the operation layer both make it optional."
         );
     }
 
@@ -137,7 +162,7 @@ mod null_member_tests {
         let labelled = CreateKeyBody {
             internal: None,
             key_type: KeyType::Ed25519,
-            derivation_path: "m/26'/2'/0'/1'".into(),
+            derivation_path: Some("m/26'/2'/0'/1'".into()),
             mnemonic: None,
             label: Some("persona-signing".into()),
             context_id: Some("openvtc".into()),

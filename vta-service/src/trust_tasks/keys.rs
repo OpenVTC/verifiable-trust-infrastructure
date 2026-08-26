@@ -77,11 +77,32 @@ pub(super) async fn handle_create(
         operations::keys::CreateKeyParams {
             internal: req.internal.unwrap_or(false),
             key_type: req.key_type,
-            derivation_path: Some(req.derivation_path),
-            // Trust-task envelope auto-generates key_id from derivation
-            // path; explicit-key_id specification stays on the legacy
-            // REST path until Phase 3 hardening extends CreateKeyBody.
-            key_id: None,
+            derivation_path: req.derivation_path,
+            // A derived key takes its id from the derivation path, so `None`
+            // is right for it. An **internal** key has no derivation path to
+            // be named after and the operation layer refuses one without an
+            // id — so over this binding, where the request carries no `keyId`
+            // member to supply, the binding mints one.
+            //
+            // `keyId` is published in `keys/create/0.1` as of `trust-tasks-rs`
+            // 0.12.1 (dtgwg-trust-tasks-tf#275), and this workspace cannot
+            // move to 0.12 yet: `affinidi-messaging-sdk` 0.19.12 pins
+            // `trust-tasks-rs ^0.11` and `vta_sdk::acl_setup` hands it a
+            // generated `MediatorAcl`, so two nodes in one graph fail to
+            // compile. **When that bump lands, take `key_id` from the request
+            // and delete this branch** — the specification says a maintainer
+            // that offers internal keys and receives no `keyId` SHOULD reject,
+            // and minting one is a deliberate deviation taken because the
+            // alternative is a security feature that cannot be used at all.
+            //
+            // The consumer is not left guessing: the id is returned on the
+            // response record, the CLI prints it, and `keys/rename/0.1` can
+            // change it.
+            key_id: if req.internal.unwrap_or(false) {
+                Some(format!("internal-{}", uuid::Uuid::new_v4()))
+            } else {
+                None
+            },
             mnemonic: req.mnemonic,
             label: req.label,
             context_id: req.context_id,
