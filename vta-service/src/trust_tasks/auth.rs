@@ -47,13 +47,39 @@ pub(super) async fn handle_revoke_session(
     };
 
     // 2. Look up the session.
-    let session = match get_session(&state.sessions_ks, &req.session_id).await {
+    // `sessionId` XOR `all`, per the specification's `oneOf`. Both arms are
+    // legal documents; only one of them is a thing this VTA can do.
+    let session_id = match (&req.session_id, req.all.unwrap_or(false)) {
+        (Some(id), false) => id.clone(),
+        (None, true) => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason: "auth:revoke_all_unsupported — this maintainer revokes one named \
+                             session; resend with `sessionId`"
+                        .to_string(),
+                    details: None,
+                },
+            );
+        }
+        // Both or neither: the `oneOf` refuses it, and so does this.
+        _ => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: "revoke-session takes exactly one of `sessionId` or `all`".to_string(),
+                },
+            );
+        }
+    };
+
+    let session = match get_session(&state.sessions_ks, &session_id).await {
         Ok(Some(s)) => s,
         Ok(None) => {
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
-                    reason: format!("session not found: {}", req.session_id),
+                    reason: format!("session not found: {session_id}"),
                     details: None,
                 },
             );
@@ -75,7 +101,7 @@ pub(super) async fn handle_revoke_session(
         tracing::warn!(
             caller = %auth.did,
             session_did = %session.did,
-            session_id = %req.session_id,
+            session_id = %session_id,
             "revoke-session rejected: caller is not owner or admin"
         );
         return reject_with(
@@ -87,8 +113,8 @@ pub(super) async fn handle_revoke_session(
     }
 
     // 4. Delete.
-    if let Err(e) = delete_session(&state.sessions_ks, &req.session_id).await {
-        tracing::error!(error = %e, session_id = %req.session_id, "session delete failed");
+    if let Err(e) = delete_session(&state.sessions_ks, &session_id).await {
+        tracing::error!(error = %e, session_id = %session_id, "session delete failed");
         return reject_with(
             &doc,
             RejectReason::InternalError {
@@ -101,12 +127,12 @@ pub(super) async fn handle_revoke_session(
     audit!(
         "session.revoke",
         actor = &auth.did,
-        resource = &req.session_id,
+        resource = &session_id,
         outcome = "success"
     );
     tracing::info!(
         caller = %auth.did,
-        session_id = %req.session_id,
+        session_id = %session_id,
         "session revoked via trust-task"
     );
 

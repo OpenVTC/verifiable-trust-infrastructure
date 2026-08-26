@@ -99,10 +99,19 @@ jobs:
 
       - uses: actions/cache@v5
         with:
+          # `target/` is deliberately NOT cached. Every crate in this
+          # workspace is a **path** dependency, so a source-only change does not
+          # move `Cargo.lock` and therefore does not move this key: the job
+          # restores a `target/` built from *other* source and reuses stale
+          # artifacts. The failure names a field that is plainly there in the
+          # diff, so it reads as the author's bug — see #1133, where a
+          # clean-room checkout of the same commit compiled fine.
+          #
+          # The registry and git caches stay: content-addressed by package
+          # version, so a stale entry is impossible by construction.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-check-
@@ -185,10 +194,19 @@ jobs:
 
       - uses: actions/cache@v5
         with:
+          # `target/` is deliberately NOT cached. Every crate in this
+          # workspace is a **path** dependency, so a source-only change does not
+          # move `Cargo.lock` and therefore does not move this key: the job
+          # restores a `target/` built from *other* source and reuses stale
+          # artifacts. The failure names a field that is plainly there in the
+          # diff, so it reads as the author's bug — see #1133, where a
+          # clean-room checkout of the same commit compiled fine.
+          #
+          # The registry and git caches stay: content-addressed by package
+          # version, so a stale entry is impossible by construction.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-test-
@@ -253,10 +271,19 @@ jobs:
 
       - uses: actions/cache@v5
         with:
+          # `target/` is deliberately NOT cached. Every crate in this
+          # workspace is a **path** dependency, so a source-only change does not
+          # move `Cargo.lock` and therefore does not move this key: the job
+          # restores a `target/` built from *other* source and reuses stale
+          # artifacts. The failure names a field that is plainly there in the
+          # diff, so it reads as the author's bug — see #1133, where a
+          # clean-room checkout of the same commit compiled fine.
+          #
+          # The registry and git caches stay: content-addressed by package
+          # version, so a stale entry is impossible by construction.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-clippy-
@@ -660,10 +687,19 @@ jobs:
 
       - uses: actions/cache@v5
         with:
+          # `target/` is deliberately NOT cached. Every crate in this
+          # workspace is a **path** dependency, so a source-only change does not
+          # move `Cargo.lock` and therefore does not move this key: the job
+          # restores a `target/` built from *other* source and reuses stale
+          # artifacts. The failure names a field that is plainly there in the
+          # diff, so it reads as the author's bug — see #1133, where a
+          # clean-room checkout of the same commit compiled fine.
+          #
+          # The registry and git caches stay: content-addressed by package
+          # version, so a stale entry is impossible by construction.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-features-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-features-
@@ -825,10 +861,19 @@ jobs:
 
       - uses: actions/cache@v5
         with:
+          # `target/` is deliberately NOT cached. Every crate in this
+          # workspace is a **path** dependency, so a source-only change does not
+          # move `Cargo.lock` and therefore does not move this key: the job
+          # restores a `target/` built from *other* source and reuses stale
+          # artifacts. The failure names a field that is plainly there in the
+          # diff, so it reads as the author's bug — see #1133, where a
+          # clean-room checkout of the same commit compiled fine.
+          #
+          # The registry and git caches stay: content-addressed by package
+          # version, so a stale entry is impossible by construction.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-enclave-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-enclave-
@@ -864,10 +909,19 @@ jobs:
 
       - uses: actions/cache@v5
         with:
+          # `target/` is deliberately NOT cached. Every crate in this
+          # workspace is a **path** dependency, so a source-only change does not
+          # move `Cargo.lock` and therefore does not move this key: the job
+          # restores a `target/` built from *other* source and reuses stale
+          # artifacts. The failure names a field that is plainly there in the
+          # diff, so it reads as the author's bug — see #1133, where a
+          # clean-room checkout of the same commit compiled fine.
+          #
+          # The registry and git caches stay: content-addressed by package
+          # version, so a stale entry is impossible by construction.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-mobile-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-mobile-

@@ -535,7 +535,8 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::auth::revoke_session::v0_1::Payload,
                 specs::auth::revoke_session::v0_1::Response,
                 to_v(RevokeSessionRequest {
-                    session_id: "sess-1".into(),
+                    all: None,
+                    session_id: Some("sess-1".into()),
                 }),
                 to_v(RevokeSessionResponse { revoked_count: 1 })
             ),

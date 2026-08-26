@@ -551,6 +551,60 @@ async fn dispatch_trust_task_inner(
 ///
 /// Split from [`dispatch_trust_task_inner`] so the deprecation signal there
 /// wraps every exit path out of this function, not just the last one.
+/// How this consumer's transports map onto the Framework 0.5.0 document
+/// lifecycle.
+///
+/// 0.5.0 adds a normative state table — `received` → `validated` → `accepted` →
+/// {`executing`, `suspended`} → {`responded`, `errored`, `cancelled`,
+/// `expired`} — and requires that **a transport binding map it onto its own
+/// protocol**. The upstream work does that for the five published binding
+/// crates; it does not reach here, because this workspace uses exactly one item
+/// from them (`trust_tasks_https::status_for_code`) and dispatches through its
+/// own spine. So the mapping is written down here, against the code that
+/// actually implements it.
+///
+/// All three transports converge on [`dispatch_trust_task_core`], so the
+/// state machine is **one** implementation with three renderings:
+///
+/// | state | where it happens | what the producer sees |
+/// |---|---|---|
+/// | `received` | the transport hands bytes to the spine | nothing |
+/// | `validated` | `validate_freshness` → `validate_basic` → payload schema | nothing, or a `trust-task-error` |
+/// | `accepted` | the `ReplayGuard` claim succeeds (`Fresh`) | nothing |
+/// | `executing` | the handler runs | nothing |
+/// | `responded` | `success_response` | `<type>#response` |
+/// | `errored` | `reject_with` | `trust-task-error` |
+/// | `expired` | `validate_freshness` / `validate_basic` refuse | `trust-task-error`, code `expired` |
+///
+/// Two states this service does not implement, named so their absence is a
+/// decision rather than an oversight:
+///
+/// - **`suspended`** — there is no `trust-task-control` surface here, so no
+///   document can suspend one in flight. A task runs to a terminal state or
+///   fails.
+/// - **`cancelled`** — nothing stops a task on the consumer's own initiative
+///   once accepted. The nearest thing is a policy refusal, which happens
+///   *before* acceptance and is therefore `errored`, not `cancelled`.
+///
+/// # Silence signifies no state
+///
+/// 0.5.0 settles four contradictory readings of an absent reply on one rule:
+/// **the absence of a reply distinguishes no two states**, and a producer
+/// **MUST NOT** infer any state from it.
+///
+/// This service has one place where silence is emitted deliberately, and it is
+/// conformant: a duplicate whose first execution recorded no response is
+/// answered with `204` ([`dispatch_trust_task_validated`]). That is the
+/// fire-and-forget disposition of §7.2, not a claim about state — and the
+/// in-flight case is `202` precisely so the two are not conflated.
+///
+/// The producer-side rule binds the **SDK**, not the spine: a client must not
+/// read a timeout as failure and reissue a consequential task. That is what
+/// `VtaClient::idempotent` and the delivery layer are for, and it is why
+/// `receive_next` returns `Ok(None)` on timeout — "nothing arrived", not
+/// "nothing happened".
+mod lifecycle_mapping {}
+
 /// How this consumer bounds a Trust Task document in time, and therefore how
 /// long its duplicate-execution record must be kept.
 ///
@@ -2434,6 +2488,81 @@ mod response_coverage {
             json!({ "id": id, "name": id }),
         )
         .await;
+    }
+
+    // The `device/*` family is deliberately NOT covered here. It looks cheap —
+    // register, heartbeat, set-wake, disable — and it is not: `device/register`
+    // refuses a DID that is not already in the ACL ("complete
+    // provision-integration + acl/swap-key first"), so every path behind it
+    // needs a provisioned integration rather than a seeded row. That belongs
+    // with the provision-integration tests.
+
+    /// `all: true` is a legal document, refused as unsupported — not malformed.
+    ///
+    /// `auth/revoke-session/0.1` is `sessionId` **XOR** `all`. This VTA
+    /// implements only the named-session arm, and its request type used to
+    /// require `sessionId`, so a conforming client sending `{"all": true}` got
+    /// `malformedRequest` — which tells the client its *shape* is wrong when
+    /// the shape was fine. An unimplemented option deserves to be named.
+    #[tokio::test]
+    async fn revoke_all_is_refused_as_unsupported_not_malformed() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let body = serde_json::to_vec(&json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": t::TASK_AUTH_REVOKE_SESSION_0_1,
+            "issuer": "did:key:zTestAdmin",
+            "recipient": vta_did,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": { "all": true },
+        }))
+        .expect("envelope");
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &crate::test_support::super_admin_claims(),
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        assert_eq!(
+            doc["payload"]["code"], "taskFailed",
+            "a legal document must not be called malformed: {doc}"
+        );
+        assert!(
+            doc["payload"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("revoke_all_unsupported")),
+            "the refusal must name the option it cannot honour: {doc}"
+        );
+    }
+
+    /// Signing paths that derive a key rather than naming a stored one, plus
+    /// the two liveness/session tasks that need no fixture at all.
+    #[tokio::test]
+    async fn derive_and_sign_ping_and_revoke_session() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"coverage");
+
+        // Derive-and-sign never stores the key: it derives, signs and discards,
+        // so there is no `keys/create` to pair it with.
+        ok(
+            &state,
+            t::TASK_KEYS_DERIVE_AND_SIGN_0_1,
+            json!({
+                "keyType": "ed25519",
+                "derivationPath": "m/26'/2'/0'/7'",
+                "payload": payload,
+                "algorithm": "EdDSA",
+            }),
+        )
+        .await;
+
+        ok(&state, t::TASK_MESSAGING_PING_0_1, json!({})).await;
+        // `auth/revoke-session` is not covered for a success response: it needs
+        // a real session row, and `all: true` is a legal document this VTA
+        // refuses by design (it revokes one named session). The refusal path is
+        // asserted in `revoke_all_is_refused_as_unsupported_not_malformed`.
     }
 
     /// The runtime service-management read paths.
