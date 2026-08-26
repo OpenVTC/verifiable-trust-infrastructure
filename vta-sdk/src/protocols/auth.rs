@@ -44,7 +44,22 @@ pub struct ChallengeRequest {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RevokeSessionRequest {
     /// Identifier of the session to revoke.
-    pub session_id: String,
+    ///
+    /// Optional because `auth/revoke-session/0.1` is `sessionId` **XOR**
+    /// `all` — a `oneOf` that refuses both and neither. It was a required
+    /// `String` here, so a conforming client sending `{"all": true}` got
+    /// `malformedRequest`: the wrong answer for a legal document, and one that
+    /// tells the client its *shape* is wrong when the shape was fine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Revoke every session the caller may revoke.
+    ///
+    /// Accepted so the document parses, and then **refused explicitly**: this
+    /// VTA revokes exactly the one named session. See the handler — an
+    /// unimplemented option deserves to be named as unimplemented, not
+    /// reported as a malformed request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub all: Option<bool>,
 }
 
 /// Trust-task payload for `spec/auth/revoke-session/0.1#response`.
@@ -204,12 +219,18 @@ mod tests {
     #[test]
     fn revoke_session_request_round_trips() {
         let req = RevokeSessionRequest {
-            session_id: "sess-abc-123".to_string(),
+            session_id: Some("sess-abc-123".to_string()),
+            all: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"sessionId\":\"sess-abc-123\""), "{json}");
+        // `all` is absent, not `null`: the schema types it `boolean`, and the
+        // `oneOf` reads "both present" as malformed — so emitting `null` would
+        // turn a valid request into an invalid one.
+        assert!(!json.contains("all"), "{json}");
         let parsed: RevokeSessionRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.session_id, "sess-abc-123");
+        assert_eq!(parsed.session_id.as_deref(), Some("sess-abc-123"));
+        assert_eq!(parsed.all, None);
     }
 
     #[test]
