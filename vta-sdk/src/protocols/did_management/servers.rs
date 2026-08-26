@@ -197,7 +197,7 @@ pub struct RegisterDidWithServerBody {
     /// the server hosts multiple tenant domains, this directs the
     /// register call at a specific one; otherwise the remote
     /// resolves via caller's ACL default → system default. An
-    /// unknown domain is rejected with `did-management:unknown_domain`.
+    /// unknown domain is rejected with `did-management:unknownDomain`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
 }

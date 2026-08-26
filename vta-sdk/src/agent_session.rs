@@ -315,9 +315,25 @@ impl AgentSession {
 
 /// Treat a `device/register` conflict as "already enrolled". The reject surfaces
 /// differently per transport (a `Conflict` over REST, a `Protocol` reject
-/// carrying `already_registered` over DIDComm), so match on both.
+/// carrying `device/register:alreadyRegistered` over DIDComm), so match on both.
+///
+/// This is a **matcher**: the code arrives from whatever VTA the agent enrolled
+/// against, and this SDK cannot control that maintainer's deploy order. The
+/// registry re-cased the local part to lowerCamelCase
+/// (trustoverip/dtgwg-trust-tasks-tf#279), so both spellings are accepted —
+/// a VTA that has not yet shipped the re-cased emitter still sends
+/// `already_registered`, and failing to match it turns a benign re-enrolment
+/// into a hard error rather than a crash, which no smoke test would catch.
+///
+/// TODO: drop the `already_registered` arm once every VTA this SDK talks to is
+/// on a build that emits the re-cased code — i.e. one release after the
+/// service-side change ships.
 fn is_already_registered(e: &VtaError) -> bool {
-    matches!(e, VtaError::Conflict(_)) || e.to_string().contains("already_registered")
+    if matches!(e, VtaError::Conflict(_)) {
+        return true;
+    }
+    let msg = e.to_string();
+    msg.contains("alreadyRegistered") || msg.contains("already_registered")
 }
 
 #[cfg(test)]
@@ -380,10 +396,31 @@ mod tests {
     fn already_registered_is_detected_across_transports() {
         assert!(is_already_registered(&VtaError::Conflict("dup".into())));
         assert!(is_already_registered(&VtaError::Protocol(
-            "trust task rejected: device/register:already_registered — ...".into()
+            "trust task rejected: device/register:alreadyRegistered — ...".into()
         )));
         assert!(!is_already_registered(&VtaError::Protocol(
             "something else".into()
         )));
+    }
+
+    /// The property that makes the deploy order safe, pinned as a test rather
+    /// than a comment: this matcher accepts **both** spellings of
+    /// `device/register:alreadyRegistered`. A VTA still emitting the pre-#279
+    /// snake_case local part must keep being recognised as "already enrolled",
+    /// because a missed match does not crash — it fails open into a hard error
+    /// on every re-enrolment, which a smoke test would not catch.
+    #[test]
+    fn already_registered_accepts_both_registry_spellings() {
+        for code in [
+            "device/register:alreadyRegistered",
+            "device/register:already_registered",
+        ] {
+            assert!(
+                is_already_registered(&VtaError::Protocol(format!(
+                    "trust task rejected: {code} — a DeviceBinding already exists for did:key:zA"
+                ))),
+                "matcher must accept {code}"
+            );
+        }
     }
 }

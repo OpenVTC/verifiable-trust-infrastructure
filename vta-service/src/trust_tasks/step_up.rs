@@ -114,7 +114,7 @@ pub(super) async fn verify_did_signed_gate(
 }
 
 /// A `task_failed` reject carrying a spec error code (e.g.
-/// `auth/step-up/approve-response:challenge_unknown`) as the reason.
+/// `auth/step-up/approve-response:challengeUnknown`) as the reason.
 fn step_up_failure(code: &str) -> RejectReason {
     RejectReason::TaskFailed {
         reason: code.to_string(),
@@ -134,9 +134,9 @@ fn acr_rank(acr: &str) -> u8 {
 
 fn gate_err_to_reject(e: GateError) -> RejectReason {
     match e {
-        GateError::NoGate => step_up_failure("auth/step-up/approve-response:no_gate"),
+        GateError::NoGate => step_up_failure("auth/step-up/approve-response:noGate"),
         GateError::SubjectMismatch => {
-            step_up_failure("auth/step-up/approve-response:subject_mismatch")
+            step_up_failure("auth/step-up/approve-response:subjectMismatch")
         }
         GateError::ProofInvalid(_) => {
             step_up_failure("auth/step-up/approve-response:proof_invalid")
@@ -178,7 +178,7 @@ async fn verify_webauthn_gate(
     })?;
     let resolver = VtaVmResolver::new(did_resolver);
 
-    let invalid = || step_up_failure("auth/step-up/approve-response:assertion_invalid");
+    let invalid = || step_up_failure("auth/step-up/approve-response:assertionInvalid");
     let dec = |s: &str| {
         general_purpose::URL_SAFE_NO_PAD
             .decode(s.as_bytes())
@@ -273,7 +273,7 @@ pub(super) async fn handle_approve_response(
     let Some(issuer) = doc.issuer.as_deref().map(str::to_string) else {
         return reject_with(
             &doc,
-            step_up_failure("auth/step-up/approve-response:subject_mismatch"),
+            step_up_failure("auth/step-up/approve-response:subjectMismatch"),
         );
     };
     if auth.did != issuer {
@@ -291,13 +291,13 @@ pub(super) async fn handle_approve_response(
         Ok(ConsumeOutcome::NotFound) => {
             return reject_with(
                 &doc,
-                step_up_failure("auth/step-up/approve-response:challenge_unknown"),
+                step_up_failure("auth/step-up/approve-response:challengeUnknown"),
             );
         }
         Ok(ConsumeOutcome::Expired) => {
             return reject_with(
                 &doc,
-                step_up_failure("auth/step-up/approve-response:challenge_expired"),
+                step_up_failure("auth/step-up/approve-response:challengeExpired"),
             );
         }
         Err(e) => {
@@ -313,7 +313,7 @@ pub(super) async fn handle_approve_response(
     if pending.subject != subject || pending.session_id != session_id {
         return reject_with(
             &doc,
-            step_up_failure("auth/step-up/approve-response:subject_mismatch"),
+            step_up_failure("auth/step-up/approve-response:subjectMismatch"),
         );
     }
 
@@ -329,7 +329,7 @@ pub(super) async fn handle_approve_response(
             _ => {
                 return reject_with(
                     &doc,
-                    step_up_failure("auth/step-up/approve-response:approver_unauthorized"),
+                    step_up_failure("auth/step-up/approve-response:approverUnauthorized"),
                 );
             }
         };
@@ -338,14 +338,14 @@ pub(super) async fn handle_approve_response(
             _ => {
                 return reject_with(
                     &doc,
-                    step_up_failure("auth/step-up/approve-response:approver_unauthorized"),
+                    step_up_failure("auth/step-up/approve-response:approverUnauthorized"),
                 );
             }
         };
         if !delegated_any_approver_covers(&issuer_entry, &subject_entry) {
             return reject_with(
                 &doc,
-                step_up_failure("auth/step-up/approve-response:approver_unauthorized"),
+                step_up_failure("auth/step-up/approve-response:approverUnauthorized"),
             );
         }
     } else {
@@ -361,7 +361,7 @@ pub(super) async fn handle_approve_response(
         if issuer != authorized_signer {
             return reject_with(
                 &doc,
-                step_up_failure("auth/step-up/approve-response:approver_unauthorized"),
+                step_up_failure("auth/step-up/approve-response:approverUnauthorized"),
             );
         }
     }
@@ -412,7 +412,7 @@ pub(super) async fn handle_approve_response(
     if acr_rank(target) > acr_rank(granted) {
         return reject_with(
             &doc,
-            step_up_failure("auth/step-up/approve-response:acr_unsatisfied"),
+            step_up_failure("auth/step-up/approve-response:acrUnsatisfied"),
         );
     }
 
@@ -422,7 +422,7 @@ pub(super) async fn handle_approve_response(
         Ok(None) => {
             return reject_with(
                 &doc,
-                step_up_failure("auth/step-up/approve-response:challenge_unknown"),
+                step_up_failure("auth/step-up/approve-response:challengeUnknown"),
             );
         }
         Err(e) => {

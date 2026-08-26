@@ -43,7 +43,7 @@ pub struct ProvisionIntegrationRequest {
     ///    `allowed_contexts`) AND the maintainer has exactly one
     ///    context registered → use it.
     /// 3. Otherwise the maintainer refuses with
-    ///    `provision/integration:context_required` and `details.
+    ///    `provision/integration:contextRequired` and `details.
     ///    candidates: Vec<String>` listing the plausible contexts.
     ///
     /// Wallet-class consumers SHOULD omit; integration-class consumers

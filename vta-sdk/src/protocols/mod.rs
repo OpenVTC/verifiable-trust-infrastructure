@@ -68,7 +68,7 @@ pub mod problem_report_codes {
     /// or its own contexts state. The problem-report body's `args`
     /// carries `candidates: Vec<String>` so the relayer can surface
     /// the list to the operator and retry with an explicit choice.
-    pub const PROVISION_CONTEXT_REQUIRED: &str = "provision/integration:context_required";
+    pub const PROVISION_CONTEXT_REQUIRED: &str = "provision/integration:contextRequired";
 }
 
 /// Extract code and comment from a problem-report message body.

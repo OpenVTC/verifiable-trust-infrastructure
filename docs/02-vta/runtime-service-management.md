@@ -501,7 +501,7 @@ under the right domain instead.
 ### Error contract
 
 `--domain <name>` against an unknown / inactive domain returns
-the framework-spec error code `did-management:unknown_domain`.
+the framework-spec error code `did-management:unknownDomain`.
 The CLI surfaces the code unchanged so an operator can correlate
 against the [`did-management/_shared/0.1/CONVENTIONS.md`](https://github.com/trustoverip/dtgwg-trust-tasks-tf/blob/draft-did-management-category/specs/did-management/_shared/0.1/CONVENTIONS.md)
 spec. `list-domains` against the same server tells you which

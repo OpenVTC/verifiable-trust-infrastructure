@@ -245,7 +245,7 @@ async fn cmd_list_domains(
 /// not a TTY (CI / scripted use) so the call proceeds with the
 /// server's own resolution chain. Network failures and empty domain
 /// lists also fall back to `Ok(None)` rather than blocking the
-/// operation — the server's `did-management:unknown_domain` error
+/// operation — the server's `did-management:unknownDomain` error
 /// surfaces any real misconfiguration downstream.
 async fn prompt_domain_if_interactive(
     client: &VtaClient,

@@ -431,7 +431,7 @@ impl<'a> WebvhDIDCommClient<'a> {
     /// VTA-managed `did-hosting-control` backplane), the operator
     /// supplies the target; otherwise the remote falls back to the
     /// caller's ACL default → system default. An unknown domain is
-    /// rejected with `did-management:unknown_domain`.
+    /// rejected with `did-management:unknownDomain`.
     pub async fn request_uri(
         &self,
         path: Option<&str>,

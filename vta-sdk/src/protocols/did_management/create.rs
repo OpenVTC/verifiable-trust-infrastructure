@@ -120,7 +120,7 @@ pub struct CreateDidWebvhBody {
     /// supply this to direct the new DID at a specific one;
     /// otherwise the server resolves via caller's ACL default →
     /// system default. An unknown domain on the server is rejected
-    /// with `did-management:unknown_domain`. Ignored in serverless
+    /// with `did-management:unknownDomain`. Ignored in serverless
     /// mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,

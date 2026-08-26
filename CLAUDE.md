@@ -775,7 +775,7 @@ new flow, update both this section and the relevant `docs/*.md`.
   webvh op (`request_uri`, `register_did_atomic`, `publish_did`,
   `delete_did`, `check_path`). The remote `did-hosting-control`
   resolves: explicit → caller's ACL default on the host →
-  system default → reject with `did-management:unknown_domain`.
+  system default → reject with `did-management:unknownDomain`.
   Wire types `CreateDidWebvhBody/Request/Params` and
   `RegisterDidWithServerBody/Params` carry the field; v0.7
   callers and hosts that don't yet understand it serialise

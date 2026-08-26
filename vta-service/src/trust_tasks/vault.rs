@@ -497,7 +497,7 @@ fn vault_not_found(doc: &TrustTask<Value>, verb: &str, id: &str) -> TrustTaskOut
     reject_with(
         doc,
         RejectReason::TaskFailed {
-            reason: format!("vault/{verb}:not_found — no entry at id {id}"),
+            reason: format!("vault/{verb}:notFound — no entry at id {id}"),
             details: None,
         },
     )
@@ -516,7 +516,7 @@ fn check_expected_version(
             doc,
             RejectReason::TaskFailed {
                 reason: format!(
-                    "vault/{verb}:version_conflict — expectedVersion {v} != current version {current}"
+                    "vault/{verb}:versionConflict — expectedVersion {v} != current version {current}"
                 ),
                 details: Some(serde_json::json!({ "currentVersion": current })),
             },
@@ -582,12 +582,12 @@ fn refuse_if_not_active(
         entry_id = %entry.id,
         status = ?entry.status,
         op = %op,
-        "vault: refusing a non-active entry on a use path (reported to caller as not_found)"
+        "vault: refusing a non-active entry on a use path (reported to caller as notFound)"
     );
     Some(reject_with(
         doc,
         RejectReason::TaskFailed {
-            reason: format!("vault/{op}:not_found — no entry at id {}", entry.id),
+            reason: format!("vault/{op}:notFound — no entry at id {}", entry.id),
             details: None,
         },
     ))
@@ -767,7 +767,7 @@ pub(super) async fn handle_upsert(
             &doc,
             RejectReason::TaskFailed {
                 reason: format!(
-                    "vault/upsert:not_found — no entry at id {}",
+                    "vault/upsert:notFound — no entry at id {}",
                     req.id.as_deref().unwrap_or("(none)")
                 ),
                 details: None,
@@ -813,7 +813,7 @@ pub(super) async fn handle_upsert(
             &doc,
             RejectReason::TaskFailed {
                 reason: format!(
-                    "vault/upsert:context_change_forbidden — entry {} is in context {}; cannot move to {}. Delete and recreate instead.",
+                    "vault/upsert:contextChangeForbidden — entry {} is in context {}; cannot move to {}. Delete and recreate instead.",
                     e.entry.id, e.entry.context_id, req.context_id
                 ),
                 details: Some(serde_json::json!({
@@ -832,7 +832,7 @@ pub(super) async fn handle_upsert(
             &doc,
             RejectReason::TaskFailed {
                 reason: format!(
-                    "vault/upsert:version_conflict — expectedVersion {v} != current version {}",
+                    "vault/upsert:versionConflict — expectedVersion {v} != current version {}",
                     e.entry.version
                 ),
                 details: Some(serde_json::json!({ "currentVersion": e.entry.version })),
@@ -897,7 +897,7 @@ pub(super) async fn handle_upsert(
                             &doc,
                             RejectReason::PermissionDenied {
                                 reason: format!(
-                                    "vault/upsert:sealed_secret_invalid — TSP sender {sender} does not match authenticated caller {caller}"
+                                    "vault/upsert:sealedSecretInvalid — TSP sender {sender} does not match authenticated caller {caller}"
                                 ),
                             },
                         );
@@ -907,7 +907,7 @@ pub(super) async fn handle_upsert(
                             &doc,
                             RejectReason::TaskFailed {
                                 reason: format!(
-                                    "vault/upsert:sealed_secret_invalid — TSP unpack: {e}"
+                                    "vault/upsert:sealedSecretInvalid — TSP unpack: {e}"
                                 ),
                                 details: Some(serde_json::json!({ "reason": "unpack_failed" })),
                             },
@@ -918,7 +918,7 @@ pub(super) async fn handle_upsert(
                             &doc,
                             RejectReason::TaskFailed {
                                 reason:
-                                    "vault/upsert:sealed_secret_invalid — TSP message has no sender"
+                                    "vault/upsert:sealedSecretInvalid — TSP message has no sender"
                                         .into(),
                                 details: Some(serde_json::json!({ "reason": "missing_sender" })),
                             },
@@ -929,7 +929,7 @@ pub(super) async fn handle_upsert(
                             &doc,
                             RejectReason::TaskFailed {
                                 reason: format!(
-                                    "vault/upsert:sealed_secret_invalid — cleartext not a VaultSecret: {e}"
+                                    "vault/upsert:sealedSecretInvalid — cleartext not a VaultSecret: {e}"
                                 ),
                                 details: Some(
                                     serde_json::json!({ "reason": "cleartext_schema_invalid" }),
@@ -946,7 +946,7 @@ pub(super) async fn handle_upsert(
                         &doc,
                         RejectReason::TaskFailed {
                             reason: format!(
-                                "vault/upsert:envelope_unsupported — received {kind}; this maintainer accepts only didcomm-authcrypt in M2A",
+                                "vault/upsert:envelopeUnsupported — received {kind}; this maintainer accepts only didcomm-authcrypt in M2A",
                                 kind = other.kind_name()
                             ),
                             details: Some(serde_json::json!({
@@ -977,7 +977,7 @@ pub(super) async fn handle_upsert(
                         &doc,
                         RejectReason::PermissionDenied {
                             reason: format!(
-                                "vault/upsert:sealed_secret_invalid — JWE sender {sender} does not match authenticated caller {caller}"
+                                "vault/upsert:sealedSecretInvalid — JWE sender {sender} does not match authenticated caller {caller}"
                             ),
                         },
                     );
@@ -987,7 +987,7 @@ pub(super) async fn handle_upsert(
                         &doc,
                         RejectReason::TaskFailed {
                             reason: format!(
-                                "vault/upsert:sealed_secret_invalid — DIDComm unpack: {e}"
+                                "vault/upsert:sealedSecretInvalid — DIDComm unpack: {e}"
                             ),
                             details: Some(serde_json::json!({ "reason": "unpack_failed" })),
                         },
@@ -997,7 +997,7 @@ pub(super) async fn handle_upsert(
                     return reject_with(
                         &doc,
                         RejectReason::TaskFailed {
-                            reason: "vault/upsert:sealed_secret_invalid — JWE has no sender (from)"
+                            reason: "vault/upsert:sealedSecretInvalid — JWE has no sender (from)"
                                 .into(),
                             details: Some(serde_json::json!({ "reason": "missing_sender" })),
                         },
@@ -1008,7 +1008,7 @@ pub(super) async fn handle_upsert(
                         &doc,
                         RejectReason::TaskFailed {
                             reason: format!(
-                                "vault/upsert:sealed_secret_invalid — cleartext not a VaultSecret: {e}"
+                                "vault/upsert:sealedSecretInvalid — cleartext not a VaultSecret: {e}"
                             ),
                             details: Some(
                                 serde_json::json!({ "reason": "cleartext_schema_invalid" }),
@@ -1024,7 +1024,7 @@ pub(super) async fn handle_upsert(
                 &doc,
                 RejectReason::TaskFailed {
                     reason: format!(
-                        "vault/upsert:secret_required — secretKind {:?} needs `sealedSecret` on create",
+                        "vault/upsert:secretRequired — secretKind {:?} needs `sealedSecret` on create",
                         req.secret_kind
                     ),
                     details: None,
@@ -1038,7 +1038,7 @@ pub(super) async fn handle_upsert(
             &doc,
             RejectReason::TaskFailed {
                 reason: format!(
-                    "vault/upsert:sealed_secret_invalid — declared secretKind {:?} does not match secret variant {:?}",
+                    "vault/upsert:sealedSecretInvalid — declared secretKind {:?} does not match secret variant {:?}",
                     req.secret_kind,
                     secret.kind()
                 ),
@@ -1418,7 +1418,7 @@ pub(super) async fn handle_release(
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
-                    reason: format!("vault/release:not_found — no entry at id {}", req.entry_id),
+                    reason: format!("vault/release:notFound — no entry at id {}", req.entry_id),
                     details: None,
                 },
             );
@@ -1584,7 +1584,7 @@ pub(super) async fn handle_proxy_login(
                 &doc,
                 RejectReason::TaskFailed {
                     reason: format!(
-                        "vault/proxy-login:not_found — no entry at id {}",
+                        "vault/proxy-login:notFound — no entry at id {}",
                         req.entry_id
                     ),
                     details: None,
@@ -1677,7 +1677,7 @@ pub(super) async fn handle_proxy_login(
             &doc,
             RejectReason::TaskFailed {
                 reason:
-                    "vault/proxy-login:not_proxyable — password entry has no loginConfig; use vault/release for browser-fill"
+                    "vault/proxy-login:notProxyable — password entry has no loginConfig; use vault/release for browser-fill"
                         .into(),
                 details: Some(serde_json::json!({
                     "secretKind": "password",
@@ -1769,7 +1769,7 @@ pub(super) async fn handle_sign_trust_task(
                 &doc,
                 RejectReason::TaskFailed {
                     reason: format!(
-                        "vault/sign-trust-task:not_found — no entry at id {}",
+                        "vault/sign-trust-task:notFound — no entry at id {}",
                         req.entry_id
                     ),
                     details: None,
@@ -1811,7 +1811,7 @@ pub(super) async fn handle_sign_trust_task(
                 &doc,
                 RejectReason::TaskFailed {
                     reason: format!(
-                        "vault/sign-trust-task:not_signable — entry kind '{kind}' has no DID-based signing identity"
+                        "vault/sign-trust-task:notSignable — entry kind '{kind}' has no DID-based signing identity"
                     ),
                     details: Some(serde_json::json!({ "secretKind": kind })),
                 },
@@ -1821,7 +1821,7 @@ pub(super) async fn handle_sign_trust_task(
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
-                    reason: "vault/sign-trust-task:envelope_invalid — unsignedEnvelope must be a JSON object".into(),
+                    reason: "vault/sign-trust-task:envelopeInvalid — unsignedEnvelope must be a JSON object".into(),
                     details: None,
                 },
             );
@@ -1831,7 +1831,7 @@ pub(super) async fn handle_sign_trust_task(
                 &doc,
                 RejectReason::TaskFailed {
                     reason: format!(
-                        "vault/sign-trust-task:envelope_invalid — missing required field '{field}'"
+                        "vault/sign-trust-task:envelopeInvalid — missing required field '{field}'"
                     ),
                     details: Some(serde_json::json!({ "missing": field })),
                 },
@@ -1841,7 +1841,7 @@ pub(super) async fn handle_sign_trust_task(
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
-                    reason: "vault/sign-trust-task:envelope_invalid — issuer must be a string"
+                    reason: "vault/sign-trust-task:envelopeInvalid — issuer must be a string"
                         .into(),
                     details: None,
                 },
@@ -1851,7 +1851,7 @@ pub(super) async fn handle_sign_trust_task(
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
-                    reason: "vault/sign-trust-task:envelope_already_proofed — strip the existing proof and resubmit".into(),
+                    reason: "vault/sign-trust-task:envelopeAlreadyProofed — strip the existing proof and resubmit".into(),
                     details: None,
                 },
             );
@@ -1863,7 +1863,7 @@ pub(super) async fn handle_sign_trust_task(
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
-                    reason: "vault/sign-trust-task:envelope_issuer_mismatch — envelope.issuer must equal the entry's principalDid".into(),
+                    reason: "vault/sign-trust-task:envelopeIssuerMismatch — envelope.issuer must equal the entry's principalDid".into(),
                     details: Some(serde_json::json!({
                         "envelopeIssuer": envelope_issuer,
                         "expectedIssuer": expected,
@@ -1875,7 +1875,7 @@ pub(super) async fn handle_sign_trust_task(
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
-                    reason: "vault/sign-trust-task:envelope_invalid — expiresAt must be an RFC 3339 timestamp".into(),
+                    reason: "vault/sign-trust-task:envelopeInvalid — expiresAt must be an RFC 3339 timestamp".into(),
                     details: Some(serde_json::json!({ "expiresAt": value })),
                 },
             );
@@ -1885,7 +1885,7 @@ pub(super) async fn handle_sign_trust_task(
                 &doc,
                 RejectReason::TaskFailed {
                     reason:
-                        "vault/sign-trust-task:envelope_expired — envelope.expiresAt is in the past"
+                        "vault/sign-trust-task:envelopeExpired — envelope.expiresAt is in the past"
                             .into(),
                     details: Some(serde_json::json!({ "expiresAt": value })),
                 },
@@ -1937,7 +1937,7 @@ fn password_post_error_to_reject(
         PasswordPostError::NonSuccessStatus { status } if (400..500).contains(status) => {
             RejectReason::TaskFailed {
                 reason: format!(
-                    "vault/proxy-login:credential_rejected — third party returned HTTP {status} for entry {entry_id}"
+                    "vault/proxy-login:credentialRejected — third party returned HTTP {status} for entry {entry_id}"
                 ),
                 details: Some(serde_json::json!({
                     "status": status,
@@ -1947,12 +1947,12 @@ fn password_post_error_to_reject(
         }
         PasswordPostError::NonSuccessStatus { status } => RejectReason::TaskFailed {
             reason: format!(
-                "vault/proxy-login:target_unreachable — third party returned HTTP {status}"
+                "vault/proxy-login:targetUnreachable — third party returned HTTP {status}"
             ),
             details: Some(serde_json::json!({ "status": status, "retryable": true })),
         },
         PasswordPostError::Transport { url, source } => RejectReason::TaskFailed {
-            reason: format!("vault/proxy-login:target_unreachable — {source} ({url})"),
+            reason: format!("vault/proxy-login:targetUnreachable — {source} ({url})"),
             details: Some(serde_json::json!({ "url": url, "retryable": true })),
         },
         PasswordPostError::InvalidLoginUrl(msg) => RejectReason::MalformedRequest {
