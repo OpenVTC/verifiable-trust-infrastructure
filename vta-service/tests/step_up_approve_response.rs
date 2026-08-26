@@ -178,7 +178,24 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
     assert_eq!(stored.acr, "aal2");
     assert!(stored.amr.iter().any(|m| m == "did"));
 
-    // 8. The pending step-up was consumed (single use): a replay is unknown.
+    // 8. A replay does not elevate again.
+    //
+    // The same document, byte for byte — which is what a mediator redelivery or
+    // a client's cross-transport fallback sends. It is now refused by the
+    // duplicate-execution record (SPEC §7.2 item 11) at the dispatch spine,
+    // before the handler runs at all.
+    //
+    // This used to assert a **non-2xx**, on the reasoning that the pending
+    // step-up had been consumed so the replay failed with `challenge_unknown`.
+    // That protection was real but incidental: it depended on the handler being
+    // reached and finding its state gone. The guard makes it deliberate, and
+    // §7.2 is explicit that the answer must *not* be an error — "in no case is
+    // a duplicate reported as `taskFailed`; the task did not fail, it already
+    // happened" — so the replay is now answered with the first execution's own
+    // response.
+    //
+    // The property under test is unchanged and asserted more directly below:
+    // the elevation happened exactly once.
     let req2 = Request::builder()
         .method("POST")
         .uri("/api/trust-tasks")
@@ -186,13 +203,25 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
         .unwrap();
-    let (status2, _) = {
-        let resp = router.clone().oneshot(req2).await.unwrap();
-        (resp.status(), ())
-    };
-    // The dispatcher returns the trust-task error document with a non-2xx
-    // status (challenge_unknown — the pending step-up is gone).
-    assert_ne!(status2, StatusCode::OK, "replay must not elevate again");
+    let resp2 = router.clone().oneshot(req2).await.unwrap();
+    let bytes2 = resp2.into_body().collect().await.unwrap().to_bytes();
+    let v2: Value = serde_json::from_slice(&bytes2).unwrap_or(Value::Null);
+    assert_ne!(
+        v2["payload"]["code"], "taskFailed",
+        "a duplicate must not be reported as a failure: {v2}"
+    );
+
+    // The pending step-up is still consumed, and the session is still at the
+    // single elevation the first delivery produced — a second one would show
+    // as a fresh `acr_expires_at`.
+    let after_replay = get_session(&ctx.sessions_ks, &session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        after_replay.acr_expires_at, stored.acr_expires_at,
+        "the replay must not have re-elevated the session: {v2}"
+    );
 }
 
 /// Dual-accept: the **0.2** approve-response carries the camelCase

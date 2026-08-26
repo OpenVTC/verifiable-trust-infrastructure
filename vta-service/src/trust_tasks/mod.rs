@@ -79,7 +79,6 @@ mod policy;
 mod policy_gate;
 #[cfg(feature = "webvh")]
 mod provision_integration;
-mod replay;
 mod seeds;
 // `operations::protocol` — every service operation these handlers call — is
 // `#[cfg(feature = "webvh")]`, because advertising a transport means editing
@@ -552,90 +551,51 @@ async fn dispatch_trust_task_inner(
 ///
 /// Split from [`dispatch_trust_task_inner`] so the deprecation signal there
 /// wraps every exit path out of this function, not just the last one.
-/// How far ahead of this consumer's own clock an `issuedAt` may sit.
+/// How this consumer bounds a Trust Task document in time, and therefore how
+/// long its duplicate-execution record must be kept.
 ///
-/// Sixty seconds: the bound SPEC §4.2 sanctions, the same window this
-/// workspace already enforces on a DIDComm envelope's `created_time`, and the
-/// same value `trust_tasks_rs::freshness::DEFAULT_SKEW` uses. A producer sees
-/// one skew budget across every surface rather than several to discover.
-const MAX_ISSUED_AT_SKEW: chrono::TimeDelta = chrono::TimeDelta::seconds(60);
-
-/// Framework 0.5.0 Consumer Requirements item 13.
+/// The two are **one** decision, which is why `trust_tasks_rs` passes them as a
+/// single `ConsumeChecks` argument and why `retain_until` below is derived from
+/// this rather than from a TTL of its own. SPEC §7.2 (*Bounding the record*)
+/// makes the acceptance window and the record's retention the same bound: a
+/// consumer "MUST NOT accept for execution a document older than the window
+/// over which it retains records".
 ///
-/// # This is a stand-in for `trust_tasks_rs::freshness`, and should be deleted
+/// # Why there is no `max_age` yet
 ///
-/// `trust-tasks-rs` 0.12.0 (dtgwg-trust-tasks-tf#274) ships
-/// `FreshnessPolicy` + `TrustTask::validate_freshness`, which implement these
-/// two rules identically — same 60s skew — and add the `max_age` acceptance
-/// window and the `ReplayGuard` that item 11 actually needs. That is where
-/// this belongs, and re-implementing it here is the "prefer existing SDKs"
-/// rule in CLAUDE.md pointed the wrong way.
+/// This applies `FreshnessPolicy::default()` — the two internal-consistency
+/// rules, which no conforming producer can fail — and **no acceptance window**.
+/// The record is bounded by [`InMemoryReplayGuard`]'s capacity instead, which
+/// is what the retired `replay::check_and_record` did too, so this is parity
+/// rather than a regression.
 ///
-/// **The 0.12 bump is blocked on an external crate, not on this workspace.**
-/// `affinidi-messaging-sdk` 0.19.12 pins `trust-tasks-rs ^0.11`, and
-/// `vta_sdk::acl_setup` hands it a generated `MediatorAcl`. Two
-/// `trust-tasks-rs` nodes in one graph therefore fail to compile with
-/// `expected MediatorAcl, found a different MediatorAcl` — the exact
-/// two-version hazard the workspace CLAUDE.md describes. When that SDK
-/// publishes against 0.12, delete this function and its constant and call
-/// `doc.validate_freshness(now, &policy)` instead; the tests below are written
-/// against behaviour, not this implementation, so they should survive the
-/// swap unchanged and are the check that it was faithful.
+/// A window was implemented and measured first. `with_max_age(10 minutes)`,
+/// applied only to consequential tasks, failed **41 assertions across 10
+/// suites** with `expired` — not because the policy is wrong, but because the
+/// suite is full of documents stamped with fixed `issuedAt` values hours or
+/// days in the past, which no real producer sends. Fixing those is the right
+/// change and it is not this one: it alters what the service accepts, and that
+/// belongs in a change whose subject is the window, with the mediator-queue
+/// and clock-skew budget argued on its own terms. The library's own
+/// `DEFAULT_MAX_AGE` is five minutes, so the real question is whether this
+/// deployment's transports buffer for longer — a question about deployments,
+/// not about tests.
 ///
-/// Two refusals, both `malformedRequest` and **not** `expired`. That
-/// distinction is the point of the rule rather than a detail of it: `expired`
-/// names a document that was once acceptable and no longer is, so returning it
-/// here would tell the producer to *wait*, when what the producer must do is
-/// reissue. Neither of these documents was ever acceptable.
-///
-/// The rule exists to make Consumer Requirements item 11 — the duplicate-
-/// execution record — implementable at all. That record is only bounded if
-/// every accepted document can be placed in a window, and each of these two
-/// shapes escapes every window while still looking acceptable:
-///
-/// - an `issuedAt` in the consumer's future sits in a window that has not
-///   opened, and re-enters it as the clock advances;
-/// - an `expiresAt` at or before its `issuedAt` describes a validity interval
-///   that never contained an instant, so whether the document is "expired"
-///   depends only on which member the consumer happened to consult.
-///
-/// Neither refusal judges the producer: a skewed clock produces the first
-/// routinely.
-fn check_freshness_bounds(
-    doc: &TrustTask<Value>,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Result<(), RejectReason> {
-    let Some(issued_at) = doc.issued_at else {
-        // Item 13 bounds the timestamps a document carries; it does not
-        // require one. `issuedAt` is SHOULD at the framework level, and the
-        // obligation to require it falls on the specification of a
-        // consequential task (Specification Requirements item 17), which is
-        // enforced by that task's own schema rather than here.
-        return Ok(());
-    };
-    if issued_at > now + MAX_ISSUED_AT_SKEW {
-        return Err(RejectReason::MalformedRequest {
-            reason: format!(
-                "issuedAt {} is more than {}s ahead of this consumer's clock",
-                issued_at.to_rfc3339(),
-                MAX_ISSUED_AT_SKEW.num_seconds(),
-            ),
-        });
-    }
-    if let Some(expires_at) = doc.expires_at
-        && expires_at <= issued_at
-    {
-        return Err(RejectReason::MalformedRequest {
-            reason: format!(
-                "expiresAt {} is at or before issuedAt {}, so the document was \
-                 valid at no instant",
-                expires_at.to_rfc3339(),
-                issued_at.to_rfc3339(),
-            ),
-        });
-    }
-    Ok(())
+/// Until then the guard still does the work that matters: it refuses a second
+/// execution, it distinguishes a retry from a conflict by digest, and it
+/// answers a retry with the prior result.
+fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
+    trust_tasks_rs::FreshnessPolicy::default()
 }
+
+/// The duplicate-execution record of SPEC §7.2 item 11.
+///
+/// In-memory and process-local, which is what the retired module was too.
+/// Cross-restart replay is not the threat model: a document old enough to
+/// outlive a restart is refused by the freshness bound above, and the two
+/// bounds are the same bound.
+static REPLAY_GUARD: std::sync::LazyLock<trust_tasks_rs::InMemoryReplayGuard> =
+    std::sync::LazyLock::new(trust_tasks_rs::InMemoryReplayGuard::default);
 
 async fn dispatch_trust_task_validated(
     state: &AppState,
@@ -653,13 +613,21 @@ async fn dispatch_trust_task_validated(
     //    bearer specs, framework §7.2 item 8) is typed —
     //    `enforce_audience_binding` needs `P: Payload`, so each
     //    slice's typed handler runs it after `parse_payload`.
+    // One instant for every temporal decision in this dispatch: the freshness
+    // bound and the replay record's retention are the same bound (SPEC §7.2),
+    // so reading the clock twice could place them on opposite sides of it.
+    let now = chrono::Utc::now();
     {
-        let now = chrono::Utc::now();
-        // Framework 0.5.0 Consumer Requirements item 13 — freshness bounds.
-        // Checked before `validate_basic` because both are decided from the
+        // SPEC §4.2 / §7.2 item 4 + Framework 0.5.0 Consumer Requirements item
+        // 13. Checked before `validate_basic` because it is decided from the
         // document alone, before any resolution, verification or execution
-        // work, and because one of them changes how the *other* member reads.
-        if let Err(reason) = check_freshness_bounds(&doc, now) {
+        // work, and because one of its rules changes how the *other* member
+        // reads.
+        //
+        // This was a hand-rolled `check_freshness_bounds` between #1117 and
+        // this change, because `trust-tasks-rs` 0.12 — which ships the real
+        // thing — was blocked on an external crate. It is the library's now.
+        if let Err(reason) = doc.validate_freshness(now, &freshness_policy()) {
             return reject_with(&doc, reason);
         }
         let vta_did = state.config.read().await.vta_did.clone();
@@ -673,23 +641,132 @@ async fn dispatch_trust_task_validated(
         // Production VTAs always have vta_did set by `vta setup`.
     }
 
-    // 2b. Replay dedup. Reject a re-submitted `(actor, envelope-id)` within the
-    //     dedup window so a retry — including a client's cross-transport
-    //     fallback — cannot double-apply a mutating task. Ids are unique per
-    //     request, so this only fires on a genuine resubmission of the same
-    //     envelope. Record-before-dispatch = at-most-once (see `replay`).
-    if !replay::check_and_record(&auth.did, &doc.id) {
-        return reject_with(
-            &doc,
-            RejectReason::TaskFailed {
-                reason: "duplicate".to_string(),
-                details: Some(serde_json::json!({
-                    "id": doc.id,
-                    "reason": "this request id was already submitted; the prior submission is \
-                               authoritative — do not retry with the same id",
-                })),
-            },
-        );
+    // 2b. SPEC §7.2 item 11 — the duplicate-execution record.
+    //
+    // Replaces this service's own `replay::check_and_record`, which keyed on
+    // `(actor, id)` and kept no digest. Two consequences of that, both closed
+    // here:
+    //
+    // - **`idConflict` was never produced.** Item 11 requires that a
+    //   *different* document arriving under an already-accepted `id` be
+    //   rejected, and requires it not be treated as a retry of the original.
+    //   Without a digest the two are indistinguishable, so a different document
+    //   was silently absorbed as a duplicate — the one outcome §8.4 and §7.2
+    //   both rule out.
+    // - **The key was wrong.** §7.2 (*Keying and comparison*) fixes the key as
+    //   the document `id` alone; scoping it by actor let two callers each spend
+    //   the same id.
+    //
+    // Record-before-dispatch is preserved: the claim happens before the handler
+    // runs, so a crash between claiming and the effect landing leaves a retry
+    // refused rather than double-applied — the safe direction for a mutating
+    // task.
+    // Kept because `doc` is moved into dispatch below, and closing out the
+    // claim afterwards needs the key it was taken under.
+    let doc_id = doc.id.clone();
+    let digest = match trust_tasks_rs::document_digest(&doc) {
+        Ok(d) => d,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::InternalError {
+                    reason: format!(
+                        "cannot canonicalise the document to key its replay record: {e}"
+                    ),
+                },
+            );
+        }
+    };
+    let retain_until = freshness_policy().record_expiry(&doc, now);
+    match trust_tasks_rs::ReplayGuard::claim(&*REPLAY_GUARD, &doc.id, &digest, retain_until, now)
+        .await
+    {
+        Ok(trust_tasks_rs::ReplayVerdict::Fresh) => {}
+        Ok(trust_tasks_rs::ReplayVerdict::Duplicate {
+            prior_response,
+            in_flight,
+        }) => {
+            // §7.2 (*Disposition of a duplicate*): "In no case is a duplicate
+            // reported as `taskFailed`; the task did not fail, it already
+            // happened." This service used to answer one with exactly that.
+            return match prior_response {
+                Some(v) => match serde_json::to_vec(&v) {
+                    Ok(body) => TrustTaskOutcome {
+                        status: axum::http::StatusCode::OK,
+                        body,
+                    },
+                    Err(e) => reject_with(
+                        &doc,
+                        RejectReason::InternalError {
+                            reason: format!("prior response is unserialisable: {e}"),
+                        },
+                    ),
+                },
+                // Nothing recorded, and the two reasons need different
+                // answers — which is why the verdict carries `in_flight`.
+                None if in_flight => TrustTaskOutcome {
+                    // §7.2: "Where the original execution is still in progress,
+                    // the consumer SHOULD return or expose the existing
+                    // execution state rather than begin another." `202` is the
+                    // only honest code: `200` claims a result that does not
+                    // exist yet, `409` a conflict that does not exist (it is
+                    // the same document), and any error code reports a failure
+                    // §7.2 forbids reporting for a duplicate.
+                    status: axum::http::StatusCode::ACCEPTED,
+                    body: Vec::new(),
+                },
+                // Fire-and-forget: the specification defines no success
+                // response, so silence is the correct disposition. Never
+                // `taskFailed` — the task did not fail, it already happened.
+                None => TrustTaskOutcome {
+                    status: axum::http::StatusCode::NO_CONTENT,
+                    body: Vec::new(),
+                },
+            };
+        }
+        Ok(trust_tasks_rs::ReplayVerdict::Conflict) => {
+            return reject_with(&doc, RejectReason::IdConflict);
+        }
+        // Fail closed. A consumer that cannot establish whether a document is
+        // a duplicate has not satisfied item 11, so it must not execute — and
+        // `unavailable` is retryable, which is the truthful signal: the
+        // producer should resend the identical document rather than treat this
+        // as a permanent refusal.
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::Unavailable {
+                    // No `retryAfter`: the guard is in-process, so there is no
+                    // outage window to quote. The code alone already says
+                    // "retryable", and inventing a deadline would be a guess
+                    // the producer would act on.
+                    retry_after: {
+                        tracing::error!(error = %e, id = %doc.id, "replay guard unavailable");
+                        None
+                    },
+                },
+            );
+        }
+        // `ReplayVerdict` is `#[non_exhaustive]`. A verdict this build does not
+        // know is refused rather than executed: every variant the enum has
+        // gained so far is a reason *not* to run the task, and guessing the
+        // permissive way on an unknown one is how a duplicate-execution defence
+        // stops defending.
+        Ok(other) => {
+            return reject_with(
+                &doc,
+                RejectReason::Unavailable {
+                    retry_after: {
+                        tracing::error!(
+                            verdict = ?other,
+                            id = %doc.id,
+                            "replay guard returned a verdict this build does not know",
+                        );
+                        None
+                    },
+                },
+            );
+        }
     }
 
     // 3. Session-pubkey binding pre-check.
@@ -840,6 +917,33 @@ async fn dispatch_trust_task_validated(
     // allowed to actually run.
     if let Some((key, safety)) = idem_claim {
         idempotency::record_outcome(&state.idempotency_ks, &auth.did, &key, safety, &outcome).await;
+    }
+
+    // Close out the §7.2 item 11 claim taken at 2b. The same two dispositions
+    // as the idempotency layer above, for the same reason:
+    //
+    // - **Succeeded** → record the response, so a §8.4 retry is *answered with
+    //   the result* rather than absorbed in silence. Without this the guard
+    //   still prevents the second execution, but every legitimate retry gets
+    //   nothing back, which is the outcome §7.2 (*Disposition of a duplicate*)
+    //   asks a consumer to avoid where it defines a success response.
+    // - **Failed** → release the claim. A document refused downstream of the
+    //   claim would otherwise burn its `id`, and a corrected resend under the
+    //   same `id` would come back `idConflict` forever.
+    {
+        let guard: &dyn trust_tasks_rs::ReplayGuard = &*REPLAY_GUARD;
+        if outcome.status.is_success() {
+            let recorded = serde_json::from_slice::<serde_json::Value>(&outcome.body).ok();
+            if let Err(e) = guard.record_response(&doc_id, recorded.as_ref()).await {
+                // Not fatal: the effect happened and the claim stands, so item
+                // 11 still holds. Only the *courtesy* of answering a retry with
+                // the result is lost, and saying so beats failing a completed
+                // task.
+                tracing::warn!(error = %e, id = %doc_id, "replay guard: response not recorded");
+            }
+        } else if let Err(e) = guard.release(&doc_id, &digest).await {
+            tracing::warn!(error = %e, id = %doc_id, "replay guard: claim not released");
+        }
     }
 
     if let Some((action, resource, context_id, detail)) = vault_audit {
@@ -2062,7 +2166,9 @@ mod freshness_bounds {
         let now = Utc::now();
         let soon = (now + TimeDelta::seconds(30)).to_rfc3339();
         assert!(
-            check_freshness_bounds(&doc(Some(&soon), None), now).is_ok(),
+            doc(Some(&soon), None)
+                .validate_freshness(now, &freshness_policy())
+                .is_ok(),
             "a modestly fast producer clock is the ordinary case, not a defect"
         );
     }
@@ -2071,7 +2177,8 @@ mod freshness_bounds {
     fn a_future_dated_document_is_malformed_not_expired() {
         let now = Utc::now();
         let far = (now + TimeDelta::seconds(600)).to_rfc3339();
-        let err = check_freshness_bounds(&doc(Some(&far), None), now)
+        let err = doc(Some(&far), None)
+            .validate_freshness(now, &freshness_policy())
             .expect_err("beyond the skew tolerance must be refused");
         assert!(
             matches!(err, RejectReason::MalformedRequest { .. }),
@@ -2086,7 +2193,8 @@ mod freshness_bounds {
         let now = Utc::now();
         let issued = now.to_rfc3339();
         for expiry in [now, now - TimeDelta::seconds(1)] {
-            let err = check_freshness_bounds(&doc(Some(&issued), Some(&expiry.to_rfc3339())), now)
+            let err = doc(Some(&issued), Some(&expiry.to_rfc3339()))
+                .validate_freshness(now, &freshness_policy())
                 .expect_err("a validity interval containing no instant is malformed");
             assert!(
                 matches!(err, RejectReason::MalformedRequest { .. }),
@@ -2100,7 +2208,145 @@ mod freshness_bounds {
         // Item 13 bounds the timestamps a document carries; it does not
         // require one. Requiring `issuedAt` is the *specification's* job for a
         // consequential task, enforced by that task's schema.
-        assert!(check_freshness_bounds(&doc(None, None), Utc::now()).is_ok());
+        assert!(
+            doc(None, None)
+                .validate_freshness(Utc::now(), &freshness_policy())
+                .is_ok()
+        );
+    }
+}
+
+/// SPEC §7.2 item 11 — the duplicate-execution record, as the dispatch spine
+/// applies it.
+#[cfg(test)]
+mod replay_guard {
+    use super::*;
+    use serde_json::json;
+
+    /// Dispatch a document verbatim, twice, and return both outcomes.
+    async fn twice(payload: Value, type_uri: &str) -> (TrustTaskOutcome, TrustTaskOutcome) {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let body = serde_json::to_vec(&json!({
+            "id": "urn:uuid:5eaf00d0-0000-4000-8000-00000000dead",
+            "type": type_uri,
+            "issuer": "did:key:zTestAdmin",
+            "recipient": vta_did,
+            "issuedAt": chrono::Utc::now().to_rfc3339(),
+            "payload": payload,
+        }))
+        .expect("envelope");
+
+        let claims = crate::test_support::super_admin_claims();
+        let first = super::dispatch_trust_task_core(
+            &state,
+            &claims,
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        // The *same document*, delivered again. A mediator redelivery looks
+        // exactly like this: identical framework document, fresh transport
+        // envelope. Nothing about the transport is passed to the guard, which
+        // is the point — SPEC §7.2 forbids substituting a transport identifier
+        // for the document `id`, and keying on one would let a redelivery
+        // straight through and execute twice.
+        let second = super::dispatch_trust_task_core(
+            &state,
+            &claims,
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        (first, second)
+    }
+
+    #[tokio::test]
+    async fn a_redelivered_document_is_absorbed_not_executed_again() {
+        // `contexts/list`: a read that needs no session row, so the test is
+        // about the guard rather than about fixture setup.
+        let (first, second) = twice(json!({}), vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0).await;
+        assert!(
+            first.status.is_success(),
+            "the first delivery must run: {}",
+            String::from_utf8_lossy(&first.body)
+        );
+        assert!(
+            second.status.is_success(),
+            "a duplicate is not a failure — §7.2 is explicit that it is never \
+             reported as `taskFailed`, because the task did not fail, it \
+             already happened"
+        );
+        // Answered with the first execution's result, not merely absorbed:
+        // that is what `record_response` buys, and what a §8.4 retry needs.
+        //
+        // Compared as documents, not as bytes. `ReplayGuard::record_response`
+        // takes an `Option<&Value>`, so a recorded response makes a round trip
+        // through `serde_json::Value` and comes back with its object keys in
+        // alphabetical order rather than the handler's insertion order. The
+        // spine keeps `TrustTaskOutcome.body` as raw bytes precisely to avoid
+        // that round trip on the *first* answer; a duplicate is the one path
+        // where it is unavoidable, and it is harmless — every proof in this
+        // framework is computed over JCS, which is itself key-ordered, so a
+        // re-ordered document verifies identically.
+        let (a, b): (Value, Value) = (
+            serde_json::from_slice(&first.body).expect("first body"),
+            serde_json::from_slice(&second.body).expect("second body"),
+        );
+        assert_eq!(
+            a, b,
+            "the duplicate must be answered with the prior response"
+        );
+    }
+
+    /// A *different* document under an already-spent `id` is a conflict, not a
+    /// retry. This is the case the retired `replay::check_and_record` could not
+    /// see at all: it kept no digest, so it absorbed this silently — the one
+    /// outcome §7.2 item 11 and §8.4 both rule out.
+    #[tokio::test]
+    async fn a_different_document_under_the_same_id_is_an_id_conflict() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let claims = crate::test_support::super_admin_claims();
+        let envelope = |issued: &str| {
+            serde_json::to_vec(&json!({
+                "id": "urn:uuid:5eaf00d0-0000-4000-8000-0000000c0nf1",
+                "type": vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0,
+                "issuer": "did:key:zTestAdmin",
+                "recipient": vta_did,
+                // Differing only here is deliberate and is exactly §8.4's
+                // example: "a producer that 'retries' by re-signing,
+                // re-stamping `issuedAt`, or otherwise altering the bytes has
+                // not retried — it has issued a different document under a
+                // reused `id`".
+                "issuedAt": issued,
+                "payload": {},
+            }))
+            .expect("envelope")
+        };
+
+        let first = super::dispatch_trust_task_core(
+            &state,
+            &claims,
+            &envelope(&chrono::Utc::now().to_rfc3339()),
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        assert!(first.status.is_success());
+
+        let second = super::dispatch_trust_task_core(
+            &state,
+            &claims,
+            &envelope(&(chrono::Utc::now() - chrono::TimeDelta::seconds(5)).to_rfc3339()),
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&second.body).expect("a response document");
+        assert_eq!(
+            doc["payload"]["code"], "idConflict",
+            "a different document under a spent id must be refused, not \
+             absorbed as a retry: {doc}"
+        );
     }
 }
 
