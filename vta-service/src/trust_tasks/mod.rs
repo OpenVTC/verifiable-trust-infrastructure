@@ -552,6 +552,91 @@ async fn dispatch_trust_task_inner(
 ///
 /// Split from [`dispatch_trust_task_inner`] so the deprecation signal there
 /// wraps every exit path out of this function, not just the last one.
+/// How far ahead of this consumer's own clock an `issuedAt` may sit.
+///
+/// Sixty seconds: the bound SPEC §4.2 sanctions, the same window this
+/// workspace already enforces on a DIDComm envelope's `created_time`, and the
+/// same value `trust_tasks_rs::freshness::DEFAULT_SKEW` uses. A producer sees
+/// one skew budget across every surface rather than several to discover.
+const MAX_ISSUED_AT_SKEW: chrono::TimeDelta = chrono::TimeDelta::seconds(60);
+
+/// Framework 0.5.0 Consumer Requirements item 13.
+///
+/// # This is a stand-in for `trust_tasks_rs::freshness`, and should be deleted
+///
+/// `trust-tasks-rs` 0.12.0 (dtgwg-trust-tasks-tf#274) ships
+/// `FreshnessPolicy` + `TrustTask::validate_freshness`, which implement these
+/// two rules identically — same 60s skew — and add the `max_age` acceptance
+/// window and the `ReplayGuard` that item 11 actually needs. That is where
+/// this belongs, and re-implementing it here is the "prefer existing SDKs"
+/// rule in CLAUDE.md pointed the wrong way.
+///
+/// **The 0.12 bump is blocked on an external crate, not on this workspace.**
+/// `affinidi-messaging-sdk` 0.19.12 pins `trust-tasks-rs ^0.11`, and
+/// `vta_sdk::acl_setup` hands it a generated `MediatorAcl`. Two
+/// `trust-tasks-rs` nodes in one graph therefore fail to compile with
+/// `expected MediatorAcl, found a different MediatorAcl` — the exact
+/// two-version hazard the workspace CLAUDE.md describes. When that SDK
+/// publishes against 0.12, delete this function and its constant and call
+/// `doc.validate_freshness(now, &policy)` instead; the tests below are written
+/// against behaviour, not this implementation, so they should survive the
+/// swap unchanged and are the check that it was faithful.
+///
+/// Two refusals, both `malformedRequest` and **not** `expired`. That
+/// distinction is the point of the rule rather than a detail of it: `expired`
+/// names a document that was once acceptable and no longer is, so returning it
+/// here would tell the producer to *wait*, when what the producer must do is
+/// reissue. Neither of these documents was ever acceptable.
+///
+/// The rule exists to make Consumer Requirements item 11 — the duplicate-
+/// execution record — implementable at all. That record is only bounded if
+/// every accepted document can be placed in a window, and each of these two
+/// shapes escapes every window while still looking acceptable:
+///
+/// - an `issuedAt` in the consumer's future sits in a window that has not
+///   opened, and re-enters it as the clock advances;
+/// - an `expiresAt` at or before its `issuedAt` describes a validity interval
+///   that never contained an instant, so whether the document is "expired"
+///   depends only on which member the consumer happened to consult.
+///
+/// Neither refusal judges the producer: a skewed clock produces the first
+/// routinely.
+fn check_freshness_bounds(
+    doc: &TrustTask<Value>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), RejectReason> {
+    let Some(issued_at) = doc.issued_at else {
+        // Item 13 bounds the timestamps a document carries; it does not
+        // require one. `issuedAt` is SHOULD at the framework level, and the
+        // obligation to require it falls on the specification of a
+        // consequential task (Specification Requirements item 17), which is
+        // enforced by that task's own schema rather than here.
+        return Ok(());
+    };
+    if issued_at > now + MAX_ISSUED_AT_SKEW {
+        return Err(RejectReason::MalformedRequest {
+            reason: format!(
+                "issuedAt {} is more than {}s ahead of this consumer's clock",
+                issued_at.to_rfc3339(),
+                MAX_ISSUED_AT_SKEW.num_seconds(),
+            ),
+        });
+    }
+    if let Some(expires_at) = doc.expires_at
+        && expires_at <= issued_at
+    {
+        return Err(RejectReason::MalformedRequest {
+            reason: format!(
+                "expiresAt {} is at or before issuedAt {}, so the document was \
+                 valid at no instant",
+                expires_at.to_rfc3339(),
+                issued_at.to_rfc3339(),
+            ),
+        });
+    }
+    Ok(())
+}
+
 async fn dispatch_trust_task_validated(
     state: &AppState,
     auth: &AuthClaims,
@@ -569,9 +654,17 @@ async fn dispatch_trust_task_validated(
     //    `enforce_audience_binding` needs `P: Payload`, so each
     //    slice's typed handler runs it after `parse_payload`.
     {
+        let now = chrono::Utc::now();
+        // Framework 0.5.0 Consumer Requirements item 13 — freshness bounds.
+        // Checked before `validate_basic` because both are decided from the
+        // document alone, before any resolution, verification or execution
+        // work, and because one of them changes how the *other* member reads.
+        if let Err(reason) = check_freshness_bounds(&doc, now) {
+            return reject_with(&doc, reason);
+        }
         let vta_did = state.config.read().await.vta_did.clone();
         if let Some(my_vid) = vta_did.as_deref()
-            && let Err(reason) = doc.validate_basic(chrono::Utc::now(), my_vid)
+            && let Err(reason) = doc.validate_basic(now, my_vid)
         {
             return reject_with(&doc, reason);
         }
@@ -1938,6 +2031,76 @@ mod superseded_task_dispatch_tests {
             payload.get(DEPRECATION_MEMBER).is_none() && payload.get("ext").is_none(),
             "the notice must not reach the payload: {payload}"
         );
+    }
+}
+
+/// Framework 0.5.0 Consumer Requirements item 13 — the freshness bounds.
+#[cfg(test)]
+mod freshness_bounds {
+    use super::*;
+    use chrono::{TimeDelta, Utc};
+    use serde_json::json;
+
+    fn doc(issued_at: Option<&str>, expires_at: Option<&str>) -> TrustTask<Value> {
+        let mut v = json!({
+            "id": "urn:uuid:11111111-1111-1111-1111-111111111111",
+            "type": vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1,
+            "issuer": "did:key:zTestAdmin",
+            "payload": {},
+        });
+        if let Some(i) = issued_at {
+            v["issuedAt"] = json!(i);
+        }
+        if let Some(e) = expires_at {
+            v["expiresAt"] = json!(e);
+        }
+        serde_json::from_value(v).expect("a document")
+    }
+
+    #[test]
+    fn a_document_inside_the_skew_window_is_accepted() {
+        let now = Utc::now();
+        let soon = (now + TimeDelta::seconds(30)).to_rfc3339();
+        assert!(
+            check_freshness_bounds(&doc(Some(&soon), None), now).is_ok(),
+            "a modestly fast producer clock is the ordinary case, not a defect"
+        );
+    }
+
+    #[test]
+    fn a_future_dated_document_is_malformed_not_expired() {
+        let now = Utc::now();
+        let far = (now + TimeDelta::seconds(600)).to_rfc3339();
+        let err = check_freshness_bounds(&doc(Some(&far), None), now)
+            .expect_err("beyond the skew tolerance must be refused");
+        assert!(
+            matches!(err, RejectReason::MalformedRequest { .. }),
+            "it must be malformed, never expired: `expired` names a document \
+             that was once acceptable and tells the producer to wait, when \
+             what it must do is reissue. Got {err:?}"
+        );
+    }
+
+    #[test]
+    fn an_expiry_at_or_before_issuance_is_malformed() {
+        let now = Utc::now();
+        let issued = now.to_rfc3339();
+        for expiry in [now, now - TimeDelta::seconds(1)] {
+            let err = check_freshness_bounds(&doc(Some(&issued), Some(&expiry.to_rfc3339())), now)
+                .expect_err("a validity interval containing no instant is malformed");
+            assert!(
+                matches!(err, RejectReason::MalformedRequest { .. }),
+                "got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_document_without_issued_at_is_not_refused_here() {
+        // Item 13 bounds the timestamps a document carries; it does not
+        // require one. Requiring `issuedAt` is the *specification's* job for a
+        // consequential task, enforced by that task's schema.
+        assert!(check_freshness_bounds(&doc(None, None), Utc::now()).is_ok());
     }
 }
 
