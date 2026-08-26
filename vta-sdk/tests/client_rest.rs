@@ -1341,7 +1341,9 @@ async fn get_did_webvh_returns_record() {
         "GET",
         "/webvh/dids/did:webvh:Qabc:server.example.com:primary",
         200,
-        webvh_did_record_json(did),
+        // `dids/get` carries the record under `record` since the get-log fold
+        // (#1114); the flattened shape this used to mount no longer decodes.
+        json!({ "record": webvh_did_record_json(did) }),
     )
     .await;
     let c = client(&server).await;
@@ -1357,7 +1359,11 @@ async fn get_did_webvh_log_returns_log() {
         "GET",
         "/webvh/dids/did:webvh:abc/log",
         200,
-        json!({"did": "did:webvh:abc", "log": "{\"versionId\":\"1\"}\n"}),
+        // Same fold: `did` now lives on the nested record, `log` beside it.
+        json!({
+            "record": webvh_did_record_json("did:webvh:abc"),
+            "log": "{\"versionId\":\"1\"}\n",
+        }),
     )
     .await;
     let c = client(&server).await;
