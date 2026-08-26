@@ -9,6 +9,15 @@ use crate::keys::{KeyOrigin, KeyStatus, KeyType};
 pub struct CreateKeyBody {
     #[serde(alias = "key_type")]
     pub key_type: KeyType,
+    /// Durable identifier to give the new key.
+    ///
+    /// Optional: for a derived key the maintainer defaults it to
+    /// `derivation_path`, which is what this workspace does. It is **not**
+    /// optional in practice for `internal: true` — such a key has no
+    /// derivation path to be named after — which is the gap that put it in
+    /// `keys/create/0.1` (dtgwg-trust-tasks-tf#275, `trust-tasks-rs` 0.12.1).
+    #[serde(default, alias = "key_id", skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
     /// Optional, as `keys/create/0.1` says: "omitting it leaves the choice to
     /// the custodian".
     ///
@@ -137,6 +146,7 @@ mod null_member_tests {
         let minimal = CreateKeyBody {
             internal: None,
             key_type: KeyType::Ed25519,
+            key_id: None,
             derivation_path: None,
             mnemonic: None,
             label: None,
@@ -162,6 +172,7 @@ mod null_member_tests {
         let labelled = CreateKeyBody {
             internal: None,
             key_type: KeyType::Ed25519,
+            key_id: None,
             derivation_path: Some("m/26'/2'/0'/1'".into()),
             mnemonic: None,
             label: Some("persona-signing".into()),
