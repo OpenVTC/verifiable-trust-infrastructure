@@ -858,8 +858,8 @@ async fn unauthorized_approver_cannot_elevate() {
     assert!(
         serde_json::to_string(&v)
             .unwrap()
-            .contains("approver_unauthorized"),
-        "expected approver_unauthorized, got: {v}"
+            .contains("approverUnauthorized"),
+        "expected approverUnauthorized, got: {v}"
     );
     let stored = get_session(&ctx.sessions_ks, &session_id)
         .await

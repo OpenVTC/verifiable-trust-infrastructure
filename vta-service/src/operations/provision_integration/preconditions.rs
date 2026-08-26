@@ -21,7 +21,7 @@ use super::ProvisionIntegrationDeps;
 /// retry with an explicit choice.
 ///
 /// The caller renders this differently per transport: the DIDComm
-/// handler emits a `provision/integration:context_required` problem
+/// handler emits a `provision/integration:contextRequired` problem
 /// report with `args = candidates`; the REST handler returns a 400
 /// with the message and candidates inlined.
 #[derive(Debug)]
@@ -171,7 +171,7 @@ pub async fn ensure_target_context_or_create(
 pub enum ResolveContextError {
     /// Inference couldn't pick a single target — carries the candidates so the
     /// transport can surface them (REST: 400 with candidates inlined; DIDComm:
-    /// `provision/integration:context_required` problem report, `args =
+    /// `provision/integration:contextRequired` problem report, `args =
     /// candidates`).
     Ambiguous(AmbiguousContext),
     /// Any other failure — storage error, no-context-at-all `NotFound`, the

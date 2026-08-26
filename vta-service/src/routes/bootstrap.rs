@@ -762,7 +762,7 @@ mod provision {
         // Resolve + ensure the target context via the shared preamble. On
         // ambiguity we collapse into Validation here — REST clients (pnm-cli,
         // scripts) get the message + candidates inline. The DIDComm path emits
-        // the canonical `provision/integration:context_required` code so
+        // the canonical `provision/integration:contextRequired` code so
         // structured clients can branch on it; REST's typed-error vocabulary
         // wasn't designed for arbitrary new codes, so we stay with the existing
         // 400 shape. `--create-context` (super-admin gate inside

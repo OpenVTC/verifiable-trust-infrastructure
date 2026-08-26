@@ -47,7 +47,7 @@ pub async fn register_device(
     // at enrolment). No entry → no pending enrolment.
     let mut entry = get_acl_entry(acl_ks, &did).await?.ok_or_else(|| {
         AppError::NotFound(format!(
-            "device/register:no_pending_enrolment — DID {did} is not in the ACL; \
+            "device/register:noPendingEnrolment — DID {did} is not in the ACL; \
              complete provision-integration + acl/swap-key first"
         ))
     })?;
@@ -55,7 +55,7 @@ pub async fn register_device(
     // Re-registration is intentionally not idempotent (spec): rotate keys + retry.
     if entry.device.is_some() {
         return Err(AppError::Conflict(format!(
-            "device/register:already_registered — a DeviceBinding already exists for {did}"
+            "device/register:alreadyRegistered — a DeviceBinding already exists for {did}"
         )));
     }
 
@@ -113,12 +113,12 @@ pub async fn heartbeat_device(
     let did = auth.did.clone();
     let mut entry = get_acl_entry(acl_ks, &did).await?.ok_or_else(|| {
         AppError::NotFound(format!(
-            "device/heartbeat:not_registered — no DeviceBinding for {did}"
+            "device/heartbeat:notRegistered — no DeviceBinding for {did}"
         ))
     })?;
     let binding = entry.device.as_mut().ok_or_else(|| {
         AppError::NotFound(format!(
-            "device/heartbeat:not_registered — no DeviceBinding for {did}"
+            "device/heartbeat:notRegistered — no DeviceBinding for {did}"
         ))
     })?;
 
@@ -353,12 +353,12 @@ pub async fn set_wake_device(
     let did = auth.did.clone();
     let mut entry = get_acl_entry(acl_ks, &did).await?.ok_or_else(|| {
         AppError::NotFound(format!(
-            "device/set-wake:not_registered — no DeviceBinding for {did}"
+            "device/set-wake:notRegistered — no DeviceBinding for {did}"
         ))
     })?;
     if entry.device.is_none() {
         return Err(AppError::NotFound(format!(
-            "device/set-wake:not_registered — no DeviceBinding for {did}"
+            "device/set-wake:notRegistered — no DeviceBinding for {did}"
         )));
     }
 

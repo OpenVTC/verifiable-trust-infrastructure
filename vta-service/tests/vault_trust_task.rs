@@ -402,7 +402,7 @@ async fn archive_hides_and_blocks_then_unarchive_restores() {
     assert_ne!(
         rel_status,
         StatusCode::OK,
-        "archived entry refuses release (not_found)"
+        "archived entry refuses release (notFound)"
     );
 
     // Double-archive is rejected.

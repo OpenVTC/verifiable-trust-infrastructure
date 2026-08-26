@@ -707,7 +707,7 @@ pub(crate) enum WebvhCommands {
         /// remote backplane serves multiple tenant domains, name the
         /// one this DID should live on; otherwise the server resolves
         /// via your ACL default → its system default. An unknown
-        /// domain comes back as a `did-management:unknown_domain`
+        /// domain comes back as a `did-management:unknownDomain`
         /// error. Use `pnm did-mgmt list-domains --server <id>` to
         /// see what's configured. Ignored in serverless mode.
         #[arg(long)]

@@ -2482,11 +2482,11 @@ mod tests {
         let doc = serde_json::json!({
             "id": "urn:uuid:def",
             "type": "https://trusttasks.org/spec/vault/get/0.1#reject",
-            "reason": "vault/get:not_found — no such entry"
+            "reason": "vault/get:notFound — no such entry"
         });
         let err = VtaClient::extract_trust_task_payload(doc).unwrap_err();
         match err {
-            VtaError::Protocol(msg) => assert!(msg.contains("not_found"), "got: {msg}"),
+            VtaError::Protocol(msg) => assert!(msg.contains("notFound"), "got: {msg}"),
             other => panic!("expected Protocol error, got {other:?}"),
         }
     }

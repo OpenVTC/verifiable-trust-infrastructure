@@ -363,7 +363,7 @@ pub struct CreateDidWebvhParams {
     /// Honored only for server-managed DIDs (when `server_id` is set);
     /// ignored in serverless mode. Resolution chain on the remote:
     /// explicit → caller's ACL default on the server → server's
-    /// system default → reject with `did-management:unknown_domain`.
+    /// system default → reject with `did-management:unknownDomain`.
     /// Enables a VTA managing slots across multiple tenant domains
     /// on one shared `did-hosting-control` backplane to direct
     /// provisioning at the right tenant.

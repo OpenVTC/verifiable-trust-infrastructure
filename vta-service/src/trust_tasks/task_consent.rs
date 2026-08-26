@@ -168,7 +168,7 @@ pub(super) async fn handle_decision(
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
-                    reason: "task-consent/decision:no_pending".into(),
+                    reason: "task-consent/decision:noPending".into(),
                     details: Some(json!({ "payloadDigest": payload.payload_digest })),
                 },
             );
@@ -283,7 +283,7 @@ pub(super) async fn handle_decision(
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
-                    reason: "task-consent/decision:no_pending".into(),
+                    reason: "task-consent/decision:noPending".into(),
                     details: None,
                 },
             );

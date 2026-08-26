@@ -557,7 +557,7 @@ impl WebvhClient {
     /// CLI `--domain`) supplies the target; otherwise the remote
     /// resolves through caller's ACL default → system default. An
     /// unknown domain on the remote is rejected as
-    /// `did-management:unknown_domain`.
+    /// `did-management:unknownDomain`.
     pub async fn request_uri(
         &self,
         path: Option<&str>,
@@ -645,7 +645,7 @@ impl WebvhClient {
     /// The `domain` argument is accepted for disambiguation on hosts
     /// that run per-domain mnemonic namespaces. Hosts with a flat
     /// namespace ignore it on lookup; a mismatched explicit domain is
-    /// surfaced as `did-management:unknown_domain`.
+    /// surfaced as `did-management:unknownDomain`.
     pub async fn publish_did(
         &self,
         mnemonic: &str,
