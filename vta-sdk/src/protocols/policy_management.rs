@@ -121,6 +121,15 @@ pub struct UpsertPolicyBody {
     pub applies_to: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<i32>,
+    /// Optional on the wire, defaulting to `true`, as `policy/upsert/0.2`
+    /// declares (`"enabled": {"type": "boolean", "default": true}`).
+    ///
+    /// It was a bare `bool` here, so a conforming client that omitted it got
+    /// `malformedRequest` — the same shape as `keys/create`'s `derivationPath`
+    /// before #1123. A policy you bothered to write is one you meant to switch
+    /// on, which is why the specification defaults it that way rather than
+    /// making it required.
+    #[serde(default = "enabled_by_default")]
     pub enabled: bool,
     /// Optimistic concurrency: when present it MUST equal the row's current
     /// version, else the caller is overwriting a revision it never saw.
@@ -163,6 +172,11 @@ pub struct DeletePolicyResultBody {
     pub id: String,
     /// RFC 3339 removal timestamp.
     pub deleted_at: String,
+}
+
+/// `policy/upsert/0.2` declares `enabled` with `"default": true`.
+fn enabled_by_default() -> bool {
+    true
 }
 
 #[cfg(test)]
