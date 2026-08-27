@@ -110,14 +110,26 @@ pub enum AssertionMode {
 /// Response body. Used by both transports — REST handlers serialize
 /// and the DIDComm provision-integration client (`vta-sdk`)
 /// deserializes the result message body.
+/// `rename_all` is on the struct rather than on the one field that needs it.
+/// Every member was a single word until `digestMultibase`, so nothing here had
+/// ever exercised the casing — and the first multi-word field went out as
+/// `digest_multibase`, which `additionalProperties: false` rejects. Naming the
+/// rule once means the next multi-word member cannot repeat that.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ProvisionIntegrationResponse {
     /// Armored sealed bundle.
     pub bundle: String,
-    /// SHA-256 digest of the sealed ciphertext (lowercase hex).
-    pub digest: String,
+    /// Digest over the armored ciphertext, for a holder that pins the bundle
+    /// out-of-band.
+    ///
+    /// A multibase multihash as of `provision/integration/0.3`, where it
+    /// replaced the bare-hex `digest`: multihash names its own algorithm, so
+    /// moving off SHA-256 is a change of value rather than of schema. OPTIONAL
+    /// — a holder that does not pin does not need it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest_multibase: Option<String>,
     pub summary: ProvisionSummary,
 }
 
@@ -346,9 +358,9 @@ mod tests {
         use chrono::Duration;
 
         let schema = trust_tasks_rs::schema_index::schema_for(
-            crate::trust_tasks::TASK_PROVISION_INTEGRATION_0_2,
+            crate::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
         )
-        .expect("the 0.2 schema is published and indexed");
+        .expect("the 0.3 schema is published and indexed");
 
         let (seed, pub_bytes) = crate::sealed_transfer::generate_ed25519_keypair();
         let client_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&pub_bytes);

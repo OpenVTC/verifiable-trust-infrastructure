@@ -87,6 +87,48 @@ pub fn bundle_digest(bundle: &SealedBundle) -> String {
     crate::hex::lower(hasher.finalize().as_slice())
 }
 
+/// The same digest as [`bundle_digest`], in the form the wire now carries.
+///
+/// A multibase-encoded multihash — `0x12 0x20` (sha2-256, 32 bytes) followed by
+/// the digest, base58btc with the `z` prefix. `provision/integration/0.3`
+/// replaced the bare-hex `digest` with this, so that moving off SHA-256 later
+/// is a change of value rather than another schema revision: multihash names
+/// the algorithm in-band, where `^[0-9a-f]{64}$` hard-coded it into the
+/// contract.
+///
+/// [`bundle_digest`] stays, and stays hex: it is what the open path compares
+/// against and what operators read off a terminal, and neither of those is a
+/// wire contract.
+pub fn bundle_digest_multibase(bundle: &SealedBundle) -> String {
+    let mut chunks: Vec<&ArmoredChunk> = bundle.chunks.iter().collect();
+    chunks.sort_by_key(|c| c.chunk_index);
+    let mut hasher = Sha256::new();
+    for c in chunks {
+        hasher.update(&c.sealed_bytes);
+    }
+    let mut mh = vec![0x12, 0x20];
+    mh.extend_from_slice(hasher.finalize().as_slice());
+    multibase::encode(multibase::Base::Base58Btc, mh)
+}
+
+/// Decode a wire `digestMultibase` back to the lowercase hex the open path
+/// compares against.
+///
+/// Rejects anything that is not a sha2-256 multihash (`0x12 0x20` + 32 bytes):
+/// the digest is an integrity pin, and silently accepting an algorithm this
+/// build cannot compute would turn a mismatch into a pass.
+pub fn multibase_digest_to_hex(value: &str) -> Result<String, SealedTransferError> {
+    let (_base, bytes) = multibase::decode(value).map_err(|e| {
+        SealedTransferError::Armor(format!("digestMultibase is not multibase: {e}"))
+    })?;
+    match bytes.split_at_checked(2) {
+        Some(([0x12, 0x20], digest)) if digest.len() == 32 => Ok(crate::hex::lower(digest)),
+        _ => Err(SealedTransferError::Armor(
+            "digestMultibase is not a sha2-256 multihash — this build cannot verify it".into(),
+        )),
+    }
+}
+
 /// Seal a [`SealedPayloadV1`] for delivery to `recipient_pubkey`.
 ///
 /// `bundle_id` should be the consumer's request nonce. The producer's

@@ -697,8 +697,18 @@ mod provision {
     pub struct ProvisionIntegrationResponseBody {
         /// Armored sealed bundle (PGP-style BEGIN/END blocks).
         pub bundle: String,
-        /// SHA-256 digest of the sealed ciphertext (lowercase hex).
-        pub digest: String,
+        /// Digest over the sealed ciphertext, as a multibase multihash.
+        ///
+        /// Renamed from the bare-hex `digest` with
+        /// `provision/integration/0.3`. This body is a second declaration of
+        /// the same wire shape `vta_sdk`'s `ProvisionIntegrationResponse`
+        /// defines, and the SDK decodes it with `deny_unknown_fields` — so the
+        /// two are not merely conventionally aligned, they must match or the
+        /// client cannot read the response at all. It did not, and that is what
+        /// `url_direct_admin_rotation_round_trips_against_rest_only_mock`
+        /// caught.
+        #[serde(rename = "digestMultibase")]
+        pub digest_multibase: String,
         /// Operator-readable summary.
         pub summary: ProvisionSummaryWire,
     }
@@ -805,7 +815,7 @@ mod provision {
 
         Ok(Json(ProvisionIntegrationResponseBody {
             bundle: output.armored,
-            digest: output.digest,
+            digest_multibase: output.digest_multibase,
             summary: ProvisionSummaryWire {
                 client_did: output.summary.client_did,
                 admin_did: output.summary.admin_did,

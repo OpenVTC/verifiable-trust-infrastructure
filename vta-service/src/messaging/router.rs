@@ -542,9 +542,10 @@ pub async fn dispatch(
     // ── Provision-integration (webvh) ────────────────────────────────
     #[cfg(feature = "webvh")]
     {
-        if t == provision_integration_management::CANONICAL_PROVISION_INTEGRATION
-            || t == provision_integration_management::CANONICAL_PROVISION_INTEGRATION_0_2
-        {
+        // 0.3 only, matching the Trust-Task dispatcher: the response carries
+        // `digestMultibase`, which 0.1's and 0.2's closed response schemas
+        // reject.
+        if t == provision_integration_management::CANONICAL_PROVISION_INTEGRATION_0_3 {
             return finish(
                 handlers::handle_provision_integration(ctx, msg, Extension(vta_state)).await,
             );

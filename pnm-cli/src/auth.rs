@@ -169,6 +169,19 @@ pub async fn ensure_authenticated(
     store().ensure_authenticated(base_url, keyring_key).await
 }
 
+/// An authenticated client that can also *sign* what it sends.
+///
+/// [`ensure_authenticated`] returns a bearer token, which authenticates the
+/// connection and nothing else. SPEC §7.2 item 7a makes a per-document proof
+/// mandatory for most tasks, so a client built from the token alone has every
+/// call refused. This carries the session's DID and key across too.
+pub async fn authenticated_client(
+    base_url: &str,
+    keyring_key: &str,
+) -> Result<vta_sdk::client::VtaClient, Box<dyn std::error::Error>> {
+    store().rest_client(base_url, keyring_key).await
+}
+
 /// Print the current access token (JWT) to stdout. Performs a fresh
 /// authentication if the cached token is missing or expired. Used by
 /// operator tooling that needs to paste the bearer credential into a

@@ -313,7 +313,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Mints a DID, keys, an ACL grant and an authorization VC, and returns them
     // HPKE-sealed. Non-convergent in every one of those, and the response is the
     // secret bundle. Remediation-plan F3.
-    (trust_tasks::TASK_PROVISION_INTEGRATION_0_2, KeyedSecret),
+    (trust_tasks::TASK_PROVISION_INTEGRATION_0_3, KeyedSecret),
     // ── WebVH servers ───────────────────────────────────────────────────
     (trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0, ReadOnly),
     (trust_tasks::TASK_WEBVH_SERVERS_REGISTER_1_0, Keyed),
@@ -532,7 +532,7 @@ mod tests {
             );
         }
         assert_eq!(
-            retry_safety(trust_tasks::TASK_PROVISION_INTEGRATION_0_2),
+            retry_safety(trust_tasks::TASK_PROVISION_INTEGRATION_0_3),
             Some(RetrySafety::KeyedSecret)
         );
     }

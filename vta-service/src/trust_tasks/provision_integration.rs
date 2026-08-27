@@ -143,7 +143,7 @@ pub(super) async fn handle_request(
 
     let body = ProvisionIntegrationResponse {
         bundle: output.armored,
-        digest: output.digest,
+        digest_multibase: Some(output.digest_multibase),
         summary: vta_sdk::provision_integration::http::ProvisionSummary {
             client_did: output.summary.client_did,
             admin_did: output.summary.admin_did,

@@ -59,6 +59,20 @@ pub const CANONICAL_PROVISION_INTEGRATION_0_2: &str =
 pub const CANONICAL_PROVISION_INTEGRATION_0_2_RESULT: &str =
     "https://trusttasks.org/spec/provision/integration/0.2#response";
 
+/// Inbound VP + provisioning options — canonical Trust Task URI, v0.3.
+///
+/// The DIDComm surface follows the Trust-Task one onto 0.3, and for the same
+/// reason: the response carries `digestMultibase` where 0.1 and 0.2 carry a
+/// bare-hex `digest`, and both of those close their response with
+/// `additionalProperties: false`. Serving them from one response body would
+/// emit a member their schemas reject.
+pub const CANONICAL_PROVISION_INTEGRATION_0_3: &str =
+    "https://trusttasks.org/spec/provision/integration/0.3";
+
+/// Outbound sealed bundle + summary — canonical Trust Task URI, v0.3.
+pub const CANONICAL_PROVISION_INTEGRATION_0_3_RESULT: &str =
+    "https://trusttasks.org/spec/provision/integration/0.3#response";
+
 /// Match the result URI to whichever request URI the caller used.
 /// Centralised here so the routing decision lives next to the URI
 /// constants — handlers downstream just call this. The 0.2 request URI
@@ -101,6 +115,7 @@ use crate::provision_integration::http::{
 pub enum ProvisionSpecVersion {
     V0_1,
     V0_2,
+    V0_3,
 }
 
 impl ProvisionSpecVersion {
@@ -109,12 +124,20 @@ impl ProvisionSpecVersion {
         match self {
             ProvisionSpecVersion::V0_1 => CANONICAL_PROVISION_INTEGRATION,
             ProvisionSpecVersion::V0_2 => CANONICAL_PROVISION_INTEGRATION_0_2,
+            ProvisionSpecVersion::V0_3 => CANONICAL_PROVISION_INTEGRATION_0_3,
         }
     }
 }
 
+/// Whether `request_uri` is the 0.1 form, whose summary keys are snake_case.
+///
+/// Written as an equality against 0.1, not as "anything that is not 0.2". The
+/// negative form silently classified every *future* version as 0.1: adding 0.3
+/// made it snake_case a camelCase summary, and the only symptom was a response
+/// whose keys no consumer expected. A predicate about one version should name
+/// that version.
 fn is_v0_1(request_uri: &str) -> bool {
-    request_uri != CANONICAL_PROVISION_INTEGRATION_0_2
+    request_uri == CANONICAL_PROVISION_INTEGRATION
 }
 
 /// `fooBarBaz` → `foo_bar_baz`. A single-word key is returned unchanged.
@@ -424,10 +447,10 @@ mod tests {
     }
 
     #[test]
-    fn response_body_v0_1_stays_snake_case_v0_2_camelizes_summary() {
+    fn response_body_v0_1_stays_snake_case_v0_3_camelizes_summary() {
         let resp = ProvisionIntegrationResponse {
             bundle: "armored".into(),
-            digest: "deadbeef".into(),
+            digest_multibase: Some("zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ".into()),
             summary: crate::provision_integration::http::ProvisionSummary {
                 client_did: "did:key:zClient".into(),
                 admin_did: "did:key:zAdmin".into(),
@@ -448,8 +471,8 @@ mod tests {
         assert_eq!(v01["summary"]["client_did"], "did:key:zClient");
         assert_eq!(v01["summary"]["bundle_id_hex"], "abc");
         assert!(v01["summary"].get("clientDid").is_none());
-        // 0.2 — summary keys camelized; values and opaque bundle/digest intact.
-        let v02 = response_body_for_version(&resp, CANONICAL_PROVISION_INTEGRATION_0_2).unwrap();
+        // 0.3 — summary keys camelized; values and opaque bundle/digest intact.
+        let v02 = response_body_for_version(&resp, CANONICAL_PROVISION_INTEGRATION_0_3).unwrap();
         assert_eq!(v02["summary"]["clientDid"], "did:key:zClient");
         assert_eq!(v02["summary"]["bundleIdHex"], "abc");
         assert_eq!(v02["summary"]["secretCount"], 2);
@@ -457,6 +480,13 @@ mod tests {
         assert_eq!(v02["summary"]["contextCreated"], true);
         assert!(v02["summary"].get("client_did").is_none());
         assert_eq!(v02["bundle"], "armored");
-        assert_eq!(v02["digest"], "deadbeef");
+        assert_eq!(
+            v02["digestMultibase"],
+            "zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ"
+        );
+        assert!(
+            v02.get("digest").is_none(),
+            "0.3 carries `digestMultibase` and nothing else — its response is closed"
+        );
     }
 }

@@ -31,7 +31,15 @@ pub(super) struct SealedProvisionBundle {
     pub armored: String,
     /// Lowercase-hex SHA-256 of the bundle, communicated out-of-band so
     /// the consumer can pin integrity before opening.
+    ///
+    /// Kept in hex for the operator-facing surfaces (`pnm bootstrap open
+    /// --expect-digest`, the CLI printouts). The *wire* form is
+    /// [`digest_multibase`](Self::digest_multibase).
     pub digest: String,
+    /// The same digest as a multibase multihash — the form
+    /// `provision/integration/0.3` puts on the wire, where it replaced the
+    /// bare-hex `digest` so the algorithm travels with the value.
+    pub digest_multibase: String,
 }
 
 /// Seal a `SealedPayloadV1` for the consumer's HPKE pubkey, choosing
@@ -80,5 +88,6 @@ pub(super) async fn seal_provision_payload(
     Ok(SealedProvisionBundle {
         armored: armor::encode(&bundle),
         digest: bundle_digest(&bundle),
+        digest_multibase: vta_sdk::sealed_transfer::bundle_digest_multibase(&bundle),
     })
 }

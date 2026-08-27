@@ -104,8 +104,16 @@ impl VtaClient {
                 .await
                 .map_err(|e| VtaError::Auth(e.to_string()))?;
 
-                let client = VtaClient::new(input.vta_url);
-                client.set_token_async(token.access_token.clone()).await;
+                let client = VtaClient::authenticated(
+                    input.vta_url,
+                    crate::client::ClientIdentity {
+                        client_did: input.credential_did.to_string(),
+                        private_key_multibase: input.private_key_multibase.to_string(),
+                        vta_did: input.vta_did.to_string(),
+                    },
+                    token.access_token.clone(),
+                )
+                .await;
                 Ok(ConnectedVta {
                     client,
                     rest_token: Some(token),

@@ -136,7 +136,17 @@ pub fn response_to_result(
     }
 
     let x_secret = crate::sealed_transfer::ed25519_seed_to_x25519_secret(seed);
-    let opened = open_bundle(&x_secret, bundle, Some(&response.digest))?;
+    // Decoded back to hex for the comparison: the pin travels as a multibase
+    // multihash from 0.3 on, but `open_bundle` compares the hex it computes.
+    // `None` is a real answer — the member is OPTIONAL, and a holder that does
+    // not pin the bundle out of band sends no digest to check against.
+    let expected = response
+        .digest_multibase
+        .as_deref()
+        .map(crate::sealed_transfer::multibase_digest_to_hex)
+        .transpose()
+        .map_err(|e| ProvisionError::Armor(e.to_string()))?;
+    let opened = open_bundle(&x_secret, bundle, expected.as_deref())?;
 
     let payload = match opened.payload {
         SealedPayloadV1::TemplateBootstrap(boxed) => *boxed,
@@ -145,7 +155,7 @@ pub fn response_to_result(
 
     Ok(ProvisionResult {
         bundle_id_hex: hex_lower(&opened.bundle_id),
-        digest: response.digest,
+        digest: expected.unwrap_or_default(),
         summary: response.summary,
         payload,
     })
@@ -181,7 +191,17 @@ pub fn admin_rotation_response_to_reply(
     }
 
     let x_secret = crate::sealed_transfer::ed25519_seed_to_x25519_secret(seed);
-    let opened = open_bundle(&x_secret, bundle, Some(&response.digest))?;
+    // Decoded back to hex for the comparison: the pin travels as a multibase
+    // multihash from 0.3 on, but `open_bundle` compares the hex it computes.
+    // `None` is a real answer — the member is OPTIONAL, and a holder that does
+    // not pin the bundle out of band sends no digest to check against.
+    let expected = response
+        .digest_multibase
+        .as_deref()
+        .map(crate::sealed_transfer::multibase_digest_to_hex)
+        .transpose()
+        .map_err(|e| ProvisionError::Armor(e.to_string()))?;
+    let opened = open_bundle(&x_secret, bundle, expected.as_deref())?;
 
     let payload = match opened.payload {
         SealedPayloadV1::AdminRotation(boxed) => *boxed,

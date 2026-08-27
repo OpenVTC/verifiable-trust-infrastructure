@@ -228,9 +228,14 @@ pub(crate) async fn run(
                 // Fallback: query VTA's REST status endpoint for mediator info.
                 if let Some(url) = effective_rest_url.as_deref() {
                     match auth::ensure_authenticated(url, keyring_key).await {
-                        Ok(token) => {
-                            let client = VtaClient::new(url);
-                            client.set_token_async(token).await;
+                        Ok(_token) => {
+                            let client = match auth::authenticated_client(url, keyring_key).await {
+                                Ok(c) => c,
+                                // The outer arm already handled an auth
+                                // failure; this can only be a missing session,
+                                // which the DIDComm probe below reports.
+                                Err(_) => return Ok(()),
+                            };
                             match client.didcomm_status().await {
                                 Ok(status) if status.enabled => {
                                     Ok(status.mediator_did.map(|did| (did, true)))

@@ -1019,7 +1019,7 @@ async fn a_reprovision_is_refused_pending_consent_and_executes_once_approved() {
 
     // ── 1. Refused, pending a human.
     let doc = envelope(
-        vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_2,
+        vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
         &requester,
         &ctx.vta_did,
         payload.clone(),
@@ -1078,7 +1078,7 @@ async fn a_reprovision_is_refused_pending_consent_and_executes_once_approved() {
     //       digest, not the envelope id, and the replay guard would refuse a
     //       reused id outright.
     let resubmit = envelope(
-        vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_2,
+        vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
         &requester,
         &ctx.vta_did,
         payload,
