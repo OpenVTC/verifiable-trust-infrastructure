@@ -57,6 +57,22 @@ struct SealResponder {
     producer_did: String,
 }
 
+/// Read a required string member out of the raw bootstrap-request JSON.
+///
+/// `ProvisionIntegrationRequest.request` is a `serde_json::Value`, not a typed
+/// `BootstrapRequest`, and deliberately so: a relayer is usually not the holder
+/// — the air-gap flow exists precisely because it isn't — so holding it typed
+/// meant re-rendering, with this crate's casing, a document some other process
+/// signed. This fake reads it the way a real VTA does, out of the bytes that
+/// arrived.
+fn req_str(request: &serde_json::Value, member: &str) -> String {
+    request
+        .get(member)
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| panic!("bootstrap request carries a string `{member}`"))
+        .to_string()
+}
+
 impl Respond for SealResponder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let req: ProvisionIntegrationRequest =
@@ -66,7 +82,9 @@ impl Respond for SealResponder {
         let nonce: [u8; 16] = {
             use base64::Engine;
             use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
-            let raw = B64URL.decode(&req.request.nonce).expect("nonce b64");
+            let raw = B64URL
+                .decode(req_str(&req.request, "nonce"))
+                .expect("nonce b64");
             raw.try_into().expect("nonce 16 bytes")
         };
 
@@ -166,9 +184,9 @@ impl Respond for SealResponder {
             bundle: armored,
             digest,
             summary: ProvisionSummary {
-                client_did: req.request.holder.clone(),
+                client_did: req_str(&req.request, "holder"),
                 admin_did: self.admin_did.clone(),
-                admin_rolled_over: req.request.holder != self.admin_did,
+                admin_rolled_over: req_str(&req.request, "holder") != self.admin_did,
                 integration_did: Some(self.integration_did.clone()),
                 template_name: Some(self.template_name.clone()),
                 template_kind: Some(self.template_kind.clone()),
@@ -205,11 +223,22 @@ fn x25519_pub_from_setup_seed(seed: &[u8; 32]) -> [u8; 32] {
         .expect("ed25519 → x25519 pubkey conversion")
 }
 
+/// A challenge that satisfies the spec payload's `minLength: 16` — the
+/// canonical handler issues hex-encoded 32 random bytes.
+///
+/// The same 14-char `"test-challenge"` fixture was corrected in
+/// `runner_rest.rs`'s unit tests when the client stopped hand-writing its auth
+/// payload and started building the typed spec type. This file was missed, and
+/// stayed missed because it is gated on `provision-client` + `test-support` —
+/// neither default — and CI runs `--all-targets` without `--all-features`, so
+/// nothing ever compiled it to find out.
+const TEST_CHALLENGE: &str = "test-challenge-0123456789abcdef";
+
 async fn mount_auth_mocks(server: &MockServer) {
     Mock::given(method("POST"))
         .and(path("/auth/challenge"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "challenge": "test-challenge",
+            "challenge": TEST_CHALLENGE,
             "sessionId": "test-session",
             "expiresAt": "2099-12-31T23:59:59Z"
         })))
@@ -363,7 +392,9 @@ impl Respond for AdminRotationResponder {
         let nonce: [u8; 16] = {
             use base64::Engine;
             use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
-            let raw = B64URL.decode(&req.request.nonce).expect("nonce b64");
+            let raw = B64URL
+                .decode(req_str(&req.request, "nonce"))
+                .expect("nonce b64");
             raw.try_into().expect("nonce 16 bytes")
         };
 
@@ -429,7 +460,7 @@ impl Respond for AdminRotationResponder {
             bundle: armored,
             digest,
             summary: ProvisionSummary {
-                client_did: req.request.holder.clone(),
+                client_did: req_str(&req.request, "holder"),
                 admin_did: self.admin_did.clone(),
                 admin_rolled_over: true,
                 integration_did: None,
