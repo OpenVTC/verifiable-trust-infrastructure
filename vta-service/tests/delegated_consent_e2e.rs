@@ -92,6 +92,11 @@ fn approver(seed: u8) -> Approver {
 /// takes the approver's identity from it, never from the bearer session.
 fn sign_as(who: &Approver, doc_json: Value) -> Value {
     let mut doc: TrustTask<Value> = serde_json::from_value(doc_json).unwrap();
+    // Any existing proof comes off first. `prepare_sign_input` hashes the
+    // document as given, so signing over one that already carries a proof
+    // produces a signature covering bytes the verifier never reconstructs — it
+    // fails as `proofInvalid`, which reads like a key problem and is not one.
+    doc.proof = None;
     let mut di = DataIntegrityProof::new(
         CryptoSuite::EddsaJcs2022,
         who.vm.clone(),
@@ -109,16 +114,31 @@ fn sign_as(who: &Approver, doc_json: Value) -> Value {
     serde_json::to_value(&doc).unwrap()
 }
 
-fn envelope(type_uri: &str, issuer: &str, recipient: &str, payload: Value) -> Value {
-    json!({
-        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        "type": type_uri,
-        "issuer": issuer,
-        "recipient": recipient,
-        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "payload": payload,
-    })
+/// A signed envelope from `issuer`.
+///
+/// Signing is not optional any more: SPEC §7.2 item 7a is enforced, and most of
+/// the tasks these tests drive declare `proof` REQUIRED. Taking an `&Approver`
+/// rather than a DID string is what makes that possible — a hand-written DID
+/// has no key behind it, so a document issued by one can never be signed, and
+/// the compiler now says so at the call site instead of the VTA saying it at
+/// run time.
+fn envelope(type_uri: &str, issuer: &Approver, recipient: &str, payload: Value) -> Value {
+    sign_as(
+        issuer,
+        json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": type_uri,
+            "issuer": issuer.did,
+            "recipient": recipient,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": payload,
+        }),
+    )
 }
+
+/// The requester identity these tests act as. Seeded so the DID and the signing
+/// key come from one place.
+const REQUESTER_SEED: u8 = 0x51;
 
 /// The update keys actually in force on `did`, read from the committed log.
 ///
@@ -158,8 +178,8 @@ async fn a_did_update_is_approved_by_a_human_and_the_keys_they_saw_are_the_keys_
         ..Default::default()
     })
     .await;
-    let requester = "did:key:z6MkTestRequester";
-    let token = ctx.mint_token(requester, "admin", vec![]).await;
+    let requester = approver(REQUESTER_SEED);
+    let token = ctx.mint_token(&requester.did, "admin", vec![]).await;
     let ops = approver(7);
 
     // A real DID, minted over the wire by the VTA that holds its key.
@@ -191,7 +211,7 @@ async fn a_did_update_is_approved_by_a_human_and_the_keys_they_saw_are_the_keys_
     });
     let update = envelope(
         WEBVH_UPDATE,
-        requester,
+        &requester,
         &ctx.vta_did,
         json!({ "did": did, "document": new_doc }),
     );
@@ -270,18 +290,15 @@ async fn a_did_update_is_approved_by_a_human_and_the_keys_they_saw_are_the_keys_
 
     // ── 4. The human approves. The proof is the authorization; the bearer token
     //       belongs to the *requester* and says nothing about who agreed.
-    let decision = sign_as(
+    let decision = envelope(
+        TASK_CONSENT_DECISION,
         &ops,
-        envelope(
-            TASK_CONSENT_DECISION,
-            &ops.did,
-            &ctx.vta_did,
-            json!({
-                "challenge": challenge,
-                "payloadDigest": payload_digest,
-                "decision": "approve"
-            }),
-        ),
+        &ctx.vta_did,
+        json!({
+            "challenge": challenge,
+            "payloadDigest": payload_digest,
+            "decision": "approve"
+        }),
     );
     let (status, granted) = post(&router, &token, &decision).await;
     assert_eq!(
@@ -297,7 +314,7 @@ async fn a_did_update_is_approved_by_a_human_and_the_keys_they_saw_are_the_keys_
     //       re-proposes the approved task in a new envelope, exactly as here.
     let resubmit = envelope(
         WEBVH_UPDATE,
-        requester,
+        &requester,
         &ctx.vta_did,
         update["payload"].clone(),
     );
@@ -330,8 +347,8 @@ async fn an_approval_authorizes_exactly_one_execution() {
         ..Default::default()
     })
     .await;
-    let requester = "did:key:z6MkTestRequester";
-    let token = ctx.mint_token(requester, "admin", vec![]).await;
+    let requester = approver(REQUESTER_SEED);
+    let token = ctx.mint_token(&requester.did, "admin", vec![]).await;
     let ops = approver(9);
 
     let (did, _scid) = create_did(&router, &ctx, &token).await;
@@ -348,22 +365,19 @@ async fn an_approval_authorizes_exactly_one_execution() {
         "did": did,
         "document": { "@context": ["https://www.w3.org/ns/did/v1"], "id": did, "alsoKnownAs": ["did:example:x"] }
     });
-    let update = envelope(WEBVH_UPDATE, requester, &ctx.vta_did, payload);
+    let update = envelope(WEBVH_UPDATE, &requester, &ctx.vta_did, payload);
 
     let (_, rejected) = post(&router, &token, &update).await;
     let d = &rejected["payload"]["details"];
-    let decision = sign_as(
+    let decision = envelope(
+        TASK_CONSENT_DECISION,
         &ops,
-        envelope(
-            TASK_CONSENT_DECISION,
-            &ops.did,
-            &ctx.vta_did,
-            json!({
-                "challenge": d["challenge"],
-                "payloadDigest": d["payloadDigest"],
-                "decision": "approve"
-            }),
-        ),
+        &ctx.vta_did,
+        json!({
+            "challenge": d["challenge"],
+            "payloadDigest": d["payloadDigest"],
+            "decision": "approve"
+        }),
     );
     let (status, _) = post(&router, &token, &decision).await;
     assert_eq!(status, StatusCode::OK);
@@ -371,7 +385,7 @@ async fn an_approval_authorizes_exactly_one_execution() {
     // First re-submit (fresh envelope, same payload) executes.
     let first = envelope(
         WEBVH_UPDATE,
-        requester,
+        &requester,
         &ctx.vta_did,
         update["payload"].clone(),
     );
@@ -382,7 +396,7 @@ async fn an_approval_authorizes_exactly_one_execution() {
     // grant was consumed; what comes back is a fresh demand for consent.
     let second = envelope(
         WEBVH_UPDATE,
-        requester,
+        &requester,
         &ctx.vta_did,
         update["payload"].clone(),
     );
@@ -429,7 +443,7 @@ async fn the_requester_cannot_approve_its_own_task() {
 
     let update = envelope(
         WEBVH_UPDATE,
-        &requester.did,
+        &requester,
         &ctx.vta_did,
         json!({ "did": did, "document": { "@context": ["https://www.w3.org/ns/did/v1"], "id": did } }),
     );
@@ -444,18 +458,15 @@ async fn the_requester_cannot_approve_its_own_task() {
     );
 
     // And if they sign one anyway, the executor refuses it.
-    let decision = sign_as(
+    let decision = envelope(
+        TASK_CONSENT_DECISION,
         &requester,
-        envelope(
-            TASK_CONSENT_DECISION,
-            &requester.did,
-            &ctx.vta_did,
-            json!({
-                "challenge": d["challenge"],
-                "payloadDigest": d["payloadDigest"],
-                "decision": "approve"
-            }),
-        ),
+        &ctx.vta_did,
+        json!({
+            "challenge": d["challenge"],
+            "payloadDigest": d["payloadDigest"],
+            "decision": "approve"
+        }),
     );
     let (status, refused) = post(&router, &token, &decision).await;
     assert_ne!(
@@ -483,16 +494,16 @@ async fn a_context_admin_approval_lets_a_cross_context_requester_execute() {
     // Setup: mint the DID in context `default` using a super-admin (the
     // provisioning identity a deployment already trusts).
     let admin_token = ctx
-        .mint_token("did:key:z6MkTestRequester", "admin", vec![])
+        .mint_token(&approver(REQUESTER_SEED).did, "admin", vec![])
         .await;
     let (did, _scid) = create_did(&router, &ctx, &admin_token).await;
     let keys_before = update_keys_in_force(&ctx, &did).await;
 
     // The requester is an admin — but of `other-ctx`, NOT `default`. On its own
     // token it cannot touch this DID.
-    let requester = "did:key:z6MkCrossCtxAgent";
+    let requester = approver(0x52);
     let deleg_token = ctx
-        .mint_token(requester, "admin", vec!["other-ctx".into()])
+        .mint_token(&requester.did, "admin", vec!["other-ctx".into()])
         .await;
 
     // The approver is an admin of `default` in the ACL — the authority a
@@ -520,7 +531,7 @@ async fn a_context_admin_approval_lets_a_cross_context_requester_execute() {
     //    approver can be shown the effects.
     let update = envelope(
         WEBVH_UPDATE,
-        requester,
+        &requester,
         &ctx.vta_did,
         json!({
             "did": did,
@@ -543,14 +554,11 @@ async fn a_context_admin_approval_lets_a_cross_context_requester_execute() {
     );
 
     // 2. The context admin approves.
-    let decision = sign_as(
+    let decision = envelope(
+        TASK_CONSENT_DECISION,
         &ops,
-        envelope(
-            TASK_CONSENT_DECISION,
-            &ops.did,
-            &ctx.vta_did,
-            json!({ "challenge": challenge, "payloadDigest": payload_digest, "decision": "approve" }),
-        ),
+        &ctx.vta_did,
+        json!({ "challenge": challenge, "payloadDigest": payload_digest, "decision": "approve" }),
     );
     let (status, granted) = post(&router, &deleg_token, &decision).await;
     assert_eq!(status, StatusCode::OK, "decision accepted: {granted}");
@@ -560,7 +568,7 @@ async fn a_context_admin_approval_lets_a_cross_context_requester_execute() {
     //    context authority the approval conferred for this one task.
     let resubmit = envelope(
         WEBVH_UPDATE,
-        requester,
+        &requester,
         &ctx.vta_did,
         update["payload"].clone(),
     );
@@ -601,14 +609,14 @@ async fn an_unsatisfiable_elevation_is_refused_before_any_consent_ceremony() {
     .await;
 
     let admin_token = ctx
-        .mint_token("did:key:z6MkTestRequester", "admin", vec![])
+        .mint_token(&approver(REQUESTER_SEED).did, "admin", vec![])
         .await;
     let (did, _scid) = create_did(&router, &ctx, &admin_token).await;
     let keys_before = update_keys_in_force(&ctx, &did).await;
 
-    let requester = "did:key:z6MkCrossCtxAgent";
+    let requester = approver(0x52);
     let deleg_token = ctx
-        .mint_token(requester, "admin", vec!["other-ctx".into()])
+        .mint_token(&requester.did, "admin", vec!["other-ctx".into()])
         .await;
 
     // The approver administers a DIFFERENT context, not `default`.
@@ -632,7 +640,7 @@ async fn an_unsatisfiable_elevation_is_refused_before_any_consent_ceremony() {
 
     let update = envelope(
         WEBVH_UPDATE,
-        requester,
+        &requester,
         &ctx.vta_did,
         json!({
             "did": did,
@@ -715,7 +723,7 @@ async fn create_did(router: &axum::Router, ctx: &TestAppContext, token: &str) ->
 
     let doc = envelope(
         vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
-        "did:key:z6MkTestRequester",
+        &approver(REQUESTER_SEED),
         &ctx.vta_did,
         json!({ "contextId": "default", "url": "https://example.com/acme" }),
     );
@@ -747,8 +755,8 @@ async fn rest_and_trust_task_reach_the_same_consent_decision() {
         ..Default::default()
     })
     .await;
-    let requester = "did:key:z6MkTestRequester";
-    let token = ctx.mint_token(requester, "admin", vec![]).await;
+    let requester = approver(REQUESTER_SEED);
+    let token = ctx.mint_token(&requester.did, "admin", vec![]).await;
     let ops = approver(11);
 
     vta_service::contexts::create_context(&ctx.contexts_ks, "default", "Default")
@@ -780,7 +788,7 @@ async fn rest_and_trust_task_reach_the_same_consent_decision() {
     // ── Trust-task path: refused, as it always was.
     let doc = envelope(
         vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1,
-        requester,
+        &requester,
         &ctx.vta_did,
         grant.clone(),
     );
@@ -850,8 +858,8 @@ async fn the_webvh_rest_route_is_gated_like_its_trust_task() {
         ..Default::default()
     })
     .await;
-    let requester = "did:key:z6MkTestRequester";
-    let token = ctx.mint_token(requester, "admin", vec![]).await;
+    let requester = approver(REQUESTER_SEED);
+    let token = ctx.mint_token(&requester.did, "admin", vec![]).await;
     let ops = approver(13);
 
     let (did, scid) = create_did(&router, &ctx, &token).await;
@@ -984,8 +992,8 @@ async fn a_reprovision_is_refused_pending_consent_and_executes_once_approved() {
         ..Default::default()
     })
     .await;
-    let requester = "did:key:z6MkTestRequester";
-    let token = ctx.mint_token(requester, "admin", vec![]).await;
+    let requester = approver(REQUESTER_SEED);
+    let token = ctx.mint_token(&requester.did, "admin", vec![]).await;
     let ops = approver(23);
 
     vta_service::contexts::create_context(&ctx.contexts_ks, "default", "Default")
@@ -1012,7 +1020,7 @@ async fn a_reprovision_is_refused_pending_consent_and_executes_once_approved() {
     // ── 1. Refused, pending a human.
     let doc = envelope(
         vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_2,
-        requester,
+        &requester,
         &ctx.vta_did,
         payload.clone(),
     );
@@ -1048,18 +1056,15 @@ async fn a_reprovision_is_refused_pending_consent_and_executes_once_approved() {
     //       decision (#907) — `ops` holds no ACL entry, which is exactly the
     //       property that lets a recovery approver be a device rather than an
     //       administrator.
-    let decision = sign_as(
+    let decision = envelope(
+        TASK_CONSENT_DECISION,
         &ops,
-        envelope(
-            TASK_CONSENT_DECISION,
-            &ops.did,
-            &ctx.vta_did,
-            json!({
-                "challenge": challenge,
-                "payloadDigest": payload_digest,
-                "decision": "approve"
-            }),
-        ),
+        &ctx.vta_did,
+        json!({
+            "challenge": challenge,
+            "payloadDigest": payload_digest,
+            "decision": "approve"
+        }),
     );
     let (status, granted) = post(&router, &token, &decision).await;
     assert_eq!(
@@ -1074,7 +1079,7 @@ async fn a_reprovision_is_refused_pending_consent_and_executes_once_approved() {
     //       reused id outright.
     let resubmit = envelope(
         vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_2,
-        requester,
+        &requester,
         &ctx.vta_did,
         payload,
     );

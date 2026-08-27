@@ -100,15 +100,28 @@ async fn put_pending(ctx: &TestAppContext, id: &str) {
         .expect("seed pending record");
 }
 
+/// The admin's signing seed. The DID is derived from it rather than written
+/// out, because SPEC §7.2 item 7a is enforced and `credential-exchange/*`
+/// declares `proof` REQUIRED — so the DID in `issuer` and the key that signs
+/// have to come from one place, and item 6 rejects them if they disagree.
+const ADMIN_SEED: u8 = 0x60;
+
+fn admin_did() -> String {
+    vta_service::test_support::did_for_seed(ADMIN_SEED).0
+}
+
 fn tt(id: &str, type_uri: &str, issuer: &str, payload: Value) -> Value {
-    json!({
+    let mut doc: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
         "id": id,
         "type": type_uri,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": issuer,
         "recipient": "did:key:z6MkTestVTA",
         "payload": payload,
-    })
+    }))
+    .expect("envelope deserialises");
+    vta_service::test_support::sign_as(ADMIN_SEED, &mut doc);
+    serde_json::to_value(&doc).expect("envelope serialises")
 }
 
 async fn post_tt(router: &axum::Router, token: Option<&str>, doc: &Value) -> (StatusCode, Value) {
@@ -132,7 +145,8 @@ async fn post_tt(router: &axum::Router, token: Option<&str>, doc: &Value) -> (St
 #[tokio::test]
 async fn list_then_deny_over_the_wire_deletes_the_record() {
     let (router, ctx) = build_test_app().await;
-    let did = "did:key:z6MkPendingAdmin";
+    let did = admin_did();
+    let did = did.as_str();
     let token = seed_admin_and_token(&ctx, did, "sess-pending-1", vec![]).await;
     put_pending(&ctx, "req-wire-1").await;
 

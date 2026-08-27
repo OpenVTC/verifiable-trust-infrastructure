@@ -905,6 +905,47 @@ async fn dispatch_trust_task_validated(
         return reject;
     }
 
+    // SPEC §7.2's *flag-driven* checks — the ones a specification declares
+    // rather than a consumer chooses:
+    //
+    // * item 5b  — `recipient` REQUIRED
+    // * item 7a  — `proof` REQUIRED
+    // * item 8   — audience binding (proof present, no in-band recipient, on a
+    //              non-bearer spec)
+    // * §7.3 17  — `issuedAt` REQUIRED for a consequential task
+    //
+    // None of these were enforced. `enforce_spec_policy` reads them off the
+    // typed payload's codegen-emitted constants, and this spine holds a
+    // `TrustTask<Value>` — so the check sat behind a `P` nothing here has. The
+    // comment further up still claimed "each slice's typed handler runs it
+    // after `parse_payload`"; no handler did, and that comment was the only
+    // occurrence of the name in this repo.
+    //
+    // `spec_policy_for` (trust-tasks-rs 0.17.1, trustoverip/dtgwg-trust-tasks-tf#321)
+    // keys the same constants by URI, which is what a URI-dispatching consumer
+    // can actually use. `SpecPolicy::enforce` is the same code path the typed
+    // method takes, so the two cannot drift as new flag-driven rules land.
+    //
+    // Runs after schema validation, for the same reason schema validation runs
+    // before the policy gate: a document that is not the shape it claims should
+    // be refused for *that*, with the schema's own message, rather than for a
+    // missing member the reader would then have to interpret.
+    //
+    // `None` means this build knows no spec for the URI — the unspecced-task
+    // case `validate_payload` has already decided about, per
+    // `policy.require_payload_schema`. Deciding it a second time here, with a
+    // different default, would make one of the two answers unreachable.
+    if let Some(policy) = trust_tasks_rs::schema_index::spec_policy_for(&type_uri)
+        && let Err(reason) = policy.enforce(&doc)
+    {
+        tracing::info!(
+            type_uri,
+            ?reason,
+            "document refused by its specification's policy"
+        );
+        return reject_with(&doc, reason);
+    }
+
     // Idempotency claim. Only bites when the document carries an
     // `idempotencyKey` *and* the task is one where a second execution leaves a
     // second durable artefact (`vta_sdk::retry_safety`) — everything else
@@ -2452,21 +2493,33 @@ mod response_coverage {
 
     use crate::test_support::build_signing_test_app_state;
 
+    /// Serialise a signed super-admin document, ready for
+    /// `dispatch_trust_task_core`.
+    ///
+    /// Every test here needs the same three things the spine now enforces — an
+    /// in-band `recipient`, an `issuedAt`, and a `proof` from the same identity
+    /// the claims carry — so they are built in one place rather than seven.
+    pub(super) fn signed_body(uri: &str, vta_did: &str, payload: Value) -> Vec<u8> {
+        let mut doc: TrustTask<Value> = serde_json::from_value(json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": uri,
+            "issuer": crate::test_support::test_admin_did().0,
+            "recipient": vta_did,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": payload,
+        }))
+        .expect("envelope deserialises");
+        crate::test_support::sign_as_test_admin(&mut doc);
+        serde_json::to_vec(&doc).expect("envelope serialises")
+    }
+
     /// Dispatch as a super-admin and require a success document back.
     ///
     /// Returns the response `payload` so a test can chain (e.g. take a key id
     /// out of `keys/create` and sign with it).
     async fn ok(state: &crate::server::AppState, uri: &str, payload: Value) -> Value {
         let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
-        let body = serde_json::to_vec(&json!({
-            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            "type": uri,
-            "issuer": "did:key:zTestAdmin",
-            "recipient": vta_did,
-            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": payload,
-        }))
-        .expect("envelope serialises");
+        let body = signed_body(uri, &vta_did, payload);
 
         let outcome = super::dispatch_trust_task_core(
             state,
@@ -2530,15 +2583,11 @@ mod response_coverage {
     async fn revoke_all_is_refused_as_unsupported_not_malformed() {
         let (state, _dir) = build_signing_test_app_state().await;
         let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
-        let body = serde_json::to_vec(&json!({
-            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            "type": t::TASK_AUTH_REVOKE_SESSION_0_1,
-            "issuer": "did:key:zTestAdmin",
-            "recipient": vta_did,
-            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": { "all": true },
-        }))
-        .expect("envelope");
+        let body = signed_body(
+            t::TASK_AUTH_REVOKE_SESSION_0_1,
+            &vta_did,
+            json!({ "all": true }),
+        );
         let outcome = super::dispatch_trust_task_core(
             &state,
             &crate::test_support::super_admin_claims(),
@@ -2645,18 +2694,14 @@ mod response_coverage {
         let (state, _dir) = build_signing_test_app_state().await;
         let claims = crate::test_support::super_admin_claims();
         let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
-        let body = serde_json::to_vec(&json!({
-            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-            "type": t::TASK_ACL_SWAP_KEY_0_1,
-            "issuer": "did:key:zTestAdmin",
-            "recipient": vta_did,
-            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": {
+        let body = signed_body(
+            t::TASK_ACL_SWAP_KEY_0_1,
+            &vta_did,
+            json!({
                 "currentSubject": claims.did,
                 "newSubject": "did:key:z6MkCovNewSubject",
-            },
-        }))
-        .expect("envelope");
+            }),
+        );
         let outcome = super::dispatch_trust_task_core(
             &state,
             &claims,

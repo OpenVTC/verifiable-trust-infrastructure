@@ -630,6 +630,34 @@ impl SessionStore {
     /// regardless of what the DID document advertises, use
     /// [`connect_with_transport`](Self::connect_with_transport) with
     /// [`TransportChoice::Rest`].
+    ///
+    /// An authenticated REST client carrying the identity it signs with.
+    ///
+    /// The session is re-loaded *after* `ensure_authenticated` on purpose: a
+    /// session that needed rotation now holds a different `client_did` and key,
+    /// and signing with the pre-rotation pair would produce documents whose
+    /// `issuer` no longer matches the identity the bearer token authenticates —
+    /// which SPEC §7.2 item 6 rejects.
+    async fn rest_client(
+        &self,
+        url: &str,
+        key: &str,
+        vta_did: &str,
+    ) -> Result<crate::client::VtaClient, Box<dyn std::error::Error>> {
+        let token = self.ensure_authenticated(url, key).await?;
+        let session = self
+            .load_session(key)
+            .ok_or_else(|| format!("session `{key}` vanished during authentication"))?;
+        let client =
+            crate::client::VtaClient::new(url).with_identity(crate::client::ClientIdentity {
+                client_did: session.client_did.clone(),
+                private_key_multibase: session.private_key.clone(),
+                vta_did: vta_did.to_string(),
+            });
+        client.set_token(token);
+        Ok(client)
+    }
+
     pub async fn connect(
         &self,
         key: &str,
@@ -702,9 +730,7 @@ impl SessionStore {
                     .ok_or_else(|| no_rest_endpoint_error(&session_vta_did))?,
             };
             debug!(url = %url, "connecting via REST (forced --transport rest)");
-            let token = self.ensure_authenticated(&url, key).await?;
-            let client = crate::client::VtaClient::new(&url);
-            client.set_token(token);
+            let client = self.rest_client(&url, key, &session_vta_did).await?;
             return Ok(client);
         }
 
@@ -867,9 +893,7 @@ impl SessionStore {
                 }
                 if let Some(url) = rest_url {
                     debug!(url = %url, "connecting via REST (fallback from TSP)");
-                    let token = self.ensure_authenticated(&url, key).await?;
-                    let client = crate::client::VtaClient::new(&url);
-                    client.set_token(token);
+                    let client = self.rest_client(&url, key, &session_vta_did).await?;
                     return Ok(client);
                 }
                 // TSP-only VTA whose TSP is down: there is nothing to fall back
@@ -906,9 +930,7 @@ impl SessionStore {
                     return Err(no_didcomm_endpoint_error(&session_vta_did, false, true));
                 }
                 debug!(url = %url, "connecting via REST (from DID doc)");
-                let token = self.ensure_authenticated(&url, key).await?;
-                let client = crate::client::VtaClient::new(&url);
-                client.set_token(token);
+                let client = self.rest_client(&url, key, &session_vta_did).await?;
                 return Ok(client);
             }
             Err(e) => {

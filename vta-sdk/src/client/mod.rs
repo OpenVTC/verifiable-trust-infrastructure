@@ -31,6 +31,33 @@ pub(super) struct RestAuth {
     pub(super) credential: Option<AuthCredential>,
 }
 
+/// What a conforming *producer* needs to put on the wire, beyond the payload.
+///
+/// SPEC §7.2 turns two of these into hard requirements, and this SDK carried
+/// neither until the VTA started enforcing them:
+///
+/// * **item 5b** — every one of the 109 tasks this SDK dispatches declares
+///   `recipient` REQUIRED, so a document with no in-band recipient is
+///   `malformedRequest`. `build_task_document` used to emit exactly that.
+/// * **item 7a** — 72 of them declare `proof` REQUIRED. A bearer token
+///   authenticates the *connection*; it says nothing about the document, and
+///   §7.2 item 7 admits no transport substitute.
+///
+/// Held together because they are not independent: attaching a proof without an
+/// in-band recipient trips item 8 (audience binding) on any non-bearer spec, so
+/// a client that can sign must also know who it is signing *to*.
+#[derive(Clone, Debug)]
+pub struct ClientIdentity {
+    /// The producer's `did:key`. Becomes the document's `issuer`, and must
+    /// match the identity the transport authenticates as — item 6 rejects a
+    /// document whose in-band issuer disagrees with it.
+    pub client_did: String,
+    /// Multibase-encoded Ed25519 seed for `client_did`.
+    pub private_key_multibase: String,
+    /// The VTA's DID. Becomes the document's `recipient`.
+    pub vta_did: String,
+}
+
 /// Cloneable transport layer.
 ///
 /// Auth state is wrapped in `Arc<Mutex>` so cloned clients share tokens
@@ -178,6 +205,12 @@ pub struct VtaClient {
     /// the transports that really exist.
     #[cfg(feature = "test-loopback")]
     pub(super) loopback: Option<std::sync::Arc<dyn loopback::LoopbackSink>>,
+    /// Set when this client can produce conforming documents — see
+    /// [`ClientIdentity`]. `None` emits the pre-§7.2 shape, which a conforming
+    /// consumer refuses; it is kept only so a caller that has not been given an
+    /// identity yet fails at the VTA with a message naming the missing member,
+    /// rather than at construction with one that does not.
+    pub(super) identity: Option<std::sync::Arc<ClientIdentity>>,
 }
 
 // ── Protocol response aliases ──────────────────────────────────────
@@ -343,6 +376,7 @@ impl VtaClient {
         Self {
             #[cfg(feature = "test-loopback")]
             loopback: None,
+            identity: None,
             transport: Transport::Rest {
                 client: crate::http::rest_client(),
                 base_url: base_url.trim_end_matches('/').to_string(),
@@ -376,6 +410,7 @@ impl VtaClient {
         Ok(Self {
             #[cfg(feature = "test-loopback")]
             loopback: None,
+            identity: None,
             transport: Transport::Rest {
                 client: http,
                 base_url,
@@ -459,6 +494,7 @@ impl VtaClient {
         Self {
             #[cfg(feature = "test-loopback")]
             loopback: None,
+            identity: None,
             transport: Transport::DIDComm {
                 session,
                 rest_client,
@@ -697,6 +733,7 @@ impl VtaClient {
         Self {
             #[cfg(feature = "test-loopback")]
             loopback: None,
+            identity: None,
             transport: Transport::Tsp {
                 session: std::sync::Arc::new(session),
                 vta_did: vta_did.to_string(),
@@ -937,6 +974,16 @@ impl VtaClient {
     }
 
     /// Set the Bearer token (async version).
+    /// Give this client the identity it signs and addresses documents with.
+    ///
+    /// Without one, every dispatched document is missing an in-band `recipient`
+    /// (SPEC §7.2 item 5b, required by all 109 dispatched specs) and a `proof`
+    /// (item 7a, required by 72 of them), and a conforming VTA refuses it.
+    pub fn with_identity(mut self, identity: ClientIdentity) -> Self {
+        self.identity = Some(std::sync::Arc::new(identity));
+        self
+    }
+
     pub async fn set_token_async(&self, token: String) {
         match &self.transport {
             Transport::Rest { auth, .. } => {
@@ -1534,7 +1581,7 @@ impl VtaClient {
             return sink.dispatch(type_uri, &payload);
         }
 
-        let doc = build_task_document(type_uri, payload);
+        let doc = self.signed_task_document(type_uri, payload).await?;
         match &self.transport {
             Transport::Rest {
                 client,
@@ -2554,13 +2601,64 @@ mod tests {
 /// `TrustTask::extra`, and a Data-Integrity proof covers every member but
 /// `proof` — so a signed document's key cannot be rewritten in transit to split
 /// one operation into two.
-fn build_task_document(type_uri: &str, payload: serde_json::Value) -> serde_json::Value {
+impl VtaClient {
+    /// Build the document this client puts on the wire, signed when it can be.
+    ///
+    /// Signing is unconditional rather than keyed on whether *this* spec
+    /// declares `proof` REQUIRED: 72 of the 109 do, the flag lives in the
+    /// registry rather than here, and a proof on a task that merely RECOMMENDs
+    /// one is legal and strictly more attributable. The one thing it must not
+    /// do is attach a proof with no in-band `recipient` — §7.2 item 8 refuses
+    /// that on a non-bearer spec — and `build_task_document` sets both from the
+    /// same [`ClientIdentity`], so the two cannot come apart.
+    async fn signed_task_document(
+        &self,
+        type_uri: &str,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
+        let identity = self.identity.clone();
+        let doc = build_task_document(type_uri, payload, identity.as_deref());
+        let Some(identity) = identity else {
+            return Ok(doc);
+        };
+        let mut typed: trust_tasks_rs::TrustTask<serde_json::Value> = serde_json::from_value(doc)
+            .map_err(|e| {
+            VtaError::Protocol(format!("could not build a Trust Task document: {e}"))
+        })?;
+        crate::trust_task_sign::sign_in_place(
+            &mut typed,
+            &identity.client_did,
+            &identity.private_key_multibase,
+        )
+        .await
+        .map_err(|e| VtaError::Protocol(format!("could not sign the Trust Task document: {e}")))?;
+        serde_json::to_value(&typed)
+            .map_err(|e| VtaError::Protocol(format!("could not serialise the document: {e}")))
+    }
+}
+
+fn build_task_document(
+    type_uri: &str,
+    payload: serde_json::Value,
+    identity: Option<&ClientIdentity>,
+) -> serde_json::Value {
     let mut doc = serde_json::json!({
         "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
         "type": type_uri,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": payload,
     });
+    // `issuer` and `recipient` are envelope members every dispatched spec
+    // declares REQUIRED (SPEC §7.2 item 5b). They are set here rather than at
+    // each of the ~200 call sites for the same reason `issuedAt` is: a member
+    // the framework requires of every document belongs to the one function that
+    // builds every document.
+    if let Some(id) = identity
+        && let Some(obj) = doc.as_object_mut()
+    {
+        obj.insert("issuer".to_string(), serde_json::json!(id.client_did));
+        obj.insert("recipient".to_string(), serde_json::json!(id.vta_did));
+    }
     if let Some(key) = crate::idempotency::current_key()
         && crate::retry_safety::retry_safety(type_uri).is_some_and(|s| s.needs_key())
         && let Some(obj) = doc.as_object_mut()
@@ -2587,6 +2685,7 @@ mod idempotency_document_tests {
                 let doc = build_task_document(
                     trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
                     serde_json::json!({}),
+                    None,
                 );
                 assert_eq!(key_in(&doc).as_deref(), Some("urn:uuid:k"));
             })
@@ -2602,6 +2701,7 @@ mod idempotency_document_tests {
                 let doc = build_task_document(
                     trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
                     serde_json::json!({}),
+                    None,
                 );
                 assert_eq!(key_in(&doc), None);
             })
@@ -2613,6 +2713,7 @@ mod idempotency_document_tests {
         let doc = build_task_document(
             trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
             serde_json::json!({}),
+            None,
         );
         assert_eq!(key_in(&doc), None);
     }
@@ -2624,10 +2725,16 @@ mod idempotency_document_tests {
     async fn two_attempts_in_one_scope_share_a_key_but_not_an_envelope_id() {
         IDEMPOTENCY_KEY
             .scope("urn:uuid:k".to_string(), async {
-                let a =
-                    build_task_document(trust_tasks::TASK_KEYS_CREATE_0_1, serde_json::json!({}));
-                let b =
-                    build_task_document(trust_tasks::TASK_KEYS_CREATE_0_1, serde_json::json!({}));
+                let a = build_task_document(
+                    trust_tasks::TASK_KEYS_CREATE_0_1,
+                    serde_json::json!({}),
+                    None,
+                );
+                let b = build_task_document(
+                    trust_tasks::TASK_KEYS_CREATE_0_1,
+                    serde_json::json!({}),
+                    None,
+                );
                 assert_eq!(key_in(&a), key_in(&b), "the retry must reuse the key");
                 assert_ne!(
                     a.get("id"),

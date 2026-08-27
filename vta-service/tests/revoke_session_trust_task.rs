@@ -22,7 +22,15 @@ use tower::ServiceExt;
 use vta_service::test_support::{TestAppContext, build_test_app};
 use vti_common::auth::session::{Session, SessionState, get_session, now_epoch, store_session};
 
-const CALLER: &str = "did:key:z6MkRevokeCaller";
+/// The caller's signing seed. `auth/revoke-session/0.1` declares `proof`
+/// REQUIRED, so the DID and the key behind it have to come from one place —
+/// item 6 rejects a document whose issuer disagrees with the identity its token
+/// authenticates.
+const CALLER_SEED: u8 = 0x70;
+
+fn caller() -> String {
+    vta_service::test_support::did_for_seed(CALLER_SEED).0
+}
 const STRANGER: &str = "did:key:z6MkRevokeStranger";
 
 async fn seed_session(ctx: &TestAppContext, session_id: &str, did: &str) {
@@ -45,7 +53,7 @@ async fn seed_session(ctx: &TestAppContext, session_id: &str, did: &str) {
     store_session(&ctx.sessions_ks, &session).await.unwrap();
 }
 
-/// Dispatch a `revoke-session` for `target`, authenticated as `CALLER` on
+/// Dispatch a `revoke-session` for `target`, authenticated as `caller().as_str()` on
 /// `caller_session` with `role`. Returns `(status, response document)`.
 async fn revoke(
     router: &axum::Router,
@@ -56,7 +64,7 @@ async fn revoke(
     doc_id: &str,
 ) -> (StatusCode, Value) {
     let claims = ctx.jwt_keys.new_claims(
-        CALLER.into(),
+        caller(),
         caller_session.into(),
         role.into(),
         vec![],
@@ -64,14 +72,17 @@ async fn revoke(
         false,
     );
     let token = ctx.jwt_keys.encode(&claims).unwrap();
-    let doc = json!({
+    let mut typed: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
         "id": format!("urn:uuid:{doc_id}"),
         "type": "https://trusttasks.org/spec/auth/revoke-session/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "issuer": CALLER,
+        "issuer": &caller(),
         "recipient": "did:key:z6MkTestVTA",
         "payload": { "sessionId": target },
-    });
+    }))
+    .expect("envelope deserialises");
+    vta_service::test_support::sign_as(CALLER_SEED, &mut typed);
+    let doc = serde_json::to_value(&typed).expect("envelope serialises");
     let req = Request::builder()
         .method("POST")
         .uri("/api/trust-tasks")
@@ -92,8 +103,8 @@ async fn revoke(
 #[tokio::test]
 async fn revoking_own_session_counts_one_then_zero() {
     let (router, ctx) = build_test_app().await;
-    seed_session(&ctx, "sess-here", CALLER).await;
-    seed_session(&ctx, "sess-other-device", CALLER).await;
+    seed_session(&ctx, "sess-here", &caller()).await;
+    seed_session(&ctx, "sess-other-device", caller().as_str()).await;
 
     let (status, v) = revoke(
         &router,
@@ -140,7 +151,7 @@ async fn revoking_own_session_counts_one_then_zero() {
 #[tokio::test]
 async fn a_stranger_session_and_a_missing_one_answer_identically() {
     let (router, ctx) = build_test_app().await;
-    seed_session(&ctx, "sess-here", CALLER).await;
+    seed_session(&ctx, "sess-here", &caller()).await;
     seed_session(&ctx, "sess-not-yours", STRANGER).await;
 
     let (exists_status, exists) = revoke(
@@ -186,7 +197,7 @@ async fn a_stranger_session_and_a_missing_one_answer_identically() {
 #[tokio::test]
 async fn an_admin_revokes_another_subjects_session() {
     let (router, ctx) = build_test_app().await;
-    seed_session(&ctx, "sess-here", CALLER).await;
+    seed_session(&ctx, "sess-here", &caller()).await;
     seed_session(&ctx, "sess-not-yours", STRANGER).await;
 
     let (status, v) = revoke(

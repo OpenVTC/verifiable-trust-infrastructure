@@ -322,6 +322,33 @@ fn delete_auth(uri: &str, token: &str) -> Request<Body> {
 /// This was `capabilities_requires_auth`, pointed at the retired task (#1043).
 /// The property is the spine's, not that task's, so it is asserted through the
 /// discovery task that replaced it rather than deleted with its subject.
+/// A hand-built Trust Task document that a conforming VTA will accept.
+///
+/// The spine enforces SPEC §7.2, so a document needs an in-band `recipient`
+/// (item 5b — every dispatched spec declares it REQUIRED) and, for 72 of the
+/// 109, a `proof` from the same identity the token authenticates (items 6, 7a).
+/// Tests that hand-roll an envelope have to carry both or they are refused
+/// before they reach the behaviour they mean to check.
+fn signed_doc(
+    ctx: &TestContext,
+    id: &str,
+    type_uri: &str,
+    payload: serde_json::Value,
+) -> serde_json::Value {
+    let (did, _vm) = vta_service::test_support::test_admin_did();
+    let mut doc: trust_tasks_rs::TrustTask<serde_json::Value> = serde_json::from_value(json!({
+        "id": id,
+        "type": type_uri,
+        "issuer": did,
+        "recipient": ctx.inner.vta_did,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "payload": payload,
+    }))
+    .expect("envelope deserialises");
+    vta_service::test_support::sign_as_test_admin(&mut doc);
+    serde_json::to_value(&doc).expect("envelope serialises")
+}
+
 #[tokio::test]
 async fn trust_tasks_require_auth() {
     let (app, _ctx) = TestApp::new().await;
@@ -355,12 +382,12 @@ async fn trust_task_discovery_reports_dispatched_tasks() {
         .request(post_auth(
             "/api/trust-tasks",
             &token,
-            json!({
-                "id": "urn:uuid:4c3d5e6f-7081-4293-a4b5-c6d7e8f90123",
-                "type": "https://trusttasks.org/spec/trust-task-discovery/0.1",
-                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                "payload": { "patterns": ["acl/*"] },
-            }),
+            signed_doc(
+                &ctx,
+                "urn:uuid:4c3d5e6f-7081-4293-a4b5-c6d7e8f90123",
+                "https://trusttasks.org/spec/trust-task-discovery/0.1",
+                json!({ "patterns": ["acl/*"] }),
+            ),
         ))
         .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -393,12 +420,12 @@ async fn trust_task_discovery_defaults_to_everything() {
         .request(post_auth(
             "/api/trust-tasks",
             &token,
-            json!({
-                "id": "urn:uuid:5d4e6f70-8192-43a4-b5c6-d7e8f9012345",
-                "type": "https://trusttasks.org/spec/trust-task-discovery/0.1",
-                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                "payload": {},
-            }),
+            signed_doc(
+                &ctx,
+                "urn:uuid:5d4e6f70-8192-43a4-b5c6-d7e8f9012345",
+                "https://trusttasks.org/spec/trust-task-discovery/0.1",
+                json!({}),
+            ),
         ))
         .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -2204,15 +2231,15 @@ async fn keys_import_trust_task_refuses_cleartext_over_rest() {
         .request(post_auth(
             "/api/trust-tasks",
             &token,
-            json!({
-                "id": "urn:uuid:6f1b2c3d-4e5f-4061-8293-a4b5c6d7e8f9",
-                "type": "https://trusttasks.org/spec/keys/import/0.1",
-                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                "payload": {
+            signed_doc(
+                &ctx,
+                "urn:uuid:6f1b2c3d-4e5f-4061-8293-a4b5c6d7e8f9",
+                "https://trusttasks.org/spec/keys/import/0.1",
+                json!({
                     "keyType": "ed25519",
                     "privateKeyMultibase": "z6MkDeadbeefDeadbeefDeadbeef",
-                },
-            }),
+                }),
+            ),
         ))
         .await;
 

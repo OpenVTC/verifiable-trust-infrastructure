@@ -63,21 +63,29 @@ async fn whoami_status(
         )
         .with_jti(jti);
     let token = ctx.jwt_keys.encode(&claims).unwrap();
-    let doc = serde_json::json!({
-        // A fresh id per call. These are distinct requests, not replays, and
-        // SPEC §7.2 item 11 keys the duplicate-execution record on the document
-        // `id` **alone** — "transport request identifiers, transport message
-        // identifiers, and execution handles MUST NOT substitute". Reusing one
-        // literal across calls worked only while this service keyed on
-        // `(actor, id)`, which is the deviation the `ReplayGuard` adoption
-        // closed; a real producer mints a fresh id per request anyway.
-        "id": format!("urn:uuid:jti-pin-itest-{}", uuid::Uuid::new_v4()),
-        "type": "https://trusttasks.org/spec/auth/whoami/0.1",
-        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "issuer": did,
-        "recipient": "did:key:z6MkTestVTA",
-        "payload": {},
-    });
+    // `auth/whoami/0.1` declares `proof` REQUIRED, and the seed is what ties the
+    // `issuer` to a key that can produce one — item 6 rejects a document whose
+    // issuer disagrees with the identity its token authenticates.
+    let seed = seed_for(did);
+    let mut typed: trust_tasks_rs::TrustTask<serde_json::Value> =
+        serde_json::from_value(serde_json::json!({
+            // A fresh id per call. These are distinct requests, not replays, and
+            // SPEC §7.2 item 11 keys the duplicate-execution record on the document
+            // `id` **alone** — "transport request identifiers, transport message
+            // identifiers, and execution handles MUST NOT substitute". Reusing one
+            // literal across calls worked only while this service keyed on
+            // `(actor, id)`, which is the deviation the `ReplayGuard` adoption
+            // closed; a real producer mints a fresh id per request anyway.
+            "id": format!("urn:uuid:jti-pin-itest-{}", uuid::Uuid::new_v4()),
+            "type": "https://trusttasks.org/spec/auth/whoami/0.1",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "issuer": did,
+            "recipient": "did:key:z6MkTestVTA",
+            "payload": {},
+        }))
+        .expect("envelope deserialises");
+    vta_service::test_support::sign_as(seed, &mut typed);
+    let doc = serde_json::to_value(&typed).expect("envelope serialises");
     let req = Request::builder()
         .method("POST")
         .uri("/api/trust-tasks")
@@ -88,10 +96,24 @@ async fn whoami_status(
     router.clone().oneshot(req).await.unwrap().status()
 }
 
+/// The signing seed behind a test DID.
+///
+/// These tests use two identities and care which one a token names, so the map
+/// is explicit rather than derived — a wrong answer here signs as the wrong
+/// party and is refused for that instead of for the jti pin under test.
+fn seed_for(did: &str) -> u8 {
+    for seed in [0x80u8, 0x81] {
+        if vta_service::test_support::did_for_seed(seed).0 == did {
+            return seed;
+        }
+    }
+    panic!("no signing seed for {did}");
+}
+
 #[tokio::test]
 async fn matching_jti_authenticates_but_superseded_jti_is_rejected() {
     let (router, ctx) = build_test_app().await;
-    let did = "did:key:z6MkPinned";
+    let did = &vta_service::test_support::did_for_seed(0x80).0;
     seed_admin_acl(&ctx, did).await;
     seed_session(&ctx, "sess-pin", did, Some("jti-A")).await;
 
@@ -115,7 +137,7 @@ async fn matching_jti_authenticates_but_superseded_jti_is_rejected() {
 #[tokio::test]
 async fn unpinned_session_accepts_any_jti() {
     let (router, ctx) = build_test_app().await;
-    let did = "did:key:z6MkLegacy";
+    let did = &vta_service::test_support::did_for_seed(0x81).0;
     seed_admin_acl(&ctx, did).await;
     // token_id: None — a legacy / intrinsic-sender session; the pin is skipped.
     seed_session(&ctx, "sess-legacy", did, None).await;

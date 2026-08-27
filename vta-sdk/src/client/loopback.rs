@@ -110,6 +110,9 @@ impl super::VtaClient {
     #[must_use]
     pub fn loopback(sink: Arc<dyn LoopbackSink>) -> Self {
         Self {
+            // A loopback client never reaches a conforming consumer — the sink
+            // answers ahead of the transport — so there is nothing to sign for.
+            identity: None,
             transport: super::Transport::Rest {
                 client: crate::http::rest_client(),
                 base_url: "http://loopback.invalid".to_string(),

@@ -28,12 +28,20 @@ use vta_service::test_support::build_test_app;
 
 const KEYS_CREATE: &str = "https://trusttasks.org/spec/keys/create/0.1";
 const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.1";
-const CALLER: &str = "did:key:z6MkIdempotencyCaller";
+/// The caller's signing seed. A `did:key` derived from it, rather than a
+/// hand-written DID, because SPEC §7.2 item 7a wants a proof on `keys/create`
+/// and item 6 wants the in-band issuer to be the identity the token
+/// authenticates — so the DID and the key have to come from one place.
+const CALLER_SEED: u8 = 0x40;
+
+fn caller() -> String {
+    vta_service::test_support::did_for_seed(CALLER_SEED).0
+}
 const OTHER_CALLER: &str = "did:key:z6MkSomeoneElseEntirely";
 const CONTEXT: &str = "test";
 
 /// A live app with the `test` context in place and an unrestricted admin token
-/// for [`CALLER`].
+/// for [`caller().as_str()`].
 ///
 /// `keys/create` needs a real context to derive under, so every test that
 /// counts keys has to create one first.
@@ -42,7 +50,7 @@ async fn app() -> (axum::Router, String) {
     vta_service::contexts::create_context(&ctx.contexts_ks, CONTEXT, "Idempotency tests")
         .await
         .expect("context");
-    let token = ctx.mint_token(CALLER, "admin", vec![]).await;
+    let token = ctx.mint_token(caller().as_str(), "admin", vec![]).await;
     (router, token)
 }
 
@@ -52,7 +60,7 @@ async fn app_with_second_caller() -> (axum::Router, String, String) {
     vta_service::contexts::create_context(&ctx.contexts_ks, CONTEXT, "Idempotency tests")
         .await
         .expect("context");
-    let mine = ctx.mint_token(CALLER, "admin", vec![]).await;
+    let mine = ctx.mint_token(caller().as_str(), "admin", vec![]).await;
     let theirs = ctx.mint_token(OTHER_CALLER, "admin", vec![]).await;
     (router, mine, theirs)
 }
@@ -68,7 +76,7 @@ fn create_doc(envelope_id: &str, label: &str, idempotency_key: Option<&str>) -> 
         "id": format!("urn:uuid:{envelope_id}"),
         "type": KEYS_CREATE,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "issuer": CALLER,
+        "issuer": caller(),
         "recipient": "did:key:z6MkTestVTA",
         "payload": {
             "keyType": "ed25519",
@@ -80,7 +88,12 @@ fn create_doc(envelope_id: &str, label: &str, idempotency_key: Option<&str>) -> 
     if let Some(k) = idempotency_key {
         doc["idempotencyKey"] = json!(k);
     }
-    doc
+    // Signed last: the proof is taken over the finished document, so attaching
+    // it before `idempotencyKey` would sign a document that is not the one sent.
+    let mut typed: trust_tasks_rs::TrustTask<Value> =
+        serde_json::from_value(doc).expect("envelope deserialises");
+    vta_service::test_support::sign_as(CALLER_SEED, &mut typed);
+    serde_json::to_value(&typed).expect("envelope serialises")
 }
 
 async fn post(router: &axum::Router, token: &str, doc: &Value) -> (StatusCode, Value) {
@@ -107,7 +120,7 @@ async fn key_count(router: &axum::Router, token: &str) -> usize {
         "id": format!("urn:uuid:{}", uuid_ish()),
         "type": KEYS_LIST,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "issuer": CALLER,
+        "issuer": caller(),
         "recipient": "did:key:z6MkTestVTA",
         "payload": { "contextId": CONTEXT },
     });
@@ -268,7 +281,7 @@ async fn the_same_key_on_a_different_task_is_refused() {
         "id": "urn:uuid:e2",
         "type": "https://trusttasks.org/spec/vta/webvh/dids/create/1.0",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "issuer": CALLER,
+        "issuer": caller(),
         "recipient": "did:key:z6MkTestVTA",
         "idempotencyKey": "urn:uuid:idem-cross",
         "payload": { "contextId": CONTEXT, "portable": true },
@@ -306,7 +319,7 @@ async fn a_key_on_a_retry_safe_task_is_ignored_not_rejected() {
         "id": "urn:uuid:g1",
         "type": KEYS_LIST,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "issuer": CALLER,
+        "issuer": caller(),
         "recipient": "did:key:z6MkTestVTA",
         "idempotencyKey": "urn:uuid:idem-on-a-read",
         "payload": { "contextId": CONTEXT },

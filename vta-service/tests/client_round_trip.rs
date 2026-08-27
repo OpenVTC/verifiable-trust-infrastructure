@@ -44,13 +44,7 @@ use vta_sdk::client::{CreateAclRequest, UpdateAclRequest, VtaClient};
 
 /// A client authenticated as an unrestricted admin against a live mock VTA.
 async fn admin_client(mock: &MockVta) -> VtaClient {
-    let token = mock
-        .ctx
-        .mint_token("did:key:z6MkRoundTripAdmin", "admin", vec![])
-        .await;
-    let client = VtaClient::new(mock.base_url());
-    client.set_token_async(token).await;
-    client
+    mock.signing_client(0x30, "admin", vec![]).await
 }
 
 // ── ACL ─────────────────────────────────────────────────────────────
@@ -465,8 +459,7 @@ async fn webvh_get_did_round_trips_after_the_get_log_fold() {
         .ctx
         .mint_token("did:key:z6MkRoundTripAdmin", "admin", vec![])
         .await;
-    let client = VtaClient::new(mock.base_url());
-    client.set_token_async(token.clone()).await;
+    let client = mock.signing_client(0x30, "admin", vec![]).await;
 
     let did = "did:webvh:example.com:round-trip";
     let record = WebvhDidRecord {

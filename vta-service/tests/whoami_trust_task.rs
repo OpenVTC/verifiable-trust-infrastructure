@@ -28,7 +28,11 @@ async fn seed_admin_acl(ctx: &TestAppContext, did: &str, contexts: Vec<String>) 
 #[tokio::test]
 async fn whoami_reports_live_session_acr_not_stale_token() {
     let (router, ctx) = build_test_app().await;
-    let did = "did:key:z6MkWhoamiSubject";
+    // Seeded: `auth/whoami/0.1` declares `proof` REQUIRED, so the subject needs
+    // a key, and item 6 needs it to be the same identity the token names.
+    const SUBJECT_SEED: u8 = 0xB0;
+    let did = vta_service::test_support::did_for_seed(SUBJECT_SEED).0;
+    let did = did.as_str();
     let session_id = "sess-whoami-1";
     seed_admin_acl(&ctx, did, vec!["ctx1".into()]).await;
 
@@ -63,14 +67,17 @@ async fn whoami_reports_live_session_acr_not_stale_token() {
     );
     let token = ctx.jwt_keys.encode(&claims).unwrap();
 
-    let doc = json!({
+    let mut typed: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
         "id": "urn:uuid:whoami-itest-1",
         "type": "https://trusttasks.org/spec/auth/whoami/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": "did:key:z6MkTestVTA",
         "payload": {},
-    });
+    }))
+    .expect("envelope deserialises");
+    vta_service::test_support::sign_as(SUBJECT_SEED, &mut typed);
+    let doc = serde_json::to_value(&typed).expect("envelope serialises");
     let req = Request::builder()
         .method("POST")
         .uri("/api/trust-tasks")

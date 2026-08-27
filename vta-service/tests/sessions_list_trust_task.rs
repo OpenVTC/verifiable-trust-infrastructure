@@ -45,7 +45,9 @@ async fn seed_session(
 #[tokio::test]
 async fn sessions_list_returns_only_callers_active_sessions() {
     let (router, ctx) = build_test_app().await;
-    let did = "did:key:z6MkMultiDevice";
+    const CALLER_SEED: u8 = 0x90;
+    let caller = vta_service::test_support::did_for_seed(CALLER_SEED).0;
+    let did = caller.as_str();
     let other = "did:key:z6MkSomeoneElse";
     let now = now_epoch();
 
@@ -100,14 +102,20 @@ async fn sessions_list_returns_only_callers_active_sessions() {
     );
     let token = ctx.jwt_keys.encode(&claims).unwrap();
 
-    let doc = json!({
+    // `auth/sessions/list/0.1` declares `proof` REQUIRED. The caller's DID is
+    // derived from the signing seed so the issuer and the key agree — item 6
+    // refuses them otherwise.
+    let mut typed: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
         "id": "urn:uuid:sessions-list-itest-1",
         "type": "https://trusttasks.org/spec/auth/sessions/list/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": "did:key:z6MkTestVTA",
         "payload": {},
-    });
+    }))
+    .expect("envelope deserialises");
+    vta_service::test_support::sign_as(CALLER_SEED, &mut typed);
+    let doc = serde_json::to_value(&typed).expect("envelope serialises");
     let req = Request::builder()
         .method("POST")
         .uri("/api/trust-tasks")
