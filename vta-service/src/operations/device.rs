@@ -179,7 +179,7 @@ pub async fn list_devices(
         }
         if let Some(cap) = &payload.capability_filter {
             let want = serde_json::to_value(cap).ok();
-            let have = wire_capabilities(entry);
+            let have = split_capabilities(entry).0;
             if !want.is_some_and(|w| have.contains(&w)) {
                 continue;
             }
@@ -436,6 +436,7 @@ pub fn to_wire_binding(entry: &AclEntry) -> Value {
         .as_ref()
         .expect("to_wire_binding requires entry.device to be Some");
 
+    let (published_caps, local_caps) = split_capabilities(entry);
     let mut out = json!({
         "deviceId": b.device_id,
         "consumerDid": entry.did,
@@ -443,9 +444,18 @@ pub fn to_wire_binding(entry: &AclEntry) -> Value {
         "displayName": b.display_name,
         "registeredAt": b.registered_at,
         "pushCapable": b.push_capable(),
-        "capabilities": wire_capabilities(entry),
+        "capabilities": published_caps,
     });
     let map = out.as_object_mut().expect("json object");
+    if !local_caps.is_empty() {
+        // Reverse-DNS namespaced per SPEC §4.5.1: these are this ecosystem's
+        // capabilities, not the framework's, so they travel in the slot the
+        // framework provides rather than widening its closed enum.
+        map.insert(
+            "ext".into(),
+            json!({ "org.openvtc": { "capabilities": local_caps } }),
+        );
+    }
     if let Some(p) = &b.platform {
         map.insert("platform".into(), json!(p));
     }
@@ -505,20 +515,69 @@ fn kind_to_wire(kind: &ConsumerKind) -> Value {
     }
 }
 
-/// Wire capability list (kebab-case), mirrored from the ACL entry — derived from
-/// the role for legacy entries with no explicit set. Drops the VTA-internal
-/// `sign-trust-task` capability, which is absent from the wire schema's closed
-/// `Capability` enum.
-fn wire_capabilities(entry: &AclEntry) -> Vec<Value> {
+/// Capabilities the published `device/_shared/0.2` `Capability` enum defines.
+///
+/// Listed **positively** so a capability added to this workspace later is
+/// treated as ecosystem-local by default and lands in `ext` rather than
+/// leaking into a closed enum. The previous code filtered out the one local
+/// capability by name; `CredentialWrite` was added afterwards, the filter was
+/// not extended, and it went onto the wire and failed the schema.
+const PUBLISHED_CAPABILITIES: &[Capability] = &[
+    Capability::VaultRead,
+    Capability::VaultWrite,
+    Capability::ProxyLogin,
+    Capability::FillRelease,
+    Capability::PolicyAdmin,
+    Capability::DeviceAdmin,
+    Capability::Sign,
+    Capability::KeyMint,
+];
+
+/// The capabilities an ACL entry confers, split into what the published
+/// `capabilities` member may carry and what belongs under `ext`.
+///
+/// Ecosystem-local capabilities are **carried, not dropped**. SPEC §4.5.1 has
+/// an extension slot for exactly this, and `DeviceBinding` declares one; the
+/// earlier approach silently omitted `sign-trust-task`, which told a reader the
+/// device lacked an authority it actually held. Dropping a capability from a
+/// listing is a safety claim, and it was not a true one.
+fn split_capabilities(entry: &AclEntry) -> (Vec<Value>, Vec<Value>) {
     let caps = if entry.capabilities.is_empty() {
         derived_capabilities_for_role(&entry.role)
     } else {
         entry.capabilities.clone()
     };
-    caps.iter()
-        .filter(|c| !matches!(c, Capability::SignTrustTask))
-        .map(|c| serde_json::to_value(c).expect("Capability serialises"))
-        .collect()
+    let (published, local): (Vec<_>, Vec<_>) = caps
+        .iter()
+        .partition(|c| PUBLISHED_CAPABILITIES.contains(c));
+    let to_value = |c: &Capability| serde_json::to_value(c).expect("Capability serialises");
+    // The published list is re-cased kebab -> camel on the way out by the 0.2
+    // dual-accept layer (`wire_v0_2`), which only knows the members the
+    // specification defines. An `ext` member is invisible to it, so these are
+    // camel-cased here — a document that spelled `deviceAdmin` beside
+    // `sign-trust-task` would be answering in two dialects at once, and
+    // SPEC §4.10 asks for lowerCamelCase either way.
+    let to_camel = |c: &Capability| {
+        let kebab = to_value(c);
+        let s = kebab.as_str().unwrap_or_default();
+        let mut out = String::with_capacity(s.len());
+        let mut upper = false;
+        for ch in s.chars() {
+            match ch {
+                '-' => upper = true,
+                c if upper => {
+                    out.extend(c.to_uppercase());
+                    upper = false;
+                }
+                c => out.push(c),
+            }
+        }
+        Value::String(out)
+    };
+    (
+        published.iter().map(to_value).collect(),
+        local.iter().map(to_camel).collect(),
+    )
 }
 
 #[cfg(test)]
@@ -559,20 +618,26 @@ mod tests {
     }
 
     #[test]
-    fn wire_capabilities_drops_internal_sign_trust_task() {
+    fn local_capabilities_are_split_out_not_dropped() {
         let mut e = entry_with_binding();
         e.capabilities = vec![
             Capability::VaultRead,
             Capability::SignTrustTask,
             Capability::Sign,
         ];
-        let caps = wire_capabilities(&e);
-        let strs: Vec<&str> = caps.iter().map(|c| c.as_str().unwrap()).collect();
-        assert!(strs.contains(&"vault-read"));
-        assert!(strs.contains(&"sign"));
+        let (published, local) = split_capabilities(&e);
+        let p: Vec<&str> = published.iter().map(|c| c.as_str().unwrap()).collect();
+        let l: Vec<&str> = local.iter().map(|c| c.as_str().unwrap()).collect();
+        assert!(p.contains(&"vault-read"), "{p:?}");
+        assert!(p.contains(&"sign"), "{p:?}");
         assert!(
-            !strs.contains(&"sign-trust-task"),
-            "internal-only capability must not leak to the wire: {strs:?}"
+            !p.contains(&"sign-trust-task"),
+            "an ecosystem-local capability must not enter the closed enum: {p:?}"
+        );
+        assert!(
+            l.contains(&"signTrustTask"),
+            "…but it must still be reported, under `ext` — and in lowerCamelCase, \
+             so the document does not answer in two dialects at once: {l:?}"
         );
     }
 
