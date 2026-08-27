@@ -188,15 +188,25 @@ where
     S: ServiceLifecycle,
     E: EnableMutationError,
 {
-    {
+    // "Already enabled" means enabled in **both** places, not in either.
+    //
+    // Refusing on the config alone made one reachable state unmanageable.
+    // `update` requires the service ON in the config *and* advertised in the
+    // document; this refused whenever the config said ON. So config-ON with the
+    // document silent — which is exactly what re-pointing `vta_did` at a freshly
+    // minted DID produces, and what restoring a config without its log produces
+    // — could be neither enabled nor updated. The operator's only route out was
+    // to edit the config by hand.
+    //
+    // Enable's job is to make both true. Where they disagree there is work to
+    // do, and this is the operation that does it.
+    let cfg_on = {
         let cfg = config.read().await;
-        if S::config_enabled(&cfg) {
-            return Err(E::already_enabled());
-        }
-    }
+        S::config_enabled(&cfg)
+    };
     let state =
         crate::operations::protocol::preconditions::load_vta_doc_state(config, webvh_ks).await?;
-    if S::current_service_url(&state.current_doc).is_some() {
+    if cfg_on && S::current_service_url(&state.current_doc).is_some() {
         return Err(E::already_enabled());
     }
     Ok(state)
