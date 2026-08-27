@@ -473,14 +473,28 @@ pub fn to_wire_binding(entry: &AclEntry) -> Value {
 
 /// Wire `ConsumerKind` (register payload) → internal [`ConsumerKind`].
 /// Explicit because the two types' serde forms differ (see [`to_wire_binding`]).
-pub fn wire_kind_to_internal(w: &register_spec::ConsumerKind) -> ConsumerKind {
+///
+/// Fallible because the generated wire enums are `#[non_exhaustive]`: a caller
+/// on a newer registry can name a device kind, form factor or service kind
+/// added after this binary was built. `device/register` writes an ACL entry
+/// from this value, and the kind is what the VTA's policy keys off — mapping an
+/// unknown one onto `Daemon`, or onto any other arm, would register a device
+/// under a privilege profile nobody asked for. Refusing is the only answer that
+/// cannot silently be wrong.
+pub fn wire_kind_to_internal(w: &register_spec::ConsumerKind) -> Result<ConsumerKind, AppError> {
     use register_spec::{ConsumerKindFormFactor as Wff, ConsumerKindServiceKind as Wsk};
-    match w {
+    let unknown = |what: &str| {
+        AppError::Validation(format!(
+            "device/register: unrecognised {what} — this VTA cannot apply a policy to a              value added to the registry after it was built"
+        ))
+    };
+    Ok(match w {
         register_spec::ConsumerKind::Companion { form_factor } => ConsumerKind::Companion {
             form_factor: match form_factor {
                 Wff::Browser => CompanionFormFactor::Browser,
                 Wff::Mobile => CompanionFormFactor::Mobile,
                 Wff::Desktop => CompanionFormFactor::Desktop,
+                _ => return Err(unknown("companion form factor")),
             },
         },
         register_spec::ConsumerKind::Service { service_kind } => ConsumerKind::Service {
@@ -488,9 +502,11 @@ pub fn wire_kind_to_internal(w: &register_spec::ConsumerKind) -> ConsumerKind {
                 Wsk::Mediator => ServiceKind::Mediator,
                 Wsk::AiAgent => ServiceKind::AiAgent,
                 Wsk::Daemon => ServiceKind::Daemon,
+                _ => return Err(unknown("service kind")),
             },
         },
-    }
+        _ => return Err(unknown("consumer kind")),
+    })
 }
 
 /// Internal [`ConsumerKind`] → wire JSON (camelCase `formFactor`/`serviceKind`).

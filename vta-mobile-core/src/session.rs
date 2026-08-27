@@ -125,17 +125,21 @@ pub fn build_auth_challenge(
     subject: Option<String>,
     purpose: Option<String>,
 ) -> Result<String, FfiError> {
-    let payload = challenge::Payload {
-        subject: subject
-            .map(challenge::PayloadSubject::try_from)
-            .transpose()
-            .map_err(conv)?,
-        purpose: purpose
-            .map(challenge::PayloadPurpose::try_from)
-            .transpose()
-            .map_err(conv)?,
-        ext: None,
-    };
+    let payload: challenge::Payload = challenge::Payload::builder()
+        .subject(
+            subject
+                .map(challenge::PayloadSubject::try_from)
+                .transpose()
+                .map_err(conv)?,
+        )
+        .purpose(
+            purpose
+                .map(challenge::PayloadPurpose::try_from)
+                .transpose()
+                .map_err(conv)?,
+        )
+        .try_into()
+        .map_err(conv)?;
     serialize(&envelope_doc(&env, payload)?)
 }
 
@@ -161,16 +165,18 @@ pub fn build_authenticate(
     scope: Vec<String>,
     signer: Box<dyn Signer>,
 ) -> Result<String, FfiError> {
-    let payload = authenticate::Payload {
-        challenge: authenticate::PayloadChallenge::try_from(challenge).map_err(conv)?,
-        session_id: authenticate::PayloadSessionId::try_from(session_id).map_err(conv)?,
-        scope: scope
-            .into_iter()
-            .map(authenticate::PayloadScopeItem::try_from)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(conv)?,
-        ext: None,
-    };
+    let payload: authenticate::Payload = authenticate::Payload::builder()
+        .challenge(authenticate::PayloadChallenge::try_from(challenge).map_err(conv)?)
+        .session_id(authenticate::PayloadSessionId::try_from(session_id).map_err(conv)?)
+        .scope(
+            scope
+                .into_iter()
+                .map(authenticate::PayloadScopeItem::try_from)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(conv)?,
+        )
+        .try_into()
+        .map_err(conv)?;
     let mut doc = envelope_doc(&env, payload)?;
     attach_did_signed_proof(&mut doc, &*signer, &env.issued_at)?;
     serialize(&doc)
@@ -204,15 +210,17 @@ pub fn build_refresh(
     refresh_token: String,
     scope: Vec<String>,
 ) -> Result<String, FfiError> {
-    let payload = refresh::Payload {
-        refresh_token: refresh::PayloadRefreshToken::try_from(refresh_token).map_err(conv)?,
-        scope: scope
-            .into_iter()
-            .map(refresh::PayloadScopeItem::try_from)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(conv)?,
-        ext: None,
-    };
+    let payload: refresh::Payload = refresh::Payload::builder()
+        .refresh_token(refresh::PayloadRefreshToken::try_from(refresh_token).map_err(conv)?)
+        .scope(
+            scope
+                .into_iter()
+                .map(refresh::PayloadScopeItem::try_from)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(conv)?,
+        )
+        .try_into()
+        .map_err(conv)?;
     serialize(&envelope_doc(&env, payload)?)
 }
 
@@ -282,7 +290,13 @@ pub fn build_revoke_session(
 ) -> Result<String, FfiError> {
     let payload = revoke_session::Payload::Variant0 {
         session_id: revoke_session::PayloadVariant0SessionId::try_from(session_id).map_err(conv)?,
-        reason,
+        // `reason` is a bounded newtype as of the 0.17 registry, not a bare
+        // `String`. Parsing it here fails on the device that would otherwise
+        // sign a document the auth service must reject.
+        reason: reason
+            .map(revoke_session::PayloadVariant0Reason::try_from)
+            .transpose()
+            .map_err(conv)?,
         ext: None,
     };
     let mut doc = envelope_doc(&env, payload)?;
@@ -302,7 +316,10 @@ pub fn build_revoke_all_sessions(
 ) -> Result<String, FfiError> {
     let payload = revoke_session::Payload::Variant1 {
         all: true,
-        reason,
+        reason: reason
+            .map(revoke_session::PayloadVariant1Reason::try_from)
+            .transpose()
+            .map_err(conv)?,
         ext: None,
     };
     let mut doc = envelope_doc(&env, payload)?;

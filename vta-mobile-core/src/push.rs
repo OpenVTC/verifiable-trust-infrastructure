@@ -124,12 +124,13 @@ pub fn build_push_register(
     registration: PushRegistration,
     controller_vta_did: String,
 ) -> Result<String, FfiError> {
-    let payload = register::Payload {
-        registration: to_wire_registration(registration)?,
-        controller_vta_did: register::PayloadControllerVtaDid::try_from(controller_vta_did)
-            .map_err(conv)?,
-        ext: None,
-    };
+    let payload: register::Payload = register::Payload::builder()
+        .registration(to_wire_registration(registration)?)
+        .controller_vta_did(
+            register::PayloadControllerVtaDid::try_from(controller_vta_did).map_err(conv)?,
+        )
+        .try_into()
+        .map_err(conv)?;
     serialize(&envelope_doc(&env, payload)?)
 }
 
@@ -162,10 +163,11 @@ pub fn build_device_set_wake(
 ) -> Result<String, FfiError> {
     let wake_handle = wake_handle
         .map(|h| -> Result<set_wake::WakeHandle, FfiError> {
-            Ok(set_wake::WakeHandle {
-                gateway: set_wake::WakeHandleGateway::try_from(h.gateway).map_err(conv)?,
-                handle: set_wake::WakeHandleHandle::try_from(h.handle).map_err(conv)?,
-            })
+            set_wake::WakeHandle::builder()
+                .gateway(set_wake::WakeHandleGateway::try_from(h.gateway).map_err(conv)?)
+                .handle(set_wake::WakeHandleHandle::try_from(h.handle).map_err(conv)?)
+                .try_into()
+                .map_err(conv)
         })
         .transpose()?;
     let push_platform = push_platform.map(|p| match p {
@@ -185,12 +187,12 @@ pub fn build_device_set_wake(
                 .map_err(conv)?,
         )
     };
-    let payload = set_wake::Payload {
-        wake_handle,
-        push_platform,
-        suggested_triggers,
-        ext: None,
-    };
+    let payload: set_wake::Payload = set_wake::Payload::builder()
+        .wake_handle(wake_handle)
+        .push_platform(push_platform)
+        .suggested_triggers(suggested_triggers)
+        .try_into()
+        .map_err(conv)?;
     let mut doc = envelope_doc(&env, payload)?;
     attach_did_signed_proof(&mut doc, &*signer, &env.issued_at)?;
     serialize(&doc)
@@ -234,10 +236,11 @@ fn to_wire_registration(reg: PushRegistration) -> Result<register::PushRegistrat
             auth,
         } => register::PushRegistration::Webpush {
             endpoint,
-            keys: register::PushRegistrationKeys {
-                auth: register::PushRegistrationKeysAuth::try_from(auth).map_err(conv)?,
-                p256dh: register::PushRegistrationKeysP256dh::try_from(p256dh).map_err(conv)?,
-            },
+            keys: register::PushRegistrationKeys::builder()
+                .auth(register::PushRegistrationKeysAuth::try_from(auth).map_err(conv)?)
+                .p256dh(register::PushRegistrationKeysP256dh::try_from(p256dh).map_err(conv)?)
+                .try_into()
+                .map_err(conv)?,
         },
     })
 }

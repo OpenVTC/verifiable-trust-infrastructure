@@ -316,19 +316,25 @@ fn assemble_decision(
         })?
         .with_timezone(&chrono::Utc);
 
-    let payload = decision::Payload {
-        challenge: decision::PayloadChallenge::try_from(draft.challenge.clone()).map_err(conv)?,
-        decision: d,
+    let payload: decision::Payload = decision::Payload::builder()
+        .challenge(decision::PayloadChallenge::try_from(draft.challenge.clone()).map_err(conv)?)
+        .decision(d)
         // `payloadDigest` moved to the shared `DigestMultibase` type — a
         // multibase-encoded multihash, not the bare hex it used to be. Parse
         // rather than assume: a draft carrying a stale hex digest must fail
         // here, at the device that would otherwise sign a decision the VTA
         // could never match.
-        payload_digest: decision::DigestMultibase::try_from(draft.payload_digest.clone())
-            .map_err(conv)?,
-        reason,
-        ext: None,
-    };
+        .payload_digest(
+            decision::DigestMultibase::try_from(draft.payload_digest.clone()).map_err(conv)?,
+        )
+        .reason(
+            reason
+                .map(decision::PayloadReason::try_from)
+                .transpose()
+                .map_err(conv)?,
+        )
+        .try_into()
+        .map_err(conv)?;
 
     let mut doc = TrustTask::for_payload(draft.id.clone(), payload);
     doc.issuer = Some(draft.issuer_did.clone());

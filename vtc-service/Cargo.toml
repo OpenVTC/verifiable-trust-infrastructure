@@ -219,7 +219,7 @@ affinidi-messaging-didcomm = "0.15"
 # mediator-side twin of the client-side failure this crate's TSP work is about.
 # Always on (not conditioned on this crate's `tsp`): the harness is test-only,
 # and a mediator that can route TSP is harmless to the DIDComm suite.
-affinidi-messaging-test-mediator = { version = "0.3", optional = true, features = [
+affinidi-messaging-test-mediator = { version = "0.4", optional = true, features = [
     "tsp",
 ] }
 tokio-util = { workspace = true, features = ["rt"] }

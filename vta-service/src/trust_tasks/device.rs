@@ -34,7 +34,10 @@ pub(super) async fn handle_register(
         Err(resp) => return resp,
     };
 
-    let consumer_kind = operations::device::wire_kind_to_internal(&payload.consumer_kind);
+    let consumer_kind = match operations::device::wire_kind_to_internal(&payload.consumer_kind) {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
     let display_name = payload.display_name.to_string();
     let hpke_public_key = payload.hpke_public_key.as_ref().map(|k| k.to_string());
     // `attestation` and `keyCustody` are accepted but not yet acted on (spec:
