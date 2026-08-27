@@ -244,7 +244,18 @@ aws-lc-rs = "1.16"
 # than fail quietly — but it would fail as "you are serving unspecced URIs",
 # which reads as an implementation fault instead of a stale dependency. The
 # pin makes the resolver say the true thing instead.
-trust-tasks-rs = { version = "0.17", default-features = false, features = ["validate"] }
+# `all-specs` is declared, not inherited. This workspace asked for
+# `default-features = false` and got every spec family anyway, because
+# `affinidi-messaging-sdk` -> `affinidi-tdk` happens to enable the default
+# feature and cargo unions them. That is the entire schema index arriving by
+# luck: if any crate in that chain ever set `default-features = false`,
+# `schema_index::schema_for` would answer `None` for every URI, `validate_payload`
+# would stop validating with one `debug!` line to say so, and `spec_policy_for`
+# would stop enforcing SPEC §7.2 the same way. Both fail *open*.
+trust-tasks-rs = { version = "0.17", default-features = false, features = [
+  "validate",
+  "all-specs",
+] }
 trust-tasks-capability-client = "0.17"
 trust-tasks-https = { version = "0.17", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every

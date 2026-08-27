@@ -1721,6 +1721,47 @@ mod tests {
     /// the operation is served by a dedicated REST route rather than the
     /// dispatcher, it belongs in `deprecation::SUPERSEDED` — the route table —
     /// not here.
+    /// The schema index must be a declared dependency, not an inherited one.
+    ///
+    /// This workspace asks `trust-tasks-rs` for `default-features = false`. It
+    /// received every spec family regardless, because a transitive dependency
+    /// enables the default feature and cargo unions them — so the index that
+    /// `validate_payload` and `spec_policy_for` both read arrived by luck.
+    ///
+    /// Both of those fail *open* when a spec is unknown: `validate_payload`
+    /// dispatches unvalidated unless `require_payload_schema` is set, and
+    /// `spec_policy_for` returning `None` skips SPEC §7.2 entirely. So the day
+    /// that chain changed, this VTA would have quietly stopped checking
+    /// payloads and stopped enforcing proof-REQUIRED, with one `debug!` line
+    /// between it and nobody noticing.
+    ///
+    /// What this test does and does not prove, precisely: it fails when the
+    /// index is empty, which is the outcome that matters. It cannot fail when
+    /// the *declaration* is removed but the transitive path still supplies the
+    /// families — cargo unions features, so the two are indistinguishable from
+    /// inside the build. That is the right coverage anyway: an index populated
+    /// by either route is a working VTA, and this fires on the day neither
+    /// route supplies it.
+    #[test]
+    fn the_spec_index_is_populated() {
+        for uri in [
+            "https://trusttasks.org/spec/acl/grant/0.1",
+            "https://trusttasks.org/spec/auth/authenticate/0.1",
+            "https://trusttasks.org/spec/vault/list/0.3",
+        ] {
+            assert!(
+                trust_tasks_rs::schema_index::schema_for(uri).is_some(),
+                "no schema for `{uri}` — this build's `trust-tasks-rs` carries no spec \
+                 families, so payload validation and SPEC §7.2 enforcement are both off"
+            );
+            assert!(
+                trust_tasks_rs::schema_index::spec_policy_for(uri).is_some(),
+                "no spec policy for `{uri}` — §7.2's recipient/proof/issuedAt checks \
+                 cannot fire for it"
+            );
+        }
+    }
+
     #[test]
     fn superseded_tasks_are_dispatched() {
         let dispatched = dispatched_uris();
