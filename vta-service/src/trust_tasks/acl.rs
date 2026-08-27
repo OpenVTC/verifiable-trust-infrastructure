@@ -237,6 +237,22 @@ pub(super) async fn handle_swap_key(
         Err(resp) => return resp,
     };
 
+    // `linkProof` is optional at the framework level and required by this
+    // deployment. Refused by name rather than as a parse failure: the document
+    // is well-formed, and telling a producer its shape is wrong sends it to
+    // re-read the schema, which will agree with the producer.
+    let Some(link_proof) = req.link_proof.clone() else {
+        return reject_with(
+            &doc,
+            RejectReason::TaskFailed {
+                reason: "acl:link_proof_required — this maintainer requires a `linkProof` \
+                         proving the new subject consents to the takeover"
+                    .to_string(),
+                details: None,
+            },
+        );
+    };
+
     // The authenticated caller must equal the declared currentSubject — stops a
     // sender from claiming to rotate someone else's entry.
     if req.current_subject != auth.did {
@@ -282,7 +298,7 @@ pub(super) async fn handle_swap_key(
         &state.acl_ks,
         &state.audit_sink,
         auth,
-        &req.link_proof,
+        &link_proof,
         did_resolver,
         &vta_did,
         TRANSPORT_TRUST_TASK,

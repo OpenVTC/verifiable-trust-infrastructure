@@ -827,7 +827,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(SwapKeyBody {
                     current_subject: SUBJECT.into(),
                     new_subject: "did:key:z6MkNewSubject".into(),
-                    link_proof: "eyJhbGciOiJFZERTQSJ9.e30.c2ln".into(),
+                    link_proof: Some("eyJhbGciOiJFZERTQSJ9.e30.c2ln".into()),
                     reason: Some("wallet rotation".into()),
                 }),
                 to_v(SwapKeyResultBody {
