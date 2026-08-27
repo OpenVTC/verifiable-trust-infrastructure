@@ -676,3 +676,128 @@ async fn a_superseded_signing_key_is_recovered_from_the_seed() {
 
     mock.shutdown().await;
 }
+
+/// Response-conformance coverage for the webvh family, against the stub host.
+///
+/// These tasks are not covered by the lib-level `response_coverage` module for
+/// a reason worth stating: **every one of them either reaches a hosting server
+/// or requires a DID that is already hosted.** `agent-name/*` looks local — the
+/// names are local records — but each refuses a serverless DID ("agent names
+/// require a hosted DID"), and a DID seeded straight into the keyspace *is*
+/// serverless. So the whole family needs a real mint against a host, which is
+/// exactly what `MockVta::start_with_webvh_host` provides.
+///
+/// The assertions here are deliberately thin. The response-conformance layer
+/// validates every response these provoke against its published schema, so a
+/// drift shows up as a `500` and fails the call, not as a weak assertion here.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn webvh_family_response_shapes() {
+    use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
+    use vta_sdk::protocols::did_management::create::WebvhPathMode;
+
+    let mock = MockVta::start_with_webvh_host().await;
+    let token = mock
+        .ctx
+        .mint_token("did:key:z6MkWebvhCoverage", "admin", vec![])
+        .await;
+    let client = VtaClient::new(mock.base_url());
+    client.set_token_async(token).await;
+
+    // A real mint: everything below needs a *hosted* DID, not a seeded record.
+    let minted = client
+        .create_did_webvh(CreateDidWebvhRequest {
+            context_id: "ctx1".into(),
+            server_id: Some(MockVta::WEBVH_SERVER_ID.into()),
+            url: None,
+            path: None,
+            path_mode: Some(WebvhPathMode::AutoAssign),
+            domain: None,
+            label: None,
+            portable: false,
+            add_mediator_service: false,
+            add_tsp_service: false,
+            additional_services: None,
+            pre_rotation_count: 0,
+            did_document: None,
+            did_log: None,
+            set_primary: false,
+            signing_key_id: None,
+            ka_key_id: None,
+            template: None,
+            template_context: None,
+            template_vars: Default::default(),
+        })
+        .await
+        .expect("mint against the stub host");
+    let did = minted.did;
+
+    // ── server surface ────────────────────────────────────────────────────
+    client.list_webvh_servers().await.expect("servers/list");
+    client
+        .list_webvh_server_domains(MockVta::WEBVH_SERVER_ID)
+        .await
+        .expect("servers/domains");
+    client
+        .reconcile_webvh_server_dids(MockVta::WEBVH_SERVER_ID)
+        .await
+        .expect("servers/reconcile");
+
+    // ── agent names ───────────────────────────────────────────────────────
+    // Ordered as an operator would: claim, read back, disable, re-enable, drop.
+    client
+        .set_agent_name(&did, "coverage-agent")
+        .await
+        .expect("agent-name/set");
+    client
+        .check_agent_name(&did, "coverage-agent")
+        .await
+        .expect("agent-name/check");
+    client
+        .list_agent_names(&did)
+        .await
+        .expect("agent-name/list");
+    client
+        .disable_agent_name(&did, "coverage-agent")
+        .await
+        .expect("agent-name/disable");
+    client
+        .enable_agent_name(&did, "coverage-agent")
+        .await
+        .expect("agent-name/enable");
+    client
+        .remove_agent_name(&did, "coverage-agent")
+        .await
+        .expect("agent-name/remove");
+
+    // ── passkey verification methods ──────────────────────────────────────
+    // Same constraint as agent names, for a different reason: these refuse a
+    // DID that is not **VTA-managed**, so the fixture's own `did:key` signing
+    // identity does not qualify and a minted one does. Dispatched raw because
+    // `VtaClient` exposes no method for this family.
+    client
+        .dispatch_trust_task(
+            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
+            serde_json::json!({ "did": did }),
+            30,
+        )
+        .await
+        .expect("passkey-vms/list");
+    // `enroll-challenge` / `enroll-submit` / `revoke` are not covered: they
+    // answer `unavailable` here because this fixture configures no WebAuthn
+    // relying party, and a challenge with no RP to bind to is not a thing the
+    // service will mint. Covering them means standing up a WebAuthn config and
+    // a soft authenticator, which is what the `admin_passkeys` suites already
+    // do for the VTC side.
+
+    // ── the DID itself ────────────────────────────────────────────────────
+    // Rotate before delete: a rotation on a deleted DID has nothing to rotate,
+    // and delete is terminal.
+    client
+        .rotate_did_webvh_keys_by_did(&did, Default::default())
+        .await
+        .expect("dids/rotate-keys");
+    client.delete_did_webvh(&did).await.expect("dids/delete");
+
+    mock.shutdown().await;
+}

@@ -1217,7 +1217,7 @@ pub struct StubWebvhHost {
 impl StubWebvhHost {
     /// Start the stub host on a random loopback port and return once bound.
     pub async fn start() -> StubWebvhHost {
-        use axum::routing::{post, put};
+        use axum::routing::post;
         use serde_json::json;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1281,6 +1281,89 @@ impl StubWebvhHost {
             )
             .route("/api/auth/", post(tokens))
             .route("/api/auth/refresh", post(tokens))
+            // Agent names live on the *host*, not in the VTA — which is why
+            // every `agent-name/*` task refuses a serverless DID. The host
+            // takes one `update` verb carrying the target state (`bound`,
+            // `parked`, …) rather than a verb per operation, so set / remove /
+            // disable / enable all land here.
+            .route(
+                "/api/agent-names/update",
+                post(|headers: axum::http::HeaderMap| async move {
+                    require_bearer(&headers)?;
+                    Ok::<_, axum::http::StatusCode>(axum::Json(json!({ "record": {} })))
+                }),
+            )
+            // `remove` is its own verb, not an `update` state: releasing a name
+            // returns it to the pool, which is a different act from parking it.
+            .route(
+                "/api/agent-names/remove",
+                post(|headers: axum::http::HeaderMap| async move {
+                    require_bearer(&headers)?;
+                    Ok::<_, axum::http::StatusCode>(axum::Json(json!({ "record": {} })))
+                }),
+            )
+            .route(
+                "/api/agent-names/check",
+                post(|headers: axum::http::HeaderMap| async move {
+                    require_bearer(&headers)?;
+                    // Available and unreserved: the arm a caller checks before
+                    // claiming, and the one whose shape the VTA relays.
+                    Ok::<_, axum::http::StatusCode>(axum::Json(json!({
+                        "name": "coverage-agent",
+                        "domain": "webvh-host.test",
+                        "available": true,
+                        "reserved": false,
+                    })))
+                }),
+            )
+            // `GET /api/dids?owner=…` — the host's view of the DIDs it holds
+            // for one owner. `servers/{reconcile,retire-orphan}` both read it
+            // to compare the host's list against the VTA's records.
+            //
+            // Answers with an empty list. That is the interesting case rather
+            // than a lazy one: reconcile's whole job is to report the
+            // difference between two sets, and "the host holds nothing while
+            // the VTA holds records" is the shape that exercises the
+            // *missing-on-host* arm. A stub echoing the VTA's own records back
+            // would only ever prove the empty-difference path.
+            .route(
+                "/api/dids",
+                axum::routing::get(|headers: axum::http::HeaderMap| async move {
+                    require_bearer(&headers)?;
+                    Ok::<_, axum::http::StatusCode>(axum::Json(json!([])))
+                }),
+            )
+            // The caller-scoped domain listing. A real `did-hosting-control`
+            // serves this so an operator can discover which tenant domains
+            // their credential may mint into; the VTA proxies it for
+            // `vta/webvh/servers/domains/0.1`. One domain is enough to exercise
+            // the response shape, and `default: true` makes it the one a mint
+            // with no explicit `--domain` resolves to.
+            .route(
+                "/api/me/domains",
+                axum::routing::get(|headers: axum::http::HeaderMap| async move {
+                    require_bearer(&headers)?;
+                    Ok::<_, axum::http::StatusCode>(axum::Json(
+                        // `name` / `defaultDomain` / `status` / `createdAt`,
+                        // matching `vta_webvh::MyDomainEntry`. Two details a
+                        // stub gets wrong by guessing: `createdAt` is **Unix
+                        // seconds**, not RFC 3339 — the VTA converts when it
+                        // relays into the canonical `DomainEntry`, which does
+                        // want a string — and the canonical shape *requires*
+                        // it, so omitting it fails the relayed schema rather
+                        // than the decode.
+                        json!({
+                            "domains": [{
+                                "name": "webvh-host.test",
+                                "defaultDomain": true,
+                                "status": "active",
+                                "createdAt": 1_767_225_600u64,
+                            }],
+                            "default": "webvh-host.test",
+                        }),
+                    ))
+                }),
+            )
             .route(
                 "/api/dids",
                 post(|headers: axum::http::HeaderMap| async move {
@@ -1319,8 +1402,22 @@ impl StubWebvhHost {
                 }),
             )
             .route(
+                // `GET` answers the DID's record, whose `agentNames` array is
+                // what `agent-name/list` reads. `createdAt` is Unix seconds
+                // here as it is on the domain listing — the wire type has a
+                // custom deserializer for it, which is the tell.
                 "/api/dids/{mnemonic}",
-                put({
+                axum::routing::get(|headers: axum::http::HeaderMap| async move {
+                    require_bearer(&headers)?;
+                    Ok::<_, axum::http::StatusCode>(axum::Json(json!({
+                        "agentNames": [{
+                            "name": "coverage-agent",
+                            "enabled": true,
+                            "createdAt": 1_767_225_600u64,
+                        }],
+                    })))
+                })
+                .put({
                     let fail_puts = fail_puts.clone();
                     move |headers: axum::http::HeaderMap| {
                         let fail_puts = fail_puts.clone();
