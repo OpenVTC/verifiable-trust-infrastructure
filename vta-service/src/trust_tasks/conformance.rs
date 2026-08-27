@@ -606,15 +606,19 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::consent::request::v1_0::Payload,
                 specs::consent::request::v1_0::Response,
-                // Neither hint set — the shape
-                // `consent_request(subject, scope, challenge, None, None)`
-                // emits, and the one that leaves both optionals to the skip.
+                // Every optional member set. The witness used to leave both
+                // hints `None`, which serialized them away — so the fixture
+                // proved the required trio and nothing about the optional
+                // members' encoding. `firstMessageDigest` in particular is a
+                // `DigestMultibase`, and an omitted member cannot fail its
+                // pattern.
                 to_v(ConsentRequestBody {
                     subject: consent_subject_json(),
                     scope: "converse".into(),
                     challenge: "chal-0123456789abcdef".into(),
-                    display_hint: None,
-                    context_hint: None,
+                    display_hint: Some("Slack DM".into()),
+                    first_message_digest: Some(DIGEST_MULTIBASE.into()),
+                    context_hint: Some("ctx-a".into()),
                 }),
                 json!({ "status": "accepted", "requestId": "chal-1" })
             ),

@@ -208,8 +208,23 @@ async fn every_optional_argument_unset_still_builds_a_conforming_payload() {
     assert_conforms(
         &captured(|c| async move {
             drop(
-                c.consent_request(s, "converse", CHALLENGE, None, None)
-                    .await,
+                c.consent_request(
+                    &vta_sdk::protocols::consent_management::ConsentRequestBody {
+                        subject: s,
+                        scope: "converse".into(),
+                        challenge: CHALLENGE.into(),
+                        // Every optional member set: this suite checks what the
+                        // producer *emits*, and a member left `None` is skipped
+                        // before it reaches the schema. Populated, it is the only
+                        // place `firstMessageDigest` gets its encoding checked.
+                        display_hint: Some("Signal group 'Family'".into()),
+                        first_message_digest: Some(
+                            "zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ".into(),
+                        ),
+                        context_hint: Some("ctx-a".into()),
+                    },
+                )
+                .await,
             )
         })
         .await,

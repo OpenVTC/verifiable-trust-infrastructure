@@ -27,21 +27,15 @@ impl VtaClient {
     /// agent. Default-deny: if no live grant exists, a pending consent is minted
     /// for an approver. `scope` is `"receive"` or `"converse"`. `challenge` (≥128
     /// bits) is echoed by the matching decision.
-    pub async fn consent_request(
-        &self,
-        subject: Value,
-        scope: &str,
-        challenge: &str,
-        display_hint: Option<&str>,
-        context_hint: Option<&str>,
-    ) -> Result<Value, VtaError> {
-        let payload = serde_json::to_value(ConsentRequestBody {
-            subject,
-            scope: scope.to_string(),
-            challenge: challenge.to_string(),
-            display_hint: display_hint.map(str::to_string),
-            context_hint: context_hint.map(str::to_string),
-        })?;
+    ///
+    /// Takes the body rather than positional arguments. The schema declares
+    /// three optional members and two of them are hints, so the positional form
+    /// was four `Option<&str>` in a row with `displayHint` and `contextHint`
+    /// adjacent and interchangeable to the compiler — and it had to break every
+    /// time the schema grew another optional member. Named fields cost the
+    /// caller one `..Default::default()` and settle both.
+    pub async fn consent_request(&self, body: &ConsentRequestBody) -> Result<Value, VtaError> {
+        let payload = serde_json::to_value(body)?;
         self.dispatch_trust_task(
             trust_tasks::TASK_CONSENT_REQUEST_1_0,
             payload,

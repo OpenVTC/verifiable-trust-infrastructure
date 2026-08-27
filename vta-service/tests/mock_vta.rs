@@ -819,10 +819,11 @@ async fn webvh_family_response_shapes() {
                 // the task refuses it, and correctly, pointing the caller at
                 // `webvh/dids/delete` for a slot it still controls.
                 slot_id: "cov-orphan-slot".into(),
-                // `None`: this stub reports no host-only slots, so there is no
-                // DID the caller "believes the slot serves". The member exists
-                // to turn a stale reconcile report into a refusal rather than a
-                // surprise, which needs a report to have been stale.
+                // `None`: the caller retires the slot on the strength of the
+                // reconcile report alone. Setting it asserts "I believe this
+                // slot serves <did>", which turns a stale report into a
+                // refusal rather than a surprise — a guard worth its own test,
+                // not worth spending the happy path on.
                 expected_did: None,
                 reason: Some("coverage".into()),
             },
@@ -845,6 +846,142 @@ async fn webvh_family_response_shapes() {
         .remove_webvh_server(MockVta::WEBVH_SERVER_ID)
         .await
         .expect("servers/remove");
+
+    mock.shutdown().await;
+}
+
+/// The `consent/*` family, driven as the ceremony it is: bind an approver, ask,
+/// decide, read back, withdraw.
+///
+/// The order is the point. `consent/request` is default-deny and resolves an
+/// approver for the (platform, context) before it will mint anything, so
+/// `approver-set` is not setup for this test — it is the step that makes the
+/// rest of the family reachable at all. Running the six in isolation would
+/// prove six shapes; running them in sequence proves the gate.
+#[tokio::test]
+async fn consent_family_response_shapes() {
+    use vta_sdk::client::VtaClient;
+    use vta_sdk::protocols::consent_management::ConsentRequestBody;
+
+    const PLATFORM: &str = "signal";
+    const CONTEXT: &str = "ctx1";
+    const OPERATOR: &str = "did:key:z6MkConsentOperator";
+    // base64url, ≥128 bits per the schema's `minLength` 16.
+    const CHALLENGE: &str = "Y29uc2VudC1jb3ZlcmFnZS0xMjhi";
+
+    let mock = MockVta::start().await;
+    // One context, not the unrestricted admin: `consent/request` falls back to
+    // `default_context()` when the caller sends no `contextHint`, and that
+    // returns `Some` only for a caller with *exactly* one allowed context. An
+    // admin minted with `vec![]` has unrestricted access and no default, so the
+    // fallback this test exercises would be dead.
+    let token = mock
+        .ctx
+        .mint_token(OPERATOR, "admin", vec![CONTEXT.to_string()])
+        .await;
+    let client = VtaClient::new(mock.base_url());
+    client.set_token_async(token).await;
+
+    let subject = serde_json::json!({
+        "platform": PLATFORM,
+        "conversationRef": "sig-cov-1a2b3c4d",
+        "kind": "group",
+        "agent": "did:key:z6MkConsentAgent",
+    });
+
+    // ── the approver must exist before anything can be asked ──────────────
+    client
+        .consent_approver_set(PLATFORM, CONTEXT, OPERATOR, Some("bridge-relay"), None)
+        .await
+        .expect("consent/approver-set");
+    let listed = client
+        .consent_approver_list(Some(PLATFORM), Some(CONTEXT))
+        .await
+        .expect("consent/approver-list");
+    assert_eq!(
+        listed["approvers"].as_array().map(Vec::len),
+        Some(1),
+        "the binding just written must come back through the filter that names it"
+    );
+
+    // ── ask ───────────────────────────────────────────────────────────────
+    // No `contextHint`: the approver resolves through `default_context()`.
+    let asked = client
+        .consent_request(&ConsentRequestBody {
+            subject: subject.clone(),
+            scope: "converse".into(),
+            challenge: CHALLENGE.into(),
+            display_hint: Some("Signal group 'Coverage'".into()),
+            first_message_digest: None,
+            context_hint: None,
+        })
+        .await
+        .expect("consent/request");
+    assert_eq!(asked["status"], "accepted");
+    assert_eq!(
+        asked["requestId"], CHALLENGE,
+        "the request id a bridge correlates on is the challenge it sent"
+    );
+
+    // ── decide ────────────────────────────────────────────────────────────
+    let decided = client
+        .consent_decision(
+            subject.clone(),
+            "allow",
+            Some("converse"),
+            Some(CHALLENGE),
+            None,
+        )
+        .await
+        .expect("consent/decision");
+    assert_eq!(decided["status"], "recorded");
+
+    // Asking again now short-circuits on the live grant rather than minting a
+    // second pending consent — the branch that stops a bridge re-prompting an
+    // operator who has already answered.
+    let again = client
+        .consent_request(&ConsentRequestBody {
+            subject: subject.clone(),
+            scope: "converse".into(),
+            challenge: "Y29uc2VudC1jb3ZlcmFnZS1hZ2Fpbg".into(),
+            display_hint: None,
+            first_message_digest: None,
+            context_hint: None,
+        })
+        .await
+        .expect("consent/request (already decided)");
+    assert_eq!(again["requestId"], "existing-grant");
+
+    // ── read back ─────────────────────────────────────────────────────────
+    let grants = client
+        .consent_list(None, Some(PLATFORM), None)
+        .await
+        .expect("consent/list");
+    assert_eq!(grants["grants"].as_array().map(Vec::len), Some(1));
+
+    // ── withdraw, and prove it took ───────────────────────────────────────
+    client
+        .consent_revoke(subject.clone(), Some("coverage"))
+        .await
+        .expect("consent/revoke");
+    let after = client
+        .consent_list(None, Some(PLATFORM), None)
+        .await
+        .expect("consent/list after revoke");
+    assert_eq!(
+        after["grants"].as_array().map(Vec::len),
+        Some(0),
+        "revoke must return the subject to default-deny, not merely report success"
+    );
+
+    // Revoking again is `notFound` as a *status*, not a reject: the published
+    // response schema declares the value, and the post-condition the caller
+    // asked for already holds.
+    let twice = client
+        .consent_revoke(subject, None)
+        .await
+        .expect("consent/revoke is idempotent");
+    assert_eq!(twice["status"], "notFound");
 
     mock.shutdown().await;
 }
