@@ -2637,6 +2637,31 @@ mod response_coverage {
         doc["payload"].clone()
     }
 
+    /// [`ok`], but on a transport that is confidential end to end.
+    ///
+    /// `keys/import` refuses a cleartext `privateKeyMultibase` on anything less
+    /// — TLS terminates wherever the operator terminates it, so the key would
+    /// exist in plaintext there. DIDComm authcrypt and TSP do not, and this is
+    /// how a test says it is one of those.
+    async fn ok_e2e(state: &crate::server::AppState, uri: &str, payload: Value) -> Value {
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let body = signed_body(uri, &vta_did, payload);
+        let outcome = super::dispatch_trust_task_core(
+            state,
+            &crate::test_support::super_admin_claims(),
+            &body,
+            transport::TransportConfidentiality::EndToEnd,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        assert_eq!(
+            doc["type"],
+            format!("{uri}#response"),
+            "expected a success response from {uri}, got: {doc}"
+        );
+        doc["payload"].clone()
+    }
+
     /// Mint a key and return its id, so the read/sign/rename paths have a real
     /// subject rather than the VTA's own signing key (which they must not
     /// rename or revoke).
@@ -2954,6 +2979,210 @@ mod response_coverage {
             &state,
             t::TASK_DEVICE_DISABLE_0_1,
             json!({ "deviceId": device_id, "reason": "coverage" }),
+        )
+        .await;
+    }
+
+    /// `keys/import` and `keys/derive-and-sign-document`.
+    ///
+    /// Import needs a transport that is confidential end to end; the cleartext
+    /// key carrier is refused on anything less, and that refusal is already
+    /// covered in `tests/api_integration.rs`. This is the other side of it.
+    #[tokio::test]
+    async fn keys_import_and_derive_and_sign() {
+        let (state, _dir) = build_signing_test_app_state().await;
+
+        // A real Ed25519 seed, multibase-encoded — the form the handler decodes.
+        let seed = [0x5Au8; 32];
+        ok_e2e(
+            &state,
+            t::TASK_KEYS_IMPORT_0_1,
+            json!({
+                "keyType": "ed25519",
+                "privateKeyMultibase": multibase::encode(multibase::Base::Base58Btc, seed),
+                "label": "imported",
+            }),
+        )
+        .await;
+
+        // Derive-and-sign takes a document rather than a key id: the key is
+        // derived on the spot from the path, signed with, and not persisted.
+        ok(
+            &state,
+            t::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
+            json!({
+                "keyType": "ed25519",
+                "derivationPath": "m/26'/9'/0'",
+                "document": {
+                    "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
+                    "payload": { "challenge": "abc", "sessionId": "s1" },
+                },
+            }),
+        )
+        .await;
+    }
+
+    /// Seed a vault entry with its secret already in place.
+    ///
+    /// `vault/upsert` refuses a *create* with no `sealedSecret` — every
+    /// `secretKind` needs one — and sealing takes an HPKE envelope addressed to
+    /// this VTA. An *update* does not: it carries the stored secret forward.
+    /// Seeding the create is what lets the rest of the family be driven without
+    /// standing up the envelope machinery, which `tests/vault_unseal_authcrypt`
+    /// already covers on its own terms.
+    async fn a_vault_entry(state: &crate::server::AppState, id: &str, context_id: &str) -> String {
+        use vti_common::vault::{
+            SecretKind, SiteTarget, StoredVaultEntry, VaultEntry, VaultSecret, VaultStatus,
+            put_stored_vault_entry,
+        };
+        let now = "2026-01-01T00:00:00Z".to_string();
+        let entry = StoredVaultEntry {
+            entry: VaultEntry {
+                id: id.to_string(),
+                context_id: context_id.to_string(),
+                targets: vec![SiteTarget::WebOrigin {
+                    origin: "https://example.com".to_string(),
+                }],
+                label: "Coverage entry".to_string(),
+                secret_kind: SecretKind::Password,
+                tags: Vec::new(),
+                notes: None,
+                favicon: None,
+                selectors: Vec::new(),
+                custom_field_names: Vec::new(),
+                attachments: Vec::new(),
+                expires_at: None,
+                breached_at: None,
+                password_changed_at: None,
+                created_at: now.clone(),
+                created_by: None,
+                updated_at: now,
+                updated_by: None,
+                last_used_at: None,
+                version: 1,
+                principal_did: None,
+                status: VaultStatus::Active,
+                archived_at: None,
+                deleted_at: None,
+                grace_until: None,
+            },
+            secret: VaultSecret::Password {
+                username: Some("alice".to_string()),
+                password: "hunter2-very-secret".to_string(),
+                totp: None,
+                login_config: None,
+                secure_notes: None,
+                custom_fields: Vec::new(),
+            },
+        };
+        put_stored_vault_entry(&state.vault_ks, &entry)
+            .await
+            .expect("seed the vault entry");
+        id.to_string()
+    }
+
+    /// The vault write and release paths.
+    // Names the deprecated 0.1 URI on purpose: it is the canonical form this
+    // covers, and it is still dispatched.
+    #[allow(deprecated)]
+    #[tokio::test]
+    async fn vault_entry_lifecycle() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "vault-ctx").await;
+        let entry_id = a_vault_entry(&state, "vault-cov-1", "vault-ctx").await;
+
+        // An update: `sealedSecret` omitted, so the stored secret carries
+        // forward. A create with none is refused, and correctly.
+        ok(
+            &state,
+            t::TASK_VAULT_UPSERT_0_1,
+            json!({
+                "id": entry_id,
+                "contextId": "vault-ctx",
+                "targets": [{ "kind": "web-origin", "origin": "https://example.com" }],
+                "label": "Coverage entry (renamed)",
+                "secretKind": "password",
+            }),
+        )
+        .await;
+
+        // `release`, `proxy-login` and `sign-trust-task` are deliberately not
+        // here. Each seals its answer into a DIDComm envelope addressed to the
+        // caller, so covering their success path means being a real DIDComm
+        // client with keys the mediator knows — `MockVta::start_with_transports`
+        // and its embedded mediator, not this in-process fixture. An offline
+        // ATM gets as far as packing and no further.
+    }
+
+    /// `acl/swap-key` — the self-service key rotation.
+    ///
+    /// The `linkProof` is a real VP-JWT built by the SDK's own producer, signed
+    /// by the *new* DID and audience-bound to this VTA. A transcribed fixture
+    /// would prove someone can type a JWT; this proves the two sides agree.
+    #[tokio::test]
+    async fn acl_swap_key_rotates_the_callers_own_entry() {
+        use ed25519_dalek::SigningKey;
+
+        let (state, _dir) = build_signing_test_app_state().await;
+        let claims = crate::test_support::super_admin_claims();
+        crate::test_support::seed_acl_entry(
+            &state.acl_ks,
+            &claims.did,
+            crate::acl::Role::Admin,
+            vec![],
+        )
+        .await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+
+        // The DID being rotated *to*, and the key that proves control of it.
+        let new_sk = SigningKey::from_bytes(&[0xD1; 32]);
+        let (new_did, _vm) = crate::test_support::did_for_seed(0xD1);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let link_proof = vta_sdk::protocols::acl_management::swap::build_swap_presentation(
+            &new_sk, &new_did, &vta_did, now, 300, None,
+        );
+
+        ok(
+            &state,
+            t::TASK_ACL_SWAP_KEY_0_1,
+            json!({
+                // Must equal the authenticated caller: the operation exists so a
+                // holder can rotate *its own* entry, never someone else's.
+                "currentSubject": claims.did,
+                "newSubject": new_did,
+                "linkProof": link_proof,
+            }),
+        )
+        .await;
+    }
+
+    /// `services/drain/cancel` — call off a drain before its deadline.
+    ///
+    /// Needs an active drain to cancel, which is a registry record rather than
+    /// a live mediator: `record_drain_persisted` is what the drain path itself
+    /// writes, so seeding through it is the same state a real drain leaves.
+    #[tokio::test]
+    async fn services_drain_cancel() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let mediator_did = "did:key:z6MkDrainedMediator";
+        state
+            .mediator_registry
+            .record_drain_persisted(
+                &state.drains_ks,
+                mediator_did,
+                "wss://drained.example".into(),
+                chrono::Utc::now() + chrono::Duration::minutes(30),
+            )
+            .await
+            .expect("seed an active drain");
+
+        ok(
+            &state,
+            t::TASK_SERVICES_DRAIN_CANCEL_1_0,
+            json!({ "mediatorDid": mediator_did }),
         )
         .await;
     }
