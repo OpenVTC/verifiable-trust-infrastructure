@@ -122,14 +122,21 @@ async fn post_vault(
     uri: &str,
     payload: Value,
 ) -> (StatusCode, String) {
-    let doc = json!({
+    // Signed with the holder's own seed (7) — `holder_did()` derives the DID
+    // from it, so the issuer and the key agree, which item 6 requires. The vault
+    // specs declare `proof` REQUIRED, so an unsigned document never reaches the
+    // capability checks these tests are about.
+    let mut typed: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
         "id": format!("tt-{}", uuid::Uuid::new_v4()),
         "type": uri,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": holder_did(),
         "recipient": "did:key:z6MkTestVTA",
         "payload": payload,
-    });
+    }))
+    .expect("envelope deserialises");
+    vta_service::test_support::sign_as(7, &mut typed);
+    let doc = serde_json::to_value(&typed).expect("envelope serialises");
     let req = Request::builder()
         .method("POST")
         .uri("/api/trust-tasks")

@@ -4,6 +4,7 @@
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use vta_sdk::client::VtaClient;
 use vta_service::test_support::MockVta;
 
 /// Minimal HTTP/1.1 GET over a fresh TCP connection; returns the raw response.
@@ -20,6 +21,24 @@ async fn http_get(addr: &str, path: &str) -> String {
         .await
         .expect("read response");
     String::from_utf8_lossy(&response).into_owned()
+}
+
+/// A client that can produce documents a conforming VTA accepts.
+///
+/// `mint_token` alone stopped being enough when the spine started enforcing
+/// SPEC §7.2: every dispatched spec declares `recipient` REQUIRED (item 5b) and
+/// 72 of them declare `proof` REQUIRED (item 7a), so a client needs the key
+/// behind the DID its token names — not just the token. `seed` picks the
+/// identity, so a test wanting two callers asks for two seeds.
+async fn signing_client(mock: &MockVta, seed: u8, role: &str, contexts: Vec<String>) -> VtaClient {
+    let vta_did = mock.vta_did().to_string();
+    let (identity, token) = mock
+        .ctx
+        .mint_signing_identity(seed, role, contexts, &vta_did)
+        .await;
+    let client = VtaClient::new(mock.base_url()).with_identity(identity);
+    client.set_token_async(token).await;
+    client
 }
 
 #[tokio::test]
@@ -98,12 +117,7 @@ async fn seeded_webvh_server_is_listed_over_http() {
     mock.seed_webvh_server("prod", "did:webvh:host.example.com")
         .await;
 
-    let token = mock
-        .ctx
-        .mint_token("did:key:z6MkTestAdmin", "admin", vec![])
-        .await;
-    let client = vta_sdk::client::VtaClient::new(mock.base_url());
-    client.set_token_async(token).await;
+    let client = signing_client(&mock, 0x10, "admin", vec![]).await;
 
     let result = client
         .list_webvh_servers()
@@ -176,18 +190,13 @@ async fn url_direct_admin_rotation_round_trips_against_rest_only_mock() {
 /// for the persona-mint layer.
 #[tokio::test]
 async fn create_did_webvh_round_trips_against_stub_host() {
-    use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
+    use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
 
     let mock = MockVta::start_with_webvh_host().await;
 
     // Authenticate as a super-admin (mint-token shortcut — no live handshake).
-    let token = mock
-        .ctx
-        .mint_token("did:key:z6MkWebvhAdmin", "admin", vec![])
-        .await;
-    let client = VtaClient::new(mock.base_url());
-    client.set_token_async(token).await;
+    let client = signing_client(&mock, 0x11, "admin", vec![]).await;
 
     let req = CreateDidWebvhRequest {
         context_id: "ctx1".into(),
@@ -248,17 +257,12 @@ async fn create_did_webvh_round_trips_against_stub_host() {
 #[tokio::test]
 #[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
 async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() {
-    use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
+    use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
     use vta_sdk::protocols::did_management::update::UpdateDidWebvhBody;
 
     let mock = MockVta::start_with_webvh_host().await;
-    let token = mock
-        .ctx
-        .mint_token("did:key:z6MkWebvhAdmin", "admin", vec![])
-        .await;
-    let client = VtaClient::new(mock.base_url());
-    client.set_token_async(token).await;
+    let client = signing_client(&mock, 0x11, "admin", vec![]).await;
 
     let create = client
         .create_did_webvh(CreateDidWebvhRequest {
@@ -376,17 +380,12 @@ async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() 
 #[tokio::test]
 #[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
 async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
-    use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
+    use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
     use vta_sdk::protocols::did_management::update::UpdateDidWebvhBody;
 
     let mock = MockVta::start_with_webvh_host().await;
-    let token = mock
-        .ctx
-        .mint_token("did:key:z6MkWebvhAdmin", "admin", vec![])
-        .await;
-    let client = VtaClient::new(mock.base_url());
-    client.set_token_async(token).await;
+    let client = signing_client(&mock, 0x11, "admin", vec![]).await;
 
     let create = client
         .create_did_webvh(CreateDidWebvhRequest {
@@ -490,17 +489,12 @@ async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
 #[tokio::test]
 #[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
 async fn a_stale_caller_still_conflicts() {
-    use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
+    use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
     use vta_sdk::protocols::did_management::update::UpdateDidWebvhBody;
 
     let mock = MockVta::start_with_webvh_host().await;
-    let token = mock
-        .ctx
-        .mint_token("did:key:z6MkWebvhAdmin", "admin", vec![])
-        .await;
-    let client = VtaClient::new(mock.base_url());
-    client.set_token_async(token).await;
+    let client = signing_client(&mock, 0x11, "admin", vec![]).await;
 
     let create = client
         .create_did_webvh(CreateDidWebvhRequest {
@@ -598,17 +592,12 @@ async fn a_stale_caller_still_conflicts() {
 #[tokio::test]
 #[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
 async fn a_superseded_signing_key_is_recovered_from_the_seed() {
-    use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
+    use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
     use vta_sdk::protocols::did_management::update::UpdateDidWebvhBody;
 
     let mock = MockVta::start_with_webvh_host().await;
-    let token = mock
-        .ctx
-        .mint_token("did:key:z6MkWebvhAdmin", "admin", vec![])
-        .await;
-    let client = VtaClient::new(mock.base_url());
-    client.set_token_async(token).await;
+    let client = signing_client(&mock, 0x11, "admin", vec![]).await;
 
     let create = client
         .create_did_webvh(CreateDidWebvhRequest {
@@ -693,16 +682,11 @@ async fn a_superseded_signing_key_is_recovered_from_the_seed() {
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn webvh_family_response_shapes() {
-    use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
+    use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
 
     let mock = MockVta::start_with_webvh_host().await;
-    let token = mock
-        .ctx
-        .mint_token("did:key:z6MkWebvhCoverage", "admin", vec![])
-        .await;
-    let client = VtaClient::new(mock.base_url());
-    client.set_token_async(token).await;
+    let client = signing_client(&mock, 0x12, "admin", vec![]).await;
 
     // A real mint: everything below needs a *hosted* DID, not a seeded record.
     let minted = client
@@ -860,12 +844,10 @@ async fn webvh_family_response_shapes() {
 /// prove six shapes; running them in sequence proves the gate.
 #[tokio::test]
 async fn consent_family_response_shapes() {
-    use vta_sdk::client::VtaClient;
     use vta_sdk::protocols::consent_management::ConsentRequestBody;
 
     const PLATFORM: &str = "signal";
     const CONTEXT: &str = "ctx1";
-    const OPERATOR: &str = "did:key:z6MkConsentOperator";
     // base64url, ≥128 bits per the schema's `minLength` 16.
     const CHALLENGE: &str = "Y29uc2VudC1jb3ZlcmFnZS0xMjhi";
 
@@ -875,12 +857,17 @@ async fn consent_family_response_shapes() {
     // returns `Some` only for a caller with *exactly* one allowed context. An
     // admin minted with `vec![]` has unrestricted access and no default, so the
     // fallback this test exercises would be dead.
-    let token = mock
+    let client = signing_client(&mock, 0x20, "admin", vec![CONTEXT.to_string()]).await;
+    // The operator is the caller: `consent/decision` treats the requester and
+    // the approver as one when they are the same DID (bridge-attested), and the
+    // caller's DID is now derived from its signing seed rather than named.
+    let operator = mock
         .ctx
-        .mint_token(OPERATOR, "admin", vec![CONTEXT.to_string()])
-        .await;
-    let client = VtaClient::new(mock.base_url());
-    client.set_token_async(token).await;
+        .mint_signing_identity(0x20, "admin", vec![CONTEXT.to_string()], mock.vta_did())
+        .await
+        .0
+        .client_did;
+    let operator = operator.as_str();
 
     let subject = serde_json::json!({
         "platform": PLATFORM,
@@ -891,7 +878,7 @@ async fn consent_family_response_shapes() {
 
     // ── the approver must exist before anything can be asked ──────────────
     client
-        .consent_approver_set(PLATFORM, CONTEXT, OPERATOR, Some("bridge-relay"), None)
+        .consent_approver_set(PLATFORM, CONTEXT, operator, Some("bridge-relay"), None)
         .await
         .expect("consent/approver-set");
     let listed = client

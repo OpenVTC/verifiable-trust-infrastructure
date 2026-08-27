@@ -360,7 +360,10 @@ async fn trust_task_acl_mutation_requires_step_up() {
     // are the only trigger now.
     require_step_up_for_everything(&ctx).await;
 
-    let did = "did:key:z6MkAal1Admin".to_string();
+    // Seeded so the issuer has a key: `acl/grant/0.1` declares `proof` REQUIRED,
+    // and the step-up gate this test is about fires *after* that check.
+    const AAL1_SEED: u8 = 0xA1;
+    let did = vta_service::test_support::did_for_seed(AAL1_SEED).0;
     let session_id = "sess-stepup-tt-1".to_string();
 
     // An AAL1 admin session + bearer token: role passes, assurance level does not.
@@ -393,7 +396,7 @@ async fn trust_task_acl_mutation_requires_step_up() {
 
     // A well-formed acl/create addressed to the test VTA. The step-up gate fires
     // before payload parsing, so the body need only route + pass the role check.
-    let doc = json!({
+    let mut typed: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
         "id": "acl-create-itest-1",
         "type": "https://trusttasks.org/spec/acl/grant/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -406,7 +409,10 @@ async fn trust_task_acl_mutation_requires_step_up() {
                 "scopes": ["ctx1"]
             }
         },
-    });
+    }))
+    .expect("envelope deserialises");
+    vta_service::test_support::sign_as(AAL1_SEED, &mut typed);
+    let doc = serde_json::to_value(&typed).expect("envelope serialises");
     let req = Request::builder()
         .method("POST")
         .uri("/api/trust-tasks")
@@ -507,7 +513,10 @@ async fn v0_2_minted_request_completes_with_a_0_1_flavored_response() {
 
     // 1. An AAL2-gated trust-task mutation → rejected with the minted
     //    approve-request in `details`.
-    let gated = json!({
+    // Signed with the same seed the DID is derived from (57): `acl/grant/0.1`
+    // declares `proof` REQUIRED, and the step-up gate this test exercises runs
+    // after that check.
+    let mut gated_doc: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
         "id": "acl-create-roundtrip-1",
         "type": "https://trusttasks.org/spec/acl/grant/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -520,7 +529,10 @@ async fn v0_2_minted_request_completes_with_a_0_1_flavored_response() {
                 "scopes": ["ctx1"]
             }
         },
-    });
+    }))
+    .expect("envelope deserialises");
+    vta_service::test_support::sign_as(57, &mut gated_doc);
+    let gated = serde_json::to_value(&gated_doc).expect("envelope serialises");
     let req = Request::builder()
         .method("POST")
         .uri("/api/trust-tasks")

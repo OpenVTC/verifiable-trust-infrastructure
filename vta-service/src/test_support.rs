@@ -180,9 +180,94 @@ pub fn test_deps(ts: &TestStore) -> ProvisionIntegrationDeps {
 
 /// Synthesise a super-admin `AuthClaims` for tests that bypass the
 /// normal session/JWT gate.
+/// The test super-admin's identity — a **real** `did:key`, derived from a fixed
+/// seed so it is stable across runs and reproducible from this constant alone.
+///
+/// It used to be the literal `"did:key:zTestAdmin"`, which is not a `did:key`
+/// at all: nothing resolves it, and no document issued by it can carry a
+/// verifiable proof. That was fine while the dispatcher accepted proofless
+/// documents. It stopped being fine when the spine started enforcing SPEC §7.2
+/// item 7 — 72 of the 109 dispatched specs declare `proof` REQUIRED, and a test
+/// that cannot sign cannot exercise any of them.
+pub const TEST_ADMIN_SEED: [u8; 32] = [0x7A; 32];
+
+/// The test super-admin's `did:key`, and the verification method inside it.
+///
+/// `did:key` encodes the public key in the identifier, so the DID document is
+/// derivable from the string — no network, no resolver cache, and the VTA
+/// verifies a proof from it without any test-only resolution path.
+pub fn test_admin_did() -> (String, String) {
+    did_for_seed(TEST_ADMIN_SEED[0])
+}
+
+/// The `did:key` and verification method for a one-byte test seed.
+///
+/// One byte, not 32, because a test only ever needs identities to be *distinct*
+/// and *reproducible*; naming them by a single number keeps a two-caller test
+/// from having to invent two DID strings and keep them in step with two tokens.
+pub fn did_for_seed(seed: u8) -> (String, String) {
+    use ed25519_dalek::SigningKey;
+    let sk = SigningKey::from_bytes(&[seed; 32]);
+    let mut mc = vec![0xed, 0x01];
+    mc.extend_from_slice(sk.verifying_key().as_bytes());
+    let mb = multibase::encode(multibase::Base::Base58Btc, mc);
+    let did = format!("did:key:{mb}");
+    let vm = format!("{did}#{mb}");
+    (did, vm)
+}
+
+/// Attach an `eddsa-jcs-2022` Data Integrity proof from the test super-admin.
+///
+/// Mirrors the producer side: the proof is taken over the document with any
+/// existing `proof` removed, which is what `prepare_sign_input` expects and
+/// what the VTA re-derives when it verifies.
+pub fn sign_as_test_admin(doc: &mut trust_tasks_rs::TrustTask<serde_json::Value>) {
+    sign_as(TEST_ADMIN_SEED[0], doc)
+}
+
+/// Attach an `eddsa-jcs-2022` proof from the identity `seed` names.
+///
+/// The document's `issuer` must be [`did_for_seed`] of the same seed: SPEC §7.2
+/// item 6 rejects a document whose in-band issuer disagrees with the
+/// transport-authenticated identity, so a test that mints a token for one DID
+/// and signs with another is refused for that rather than for whatever it meant
+/// to check.
+pub fn sign_as(seed: u8, doc: &mut trust_tasks_rs::TrustTask<serde_json::Value>) {
+    use affinidi_data_integrity::DataIntegrityProof;
+    use affinidi_data_integrity::crypto_suites::CryptoSuite;
+    use affinidi_data_integrity::prepare_sign_input;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    let (_did, vm) = did_for_seed(seed);
+    let sk = SigningKey::from_bytes(&[seed; 32]);
+    let mut di = DataIntegrityProof::new(
+        CryptoSuite::EddsaJcs2022,
+        vm,
+        "assertionMethod".to_string(),
+        None,
+        Some(
+            chrono::Utc::now()
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                .to_string(),
+        ),
+        None,
+    );
+    doc.proof = None;
+    let input = prepare_sign_input(&*doc, &di, CryptoSuite::EddsaJcs2022)
+        .expect("the test document prepares for signing");
+    di.proof_value = Some(multibase::encode(
+        multibase::Base::Base58Btc,
+        sk.sign(&input).to_bytes(),
+    ));
+    doc.proof = Some(
+        serde_json::from_value(serde_json::to_value(&di).expect("proof serialises"))
+            .expect("proof round-trips into the framework type"),
+    );
+}
+
 pub fn super_admin_claims() -> AuthClaims {
     AuthClaims {
-        did: "did:key:zTestAdmin".into(),
+        did: test_admin_did().0,
         role: Role::Admin,
         allowed_contexts: Vec::new(),
         session_id: "test-session".into(),
@@ -613,6 +698,48 @@ pub struct TestAppContext {
 }
 
 impl TestAppContext {
+    /// Mint a signing identity **and** a matching token, for a test that drives
+    /// the VTA through `vta_sdk::VtaClient`.
+    ///
+    /// [`mint_token`](Self::mint_token) alone is no longer enough for those.
+    /// The spine enforces SPEC §7.2, so a document needs an in-band `recipient`
+    /// (item 5b, every dispatched spec) and a `proof` from the same identity
+    /// the token authenticates (items 6 and 7a, 72 of them). A token names a
+    /// DID; signing needs the key behind it, and `did:key` is the method where
+    /// the two are derivable from one seed.
+    ///
+    /// `seed` selects the identity, so a test that wants two callers asks for
+    /// two seeds rather than two unrelated strings.
+    pub async fn mint_signing_identity(
+        &self,
+        seed: u8,
+        role: &str,
+        contexts: Vec<String>,
+        vta_did: &str,
+    ) -> (vta_sdk::client::ClientIdentity, String) {
+        use ed25519_dalek::SigningKey;
+        let sk = SigningKey::from_bytes(&[seed; 32]);
+        let mut mc = vec![0xed, 0x01];
+        mc.extend_from_slice(sk.verifying_key().as_bytes());
+        let did = format!(
+            "did:key:{}",
+            multibase::encode(multibase::Base::Base58Btc, mc)
+        );
+        let token = self.mint_token(&did, role, contexts).await;
+        // The private key travels as the multibase-encoded *seed*, which is what
+        // `trust_task_sign::sign_in_place` decodes.
+        let private_key_multibase =
+            multibase::encode(multibase::Base::Base58Btc, sk.to_bytes().as_slice());
+        (
+            vta_sdk::client::ClientIdentity {
+                client_did: did,
+                private_key_multibase,
+                vta_did: vta_did.to_string(),
+            },
+            token,
+        )
+    }
+
     /// Mint an access token for `did` with `role` + `contexts`, bypassing the
     /// live challenge-response handshake. The SDK's `challenge_response` packs a
     /// DIDComm envelope the server unpacks via ATM; a REST-only [`MockVta`] has
@@ -1875,6 +2002,30 @@ impl MockVta {
     /// [`base_url`](Self::base_url) to a URL-direct provision entry point.
     pub fn vta_did(&self) -> &str {
         &self.ctx.vta_did
+    }
+
+    /// A `VtaClient` that can produce documents this VTA accepts.
+    ///
+    /// `mint_token` alone stopped being enough once the spine enforced SPEC
+    /// §7.2: every dispatched spec declares `recipient` REQUIRED (item 5b) and
+    /// 72 of the 109 declare `proof` REQUIRED (item 7a), so a client needs the
+    /// key behind the DID its token names. `seed` selects the identity, so a
+    /// test wanting two callers asks for two seeds rather than two unrelated
+    /// DID strings.
+    pub async fn signing_client(
+        &self,
+        seed: u8,
+        role: &str,
+        contexts: Vec<String>,
+    ) -> vta_sdk::client::VtaClient {
+        let vta_did = self.vta_did().to_string();
+        let (identity, token) = self
+            .ctx
+            .mint_signing_identity(seed, role, contexts, &vta_did)
+            .await;
+        let client = vta_sdk::client::VtaClient::new(self.base_url()).with_identity(identity);
+        client.set_token_async(token).await;
+        client
     }
 
     /// Fail the stub host's next `n` publishes with a 500 — simulate a
