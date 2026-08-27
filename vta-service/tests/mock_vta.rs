@@ -972,3 +972,113 @@ async fn consent_family_response_shapes() {
 
     mock.shutdown().await;
 }
+
+/// The `services/*` write paths, against a VTA whose own DID is hosted.
+///
+/// These were the last uncovered block with a shared cause. `services/enable`
+/// and its siblings publish a new WebVH LogEntry for the VTA's *own* DID, so
+/// `load_vta_doc_state` needs a record and a log for it — and the ordinary test
+/// fixture's `vta_did` is a self-resolving `did:key`, which has neither. No
+/// amount of test-writing reaches them from there; the fixture is the blocker.
+///
+/// Minting one against the stub host and pointing `vta_did` at it is what
+/// unlocks the whole family, which is why this is one test rather than five.
+#[tokio::test]
+async fn services_write_paths_against_a_hosted_vta_did() {
+    use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
+    use vta_sdk::protocols::did_management::create::WebvhPathMode;
+
+    let mock = MockVta::start_with_webvh_host().await;
+    let client: VtaClient = mock.signing_client(0x40, "admin", vec![]).await;
+
+    // A real hosted DID, with the record and log the preconditions read.
+    let minted = client
+        .create_did_webvh(CreateDidWebvhRequest {
+            context_id: "ctx1".into(),
+            server_id: Some(MockVta::WEBVH_SERVER_ID.into()),
+            url: None,
+            path: None,
+            path_mode: Some(WebvhPathMode::AutoAssign),
+            domain: None,
+            label: None,
+            portable: false,
+            add_mediator_service: false,
+            add_tsp_service: false,
+            additional_services: None,
+            pre_rotation_count: 0,
+            did_document: None,
+            did_log: None,
+            set_primary: false,
+            signing_key_id: None,
+            ka_key_id: None,
+            template: None,
+            template_context: None,
+            template_vars: Default::default(),
+        })
+        .await
+        .expect("mint a hosted DID for the VTA itself");
+    let did = minted.did.clone();
+
+    // Point the VTA at it. `services/*` mutate *this* DID's document, so the
+    // one under test has to be the one the VTA calls its own.
+    {
+        let mut cfg = mock.ctx.config.write().await;
+        cfg.vta_did = Some(did.clone());
+    }
+
+    // And re-address the client. The VTA's identity just changed, and a
+    // document's `recipient` has to name the consumer it is sent to — SPEC §7.2
+    // item 5 rejects one that does not. Reusing the old client would fail on
+    // `wrongRecipient` before reaching anything this test is about.
+    let (identity, token) = mock
+        .ctx
+        .mint_signing_identity(0x40, "admin", vec![], &did)
+        .await;
+    let client = VtaClient::new(mock.base_url()).with_identity(identity);
+    client.set_token_async(token).await;
+
+    // REST throughout: it is the transport with no live handshake, so these
+    // exercise the publish path rather than a service-liveness probe.
+    //
+    // `enable` first, and it is doing real work: the freshly minted DID's
+    // document advertises no REST service, while the fixture's config says REST
+    // is on. Reconciling that disagreement is what enable is for — and until
+    // this change it refused to, leaving the state unmanageable.
+    client
+        .dispatch_trust_task(
+            vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0,
+            serde_json::json!({ "service": "rest", "config": { "url": "https://vta.test" } }),
+            30,
+        )
+        .await
+        .expect("services/enable");
+
+    client
+        .dispatch_trust_task(
+            vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0,
+            serde_json::json!({ "service": "rest", "config": { "url": "https://vta.test/moved" } }),
+            30,
+        )
+        .await
+        .expect("services/update");
+
+    client
+        .dispatch_trust_task(
+            vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_0,
+            serde_json::json!({ "service": "rest" }),
+            30,
+        )
+        .await
+        .expect("services/disable");
+
+    client
+        .dispatch_trust_task(
+            vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_0,
+            serde_json::json!({ "service": "rest" }),
+            30,
+        )
+        .await
+        .expect("services/rollback");
+
+    mock.shutdown().await;
+}

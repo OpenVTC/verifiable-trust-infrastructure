@@ -204,14 +204,35 @@ mod tests {
         }
     }
 
+    /// "Already enabled" means enabled in **both** the live config and the
+    /// published document — not in either.
+    ///
+    /// This fixture is the disagreement case: the config says the service is
+    /// on, the document advertises nothing. It used to be refused, which left
+    /// it unmanageable — `update` requires the service on in both places, so
+    /// neither operation would touch it and the only way out was to edit the
+    /// config by hand. It is reachable by re-pointing `vta_did` at a freshly
+    /// minted DID, or by restoring a config without its log.
+    ///
+    /// Reconciling that is what enable is *for*, so it no longer stops here.
+    ///
+    /// It stops at the *next* precondition instead — this fixture seeds no
+    /// webvh record — and that is the whole assertion: reaching
+    /// `VtaDidRecordMissing` proves the config check no longer short-circuits
+    /// ahead of the document. Asserting success would need a fixture that
+    /// models a fully published VTA, which the round-trip in
+    /// `tests/mock_vta.rs` does against the stub host.
     #[tokio::test]
-    async fn preconditions_reject_when_already_enabled() {
+    async fn preconditions_no_longer_stop_at_the_config_alone() {
         let fx = build_fixture(true);
         let err =
             check_enable_preconditions::<RestService, EnableRestError>(&fx.config, &fx.webvh_ks())
                 .await
                 .unwrap_err();
-        assert!(matches!(err, EnableRestError::ServiceAlreadyEnabled));
+        assert!(
+            matches!(err, EnableRestError::VtaDidRecordMissing(_)),
+            "expected the document check to be reached, got {err:?}"
+        );
     }
 
     #[tokio::test]
