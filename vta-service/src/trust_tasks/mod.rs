@@ -2565,6 +2565,39 @@ mod response_coverage {
         // asserted in `revoke_all_is_refused_as_unsupported_not_malformed`.
     }
 
+    /// The device family.
+    ///
+    /// `device/register` refuses a DID that holds no ACL entry
+    /// ("noPendingEnrolment — complete provision-integration + acl/swap-key
+    /// first"), which reads as though the whole family needs a provisioned
+    /// integration. It needs one *row*: the entry is the enrolment the device
+    /// is completing, and seeding it is what a swapped-in long-term key leaves
+    /// behind.
+    #[tokio::test]
+    async fn device_lifecycle() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let claims = crate::test_support::super_admin_claims();
+        crate::test_support::seed_acl_entry(
+            &state.acl_ks,
+            &claims.did,
+            crate::acl::Role::Admin,
+            vec![],
+        )
+        .await;
+
+        ok(
+            &state,
+            t::TASK_DEVICE_REGISTER_0_2,
+            json!({
+                "consumerKind": { "kind": "companion", "formFactor": "mobile" },
+                "displayName": "Coverage Phone",
+            }),
+        )
+        .await;
+        ok(&state, t::TASK_DEVICE_HEARTBEAT_0_2, json!({})).await;
+        ok(&state, t::TASK_DEVICE_SET_WAKE_0_2, json!({})).await;
+    }
+
     /// The credential issuance path.
     ///
     /// `vta/passkey-vms/*` is deliberately not here: those tasks require a

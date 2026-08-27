@@ -783,12 +783,28 @@ async fn webvh_family_response_shapes() {
         )
         .await
         .expect("passkey-vms/list");
-    // `enroll-challenge` / `enroll-submit` / `revoke` are not covered: they
-    // answer `unavailable` here because this fixture configures no WebAuthn
-    // relying party, and a challenge with no RP to bind to is not a thing the
-    // service will mint. Covering them means standing up a WebAuthn config and
-    // a soft authenticator, which is what the `admin_passkeys` suites already
-    // do for the VTC side.
+    // `enroll-challenge` needs `public_url`, not a WebAuthn relying party as
+    // first assumed: the RP is *derived* from the VTA's public origin
+    // (`require_public_url` → `build_webauthn`), and this fixture leaves it
+    // unset, so the task answers `unavailable`. Setting the origin is the whole
+    // prerequisite.
+    {
+        let mut cfg = mock.ctx.config.write().await;
+        cfg.public_url = Some("https://vta.test".into());
+    }
+    client
+        .dispatch_trust_task(
+            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
+            serde_json::json!({ "did": did, "label": "coverage-key" }),
+            30,
+        )
+        .await
+        .expect("passkey-vms/enroll-challenge");
+
+    // `enroll-submit` and `revoke` stay uncovered: submit needs a real
+    // authenticator attestation over the challenge above, and revoke needs an
+    // enrolled VM to remove. Both want the soft-authenticator harness the
+    // `admin_passkeys` suites stand up on the VTC side.
 
     // ── the DID itself ────────────────────────────────────────────────────
     // Rotate before delete: a rotation on a deleted DID has nothing to rotate,
