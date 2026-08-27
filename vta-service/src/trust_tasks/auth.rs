@@ -21,13 +21,34 @@ use super::helpers::{app_error_to_reject, reject_with, success_response};
 
 /// Handler for `spec/vta/auth/revoke-session/1.0`.
 ///
-/// Parses the request payload, looks up the session, authorises the
-/// caller (session owner OR `Role::Admin`), deletes the session, and
-/// returns a `#response`-typed success document with an empty body.
+/// Parses the request payload, looks up the session, authorises the caller
+/// (session owner OR `Role::Admin`), deletes the session, and answers with
+/// `revokedCount` — the number of sessions this call invalidated.
 ///
-/// Mirrors `routes::auth::revoke_session` (the legacy
-/// `DELETE /auth/sessions/{session_id}` REST handler) — same audit
-/// event key (`session.revoke`), same authorisation rule.
+/// **`revokedCount: 0` is a success, and it is deliberately ambiguous.** The
+/// spec asks for both things at once. The response schema says "Zero is a valid
+/// outcome (e.g. the named sessionId was already revoked)" and the prose adds
+/// that producers "SHOULD treat zero as 'the post-state is what you asked for',
+/// not as an error" — so a retry of a revoke that already happened must
+/// succeed. `vta-sdk`'s own `retry_safety` table agrees: this task is
+/// `RetrySafe`. Separately, the `notOwner` error code carries "The auth service
+/// MUST NOT reveal whether the session exists at all when the producer is not
+/// its owner."
+///
+/// Those two only hold together if a session the caller may not touch and a
+/// session that is not there answer identically. So both return zero, and this
+/// handler never emits `notOwner`: emitting it *only* when the session exists
+/// is exactly the disclosure the code's own definition forbids. The count stays
+/// literally true either way — zero sessions were invalidated by this call. The
+/// refusal is still recorded in the audit trail, which is not the caller's to
+/// read.
+///
+/// This diverges from `routes::auth::revoke_session` (the legacy
+/// `DELETE /auth/sessions/{session_id}` REST handler), which 404s on a missing
+/// session. That is the conventional REST answer for a missing resource and is
+/// in its published OpenAPI responses; it is not governed by this task's
+/// `revokedCount` schema. Same audit event key (`session.revoke`), same
+/// authorisation rule.
 pub(super) async fn handle_revoke_session(
     state: &AppState,
     auth: &AuthClaims,
@@ -74,16 +95,7 @@ pub(super) async fn handle_revoke_session(
     };
 
     let session = match get_session(&state.sessions_ks, &session_id).await {
-        Ok(Some(s)) => s,
-        Ok(None) => {
-            return reject_with(
-                &doc,
-                RejectReason::TaskFailed {
-                    reason: format!("session not found: {session_id}"),
-                    details: None,
-                },
-            );
-        }
+        Ok(s) => s,
         Err(e) => {
             tracing::error!(error = %e, "session lookup failed in revoke-session");
             return reject_with(
@@ -95,21 +107,29 @@ pub(super) async fn handle_revoke_session(
         }
     };
 
-    // 3. Authorise: caller owns the session OR has Role::Admin. Same
-    //    rule as the legacy REST handler.
-    if session.did != auth.did && auth.role != Role::Admin {
+    // 3. Authorise: caller owns the session OR has Role::Admin. Same rule as
+    //    the legacy REST handler. A session that is not the caller's and a
+    //    session that does not exist take the same arm, so the caller cannot
+    //    tell them apart — see this function's doc comment.
+    if session
+        .filter(|s| s.did == auth.did || auth.role == Role::Admin)
+        .is_none()
+    {
+        // Warn, not reject. The operator reading logs is entitled to know a
+        // caller reached for a session; the caller is not entitled to know
+        // whether it was there.
         tracing::warn!(
             caller = %auth.did,
-            session_did = %session.did,
             session_id = %session_id,
-            "revoke-session rejected: caller is not owner or admin"
+            "revoke-session: no session revoked (absent, or not the caller's)"
         );
-        return reject_with(
-            &doc,
-            RejectReason::PermissionDenied {
-                reason: "cannot revoke another user's session".to_string(),
-            },
+        audit!(
+            "session.revoke",
+            actor = &auth.did,
+            resource = &session_id,
+            outcome = "no-op"
         );
+        return success_response(&doc, RevokeSessionResponse { revoked_count: 0 });
     }
 
     // 4. Delete.
@@ -136,8 +156,8 @@ pub(super) async fn handle_revoke_session(
         "session revoked via trust-task"
     );
 
-    // 6. Build the success response document. Canonical `revokedCount` is 1:
-    // this handler revokes exactly the one named session.
+    // 6. Build the success response document. `revokedCount` is 1: this handler
+    // revokes exactly the one named session.
     success_response(&doc, RevokeSessionResponse { revoked_count: 1 })
 }
 
