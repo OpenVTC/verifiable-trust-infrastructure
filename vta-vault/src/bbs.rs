@@ -413,16 +413,20 @@ pub async fn present_bbs(
         .map_err(|e| AppError::Internal(format!("serialise BBS presentation: {e}")))
 }
 
+/// The holder's BBS pseudonym secrets: `(prover_nym, secret_prover_blind)`.
+///
+/// Named because the pair is meaningless split — a `prover_nym` without its
+/// blind derives no pseudonym — and because the anonymous tuple tripped
+/// `clippy::type_complexity` once it was wrapped in `Result<Option<…>>`.
+type PseudonymSecrets = (Vec<u8>, Vec<u8>);
+
 /// Read the holder's BBS pseudonym secrets from a stored credential's reserved
-/// tags, returning `(prover_nym, secret_prover_blind)` as raw bytes when the
-/// credential was issued in holder-binding mode, or `None` for a
-/// possession-based bbs-2023 credential.
+/// tags, returning them as raw bytes when the credential was issued in
+/// holder-binding mode, or `None` for a possession-based bbs-2023 credential.
 ///
 /// Errors if exactly one secret is present (a corrupt half-pair — both are
 /// required to derive a pseudonym) or a value is not valid base64url.
-fn holder_pseudonym_secrets(
-    cred: &StoredCredential,
-) -> Result<Option<(Vec<u8>, Vec<u8>)>, AppError> {
+fn holder_pseudonym_secrets(cred: &StoredCredential) -> Result<Option<PseudonymSecrets>, AppError> {
     let decode = |k: &str, v: &str| {
         URL_SAFE_NO_PAD
             .decode(v)
