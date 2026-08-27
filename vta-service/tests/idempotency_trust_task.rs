@@ -37,7 +37,15 @@ const CALLER_SEED: u8 = 0x40;
 fn caller() -> String {
     vta_service::test_support::did_for_seed(CALLER_SEED).0
 }
-const OTHER_CALLER: &str = "did:key:z6MkSomeoneElseEntirely";
+/// A second caller, seeded like the first. It used to be a hand-written DID
+/// with no key behind it, which worked while nothing verified proofs — the
+/// document claimed that issuer and was signed by the first caller, and the VTA
+/// took its word for it. It cannot now.
+const OTHER_SEED: u8 = 0x41;
+
+fn other_caller() -> String {
+    vta_service::test_support::did_for_seed(OTHER_SEED).0
+}
 const CONTEXT: &str = "test";
 
 /// A live app with the `test` context in place and an unrestricted admin token
@@ -61,7 +69,7 @@ async fn app_with_second_caller() -> (axum::Router, String, String) {
         .await
         .expect("context");
     let mine = ctx.mint_token(caller().as_str(), "admin", vec![]).await;
-    let theirs = ctx.mint_token(OTHER_CALLER, "admin", vec![]).await;
+    let theirs = ctx.mint_token(&other_caller(), "admin", vec![]).await;
     (router, mine, theirs)
 }
 
@@ -72,11 +80,18 @@ async fn app_with_second_caller() -> (axum::Router, String, String) {
 /// case. If these tests reused the envelope id they would be exercising the
 /// wrong layer and passing for the wrong reason.
 fn create_doc(envelope_id: &str, label: &str, idempotency_key: Option<&str>) -> Value {
+    create_doc_as(CALLER_SEED, envelope_id, label, idempotency_key)
+}
+
+/// The same document, issued and signed by whichever seeded identity `seed`
+/// names. Split out because a proof only counts as the issuer's when the two
+/// come from the same key.
+fn create_doc_as(seed: u8, envelope_id: &str, label: &str, idempotency_key: Option<&str>) -> Value {
     let mut doc = json!({
         "id": format!("urn:uuid:{envelope_id}"),
         "type": KEYS_CREATE,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "issuer": caller(),
+        "issuer": vta_service::test_support::did_for_seed(seed).0,
         "recipient": "did:key:z6MkTestVTA",
         "payload": {
             "keyType": "ed25519",
@@ -92,7 +107,7 @@ fn create_doc(envelope_id: &str, label: &str, idempotency_key: Option<&str>) -> 
     // it before `idempotencyKey` would sign a document that is not the one sent.
     let mut typed: trust_tasks_rs::TrustTask<Value> =
         serde_json::from_value(doc).expect("envelope deserialises");
-    vta_service::test_support::sign_as(CALLER_SEED, &mut typed);
+    vta_service::test_support::sign_as(seed, &mut typed);
     serde_json::to_value(&typed).expect("envelope serialises")
 }
 
@@ -299,8 +314,7 @@ async fn one_callers_key_does_not_block_another() {
     let (s1, b1) = post(&router, &mine, &create_doc("f1", "mine", shared)).await;
     assert_eq!(s1, StatusCode::OK, "{b1}");
 
-    let mut doc = create_doc("f2", "theirs", shared);
-    doc["issuer"] = json!(OTHER_CALLER);
+    let doc = create_doc_as(OTHER_SEED, "f2", "theirs", shared);
     let (s2, b2) = post(&router, &theirs, &doc).await;
     assert_eq!(
         s2,
