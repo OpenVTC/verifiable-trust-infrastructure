@@ -737,6 +737,28 @@ jobs:
       - name: vta-sdk client + sealed-transfer + provision-integration
         run: cargo check -p vta-sdk --features client,sealed-transfer,provision-integration
 
+      # The *maximal* combination. Every step above narrows the feature set;
+      # nothing built the top end, and `clippy`/`check` elsewhere in this
+      # workflow run `--all-targets` without `--all-features`. So a target
+      # gated on two non-default features was never compiled by anything:
+      # `vta-sdk/tests/provision_client_e2e.rs` (`provision-client` +
+      # `test-support`) sat uncompilable for as long as it took
+      # `ProvisionIntegrationRequest.request` to become a `serde_json::Value`.
+      #
+      # Compiling it is not enough — the same file's auth mock still handed out
+      # a 14-char challenge against a `minLength: 16` payload, a *runtime*
+      # failure that the identical fixture in `runner_rest.rs`'s unit tests had
+      # already been fixed for. So this runs the tests too.
+      - name: workspace all-features (lint)
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+      # `-p vta-sdk`, not the workspace: `vtc-service`'s
+      # `*_without_feature_is_config_error` tests assert the error you get when
+      # a secrets backend is *not* compiled in, so `--all-features` is the one
+      # build where they cannot pass. That is the tests being right about the
+      # feature, not a combination worth fixing.
+      - name: vta-sdk all-features (test)
+        run: cargo test -p vta-sdk --all-features
+
       # Every step above only *compiles*. The setup wizard's scripted-prompt
       # tests are the one place where a feature flag changes behaviour rather
       # than just what compiles: each secrets backend adds an option to the
