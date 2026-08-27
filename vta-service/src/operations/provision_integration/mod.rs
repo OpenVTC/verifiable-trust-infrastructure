@@ -172,7 +172,10 @@ pub struct ProvisionIntegrationParams {
 /// operator, plus a small summary for CLI display / HTTP response.
 pub struct ProvisionIntegrationOutput {
     pub armored: String,
+    /// Lowercase hex — what an operator reads and what `--expect-digest` takes.
     pub digest: String,
+    /// Multibase multihash — what `provision/integration/0.3` puts on the wire.
+    pub digest_multibase: String,
     pub summary: ProvisionSummary,
 }
 
@@ -755,7 +758,11 @@ pub async fn provision_integration(
     };
 
     // ── 8. Seal ─────────────────────────────────────────────────────
-    let seal::SealedProvisionBundle { armored, digest } = seal::seal_provision_payload(
+    let seal::SealedProvisionBundle {
+        armored,
+        digest,
+        digest_multibase,
+    } = seal::seal_provision_payload(
         state,
         &vta_did,
         assertion_mode,
@@ -784,6 +791,7 @@ pub async fn provision_integration(
     Ok(ProvisionIntegrationOutput {
         armored,
         digest,
+        digest_multibase,
         summary: ProvisionSummary {
             client_did,
             admin_did,
@@ -980,7 +988,11 @@ async fn provision_admin_rotation(
     };
 
     // ── 7. Seal ─────────────────────────────────────────────────────
-    let seal::SealedProvisionBundle { armored, digest } = seal::seal_provision_payload(
+    let seal::SealedProvisionBundle {
+        armored,
+        digest,
+        digest_multibase,
+    } = seal::seal_provision_payload(
         state,
         &vta_did,
         assertion_mode,
@@ -1003,6 +1015,7 @@ async fn provision_admin_rotation(
     Ok(ProvisionIntegrationOutput {
         armored,
         digest,
+        digest_multibase,
         summary: ProvisionSummary {
             client_did: client_did.to_string(),
             admin_did,

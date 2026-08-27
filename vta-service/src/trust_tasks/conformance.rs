@@ -2094,7 +2094,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
         });
         let response = to_v(prov::ProvisionIntegrationResponse {
             bundle: "-----BEGIN VTA SEALED BUNDLE-----".into(),
-            digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            // A real `DigestMultibase`, not a placeholder: 0.3 constrains the
+            // encoding, and a fixture that cannot satisfy the pattern proves
+            // nothing about what this producer emits.
+            digest_multibase: Some(DIGEST_MULTIBASE.into()),
             summary: prov::ProvisionSummary {
                 client_did: "did:key:z6MkAgentSetup".into(),
                 admin_did: "did:key:z6MkAdmin".into(),
@@ -2115,10 +2118,10 @@ fn table() -> Vec<(&'static str, Conformance)> {
         serde_json::from_value::<prov::ProvisionIntegrationRequest>(request.clone())
             .expect("canonical provision request parses into ProvisionIntegrationRequest");
         t.push((
-            uris::TASK_PROVISION_INTEGRATION_0_2,
+            uris::TASK_PROVISION_INTEGRATION_0_3,
             checked!(
-                specs::provision::integration::v0_2::Payload,
-                specs::provision::integration::v0_2::Response,
+                specs::provision::integration::v0_3::Payload,
+                specs::provision::integration::v0_3::Response,
                 request,
                 response
             ),

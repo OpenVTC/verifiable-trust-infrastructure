@@ -35,8 +35,7 @@ use vta_sdk::provision_integration::payload::{
     VtaTrustBundle,
 };
 use vta_sdk::sealed_transfer::{
-    AssertionProof, InMemoryNonceStore, ProducerAssertion, SealedPayloadV1, armor, bundle_digest,
-    seal_payload,
+    AssertionProof, InMemoryNonceStore, ProducerAssertion, SealedPayloadV1, armor, seal_payload,
 };
 
 /// Fake VTA bootstrap responder. On every POST, decodes the request VP
@@ -178,11 +177,11 @@ impl Respond for SealResponder {
         .expect("seal payload");
 
         let armored = armor::encode(&bundle);
-        let digest = bundle_digest(&bundle);
+        let digest_multibase = vta_sdk::sealed_transfer::bundle_digest_multibase(&bundle);
 
         let response = ProvisionIntegrationResponse {
             bundle: armored,
-            digest,
+            digest_multibase: Some(digest_multibase),
             summary: ProvisionSummary {
                 client_did: req_str(&req.request, "holder"),
                 admin_did: self.admin_did.clone(),
@@ -454,11 +453,11 @@ impl Respond for AdminRotationResponder {
         .expect("seal AdminRotation payload");
 
         let armored = armor::encode(&bundle);
-        let digest = bundle_digest(&bundle);
+        let digest_multibase = vta_sdk::sealed_transfer::bundle_digest_multibase(&bundle);
 
         let response = ProvisionIntegrationResponse {
             bundle: armored,
-            digest,
+            digest_multibase: Some(digest_multibase),
             summary: ProvisionSummary {
                 client_did: req_str(&req.request, "holder"),
                 admin_did: self.admin_did.clone(),
@@ -697,7 +696,7 @@ async fn admin_rotated_didcomm_response_decoder_extracts_rotated_credentials() {
 
     let response = ProvisionIntegrationResponse {
         bundle: armor::encode(&bundle),
-        digest: bundle_digest(&bundle),
+        digest_multibase: Some(vta_sdk::sealed_transfer::bundle_digest_multibase(&bundle)),
         summary: ProvisionSummary {
             client_did: key.did.clone(),
             admin_did: rotated_admin_did.clone(),

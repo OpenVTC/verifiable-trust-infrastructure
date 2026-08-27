@@ -407,10 +407,21 @@ impl VtaClient {
             .trim_end_matches('/')
             .to_string();
 
+        // The credential *is* the identity — the same DID and key that just
+        // authenticated, and the VTA DID it authenticated against. Carrying it
+        // in `RestAuth` for refresh but not as the signing identity is the
+        // split that left this constructor's clients unable to produce a
+        // conforming document.
+        let identity = ClientIdentity {
+            client_did: cred.did.clone(),
+            private_key_multibase: cred.private_key_multibase.clone(),
+            vta_did: cred.vta_did.clone(),
+        };
+
         Ok(Self {
             #[cfg(feature = "test-loopback")]
             loopback: None,
-            identity: None,
+            identity: Some(std::sync::Arc::new(identity)),
             transport: Transport::Rest {
                 client: http,
                 base_url,
@@ -974,6 +985,20 @@ impl VtaClient {
     }
 
     /// Set the Bearer token (async version).
+    /// A client authenticated as `identity`, carrying both the token and the
+    /// identity it signs with.
+    ///
+    /// Prefer this over `new` + [`with_identity`](Self::with_identity) +
+    /// `set_token_async` wherever all three are known at once, which is every
+    /// post-authentication site: the three-step form is what let five of them
+    /// ship with the identity missing, because nothing about
+    /// `new(url).set_token(t)` looks incomplete.
+    pub async fn authenticated(url: &str, identity: ClientIdentity, token: String) -> Self {
+        let client = Self::new(url).with_identity(identity);
+        client.set_token_async(token).await;
+        client
+    }
+
     /// Give this client the identity it signs and addresses documents with.
     ///
     /// Without one, every dispatched document is missing an in-band `recipient`
@@ -982,6 +1007,19 @@ impl VtaClient {
     pub fn with_identity(mut self, identity: ClientIdentity) -> Self {
         self.identity = Some(std::sync::Arc::new(identity));
         self
+    }
+
+    /// Whether this client is carrying a bearer token.
+    async fn has_token(&self) -> bool {
+        match &self.transport {
+            Transport::Rest { auth, .. } => auth.lock().await.token.is_some(),
+            // The other transports authenticate per-message rather than with a
+            // bearer token, so "has a token" is not the question there.
+            #[cfg(feature = "session")]
+            Transport::DIDComm { .. } => false,
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => false,
+        }
     }
 
     pub async fn set_token_async(&self, token: String) {
@@ -2619,6 +2657,20 @@ impl VtaClient {
         let identity = self.identity.clone();
         let doc = build_task_document(type_uri, payload, identity.as_deref());
         let Some(identity) = identity else {
+            // Authenticated but identity-less: the document is missing an
+            // in-band `recipient` (SPEC §7.2 item 5b) and a `proof` (item 7a),
+            // and a conforming VTA refuses it. Say so here rather than let the
+            // caller read `malformedRequest: … no in-band recipient` off the
+            // wire and go looking for a payload bug — the fault is in how this
+            // client was built, and this is where that is knowable.
+            if self.has_token().await {
+                return Err(VtaError::Protocol(format!(
+                    "this VtaClient is authenticated but carries no ClientIdentity, so the \
+                     document it would send for `{type_uri}` has no in-band recipient and no \
+                     proof — build it with `VtaClient::authenticated(url, identity, token)` \
+                     or `.with_identity(…)`"
+                )));
+            }
             return Ok(doc);
         };
         let mut typed: trust_tasks_rs::TrustTask<serde_json::Value> = serde_json::from_value(doc)

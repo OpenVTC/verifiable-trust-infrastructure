@@ -608,14 +608,34 @@ pub async fn run_provision_integration(
     }
     eprintln!("  Secrets:         {}", resp.summary.secret_count);
     eprintln!("  Outputs:         {}", resp.summary.output_count);
-    eprintln!("  SHA-256 digest:  {}", resp.digest);
-    eprintln!();
-    eprintln!(
-        "Communicate the digest to the integration's operator out-of-band so they can\n  \
-         verify the bundle on first boot:\n  \
-         pnm bootstrap open --bundle <file> --expect-digest {}",
-        resp.digest
-    );
+    // Printed as hex, because that is what `--expect-digest` takes and what an
+    // operator reads out loud. The wire carries a multibase multihash as of
+    // `provision/integration/0.3`; the two are the same digest in two
+    // encodings, and the human-facing one should not change under an operator
+    // mid-migration.
+    let digest_hex = resp
+        .digest_multibase
+        .as_deref()
+        .map(vta_sdk::sealed_transfer::multibase_digest_to_hex)
+        .transpose()
+        .unwrap_or(None);
+    match digest_hex {
+        Some(hex) => {
+            eprintln!("  SHA-256 digest:  {hex}");
+            eprintln!();
+            eprintln!(
+                "Communicate the digest to the integration's operator out-of-band so they can\n  \
+                 verify the bundle on first boot:\n  \
+                 pnm bootstrap open --bundle <file> --expect-digest {hex}",
+            );
+        }
+        // The member is OPTIONAL from 0.3 on. Say so rather than print an empty
+        // line an operator might read as a digest of nothing.
+        None => {
+            eprintln!("  SHA-256 digest:  (not supplied by this VTA)");
+            eprintln!();
+        }
+    }
     Ok(())
 }
 

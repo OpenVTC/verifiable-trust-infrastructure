@@ -633,29 +633,36 @@ impl SessionStore {
     ///
     /// An authenticated REST client carrying the identity it signs with.
     ///
+    /// Public because every caller that authenticates against a VTA needs this
+    /// exact triple — token, client DID, key — and assembling it by hand is how
+    /// five call sites shipped without the identity. `pnm`, `cnm` and the
+    /// provisioning runners all go through here.
+    ///
     /// The session is re-loaded *after* `ensure_authenticated` on purpose: a
     /// session that needed rotation now holds a different `client_did` and key,
     /// and signing with the pre-rotation pair would produce documents whose
     /// `issuer` no longer matches the identity the bearer token authenticates —
     /// which SPEC §7.2 item 6 rejects.
-    async fn rest_client(
+    pub async fn rest_client(
         &self,
         url: &str,
         key: &str,
-        vta_did: &str,
     ) -> Result<crate::client::VtaClient, Box<dyn std::error::Error>> {
         let token = self.ensure_authenticated(url, key).await?;
         let session = self
             .load_session(key)
             .ok_or_else(|| format!("session `{key}` vanished during authentication"))?;
-        let client =
-            crate::client::VtaClient::new(url).with_identity(crate::client::ClientIdentity {
+        let vta_did = require_vta_did(&session)?.to_string();
+        Ok(crate::client::VtaClient::authenticated(
+            url,
+            crate::client::ClientIdentity {
                 client_did: session.client_did.clone(),
                 private_key_multibase: session.private_key.clone(),
-                vta_did: vta_did.to_string(),
-            });
-        client.set_token(token);
-        Ok(client)
+                vta_did,
+            },
+            token,
+        )
+        .await)
     }
 
     pub async fn connect(
@@ -730,7 +737,7 @@ impl SessionStore {
                     .ok_or_else(|| no_rest_endpoint_error(&session_vta_did))?,
             };
             debug!(url = %url, "connecting via REST (forced --transport rest)");
-            let client = self.rest_client(&url, key, &session_vta_did).await?;
+            let client = self.rest_client(&url, key).await?;
             return Ok(client);
         }
 
@@ -893,7 +900,7 @@ impl SessionStore {
                 }
                 if let Some(url) = rest_url {
                     debug!(url = %url, "connecting via REST (fallback from TSP)");
-                    let client = self.rest_client(&url, key, &session_vta_did).await?;
+                    let client = self.rest_client(&url, key).await?;
                     return Ok(client);
                 }
                 // TSP-only VTA whose TSP is down: there is nothing to fall back
@@ -930,7 +937,7 @@ impl SessionStore {
                     return Err(no_didcomm_endpoint_error(&session_vta_did, false, true));
                 }
                 debug!(url = %url, "connecting via REST (from DID doc)");
-                let client = self.rest_client(&url, key, &session_vta_did).await?;
+                let client = self.rest_client(&url, key).await?;
                 return Ok(client);
             }
             Err(e) => {
@@ -962,9 +969,12 @@ impl SessionStore {
         // token we just obtained. Prefer DIDComm if available, otherwise keep
         // the REST client we already built.
         if let Some(url) = url_override {
-            let token = self.ensure_authenticated(url, key).await?;
-            let rest_client = crate::client::VtaClient::new(url);
-            rest_client.set_token(token);
+            // Via `rest_client` so the identity travels with the token: this
+            // client is used for the authenticated status probe *and* kept as
+            // the fallback when DIDComm is not available, so a bare
+            // `VtaClient::new` here would hand the caller a client that cannot
+            // produce a conforming document.
+            let rest_client = self.rest_client(url, key).await?;
 
             // Priority 3: DIDComm discovery via the authenticated status endpoint.
             if let Some(mediator_did) = discover_mediator_via_status(&rest_client).await {

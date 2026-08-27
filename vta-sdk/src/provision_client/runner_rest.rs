@@ -144,8 +144,18 @@ pub(crate) async fn run_rest_attempt_full_setup(
         }
     };
 
-    let client = VtaClient::new(rest_url);
-    client.set_token_async(token_result.access_token).await;
+    // The setup DID *is* this client's identity: it just authenticated with it,
+    // and the provisioning tasks that follow are proof-REQUIRED like any other.
+    let client = VtaClient::authenticated(
+        rest_url,
+        crate::client::ClientIdentity {
+            client_did: setup_did.clone(),
+            private_key_multibase: setup_privkey_mb.clone(),
+            vta_did: vta_did.to_string(),
+        },
+        token_result.access_token,
+    )
+    .await;
 
     let _ = tx.send(VtaEvent::CheckDone(
         DiagCheck::ListWebvhServers,
@@ -309,8 +319,18 @@ pub(crate) async fn run_rest_attempt_admin_rotated(
         }
     };
 
-    let client = VtaClient::new(rest_url);
-    client.set_token_async(token_result.access_token).await;
+    // The setup DID *is* this client's identity: it just authenticated with it,
+    // and the provisioning tasks that follow are proof-REQUIRED like any other.
+    let client = VtaClient::authenticated(
+        rest_url,
+        crate::client::ClientIdentity {
+            client_did: setup_did.clone(),
+            private_key_multibase: setup_privkey_mb.clone(),
+            vta_did: vta_did.to_string(),
+        },
+        token_result.access_token,
+    )
+    .await;
 
     let _ = tx.send(VtaEvent::CheckDone(
         DiagCheck::ListWebvhServers,

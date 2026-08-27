@@ -878,8 +878,19 @@ async fn connect_setup_client(
         )
         .await
         .map_err(|e| AppError::Internal(format!("VTA REST authentication failed: {e}")))?;
-        let client = VtaClient::new(rest_url);
-        client.set_token_async(auth.access_token).await;
+        // The setup key is this client's identity — it is what just
+        // authenticated, and the tasks the wizard dispatches are proof-REQUIRED
+        // like any other.
+        let client = VtaClient::authenticated(
+            rest_url,
+            vta_sdk::client::ClientIdentity {
+                client_did: setup_key.did.clone(),
+                private_key_multibase: setup_key.private_key_multibase().to_string(),
+                vta_did: resolved.vta_did.clone(),
+            },
+            auth.access_token,
+        )
+        .await;
         return Ok(client);
     }
 

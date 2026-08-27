@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn secret_bearing_tasks_are_never_recorded_with_a_body() {
         assert!(
-            !retry_safety(trust_tasks::TASK_PROVISION_INTEGRATION_0_2)
+            !retry_safety(trust_tasks::TASK_PROVISION_INTEGRATION_0_3)
                 .expect("classified")
                 .response_is_replayable()
         );

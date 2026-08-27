@@ -165,9 +165,8 @@ pub async fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
             let context_name = format!("CNM - {community_name}");
 
             // Authenticate personal VTA client
-            let personal_client = VtaClient::new(&personal_url);
-            let token = auth::ensure_authenticated(&personal_url, PERSONAL_KEYRING_KEY).await?;
-            personal_client.set_token(token);
+            let personal_client =
+                auth::authenticated_client(&personal_url, PERSONAL_KEYRING_KEY).await?;
 
             // Create context in personal VTA
             eprintln!("\nCreating context '{context_name}' in personal VTA...");
@@ -328,9 +327,7 @@ pub async fn bootstrap_community_session(
     let community_url = resolve_vta_url(community_vta_did).await?;
 
     // Authenticate to personal VTA
-    let token = auth::ensure_authenticated(personal_url, PERSONAL_KEYRING_KEY).await?;
-    let personal_client = VtaClient::new(personal_url);
-    personal_client.set_token(token);
+    let personal_client = auth::authenticated_client(personal_url, PERSONAL_KEYRING_KEY).await?;
 
     // Mint a new admin credential locally and register it on the personal
     // VTA via POST /acl. No key material crosses the wire.

@@ -69,10 +69,34 @@ fn no_payload_key(key: &'static str) -> impl Fn(&wiremock::Request) -> bool {
 
 const TOKEN: &str = "test-token";
 
+/// A client with both a token and the identity it signs with.
+///
+/// The identity is not decoration here. An authenticated client with none
+/// refuses to dispatch — it would otherwise emit a document with no in-band
+/// `recipient` and no `proof`, which a conforming VTA rejects (SPEC §7.2 items
+/// 5b and 7a). The stubs in this file do not check the signature, but the
+/// client will not produce a request without one.
+/// A real `did:key` and its seed, so the proof this client attaches is one a
+/// verifier could actually check.
+fn test_identity() -> vta_sdk::client::ClientIdentity {
+    let sk = ed25519_dalek::SigningKey::from_bytes(&[0xC1; 32]);
+    let mut mc = vec![0xed, 0x01];
+    mc.extend_from_slice(sk.verifying_key().as_bytes());
+    vta_sdk::client::ClientIdentity {
+        client_did: format!(
+            "did:key:{}",
+            multibase::encode(multibase::Base::Base58Btc, mc)
+        ),
+        private_key_multibase: multibase::encode(
+            multibase::Base::Base58Btc,
+            sk.to_bytes().as_slice(),
+        ),
+        vta_did: "did:key:z6MkTestVta".into(),
+    }
+}
+
 async fn client(server: &MockServer) -> VtaClient {
-    let c = VtaClient::new(&server.uri());
-    c.set_token_async(TOKEN.into()).await;
-    c
+    VtaClient::authenticated(&server.uri(), test_identity(), TOKEN.into()).await
 }
 
 fn err_body(msg: &str) -> Value {
@@ -2023,8 +2047,9 @@ async fn oversized_error_body_is_truncated() {
 async fn network_error_when_server_unreachable() {
     // Port 1 is reserved (TCPMUX) and effectively never listens on
     // dev/CI machines — connection refused → reqwest::Error → Network.
-    let c = VtaClient::new("http://127.0.0.1:1");
-    c.set_token_async(TOKEN.into()).await;
+    // With an identity, so the failure under test is the *connection* and not
+    // this client refusing to build a non-conforming document.
+    let c = VtaClient::authenticated("http://127.0.0.1:1", test_identity(), TOKEN.into()).await;
     let err = c.get_config().await.unwrap_err();
     assert!(err.is_network(), "got {err:?}");
 }

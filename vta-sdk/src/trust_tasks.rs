@@ -549,10 +549,6 @@ pub const TASK_VAULT_LIST_0_1: &str = "https://trusttasks.org/spec/vault/list/0.
 
 /// `spec/vault/list/0.2` — successor to [`TASK_VAULT_LIST_0_1`]; camelCase
 /// enum values (e.g. `secretKind: oauthTokens`).
-#[deprecated(note = "0.2 is superseded by the 0.3 wire form: `AttachmentRef` \
-    replaces the bare-hex `sha256` with a multibase `digestMultibase`, which \
-    carries its own hash algorithm rather than hard-coding SHA-256 into the \
-    wire contract — prefer TASK_VAULT_LIST_0_3.")]
 pub const TASK_VAULT_LIST_0_2: &str = "https://trusttasks.org/spec/vault/list/0.2";
 
 /// `spec/vault/list/0.3` — successor to [`TASK_VAULT_LIST_0_2`].
@@ -572,10 +568,6 @@ pub const TASK_VAULT_LIST_0_3: &str = "https://trusttasks.org/spec/vault/list/0.
 pub const TASK_VAULT_GET_0_1: &str = "https://trusttasks.org/spec/vault/get/0.1";
 
 /// `spec/vault/get/0.2` — successor to [`TASK_VAULT_GET_0_1`].
-#[deprecated(note = "0.2 is superseded by the 0.3 wire form: `AttachmentRef` \
-    replaces the bare-hex `sha256` with a multibase `digestMultibase`, which \
-    carries its own hash algorithm rather than hard-coding SHA-256 into the \
-    wire contract — prefer TASK_VAULT_GET_0_3.")]
 pub const TASK_VAULT_GET_0_2: &str = "https://trusttasks.org/spec/vault/get/0.2";
 
 /// `spec/vault/get/0.3` — successor to [`TASK_VAULT_GET_0_2`].
@@ -597,10 +589,6 @@ pub const TASK_VAULT_GET_0_3: &str = "https://trusttasks.org/spec/vault/get/0.3"
 pub const TASK_VAULT_UPSERT_0_1: &str = "https://trusttasks.org/spec/vault/upsert/0.1";
 
 /// `spec/vault/upsert/0.2` — successor to [`TASK_VAULT_UPSERT_0_1`].
-#[deprecated(note = "0.2 is superseded by the 0.3 wire form: `AttachmentRef` \
-    replaces the bare-hex `sha256` with a multibase `digestMultibase`, which \
-    carries its own hash algorithm rather than hard-coding SHA-256 into the \
-    wire contract — prefer TASK_VAULT_UPSERT_0_3.")]
 pub const TASK_VAULT_UPSERT_0_2: &str = "https://trusttasks.org/spec/vault/upsert/0.2";
 
 /// `spec/vault/upsert/0.3` — successor to [`TASK_VAULT_UPSERT_0_2`].
@@ -1076,14 +1064,32 @@ pub const TASK_PASSKEY_VMS_REVOKE_0_1: &str =
 // carries the same request/response shapes the SDK already exports
 // under `vta_sdk::provision_integration::http`.
 
-/// `provision/integration/0.2` — submit a VP-framed
-/// `BootstrapRequest` plus provisioning options to the VTA; receive a
-/// sealed `TemplateBootstrap` bundle back. Payload:
+/// `provision/integration/0.3` — submit a VP-framed `BootstrapRequest` plus
+/// provisioning options to the VTA; receive a sealed `TemplateBootstrap` bundle
+/// back. Payload:
 /// [`crate::provision_integration::http::ProvisionIntegrationRequest`].
 /// Auth: Admin role on the target context (super-admin to use
 /// `create_context: true`).
-pub const TASK_PROVISION_INTEGRATION_0_2: &str =
-    "https://trusttasks.org/spec/provision/integration/0.2";
+///
+/// **0.2 is gone rather than deprecated.** It required a bare-hex `digest` and
+/// forbade `digestMultibase`; 0.3 is the reverse, and both close their response
+/// with `additionalProperties: false` — so no single response satisfies the
+/// two. Dual-accepting them would have meant a version-aware response shape for
+/// one renamed member.
+///
+/// The bundle digest is the whole change: the bare-hex `digest` (SHA-256 pinned
+/// by an `^[0-9a-f]{64}$` pattern) becomes an OPTIONAL `digestMultibase`, a
+/// multibase multihash that names its own algorithm. Taken over the armored
+/// bytes exactly as carried in `bundle`, not over a canonicalization — the
+/// armor is the artifact, and re-armoring the same ciphertext need not
+/// reproduce the same bytes.
+///
+/// 0.3's response schema was unsatisfiable until
+/// trustoverip/dtgwg-trust-tasks-tf#324: `required` still named the `digest`
+/// the rename had removed, against `additionalProperties: false`. This VTA
+/// could not have served it before that landed.
+pub const TASK_PROVISION_INTEGRATION_0_3: &str =
+    "https://trusttasks.org/spec/provision/integration/0.3";
 
 // ─── WebVH-DID-lifecycle slice (spec/vta/webvh/*) ────────────────────────
 //
@@ -1657,7 +1663,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PASSKEY_VMS_LIST_0_1,
     TASK_PASSKEY_VMS_REVOKE_0_1,
     // Provision-integration (feature-gated: webvh)
-    TASK_PROVISION_INTEGRATION_0_2,
+    TASK_PROVISION_INTEGRATION_0_3,
     // WebVH-DID-lifecycle slice (feature-gated: webvh)
     TASK_WEBVH_SERVERS_LIST_1_0,
     TASK_WEBVH_SERVERS_REGISTER_1_0,

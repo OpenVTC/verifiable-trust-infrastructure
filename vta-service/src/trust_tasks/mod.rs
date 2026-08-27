@@ -141,7 +141,11 @@ const REST_ROUTED: &[&str] = vta_sdk::trust_tasks::REST_ROUTED_URIS;
 ///
 /// All entries are unconditional (don't change per cfg). They're
 /// just statements that the dispatcher knows about them.
-#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
+#[allow(dead_code)]
+// consumed by the dispatcher's test-only parity harness
+// Names deprecated URIs on purpose: this VTA still serves them, and the census
+// is what proves an entry has not outlived its handler.
+#[allow(deprecated)]
 const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     // Passkey-VMs slice — requires `webvh` + `didcomm` features. The
     // `dispatch_table!` entries list the same URIs and are tracked by the
@@ -152,7 +156,7 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
     // Provision-integration — requires `webvh`.
-    vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_2,
+    vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
     // WebVH-DID-lifecycle slice — requires `webvh`. The `dispatch_table!`
     // entries list the same URIs and are tracked by the parity harness when
     // `webvh` is on; this allowlist covers builds where `webvh` is off.
@@ -1440,8 +1444,13 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1 => passkey_vms::handle_revoke
         [ Destructive None false ],
     // ─── Provision-integration (feature-gated: webvh) ────────────
+    // 0.3 only. 0.2 required a bare-hex `digest` and forbade
+    // `digestMultibase`; 0.3 is the reverse, and both close their response with
+    // `additionalProperties: false` — so no single response satisfies the two,
+    // and dual-accepting them would mean a version-aware response shape for one
+    // renamed member. Cut over instead.
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_2
+    vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3
         => provision_integration::handle_request
         [ Mutating Secret false ],
     // ─── WebVH-DID-lifecycle slice (feature-gated: webvh) ────────

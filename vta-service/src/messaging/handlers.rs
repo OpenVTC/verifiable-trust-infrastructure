@@ -1505,7 +1505,7 @@ pub async fn handle_provision_integration(
 
     let result = vta_sdk::provision_integration::http::ProvisionIntegrationResponse {
         bundle: output.armored,
-        digest: output.digest,
+        digest_multibase: Some(output.digest_multibase),
         summary: vta_sdk::provision_integration::http::ProvisionSummary {
             client_did: output.summary.client_did,
             admin_did: output.summary.admin_did,
