@@ -950,6 +950,56 @@ async fn dispatch_trust_task_validated(
         return reject_with(&doc, reason);
     }
 
+    // SPEC §7.2 item 7, *first* clause: "If the document carries a `proof`
+    // member, verify it per §4.7 against the in-band `issuer` and reject the
+    // document with `proofInvalid` on verification failure."
+    //
+    // The second clause — reject a *missing* proof where the spec requires one
+    // — is `enforce_spec_policy` above. Only that half was implemented, which
+    // is the worse way round to have it: a caller attaches a proof *because*
+    // the task demands one, and until now any bytes in the member satisfied the
+    // demand. A document signed by a key its issuer does not control reached
+    // the handler.
+    //
+    // Verified here rather than per-handler for the reason the schema check is:
+    // it must happen before anything reads the payload, and a slice that forgets
+    // it is a slice with no proof checking at all. `step_up` and `task_consent`
+    // keep their own calls — they bind the signer to a *specific* party (the
+    // approver), which is a stronger claim than "the issuer signed this".
+    if doc.proof.is_some() {
+        match vti_common::auth::di_proof::verify_trust_task_proof(&doc).await {
+            Ok(signer) => {
+                // A valid proof by some *other* DID is not a proof by the
+                // issuer; without this the signature would establish only that
+                // somebody signed something.
+                if doc.issuer.as_deref() != Some(signer.as_str()) {
+                    tracing::warn!(
+                        type_uri,
+                        issuer = ?doc.issuer,
+                        signer = %signer,
+                        "document proof verifies, but not as its issuer"
+                    );
+                    return reject_with(
+                        &doc,
+                        RejectReason::ProofInvalid {
+                            reason: "the proof verifies as a DID other than the document's issuer"
+                                .to_string(),
+                        },
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::info!(type_uri, error = %e, "document proof failed verification");
+                return reject_with(
+                    &doc,
+                    RejectReason::ProofInvalid {
+                        reason: e.to_string(),
+                    },
+                );
+            }
+        }
+    }
+
     // Idempotency claim. Only bites when the document carries an
     // `idempotencyKey` *and* the task is one where a second execution leaves a
     // second durable artefact (`vta_sdk::retry_safety`) — everything else
@@ -2803,6 +2853,109 @@ mod response_coverage {
         .await;
         ok(&state, t::TASK_DEVICE_HEARTBEAT_0_2, json!({})).await;
         ok(&state, t::TASK_DEVICE_SET_WAKE_0_2, json!({})).await;
+    }
+
+    /// SPEC §7.2 item 7, first clause: "If the document carries a `proof`
+    /// member, verify it per §4.7 against the in-band `issuer` and reject the
+    /// document with `proofInvalid` on verification failure."
+    #[tokio::test]
+    async fn a_proof_that_does_not_verify_is_refused() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+
+        // Signed by a *different* identity than the one it claims as issuer.
+        let mut doc: TrustTask<Value> = serde_json::from_value(json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": t::TASK_AUTH_WHOAMI_0_1,
+            "issuer": crate::test_support::test_admin_did().0,
+            "recipient": vta_did,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {},
+        }))
+        .expect("envelope");
+        crate::test_support::sign_as(0xEE, &mut doc);
+
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &crate::test_support::super_admin_claims(),
+            &serde_json::to_vec(&doc).expect("bytes"),
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let v: Value = serde_json::from_slice(&outcome.body).expect("a response");
+        assert_eq!(
+            v["payload"]["code"], "proofInvalid",
+            "a proof from a key the issuer does not control must be refused: {v}"
+        );
+    }
+
+    /// The same family at its **canonical** 0.1 URIs, plus the two ends of the
+    /// lifecycle that have no 0.2 form.
+    ///
+    /// Not a duplicate of the 0.2 walk above. A 0.2 request is down-converted
+    /// to the 0.1 handler and its response up-converted back, so driving 0.2
+    /// never produces a `…/0.1#response` and never exercises the branch that
+    /// answers a caller who asked in the canonical form. Those are two
+    /// different paths through the spine, and only one of them was tested.
+    ///
+    /// Its own `AppState` because `device/register` refuses a second binding
+    /// for the same DID, and both walks register as the super-admin.
+    // Names the deprecated 0.1 URIs on purpose: they are what this test exists
+    // to cover, and they are still dispatched.
+    #[allow(deprecated)]
+    #[tokio::test]
+    async fn device_lifecycle_canonical() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let claims = crate::test_support::super_admin_claims();
+        crate::test_support::seed_acl_entry(
+            &state.acl_ks,
+            &claims.did,
+            crate::acl::Role::Admin,
+            vec![],
+        )
+        .await;
+
+        let registered = ok(
+            &state,
+            t::TASK_DEVICE_REGISTER_0_1,
+            json!({
+                // `formFactor`, not `form-factor`: the 0.1 → 0.2 difference is
+                // in the enum *values*, never the member names, and the edge
+                // transform only ever rewrites values at declared enum paths.
+                "consumerKind": { "kind": "companion", "formFactor": "mobile" },
+                "displayName": "Coverage Phone (canonical)",
+            }),
+        )
+        .await;
+        // The id the rest of the lifecycle is addressed by. Read from the
+        // response rather than minted here: the VTA assigns it, and a test that
+        // guesses would pass against a VTA that had stopped returning one.
+        let device_id = registered["binding"]["deviceId"]
+            .as_str()
+            .expect("register returns the binding's deviceId")
+            .to_string();
+
+        ok(&state, t::TASK_DEVICE_HEARTBEAT_0_1, json!({})).await;
+        ok(&state, t::TASK_DEVICE_SET_WAKE_0_1, json!({})).await;
+
+        // Wipe before disable: a wipe instruction is issued *to* a device, and
+        // a disabled one has nothing to collect it. The operator's order.
+        ok(
+            &state,
+            t::TASK_DEVICE_WIPE_0_1,
+            json!({
+                "deviceId": device_id,
+                "scope": "cache-and-keys",
+                "reason": "coverage",
+            }),
+        )
+        .await;
+        ok(
+            &state,
+            t::TASK_DEVICE_DISABLE_0_1,
+            json!({ "deviceId": device_id, "reason": "coverage" }),
+        )
+        .await;
     }
 
     /// The runtime service-management read paths.
