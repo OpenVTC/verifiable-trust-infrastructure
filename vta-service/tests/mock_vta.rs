@@ -1080,5 +1080,12 @@ async fn services_write_paths_against_a_hosted_vta_did() {
         .await
         .expect("services/rollback");
 
+    // `passkey-vms/revoke` is *not* here, and the reason is worth recording:
+    // it refuses a fragment that is not on the document
+    // (`vta/passkey-vms/revoke:fragmentNotFound`), so covering it needs a VM
+    // that was really enrolled — which needs a real authenticator attestation
+    // over `enroll-challenge`'s nonce. That is a soft-authenticator harness,
+    // not a fixture tweak, and it is the same blocker as `enroll-submit`.
+
     mock.shutdown().await;
 }
