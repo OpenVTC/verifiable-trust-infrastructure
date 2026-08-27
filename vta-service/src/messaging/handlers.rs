@@ -690,8 +690,16 @@ pub async fn handle_swap_acl(
                 body.current_subject, auth.did
             )));
         }
+        // Same policy as the Trust Task path: optional at the framework level,
+        // required here, and refused by name rather than as a parse failure.
+        let Some(link_proof) = body.link_proof else {
+            return Err(handler_err(
+                "acl:link_proof_required — this maintainer requires a `linkProof` proving \
+                 the new subject consents to the takeover",
+            ));
+        };
         (
-            body.link_proof,
+            link_proof,
             Some(body.new_subject),
             Some(body.current_subject),
         )

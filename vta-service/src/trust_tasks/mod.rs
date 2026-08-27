@@ -2565,6 +2565,96 @@ mod response_coverage {
         // asserted in `revoke_all_is_refused_as_unsupported_not_malformed`.
     }
 
+    /// Issue then revoke, chained: revoke needs an id only an issue produces.
+    #[tokio::test]
+    async fn credentials_issue_then_revoke() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let issued = ok(
+            &state,
+            t::TASK_VTA_CREDENTIALS_ISSUE_0_1,
+            json!({
+                "holder": "did:key:z6MkCoverageHolder",
+                "claims": { "role": "coverage" },
+                "validitySeconds": 3600,
+            }),
+        )
+        .await;
+        let id = issued["credentialId"]
+            .as_str()
+            .or_else(|| issued["credential"]["id"].as_str())
+            .unwrap_or_else(|| panic!("issue must name the credential: {issued}"))
+            .to_owned();
+        ok(
+            &state,
+            t::TASK_VTA_CREDENTIALS_REVOKE_0_1,
+            json!({ "credentialId": id, "reason": "coverage" }),
+        )
+        .await;
+    }
+
+    /// A context's DID can be repointed after creation.
+    #[tokio::test]
+    async fn contexts_update_did() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "cov-update-did").await;
+        ok(
+            &state,
+            t::TASK_CONTEXTS_UPDATE_DID_1_0,
+            json!({ "id": "cov-update-did", "did": "did:key:z6MkCovContextDid" }),
+        )
+        .await;
+    }
+
+    /// A swap with no `linkProof` names the policy, rather than calling a
+    /// well-formed document malformed.
+    ///
+    /// `acl/swap-key/0.1` makes `linkProof` optional — "required by some
+    /// maintainers … Producers omit this when the consumer's policy doesn't
+    /// require it." This deployment requires it, which is exactly the split the
+    /// specification describes; what was wrong was the answer. A producer that
+    /// omitted it got `malformedRequest`, sending it to re-read a schema that
+    /// would agree with it.
+    ///
+    /// The success path is not covered: it needs a real VP-JWT signed by the
+    /// new subject, and `currentSubject` must equal the authenticated caller,
+    /// so it wants a second keypair and a signing ceremony.
+    #[tokio::test]
+    async fn swap_key_without_a_link_proof_names_the_policy() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let claims = crate::test_support::super_admin_claims();
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let body = serde_json::to_vec(&json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": t::TASK_ACL_SWAP_KEY_0_1,
+            "issuer": "did:key:zTestAdmin",
+            "recipient": vta_did,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {
+                "currentSubject": claims.did,
+                "newSubject": "did:key:z6MkCovNewSubject",
+            },
+        }))
+        .expect("envelope");
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &claims,
+            &body,
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        assert_eq!(
+            doc["payload"]["code"], "taskFailed",
+            "a document the schema accepts must not be called malformed: {doc}"
+        );
+        assert!(
+            doc["payload"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("link_proof_required")),
+            "the refusal must name what this maintainer wants: {doc}"
+        );
+    }
+
     /// The device family.
     ///
     /// `device/register` refuses a DID that holds no ACL entry
@@ -2596,31 +2686,6 @@ mod response_coverage {
         .await;
         ok(&state, t::TASK_DEVICE_HEARTBEAT_0_2, json!({})).await;
         ok(&state, t::TASK_DEVICE_SET_WAKE_0_2, json!({})).await;
-    }
-
-    /// The credential issuance path.
-    ///
-    /// `vta/passkey-vms/*` is deliberately not here: those tasks require a
-    /// **VTA-managed** DID ("DID not found or not VTA-managed"), and this
-    /// fixture's `did:key` signing identity is not one — the same constraint
-    /// that puts `agent-name/*` in the stub-host test. There is also no
-    /// `VtaClient` method for them, so covering them means dispatching raw
-    /// against a minted DID.
-    #[tokio::test]
-    async fn credentials_issue() {
-        let (state, _dir) = build_signing_test_app_state().await;
-        // Needs the VTA's `#key-0`, which this fixture provisions — that is
-        // what `build_signing_test_app_state` is for.
-        ok(
-            &state,
-            t::TASK_VTA_CREDENTIALS_ISSUE_0_1,
-            json!({
-                "holder": "did:key:z6MkCoverageHolder",
-                "claims": { "role": "coverage" },
-                "validitySeconds": 3600,
-            }),
-        )
-        .await;
     }
 
     /// The runtime service-management read paths.

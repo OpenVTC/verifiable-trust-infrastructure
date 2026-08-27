@@ -46,9 +46,20 @@ pub struct SwapKeyBody {
     /// The VID being swapped in — MUST equal the `iss` of `link_proof`.
     pub new_subject: String,
     /// Compact Ed25519 JWS (VP-JWT) signed by `new_subject` proving consent
-    /// to take over `current_subject`'s ACL entry. The spec marks this
-    /// optional at the framework level, but the FPN deployment policy requires it.
-    pub link_proof: String,
+    /// to take over `current_subject`'s ACL entry.
+    ///
+    /// Optional on the wire, required by this deployment's policy — which is
+    /// exactly the split `acl/swap-key/0.1` describes: "required by some
+    /// maintainers … Producers omit this when the consumer's policy doesn't
+    /// require it."
+    ///
+    /// It was a bare `String` here, so a conforming producer that omitted it
+    /// got `malformedRequest` — "your document is the wrong shape" — when the
+    /// shape was right and the *policy* wanted more. The handler now refuses it
+    /// by name instead. The security posture is unchanged: a swap without a
+    /// proof of possession is still refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_proof: Option<String>,
     /// Optional human-readable rationale recorded in the audit log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
