@@ -92,14 +92,18 @@ pub async fn sign_authenticate_doc(
     challenge: &str,
     session_id: &str,
 ) -> Result<String, AuthDiError> {
-    let payload = authenticate::Payload {
-        challenge: authenticate::PayloadChallenge::try_from(challenge.to_string())
-            .map_err(|e| AuthDiError::Payload(format!("challenge: {e}")))?,
-        session_id: authenticate::PayloadSessionId::try_from(session_id.to_string())
-            .map_err(|e| AuthDiError::Payload(format!("sessionId: {e}")))?,
-        scope: Vec::new(),
-        ext: None,
-    };
+    let payload: authenticate::Payload = authenticate::Payload::builder()
+        .challenge(
+            authenticate::PayloadChallenge::try_from(challenge.to_string())
+                .map_err(|e| AuthDiError::Payload(format!("challenge: {e}")))?,
+        )
+        .session_id(
+            authenticate::PayloadSessionId::try_from(session_id.to_string())
+                .map_err(|e| AuthDiError::Payload(format!("sessionId: {e}")))?,
+        )
+        .scope(Vec::new())
+        .try_into()
+        .map_err(|e| AuthDiError::Payload(format!("authenticate payload: {e}")))?;
     Ok(trust_task_sign::build_signed(
         TASK_AUTH_AUTHENTICATE_0_1,
         serde_json::to_value(&payload).map_err(|e| AuthDiError::Payload(e.to_string()))?,
@@ -126,12 +130,14 @@ pub fn build_refresh_doc(
     vta_did: &str,
     refresh_token: &str,
 ) -> Result<String, AuthDiError> {
-    let payload = refresh::Payload {
-        refresh_token: refresh::PayloadRefreshToken::try_from(refresh_token.to_string())
-            .map_err(|e| AuthDiError::Payload(format!("refreshToken: {e}")))?,
-        scope: Vec::new(),
-        ext: None,
-    };
+    let payload: refresh::Payload = refresh::Payload::builder()
+        .refresh_token(
+            refresh::PayloadRefreshToken::try_from(refresh_token.to_string())
+                .map_err(|e| AuthDiError::Payload(format!("refreshToken: {e}")))?,
+        )
+        .scope(Vec::new())
+        .try_into()
+        .map_err(|e| AuthDiError::Payload(format!("refresh payload: {e}")))?;
     let doc = trust_task_sign::build_unsigned(
         TASK_AUTH_REFRESH_0_1,
         serde_json::to_value(&payload).map_err(|e| AuthDiError::Payload(e.to_string()))?,

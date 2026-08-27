@@ -250,7 +250,7 @@ futures-util = "0.3"
 # crate's `tsp` feature and are NOT reachable via `affinidi-tdk/tsp`. The crate
 # is already present transitively via `affinidi-tdk` at the same 0.18.x; this
 # entry adds no new code when `tsp` is off (optional + default-features off).
-affinidi-messaging-sdk = { version = "0.20", optional = true, default-features = false }
+affinidi-messaging-sdk = { version = "0.21", optional = true, default-features = false }
 async-trait = "0.1"
 affinidi-tdk-common = "0.6"
 affinidi-did-resolver-cache-sdk = { workspace = true }
@@ -323,7 +323,7 @@ tempfile = { version = "3", optional = true }
 # A real dependency rather than a dev-dependency: `test-support` exists to serve
 # *external* consumers, and a dev-dependency would not be available to them.
 # `tsp` so the mediator routes raw-TSP frames, not just DIDComm.
-affinidi-messaging-test-mediator = { version = "0.3", optional = true, features = [
+affinidi-messaging-test-mediator = { version = "0.4", optional = true, features = [
     "tsp",
 ] }
 libc = { workspace = true, optional = true }

@@ -62,19 +62,26 @@ pub fn build_approve_response_webauthn(
     draft: ApproveResponseDraft,
     assertion: WebAuthnAssertion,
 ) -> Result<String, FfiError> {
-    let evidence = approve_response::Evidence::Webauthn(approve_response::AssertionResponse {
-        id: assertion.credential_id.clone(),
-        raw_id: assertion.credential_id,
-        type_: serde_json::Value::String("public-key".to_string()),
-        response: approve_response::AssertionResponseResponse {
-            authenticator_data: assertion.authenticator_data,
-            client_data_json: assertion.client_data_json,
-            signature: assertion.signature,
-            user_handle: assertion.user_handle,
-        },
-        authenticator_attachment: None,
-        client_extension_results: serde_json::Map::new(),
-    });
+    let response: approve_response::AssertionResponseResponse =
+        approve_response::AssertionResponseResponse::builder()
+            .authenticator_data(assertion.authenticator_data)
+            .client_data_json(assertion.client_data_json)
+            .signature(assertion.signature)
+            .user_handle(assertion.user_handle)
+            .try_into()
+            .map_err(conv)?;
+    // `authenticatorAttachment` is left unset rather than sent as null: the
+    // platform did not report one.
+    let assertion_response: approve_response::AssertionResponse =
+        approve_response::AssertionResponse::builder()
+            .id(assertion.credential_id.clone())
+            .raw_id(assertion.credential_id)
+            .type_(serde_json::Value::String("public-key".to_string()))
+            .response(response)
+            .client_extension_results(serde_json::Map::new())
+            .try_into()
+            .map_err(conv)?;
+    let evidence = approve_response::Evidence::Webauthn(assertion_response);
     let doc = assemble_doc(
         &draft,
         evidence,
@@ -139,18 +146,26 @@ fn assemble_doc(
         })?
         .with_timezone(&chrono::Utc);
 
-    let payload = approve_response::Payload {
-        subject: approve_response::PayloadSubject::try_from(draft.subject.clone()).map_err(conv)?,
-        session_id: approve_response::PayloadSessionId::try_from(draft.session_id.clone())
-            .map_err(conv)?,
-        challenge: approve_response::PayloadChallenge::try_from(draft.challenge.clone())
-            .map_err(conv)?,
-        decision,
-        denied_reason,
-        granted_acr: draft.granted_acr.clone(),
-        evidence: Some(evidence),
-        ext: None,
-    };
+    let payload: approve_response::Payload = approve_response::Payload::builder()
+        .subject(approve_response::PayloadSubject::try_from(draft.subject.clone()).map_err(conv)?)
+        .session_id(
+            approve_response::PayloadSessionId::try_from(draft.session_id.clone()).map_err(conv)?,
+        )
+        .challenge(
+            approve_response::PayloadChallenge::try_from(draft.challenge.clone()).map_err(conv)?,
+        )
+        .decision(decision)
+        // Bounded newtype as of the 0.17 registry, not a bare `String`.
+        .denied_reason(
+            denied_reason
+                .map(approve_response::PayloadDeniedReason::try_from)
+                .transpose()
+                .map_err(conv)?,
+        )
+        .granted_acr(draft.granted_acr.clone())
+        .evidence(Some(evidence))
+        .try_into()
+        .map_err(conv)?;
 
     let mut doc = TrustTask::for_payload(draft.id.clone(), payload);
     doc.issuer = Some(draft.issuer_did.clone());

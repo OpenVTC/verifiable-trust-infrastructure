@@ -179,17 +179,21 @@ async fn set_client_acl_internal(
 /// access-list mode is set to ExplicitDeny (denylist semantics), allowing all
 /// except explicitly denied entries.
 fn build_allow_all_acl() -> account::update::v0_1::MediatorAcl {
-    account::update::v0_1::MediatorAcl {
-        blocked: Some(false),
-        local: Some(true),
-        send_messages: Some(true),
-        receive_messages: Some(true),
-        send_forwarded: Some(true),
-        receive_forwarded: Some(true),
-        create_invites: Some(true),
-        anon_receive: Some(true),
-        access_list_mode: Some(account::update::v0_1::MediatorAclAccessListMode::ExplicitDeny),
-        // Don't set self-manage flags — let the mediator's defaults apply
-        ..Default::default()
-    }
+    // The self-manage flags are deliberately left unset so the mediator's
+    // defaults apply — which is what the builder does with a member never
+    // named, exactly as `..Default::default()` did.
+    account::update::v0_1::MediatorAcl::builder()
+        .blocked(Some(false))
+        .local(Some(true))
+        .send_messages(Some(true))
+        .receive_messages(Some(true))
+        .send_forwarded(Some(true))
+        .receive_forwarded(Some(true))
+        .create_invites(Some(true))
+        .anon_receive(Some(true))
+        .access_list_mode(Some(
+            account::update::v0_1::MediatorAclAccessListMode::ExplicitDeny,
+        ))
+        .try_into()
+        .expect("MediatorAcl has no required member")
 }

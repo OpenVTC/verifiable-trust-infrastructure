@@ -146,6 +146,46 @@ fn user_handle_for_did(did: &str) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
+/// The WebAuthn `user.name` / `user.displayName` for an enrolment.
+///
+/// **Not the DID.** This is the string an authenticator shows in the credential
+/// picker, and WebAuthn L2 §5.4.3 lets an authenticator truncate it to 64
+/// bytes — which the registry's `maxLength: 64` on `userName` /
+/// `userDisplayName` mirrors. A `did:webvh` is routinely longer than that: the
+/// SCID alone is ~46 characters before the host and path. Sending the raw DID
+/// produced a response the 0.17 schema rejects outright, and before that a
+/// picker entry truncated mid-SCID — unreadable, and identical between two DIDs
+/// on the same host.
+///
+/// Nothing is lost by not sending it. `userHandle` is the DID-derived binding
+/// (see [`user_handle_for_did`]) and is unbounded; `user.name` is a label for a
+/// human, so it gets one:
+///
+/// * the operator's `label` when the enrolment supplied one, else
+/// * the DID with its `did:<method>:<scid>:` prefix dropped — the host and path
+///   are the part a person recognises, the SCID is the part they cannot.
+///
+/// Clamped on a `char` boundary so a multi-byte label cannot split.
+fn display_name_for(did: &str, label: Option<&str>) -> String {
+    const MAX: usize = 64;
+    let base = match label {
+        Some(l) if !l.trim().is_empty() => l.trim().to_string(),
+        _ => did
+            .strip_prefix("did:")
+            .and_then(|rest| rest.split_once(':'))
+            .and_then(|(_method, rest)| rest.split_once(':'))
+            .map(|(_scid, tail)| tail.to_string())
+            .unwrap_or_else(|| did.to_string()),
+    };
+    if base.chars().count() <= MAX {
+        return base;
+    }
+    // Keep the tail: for a path-shaped identifier the distinguishing part is at
+    // the end (`…:dids:persona`), not the start.
+    let skip = base.chars().count() - MAX + 1;
+    format!("…{}", base.chars().skip(skip).collect::<String>())
+}
+
 /// VM fragment derivation: `passkey-<base64url(sha256(credential_id))>`.
 fn fragment_for_credential(credential_id: &[u8]) -> String {
     let hash = Sha256::digest(credential_id);
@@ -185,8 +225,9 @@ pub async fn start_enrollment(
     let user_uuid = Uuid::from_slice(&user_handle[..16])
         .map_err(|e| PasskeyVmError::Internal(format!("derive user uuid from handle: {e}")))?;
 
+    let display = display_name_for(did, label.as_deref());
     let (ccr, registration) = webauthn
-        .start_passkey_registration(user_uuid, did, did, None)
+        .start_passkey_registration(user_uuid, &display, &display, None)
         .map_err(|e| PasskeyVmError::Internal(format!("start_passkey_registration: {e}")))?;
 
     // Persist ceremony state. Use a fresh UUID as the ceremony id
@@ -668,5 +709,62 @@ mod tests {
             matches!(err, PasskeyVmError::FragmentNotFound),
             "expected FragmentNotFound, got {err:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod display_name_tests {
+    use super::display_name_for;
+
+    /// The case that broke: a real `did:webvh` is longer than the schema's
+    /// `maxLength: 64`, and the part a person recognises is the tail.
+    #[test]
+    fn a_webvh_did_loses_its_scid_and_fits() {
+        let did =
+            "did:webvh:QmSRTjKQF54iQfv58QjbbcunzZ1GiDzvuFFPERVHwUF4kX:webvh-host.test:dids:persona";
+        assert!(
+            did.chars().count() > 64,
+            "the fixture must be over the bound"
+        );
+        let got = display_name_for(did, None);
+        assert_eq!(got, "webvh-host.test:dids:persona");
+        assert!(got.chars().count() <= 64);
+    }
+
+    /// An operator-supplied label wins — it is the whole reason `label` is on
+    /// the enrolment payload.
+    #[test]
+    fn a_label_is_preferred() {
+        assert_eq!(
+            display_name_for("did:webvh:QmScid:example.com:dids:x", Some("Ops laptop")),
+            "Ops laptop"
+        );
+    }
+
+    /// Whitespace-only is not a label.
+    #[test]
+    fn a_blank_label_falls_back_to_the_did() {
+        assert_eq!(
+            display_name_for("did:webvh:QmScid:example.com:dids:x", Some("   ")),
+            "example.com:dids:x"
+        );
+    }
+
+    /// A DID that is not `did:method:scid:tail` shaped is left alone rather
+    /// than mangled — `did:key` has no SCID to drop.
+    #[test]
+    fn a_short_did_key_is_left_whole() {
+        let did = "did:key:z6MkAgent";
+        assert_eq!(display_name_for(did, None), did);
+    }
+
+    /// Over-long input is clamped on a char boundary, keeping the tail.
+    #[test]
+    fn an_over_long_label_is_clamped_without_splitting_a_char() {
+        let label = "é".repeat(200);
+        let got = display_name_for("did:key:z6Mk", Some(&label));
+        assert_eq!(got.chars().count(), 64, "clamped to the bound");
+        assert!(got.starts_with('…'));
+        assert!(got.is_char_boundary(got.len()));
     }
 }

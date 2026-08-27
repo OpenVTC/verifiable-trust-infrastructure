@@ -73,14 +73,33 @@ fn state(s: &SdkState) -> spec::list::v1_0::ServiceState {
         } => (K::Didcomm, *enabled, mediator_did.clone(), None),
         SdkState::Webauthn { enabled, url } => (K::Webauthn, *enabled, None, url.clone()),
     };
-    Out {
-        kind,
-        enabled,
-        mediator_did,
-        url,
-        drains_until: None,
-        ext: None,
-    }
+    // `drainsUntil` unset: a state snapshot says nothing about drains, which
+    // `services/drain/list` answers.
+    Out::builder()
+        .kind(kind)
+        .enabled(enabled)
+        .mediator_did(mediator_did)
+        .url(url)
+        .try_into()
+        .expect("every required member of the service state is set above")
+}
+
+/// Finish a generated response/component builder.
+///
+/// The generated types are `#[non_exhaustive]` as of trust-tasks-rs 0.17, so
+/// this crate cannot name their members in a struct literal — that is what lets
+/// the registry add an OPTIONAL member without breaking every consumer. The
+/// builder starts each REQUIRED member as `Err("no value supplied for …")`, so
+/// every call below sets its required members explicitly and lets the optional
+/// ones default.
+fn built<T, B>(builder: B) -> Result<T, AppError>
+where
+    B: TryInto<T>,
+    B::Error: std::fmt::Display,
+{
+    builder
+        .try_into()
+        .map_err(|e| AppError::Internal(format!("couldn't build a services response: {e}")))
 }
 
 fn kind_of(s: &SdkState) -> spec::list::v1_0::ServiceKind {
@@ -119,13 +138,13 @@ pub(super) async fn handle_list(
     match crate::operations::protocol::list::list_services(&state_.config, &state_.webvh_ks, auth)
         .await
     {
-        Ok(body) => success_response(
-            &doc,
-            spec::list::v1_0::Response {
-                services: body.services.iter().map(state).collect(),
-                ext: None,
-            },
-        ),
+        Ok(body) => match built::<spec::list::v1_0::Response, _>(
+            spec::list::v1_0::Response::builder()
+                .services(body.services.iter().map(state).collect::<Vec<_>>()),
+        ) {
+            Ok(r) => success_response(&doc, r),
+            Err(e) => app_error_to_reject(&doc, e),
+        },
         Err(e) => app_error_to_reject(&doc, list_error(e)),
     }
 }
@@ -151,18 +170,35 @@ pub(super) async fn handle_get(
                 spec::get::v1_0::ServiceKind::Rest => spec::list::v1_0::ServiceKind::Rest,
                 spec::get::v1_0::ServiceKind::Tsp => spec::list::v1_0::ServiceKind::Tsp,
                 spec::get::v1_0::ServiceKind::Webauthn => spec::list::v1_0::ServiceKind::Webauthn,
+                // The generated enum is `#[non_exhaustive]`: a caller on a
+                // newer registry can name a transport this build does not
+                // serve. Refuse rather than fall through to one of the four —
+                // `get` exists to distinguish "never configured" from
+                // "configured and disabled", and answering about the wrong
+                // transport would corrupt exactly that distinction.
+                _ => {
+                    return app_error_to_reject(
+                        &doc,
+                        AppError::Validation(
+                            "services/get: unrecognised service kind — this VTA does not serve \
+                             a transport added to the registry after it was built"
+                                .into(),
+                        ),
+                    );
+                }
             };
             match body.services.iter().find(|s| kind_of(s) == want) {
-                Some(found) => success_response(
-                    &doc,
-                    spec::get::v1_0::Response {
-                        state: serde_json::from_value(
+                Some(found) => match built::<spec::get::v1_0::Response, _>(
+                    spec::get::v1_0::Response::builder().state(
+                        serde_json::from_value::<spec::get::v1_0::ServiceState>(
                             serde_json::to_value(state(found)).unwrap_or(Value::Null),
                         )
                         .expect("the two generated ServiceState shapes are identical"),
-                        ext: None,
-                    },
-                ),
+                    ),
+                ) {
+                    Ok(r) => success_response(&doc, r),
+                    Err(e) => app_error_to_reject(&doc, e),
+                },
                 // Absent means never configured — distinct from configured and
                 // disabled, which comes back with `enabled: false`. Answering
                 // an empty success here would erase that distinction, which is
@@ -245,17 +281,22 @@ fn mutation(
     drain_until: Option<chrono::DateTime<chrono::Utc>>,
     draining_mediator: Option<String>,
 ) -> Result<spec::enable::v1_0::ServiceMutationResult, AppError> {
-    Ok(spec::enable::v1_0::ServiceMutationResult {
-        log_entry_version_id: log_entry_version_id
-            .try_into()
-            .map_err(|_| AppError::Internal("operation returned an empty log entry id".into()))?,
-        effective_at: chrono::Utc::now(),
-        drain_until,
-        draining_mediator,
-        vta_did: (!vta_did.is_empty()).then_some(vta_did),
-        serverless,
-        ext: None,
-    })
+    built(
+        spec::enable::v1_0::ServiceMutationResult::builder()
+            .log_entry_version_id(
+                spec::enable::v1_0::ServiceMutationResultLogEntryVersionId::try_from(
+                    log_entry_version_id,
+                )
+                .map_err(|_| {
+                    AppError::Internal("operation returned an empty log entry id".into())
+                })?,
+            )
+            .effective_at(chrono::Utc::now())
+            .drain_until(drain_until)
+            .draining_mediator(draining_mediator)
+            .vta_did((!vta_did.is_empty()).then_some(vta_did))
+            .serverless(serverless),
+    )
 }
 
 /// Re-type an identically-shaped generated value for a sibling family.
@@ -392,9 +433,28 @@ pub(super) async fn handle_enable(
             );
             mutation(r.new_version_id, r.vta_did, r.serverless, None, None)
         }
+        // `#[non_exhaustive]`: a caller on a newer registry can name a
+        // transport this build does not serve. Refusing is the only safe
+        // answer — every arm above mutates the DID document, and picking
+        // one for an unrecognised kind would write the wrong service.
+        _ => {
+            return app_error_to_reject(
+                &doc,
+                AppError::Validation(
+                    "unrecognised service kind — this VTA does not serve a \
+                     transport added to the registry after it was built"
+                        .into(),
+                ),
+            );
+        }
     };
     match result {
-        Ok(result) => success_response(&doc, spec::enable::v1_0::Response { result, ext: None }),
+        Ok(result) => match built::<spec::enable::v1_0::Response, _>(
+            spec::enable::v1_0::Response::builder().result(result),
+        ) {
+            Ok(r) => success_response(&doc, r),
+            Err(e) => app_error_to_reject(&doc, e),
+        },
         Err(e) => app_error_to_reject(&doc, e),
     }
 }
@@ -510,11 +570,32 @@ pub(super) async fn handle_update(
                 Some(r.prior_mediator_did),
             )
         }
+        // `#[non_exhaustive]`: a caller on a newer registry can name a
+        // transport this build does not serve. Refusing is the only safe
+        // answer — every arm above mutates the DID document, and picking
+        // one for an unrecognised kind would write the wrong service.
+        _ => {
+            return app_error_to_reject(
+                &doc,
+                AppError::Validation(
+                    "unrecognised service kind — this VTA does not serve a \
+                     transport added to the registry after it was built"
+                        .into(),
+                ),
+            );
+        }
     };
     match result {
-        Ok(result) => match retype(result) {
+        // Annotated: the target type used to be pinned by the response struct
+        // literal, and the builder's `TryInto` setter no longer pins it.
+        Ok(result) => match retype::<spec::update::v1_0::ServiceMutationResult>(result) {
             Ok(result) => {
-                success_response(&doc, spec::update::v1_0::Response { result, ext: None })
+                match built::<spec::update::v1_0::Response, _>(
+                    spec::update::v1_0::Response::builder().result(result),
+                ) {
+                    Ok(r) => success_response(&doc, r),
+                    Err(e) => app_error_to_reject(&doc, e),
+                }
             }
             Err(e) => app_error_to_reject(&doc, e),
         },
@@ -603,11 +684,30 @@ pub(super) async fn handle_disable(
                 draining,
             )
         }
+        // `#[non_exhaustive]`: a caller on a newer registry can name a
+        // transport this build does not serve. Refusing is the only safe
+        // answer — every arm above mutates the DID document, and picking
+        // one for an unrecognised kind would write the wrong service.
+        _ => {
+            return app_error_to_reject(
+                &doc,
+                AppError::Validation(
+                    "unrecognised service kind — this VTA does not serve a \
+                     transport added to the registry after it was built"
+                        .into(),
+                ),
+            );
+        }
     };
     match result {
-        Ok(result) => match retype(result) {
+        Ok(result) => match retype::<spec::disable::v1_0::ServiceMutationResult>(result) {
             Ok(result) => {
-                success_response(&doc, spec::disable::v1_0::Response { result, ext: None })
+                match built::<spec::disable::v1_0::Response, _>(
+                    spec::disable::v1_0::Response::builder().result(result),
+                ) {
+                    Ok(r) => success_response(&doc, r),
+                    Err(e) => app_error_to_reject(&doc, e),
+                }
             }
             Err(e) => app_error_to_reject(&doc, e),
         },
@@ -650,16 +750,15 @@ fn rollback_result(
     draining_mediator: Option<String>,
 ) -> spec::rollback::v1_0::RollbackResult {
     let wrote_an_entry = new_version_id.is_some();
-    spec::rollback::v1_0::RollbackResult {
-        kind,
-        log_entry_version_id: new_version_id,
-        effective_at: wrote_an_entry.then(chrono::Utc::now),
-        drain_until: None,
-        draining_mediator,
-        vta_did: (!vta_did.is_empty()).then_some(vta_did),
-        serverless,
-        ext: None,
-    }
+    spec::rollback::v1_0::RollbackResult::builder()
+        .kind(kind)
+        .log_entry_version_id(new_version_id)
+        .effective_at(wrote_an_entry.then(chrono::Utc::now))
+        .draining_mediator(draining_mediator)
+        .vta_did((!vta_did.is_empty()).then_some(vta_did))
+        .serverless(serverless)
+        .try_into()
+        .expect("every required member of the rollback result is set above")
 }
 
 pub(super) async fn handle_rollback(
@@ -752,8 +851,27 @@ pub(super) async fn handle_rollback(
                 draining,
             )
         }
+        // `#[non_exhaustive]`: a caller on a newer registry can name a
+        // transport this build does not serve. Refusing is the only safe
+        // answer — every arm above mutates the DID document, and picking
+        // one for an unrecognised kind would write the wrong service.
+        _ => {
+            return app_error_to_reject(
+                &doc,
+                AppError::Validation(
+                    "unrecognised service kind — this VTA does not serve a \
+                     transport added to the registry after it was built"
+                        .into(),
+                ),
+            );
+        }
     };
-    success_response(&doc, spec::rollback::v1_0::Response { result, ext: None })
+    match built::<spec::rollback::v1_0::Response, _>(
+        spec::rollback::v1_0::Response::builder().result(result),
+    ) {
+        Ok(r) => success_response(&doc, r),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
 }
 
 // ── drain ───────────────────────────────────────────────────────────
@@ -776,23 +894,38 @@ pub(super) async fn handle_drain_list(
                 .entries
                 .into_iter()
                 .map(|e| {
-                    Ok(spec::drain::list::v1_0::DrainEntry {
-                        mediator_did: e.mediator_did.try_into().map_err(|_| {
-                            AppError::Internal("drain entry has an empty mediator did".into())
-                        })?,
-                        endpoint: e.endpoint,
-                        drains_until: e.drains_until.parse().map_err(|_| {
-                            AppError::Internal("drain entry has an unparseable deadline".into())
-                        })?,
-                        ext: None,
-                    })
+                    built(
+                        spec::drain::list::v1_0::DrainEntry::builder()
+                            .mediator_did(
+                                spec::drain::list::v1_0::DrainEntryMediatorDid::try_from(
+                                    e.mediator_did,
+                                )
+                                .map_err(|_| {
+                                    AppError::Internal(
+                                        "drain entry has an empty mediator did".into(),
+                                    )
+                                })?,
+                            )
+                            .endpoint(e.endpoint)
+                            .drains_until(
+                                e.drains_until
+                                    .parse::<chrono::DateTime<chrono::Utc>>()
+                                    .map_err(|_| {
+                                        AppError::Internal(
+                                            "drain entry has an unparseable deadline".into(),
+                                        )
+                                    })?,
+                            ),
+                    )
                 })
                 .collect::<Result<Vec<_>, AppError>>();
             match entries {
-                Ok(entries) => success_response(
-                    &doc,
-                    spec::drain::list::v1_0::Response { entries, ext: None },
-                ),
+                Ok(entries) => match built::<spec::drain::list::v1_0::Response, _>(
+                    spec::drain::list::v1_0::Response::builder().entries(entries),
+                ) {
+                    Ok(r) => success_response(&doc, r),
+                    Err(e) => app_error_to_reject(&doc, e),
+                },
                 Err(e) => app_error_to_reject(&doc, e),
             }
         }
@@ -833,13 +966,12 @@ pub(super) async fn handle_drain_cancel(
         // `mediatorDid` is a plain String in this family — no newtype to
         // fall through, so there is nothing to validate here beyond what
         // the operation already guaranteed.
-        Ok(r) => success_response(
-            &doc,
-            spec::drain::cancel::v1_0::Response {
-                mediator_did: r.mediator_did,
-                ext: None,
-            },
-        ),
+        Ok(r) => match built::<spec::drain::cancel::v1_0::Response, _>(
+            spec::drain::cancel::v1_0::Response::builder().mediator_did(r.mediator_did),
+        ) {
+            Ok(resp) => success_response(&doc, resp),
+            Err(e) => app_error_to_reject(&doc, e),
+        },
         Err(e) => app_error_to_reject(&doc, AppError::Conflict(e.to_string())),
     }
 }

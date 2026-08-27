@@ -382,7 +382,10 @@ pub(super) async fn handle_approve_response(
             &doc,
             json!({
                 "status": "rejected",
-                "reason": payload.denied_reason.unwrap_or_else(|| "user declined".to_string()),
+                "reason": payload
+                    .denied_reason
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| "user declined".to_string()),
             }),
         );
     }
@@ -402,6 +405,17 @@ pub(super) async fn handle_approve_response(
                 Ok(()) => "passkey",
                 Err(reason) => return reject_with(&doc, reason),
             }
+        }
+        // `#[non_exhaustive]`: the registry can add an evidence kind after this
+        // binary was built. This match *chooses which cryptographic gate to
+        // verify*, so there is no safe fallthrough — landing on the did-signed
+        // arm would check a gate the approver did not present, and report the
+        // step-up as satisfied on evidence this VTA never understood. Refuse.
+        Some(_) => {
+            return reject_with(
+                &doc,
+                step_up_failure("auth/step-up/approve-response:evidenceUnsupported"),
+            );
         }
     };
 
@@ -924,6 +938,18 @@ pub(super) async fn trigger_gateway_wake(
                 Some(push_wake::ResponseStatus::Delivered) => {
                     tracing::info!(gateway = %gateway, approver = %approver, "push/wake delivered by gateway")
                 }
+                // `#[non_exhaustive]`: the registry can add a status after this
+                // binary was built. Named separately from `None` because the two
+                // say different things — `None` is "no status we could read at
+                // all", this is "a status we read but do not know", and only the
+                // second is worth an operator's attention. Either way the
+                // mediator queue and pickup fallback still apply, so wake stays
+                // best-effort rather than failing.
+                Some(other) => tracing::warn!(
+                    gateway = %gateway, approver = %approver, status = ?other,
+                    "push/wake: gateway returned a status this build does not know; \
+                     treating as sent — mediator queue + pickup fallback applies"
+                ),
                 None => tracing::info!(
                     gateway = %gateway, approver = %approver,
                     "push/wake sent to gateway (no recognizable 0.2 response status)"
