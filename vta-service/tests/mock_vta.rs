@@ -806,6 +806,30 @@ async fn webvh_family_response_shapes() {
     // enrolled VM to remove. Both want the soft-authenticator harness the
     // `admin_passkeys` suites stand up on the VTC side.
 
+    // ── server slot maintenance ───────────────────────────────────────────
+    // A slot the host holds with no local record behind it. `reconcile` above
+    // reports these; `retire-orphan` is how an operator clears one, so covering
+    // them together follows the operator's actual sequence.
+    client
+        .retire_orphan_slot(
+            &vta_sdk::protocols::did_management::servers::RetireOrphanSlotBody {
+                server_id: MockVta::WEBVH_SERVER_ID.into(),
+                // A slot this VTA has no record of — which is what "orphan"
+                // means. The minted DID's own slot is deliberately not used:
+                // the task refuses it, and correctly, pointing the caller at
+                // `webvh/dids/delete` for a slot it still controls.
+                slot_id: "cov-orphan-slot".into(),
+                // `None`: this stub reports no host-only slots, so there is no
+                // DID the caller "believes the slot serves". The member exists
+                // to turn a stale reconcile report into a refusal rather than a
+                // surprise, which needs a report to have been stale.
+                expected_did: None,
+                reason: Some("coverage".into()),
+            },
+        )
+        .await
+        .expect("servers/retire-orphan");
+
     // ── the DID itself ────────────────────────────────────────────────────
     // Rotate before delete: a rotation on a deleted DID has nothing to rotate,
     // and delete is terminal.
@@ -814,6 +838,13 @@ async fn webvh_family_response_shapes() {
         .await
         .expect("dids/rotate-keys");
     client.delete_did_webvh(&did).await.expect("dids/delete");
+
+    // Last: removing the server registration invalidates every path above it,
+    // so an operator does this once nothing depends on it.
+    client
+        .remove_webvh_server(MockVta::WEBVH_SERVER_ID)
+        .await
+        .expect("servers/remove");
 
     mock.shutdown().await;
 }

@@ -1320,17 +1320,25 @@ impl StubWebvhHost {
             // for one owner. `servers/{reconcile,retire-orphan}` both read it
             // to compare the host's list against the VTA's records.
             //
-            // Answers with an empty list. That is the interesting case rather
-            // than a lazy one: reconcile's whole job is to report the
-            // difference between two sets, and "the host holds nothing while
-            // the VTA holds records" is the shape that exercises the
-            // *missing-on-host* arm. A stub echoing the VTA's own records back
-            // would only ever prove the empty-difference path.
+            // Answers with one slot the VTA has **no** record of. Reconcile's
+            // job is to report the difference between two sets, so this makes
+            // both arms non-empty at once: the slot below is `host_only`, and
+            // the DID the test mints is `agent_only`. An empty list would prove
+            // only one arm, and a list echoing the VTA's own records would
+            // prove neither.
+            //
+            // It is also what makes `servers/retire-orphan` reachable — a slot
+            // is retireable precisely when it is host-only.
             .route(
                 "/api/dids",
                 axum::routing::get(|headers: axum::http::HeaderMap| async move {
                     require_bearer(&headers)?;
-                    Ok::<_, axum::http::StatusCode>(axum::Json(json!([])))
+                    Ok::<_, axum::http::StatusCode>(axum::Json(json!([{
+                        "mnemonic": "cov-orphan-slot",
+                        "domain": "webvh-host.test",
+                        "disabled": false,
+                        "updatedAt": 1_767_225_600u64,
+                    }])))
                 }),
             )
             // The caller-scoped domain listing. A real `did-hosting-control`

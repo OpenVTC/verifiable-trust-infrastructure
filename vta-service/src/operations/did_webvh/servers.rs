@@ -587,10 +587,28 @@ impl RetireOrphanRefusal {
 
     pub fn message(&self) -> String {
         match self {
-            Self::NotOrphaned { slot_id, .. } => format!(
-                "slot `{slot_id}` has a record in this VTA, so it is not an orphan. \
+            // Two different facts reach this variant, and they want opposite
+            // next actions. `did: Some` means the VTA still controls the slot —
+            // delete it properly. `did: None` means the slot is not in the
+            // host's own listing at all, so there is nothing to retire and the
+            // caller's report was about some other server or is long stale.
+            //
+            // The message used to assert the first for both, telling an
+            // operator "slot X has a record in this VTA" about a slot the VTA
+            // has never heard of — and pointing them at `dids/delete` for a DID
+            // that does not exist.
+            Self::NotOrphaned {
+                slot_id,
+                did: Some(did),
+            } => format!(
+                "slot `{slot_id}` still serves {did} in this VTA, so it is not an orphan. \
                  retire-orphan applies only to slots this VTA has no record of — \
                  use `webvh/dids/delete` for one it still controls."
+            ),
+            Self::NotOrphaned { slot_id, did: None } => format!(
+                "slot `{slot_id}` is not in this server's listing, so there is nothing \
+                 to retire. Re-run reconcile: the report naming it was for another \
+                 server, or the slot has since been released."
             ),
             Self::DidMismatch {
                 slot_id, actual, ..
