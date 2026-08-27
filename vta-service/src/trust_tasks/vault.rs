@@ -1990,7 +1990,7 @@ mod context_scope_tests {
     }
 
     fn doc() -> TrustTask<serde_json::Value> {
-        let uri: TypeUri = vta_sdk::trust_tasks::TASK_VAULT_LIST_0_2
+        let uri: TypeUri = vta_sdk::trust_tasks::TASK_VAULT_LIST_0_3
             .parse()
             .expect("list uri");
         TrustTask::new("urn:uuid:test", uri, json!({}))
@@ -2104,11 +2104,11 @@ mod tsp_unseal_tests {
     use crate::test_support::{build_signing_test_app_state, super_admin_claims};
     use serde_json::json;
     use trust_tasks_rs::{TrustTask, TypeUri};
-    use vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_2;
+    use vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_3;
 
     /// A `vault/upsert` document carrying a `tspMessage` sealed secret.
     fn upsert_tsp_doc() -> TrustTask<serde_json::Value> {
-        let uri: TypeUri = TASK_VAULT_UPSERT_0_2.parse().expect("upsert uri");
+        let uri: TypeUri = TASK_VAULT_UPSERT_0_3.parse().expect("upsert uri");
         let payload = json!({
             "contextId": "ctx-test",
             "targets": [{ "kind": "web-origin", "origin": "https://example.com" }],

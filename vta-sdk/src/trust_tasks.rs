@@ -175,9 +175,21 @@ pub const TASK_DEVICE_LIST_0_2: &str = "https://trusttasks.org/spec/device/list/
 /// No 0.2 spec exists upstream; this stays on 0.1.
 pub const TASK_DEVICE_DISABLE_0_1: &str = "https://trusttasks.org/spec/device/disable/0.1";
 
-/// `device/wipe/0.1` — issue a wipe instruction for a device. No 0.2 spec
-/// exists upstream; this stays on 0.1.
+/// `device/wipe/0.1` — issue a wipe instruction for a device.
+#[deprecated(note = "0.1 is superseded by the 0.2 wire form: the `scope` enum \
+    spells `cacheAndKeys` in camelCase. The VTA still accepts 0.1 during the \
+    migration window but it will be removed in a future release — prefer \
+    TASK_DEVICE_WIPE_0_2.")]
 pub const TASK_DEVICE_WIPE_0_1: &str = "https://trusttasks.org/spec/device/wipe/0.1";
+
+/// `device/wipe/0.2` — successor to [`TASK_DEVICE_WIPE_0_1`]. The `scope` enum
+/// value `cache-and-keys` becomes `cacheAndKeys`; nothing else changes.
+///
+/// This constant's predecessor carried "No 0.2 spec exists upstream; this stays
+/// on 0.1" until #1145. `specs/device/wipe/0.2` had been published for some
+/// time — a comment asserting an absence is a claim about the registry that
+/// nothing re-checks, and it kept anyone from looking.
+pub const TASK_DEVICE_WIPE_0_2: &str = "https://trusttasks.org/spec/device/wipe/0.2";
 
 /// `device/set-wake/0.1` — the device conveys its opaque push `WakeHandle` to
 /// the VTA, which owns the trigger allowlist and provisions the push gateway.
@@ -537,7 +549,20 @@ pub const TASK_VAULT_LIST_0_1: &str = "https://trusttasks.org/spec/vault/list/0.
 
 /// `spec/vault/list/0.2` — successor to [`TASK_VAULT_LIST_0_1`]; camelCase
 /// enum values (e.g. `secretKind: oauthTokens`).
+#[deprecated(note = "0.2 is superseded by the 0.3 wire form: `AttachmentRef` \
+    replaces the bare-hex `sha256` with a multibase `digestMultibase`, which \
+    carries its own hash algorithm rather than hard-coding SHA-256 into the \
+    wire contract — prefer TASK_VAULT_LIST_0_3.")]
 pub const TASK_VAULT_LIST_0_2: &str = "https://trusttasks.org/spec/vault/list/0.2";
+
+/// `spec/vault/list/0.3` — successor to [`TASK_VAULT_LIST_0_2`].
+///
+/// The only change from 0.2 is in the shared `VaultEntry` component:
+/// `AttachmentRef.sha256` (hex, SHA-256 pinned by the pattern) becomes
+/// `AttachmentRef.digestMultibase`, a multibase-encoded multihash that
+/// names its own algorithm. Nothing else moves — the enum casing is the
+/// same as 0.2.
+pub const TASK_VAULT_LIST_0_3: &str = "https://trusttasks.org/spec/vault/list/0.3";
 
 /// `spec/vault/get/0.1` — fetch the metadata view of a single entry by
 /// id. Same auth as vault/list.
@@ -547,7 +572,20 @@ pub const TASK_VAULT_LIST_0_2: &str = "https://trusttasks.org/spec/vault/list/0.
 pub const TASK_VAULT_GET_0_1: &str = "https://trusttasks.org/spec/vault/get/0.1";
 
 /// `spec/vault/get/0.2` — successor to [`TASK_VAULT_GET_0_1`].
+#[deprecated(note = "0.2 is superseded by the 0.3 wire form: `AttachmentRef` \
+    replaces the bare-hex `sha256` with a multibase `digestMultibase`, which \
+    carries its own hash algorithm rather than hard-coding SHA-256 into the \
+    wire contract — prefer TASK_VAULT_GET_0_3.")]
 pub const TASK_VAULT_GET_0_2: &str = "https://trusttasks.org/spec/vault/get/0.2";
+
+/// `spec/vault/get/0.3` — successor to [`TASK_VAULT_GET_0_2`].
+///
+/// The only change from 0.2 is in the shared `VaultEntry` component:
+/// `AttachmentRef.sha256` (hex, SHA-256 pinned by the pattern) becomes
+/// `AttachmentRef.digestMultibase`, a multibase-encoded multihash that
+/// names its own algorithm. Nothing else moves — the enum casing is the
+/// same as 0.2.
+pub const TASK_VAULT_GET_0_3: &str = "https://trusttasks.org/spec/vault/get/0.3";
 
 /// `spec/vault/upsert/0.1` — create a new vault entry or update an
 /// existing one. Secret material rides inside a pluggable cipher
@@ -559,7 +597,20 @@ pub const TASK_VAULT_GET_0_2: &str = "https://trusttasks.org/spec/vault/get/0.2"
 pub const TASK_VAULT_UPSERT_0_1: &str = "https://trusttasks.org/spec/vault/upsert/0.1";
 
 /// `spec/vault/upsert/0.2` — successor to [`TASK_VAULT_UPSERT_0_1`].
+#[deprecated(note = "0.2 is superseded by the 0.3 wire form: `AttachmentRef` \
+    replaces the bare-hex `sha256` with a multibase `digestMultibase`, which \
+    carries its own hash algorithm rather than hard-coding SHA-256 into the \
+    wire contract — prefer TASK_VAULT_UPSERT_0_3.")]
 pub const TASK_VAULT_UPSERT_0_2: &str = "https://trusttasks.org/spec/vault/upsert/0.2";
+
+/// `spec/vault/upsert/0.3` — successor to [`TASK_VAULT_UPSERT_0_2`].
+///
+/// The only change from 0.2 is in the shared `VaultEntry` component:
+/// `AttachmentRef.sha256` (hex, SHA-256 pinned by the pattern) becomes
+/// `AttachmentRef.digestMultibase`, a multibase-encoded multihash that
+/// names its own algorithm. Nothing else moves — the enum casing is the
+/// same as 0.2.
+pub const TASK_VAULT_UPSERT_0_3: &str = "https://trusttasks.org/spec/vault/upsert/0.3";
 
 /// `spec/vault/delete/0.1` — soft-delete (tombstone) an entry with a
 /// maintainer-defined grace window; the entry stays recoverable via
@@ -1498,6 +1549,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_DEVICE_LIST_0_2,
     TASK_DEVICE_DISABLE_0_1,
     TASK_DEVICE_WIPE_0_1,
+    TASK_DEVICE_WIPE_0_2,
     TASK_DEVICE_SET_WAKE_0_1,
     TASK_DEVICE_SET_WAKE_0_2,
     // Messaging slice
@@ -1547,13 +1599,16 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUDIT_UPDATE_RETENTION_1_0,
     // Discovery
     TASK_TRUST_TASK_DISCOVERY_0_1,
-    // Vault slice (0.1 + 0.2 dual-accept; delete is 0.1-only upstream)
+    // Vault slice (0.1 + 0.2 + 0.3 dual-accept; delete is 0.1-only upstream)
     TASK_VAULT_LIST_0_1,
     TASK_VAULT_LIST_0_2,
+    TASK_VAULT_LIST_0_3,
     TASK_VAULT_GET_0_1,
     TASK_VAULT_GET_0_2,
+    TASK_VAULT_GET_0_3,
     TASK_VAULT_UPSERT_0_1,
     TASK_VAULT_UPSERT_0_2,
+    TASK_VAULT_UPSERT_0_3,
     TASK_VAULT_DELETE_0_1,
     // Vault archival lifecycle (openvtc 0.1 extension).
     TASK_VAULT_ARCHIVE_0_1,

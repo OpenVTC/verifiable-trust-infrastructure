@@ -956,7 +956,7 @@ async fn dispatch_trust_task_validated(
                     let outcome = WIRE_VERSION
                         .scope(WireVersion::V0_2, dispatch_typed(state, auth, doc))
                         .await;
-                    wire_v0_2::upconvert_response(outcome, spec)
+                    wire_v0_2::upconvert_response(outcome, spec, &type_uri)
                 } else {
                     WIRE_VERSION
                         .scope(WireVersion::V0_1, dispatch_typed(state, auth, doc))
@@ -1680,7 +1680,15 @@ mod tests {
                 // Feature-gated arms drop out of `dispatched_uris()` when their
                 // cfg is off; the allowlist is where the parity harness tracks
                 // them, so it is the right second source here too.
-                || KNOWN_FEATURE_GATED_URIS.contains(&task.uri);
+                || KNOWN_FEATURE_GATED_URIS.contains(&task.uri)
+                // An edge-transformed URI never reaches the dispatch table —
+                // it is rewritten to the canonical form first — but it is
+                // served, and its counter does fire: `dispatch_trust_task_core`
+                // reads the superseded row from the URI *as it arrived*,
+                // before the down-convert. So the premise of this test (a row
+                // whose counter can never move) does not apply to it. The
+                // successor half of this pair already accepts them.
+                || wire_v0_2::WIRE_V0_2_URIS.contains(&task.uri);
             assert!(
                 served,
                 "`{}` is marked superseded but nothing dispatches it, so its counter \
@@ -1718,31 +1726,45 @@ mod tests {
         }
     }
 
-    /// The two 0.1→0.2 tables must agree.
+    /// The two tables must agree.
     ///
     /// `wire_v0_2::WIRE_SPECS_V0_2` is where a spec is declared dual-accepted;
-    /// `deprecation::SUPERSEDED_TASKS` is where the 0.1 form is declared on its
-    /// way out. They are separate because only the second carries a reason and
-    /// only the first carries the enum paths — but a 0.2 form added without the
-    /// matching deprecation row is a task nothing is measuring, which is the
-    /// state #1045 exists to end. Adding one entry now requires the other.
+    /// `deprecation::SUPERSEDED_TASKS` is where the older form is declared on
+    /// its way out. They are separate because only the second carries a reason
+    /// and only the first carries the enum paths — but a newer form added
+    /// without the matching deprecation row is a task nothing is measuring,
+    /// which is the state #1045 exists to end. Adding one entry now requires
+    /// the other.
+    ///
+    /// Checked per hop, not just for 0.1: a spec accepting 0.1, 0.2 and 0.3
+    /// needs a row for each superseded version, or the middle one is retired
+    /// on no evidence at all.
     #[test]
-    fn every_dual_accepted_spec_marks_its_0_1_form_superseded() {
+    fn every_dual_accepted_spec_marks_its_older_forms_superseded() {
         for spec in wire_v0_2::WIRE_SPECS_V0_2 {
-            let row = crate::deprecation::superseded_task(spec.uri_0_1).unwrap_or_else(|| {
-                panic!(
-                    "`{}` is dual-accepted at `{}` but its 0.1 form is not in \
-                     `deprecation::SUPERSEDED_TASKS`, so nothing counts the callers \
-                     still on it and it can never be retired on evidence",
-                    spec.uri_0_1, spec.uri_0_2
-                )
-            });
-            assert_eq!(
-                row.successor, spec.uri_0_2,
-                "`{}` is down-converted from `{}` but its deprecation row points \
-                 somewhere else",
-                spec.uri_0_1, spec.uri_0_2
-            );
+            // Oldest first: the canonical form, then each wire form except the
+            // newest, which is the one nothing supersedes yet.
+            let mut chain = vec![spec.uri_0_1];
+            chain.extend(spec.uris_wire.iter().rev());
+            let newest = chain.pop().expect("a spec has at least one wire form");
+
+            for superseded in chain {
+                let row = crate::deprecation::superseded_task(superseded).unwrap_or_else(|| {
+                    panic!(
+                        "`{superseded}` is superseded (this spec also accepts \
+                             `{newest}`) but it is not in \
+                             `deprecation::SUPERSEDED_TASKS`, so nothing counts the \
+                             callers still on it and it can never be retired on \
+                             evidence"
+                    )
+                });
+                assert!(
+                    spec.uris_wire.contains(&row.successor),
+                    "`{superseded}`'s deprecation row points at `{}`, which this \
+                     spec does not accept on the wire",
+                    row.successor
+                );
+            }
         }
     }
 

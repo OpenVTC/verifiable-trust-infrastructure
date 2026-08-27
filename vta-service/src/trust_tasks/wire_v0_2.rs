@@ -70,10 +70,18 @@ pub(crate) fn current_wire_version() -> WireVersion {
 /// document `payload`; a `*` segment fans out over every array element or
 /// object value.
 pub(super) struct WireSpecV02 {
-    /// Canonical 0.1 type URI the 0.2 request is down-converted to.
+    /// Canonical 0.1 type URI the request is down-converted to.
     pub uri_0_1: &'static str,
-    /// 0.2 type URI this entry matches on the wire.
-    pub uri_0_2: &'static str,
+    /// Wire type URIs this entry matches, newest first.
+    ///
+    /// A list rather than one URI because a spec can minor-bump again without
+    /// changing anything this transform touches. `vault/*` 0.3 is the worked
+    /// example: it differs from 0.2 only in `AttachmentRef` (`sha256` hex
+    /// becomes a multibase `digestMultibase`), which is not an enum value and
+    /// not at any path here — so 0.3 down-converts to the same 0.1 handler by
+    /// the same casing rules, and giving it its own row would have duplicated
+    /// every path to keep them in step by hand.
+    pub uris_wire: &'static [&'static str],
     /// Enum field paths in the **request** payload (down-converted camel→kebab).
     pub request_paths: &'static [&'static str],
     /// Enum field paths in the **response** payload (up-converted kebab→camel).
@@ -86,19 +94,19 @@ pub(super) const WIRE_SPECS_V0_2: &[WireSpecV02] = &[
     // ── device slice ────────────────────────────────────────────────
     WireSpecV02 {
         uri_0_1: "https://trusttasks.org/spec/device/register/0.1",
-        uri_0_2: "https://trusttasks.org/spec/device/register/0.2",
+        uris_wire: &["https://trusttasks.org/spec/device/register/0.2"],
         request_paths: &["consumerKind.serviceKind", "attestation.kind"],
         response_paths: &["binding.consumerKind.serviceKind", "binding.capabilities.*"],
     },
     WireSpecV02 {
         uri_0_1: "https://trusttasks.org/spec/device/heartbeat/0.1",
-        uri_0_2: "https://trusttasks.org/spec/device/heartbeat/0.2",
+        uris_wire: &["https://trusttasks.org/spec/device/heartbeat/0.2"],
         request_paths: &[],
         response_paths: &["queuedOperations.*.kind", "syncHint"],
     },
     WireSpecV02 {
         uri_0_1: "https://trusttasks.org/spec/device/list/0.1",
-        uri_0_2: "https://trusttasks.org/spec/device/list/0.2",
+        uris_wire: &["https://trusttasks.org/spec/device/list/0.2"],
         request_paths: &[
             "capabilityFilter",
             "consumerKindFilter",
@@ -113,8 +121,15 @@ pub(super) const WIRE_SPECS_V0_2: &[WireSpecV02] = &[
     WireSpecV02 {
         // No enum fields in either direction — pure minor-version bump.
         uri_0_1: "https://trusttasks.org/spec/device/set-wake/0.1",
-        uri_0_2: "https://trusttasks.org/spec/device/set-wake/0.2",
+        uris_wire: &["https://trusttasks.org/spec/device/set-wake/0.2"],
         request_paths: &[],
+        response_paths: &[],
+    },
+    WireSpecV02 {
+        uri_0_1: "https://trusttasks.org/spec/device/wipe/0.1",
+        uris_wire: &["https://trusttasks.org/spec/device/wipe/0.2"],
+        // The whole of the 0.1 → 0.2 change: `cache-and-keys` → `cacheAndKeys`.
+        request_paths: &["scope"],
         response_paths: &[],
     },
     // ── vault slice ─────────────────────────────────────────────────
@@ -134,25 +149,34 @@ pub(super) const WIRE_SPECS_V0_2: &[WireSpecV02] = &[
     // byte-exact.
     WireSpecV02 {
         uri_0_1: "https://trusttasks.org/spec/vault/list/0.1",
-        uri_0_2: "https://trusttasks.org/spec/vault/list/0.2",
+        uris_wire: &[
+            "https://trusttasks.org/spec/vault/list/0.3",
+            "https://trusttasks.org/spec/vault/list/0.2",
+        ],
         request_paths: &["secretKind"],
         response_paths: &["entries.*.secretKind", "entries.*.targets.*.kind"],
     },
     WireSpecV02 {
         uri_0_1: "https://trusttasks.org/spec/vault/get/0.1",
-        uri_0_2: "https://trusttasks.org/spec/vault/get/0.2",
+        uris_wire: &[
+            "https://trusttasks.org/spec/vault/get/0.3",
+            "https://trusttasks.org/spec/vault/get/0.2",
+        ],
         request_paths: &[],
         response_paths: &["entry.secretKind", "entry.targets.*.kind"],
     },
     WireSpecV02 {
         uri_0_1: "https://trusttasks.org/spec/vault/upsert/0.1",
-        uri_0_2: "https://trusttasks.org/spec/vault/upsert/0.2",
+        uris_wire: &[
+            "https://trusttasks.org/spec/vault/upsert/0.3",
+            "https://trusttasks.org/spec/vault/upsert/0.2",
+        ],
         request_paths: &["secretKind", "targets.*.kind", "sealedSecret.envelope"],
         response_paths: &["entry.secretKind", "entry.targets.*.kind"],
     },
     WireSpecV02 {
         uri_0_1: "https://trusttasks.org/spec/vault/release/0.1",
-        uri_0_2: "https://trusttasks.org/spec/vault/release/0.2",
+        uris_wire: &["https://trusttasks.org/spec/vault/release/0.2"],
         request_paths: &["target.kind"],
         // `secretKind` is the outer echo; `sealedSecret.envelope` is the
         // pluggable-cipher tag wrapping the JWE. The `VaultSecret.kind` *inside*
@@ -161,7 +185,7 @@ pub(super) const WIRE_SPECS_V0_2: &[WireSpecV02] = &[
     },
     WireSpecV02 {
         uri_0_1: "https://trusttasks.org/spec/vault/proxy-login/0.1",
-        uri_0_2: "https://trusttasks.org/spec/vault/proxy-login/0.2",
+        uris_wire: &["https://trusttasks.org/spec/vault/proxy-login/0.2"],
         request_paths: &["target.kind"],
         // The `sealedSessionBlob.envelope` tag wraps the JWE; the
         // `SessionBlob.refreshHint` inside it is camelCased at seal time.
@@ -171,7 +195,7 @@ pub(super) const WIRE_SPECS_V0_2: &[WireSpecV02] = &[
         // Request/response carry the unsigned/signed Trust-Task envelope verbatim
         // (signed bytes — must not be mutated); no SecretKind/SiteTarget fields.
         uri_0_1: "https://trusttasks.org/spec/vault/sign-trust-task/0.1",
-        uri_0_2: "https://trusttasks.org/spec/vault/sign-trust-task/0.2",
+        uris_wire: &["https://trusttasks.org/spec/vault/sign-trust-task/0.2"],
         request_paths: &[],
         response_paths: &[],
     },
@@ -185,8 +209,12 @@ pub(super) const WIRE_V0_2_URIS: &[&str] = &[
     "https://trusttasks.org/spec/device/heartbeat/0.2",
     "https://trusttasks.org/spec/device/list/0.2",
     "https://trusttasks.org/spec/device/set-wake/0.2",
+    "https://trusttasks.org/spec/device/wipe/0.2",
+    "https://trusttasks.org/spec/vault/list/0.3",
     "https://trusttasks.org/spec/vault/list/0.2",
+    "https://trusttasks.org/spec/vault/get/0.3",
     "https://trusttasks.org/spec/vault/get/0.2",
+    "https://trusttasks.org/spec/vault/upsert/0.3",
     "https://trusttasks.org/spec/vault/upsert/0.2",
     "https://trusttasks.org/spec/vault/release/0.2",
     "https://trusttasks.org/spec/vault/proxy-login/0.2",
@@ -196,7 +224,9 @@ pub(super) const WIRE_V0_2_URIS: &[&str] = &[
 /// Look up the edge-transform spec for an inbound type URI, if it's a
 /// dual-accepted 0.2 URI.
 pub(super) fn lookup_0_2(type_uri: &str) -> Option<&'static WireSpecV02> {
-    WIRE_SPECS_V0_2.iter().find(|s| s.uri_0_2 == type_uri)
+    WIRE_SPECS_V0_2
+        .iter()
+        .find(|s| s.uris_wire.contains(&type_uri))
 }
 
 /// kebab-case → camelCase (`apple-app-attest` → `appleAppAttest`). Idempotent
@@ -310,6 +340,7 @@ pub(crate) fn camelize_paths(payload: &mut Value, paths: &[&str]) {
 pub(super) fn upconvert_response(
     outcome: TrustTaskOutcome,
     spec: &WireSpecV02,
+    uri_wire: &str,
 ) -> TrustTaskOutcome {
     let TrustTaskOutcome { status, body } = outcome;
     let mut doc: Value = match serde_json::from_slice(&body) {
@@ -326,7 +357,11 @@ pub(super) fn upconvert_response(
         && let Some(fragment) = t.strip_prefix(spec.uri_0_1)
     {
         is_success_response = fragment == "#response";
-        *t = format!("{}{}", spec.uri_0_2, fragment);
+        // Answer as the version the caller *sent*, not a fixed one. A spec
+        // can carry several wire URIs (`vault/*` 0.2 and 0.3), and a response
+        // retyped to the wrong one would be refused by a client validating
+        // against the version it asked for.
+        *t = format!("{uri_wire}{fragment}");
     }
 
     if is_success_response && let Some(payload) = doc.get_mut("payload") {
@@ -451,7 +486,7 @@ mod tests {
             body: serde_json::to_vec(&doc).unwrap(),
         };
 
-        let out = upconvert_response(outcome, spec);
+        let out = upconvert_response(outcome, spec, "https://trusttasks.org/spec/device/list/0.2");
         let v: Value = serde_json::from_slice(&out.body).unwrap();
 
         assert_eq!(
@@ -484,7 +519,7 @@ mod tests {
             status: axum::http::StatusCode::FORBIDDEN,
             body: serde_json::to_vec(&doc).unwrap(),
         };
-        let out = upconvert_response(outcome, spec);
+        let out = upconvert_response(outcome, spec, "https://trusttasks.org/spec/device/list/0.2");
         let v: Value = serde_json::from_slice(&out.body).unwrap();
         assert_eq!(
             v["type"],
@@ -536,7 +571,7 @@ mod tests {
             status: axum::http::StatusCode::OK,
             body: serde_json::to_vec(&doc).unwrap(),
         };
-        let out = upconvert_response(outcome, spec);
+        let out = upconvert_response(outcome, spec, "https://trusttasks.org/spec/vault/list/0.2");
         let v: Value = serde_json::from_slice(&out.body).unwrap();
         assert_eq!(
             v["type"],
@@ -569,7 +604,11 @@ mod tests {
             status: axum::http::StatusCode::OK,
             body: serde_json::to_vec(&doc).unwrap(),
         };
-        let out = upconvert_response(outcome, spec);
+        let out = upconvert_response(
+            outcome,
+            spec,
+            "https://trusttasks.org/spec/vault/release/0.2",
+        );
         let v: Value = serde_json::from_slice(&out.body).unwrap();
         assert_eq!(
             v["type"],
@@ -602,7 +641,11 @@ mod tests {
             status: axum::http::StatusCode::OK,
             body: serde_json::to_vec(&doc).unwrap(),
         };
-        let out = upconvert_response(outcome, spec);
+        let out = upconvert_response(
+            outcome,
+            spec,
+            "https://trusttasks.org/spec/vault/proxy-login/0.2",
+        );
         let v: Value = serde_json::from_slice(&out.body).unwrap();
         assert_eq!(
             v["payload"]["sealedSessionBlob"]["envelope"],
@@ -659,9 +702,20 @@ mod tests {
         // Every spec's 0.2 URI is in the parity list, and 0.1/0.2 differ only
         // by the minor version.
         for spec in WIRE_SPECS_V0_2 {
-            assert!(WIRE_V0_2_URIS.contains(&spec.uri_0_2), "{}", spec.uri_0_2);
-            assert_eq!(spec.uri_0_1.replace("/0.1", "/0.2"), spec.uri_0_2);
-            assert!(lookup_0_2(spec.uri_0_2).is_some());
+            for wire in spec.uris_wire {
+                assert!(WIRE_V0_2_URIS.contains(wire), "{wire}");
+                assert!(lookup_0_2(wire).is_some());
+                // Same slug, later version: the transform reuses the canonical
+                // handler, so a row pointing at a *different* task would send a
+                // request somewhere it was never meant to go.
+                let canonical_slug = spec.uri_0_1.rsplit_once('/').expect("versioned uri").0;
+                assert_eq!(
+                    wire.rsplit_once('/').expect("versioned uri").0,
+                    canonical_slug,
+                    "{wire} is not a later version of {}",
+                    spec.uri_0_1
+                );
+            }
         }
     }
 }
