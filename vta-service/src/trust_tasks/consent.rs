@@ -78,6 +78,18 @@ struct RequestPayload {
     subject: WireSubject,
     scope: ConsentScope,
     challenge: String,
+    /// Operator-facing label for the approval prompt ("Signal group 'Family'").
+    /// The bridge sends it precisely because `conversationRef` is an opaque
+    /// handle by design — without this the approver is asked to decide about
+    /// `sig-1a2b3c4d`.
+    #[serde(default)]
+    display_hint: Option<String>,
+    /// Multibase multihash over the JCS canonicalization of the held first
+    /// message. The VTA never sees the message, so it cannot check the digest;
+    /// carrying it is the whole job — it binds the prompt the approver answered
+    /// to concrete content, for the bridge to check and the audit trail to keep.
+    #[serde(default)]
+    first_message_digest: Option<String>,
     #[serde(default)]
     context_hint: Option<String>,
 }
@@ -293,6 +305,8 @@ pub(super) async fn handle_request(
 
     // Snapshot the prompt subject (camelCase) before `subject` is moved.
     let wire_subject = serde_json::to_value(WireSubject::from(&subject)).unwrap_or_default();
+    let display_hint = payload.display_hint.clone();
+    let first_message_digest = payload.first_message_digest.clone();
 
     let pending = new_pending_consent(
         subject,
@@ -316,6 +330,8 @@ pub(super) async fn handle_request(
             wire_subject,
             payload.scope,
             &payload.challenge,
+            display_hint.as_deref(),
+            first_message_digest.as_deref(),
         )
         .await;
     }
@@ -342,12 +358,15 @@ const CONSENT_APPROVE_REQUEST_TYPE: &str =
 /// and ring the push-gateway doorbell. Best-effort; mirrors the step-up wake
 /// path (`maybe_push_step_up` + `trigger_gateway_wake`).
 #[cfg(feature = "didcomm")]
+#[allow(clippy::too_many_arguments)]
 async fn maybe_wake_consent_approver(
     state: &AppState,
     approver: &str,
     subject: Value,
     scope: ConsentScope,
     challenge: &str,
+    display_hint: Option<&str>,
+    first_message_digest: Option<&str>,
 ) {
     let mediator_did = {
         let cfg = state.config.read().await;
@@ -375,11 +394,25 @@ async fn maybe_wake_consent_approver(
     // already relies on.
     #[cfg(feature = "webvh")]
     {
+        // Built member-by-member so an unset hint is *absent*, not `null`.
+        // `json!` with an `Option` writes the null, and the approver's renderer
+        // has to tell "no label supplied" from "the label is null" — only the
+        // first is a thing that can happen.
+        let mut prompt_payload = serde_json::Map::new();
+        prompt_payload.insert("subject".into(), subject);
+        prompt_payload.insert("scope".into(), serde_json::json!(scope));
+        prompt_payload.insert("challenge".into(), serde_json::json!(challenge));
+        if let Some(h) = display_hint {
+            prompt_payload.insert("displayHint".into(), serde_json::json!(h));
+        }
+        if let Some(d) = first_message_digest {
+            prompt_payload.insert("firstMessageDigest".into(), serde_json::json!(d));
+        }
         let approve_request = serde_json::json!({
             "id": format!("urn:uuid:{}", Uuid::new_v4()),
             "type": CONSENT_APPROVE_REQUEST_TYPE,
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": { "subject": subject, "scope": scope, "challenge": challenge },
+            "payload": prompt_payload,
         });
         let pending = crate::messaging::registry::PendingResponse {
             recipient_did: approver.to_string(),
@@ -413,18 +446,27 @@ async fn maybe_wake_consent_approver(
         }
     }
     #[cfg(not(feature = "webvh"))]
-    let _ = (&subject, &scope, challenge);
+    let _ = (
+        &subject,
+        &scope,
+        challenge,
+        display_hint,
+        first_message_digest,
+    );
 
     super::step_up::trigger_gateway_wake(state, approver, &mediator_did).await;
 }
 
 #[cfg(not(feature = "didcomm"))]
+#[allow(clippy::too_many_arguments)]
 async fn maybe_wake_consent_approver(
     _state: &AppState,
     _approver: &str,
     _subject: Value,
     _scope: ConsentScope,
     _challenge: &str,
+    _display_hint: Option<&str>,
+    _first_message_digest: Option<&str>,
 ) {
 }
 
@@ -556,12 +598,29 @@ pub(super) async fn handle_revoke(
     };
     let _ = &payload.reason;
     let subject: ConsentSubject = payload.subject.into();
+    // No grant → `notFound` as a *status*, not a reject. The published response
+    // schema declares the value ("`revoked` = the grant was deleted.
+    // `notFound` = no grant existed for the subject."), so a conforming
+    // producer is already written to receive it, and rejecting instead means
+    // the VTA can never emit a value its own schema promises.
+    //
+    // It is also the answer the caller wants. Revoke's post-condition is
+    // "no grant for this subject", and with none stored that already holds:
+    // the conversation is at default-deny either way. An operator revoking
+    // twice, or racing another operator to the same grant, would otherwise get
+    // an error for the outcome they asked for. The `consent/revoke:notFound`
+    // error code stays declared upstream for a consumer that cannot answer at
+    // all; it is not this case.
     match get_consent_grant(&state.consent_ks, &subject).await {
         Ok(Some(_)) => {}
         Ok(None) => {
-            return app_error_to_reject(
+            return success_response(
                 &doc,
-                AppError::NotFound("consent/revoke: no grant for subject".into()),
+                AckResponse {
+                    status: "notFound",
+                    request_id: None,
+                    grant_id: None,
+                },
             );
         }
         Err(e) => return app_error_to_reject(&doc, e),
@@ -812,6 +871,8 @@ mod envelope_push_tests {
             subject,
             ConsentScope::Converse,
             "challenge-xyz",
+            Some("Signal group 'Family'"),
+            None,
         )
         .await;
 
@@ -832,6 +893,19 @@ mod envelope_push_tests {
             pushed[0].body["payload"]["challenge"].as_str(),
             Some("challenge-xyz"),
             "the challenge the approver signs against must survive the re-wrap"
+        );
+        assert_eq!(
+            pushed[0].body["payload"]["displayHint"].as_str(),
+            Some("Signal group 'Family'"),
+            "the operator-facing label is the point of the prompt: without it \
+             the approver is asked to decide about an opaque conversationRef"
+        );
+        assert!(
+            !pushed[0].body["payload"]
+                .as_object()
+                .expect("prompt payload is an object")
+                .contains_key("firstMessageDigest"),
+            "an unset hint is absent, not null"
         );
     }
 }

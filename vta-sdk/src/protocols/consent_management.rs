@@ -19,7 +19,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// `consent/request/1.0` — ask whether an inbound conversation may reach an agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Default` is for the three optional members: `subject`, `scope` and
+/// `challenge` are required by the schema, so a defaulted value of this struct
+/// is not a valid payload — build it as `ConsentRequestBody { subject, scope,
+/// challenge, ..Default::default() }`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConsentRequestBody {
     pub subject: Value,
@@ -27,8 +32,14 @@ pub struct ConsentRequestBody {
     pub scope: String,
     /// base64url nonce, `minLength` 16 — echoed by the matching decision.
     pub challenge: String,
+    /// Operator-facing label for the approval prompt (e.g. `Signal group
+    /// 'Family'`). MUST NOT carry a raw platform address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_hint: Option<String>,
+    /// Multibase multihash over the JCS canonicalization of the held first
+    /// message, binding the request to concrete content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_message_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_hint: Option<String>,
 }
@@ -115,8 +126,8 @@ mod tests {
         );
     }
 
-    /// A request with neither hint carries neither member — the shape
-    /// `consent_request(subject, scope, challenge, None, None)` emits.
+    /// A request with no optional member set carries none of them — the
+    /// required trio and nothing else.
     #[test]
     fn an_unset_hint_is_absent_from_a_request() {
         let body = ConsentRequestBody {
@@ -128,13 +139,37 @@ mod tests {
             }),
             scope: "converse".into(),
             challenge: "Y2hhbGxlbmdlLW5vbmNlLTEyOA".into(),
-            display_hint: None,
-            context_hint: None,
+            ..Default::default()
         };
         let v = serde_json::to_value(&body).expect("serialises");
         assert!(v.get("displayHint").is_none());
+        assert!(v.get("firstMessageDigest").is_none());
         assert!(v.get("contextHint").is_none());
         assert_eq!(v.as_object().expect("object").len(), 3);
+    }
+
+    /// …and every optional member reaches the wire under its camelCase name
+    /// when set. `firstMessageDigest` is the one this was added for: the VTA
+    /// dropped it and the SDK could not send it, so nothing in the stack named
+    /// it and nothing failed.
+    #[test]
+    fn a_request_carries_every_optional_member_when_set() {
+        let body = ConsentRequestBody {
+            subject: serde_json::json!({"platform": "signal"}),
+            scope: "converse".into(),
+            challenge: "Y2hhbGxlbmdlLW5vbmNlLTEyOA".into(),
+            display_hint: Some("Signal group 'Family'".into()),
+            first_message_digest: Some("zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ".into()),
+            context_hint: Some("ctx-a".into()),
+        };
+        let v = serde_json::to_value(&body).expect("serialises");
+        assert_eq!(v["displayHint"], "Signal group 'Family'");
+        assert_eq!(
+            v["firstMessageDigest"],
+            "zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ"
+        );
+        assert_eq!(v["contextHint"], "ctx-a");
+        assert_eq!(v.as_object().expect("object").len(), 6);
     }
 
     /// Set members reach the wire under their canonical camelCase names — the
