@@ -686,6 +686,11 @@ const SUPERSEDED_TASKS: &[SupersededTask] = &[
         reason: "no enum values changed; the bump is canonical-version alignment, so \
                  the whole device slice sits on one version",
     },
+    SupersededTask {
+        uri: trust_tasks::TASK_DEVICE_WIPE_0_1,
+        successor: trust_tasks::TASK_DEVICE_WIPE_0_2,
+        reason: "0.2 spells the `scope` enum value `cacheAndKeys` in camelCase",
+    },
     // ── vault ───────────────────────────────────────────────────────────
     SupersededTask {
         uri: trust_tasks::TASK_VAULT_LIST_0_1,
@@ -693,14 +698,32 @@ const SUPERSEDED_TASKS: &[SupersededTask] = &[
         reason: "0.2 spells secretKind and the related enums in camelCase",
     },
     SupersededTask {
+        uri: trust_tasks::TASK_VAULT_LIST_0_2,
+        successor: trust_tasks::TASK_VAULT_LIST_0_3,
+        reason: "0.3 replaces AttachmentRef's bare-hex `sha256` with a multibase \
+                 `digestMultibase`, which names its own hash algorithm",
+    },
+    SupersededTask {
         uri: trust_tasks::TASK_VAULT_GET_0_1,
         successor: trust_tasks::TASK_VAULT_GET_0_2,
         reason: "0.2 spells the response enums in camelCase",
     },
     SupersededTask {
+        uri: trust_tasks::TASK_VAULT_GET_0_2,
+        successor: trust_tasks::TASK_VAULT_GET_0_3,
+        reason: "0.3 replaces AttachmentRef's bare-hex `sha256` with a multibase \
+                 `digestMultibase`, which names its own hash algorithm",
+    },
+    SupersededTask {
         uri: trust_tasks::TASK_VAULT_UPSERT_0_1,
         successor: trust_tasks::TASK_VAULT_UPSERT_0_2,
         reason: "0.2 spells the secretKind / sealed-envelope / target enums in camelCase",
+    },
+    SupersededTask {
+        uri: trust_tasks::TASK_VAULT_UPSERT_0_2,
+        successor: trust_tasks::TASK_VAULT_UPSERT_0_3,
+        reason: "0.3 replaces AttachmentRef's bare-hex `sha256` with a multibase \
+                 `digestMultibase`, which names its own hash algorithm",
     },
     SupersededTask {
         uri: trust_tasks::TASK_VAULT_RELEASE_0_1,

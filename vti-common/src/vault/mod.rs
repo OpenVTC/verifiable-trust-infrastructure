@@ -331,8 +331,18 @@ pub struct AttachmentRef {
     pub id: String,
     pub name: String,
     pub size_bytes: u64,
-    /// Hex-encoded SHA-256 of the encrypted blob bytes.
-    pub sha256: String,
+    /// Digest over the encrypted blob bytes (post-encryption), so a consumer
+    /// can verify integrity after fetching it.
+    ///
+    /// A multibase-encoded multihash, not the bare hex SHA-256 this carried
+    /// before `vault/_shared/0.3`. Multihash names the algorithm in-band, so
+    /// the wire form survives moving off SHA-256 without another schema
+    /// revision; the old `^[0-9a-f]{64}$` pattern hard-coded one algorithm into
+    /// the contract.
+    ///
+    /// Taken over the bytes as stored, **not** over a canonicalization: the
+    /// blob is an opaque artifact rather than a JSON document.
+    pub digest_multibase: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
 }

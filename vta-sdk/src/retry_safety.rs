@@ -130,6 +130,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_DEVICE_LIST_0_2, ReadOnly),
     (trust_tasks::TASK_DEVICE_DISABLE_0_1, RetrySafe),
     (trust_tasks::TASK_DEVICE_WIPE_0_1, RetrySafe),
+    (trust_tasks::TASK_DEVICE_WIPE_0_2, RetrySafe),
     (trust_tasks::TASK_DEVICE_SET_WAKE_0_1, RetrySafe),
     (trust_tasks::TASK_DEVICE_SET_WAKE_0_2, RetrySafe),
     // ── Messaging ───────────────────────────────────────────────────────
@@ -213,11 +214,14 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Password vault ──────────────────────────────────────────────────
     (trust_tasks::TASK_VAULT_LIST_0_1, ReadOnly),
     (trust_tasks::TASK_VAULT_LIST_0_2, ReadOnly),
+    (trust_tasks::TASK_VAULT_LIST_0_3, ReadOnly),
     (trust_tasks::TASK_VAULT_GET_0_1, ReadOnly),
     (trust_tasks::TASK_VAULT_GET_0_2, ReadOnly),
+    (trust_tasks::TASK_VAULT_GET_0_3, ReadOnly),
     // Upsert is addressed by entry id — a repeat writes the same value.
     (trust_tasks::TASK_VAULT_UPSERT_0_1, RetrySafe),
     (trust_tasks::TASK_VAULT_UPSERT_0_2, RetrySafe),
+    (trust_tasks::TASK_VAULT_UPSERT_0_3, RetrySafe),
     (trust_tasks::TASK_VAULT_DELETE_0_1, RetrySafe),
     (trust_tasks::TASK_VAULT_ARCHIVE_0_1, RetrySafe),
     (trust_tasks::TASK_VAULT_UNARCHIVE_0_1, RetrySafe),
