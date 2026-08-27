@@ -71,8 +71,27 @@ fn super_admin() -> AuthClaims {
 
 // ── enable_rest cells ────────────────────────────────────────────
 
+/// S1 and S3 advertise REST, so enabling it again is a no-op — *when the
+/// document really advertises it*.
+///
+/// These fixtures model the S-state through `config.services` alone: they
+/// cannot publish a DID document, which is why every happy-path cell in this
+/// file is `#[ignore = "needs-webvh-host-fixture"]`. Until #1150 that proxy
+/// held, because `enable` refused on the config by itself.
+///
+/// It no longer does, and deliberately: refusing on the config alone made
+/// config-on-document-silent unmanageable — `update` requires the service on in
+/// both places, so neither operation would touch it. Reconciling that is what
+/// enable is for.
+///
+/// So these two cells now reach the document check and stop there, on a
+/// fixture that seeded no webvh record. That is the honest outcome for what
+/// this fixture actually sets up; asserting `ServiceAlreadyEnabled` would be
+/// asserting the old rule under a state the fixture never established. The
+/// document-advertised case is covered end to end in
+/// `vta-service/tests/mock_vta.rs`, against the stub host.
 #[tokio::test]
-async fn s1_rest_enable_returns_service_already_enabled() {
+async fn s1_rest_enable_reaches_the_document_check() {
     let fx = setup_vta_in_state(ServiceState::S1).await;
     let infra = OpInfra::new(&fx).await;
 
@@ -87,11 +106,16 @@ async fn s1_rest_enable_returns_service_already_enabled() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(err, EnableRestError::ServiceAlreadyEnabled));
+    assert!(
+        matches!(err, EnableRestError::VtaDidRecordMissing(_)),
+        "expected the document check to be reached, got {err:?}"
+    );
 }
 
+/// As [`s1_rest_enable_reaches_the_document_check`] — S3 advertises REST too,
+/// and this fixture models it the same way.
 #[tokio::test]
-async fn s3_rest_enable_returns_service_already_enabled() {
+async fn s3_rest_enable_reaches_the_document_check() {
     let fx = setup_vta_in_state(ServiceState::S3).await;
     let infra = OpInfra::new(&fx).await;
 
@@ -106,7 +130,10 @@ async fn s3_rest_enable_returns_service_already_enabled() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(err, EnableRestError::ServiceAlreadyEnabled));
+    assert!(
+        matches!(err, EnableRestError::VtaDidRecordMissing(_)),
+        "expected the document check to be reached, got {err:?}"
+    );
 }
 
 // ── update_rest cells ────────────────────────────────────────────
