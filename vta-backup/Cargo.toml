@@ -45,7 +45,7 @@ sha2 = { workspace = true }
 subtle = { workspace = true }
 zeroize = { version = "1", features = ["derive"] }
 aes-gcm = { workspace = true }
-argon2 = "0.5"
+argon2 = "0.6"
 async-trait = { version = "0.1", optional = true }
 
 [dev-dependencies]

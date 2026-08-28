@@ -20,8 +20,8 @@
 //! to brute-force.
 
 use argon2::Argon2;
-use argon2::password_hash::rand_core::OsRng as PhcOsRng;
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::phc::PasswordHash;
+use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use rand::RngExt;
 use vti_common::error::AppError;
 
@@ -53,9 +53,12 @@ pub fn generate() -> String {
 /// hashing cost is paid once at invite-mint and once at claim
 /// time; well below operator-perceivable latency.
 pub fn hash(secret: &str) -> Result<String, AppError> {
-    let salt = SaltString::generate(&mut PhcOsRng);
+    // `password-hash` 0.6 generates the salt itself (`getrandom`, on by
+    // default) rather than taking one. The 0.5 call passed an explicitly
+    // generated `SaltString`; dropping it is not a weakening — the library
+    // draws a large random salt from the same OS source.
     Argon2::default()
-        .hash_password(secret.as_bytes(), &salt)
+        .hash_password(secret.as_bytes())
         .map(|h| h.to_string())
         .map_err(|e| AppError::Internal(format!("claim secret hash failed: {e}")))
 }
@@ -69,7 +72,7 @@ pub fn verify(secret: &str, stored_hash: &str) -> Result<bool, AppError> {
         .map_err(|e| AppError::Internal(format!("malformed claim secret hash: {e}")))?;
     match Argon2::default().verify_password(secret.as_bytes(), &parsed) {
         Ok(()) => Ok(true),
-        Err(argon2::password_hash::Error::Password) => Ok(false),
+        Err(argon2::password_hash::Error::PasswordInvalid) => Ok(false),
         Err(e) => Err(AppError::Internal(format!(
             "claim secret verify failed: {e}"
         ))),
@@ -125,6 +128,32 @@ mod tests {
             format!("{err}").contains("malformed claim secret hash"),
             "expected malformed-hash error, got: {err}"
         );
+    }
+
+    /// A PHC string written by **argon2 0.5**, verified by whatever version
+    /// is linked now.
+    ///
+    /// Claim-secret hashes are persisted at invite-mint and read back at claim
+    /// time, so they outlive any upgrade of the hashing crate. Every other test
+    /// here hashes and verifies with the same linked version, which cannot fail
+    /// on a format or parameter change — both sides move together. This one
+    /// cannot move: the string is frozen, generated against 0.5 before the 0.6
+    /// bump, so it fails if a future upgrade stops reading what we already
+    /// wrote to disk.
+    ///
+    /// Regenerate only when deliberately migrating stored hashes, and then only
+    /// alongside a migration for the rows already out there.
+    #[test]
+    fn verifies_a_hash_written_by_the_previous_argon2() {
+        const WRITTEN_BY_0_5: &str = "$argon2id$v=19$m=19456,t=2,p=1$\
+                                      rYUqQxBXAxmC08nsOcap4Q$\
+                                      FO7Xh+ZqT32UeAoqfQtwb7dRcygZ8xxYYBS63AXGqkk";
+        assert!(
+            verify("CLAIM-SECRET-05", WRITTEN_BY_0_5).unwrap(),
+            "a hash written by argon2 0.5 no longer verifies — every claim \
+             secret minted before the upgrade is unusable"
+        );
+        assert!(!verify("WRONG-SECRET", WRITTEN_BY_0_5).unwrap());
     }
 
     #[test]

@@ -62,9 +62,23 @@ multibase = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 
 # AWS Secrets Manager backend (aws-secrets feature).
-aws-sdk-secretsmanager = { version = "1", optional = true }
-aws-config = { version = "1", features = [
+#
+# `default-features = false` + an explicit `default-https-client`, matching
+# `vta-tee`. The SDK's own default feature set still turns on the deprecated
+# `rustls` feature, which resolves to `aws-smithy-http-client`'s
+# `legacy-rustls-ring` and pulls **rustls 0.21** — and with it
+# `rustls-webpki` 0.101, which carries three open advisories (one high: a
+# DoS panic on a malformed CRL BIT STRING) and has no fixed release in the
+# 0.101 line. `default-https-client` selects the modern `rustls-aws-lc`
+# path instead, so the legacy tree is never built.
+aws-sdk-secretsmanager = { version = "1", default-features = false, features = [
+  "default-https-client",
+  "rt-tokio",
+], optional = true }
+aws-config = { version = "1", default-features = false, features = [
   "behavior-version-latest",
+  "default-https-client",
+  "rt-tokio",
 ], optional = true }
 # GCP Secret Manager backend (gcp-secrets feature).
 google-cloud-secretmanager-v1 = { version = "1", optional = true }
