@@ -44,12 +44,15 @@ interface JoinRequestRow {
 interface JoinRequestsPage {
   items: JoinRequestRow[];
   nextCursor: string | null;
-  total_estimate?: number;
+  totalEstimate?: number;
 }
 
+// What `join-requests/decide/0.1` actually answers with: the decided
+// request's id and its new status, plus the credentials an approval issued.
+// It does not echo the row back.
 interface DecideResponse {
-  request: JoinRequestRow;
-  member?: unknown;
+  requestId: string;
+  status: JoinStatus;
   vmc?: unknown;
   roleVec?: unknown;
 }
@@ -71,10 +74,18 @@ async function fetchJoinRequests(params: {
   });
 }
 
+// `join-requests/show/0.1` publishes `{request: …}`; the row was returned
+// bare until #1093. Unwrapped here so the detail view reads a flat row.
+interface JoinRequestEnvelope {
+  request: JoinRequestRow;
+}
+
 async function fetchJoinRequest(id: string): Promise<JoinRequestRow> {
-  return getJson<JoinRequestRow>(`/v1/join-requests/${id}`, {
-    trustTask: TRUST_TASK_SHOW,
-  });
+  const body = await getJson<JoinRequestEnvelope>(
+    `/v1/join-requests/${id}`,
+    { trustTask: TRUST_TASK_SHOW },
+  );
+  return body.request;
 }
 
 // One decision endpoint (`decide/0.1`) carries both outcomes as

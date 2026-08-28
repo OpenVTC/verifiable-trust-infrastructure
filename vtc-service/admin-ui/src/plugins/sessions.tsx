@@ -115,8 +115,8 @@ export function Sessions() {
   });
 
   const allSessions = sessionsQuery.data ?? [];
-  const myDid = whoami?.did;
-  const mySessionId = whoami?.sessionId;
+  const myDid = whoami?.session.subject;
+  const mySessionId = whoami?.session.id;
 
   // Filter on substring match against either identifier, then sort.
   // useMemo so revoke-button clicks (which mutate React Query

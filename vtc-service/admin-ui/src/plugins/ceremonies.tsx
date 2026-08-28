@@ -63,7 +63,7 @@ const QUEUE_LINKS: Record<string, { label: string; to: string }> = {
 
 interface JoinRequestsPage {
   items: unknown[];
-  total_estimate?: number;
+  totalEstimate?: number;
 }
 
 async function fetchPendingCount(): Promise<number> {
@@ -71,7 +71,7 @@ async function fetchPendingCount(): Promise<number> {
     "/v1/join-requests?status=pending&limit=50",
     { trustTask: TRUST_TASK_JOIN_REQUESTS },
   );
-  return page.total_estimate ?? page.items.length;
+  return page.totalEstimate ?? page.items.length;
 }
 
 type Effect = "allow" | "deny" | "refer" | "request_more";

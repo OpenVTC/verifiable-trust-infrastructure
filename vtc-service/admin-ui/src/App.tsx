@@ -156,7 +156,7 @@ export default function App() {
   // Scope-filtered plugins surface server errors as 403s anyway, but
   // hiding them from the nav keeps the UX coherent.
   const isSuperAdmin =
-    probe.data.role === "admin" && probe.data.allowedContexts.length === 0;
+    probe.data.roles.includes("admin") && probe.data.scopes.length === 0;
   const plugins = allPlugins.filter((p) => {
     if (!p.scopes || p.scopes.length === 0) return true;
     if (p.scopes.includes("super-admin")) return isSuperAdmin;
@@ -281,9 +281,9 @@ function SessionBadge({ whoami }: { whoami: WhoamiResponse }) {
 
   return (
     <div className="session-badge">
-      <div className="session-did" title={whoami.did}>
+      <div className="session-did" title={whoami.session.subject}>
         <span className="session-label">Signed in as</span>
-        <code>{shortenDid(whoami.did)}</code>
+        <code>{shortenDid(whoami.session.subject)}</code>
       </div>
       <button
         type="button"

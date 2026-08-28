@@ -243,13 +243,33 @@ export const fetchDiagnostics = (): Promise<DiagnosticsResponse> =>
     trustTask: DIAGNOSTICS_TASK,
   });
 
+/**
+ * The canonical `Session` shape, as published by the `auth/whoami/0.1`
+ * component. Nested under `session` — #1112 moved the whole payload here
+ * from the flat `{did, role, sessionId, accessExpiresAt, allowedContexts}`
+ * this console used to read.
+ */
+export interface SessionView {
+  id: string;
+  /** The DID this session authenticates — was the top-level `did`. */
+  subject: string;
+  /** RFC3339. The JWT's `iat`. */
+  issuedAt: string;
+  /** RFC3339. Was the epoch-seconds `accessExpiresAt`. */
+  expiresAt: string;
+  /** Authentication methods per RFC 8176. Omitted when the token records none. */
+  amr?: string[];
+  /** Authentication context class per OIDC Core §2. Omitted when unrecorded. */
+  acr?: string;
+}
+
 /** Shape returned by `GET /v1/auth/whoami`. */
 export interface WhoamiResponse {
-  did: string;
-  role: string;
-  sessionId: string;
-  accessExpiresAt: number;
-  allowedContexts: string[];
+  session: SessionView;
+  /** The caller's roles. A single role is one entry — was the scalar `role`. */
+  roles: string[];
+  /** The contexts this session may act in — was `allowedContexts`. */
+  scopes: string[];
 }
 
 const WHOAMI_TASK = "https://trusttasks.org/spec/auth/whoami/0.1";

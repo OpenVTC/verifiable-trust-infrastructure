@@ -82,7 +82,7 @@ interface MemberRow {
 interface MembersPage {
   items: MemberRow[];
   nextCursor: string | null;
-  total_estimate?: number;
+  totalEstimate?: number;
 }
 
 async function fetchMembers(params: {
@@ -99,10 +99,18 @@ async function fetchMembers(params: {
   });
 }
 
+// `members/show/0.1` publishes `{member: …}`; the row was returned bare until
+// #1093. Unwrapped here so the detail view keeps reading a flat `MemberRow`.
+interface MemberEnvelope {
+  member: MemberRow;
+}
+
 async function fetchMember(did: string): Promise<MemberRow> {
-  return getJson<MemberRow>(`/v1/members/${encodeURIComponent(did)}`, {
-    trustTask: TRUST_TASK_SHOW,
-  });
+  const body = await getJson<MemberEnvelope>(
+    `/v1/members/${encodeURIComponent(did)}`,
+    { trustTask: TRUST_TASK_SHOW },
+  );
+  return body.member;
 }
 
 interface RequestVmcResponse {
@@ -122,9 +130,11 @@ async function requestMemberVmc(did: string): Promise<RequestVmcResponse> {
   );
 }
 
+// As on the sign-in path: `login/start/0.2` sends the inner WebAuthn options,
+// not webauthn-rs's `{publicKey: …}` wrapper (#1112).
 interface StepUpStartResponse {
   authId: string;
-  options: { publicKey: JsonPublicKeyOptions };
+  options: JsonPublicKeyOptions;
 }
 
 /** Elevate this session with a passkey user-verification gesture.
@@ -140,7 +150,7 @@ async function stepUpSession(): Promise<void> {
   );
 
   const publicKey = decodePublicKeyOptions(
-    start.options.publicKey,
+    start.options,
   ) as PublicKeyCredentialRequestOptions;
   const credential = (await navigator.credentials.get({
     publicKey,
@@ -194,10 +204,17 @@ interface RemovedMemberRow {
   status: string;
 }
 
+// `members/removed/0.1` publishes `{removed: […]}`; the handler returned a
+// top-level array until #1082.
+interface RemovedMembersResponse {
+  removed: RemovedMemberRow[];
+}
+
 async function fetchRemovedMembers(): Promise<RemovedMemberRow[]> {
-  return getJson<RemovedMemberRow[]>("/v1/members/removed", {
+  const body = await getJson<RemovedMembersResponse>("/v1/members/removed", {
     trustTask: TRUST_TASK_REMOVED,
   });
+  return body.removed;
 }
 
 async function purgeMember(did: string): Promise<void> {
@@ -443,9 +460,9 @@ function MembersList() {
           >
             Next page <ArrowRight size={12} aria-hidden="true" />
           </button>
-          {query.data?.total_estimate !== undefined && (
+          {query.data?.totalEstimate !== undefined && (
             <span className="muted">
-              ~{query.data.total_estimate} total
+              ~{query.data.totalEstimate} total
             </span>
           )}
         </div>

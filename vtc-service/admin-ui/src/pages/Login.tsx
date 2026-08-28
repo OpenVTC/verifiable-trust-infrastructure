@@ -68,15 +68,18 @@ export function Login() {
   const signIn = async () => {
     setPhase({ kind: "running" });
     try {
+      // `login/start/0.2` sends the *inner* WebAuthn options — the value that
+      // goes in `navigator.credentials.get({ publicKey: … })` — not
+      // webauthn-rs's `{publicKey: …}` wrapper. #1112 dropped the wrapper.
       const start = await postJson<{
         authId: string;
-        options: { publicKey: JsonPublicKeyOptions };
+        options: JsonPublicKeyOptions;
       }>("/v1/auth/passkey-login/start", undefined, {
         trustTask: TRUST_TASK_START,
       });
 
       const publicKey = decodePublicKeyOptions(
-        start.options.publicKey,
+        start.options,
       ) as PublicKeyCredentialRequestOptions;
 
       const credential = (await navigator.credentials.get({
