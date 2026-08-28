@@ -1,0 +1,72 @@
+# Dependabot version updates.
+#
+# Security *alerts* were already on — they are a repo-level default, and they
+# are what surfaced the three `rustls-webpki` advisories fixed in #1158. What
+# was missing is version updates: nothing proposed an ordinary bump, so the
+# tree drifted until someone went looking. #1158 was that someone, by hand.
+#
+# The point of this file is that the next one is a pull request instead.
+
+version: 2
+updates:
+  # ── Rust ──────────────────────────────────────────────────────────────
+  # One workspace, one manifest directory as far as Dependabot is concerned:
+  # it reads the root `Cargo.toml` + `Cargo.lock` and covers every member.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Enough headroom for a normal week without burying the queue. A security
+    # advisory is not subject to this cap.
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      # `!` is added by hand when a bump is breaking — the commit lint accepts
+      # `chore(deps)!:`, and a bot cannot tell which bumps deserve it.
+      include: scope
+    groups:
+      # Patch and minor bumps are the bulk of the noise and almost never need
+      # to be read individually. Grouping them keeps the interesting PRs —
+      # the majors — legible.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+      # The AWS SDK releases as a set of ~10 crates that must move together;
+      # ungrouped, one week's bump is ten PRs that each fail to build alone.
+      aws-sdk:
+        patterns:
+          - "aws-*"
+    ignore:
+      # Owned by this workspace and released by release-plz. Dependabot would
+      # race it and propose bumps for crates the release PR is already moving.
+      - dependency-name: "vta-*"
+      - dependency-name: "vti-*"
+      - dependency-name: "vtc-*"
+
+  # ── GitHub Actions ────────────────────────────────────────────────────
+  # `dtolnay/rust-toolchain@master` and `taiki-e/install-action@cargo-semver-checks`
+  # are branch/tag refs Dependabot cannot version, and it leaves them alone.
+  # The rest are pinned majors it can move.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # ── Container base images ─────────────────────────────────────────────
+  # Two Dockerfiles at the repo root: the service image and the Nitro enclave
+  # image. A stale base is how a patched CVE fails to reach the artifact even
+  # when the Rust tree is clean.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "chore(docker)"
