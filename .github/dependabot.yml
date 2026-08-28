@@ -21,7 +21,12 @@ updates:
     # advisory is not subject to this cap.
     open-pull-requests-limit: 5
     commit-message:
-      prefix: "chore(deps)"
+      # `chore`, not `chore(deps)`: `include: scope` appends the scope itself,
+      # so a prefix that already carries one yields `chore(deps)(deps): …`,
+      # which the commit-lint regex rejects. It checks the PR *title*, so every
+      # Dependabot PR opened under the first version of this file was red on a
+      # check that had nothing to do with the bump.
+      prefix: "chore"
       # `!` is added by hand when a bump is breaking — the commit lint accepts
       # `chore(deps)!:`, and a bot cannot tell which bumps deserve it.
       include: scope

@@ -1,0 +1,61 @@
+name: PR title
+
+# Split out of ci.yml for one reason: the trigger.
+#
+# `on: pull_request` with no `types:` defaults to opened/synchronize/reopened,
+# so an `edited` event never fires — and this check reads
+# `github.event.pull_request.title`. In ci.yml that meant a PR whose only
+# problem was its title could never go green by fixing the title: re-running
+# the job replays the original event payload, so it re-reads the old one, and
+# the only way out was to push a commit that changed nothing.
+#
+# Five Dependabot PRs hit exactly that. Adding `edited` to ci.yml's own trigger
+# would re-run docker builds, the enclave build and the mobile build on every
+# description tweak, which is why this is its own file: the one check that
+# depends on PR metadata is the one that reruns when PR metadata changes.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  commit-lint:
+    # The changelog is generated from commit messages, so the message IS the
+    # user-facing artefact. A squash merge makes the PR TITLE the commit
+    # subject, which is why the title is what gets linted.
+    #
+    # Not a style rule: a subject git-cliff cannot parse lands under "Other" in
+    # the changelog of a published crate, where an external consumer reads it.
+    name: commit lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Conventional-commit PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          # type(optional scope)(optional !): subject
+          if printf '%s' "$TITLE" \
+            | grep -qE '^(feat|fix|docs|test|ci|build|perf|refactor|chore|security)(\([a-z0-9._/-]+\))?!?: .+'; then
+            echo "ok: $TITLE"
+            exit 0
+          fi
+          echo "::error title=PR title is not a conventional commit::$TITLE"
+          cat <<'EOF'
+          The PR title becomes the squash-merge commit subject, and the changelog
+          of every published crate is generated from those subjects.
+
+            <type>(<optional scope>): <subject>
+
+          type: feat fix docs test ci build perf refactor chore security
+          Append ! for a breaking change, e.g. feat(sdk)!: ...
+
+          Examples from this repo:
+            feat(tsp): a VTA can speak TSP without DIDComm
+            fix(did-webvh): write the DID log where the operator asked
+          EOF
+          exit 1
