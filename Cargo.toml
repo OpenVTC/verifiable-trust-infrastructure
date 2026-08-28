@@ -219,7 +219,7 @@ multibase = "0.9"
 # `CryptoProvider` for every algorithm and is already in our dep tree
 # via `aws-sdk-kms`, so we don't add a new transitive. The backend is
 # the AWS-vetted libcrypto fork; same primitives, no `rsa` crate.
-jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 
 # AWS-LC backend used directly by `vti-webauthn` for ECDSA P-256 WebAuthn
 # assertion verification. Already in our dep tree via `jsonwebtoken`'s
