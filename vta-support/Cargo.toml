@@ -2,7 +2,7 @@
 name = "vta-support"
 description = "Shared mid-layer VTA services — trust-context storage, the sealed-transfer seal helper, and the sealed-bootstrap nonce store"
 readme = "README.md"
-version = "0.2.12"
+version = "0.3.0"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -21,7 +21,7 @@ repository.workspace = true
 
 [dependencies]
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.2" }
-vta-config = { path = "../vta-config", version = "0.3" }
+vta-config = { path = "../vta-config", version = "0.4" }
 # `encryption` is REQUIRED, not optional: `seal.rs` calls
 # `KeyspaceHandle::with_encryption`, which is `#[cfg(feature = "encryption")]`.
 # Omitting it still built here — another workspace member enables the feature
@@ -29,8 +29,8 @@ vta-config = { path = "../vta-config", version = "0.3" }
 # verifies each crate in isolation, where nothing enables it, so the method
 # does not exist and the tarball fails to compile. That is what broke the
 # publish run for 0.2.0.
-vti-common = { path = "../vti-common", version = "0.14", features = ["encryption"] }
-vta-sdk = { path = "../vta-sdk", version = "0.30", features = ["sealed-transfer"] }
+vti-common = { path = "../vti-common", version = "0.15", features = ["encryption"] }
+vta-sdk = { path = "../vta-sdk", version = "0.31", features = ["sealed-transfer"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

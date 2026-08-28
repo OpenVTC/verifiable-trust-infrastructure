@@ -2,6 +2,804 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.21.0...vta-service-v0.22.0) — 2026-08-28
+
+
+### Added
+
+- **credentials**: Move vta/credentials/issue to 0.2 ([#1159](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1159))
+
+The last family behind its latest published spec. Checked against
+  `website/registry.json` rather than the schema files on disk: every other
+  implemented family is already on the newest published version.
+
+  0.1 and 0.2 have identical payloads. The response differs only in how it is
+  written — 0.2 composes it from `credentials/_shared/0.2`'s
+  `IssuedCredentialBase` instead of restating the members inline, which is
+  what stops the two drifting. The composition brings one new member,
+  `issuedAt`.
+
+  That member costs nothing to fill: `IssuedCredentialRecord` has carried
+  `issued_at` since the family existed, and 0.1 simply had nowhere to put it,
+  so the value was being computed, stored, and then dropped on the way out.
+  It stays `Option` on our side because the shared definition declares it
+  optional — a response without it is schema-valid and must still
+  deserialize — but the VTA always sends it.
+
+  The conformance sweep caught something on the way through, which is what it
+  is for. Its drifted-witness check asserts the generated type rejects an
+  unknown member, and 0.2's response type does not: closing a composed object
+  requires `unevaluatedProperties` (`additionalProperties` is evaluated
+  per-subschema and would reject the `allOf`-supplied members), and
+  trust-tasks-codegen maps only `additionalProperties: false` onto
+  `deny_unknown_fields`. So the generated struct is permissive where 0.1's
+  was strict.
+
+  The wire is unaffected — the schema itself is strict, so `validate_payload`
+  still rejects the member. What is lost is the type-level guard, which makes
+  the drifted-witness check pass vacuously. Recorded in
+  `PERMISSIVE_GENERATED_TYPE` with its reason and skipped rather than left to
+  give false assurance. The fix belongs in the codegen; deleting the entry
+  re-arms the check.
+
+- **compliance**: Enforce SPEC §7.2's flag-driven checks, and sign what we send ([#1146](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1146))
+
+The VTA enforced none of the four checks a *Trust Task specification* declares
+  for itself. It now enforces all of them, and the SDK produces documents that
+  satisfy them.
+
+    * item 5b — `recipient` REQUIRED: all 109 dispatched specs
+    * item 7a — `proof` REQUIRED: 72 of them
+    * item 8  — audience binding
+    * §7.3 17 — `issuedAt` REQUIRED: 70 of them
+
+  `spec_policy_for` (trust-tasks-rs 0.17.1, trustoverip/dtgwg-trust-tasks-tf#321,
+  authored for this) keys those constants by Type URI. That is what makes the
+  check reachable at all: `enforce_spec_policy` reads them off `P`, and the
+  dispatch spine holds a `TrustTask<Value>`. The alternative was a 109-entry
+  URI→type table in this repo, duplicating what the codegen already emits.
+
+  The spine's own comment claimed "each slice's typed handler runs it after
+  `parse_payload`". No handler did — that comment was the only occurrence of
+  `enforce_audience_binding` in the repository.
+
+  **This is an auth-model change, not a wire-format one.** A bearer token
+  authenticates the connection; §7.2 item 7 admits no transport substitute, so
+  every producer must now sign every document. `vta-sdk` gains `ClientIdentity`
+  (client DID, its key, the VTA's DID) and signs in `dispatch_trust_task`.
+  `SessionStore::connect` supplies it from the stored session — re-read *after*
+  `ensure_authenticated`, because a session that needed rotation now holds a
+  different DID and key, and signing with the pre-rotation pair produces a
+  document whose issuer no longer matches the identity its token authenticates.
+
+  `issuer` and `recipient` are set in `build_task_document` rather than at each
+  call site, for the reason `issuedAt` already was: a member the framework
+  requires of every document belongs to the one function that builds every
+  document. Signing is unconditional rather than keyed on the flag — a proof on a
+  task that merely RECOMMENDs one is legal and strictly more attributable — but
+  it must never happen without an in-band recipient, and both come from the same
+  `ClientIdentity` so they cannot come apart.
+
+  Test identities are now derived from one-byte seeds. `did:key:zTestAdmin` was
+  not a `did:key`: nothing resolves it and no document issued by it can carry a
+  verifiable proof. That was fine while proofless documents were accepted. The
+  seed gives a DID and the key behind it from one place, which is what item 6
+  needs — it rejects a document whose in-band issuer disagrees with the
+  transport-authenticated identity, so a test minting a token for one DID and
+  signing with another is refused for that rather than for what it meant to check.
+
+  One real bug surfaced in the fixtures: `delegated_consent_e2e`'s `sign_as` did
+  not clear an existing proof before signing. `prepare_sign_input` hashes the
+  document as given, so signing over one that already carries a proof yields a
+  signature covering bytes no verifier reconstructs — it fails as `proofInvalid`,
+  which reads like a key problem and is not one.
+
+  Coverage holds at 88/109 with zero response-conformance violations.
+
+- **tasks**: Catch up to the registry on vault 0.3, device/wipe 0.2 and credentials/issue 0.2 ([#1145](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1145))
+
+Five of the six families vta-sdk lagged the registry on. The sixth,
+  `provision/integration/0.3`, is not here: its response schema could never
+  validate — `required` named a `digest` the 0.2→0.3 rename had already removed
+  from `properties`, against `additionalProperties: false`. Fixed upstream in
+  trustoverip/dtgwg-trust-tasks-tf#324; VTI adopts it once that publishes.
+
+  **vault/{list,get,upsert} 0.3.** `AttachmentRef.sha256` — hex, with SHA-256
+  pinned by an `^[0-9a-f]{64}$` pattern — becomes `digestMultibase`, a multibase
+  multihash that names its own algorithm. Worth stating plainly: nothing in this
+  service has ever constructed an `AttachmentRef`. Every site is `vec![]` and
+  `vault/upsert` only carries forward whatever an entry already had, so the
+  member has never reached the wire and this is a type-level rename today. The
+  wire contract is what changes, and it changes so that moving off SHA-256 later
+  is a value change rather than another schema revision.
+
+  **device/wipe 0.2.** `cache-and-keys` → `cacheAndKeys`, the same recasing the
+  rest of the device slice took. Its constant carried "No 0.2 spec exists
+  upstream; this stays on 0.1" while `specs/device/wipe/0.2` had been published
+  for some time. The replacement comment says so: a comment asserting an absence
+  is a claim about the registry that nothing re-checks, and it is why nobody
+  looked again.
+
+  **vta/credentials/issue 0.2.** The request payload is unchanged. The response
+  stops restating the shared `IssuedCredential` inline and composes it through
+  `allOf` + `unevaluatedProperties` — same members, same required set, identical
+  wire form. So the two versions share a dispatch arm rather than a transform.
+
+  The edge-transform table goes from one wire URI per spec to a list.
+  `vault/*` 0.3 differs from 0.2 only in `AttachmentRef`, which is not an enum
+  value and not at any path the transform touches — so it down-converts to the
+  same canonical handler by the same casing rules. Giving it its own row would
+  have duplicated every path and left the two to be kept in step by hand.
+
+  `upconvert_response` now answers as the version the caller *sent*. With several
+  wire URIs per spec, retyping a response to a fixed one would be refused by a
+  client validating against the version it asked for.
+
+  Two guards needed widening, and both were right to fail first:
+
+  * `superseded_tasks_are_dispatched` did not count an edge-transformed URI as
+    served. Its premise is that a row whose counter can never move reads the same
+    as "safe to retire" — but the counter *does* move for these, because
+    `dispatch_trust_task_core` reads the superseded row from the URI as it
+    arrived, before the down-convert. The successor half of the pair already
+    accepted them.
+  * the wire/deprecation parity test checked only the 0.1 hop. A spec accepting
+    0.1, 0.2 and 0.3 needs a row per superseded version, or the middle one is
+    retired on no evidence at all.
+
+  `ALL_URIS` and `retry_safety` carry the four new URIs; the census caught their
+  absence, which is what it is for.
+
+- **vta**: Close the CI cache class, map the 0.5.0 lifecycle, cover more tasks ([#1134](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1134))
+
+Three things belonging to the same release.
+
+- **vta**: Mint the consent ceremony's correlator instead of deriving it ([#1133](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1133))
+
+* feat(vta): mint the consent ceremony's correlator instead of deriving it
+
+  Framework 0.5.0, *Identifier correlation and linkability*: `id`, `threadId` and
+  `ceremony.enactment` MUST be freshly minted and unguessable, and MUST NOT be
+  derived from subject data.
+
+  The `task-consent/granted` notice threaded on `wire_digest` — a function of the
+  task payload, and the same string the document carries as `payloadDigest`.
+
+  The challenge is 256 bits of randomness, so the digest is not guessable from
+  the payload; this is not the "UUIDv5 over a subject identifier" case. The
+  mediator is the exposure. `threadId` is routing metadata, and the mediator also
+  forwards documents carrying `payloadDigest`; with the same value in both it can
+  tie the routing it performs to the digest it carries and link the refusal, the
+  approval pushes and the notice into one ceremony with named counterparties.
+
+  `PendingTaskConsent` gains a minted `correlator`, created alongside the
+  challenge. The notice threads on it and the body still carries `payloadDigest`
+  unchanged, so a requester matching on the digest is unaffected. The requester
+  is told the correlator in the `auth:consent_required` refusal beside the digest
+  it already receives.
+
+  Smaller than it first looked: the request push to approvers already threaded on
+  the request document's own id, so only the requester-facing notice was derived.
+  The notice is produced but never consumed in this workspace and is explicitly
+  non-load-bearing — the grant check at re-submit is the real gate.
+
+- **vta**: Bound the error `details` member ([#1131](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1131))
+
+Framework 0.5.0, *Bounding `details`*. `details` was the one error-payload
+  member with no size bound, travelling in the direction no producer-side bound
+  reaches: a producer caps what it sends, nothing caps what comes back.
+
+  This service had a live instance. A policy denial puts the Rego module's
+  `explanation` on the wire, and that string is authored by whoever wrote the
+  policy with no length anybody checked.
+
+  The bound is 4096 bytes of JCS or 16 immediate members — 0.5.0's default where
+  a specification declares none — applied in `reject_with`, the single funnel
+  every rejection passes through, rather than at the thirty `details: Some(...)`
+  construction sites. A new site cannot be added that skips it.
+
+  An oversized `details` is ignored and never grounds to discard the `code`: the
+  code is what the receiving party needs, and dropping the rejection because its
+  annex was too long would turn a verbose policy into an unexplained failure. An
+  uncanonicalisable `details` is dropped too — it cannot be measured, so it does
+  not go out.
+
+- **vta**: Stop error messages from being a probing oracle ([#1130](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1130))
+
+Framework 0.5.0 makes the message-sanitization rule normative for every code,
+  not just `identityMismatch`: a `message` MUST NOT reveal consumer-internal
+  state, the contested value of a mismatched party, or resolver, verifier, or
+  key-status internals. Every rejection is emitted on the same path, to the same
+  possibly-unauthenticated party, generally before any authorization decision has
+  been reached.
+
+  This service violated two of the three.
+
+  `app_error_to_reject` passed `AppError::Internal`'s cause into the `message`
+  verbatim, so a caller learned "ATM not configured — server cannot pack DIDComm
+  envelopes" or "log entry has no update_keys" — the deployment's shape, its
+  configuration, and which invariant just broke. The catch-all arm was the
+  quieter half: it rendered whatever `Display` an error happened to have, so a
+  variant added later would publish itself with nobody choosing to. Both now land
+  on one fixed string and log the cause for the operator.
+
+  `DiProofError`'s `Display` rendered the underlying verifier error, and that
+  reaches the wire through `PermissionDenied`. A caller could read which
+  cryptosuite ran and how verification failed. The detail moves to a `cause()`
+  that is deliberately not reachable through `Display`, since the defect was that
+  the wire rendering and the operator rendering were one function.
+
+  `notFound`, `malformedRequest` and `permissionDenied` pass through unchanged:
+  they describe the caller's own request back to it, which is not
+  consumer-internal state.
+
+  `an_internal_error_does_not_say_internal_error_twice` asserted the cause was on
+  the wire. Its subject was a doubled prefix, which the fixed string also
+  settles; it is now `an_internal_error_reveals_no_internal_state`, joined by
+  `the_catch_all_arm_is_opaque_too`.
+
+- **vta**: Bound the replay record by the acceptance window, not by capacity ([#1127](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1127))
+
+The follow-up #1126 named. VTI now honours SPEC §7.2's same-bound rule: the
+  acceptance window and the duplicate-execution record's retention are one
+  instant, derived from one policy.
+
+  #1126 shipped the ReplayGuard without a window, leaving the record bounded by
+  InMemoryReplayGuard's capacity. That is not "no expiry so entries live
+  forever" — it is LRU, which makes the window load-dependent: on a quiet service
+  the protection is effectively unbounded, but under burst the eviction horizon
+  can fall below any sensible acceptance window and a replay executes a second
+  time. The defence was weakest exactly when the service was busiest.
+
+  Ten minutes rather than the library's five: this service routes over a mediator
+  that can hold a message while a recipient reconnects. It is the same 600s the
+  retired replay::check_and_record used as its dedup TTL, now bounding acceptance
+  as well as retention.
+
+  Most of the diff is the fixture migration the window forced, and none of it was
+  the policy being wrong. 65 envelopes carried no issuedAt at all — with a window
+  set, a document with neither issuedAt nor expiresAt cannot be placed in time
+  and is refused, which is what §7.2 requires. 12 more carried fixed literals
+  already days stale.
+
+  One subtlety: the first pass used to_rfc3339(), which renders the offset as
+  +00:00 where TrustTask's typed DateTime<Utc> round-trip renders Z. That broke a
+  signed fixture's proof — a document signed in one spelling and verified after
+  the other is a different document, which is the §8.4 distinction #1126 added
+  idConflict for, arriving as a signature failure instead. Every stamp now uses
+  to_rfc3339_opts(SecondsFormat::Secs, true).
+
+- **vta**: Adopt ReplayGuard and FreshnessPolicy, deleting the hand-rolled pair ([#1126](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1126))
+
+The last of the three stopgaps #1121 unblocked. Deletes trust_tasks/replay.rs
+  and the hand-rolled freshness bounds from #1117.
+
+  They land together because ConsumeChecks bundles them in one argument: SPEC
+  §7.2 makes the acceptance window and the replay record's retention the same
+  bound, and splitting them is how a deployment ends up with a ten-minute record
+  against an unbounded window believing it has a replay defence. This service had
+  exactly that.
+
+  The retired module keyed on (actor, id) and kept no digest, which cost two
+  things. It never produced idConflict — item 11 requires a different document
+  under an accepted id to be rejected, and with no digest that case was silently
+  absorbed as a retry, the one outcome §7.2 and §8.4 both rule out. And the key
+  was wrong: §7.2 fixes it as the document id alone, so actor-scoping let two
+  callers each spend the same id. A duplicate is also no longer answered with
+  taskFailed, which §7.2 forbids outright.
+
+  A failed outcome releases the claim, mirroring the idempotency layer beside it;
+  a successful one records its response so a retry is answered with the result.
+  The Err arm fails closed with a retryable unavailable, and the non_exhaustive
+  ReplayVerdict gets an arm that refuses rather than executes.
+
+  No acceptance window yet, and that was measured rather than assumed:
+  with_max_age(10 minutes) scoped to consequential tasks failed 41 assertions
+  across 10 suites with expired, because the suite is full of documents stamped
+  hours or days in the past. Fixing those alters what the service accepts and
+  belongs in a change whose subject is the window.
+
+
+
+### Fixed
+
+- **consent**: Sign the approve-request prompt sent to an approver's device ([#1180](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1180))
+
+`consent/approve-request/0.1` was constructed as a bare `id` / `type` /
+  `issuedAt` / `payload` document and buffered to an approver's mediator for
+  delivery to their phone, where a human is asked to approve something. It
+  carried no proof, so nothing the device could check authenticated it.
+
+  This is the odd one out rather than a deliberate exception. The sibling
+  task-consent request in `consent_request.rs` already signs with this key and
+  cryptosuite, and the step-up prompt's mobile parser refuses to render
+  without a verified proof from an enrolled issuer
+  (`vta-mobile-core::task::parse_step_up_request` — "no valid proof from an
+  enrolled executor, no prompt"). Both end up in front of a person.
+
+  `issuer` and `recipient` come with the proof, not as decoration: SPEC §7.2
+  item 5b makes `recipient` REQUIRED and item 6 requires the in-band issuer to
+  match the transport identity. A proof over a document naming neither party
+  is replayable at a different approver, which is most of what the signature
+  was supposed to buy.
+
+  Fails closed. The wake path is best-effort and already warns on a failed
+  buffer, leaving the approver to mediator pickup; an unsignable prompt takes
+  the same route. "No prompt" is recoverable in a way "unverifiable prompt"
+  is not.
+
+  ## Sequencing
+
+  This changes nothing about security on its own, because nothing verifies it
+  yet, and that is the reason to land it now rather than later: the fleet has
+  to be signing before devices can require a signature. Device-side
+  enforcement in `vta-mobile-core` follows, and must not ship first or it
+  breaks every VTA that has not deployed this.
+
+  Publishing the spec with `proof` REQUIRED is the third step, so the
+  requirement is normative rather than local convention. Tracked in #1177.
+
+  The test runs the real verifier over the document as sent rather than
+  asserting a `proof` member exists — a signature copied from another document
+  would satisfy the weaker check — and pins `issuer` and `recipient`.
+  Confirmed it has teeth by swapping the recipient DID and watching it fail.
+
+- **services**: Let enable reconcile a config the document does not match ([#1150](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1150))
+
+Coverage 93 to 97 of 109 — the `services/{enable,update,disable,rollback}`
+  write paths — and a state they could not get out of.
+
+  `enable` refused when the service was on in the live config **or** advertised
+  in the published document. `update` requires it on in **both**. So config-on
+  with a silent document was unmanageable: neither operation would touch it, and
+  the operator's only route out was to edit the config by hand.
+
+  That state is reachable, and not exotically. Re-point `vta_did` at a freshly
+  minted DID and you have it — the new document advertises nothing while the
+  config still says REST is on. Restoring a config without its log does the same.
+
+  "Already enabled" now means enabled in both places, which is the only reading
+  under which there is nothing to do. Where the two disagree there is work, and
+  this is the operation that does it. Both disagreement directions become
+  recoverable; the no-op case is still refused.
+
+  The coverage is what found it. These four were the last block with a shared
+  cause: they publish a new WebVH LogEntry for the VTA's *own* DID, so
+  `load_vta_doc_state` needs a record and a log for it — and the ordinary fixture's
+  `vta_did` is a self-resolving `did:key`, which has neither. No amount of
+  test-writing reaches them from there. Minting one against the stub host and
+  pointing `vta_did` at it is the unlock, which is why this is one test rather
+  than four.
+
+  The client is rebuilt after the flip. A document's `recipient` must name the
+  consumer it is sent to, and the VTA's identity just changed — reusing the old
+  client fails on `wrongRecipient` before reaching anything under test.
+
+  The two unit tests that encoded the old rule now assert the new one, and assert
+  it precisely: the fixture seeds no webvh record, so reaching
+  `VtaDidRecordMissing` is what proves the config check no longer short-circuits
+  ahead of the document. Asserting success would need a fixture modelling a fully
+  published VTA, which is what the stub-host round-trip is for.
+
+- **trust-tasks**: Verify the proofs we require, and cover the canonical device lifecycle ([#1149](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1149))
+
+**SPEC §7.2 item 7 has two clauses. Only the second was implemented.**
+
+    "If the document carries a `proof` member, verify it per §4.7 against the
+     in-band `issuer` and reject the document with `proofInvalid` on verification
+     failure. Independently, if the specification declares `proof` REQUIRED and
+     no `proof` is present, reject with `proofRequired`."
+
+  #1146 added the second. The first was never there, and that is the worse way
+  round to have it: a caller attaches a proof *because* the task demands one, and
+  until now any bytes in the member satisfied the demand. A document signed by a
+  key its issuer does not control reached the handler — proven by the test added
+  here, which sent one signed by an unrelated seed and watched it fail on
+  `session not found` rather than on the proof.
+
+  The verifier already existed. `vti_common::auth::di_proof::verify_trust_task_proof`
+  returns the cryptographically-proven signer, and `step_up` and `task_consent`
+  have called it for their own gates all along. The spine did not, so every other
+  task took the issuer's word for who signed.
+
+  Two checks, because a valid proof is not the same as a valid proof *by the
+  issuer*: the proof must verify, and the DID it verifies as must be the
+  document's `issuer`. Without the second, a signature would establish only that
+  somebody signed something.
+
+  `step_up` and `task_consent` keep their own calls. They bind the signer to a
+  *specific* party — the approver — which is a stronger claim than "the issuer
+  signed this" and not one this can make for them.
+
+  **Coverage 88 → 93 of 109.** The device family's canonical 0.1 URIs, plus
+  `disable` and `wipe`, which have no 0.2 form.
+
+  Not a duplicate of the existing 0.2 walk. A 0.2 request is down-converted to
+  the 0.1 handler and its response up-converted back, so driving 0.2 never
+  produces a `…/0.1#response` and never exercises the branch that answers a
+  caller who asked canonically. Two paths through the spine; one was tested.
+
+  One fixture needed a real second identity. `idempotency_trust_task`'s
+  "other caller" was a hand-written DID with no key: the document claimed that
+  issuer and was signed by the *first* caller, and the VTA took its word for it.
+  It cannot now, which is the point.
+
+- **deps**: Declare the spec families this VTA validates against ([#1148](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1148))
+
+The workspace asks `trust-tasks-rs` for `default-features = false, features =
+  ["validate"]` and receives every spec family regardless, because
+  `affinidi-messaging-sdk` -> `affinidi-tdk` enables the default feature and cargo
+  unions them. The entire schema index — the thing `validate_payload` checks
+  payloads against and `spec_policy_for` reads SPEC §7.2's constants from —
+  arrives by luck rather than by request.
+
+  Both of those fail **open**. `validate_payload` dispatches unvalidated when it
+  knows no schema (unless `policy.require_payload_schema` is set), and
+  `spec_policy_for` returning `None` skips the recipient/proof/issuedAt checks
+  entirely. So the day any crate in that chain set `default-features = false`,
+  this VTA would have stopped validating payloads and stopped enforcing §7.2,
+  with a single `debug!` line between that and nobody noticing.
+
+  `all-specs` is now declared. No behaviour change today — the features were
+  already resolving on — which is the point: the resolved set is unchanged and
+  the reason it resolves is no longer somebody else's business.
+
+  The test asserts the index is populated, for three URIs across three families.
+  Worth being exact about what it proves: it fails when the index is empty, which
+  is the outcome that matters, and it *cannot* fail when the declaration is
+  removed while the transitive path still supplies the families — cargo unions
+  features, so from inside the build the two are indistinguishable. That is the
+  right coverage anyway. An index populated by either route is a working VTA;
+  this fires on the day neither route supplies it.
+
+- **sdk**: Give every authenticated client its identity, and adopt provision/integration 0.3 ([#1147](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1147))
+
+#1146 made every producer sign, and left seven production paths building
+  clients that cannot. Each authenticates, takes the token, and drops the DID and
+  key on the floor — so every task they dispatch is refused for a missing
+  `recipient` and `proof`. `SessionStore::connect` was fixed; nothing else was,
+  because no test drives those paths against an enforcing VTA.
+
+- **auth**: Stop revoke-session telling a stranger the session exists ([#1141](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1141))
+
+Coverage 87 to 88 of 109, and a disclosure the spec forbids in as many words.
+
+  `auth/revoke-session/0.1` had three answers where it should have one. A session
+  that is not there rejected with `TaskFailed "session not found: {id}"`; a
+  session belonging to someone else rejected with `PermissionDenied`; only the
+  caller's own succeeded. So anyone holding a bearer token could enumerate session
+  ids and read existence straight off which refusal came back.
+
+  The `notOwner` error code says, in its own definition: "The auth service MUST
+  NOT reveal whether the session exists at all when the producer is not its
+  owner."
+
+  Meanwhile the response schema says "Zero is a valid outcome (e.g. the named
+  sessionId was already revoked)", the prose adds that producers "SHOULD treat
+  zero as 'the post-state is what you asked for', not as an error", and
+  `vta-sdk`'s own `retry_safety` table has this task down as `RetrySafe` — which
+  it was not, because retrying a completed revoke rejected.
+
+  Both rules hold together only if "not yours" and "not there" answer
+  identically, so both now return `revokedCount: 0`. The count is literally true
+  either way: zero sessions were invalidated by this call. This handler therefore
+  never emits `notOwner` — emitting it only when the session exists is precisely
+  the disclosure the code's own definition forbids, and an error code is a
+  registry entry, not an obligation.
+
+  Non-disclosure is not a licence to act: a session the caller cannot touch is
+  left alone, and the test asserts it is still there afterwards. The refusal is
+  recorded in the audit trail (`outcome = "no-op"`) and a `warn!` line, neither of
+  which is the caller's to read. The authorisation rule itself is unchanged —
+  owner or admin — and an admin still reaches another subject's session.
+
+- **consent**: Stop dropping the approver's label, and make revoke idempotent ([#1139](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1139))
+
+Coverage 81 to 87 of 109 — the whole `consent/*` family — and three
+  divergences from the published schemas that covering it turned up.
+
+  **The approval prompt lost its label.** `consent/request` declares
+  `displayHint`: the operator-facing name for the conversation, sent precisely
+  because `conversationRef` is an opaque handle by design. The SDK sent it. The
+  VTA's `RequestPayload` had no field for it, so serde dropped it, and the wake
+  prompt built for the approver carried `{subject, scope, challenge}`. An
+  approver was being asked to allow or deny `sig-1a2b3c4d`. Nothing failed —
+  that is why it lasted.
+
+  **`firstMessageDigest` existed only in the schema.** Declared on the same
+  payload, absent from the SDK body and from the VTA's, so no part of the stack
+  could send, store, or name it. It binds the prompt the approver answered to
+  concrete content. The VTA never sees the message, so carrying it *is* the
+  implementation: the bridge checks the digest, the VTA records what was shown.
+
+  **`consent/revoke` could never emit a status its own schema promises.** The
+  published response declares `"revoked" | "notFound"` — "`notFound` = no grant
+  existed for the subject" — and the VTA rejected instead, so a conforming
+  producer written to receive that value never could. It is also the answer the
+  caller wants: revoke's post-condition is "no grant for this subject", and with
+  none stored that already holds. An operator revoking twice, or racing another
+  operator to the same grant, got an error for the outcome they asked for. The
+  `consent/revoke:notFound` error code stays declared upstream for a consumer
+  that cannot answer at all; it is not this case.
+
+  `consent_request` now takes its body. The schema declares three optional
+  members and two are hints, so the positional form was four `Option<&str>` in a
+  row with `displayHint` and `contextHint` adjacent and interchangeable to the
+  compiler — and it broke every time the schema grew a member, as it just did.
+
+  Both conformance witnesses for the request now set every optional member. They
+  left the hints `None`, which serializes them away, so the fixtures proved the
+  required trio and nothing about the optional members' encoding —
+  `firstMessageDigest` is a `DigestMultibase`, and an omitted member cannot fail
+  its pattern.
+
+  The coverage test drives the six as the ceremony they are rather than six
+  shapes in isolation: `approver-set` is not setup for it, it is the step that
+  makes `request` resolve an approver at all. The caller is minted with exactly
+  one context, because the no-`contextHint` fallback goes through
+  `default_context()`, which answers `Some` only then — an admin minted with
+  `vec![]` has unrestricted access and no default, and would leave that path
+  dead.
+
+- **vta**: Say which fact refused a retire-orphan, and cover the slot paths ([#1138](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1138))
+
+Coverage 79 to 81 of 109, and a misleading refusal message found by trying to
+  make the task succeed.
+
+  `servers/retire-orphan` routes two very different facts to the same
+  `NotOrphaned` variant, and the message asserted one of them for both: "slot X
+  has a record in this VTA, so it is not an orphan … use webvh/dids/delete for
+  one it still controls."
+
+  The variant already carries `did: Option<String>`, which distinguishes them.
+  `Some` means the VTA still controls the slot, and the message was right.
+  `None` means the slot is not in the host's listing at all — so the message told
+  an operator the VTA held a record it had never heard of, and pointed them at
+  `dids/delete` for a DID that does not exist. Both now say what happened and
+  name different next actions. The `Option` was there the whole time; only the
+  message ignored it.
+
+  The stub host now answers `GET /api/dids` with one slot the VTA has no record
+  of, rather than an empty list. That makes both reconcile arms non-empty in one
+  call — host_only is the stub's slot, agent_only is the minted DID — where an
+  empty list proved one arm and a list echoing the VTA's own records would prove
+  neither. It is also what makes retire-orphan reachable: a slot is retireable
+  precisely when it is host-only.
+
+  Covers `vta/webvh/servers/{retire-orphan,remove}`. `remove` runs last, after
+  `dids/delete`, because removing the server registration invalidates every path
+  above it — the order an operator actually uses.
+
+- **vta**: Refuse a swap-key without linkProof by name, not as malformed ([#1137](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1137))
+
+Coverage 77 to 79 of 109, and a fifth request-side divergence.
+
+- **vta**: Carry ecosystem-local capabilities under ext, not in the closed enum ([#1136](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1136))
+
+Coverage 76 to 77 of 109, and a real conformance defect found by covering the
+  device family.
+
+  `device/register/0.2` put `credentialWrite` in the response's `capabilities`
+  array. The published `Capability` enum does not define it, so the response
+  failed its own schema. This was already known and half-fixed: a filter dropped
+  `sign-trust-task` with a comment saying it is "absent from the wire schema's
+  closed `Capability` enum". `CredentialWrite` was added later, the filter was not
+  extended, and it went straight out.
+
+  Fixed by carrying both under `ext["org.openvtc"].capabilities` rather than
+  dropping them. Dropping is what the old filter did, and it is lossy in the
+  direction that matters: omitting a capability from a listing is a safety claim,
+  and it was not a true one — the device held `sign-trust-task` and the response
+  said it did not. SPEC §4.5.1 provides the extension slot and `DeviceBinding`
+  declares one, so no upstream change is needed; widening the framework's closed
+  vocabulary with two ecosystem-specific concepts would be the wrong fix anyway.
+
+  The filter is now positive: `PUBLISHED_CAPABILITIES` lists what the published
+  enum defines and everything else is local, so a capability added tomorrow lands
+  in `ext` by default rather than leaking one variant at a time.
+
+  The local values are camel-cased at the source, because `wire_v0_2` re-cases
+  kebab to camel only at declared enum field paths and an `ext` member is
+  invisible to it — otherwise the response would answer `deviceAdmin` beside
+  `sign-trust-task`, in two dialects at once.
+
+  Two blockers recorded in earlier PRs turned out to be one line each.
+  `passkey-vms/enroll-challenge` needs `public_url`, not a WebAuthn relying
+  party — the RP is derived from the public origin. `device/*` needs one ACL
+  row, not a provisioned integration — the entry is the enrolment the device is
+  completing. Both notes were mine; a refusal that names a procedure reads as
+  needing the whole procedure when it needs that procedure's residue.
+
+- **vta**: Re-case the extended error codes the Trust Tasks registry moved ([#1122](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1122))
+
+* fix(vta)!: emit the re-cased extended error codes the registry now declares
+
+  trustoverip/dtgwg-trust-tasks-tf#279 re-cased 200 extended error-code local
+  parts to lowerCamelCase per SPEC §4.10 rule 4 — only the part after the `:`
+  moved, the namespace is unchanged. This service still produced the snake_case
+  spellings for 32 of them, so every one of those rejects carried a code the
+  registry no longer defines and no conforming consumer can branch on.
+
+  Every site here is an **emitter**: this repo decides what to send, and the
+  registry decides what is correct to send, so each moves to the new spelling
+  with no compatibility arm. The matcher side — where this repo reads a code a
+  peer produced and cannot control that peer's deploy order — is handled
+  separately in the following commit.
+
+  Three of the vault emitters build their namespace by interpolation
+  (`vault/{verb}:not_found`, `vault/{verb}:version_conflict`,
+  `vault/{op}:not_found` in `vault_not_found`, `check_expected_version` and
+  `refuse_if_not_active`), so the codes they produce do not appear as literals
+  anywhere. Those helpers cover `vault/delete:{notFound,versionConflict}` and the
+  `notFound` conflation the three consumer-facing use paths rely on for
+  enumeration resistance.
+
+- **vta**: Take keyId from the wire instead of minting one ([#1123](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1123))
+
+First of the three stopgaps #1121 unblocked. `keys/create/0.1` publishes
+  `keyId` as of trust-tasks-rs 0.12.1 (dtgwg-trust-tasks-tf#275), so the caller
+  names the key and the binding no longer has to invent one.
+
+  #1118 minted `internal-<uuid>` at the binding for an internal key. That was a
+  deliberate deviation from a SHOULD I wrote in #275 — a maintainer offering
+  internal keys and receiving no `keyId` SHOULD reject — taken because the
+  alternative was a security feature nobody could use: an internal key has no
+  derivation path to be named after, the operation layer refuses one without an
+  id, and the wire had no member to carry it. The comment at that site said to
+  delete it when the bump landed.
+
+- **vta**: --internal creates an internal key ([#1118](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1118))
+
+`pnm keys create --internal` printed a non-recoverable-key warning, required
+  the operator to type "i understand this key cannot be recovered", and then
+  created an ordinary seed-derived key — recoverable from the mnemonic, included
+  in backups, exportable. The operator was told the opposite of what happened.
+
+  `CreateKeyRequest` carries `internal`, `key_id` and `derivation_path`; the CLI
+  set them and `VtaClient::create_key` built its wire body with `internal: None`
+  hardcoded, `key_id` never read, and `derivation_path` as `unwrap_or_default()`
+  — `""` for absent, which worked only because the operation layer reads `""` as
+  absent. The operation layer was always right: `derivation_path` is an `Option`
+  there that auto-derives, and `internal` short-circuits to a CSPRNG key.
+
+  It could not have worked even with the flag forwarded. The spine rejected the
+  document, because `keys/create/0.1` was `additionalProperties: false` with no
+  `internal` member (fixed upstream in dtgwg-trust-tasks-tf#269, which also added
+  `internal` to `KeyOrigin` — the value that makes the outcome checkable); and an
+  internal key needs an explicit `key_id`, which neither the wire type nor the
+  specification had (dtgwg-trust-tasks-tf#275).
+
+  Forwards `internal` and `derivation_path`, makes `CreateKeyBody`'s
+  `derivation_path` optional to match the specification and the operation layer,
+  and mints a `key_id` for an internal key at the trust-task binding, which has
+  no `keyId` member to carry one yet.
+
+  That minting is a deliberate, temporary deviation from a SHOULD in the
+  specification, taken because `keyId` needs trust-tasks-rs 0.12.1 and this
+  workspace cannot move to 0.12: `affinidi-messaging-sdk` 0.19.12 pins
+  `trust-tasks-rs ^0.11` and `vta_sdk::acl_setup` hands it a generated
+  `MediatorAcl`, so two nodes in one graph fail to compile. The id is returned on
+  the record and `keys/rename/0.1` can change it; the site says to delete the
+  branch when the bump lands.
+
+  `an_internal_key_is_actually_internal` asserts `origin == "internal"` — the
+  check the CLI already made and that always silently failed.
+
+
+
+### Chore
+
+- **deps**: Aes-gcm 0.11, and stop the nonce conversions panicking ([#1173](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1173))
+- **sdk**: Release vta-sdk 0.30.0 for the added CreateKeyBody field ([#1156](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1156))
+
+`CreateKeyBody` gained a `key_id` field while the crate stayed at 0.29.0.
+  The struct is exhaustively constructible through the public API, so an
+  existing literal no longer compiles — a breaking change under 0.x rules,
+  which the semver report has been flagging as its one real finding
+  (195 pass, 1 fail) since the field landed.
+
+  Bumps the crate and the nineteen intra-workspace requirements that pin it,
+  so `cargo check --workspace` still resolves the path copy and a consumer
+  resolving from the registry gets a version that admits the break.
+
+- **deps**: Move VTI to trust-tasks-rs 0.17 ([#1144](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1144))
+
+Every `trust-tasks-*` pin to 0.17, plus the TDK crates that had to publish
+  first: `affinidi-tdk` 0.10, `affinidi-messaging-sdk` 0.21,
+  `affinidi-messaging-test-mediator` 0.4 (affinidi/affinidi-tdk-rs#744). Two
+  `trust-tasks-rs` versions in one graph fail to compile, so the messaging stack
+  had to move before this could.
+
+  Breaking for `vta-sdk` consumers, which is why the `!`. 0.17 marks the
+  generated payload, response, component structs **and enums**
+  `#[non_exhaustive]`, and those types sit in this crate's public API — a
+  consumer that builds one with a struct literal, with or without
+  `..Default::default()`, must move to the generated builder and to 0.17 in the
+  same change.
+
+  Struct literals become builders; matches gain a wildcard. That is what lets the
+  registry add an optional member or an enum variant without breaking every
+  consumer that spelled out the old list, and the cost is that "is every required
+  member set?" moves from compile time to the builder's conversion. Every call
+  site here sets its required members explicitly.
+
+  The wildcard arms are decisions, and they went different ways:
+
+  * `step_up`'s `evidence` match **refuses**. It chooses which cryptographic gate
+    to verify, so falling through to the did-signed arm would check a gate the
+    approver never presented and report the step-up satisfied on evidence this
+    VTA did not understand.
+  * `services/{enable,update,disable,rollback,get}` **refuse** an unknown service
+    kind. Every arm mutates the DID document; picking one would write the wrong
+    service. `get` additionally exists to tell "never configured" from
+    "configured and disabled", which answering about another transport destroys.
+  * `device/register`'s consumer kind, form factor and service kind **refuse**,
+    and `wire_kind_to_internal` became fallible to say so. It writes an ACL entry
+    and the kind is what policy keys off.
+  * `push/wake`'s reply status **logs and continues** — the only one that does.
+    Wake is best-effort with a mediator-queue fallback, and an unknown status is
+    worth an operator's attention but not a failure. Named separately from `None`
+    because the two say different things: "no status we could read" against "a
+    status we read but do not know".
+
+  `reason`, `deniedReason` and their siblings became bounded newtypes rather than
+  `String`. Parsing them at the producer means an over-long value fails on the
+  device that would otherwise sign a document the consumer must reject.
+
+  **The response gate caught a live violation.** `passkey-vms/enroll-challenge`
+  put the raw DID into WebAuthn's `userName`/`userDisplayName`, which 0.17 bounds
+  at 64 characters — a `did:webvh` is ~85, so the response was unconformant.
+  Worth stating that the schema is self-contradictory here: `userName`'s own
+  description says "e.g. the DID" while its constraint makes any `did:webvh`
+  unrepresentable. The constraint is the defensible half — WebAuthn L2 §5.4.3
+  lets an authenticator truncate at 64 bytes, so the raw DID was already
+  producing a picker entry cut mid-SCID, unreadable and identical between two
+  DIDs on the same host. `userHandle` carries the DID-derived binding and is
+  unbounded, so nothing is lost: `userName` now takes the operator's label, or
+  the DID with its `did:<method>:<scid>:` prefix dropped, clamped on a char
+  boundary.
+
+  Coverage holds at 88/109 with zero response-conformance violations.
+
+- **deps**: Trust-tasks-rs 0.12 and the TDK crates that carry it ([#1121](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1121))
+
+Verified locally against a path-patched affinidi-tdk-rs before those crates
+  published (affinidi/affinidi-tdk-rs#743); VTI's graph collapses to a single
+  trust-tasks-rs 0.12.1 node and the workspace compiles.
+
+  Bumps trust-tasks-rs 0.11.17 -> 0.12 with the four sibling crates that moved
+  with it — capability-client 0.10 -> 0.11, https 0.10 -> 0.12, didcomm 0.10 ->
+  0.12, proof 0.10 -> 0.11 — and the TDK crates whose public API carries
+  trust-tasks-rs types: affinidi-tdk 0.8.5 -> 0.9, affinidi-messaging-sdk 0.19 ->
+  0.20, affinidi-messaging-test-mediator 0.2 -> 0.3. They move together because
+  two trust-tasks-rs nodes in one graph do not warn, they fail to compile:
+  `expected MediatorAcl, found a different MediatorAcl`.
+
+  One source change. `classify_git_trust_reply` gained a required
+  `expected_thread_id` in capability-client 0.11, because acting on an
+  uncorrelated reply lets whichever document arrives next decide the fate of a
+  write it has nothing to do with. The `replies` registry already keys its waiter
+  on `doc.id`, so this is defence in depth — and `correlation_thread` is the
+  library's own SPEC §4.9 rule (`threadId` falling back to `id`) rather than this
+  call site's guess at it.
+
+  Three marked stopgaps become deletable once this lands, each of which names
+  this bump at its site: the freshness stand-in from #1117 in favour of
+  `FreshnessPolicy`/`validate_freshness`, the minted `key_id` branch from #1118
+  in favour of the wire `keyId`, and `replay::check_and_record` in favour of
+  `ReplayGuard`. They are left alone here so this change is a dependency move and
+  nothing else.
+
+
+
+### Test
+
+- **vta**: Cover the did-templates and policy families ([#1128](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1128))
+
+Coverage 48 -> 58 of 109 (44% -> 53%). Two families, one real defect.
+
+
+
 ## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.20.0...vta-service-v0.21.0) — 2026-08-26
 
 

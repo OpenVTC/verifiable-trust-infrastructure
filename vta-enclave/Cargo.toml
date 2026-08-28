@@ -34,12 +34,12 @@ vsock-log = ["dep:tokio-vsock"]
 tenant-overlay = ["dep:vta-tee", "vta-tee/tenant-overlay"]
 
 [dependencies]
-vta-service = { path = "../vta-service", version = "0.21", default-features = false, features = ["tee"] }
-vti-common = { path = "../vti-common", version = "0.14", features = ["encryption"] }
+vta-service = { path = "../vta-service", version = "0.22", default-features = false, features = ["tee"] }
+vti-common = { path = "../vti-common", version = "0.15", features = ["encryption"] }
 # Direct dep only for the `tenant-overlay` fetch entry point; the rest of the
 # TEE bootstrap is reached through `vta_service::tee`. Optional so a baked build
 # links no overlay code.
-vta-tee = { path = "../vta-tee", version = "0.1", optional = true }
+vta-tee = { path = "../vta-tee", version = "0.2", optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

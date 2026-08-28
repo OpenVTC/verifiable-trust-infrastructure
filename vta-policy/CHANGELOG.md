@@ -2,6 +2,58 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.2.12...vta-policy-v0.3.0) — 2026-08-28
+
+
+### Added
+
+- **vta**: Mint the consent ceremony's correlator instead of deriving it ([#1133](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1133))
+
+* feat(vta): mint the consent ceremony's correlator instead of deriving it
+
+  Framework 0.5.0, *Identifier correlation and linkability*: `id`, `threadId` and
+  `ceremony.enactment` MUST be freshly minted and unguessable, and MUST NOT be
+  derived from subject data.
+
+  The `task-consent/granted` notice threaded on `wire_digest` — a function of the
+  task payload, and the same string the document carries as `payloadDigest`.
+
+  The challenge is 256 bits of randomness, so the digest is not guessable from
+  the payload; this is not the "UUIDv5 over a subject identifier" case. The
+  mediator is the exposure. `threadId` is routing metadata, and the mediator also
+  forwards documents carrying `payloadDigest`; with the same value in both it can
+  tie the routing it performs to the digest it carries and link the refusal, the
+  approval pushes and the notice into one ceremony with named counterparties.
+
+  `PendingTaskConsent` gains a minted `correlator`, created alongside the
+  challenge. The notice threads on it and the body still carries `payloadDigest`
+  unchanged, so a requester matching on the digest is unaffected. The requester
+  is told the correlator in the `auth:consent_required` refusal beside the digest
+  it already receives.
+
+  Smaller than it first looked: the request push to approvers already threaded on
+  the request document's own id, so only the requester-facing notice was derived.
+  The notice is produced but never consumed in this workspace and is explicitly
+  non-load-bearing — the grant check at re-submit is the real gate.
+
+
+
+### Chore
+
+- **sdk**: Release vta-sdk 0.30.0 for the added CreateKeyBody field ([#1156](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1156))
+
+`CreateKeyBody` gained a `key_id` field while the crate stayed at 0.29.0.
+  The struct is exhaustively constructible through the public API, so an
+  existing literal no longer compiles — a breaking change under 0.x rules,
+  which the semver report has been flagging as its one real finding
+  (195 pass, 1 fail) since the field landed.
+
+  Bumps the crate and the nineteen intra-workspace requirements that pin it,
+  so `cargo check --workspace` still resolves the path copy and a consumer
+  resolving from the registry gets a version that admits the break.
+
+
+
 ## [0.2.12](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-policy-v0.2.11...vta-policy-v0.2.12) — 2026-08-26
 
 

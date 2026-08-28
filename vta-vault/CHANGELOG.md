@@ -2,6 +2,47 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.5.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.4.0...vta-vault-v0.5.0) — 2026-08-28
+
+
+### Fixed
+
+- **vault**: Name the BBS pseudonym-secret pair to satisfy type_complexity ([#1142](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1142))
+
+`main` is red, and the gate that caught it is the one #1140 added: the
+  workspace all-features clippy step runs `-D warnings`, and
+  `clippy::type_complexity` fires on `holder_pseudonym_secrets`'s
+  `Result<Option<(Vec<u8>, Vec<u8>)>, AppError>`.
+
+  That is the gate doing its job rather than being wrong. Nothing built
+  `vta-vault` under `--all-features` with `-D warnings` before, so the lint sat
+  unreported; the step that now does it is two days old.
+
+  `PseudonymSecrets` is worth naming on its own terms. The pair is meaningless
+  split — a `prover_nym` without its `secret_prover_blind` derives no pseudonym —
+  and the function's own doc comment had to spell the tuple out in prose because
+  the signature could not.
+
+  No behaviour change.
+
+
+
+### Chore
+
+- **sdk**: Release vta-sdk 0.30.0 for the added CreateKeyBody field ([#1156](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1156))
+
+`CreateKeyBody` gained a `key_id` field while the crate stayed at 0.29.0.
+  The struct is exhaustively constructible through the public API, so an
+  existing literal no longer compiles — a breaking change under 0.x rules,
+  which the semver report has been flagging as its one real finding
+  (195 pass, 1 fail) since the field landed.
+
+  Bumps the crate and the nineteen intra-workspace requirements that pin it,
+  so `cargo check --workspace` still resolves the path copy and a consumer
+  resolving from the registry gets a version that admits the break.
+
+
+
 ## [0.4.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.3.4...vta-vault-v0.4.0) — 2026-08-26
 
 

@@ -2,6 +2,61 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.14.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.13.2...pnm-cli-v0.14.0) — 2026-08-28
+
+
+### Fixed
+
+- **sdk**: Give every authenticated client its identity, and adopt provision/integration 0.3 ([#1147](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1147))
+
+#1146 made every producer sign, and left seven production paths building
+  clients that cannot. Each authenticates, takes the token, and drops the DID and
+  key on the floor — so every task they dispatch is refused for a missing
+  `recipient` and `proof`. `SessionStore::connect` was fixed; nothing else was,
+  because no test drives those paths against an enforcing VTA.
+
+- **vta**: Re-case the extended error codes the Trust Tasks registry moved ([#1122](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1122))
+
+* fix(vta)!: emit the re-cased extended error codes the registry now declares
+
+  trustoverip/dtgwg-trust-tasks-tf#279 re-cased 200 extended error-code local
+  parts to lowerCamelCase per SPEC §4.10 rule 4 — only the part after the `:`
+  moved, the namespace is unchanged. This service still produced the snake_case
+  spellings for 32 of them, so every one of those rejects carried a code the
+  registry no longer defines and no conforming consumer can branch on.
+
+  Every site here is an **emitter**: this repo decides what to send, and the
+  registry decides what is correct to send, so each moves to the new spelling
+  with no compatibility arm. The matcher side — where this repo reads a code a
+  peer produced and cannot control that peer's deploy order — is handled
+  separately in the following commit.
+
+  Three of the vault emitters build their namespace by interpolation
+  (`vault/{verb}:not_found`, `vault/{verb}:version_conflict`,
+  `vault/{op}:not_found` in `vault_not_found`, `check_expected_version` and
+  `refuse_if_not_active`), so the codes they produce do not appear as literals
+  anywhere. Those helpers cover `vault/delete:{notFound,versionConflict}` and the
+  `notFound` conflation the three consumer-facing use paths rely on for
+  enumeration resistance.
+
+
+
+### Chore
+
+- **sdk**: Release vta-sdk 0.30.0 for the added CreateKeyBody field ([#1156](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1156))
+
+`CreateKeyBody` gained a `key_id` field while the crate stayed at 0.29.0.
+  The struct is exhaustively constructible through the public API, so an
+  existing literal no longer compiles — a breaking change under 0.x rules,
+  which the semver report has been flagging as its one real finding
+  (195 pass, 1 fail) since the field landed.
+
+  Bumps the crate and the nineteen intra-workspace requirements that pin it,
+  so `cargo check --workspace` still resolves the path copy and a consumer
+  resolving from the registry gets a version that admits the break.
+
+
+
 ## [0.13.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.13.1...pnm-cli-v0.13.2) — 2026-08-26
 
 

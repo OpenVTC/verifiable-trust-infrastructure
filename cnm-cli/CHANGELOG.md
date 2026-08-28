@@ -2,6 +2,37 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.13.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.12.2...cnm-cli-v0.13.0) — 2026-08-28
+
+
+### Fixed
+
+- **sdk**: Give every authenticated client its identity, and adopt provision/integration 0.3 ([#1147](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1147))
+
+#1146 made every producer sign, and left seven production paths building
+  clients that cannot. Each authenticates, takes the token, and drops the DID and
+  key on the floor — so every task they dispatch is refused for a missing
+  `recipient` and `proof`. `SessionStore::connect` was fixed; nothing else was,
+  because no test drives those paths against an enforcing VTA.
+
+
+
+### Chore
+
+- **sdk**: Release vta-sdk 0.30.0 for the added CreateKeyBody field ([#1156](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1156))
+
+`CreateKeyBody` gained a `key_id` field while the crate stayed at 0.29.0.
+  The struct is exhaustively constructible through the public API, so an
+  existing literal no longer compiles — a breaking change under 0.x rules,
+  which the semver report has been flagging as its one real finding
+  (195 pass, 1 fail) since the field landed.
+
+  Bumps the crate and the nineteen intra-workspace requirements that pin it,
+  so `cargo check --workspace` still resolves the path copy and a consumer
+  resolving from the registry gets a version that admits the break.
+
+
+
 ## [0.12.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.12.1...cnm-cli-v0.12.2) — 2026-08-26
 
 

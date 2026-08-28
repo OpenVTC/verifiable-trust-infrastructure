@@ -2,6 +2,119 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.15.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.14.0...vti-common-v0.15.0) — 2026-08-28
+
+
+### Added
+
+- **vtc**: State artifact lifecycle precedence once, and apply it on read ([#1179](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1179))
+- **tasks**: Catch up to the registry on vault 0.3, device/wipe 0.2 and credentials/issue 0.2 ([#1145](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1145))
+
+Five of the six families vta-sdk lagged the registry on. The sixth,
+  `provision/integration/0.3`, is not here: its response schema could never
+  validate — `required` named a `digest` the 0.2→0.3 rename had already removed
+  from `properties`, against `additionalProperties: false`. Fixed upstream in
+  trustoverip/dtgwg-trust-tasks-tf#324; VTI adopts it once that publishes.
+
+  **vault/{list,get,upsert} 0.3.** `AttachmentRef.sha256` — hex, with SHA-256
+  pinned by an `^[0-9a-f]{64}$` pattern — becomes `digestMultibase`, a multibase
+  multihash that names its own algorithm. Worth stating plainly: nothing in this
+  service has ever constructed an `AttachmentRef`. Every site is `vec![]` and
+  `vault/upsert` only carries forward whatever an entry already had, so the
+  member has never reached the wire and this is a type-level rename today. The
+  wire contract is what changes, and it changes so that moving off SHA-256 later
+  is a value change rather than another schema revision.
+
+  **device/wipe 0.2.** `cache-and-keys` → `cacheAndKeys`, the same recasing the
+  rest of the device slice took. Its constant carried "No 0.2 spec exists
+  upstream; this stays on 0.1" while `specs/device/wipe/0.2` had been published
+  for some time. The replacement comment says so: a comment asserting an absence
+  is a claim about the registry that nothing re-checks, and it is why nobody
+  looked again.
+
+  **vta/credentials/issue 0.2.** The request payload is unchanged. The response
+  stops restating the shared `IssuedCredential` inline and composes it through
+  `allOf` + `unevaluatedProperties` — same members, same required set, identical
+  wire form. So the two versions share a dispatch arm rather than a transform.
+
+  The edge-transform table goes from one wire URI per spec to a list.
+  `vault/*` 0.3 differs from 0.2 only in `AttachmentRef`, which is not an enum
+  value and not at any path the transform touches — so it down-converts to the
+  same canonical handler by the same casing rules. Giving it its own row would
+  have duplicated every path and left the two to be kept in step by hand.
+
+  `upconvert_response` now answers as the version the caller *sent*. With several
+  wire URIs per spec, retyping a response to a fixed one would be refused by a
+  client validating against the version it asked for.
+
+  Two guards needed widening, and both were right to fail first:
+
+  * `superseded_tasks_are_dispatched` did not count an edge-transformed URI as
+    served. Its premise is that a row whose counter can never move reads the same
+    as "safe to retire" — but the counter *does* move for these, because
+    `dispatch_trust_task_core` reads the superseded row from the URI as it
+    arrived, before the down-convert. The successor half of the pair already
+    accepted them.
+  * the wire/deprecation parity test checked only the 0.1 hop. A spec accepting
+    0.1, 0.2 and 0.3 needs a row per superseded version, or the middle one is
+    retired on no evidence at all.
+
+  `ALL_URIS` and `retry_safety` carry the four new URIs; the census caught their
+  absence, which is what it is for.
+
+- **vta**: Stop error messages from being a probing oracle ([#1130](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1130))
+
+Framework 0.5.0 makes the message-sanitization rule normative for every code,
+  not just `identityMismatch`: a `message` MUST NOT reveal consumer-internal
+  state, the contested value of a mismatched party, or resolver, verifier, or
+  key-status internals. Every rejection is emitted on the same path, to the same
+  possibly-unauthenticated party, generally before any authorization decision has
+  been reached.
+
+  This service violated two of the three.
+
+  `app_error_to_reject` passed `AppError::Internal`'s cause into the `message`
+  verbatim, so a caller learned "ATM not configured — server cannot pack DIDComm
+  envelopes" or "log entry has no update_keys" — the deployment's shape, its
+  configuration, and which invariant just broke. The catch-all arm was the
+  quieter half: it rendered whatever `Display` an error happened to have, so a
+  variant added later would publish itself with nobody choosing to. Both now land
+  on one fixed string and log the cause for the operator.
+
+  `DiProofError`'s `Display` rendered the underlying verifier error, and that
+  reaches the wire through `PermissionDenied`. A caller could read which
+  cryptosuite ran and how verification failed. The detail moves to a `cause()`
+  that is deliberately not reachable through `Display`, since the defect was that
+  the wire rendering and the operator rendering were one function.
+
+  `notFound`, `malformedRequest` and `permissionDenied` pass through unchanged:
+  they describe the caller's own request back to it, which is not
+  consumer-internal state.
+
+  `an_internal_error_does_not_say_internal_error_twice` asserted the cause was on
+  the wire. Its subject was a doubled prefix, which the fixed string also
+  settles; it is now `an_internal_error_reveals_no_internal_state`, joined by
+  `the_catch_all_arm_is_opaque_too`.
+
+
+
+### Chore
+
+- **deps**: Aes-gcm 0.11, and stop the nonce conversions panicking ([#1173](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1173))
+- **sdk**: Release vta-sdk 0.30.0 for the added CreateKeyBody field ([#1156](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1156))
+
+`CreateKeyBody` gained a `key_id` field while the crate stayed at 0.29.0.
+  The struct is exhaustively constructible through the public API, so an
+  existing literal no longer compiles — a breaking change under 0.x rules,
+  which the semver report has been flagging as its one real finding
+  (195 pass, 1 fail) since the field landed.
+
+  Bumps the crate and the nineteen intra-workspace requirements that pin it,
+  so `cargo check --workspace` still resolves the path copy and a consumer
+  resolving from the registry gets a version that admits the break.
+
+
+
 ## [0.14.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.13.2...vti-common-v0.14.0) — 2026-08-26
 
 
