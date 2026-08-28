@@ -45,6 +45,16 @@
 //! The same holds for the optional [`PersonaAnnotation`]: the
 //! VPC is self-issued by the member under a persona DID, and the
 //! VTC only verifies and stores it.
+//!
+//! ## The row is not the whole edge
+//!
+//! A stored row is evidence that a VRC was published and passed the ingress
+//! checks of the day. It is **not** the answer to "is this edge in force",
+//! because a VRC can be suspended, superseded or withdrawn after publication
+//! and because its own `validUntil` may since have passed. Every consumer asks
+//! [`Relationship::in_force_at`] rather than treating the row's existence as
+//! the answer; the precedence rule it applies lives in
+//! [`crate::credentials::lifecycle`] and is stated once there.
 
 pub mod rate_limit;
 pub mod storage;
@@ -54,9 +64,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
+pub use crate::credentials::lifecycle::{self, InForce, LifecycleEventKind, LifecycleLog};
 pub use storage::{
     RELATIONSHIPS_BY_DID_PREFIX, RELATIONSHIPS_PREFIX, delete_relationship, find_by_hash,
-    get_relationship, issuer_counterparties_besides, list_all, list_for_did, store_relationship,
+    get_relationship, issuer_counterparties_besides, list_all, list_for_did,
+    record_lifecycle_event, store_relationship, supersede_prior_edges,
 };
 
 /// A stored, verified VRC. Field order matches the spec §5.4
@@ -112,6 +124,68 @@ pub struct Relationship {
     /// edge deletes the annotation with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persona: Option<PersonaAnnotation>,
+    /// Everything recorded against this edge since it was published:
+    /// suspension, restoration, supersession, withdrawal.
+    ///
+    /// Empty on every edge published before #1079 and on every edge that has
+    /// had no lifecycle event, which is why it is `#[serde(default)]` and
+    /// skipped when empty — existing rows decode unchanged and re-serialise
+    /// byte-identically, the same treatment [`Relationship::persona`] got when
+    /// it was added to an already-shipped row.
+    ///
+    /// This is the *only* lifecycle handle a VRC has. Per planning-review D7 a
+    /// VRC carries no `credentialStatus`, deliberately — a status-list host
+    /// learns which verifier checked which credential and when, which is the
+    /// correlation the pairwise work exists to remove. Without a status list
+    /// the community's alternatives were a permanent edge or `DELETE
+    /// /v1/relationships/{id}`, and a deletion cannot answer "was this edge in
+    /// force last Tuesday" because it can only be observed as an absence.
+    ///
+    /// Never resolved by hand. [`Relationship::in_force_at`] is the entry
+    /// point, and the precedence rule lives in
+    /// [`crate::credentials::lifecycle`].
+    ///
+    /// **Known spec lag.** `Relationship` is both the stored row and the item
+    /// shape of `spec/vtc/relationships/list/0.2`, whose response schema is
+    /// `additionalProperties: false` and predates this member — as it predates
+    /// [`Relationship::persona`], added the same way in #1067. A listed edge
+    /// that has had a lifecycle event therefore carries a member the published
+    /// task does not describe. The registry is upstream and the spec moves
+    /// first, so this is recorded here rather than papered over by dropping
+    /// the field on the way out: hiding the log from the one surface a member
+    /// can read would leave them able to be suspended and unable to see it.
+    #[serde(default, skip_serializing_if = "LifecycleLog::is_empty")]
+    pub lifecycle: LifecycleLog,
+}
+
+impl Relationship {
+    /// Whether this edge is in force at `now`, accounting for both the VRC's
+    /// own validity window and anything recorded against it since.
+    ///
+    /// Every read path that asks whether an edge *counts* goes through here.
+    /// Before #1079 none of them asked at all: the graph was read back without
+    /// re-checking dates on the reasoning that the edge had been validated at
+    /// ingress, which is true and insufficient — it says nothing about the
+    /// intervening months, and for a VRC with an open-ended `validUntil` it
+    /// says nothing at all.
+    ///
+    /// An unreadable window is reported as [`InForce::Indeterminate`] rather
+    /// than defaulted to unbounded. Rows written before #1075 entered the
+    /// graph without their window ever being parsed, so a VRC whose
+    /// `validUntil` is not a timestamp is genuinely reachable here, and
+    /// treating it as "no bound stated" is the failure mode that makes the
+    /// whole check ornamental.
+    pub fn in_force_at(&self, now: DateTime<Utc>) -> InForce {
+        match crate::credentials::ingress::validity_window(
+            &self.vrc_jsonld,
+            "RelationshipCredential",
+        ) {
+            Ok(window) => lifecycle::resolve(&window, &self.lifecycle, now),
+            Err(e) => InForce::Indeterminate {
+                reason: e.to_string(),
+            },
+        }
+    }
 }
 
 /// A Verifiable Persona Credential (VPC) attached to one edge.

@@ -325,6 +325,7 @@ mod tests {
             vrc_digest_multibase: format!("{:x}", id.as_u128()),
             created_at: Utc::now(),
             persona: None,
+            lifecycle: Default::default(),
         }
     }
 

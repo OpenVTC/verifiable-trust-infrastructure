@@ -55,6 +55,22 @@
 //! require `validUntil` to be present at all. Routing them through here would
 //! either duplicate their checks or weaken them. Three implementations was the
 //! problem; replacing two working ones with one weaker one is not the fix.
+//!
+//! ## Ingress is only half the question
+//!
+//! A window check at ingress establishes that an artifact was in date when it
+//! arrived, and nothing more. It cannot answer whether the artifact is in
+//! force *now*, because the artifact may have been suspended, superseded or
+//! withdrawn since, and because a stored row whose window has closed is not
+//! re-checked on the way out. That was exactly the reach of #1075, and #1079
+//! is the general form of it.
+//!
+//! [`crate::credentials::lifecycle`] owns the other half: it takes the window
+//! [`validity_window`] reads and the events recorded against the artifact, and
+//! resolves the two under one precedence rule. Read paths call that; ingress
+//! points call [`require_dtg_type`]. Both get their bounds from the same
+//! parser here, so admission and interpretation cannot disagree about where a
+//! window's edges are.
 
 use chrono::{DateTime, Utc};
 use dtg_credentials::DTGCredentialType;
@@ -209,6 +225,32 @@ pub fn check_validity_window(
         )));
     }
     Ok(())
+}
+
+/// Read a credential's stated window as a value, for a caller that has to
+/// *resolve* a state rather than accept-or-reject at ingress.
+///
+/// [`check_validity_window`] answers "may this document enter", which is the
+/// only question an ingress point has. It is the wrong shape for the graph
+/// read: an edge already in the store is not being admitted, it is being
+/// interpreted, and interpreting it means combining the window with whatever
+/// has been recorded against the artifact since — see
+/// [`crate::credentials::lifecycle`]. Returning the bounds lets that
+/// combination happen in one place instead of every reader re-deriving
+/// "expired" from a boolean rejection it cannot see inside.
+///
+/// Shares `read_time` with the ingress check rather than parsing again, so
+/// the two cannot disagree about what a bound *is*: both spellings are
+/// accepted, a document stating both is refused as ambiguous, and an
+/// unparseable bound is an error rather than a silent "no bound stated".
+pub fn validity_window(
+    doc: &JsonValue,
+    label: &str,
+) -> Result<crate::credentials::lifecycle::ValidityWindow, AppError> {
+    Ok(crate::credentials::lifecycle::ValidityWindow {
+        valid_from: read_time(doc, VALID_FROM_NAMES, label)?.map(|(_, t)| t),
+        valid_until: read_time(doc, VALID_UNTIL_NAMES, label)?.map(|(_, t)| t),
+    })
 }
 
 /// `(v2.0 name, v1.1 name)` for the start of the window.

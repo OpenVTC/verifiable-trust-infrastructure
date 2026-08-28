@@ -1,11 +1,14 @@
 //! CRUD helpers for [`super::Relationship`] over the
 //! `relationships:` + `relationships_by_did:` keyspaces.
 
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use vti_common::audit::AuditKey;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated, paginate};
 use vti_common::store::KeyspaceHandle;
+
+use crate::credentials::lifecycle::LifecycleEventKind;
 
 use super::Relationship;
 
@@ -112,6 +115,85 @@ pub async fn delete_relationship(
         primary.remove(primary_key(id)).await?;
     }
     Ok(())
+}
+
+/// Append a lifecycle event to one edge and persist the row.
+///
+/// Read-modify-write against the primary keyspace, then a full
+/// [`store_relationship`] so the secondary index stays paired with the row it
+/// describes. The index carries only the edge id, so it does not change here —
+/// rewriting it anyway keeps one write path for a relationship row rather than
+/// a second, subtly different one that a later index change would have to
+/// remember.
+///
+/// The transition rules (what may follow what, and that nothing follows a
+/// terminal event) are enforced by
+/// [`crate::credentials::lifecycle::LifecycleLog::record`], not here.
+/// Storage decides where the row goes; the vocabulary decides what is legal.
+///
+/// Returns the updated row so a caller can report the resolved state without a
+/// second read — and so it cannot report a state it did not persist.
+pub async fn record_lifecycle_event(
+    primary: &KeyspaceHandle,
+    index: &KeyspaceHandle,
+    id: Uuid,
+    kind: LifecycleEventKind,
+    now: DateTime<Utc>,
+) -> Result<Relationship, AppError> {
+    let mut rel = get_relationship(primary, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("VRC {id} not found")))?;
+    rel.lifecycle.record(kind, now)?;
+    store_relationship(primary, index, &rel).await?;
+    Ok(rel)
+}
+
+/// Record that `by_digest` displaces every edge this issuer already holds to
+/// this subject, and return the ids that were displaced.
+///
+/// A second VRC from the same issuer to the same counterparty is a *version*
+/// of one assertion, not a second relationship: DTG Credentials requires an
+/// R-DID to be unique per counterparty, so the (issuer, subject) pair
+/// identifies the relationship and re-issuing to it is a renewal or a
+/// correction. Before this, both rows simply accumulated and the graph offered
+/// no way to tell which the issuer currently stood behind — three unreciprocated
+/// VRCs between two parties read as three live claims.
+///
+/// Rows that already carry a terminal event are skipped rather than refused: a
+/// third publish must not fail because the first was withdrawn last month, and
+/// [`crate::credentials::lifecycle::LifecycleLog::record`] would (correctly)
+/// refuse to append past a terminal
+/// state. Everything else is superseded, including rows that are merely
+/// expired or suspended — "this was replaced" is a more useful thing to have
+/// recorded than "this lapsed", and it is the true one.
+pub async fn supersede_prior_edges(
+    primary: &KeyspaceHandle,
+    index: &KeyspaceHandle,
+    issuer_did: &str,
+    subject_did: &str,
+    except_id: Uuid,
+    by_digest: &str,
+    now: DateTime<Utc>,
+) -> Result<Vec<Uuid>, AppError> {
+    let mut superseded = Vec::new();
+    for mut rel in list_all(primary).await? {
+        if rel.id == except_id
+            || rel.issuer_did != issuer_did
+            || rel.subject_did != subject_did
+            || rel.lifecycle.is_terminal()
+        {
+            continue;
+        }
+        rel.lifecycle.record(
+            LifecycleEventKind::Superseded {
+                by: by_digest.to_string(),
+            },
+            now,
+        )?;
+        store_relationship(primary, index, &rel).await?;
+        superseded.push(rel.id);
+    }
+    Ok(superseded)
 }
 
 /// Find an existing relationship by VRC SHA-256 hash. Walks
@@ -302,6 +384,7 @@ mod tests {
             vrc_digest_multibase: format!("{:x}", id.as_u128()),
             created_at: Utc::now(),
             persona: None,
+            lifecycle: Default::default(),
         }
     }
 
@@ -461,6 +544,166 @@ mod tests {
         assert_eq!(
             page_long.items.iter().map(|r| r.id).collect::<Vec<_>>(),
             vec![long.id]
+        );
+    }
+
+    // ─── Lifecycle (#1079) ──────────────────────────────
+
+    #[tokio::test]
+    async fn a_recorded_event_survives_the_round_trip() {
+        let (primary, index, _audit, _dir) = temp_kss().await;
+        let rel = fresh("did:key:zA", "did:key:zB");
+        store_relationship(&primary, &index, &rel).await.unwrap();
+
+        let now = Utc::now();
+        let updated = record_lifecycle_event(
+            &primary,
+            &index,
+            rel.id,
+            LifecycleEventKind::Suspended {
+                reason: Some("under review".into()),
+            },
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.lifecycle.events().len(), 1);
+
+        // Read back from storage, not from the returned value — the point is
+        // that the append was persisted, not that the in-memory row changed.
+        let stored = get_relationship(&primary, rel.id).await.unwrap().unwrap();
+        assert_eq!(stored.lifecycle, updated.lifecycle);
+        assert!(!stored.in_force_at(now).is_in_force());
+    }
+
+    /// The transition rules live in the vocabulary, not in storage — but a
+    /// refusal has to reach the caller *and* leave the row untouched, or a
+    /// rejected request would still have mutated the graph.
+    #[tokio::test]
+    async fn an_illegal_transition_is_refused_and_writes_nothing() {
+        let (primary, index, _audit, _dir) = temp_kss().await;
+        let rel = fresh("did:key:zA", "did:key:zB");
+        store_relationship(&primary, &index, &rel).await.unwrap();
+        let now = Utc::now();
+
+        let err = record_lifecycle_event(
+            &primary,
+            &index,
+            rel.id,
+            LifecycleEventKind::Restored { reason: None },
+            now,
+        )
+        .await
+        .expect_err("nothing is suspended");
+        assert!(matches!(err, AppError::Conflict(_)), "{err:?}");
+
+        let stored = get_relationship(&primary, rel.id).await.unwrap().unwrap();
+        assert!(stored.lifecycle.is_empty(), "a refusal must not append");
+    }
+
+    #[tokio::test]
+    async fn recording_against_an_absent_edge_is_a_404() {
+        let (primary, index, _audit, _dir) = temp_kss().await;
+        let err = record_lifecycle_event(
+            &primary,
+            &index,
+            Uuid::new_v4(),
+            LifecycleEventKind::Suspended { reason: None },
+            Utc::now(),
+        )
+        .await
+        .expect_err("no such edge");
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    }
+
+    /// Re-issuing to the same counterparty displaces the earlier edge. The
+    /// (issuer, subject) pair is the relationship — DTG Credentials makes an
+    /// R-DID unique per counterparty — so the later credential is a new
+    /// version of one assertion, not a second one.
+    #[tokio::test]
+    async fn a_reissue_supersedes_the_earlier_edge_to_the_same_counterparty() {
+        let (primary, index, _audit, _dir) = temp_kss().await;
+        let old = fresh("did:key:zA", "did:key:zB");
+        let replacement = fresh("did:key:zA", "did:key:zB");
+        // An edge to a *different* counterparty, and one in the other
+        // direction: neither is displaced by this publication.
+        let other_subject = fresh("did:key:zA", "did:key:zC");
+        let reciprocal = fresh("did:key:zB", "did:key:zA");
+        for r in [&old, &replacement, &other_subject, &reciprocal] {
+            store_relationship(&primary, &index, r).await.unwrap();
+        }
+
+        let now = Utc::now();
+        let displaced = supersede_prior_edges(
+            &primary,
+            &index,
+            "did:key:zA",
+            "did:key:zB",
+            replacement.id,
+            "zNewDigest",
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(displaced, vec![old.id]);
+
+        let stored = get_relationship(&primary, old.id).await.unwrap().unwrap();
+        assert!(!stored.in_force_at(now).is_in_force());
+        for untouched in [replacement.id, other_subject.id, reciprocal.id] {
+            let r = get_relationship(&primary, untouched)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                r.lifecycle.is_empty(),
+                "only the edge to the same counterparty is displaced"
+            );
+        }
+    }
+
+    /// A third publish must not fail because the first was withdrawn last
+    /// month. Terminal rows are skipped, not refused — `record` would
+    /// (correctly) reject an append past a terminal state, and letting that
+    /// error escape would make an unrelated publish fail.
+    #[tokio::test]
+    async fn supersession_skips_an_edge_that_is_already_terminal() {
+        let (primary, index, _audit, _dir) = temp_kss().await;
+        let mut already = fresh("did:key:zA", "did:key:zB");
+        let earlier = Utc::now() - chrono::Duration::days(1);
+        already
+            .lifecycle
+            .record(
+                LifecycleEventKind::Superseded {
+                    by: "zFirstReplacement".into(),
+                },
+                earlier,
+            )
+            .unwrap();
+        store_relationship(&primary, &index, &already)
+            .await
+            .unwrap();
+
+        let displaced = supersede_prior_edges(
+            &primary,
+            &index,
+            "did:key:zA",
+            "did:key:zB",
+            Uuid::new_v4(),
+            "zSecondReplacement",
+            Utc::now(),
+        )
+        .await
+        .expect("a terminal row must not fail the publish");
+        assert!(displaced.is_empty());
+
+        let stored = get_relationship(&primary, already.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.lifecycle.events().len(),
+            1,
+            "the original displacement record is not overwritten"
         );
     }
 

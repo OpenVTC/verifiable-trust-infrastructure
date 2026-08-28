@@ -652,6 +652,21 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(relationships::revoke),
             "https://trusttasks.org/spec/vtc/relationships/revoke/0.1",
         ))
+        // #1079 — suspend an edge, and reverse a suspension. Temporarily
+        // ineffective is a state the graph could not previously express: an
+        // edge was published or deleted, so a community with a reason to stop
+        // relying on one had to destroy it.
+        //
+        // Mounted **without** a Trust-Task binding, unlike the three verbs
+        // above, because no canonical `spec/vtc/relationships/{suspend,
+        // restore}` URI is published yet and
+        // `tests/trust_task_manifest.rs::every_bound_canonical_task_exists_in_the_registry`
+        // requires a bound URI to resolve in `trust_tasks_rs::schema_index`.
+        // Binding a URI that does not exist would trade a real gate for a
+        // string. The spec moves first; this follows it, the same exemption
+        // the `schemas` routes below carry.
+        .routes(routes!(relationships::suspend))
+        .routes(routes!(relationships::restore))
         // #1067 — the VPC (persona annotation) on an existing
         // edge. POST + DELETE share one task mount, the same
         // workaround the personhood assert/revoke pair uses; the

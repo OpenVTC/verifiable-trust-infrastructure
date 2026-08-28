@@ -250,6 +250,37 @@ pub enum AuditEvent {
     /// row deletion in the local `relationships:` keyspace.
     VrcRevoked(VrcRevokedData),
 
+    /// A VRC was suspended: made temporarily ineffective
+    /// without being withdrawn. #1079.
+    ///
+    /// Distinct from [`Self::VrcRevoked`] because the acts are
+    /// different, not because the wording is. Revocation deletes
+    /// the row and cannot be undone; a suspension leaves the
+    /// credential and its signature untouched and has a
+    /// supported reversal. Collapsing the two into one event
+    /// would leave an operator unable to answer why an edge
+    /// stopped counting, which is the question the trail exists
+    /// for.
+    VrcSuspended(VrcLifecycleData),
+
+    /// A suspension was reversed. #1079.
+    ///
+    /// Reversal returns the edge to the governance of its own
+    /// validity window; it does not extend it, so an edge whose
+    /// `validUntil` passed while suspended is restored and still
+    /// out of force. See `vtc-service`'s
+    /// `credentials::lifecycle`.
+    VrcRestored(VrcLifecycleData),
+
+    /// A VRC was displaced by a later one between the same two
+    /// parties. #1079.
+    ///
+    /// Recorded against the *displaced* edge rather than folded
+    /// into the [`Self::VrcPublished`] entry for the credential
+    /// that replaced it, so an operator asking what happened to
+    /// an edge finds the answer under that edge's own id.
+    VrcSuperseded(VrcSupersededData),
+
     /// A member attached a Verifiable Persona Credential (VPC)
     /// to one of their published relationship edges — DTG
     /// Credentials §Annotation Credentials. The actor is the
@@ -456,6 +487,9 @@ impl AuditEvent {
             Self::CrossCommunitySessionMinted(..) => "CrossCommunitySessionMinted",
             Self::VrcPublished(..) => "VrcPublished",
             Self::VrcRevoked(..) => "VrcRevoked",
+            Self::VrcSuspended(..) => "VrcSuspended",
+            Self::VrcRestored(..) => "VrcRestored",
+            Self::VrcSuperseded(..) => "VrcSuperseded",
             Self::VpcAttached(..) => "VpcAttached",
             Self::VpcDetached(..) => "VpcDetached",
             Self::PersonhoodAsserted(..) => "PersonhoodAsserted",
@@ -1082,6 +1116,52 @@ pub struct VrcRevokedData {
     /// or `"admin"` (an admin revoked on behalf of the
     /// community).
     pub revoked_by: String,
+}
+
+/// Payload for [`AuditEvent::VrcSuspended`] and
+/// [`AuditEvent::VrcRestored`]. #1079. One shape for both
+/// because the facts are the same in each direction — which
+/// edge, who did it, why — and the verb is already the variant,
+/// the same reasoning [`VpcAnnotationData`] records.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VrcLifecycleData {
+    /// Server-allocated id (UUID) of the relationship row whose
+    /// lifecycle changed.
+    pub vrc_id: String,
+    /// `"issuer"` (the member who controls the edge, proven
+    /// either by the session DID or by an authorization object)
+    /// or `"admin"` (moderation on behalf of the community).
+    /// Proving control of the issuing key *is* being the issuer,
+    /// so a pairwise member's own decision is not misattributed
+    /// to an admin.
+    pub recorded_by: String,
+    /// Free text supplied by whoever recorded the event.
+    ///
+    /// Held because a suspension a reader cannot interpret gives
+    /// the counterparty nothing to act on. Nothing branches on
+    /// it, and it is absent whenever the caller supplied none —
+    /// never synthesised, so an empty reason stays visibly
+    /// empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Payload for [`AuditEvent::VrcSuperseded`]. #1079.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VrcSupersededData {
+    /// The displaced relationship row.
+    pub vrc_id: String,
+    /// Digest of the credential that displaced it, in the form
+    /// DTG Credentials specifies (SHA-256 over the RFC 8785
+    /// canonicalization, multihash, base58btc multibase) — the
+    /// same value `POST /v1/relationships` returned for it.
+    ///
+    /// Named by digest rather than by row id so the record stays
+    /// meaningful to a reader holding the credential but not
+    /// this service's storage.
+    pub superseded_by_digest_multibase: String,
 }
 
 /// Payload for [`AuditEvent::VpcAttached`] and
@@ -1895,6 +1975,62 @@ mod tests {
         round_trip(&e);
     }
 
+    /// #1079. The two verbs the graph had no vocabulary for. Asserted on the
+    /// wire shape because the field names are what an operator's log query and
+    /// the admin UI's label map both key on — a silent rename here is a
+    /// silently unlabelled event, not a compile error.
+    #[test]
+    fn vrc_suspend_and_restore_share_one_payload_shape() {
+        for (e, expected) in [
+            (
+                AuditEvent::VrcSuspended(VrcLifecycleData {
+                    vrc_id: "id".into(),
+                    recorded_by: "issuer".into(),
+                    reason: Some("under moderation".into()),
+                }),
+                "VrcSuspended",
+            ),
+            (
+                AuditEvent::VrcRestored(VrcLifecycleData {
+                    vrc_id: "id".into(),
+                    recorded_by: "admin".into(),
+                    reason: None,
+                }),
+                "VrcRestored",
+            ),
+        ] {
+            let v = wire_value(&e);
+            assert_eq!(v["type"], expected);
+            assert_eq!(v["data"]["vrcId"], "id");
+            assert!(v["data"]["recordedBy"].is_string());
+            round_trip(&e);
+        }
+
+        // An omitted reason stays omitted rather than becoming `null` — the
+        // trail should not suggest a reason was recorded when none was.
+        let none = wire_value(&AuditEvent::VrcRestored(VrcLifecycleData {
+            vrc_id: "id".into(),
+            recorded_by: "admin".into(),
+            reason: None,
+        }));
+        assert!(none["data"].get("reason").is_none());
+    }
+
+    /// Supersession names the displacing credential by digest, not by row id,
+    /// so the record still means something to a reader who holds the
+    /// credential but not this service's storage.
+    #[test]
+    fn vrc_superseded_names_the_displacing_credential_by_digest() {
+        let e = AuditEvent::VrcSuperseded(VrcSupersededData {
+            vrc_id: "old".into(),
+            superseded_by_digest_multibase: "zQmNew".into(),
+        });
+        let v = wire_value(&e);
+        assert_eq!(v["type"], "VrcSuperseded");
+        assert_eq!(v["data"]["supersededByDigestMultibase"], "zQmNew");
+        round_trip(&e);
+    }
+
     #[test]
     fn vpc_attach_and_detach_share_one_payload_shape() {
         for (e, expected) in [
@@ -2216,6 +2352,29 @@ mod tests {
                     revoked_by: "admin".into(),
                 }),
                 "VrcRevoked",
+            ),
+            (
+                AuditEvent::VrcSuspended(VrcLifecycleData {
+                    vrc_id: "id".into(),
+                    recorded_by: "issuer".into(),
+                    reason: None,
+                }),
+                "VrcSuspended",
+            ),
+            (
+                AuditEvent::VrcRestored(VrcLifecycleData {
+                    vrc_id: "id".into(),
+                    recorded_by: "issuer".into(),
+                    reason: None,
+                }),
+                "VrcRestored",
+            ),
+            (
+                AuditEvent::VrcSuperseded(VrcSupersededData {
+                    vrc_id: "id".into(),
+                    superseded_by_digest_multibase: "zQmNew".into(),
+                }),
+                "VrcSuperseded",
             ),
             (
                 AuditEvent::VpcAttached(VpcAnnotationData {
