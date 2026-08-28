@@ -2,6 +2,42 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.31.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.31.0...vta-sdk-v0.31.1) — 2026-08-28
+
+
+### Fixed
+
+- **sdk**: Carry the client identity on DIDComm and TSP clients ([#1184](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1184))
+
+`didcomm_transport` and `tsp_transport` built every client with
+  `identity: None`, so `build_task_document` set neither `issuer` nor
+  `recipient` and `signed_task_document` attached no proof. A conforming
+  VTA rejects that with `malformedRequest`:
+
+      specification declares recipient REQUIRED but the document carries
+      no in-band recipient
+
+  which is what `integration::startup` hits on its first call after
+  connecting over the DIDComm tier. The failure surfaces from
+  `fetch_did_secrets_bundle`, past the transport fallback, so
+  `TransportPreference::Auto` never downgrades to the REST tier — whose
+  `from_credential` constructor is the only one that already set an
+  identity.
+
+  Both transport constructors now take the identity as a required
+  argument, fed from the `did:key` triple their public `connect_*` callers
+  already hold, so the next variant cannot forget it. The bundle
+  constructors pass `None` deliberately: their holder is a `did:webvh` and
+  `trust_task_sign` signs for `did:key` holders only.
+
+  The guard meant to catch exactly this was gated on `has_token()`, which
+  is false by construction for DIDComm and TSP — it covered the one
+  transport whose constructor was already correct. It now fires for any
+  identity-less client, so the fault is reported locally, and named, in
+  place of a wire-level `malformedRequest` that reads like a payload bug.
+
+
+
 ## [0.31.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.30.0...vta-sdk-v0.31.0) — 2026-08-28
 
 
