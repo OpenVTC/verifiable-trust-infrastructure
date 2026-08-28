@@ -18,8 +18,50 @@ use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 
+use trust_tasks_rs::specs::device::heartbeat::v0_1 as heartbeat_spec;
 use trust_tasks_rs::specs::device::list::v0_1 as list_spec;
 use trust_tasks_rs::specs::device::register::v0_1 as register_spec;
+
+// The extension key a device uses to correct its own `displayName`
+// (`org.openvtc.device-name`) is defined by the SDK that produces it, and
+// imported rather than re-spelled: the two sides agree by string, and a typo on
+// either would be a rename that silently never happens. `EXT_DEVICE_NAME` on
+// that constant carries the rationale — in short, `displayName` is set once at
+// registration and re-registration is intentionally refused, so heartbeat's
+// `ext` is the only spec-provided place a correction can travel. Honouring it
+// weakens nothing: the binding, its `deviceId` and its `registeredAt` are
+// untouched, and no new binding can be claimed this way.
+use vta_sdk::protocols::device_management::EXT_DEVICE_NAME;
+
+/// Ceiling on a display name, mirroring the `device/register` schema's
+/// `maxLength: 128`. The `ext` slot is untyped, so a bound the schema would have
+/// enforced has to be enforced here — a heartbeat must not become a way to store
+/// an unbounded string on the maintainer.
+const MAX_DISPLAY_NAME_CHARS: usize = 128;
+
+/// The corrected display name a heartbeat carries, if it carries a usable one.
+///
+/// **Invalid input is ignored, not rejected.** A heartbeat's real job is to
+/// refresh `lastSeenAt`; failing the whole call over a malformed extension would
+/// make a device with a client-side bug look *offline*, which is the more
+/// expensive error — it is the one that sends an operator looking for a machine
+/// that is running fine. A name that does not survive this returns `None` and
+/// the rest of the heartbeat proceeds.
+fn extension_display_name(ext: Option<&heartbeat_spec::Ext>) -> Option<String> {
+    let value = ext?
+        .iter()
+        .find(|(key, _)| key.as_str() == EXT_DEVICE_NAME)
+        .map(|(_, value)| value)?;
+    let name = value.get("displayName")?.as_str()?.trim();
+    if name.is_empty() || name.chars().count() > MAX_DISPLAY_NAME_CHARS {
+        tracing::debug!(
+            len = name.chars().count(),
+            "ignoring a heartbeat display name outside 1..={MAX_DISPLAY_NAME_CHARS} characters"
+        );
+        return None;
+    }
+    Some(name.to_string())
+}
 
 /// Register the caller's device: attach a [`DeviceBinding`] to its existing ACL
 /// entry. The caller (`auth.did`) MUST already be in the ACL (its long-term key,
@@ -92,15 +134,22 @@ pub async fn register_device(
     Ok(json!({ "binding": to_wire_binding(&entry) }))
 }
 
-/// Device heartbeat: refresh the binding's `lastSeenAt` (and `platform` if the
-/// device reports a change), and return the maintainer's server time + any
-/// queued operations. The caller MUST be a registered device (else
-/// `not_registered`).
+/// Device heartbeat: refresh the binding's `lastSeenAt` (and `platform` or
+/// `displayName` if the device reports a change), and return the maintainer's
+/// server time + any queued operations. The caller MUST be a registered device
+/// (else `not_registered`).
+///
+/// A device may only correct **its own** binding: the entry is fetched by
+/// `auth.did`, so the rename reaches the row the caller authenticated as and no
+/// other. See [`EXT_DEVICE_NAME`] for why the correction rides here.
 ///
 /// Does **not** bump the ACL entry `version` — a heartbeat is a metadata
 /// refresh, not a policy change, so it must not collide with concurrent admin
-/// edits guarded by `If-Match`. High-volume, so it is not individually audited
-/// (the spec permits sampling).
+/// edits guarded by `If-Match`. A rename is metadata by the same measure:
+/// `displayName` **MUST NOT** be used as a security input by anything that
+/// renders it (dtgwg `device/register/0.2`), so no policy decision can turn on
+/// it. High-volume, so it is not individually audited (the spec permits
+/// sampling).
 ///
 /// `queuedOperations` is empty until `device/wipe` lands (C3); `syncHint` is
 /// `up-to-date` until vault/sync is wired (the `vaultSeq` hint is accepted but
@@ -109,6 +158,7 @@ pub async fn heartbeat_device(
     acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     platform: Option<String>,
+    ext: Option<&heartbeat_spec::Ext>,
 ) -> Result<Value, AppError> {
     let did = auth.did.clone();
     let mut entry = get_acl_entry(acl_ks, &did).await?.ok_or_else(|| {
@@ -126,6 +176,17 @@ pub async fn heartbeat_device(
     binding.last_seen_at = Some(now.clone());
     if platform.is_some() {
         binding.platform = platform;
+    }
+    if let Some(renamed) = extension_display_name(ext)
+        && renamed != binding.display_name
+    {
+        info!(
+            did = %did,
+            from = %binding.display_name,
+            to = %renamed,
+            "device corrected its display name"
+        );
+        binding.display_name = renamed;
     }
     store_acl_entry(acl_ks, &entry).await?;
 
@@ -799,7 +860,7 @@ mod tests {
         .await
         .unwrap();
 
-        let body = heartbeat_device(&acl_ks, &device_auth(did), Some("iOS 19.1".into()))
+        let body = heartbeat_device(&acl_ks, &device_auth(did), Some("iOS 19.1".into()), None)
             .await
             .expect("heartbeat on a registered device succeeds");
         assert_eq!(body["syncHint"], "up-to-date");
@@ -817,6 +878,169 @@ mod tests {
         );
     }
 
+    /// Build the heartbeat `ext` a device sends to correct its own name.
+    fn name_ext(display_name: &str) -> heartbeat_spec::Ext {
+        serde_json::from_value(
+            serde_json::json!({ EXT_DEVICE_NAME: { "displayName": display_name } }),
+        )
+        .expect("the ext key matches the schema's reverse-DNS pattern")
+    }
+
+    /// Enrol a device and give it a binding, returning its DID.
+    async fn registered(
+        acl_ks: &KeyspaceHandle,
+        audit: &vta_audit::SharedAuditSink,
+        did: &str,
+        display_name: &str,
+    ) {
+        store_acl_entry(
+            acl_ks,
+            &AclEntry::new(did, Role::Application, "did:key:zSetup"),
+        )
+        .await
+        .unwrap();
+        register_device(
+            acl_ks,
+            audit,
+            &device_auth(did),
+            mobile_kind(),
+            display_name.into(),
+            None,
+            Some("did:key:zHpke".into()),
+            "test",
+        )
+        .await
+        .unwrap();
+    }
+
+    /// `displayName` is set once at registration and re-registration is refused,
+    /// so without this a renamed machine announces its old name forever — in the
+    /// list the name exists to disambiguate.
+    #[tokio::test]
+    async fn heartbeat_applies_a_corrected_display_name() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        let did = "did:key:zDevice";
+        registered(&acl_ks, &audit, did, "OpenVTC on old-host (default)").await;
+        let before = get_acl_entry(&acl_ks, did).await.unwrap().unwrap();
+        let claimed = before.device.unwrap();
+
+        heartbeat_device(
+            &acl_ks,
+            &device_auth(did),
+            None,
+            Some(&name_ext("OpenVTC on new-host (default)")),
+        )
+        .await
+        .expect("heartbeat succeeds");
+
+        let entry = get_acl_entry(&acl_ks, did).await.unwrap().unwrap();
+        let b = entry.device.unwrap();
+        assert_eq!(b.display_name, "OpenVTC on new-host (default)");
+        // The binding is corrected, not re-claimed: identity and enrolment time
+        // are exactly what registration minted, and no policy version moved.
+        assert_eq!(b.device_id, claimed.device_id);
+        assert_eq!(b.registered_at, claimed.registered_at);
+        assert_eq!(
+            entry.version, 1,
+            "a rename is metadata, so it must not bump the entry version"
+        );
+    }
+
+    /// A device can only correct the binding it authenticated as — the entry is
+    /// fetched by `auth.did`, so there is no way to rename someone else's row.
+    #[tokio::test]
+    async fn a_rename_reaches_only_the_callers_own_binding() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        registered(&acl_ks, &audit, "did:key:zMine", "Mine").await;
+        registered(&acl_ks, &audit, "did:key:zTheirs", "Theirs").await;
+
+        heartbeat_device(
+            &acl_ks,
+            &device_auth("did:key:zMine"),
+            None,
+            Some(&name_ext("Renamed")),
+        )
+        .await
+        .unwrap();
+
+        let theirs = get_acl_entry(&acl_ks, "did:key:zTheirs")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(theirs.device.unwrap().display_name, "Theirs");
+    }
+
+    /// A malformed extension must not fail the heartbeat: `lastSeenAt` is the
+    /// call's real job, and a device that looks offline sends an operator
+    /// chasing a machine that is running fine.
+    #[tokio::test]
+    async fn an_unusable_name_is_ignored_and_the_heartbeat_still_lands() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        let did = "did:key:zDevice";
+        registered(&acl_ks, &audit, did, "Original").await;
+
+        for bad in [
+            serde_json::json!({ EXT_DEVICE_NAME: { "displayName": "   " } }),
+            serde_json::json!({ EXT_DEVICE_NAME: { "displayName": "x".repeat(129) } }),
+            serde_json::json!({ EXT_DEVICE_NAME: { "displayName": 42 } }),
+            serde_json::json!({ EXT_DEVICE_NAME: { "somethingElse": "y" } }),
+            serde_json::json!({ "org.example.unrelated": { "displayName": "Hijack" } }),
+        ] {
+            let ext: heartbeat_spec::Ext = serde_json::from_value(bad.clone()).unwrap();
+            heartbeat_device(&acl_ks, &device_auth(did), None, Some(&ext))
+                .await
+                .unwrap_or_else(|e| panic!("heartbeat must survive {bad}: {e:?}"));
+
+            let entry = get_acl_entry(&acl_ks, did).await.unwrap().unwrap();
+            let b = entry.device.unwrap();
+            assert_eq!(b.display_name, "Original", "{bad} must not rename");
+            assert!(
+                b.last_seen_at.is_some(),
+                "{bad} must still refresh liveness"
+            );
+        }
+    }
+
+    /// A name is trimmed, and one that is already current is a no-op.
+    #[tokio::test]
+    async fn a_name_is_trimmed_and_an_unchanged_one_is_a_no_op() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        let did = "did:key:zDevice";
+        registered(&acl_ks, &audit, did, "Original").await;
+
+        heartbeat_device(
+            &acl_ks,
+            &device_auth(did),
+            None,
+            Some(&name_ext("  Trimmed  ")),
+        )
+        .await
+        .unwrap();
+        let entry = get_acl_entry(&acl_ks, did).await.unwrap().unwrap();
+        assert_eq!(entry.device.unwrap().display_name, "Trimmed");
+
+        heartbeat_device(&acl_ks, &device_auth(did), None, Some(&name_ext("Trimmed")))
+            .await
+            .unwrap();
+        let entry = get_acl_entry(&acl_ks, did).await.unwrap().unwrap();
+        assert_eq!(entry.device.unwrap().display_name, "Trimmed");
+        assert_eq!(entry.version, 1);
+    }
+
+    /// The boundary the untyped `ext` slot has to enforce itself, since the
+    /// register schema's `maxLength: 128` cannot reach it.
+    #[test]
+    fn the_name_length_bound_matches_the_register_schema() {
+        let at_limit = "x".repeat(MAX_DISPLAY_NAME_CHARS);
+        assert_eq!(
+            extension_display_name(Some(&name_ext(&at_limit))).as_deref(),
+            Some(at_limit.as_str())
+        );
+        let over = "x".repeat(MAX_DISPLAY_NAME_CHARS + 1);
+        assert!(extension_display_name(Some(&name_ext(&over))).is_none());
+        assert!(extension_display_name(None).is_none());
+    }
+
     #[tokio::test]
     async fn heartbeat_rejects_unregistered_device() {
         let (acl_ks, _audit, _dir) = fresh().await;
@@ -827,7 +1051,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let err = heartbeat_device(&acl_ks, &device_auth("did:key:zBare"), None)
+        let err = heartbeat_device(&acl_ks, &device_auth("did:key:zBare"), None, None)
             .await
             .expect_err("heartbeat without a binding must be refused");
         assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");

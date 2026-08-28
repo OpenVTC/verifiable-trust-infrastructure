@@ -56,6 +56,42 @@ pub struct DeviceHeartbeatBody {
     pub platform: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vault_seq: Option<u64>,
+    /// Namespaced extension members (SPEC §4.5.1). Carries
+    /// `org.openvtc.device-name` when the device is correcting its own
+    /// `displayName`, which registration set once and nothing else updates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
+}
+
+/// Extension member a device uses to correct its own `displayName` on a
+/// heartbeat. Its value is `{ "displayName": "…" }`.
+///
+/// Reverse-DNS namespaced per SPEC §4.5.1, named the way this ecosystem already
+/// names its extensions (`org.openvtc.vault-session`,
+/// `org.openvtc.authorization-context`). **Defined once, here**, and imported by
+/// the VTA that honours it: the two sides otherwise agree by string, and a typo
+/// on either would be a rename that silently never happens.
+///
+/// # Why an extension and not `device/register`
+///
+/// `displayName` exists "to help a human pick their own laptop out of a list"
+/// (dtgwg `device/register/0.2` §Security & Privacy) and is set exactly once, at
+/// registration, because re-registration is **intentionally** refused
+/// (`device/register:alreadyRegistered`). Nothing in the device family updates
+/// it, so a renamed machine keeps announcing a name that no longer identifies
+/// it. Heartbeat is where the spec already puts metadata drift — `platform` is
+/// defined there as "updated platform descriptor if it changed since
+/// registration" — and `ext` is the slot it provides for the rest.
+pub const EXT_DEVICE_NAME: &str = "org.openvtc.device-name";
+
+/// The `ext` member that corrects this device's `displayName` — see
+/// [`EXT_DEVICE_NAME`].
+///
+/// A constructor rather than a literal at the call site, so the key is written
+/// once on this side of the wire.
+#[must_use]
+pub fn device_name_ext(display_name: &str) -> Value {
+    serde_json::json!({ EXT_DEVICE_NAME: { "displayName": display_name } })
 }
 
 /// `device/disable/0.1` — disable a device by id; the record is kept.
@@ -114,6 +150,53 @@ mod tests {
             serde_json::to_value(DeviceHeartbeatBody::default()).expect("serialises"),
             serde_json::json!({})
         );
+    }
+
+    /// The name correction rides in the spec's own extension slot, under the
+    /// key the VTA matches on.
+    #[test]
+    fn a_named_heartbeat_carries_the_device_name_extension() {
+        let body = DeviceHeartbeatBody {
+            platform: None,
+            vault_seq: None,
+            ext: Some(device_name_ext("OpenVTC on new-host (default)")),
+        };
+        assert_eq!(
+            serde_json::to_value(&body).expect("serialises"),
+            serde_json::json!({
+                "ext": {
+                    "org.openvtc.device-name": {
+                        "displayName": "OpenVTC on new-host (default)"
+                    }
+                }
+            })
+        );
+    }
+
+    /// The `ext` key has to satisfy the schema's reverse-DNS pattern
+    /// (`^[a-z][a-z0-9-]*(\.[a-z0-9-]+)+$`) or a conforming maintainer rejects
+    /// the whole heartbeat — taking `lastSeenAt` down with it, so a bad key here
+    /// is a liveness bug, not a cosmetic one.
+    #[test]
+    fn the_extension_key_matches_the_schema_pattern() {
+        let segments: Vec<&str> = EXT_DEVICE_NAME.split('.').collect();
+        assert!(segments.len() >= 2, "{EXT_DEVICE_NAME} needs a namespace");
+        assert!(
+            EXT_DEVICE_NAME.starts_with(|c: char| c.is_ascii_lowercase()),
+            "{EXT_DEVICE_NAME} must start with a lowercase letter"
+        );
+        for segment in segments {
+            assert!(
+                !segment.is_empty(),
+                "{EXT_DEVICE_NAME} has an empty segment"
+            );
+            assert!(
+                segment
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+                "{segment} may only hold [a-z0-9-]"
+            );
+        }
     }
 
     #[test]

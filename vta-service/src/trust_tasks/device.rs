@@ -61,7 +61,8 @@ pub(super) async fn handle_register(
 }
 
 /// `device/heartbeat/0.1` — periodic check-in; refreshes `lastSeenAt` (and
-/// `platform` if changed) and returns server time + queued operations.
+/// `platform` or `displayName` if changed) and returns server time + queued
+/// operations.
 pub(super) async fn handle_heartbeat(
     state: &AppState,
     auth: &AuthClaims,
@@ -71,7 +72,14 @@ pub(super) async fn handle_heartbeat(
         Ok(p) => p,
         Err(resp) => return resp,
     };
-    match operations::device::heartbeat_device(&state.acl_ks, auth, payload.platform).await {
+    match operations::device::heartbeat_device(
+        &state.acl_ks,
+        auth,
+        payload.platform,
+        payload.ext.as_ref(),
+    )
+    .await
+    {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
     }
