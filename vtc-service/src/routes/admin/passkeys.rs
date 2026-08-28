@@ -234,21 +234,35 @@ fn revoke_target_key(revocation_id: &str) -> Vec<u8> {
     operation_id = "adminPasskeyList", tag = "admin",
     security(("bearer_jwt" = [])),
     responses(
-        (status = 200, description = "Registered admin passkeys", body = ListResponse),
+        (status = 200, description = "Registered admin passkeys; empty when the                                       caller has enrolled none", body = ListResponse),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "No admin entry for caller"),
     ),
 )]
 pub async fn list(
     admin: AdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<ListResponse>, AppError> {
-    let entry = get_admin_entry(&state.passkey_ks, &admin.0.did)
-        .await?
-        .ok_or_else(|| AppError::NotFound("no admin entry for caller".into()))?;
+    // No `AdminEntry` means the caller has enrolled no passkeys — an empty
+    // collection, not a missing one, so it answers 200 with an empty list.
+    //
+    // It returned 404 until an operator hit it: an admin who signs in with
+    // their VTA wallet (SIOP, `/auth/admin-session`) holds an ACL entry and no
+    // passkey enrolment, which is a perfectly ordinary state and the *first*
+    // thing such an operator sees on this page. The console rendered the 404 as
+    // "FAILED TO LOAD PASSKEYS" directly above its own, correct, "No passkeys
+    // registered" empty state — the page contradicting itself about whether
+    // anything had gone wrong.
+    //
+    // 404 is right for `revoke`, which names a credential that must exist.
+    // It was never right here.
+    let entry = get_admin_entry(&state.passkey_ks, &admin.0.did).await?;
     Ok(Json(ListResponse {
-        credentials: entry.passkeys.iter().map(Into::into).collect(),
+        credentials: entry
+            .iter()
+            .flat_map(|e| e.passkeys.iter())
+            .map(Into::into)
+            .collect(),
     }))
 }
 

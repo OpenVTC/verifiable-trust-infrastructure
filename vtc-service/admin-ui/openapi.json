@@ -646,7 +646,7 @@
         "operationId": "adminPasskeyList",
         "responses": {
           "200": {
-            "description": "Registered admin passkeys",
+            "description": "Registered admin passkeys; empty when the                                       caller has enrolled none",
             "content": {
               "application/json": {
                 "schema": {
@@ -660,9 +660,6 @@
           },
           "403": {
             "description": "Caller is not an admin"
-          },
-          "404": {
-            "description": "No admin entry for caller"
           }
         },
         "security": [

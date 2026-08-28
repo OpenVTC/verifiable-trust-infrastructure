@@ -5095,7 +5095,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Registered admin passkeys */
+            /** @description Registered admin passkeys; empty when the                                       caller has enrolled none */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -5113,13 +5113,6 @@ export interface operations {
             };
             /** @description Caller is not an admin */
             403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No admin entry for caller */
-            404: {
                 headers: {
                     [name: string]: unknown;
                 };

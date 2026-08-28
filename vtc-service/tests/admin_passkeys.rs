@@ -281,6 +281,84 @@ async fn list_returns_bootstrap_passkey() {
     assert_eq!(arr[0]["deviceLabel"], "install");
 }
 
+/// An admin who has enrolled no passkeys gets an empty list, not a 404.
+///
+/// This is an entirely ordinary state, not an error: an operator who signs in
+/// with their VTA wallet (SIOP, `/auth/admin-session`) holds an ACL entry and
+/// no passkey enrolment, and this page is the first place they land. Answering
+/// 404 made the console render "FAILED TO LOAD PASSKEYS" directly above its
+/// own, correct, "No passkeys registered" empty state — one page disagreeing
+/// with itself about whether anything was wrong.
+///
+/// Nothing pinned the old behaviour, which is how it survived to an operator
+/// report. `revoke` keeps its 404: that one names a credential which must exist.
+#[tokio::test]
+async fn list_is_empty_for_an_admin_with_no_passkeys() {
+    let fix = build_fixture(true).await;
+
+    // Same fixture, minus the enrolment: a DID with the admin ACL role and no
+    // `AdminEntry`, which is exactly what wallet sign-in produces.
+    let did = format!("did:key:z6Mk{}", Uuid::new_v4().simple());
+    store_acl_entry(
+        &fix.state.acl_ks,
+        &AclEntry::new(did.clone(), Role::Admin, "did:key:vtc-wallet"),
+    )
+    .await
+    .unwrap();
+    assert!(
+        get_admin_entry(&fix.state.passkey_ks, &did)
+            .await
+            .unwrap()
+            .is_none(),
+        "the premise of this test is an admin with no enrolment"
+    );
+
+    let session_id = format!("sess-{}", Uuid::new_v4());
+    store_session(
+        &fix.state.sessions_ks,
+        &Session {
+            session_id: session_id.clone(),
+            did: did.clone(),
+            challenge: "test".into(),
+            state: SessionState::Authenticated,
+            created_at: now_epoch(),
+            last_seen: now_epoch(),
+            refresh_token: None,
+            refresh_expires_at: None,
+            tee_attested: false,
+            amr: Vec::new(),
+            acr: String::new(),
+            acr_expires_at: None,
+            token_id: None,
+            session_pubkey_b58btc: None,
+        },
+    )
+    .await
+    .unwrap();
+    let claims = fix
+        .jwt_keys
+        .new_claims(did, session_id, "admin".to_string(), vec![], 900, false);
+    let token = fix.jwt_keys.encode(&claims).unwrap();
+
+    let (status, body) = request(
+        &fix.router,
+        "GET",
+        "/v1/admin/passkeys",
+        Some(LIST_TASK),
+        Some(&token),
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "an empty collection is not a 404");
+    assert_eq!(
+        body["credentials"].as_array().map(Vec::len),
+        Some(0),
+        "the member must be present and empty, not absent: the console reads \
+         `credentials.length`, and an absent member is a different failure"
+    );
+}
+
 #[tokio::test]
 async fn list_requires_admin_role() {
     let fix = build_fixture(true).await;
