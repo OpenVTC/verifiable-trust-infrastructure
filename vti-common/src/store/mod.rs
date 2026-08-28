@@ -435,6 +435,14 @@ pub struct LocalKeyspaceHandle {
     /// Keyspace name, bound into the AES-GCM associated data so a value
     /// cannot be relocated to another keyspace (which shares the storage
     /// key) and still authenticate. See [`encryption`].
+    ///
+    /// Gated with the feature it serves, like `encryption_key` below: every
+    /// read of it is an AAD construction, so a build without `encryption` has
+    /// nothing to read it and the compiler says so (`field is never read`,
+    /// which is what `pnm-cli` and every other default-feature consumer sees).
+    /// Carrying it regardless would leave a security-relevant field looking
+    /// like it might be doing something in builds where it cannot.
+    #[cfg(feature = "encryption")]
     name: String,
     /// The owning database, kept so the handle can fsync the shared
     /// journal ([`LocalKeyspaceHandle::persist`]) — fjall only exposes
@@ -478,6 +486,7 @@ impl LocalStore {
             .clone();
         Ok(LocalKeyspaceHandle {
             keyspace,
+            #[cfg(feature = "encryption")]
             name: name.to_string(),
             db: self.db.clone(),
             write_lock,
