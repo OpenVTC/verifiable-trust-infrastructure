@@ -35,6 +35,18 @@
 //! EndorsementCredential" instead of `recognition::verify`'s "VEC validUntil …
 //! is in the past".
 //!
+//! ## Trust Task Context Binding
+//!
+//! [`classify_dtg`] also refuses a `WitnessCredential` carrying no
+//! `taskContext`. That *is* classification, not validity: DTG Credentials marks
+//! the property REQUIRED on that subtype, and the catalog's own
+//! `TryFrom<DTGCommon>` rejects a witness without one at exactly this point. So
+//! it belongs inside the filter rather than beside it — a document that cannot
+//! be built as a VWC is not a VWC being skipped for the wrong reason. Without
+//! it, a witness made in one exchange reads identically to one made in the
+//! exchange it is presented in (Security Considerations 5, context collapse);
+//! see [`crate::credentials::task_context`].
+//!
 //! For the same reason the VIC and recognition paths are **left alone**. Both
 //! already implement `validFrom <= now < validUntil` with the same boundary
 //! this module uses, and each carries semantics the shared check does not:
@@ -94,9 +106,20 @@ pub fn classify_dtg(doc: &JsonValue) -> Result<DTGCredentialType, AppError> {
         }
     }
 
-    DTGCredentialType::try_from(types.as_slice()).map_err(|_| {
+    let subtype = DTGCredentialType::try_from(types.as_slice()).map_err(|_| {
         AppError::Validation("credential `type` names no DTG credential subtype".into())
-    })
+    })?;
+
+    // §Trust Task Context Binding makes `taskContext` REQUIRED on the VWC, and
+    // the catalog's own `TryFrom<DTGCommon>` refuses a witness without one at
+    // exactly this point — classification, not validity. Enforced here so the
+    // rule holds at every JSON-LD ingress rather than only where someone
+    // remembered it: the missing binding is what lets a witness from one
+    // exchange be read as evidence in another (Security Considerations 5).
+    if matches!(subtype, DTGCredentialType::Witness) && doc.get("taskContext").is_none() {
+        return Err(crate::credentials::task_context::missing());
+    }
+    Ok(subtype)
 }
 
 /// Check the common structure, require one specific subtype, and require the
@@ -310,6 +333,28 @@ mod tests {
                 "{label} classified as {got}"
             );
         }
+    }
+
+    /// A VWC the catalog itself would refuse to build must not classify as one
+    /// here either. `taskContext` is REQUIRED on this subtype, and a witness
+    /// without it is the credential that cannot be tied to any exchange — the
+    /// one the context-collapse attack needs.
+    #[test]
+    fn refuses_a_witness_credential_with_no_task_context() {
+        let mut witness = vmc();
+        witness["type"] =
+            serde_json::json!(["VerifiableCredential", "DTGCredential", "WitnessCredential"]);
+
+        let err = classify_dtg(&witness).expect_err("a VWC without taskContext must be refused");
+        assert!(format!("{err:?}").contains("taskContext"), "{err:?}");
+
+        // The same document with the binding present classifies normally, so
+        // the refusal is about the missing property and not about the subtype.
+        witness["taskContext"] = serde_json::json!("urn:uuid:some-exchange");
+        assert_eq!(
+            std::mem::discriminant(&classify_dtg(&witness).expect("a bound VWC classifies")),
+            std::mem::discriminant(&DTGCredentialType::Witness)
+        );
     }
 
     #[test]

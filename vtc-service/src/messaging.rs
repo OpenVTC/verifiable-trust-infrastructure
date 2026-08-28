@@ -1313,6 +1313,9 @@ async fn credential_present_handler(msg: &Message, state: &AppState) -> Option<R
         &body.vp_token,
         &challenge.aud,
         &challenge.nonce,
+        // The same thread the challenge was keyed by: the exchange every
+        // presented credential's `taskContext` is resolved against.
+        &thread_id,
         JoinTransport::DIDComm,
         now,
     )

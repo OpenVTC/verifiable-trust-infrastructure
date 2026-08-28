@@ -33,6 +33,14 @@ pub struct FactsInputs {
     pub subject_did: String,
     pub subject_member: Option<MemberState>,
     pub evidence: Evidence,
+    /// The trust task exchange this ceremony runs in, when it has one. `None`
+    /// for the synchronous REST ceremonies (leave, role-change, directory, and
+    /// the raw-VP join submit), which are not threaded.
+    ///
+    /// Required rather than defaulted so adding a threaded ceremony has to
+    /// answer the question: an omitted thread silently unbinds every credential
+    /// in the exchange, and it does it without failing anything.
+    pub thread_id: Option<String>,
 }
 
 /// Build a [`Facts`] from the uniform community context plus the per-purpose
@@ -57,6 +65,7 @@ pub async fn assemble_facts(state: &AppState, inputs: FactsInputs) -> Result<Fac
             community_did,
             channel: "rest".to_string(),
             member_count: state.member_count(),
+            thread_id: inputs.thread_id,
         },
         evidence: inputs.evidence,
         state: FactsState {

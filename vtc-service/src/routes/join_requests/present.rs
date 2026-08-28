@@ -12,10 +12,20 @@
 //! Unlike the VP submit path (whose `presentation.verified` rests on a
 //! route-layer hex signature), here `verified` rests on the holder `kb-jwt` /
 //! DI holder proof binding the verifier's `nonce` + audience — real VP
-//! cryptography. [`present_and_decide_join`] takes the expected audience + nonce
-//! as parameters so it is transport-agnostic; the DIDComm
+//! cryptography. [`present_and_decide_join`] takes the expected audience, nonce
+//! and exchange thread as parameters so it is transport-agnostic; the DIDComm
 //! `credential-exchange/present` handler (`messaging.rs`) sources them from the
-//! single-use presentation challenge it consumes.
+//! single-use presentation challenge it consumes and the `thid` that keyed it.
+//!
+//! ## Trust Task Context Binding
+//!
+//! The thread is not only a correlation handle. It is the identity of the
+//! exchange, and every presented credential is resolved against it: a VWC
+//! without the `taskContext` DTG Credentials marks REQUIRED is refused outright,
+//! and one naming a different exchange is surfaced to the policy as such
+//! ([`crate::credentials::task_context`]). Without that, a credential issued
+//! during some other exchange is indistinguishable from one issued during this
+//! one — Security Considerations 5, context collapse.
 //!
 //! This module also hosts the **query send side** ([`prepare_join_query`] +
 //! [`send_query`]): the VTC issues the challenge and builds the DCQL query (from
@@ -38,6 +48,7 @@ use vti_common::error::AppError;
 
 use crate::ceremony::{Credential, CredentialStatus, Presentation};
 use crate::credentials::present_challenge::{self, DEFAULT_CHALLENGE_TTL};
+use crate::credentials::task_context::{self, TaskContextBinding};
 use crate::credentials::witness::{self, WitnessBinding};
 use crate::credentials::{VerifiedPresentation, VerifiedPresentationSet, verify_vp_token};
 use affinidi_data_integrity::VerificationMethodResolver;
@@ -55,14 +66,19 @@ use crate::join::{JoinSubmitOutcome, decide_join, realize_join_verdict};
 ///
 /// `expected_aud` is this VTC's identity (the `domain`/`aud` the holder bound
 /// into the kb-jwt); `expected_nonce` is the single-use freshness value the VTC
-/// issued with its query. On success the applicant is the **proven holder** of
-/// the presentation. On `allow` the MembershipCredential is issued inline (the
-/// returned [`JoinSubmitOutcome::admit`]).
+/// issued with its query. `thread_id` is the exchange the holder presented on —
+/// the same thread that keyed the single-use challenge — and is what each
+/// credential's `taskContext` is resolved against, so a credential issued in a
+/// different exchange is visible as such to the policy rather than
+/// indistinguishable from a local one. On success the applicant is the **proven
+/// holder** of the presentation. On `allow` the MembershipCredential is issued
+/// inline (the returned [`JoinSubmitOutcome::admit`]).
 pub async fn present_and_decide_join(
     state: &AppState,
     vp_token: &JsonValue,
     expected_aud: &str,
     expected_nonce: &str,
+    thread_id: &str,
     transport: JoinTransport,
     now: DateTime<Utc>,
 ) -> Result<JoinSubmitOutcome, AppError> {
@@ -80,13 +96,16 @@ pub async fn present_and_decide_join(
     let applicant_did = set.holder.clone();
 
     // 2. Project the verified set into the ceremony evidence shape, resolving
-    //    each issuer's trust via TRQP against the community's recognition graph.
-    let presentation = presentation_from_verified_set(state, &set).await;
+    //    each issuer's trust via TRQP against the community's recognition graph
+    //    and each credential's task-context binding against this exchange. A
+    //    credential the specification requires a `taskContext` on and that does
+    //    not carry one is refused here, before any decision is taken.
+    let presentation = presentation_from_verified_set(state, &set, thread_id).await?;
 
     // 3 + 4. Decide under the active join policy, then realize the verdict. The
     // credential-exchange path carries no VIC (invitations ride the VP-submit
     // path), so no invitation fact and nothing to consume.
-    let verdict = decide_join(state, &applicant_did, presentation, None).await?;
+    let verdict = decide_join(state, &applicant_did, presentation, None, Some(thread_id)).await?;
     let vp_claims = vp_claims_from_set(&set);
     realize_join_verdict(
         state,
@@ -283,10 +302,22 @@ async fn push_credential_query(
 /// ([`issuer_trusted`]) and its lifecycle `status` is resolved live against the
 /// issuer's status list ([`resolve_presented_status`]). The credential `type` is
 /// the SD-JWT-VC `vct`.
+///
+/// `exchange_thread` is the thread the presentation arrived on, against which
+/// each credential's `taskContext` is resolved.
+///
+/// Fallible where the sibling resolutions are not: an unreachable status list or
+/// a flaky registry degrade to a surfaced verdict the policy can weigh, but a
+/// VWC with no `taskContext` is not a credential with a weaker claim — it is not
+/// a well-formed VWC, and the specification marks the property REQUIRED. It is
+/// refused for the whole presentation rather than dropped from it, because
+/// silently discarding one credential turns a malformed submission into a
+/// decision made on less evidence than the holder thinks it supplied.
 async fn presentation_from_verified_set(
     state: &AppState,
     set: &VerifiedPresentationSet,
-) -> Presentation {
+    exchange_thread: &str,
+) -> Result<Presentation, AppError> {
     let own_did = state.config.read().await.vtc_did.clone();
     let registry = state.registry_client.as_deref();
     // A presented credential's revocation is checked against the *issuer's*
@@ -325,7 +356,8 @@ async fn presentation_from_verified_set(
         // whole presentation: one unreadable keyspace must not decide a
         // ceremony, and `Unresolved` is the honest answer — we could not find
         // the edge. The policy still sees an unbound witness.
-        let witness_binding = if is_witness_credential(p) {
+        let is_witness = is_witness_credential(p);
+        let witness_binding = if is_witness {
             Some(
                 witness::resolve_binding(&state.relationships_ks, &p.claims)
                     .await
@@ -338,19 +370,35 @@ async fn presentation_from_verified_set(
         } else {
             None
         };
+        // The receipt half of Trust Task Context Binding. A VWC is the one type
+        // the specification marks `taskContext` REQUIRED on, so its absence is
+        // an error rather than a verdict — and the error is raised instead of
+        // filling the current thread in, which would forge the very binding
+        // being checked. Everything else resolves to a verdict the policy reads.
+        let requirement = if is_witness {
+            task_context::Requirement::Required
+        } else {
+            task_context::Requirement::Optional
+        };
+        let task_context = task_context::resolve(
+            requirement,
+            p.task_context.as_deref(),
+            Some(exchange_thread),
+        )?;
         credentials.push(credential_from_verified(
             p,
             trusted,
             status,
             witness_binding,
+            Some(task_context),
         ));
     }
 
-    Presentation {
+    Ok(Presentation {
         verified: true,
         holder: set.holder.clone(),
         credentials,
-    }
+    })
 }
 
 /// Whether this verified credential is a VWC, and so has a digest binding to
@@ -381,6 +429,7 @@ fn credential_from_verified(
     issuer_trusted: bool,
     status: CredentialStatus,
     witness_binding: Option<WitnessBinding>,
+    task_context: Option<TaskContextBinding>,
 ) -> Credential {
     Credential {
         credential_type: p
@@ -402,6 +451,9 @@ fn credential_from_verified(
         // of the pure projection so it stays unit-testable without storage,
         // for the same reason `issuer_trusted` and `status` are parameters.
         witness_binding,
+        // Also caller-resolved: the comparison needs the exchange's thread,
+        // which is a property of the ceremony rather than of the credential.
+        task_context,
     }
 }
 
@@ -561,6 +613,7 @@ mod tests {
             holder_bound: true,
             claims: json!({ "givenName": "Alice", "exp": 1_900_000_000 }),
             credential_status: None,
+            task_context: None,
         }
     }
 
@@ -592,8 +645,13 @@ mod tests {
 
     #[test]
     fn projects_a_verified_presentation_into_a_ceremony_credential() {
-        let c =
-            credential_from_verified(&sample_presentation(), true, CredentialStatus::Valid, None);
+        let c = credential_from_verified(
+            &sample_presentation(),
+            true,
+            CredentialStatus::Valid,
+            None,
+            None,
+        );
         assert_eq!(
             c.credential_type,
             "https://openvtc.org/credentials/MembershipCredential"
@@ -611,6 +669,7 @@ mod tests {
             &sample_presentation(),
             true,
             CredentialStatus::Revoked,
+            None,
             None,
         );
         assert_eq!(c.status, CredentialStatus::Revoked);
@@ -668,8 +727,13 @@ mod tests {
 
     #[test]
     fn untrusted_issuer_carries_through_to_the_credential() {
-        let c =
-            credential_from_verified(&sample_presentation(), false, CredentialStatus::Valid, None);
+        let c = credential_from_verified(
+            &sample_presentation(),
+            false,
+            CredentialStatus::Valid,
+            None,
+            None,
+        );
         assert!(!c.issuer_trusted);
     }
 

@@ -157,6 +157,10 @@ async fn assemble_role_change_facts(
                 presentation: None,
                 request: Some(json!({ "target_role": target_role, "step_up": step_up })),
             },
+            // A role change is a synchronous admin action, not a trust task
+            // exchange, and presents no credentials — there is nothing to bind
+            // and no thread to bind it to.
+            thread_id: None,
         },
     )
     .await
@@ -476,6 +480,9 @@ async fn assemble_leave_facts(
                 presentation: None,
                 request,
             },
+            // Unthreaded, and presents no credentials — see the role-change
+            // spine above.
+            thread_id: None,
         },
     )
     .await
