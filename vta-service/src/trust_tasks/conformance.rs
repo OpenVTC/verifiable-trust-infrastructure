@@ -2702,27 +2702,6 @@ fn every_published_dispatched_uri_has_a_witness() {
 
 /// Correctness: every witness's request parses as the generated `Payload`
 /// and its response as the generated `Response` — and the check has teeth:
-/// Generated types that do **not** reject an unknown member, with the reason.
-///
-/// Not a waiver for loose validation on the wire: the *schema* is strict in
-/// every case here, so `validate_payload` still rejects the member. What is
-/// missing is the type-level guard, which means the drifted-witness check
-/// below would pass vacuously and prove nothing — so it is skipped rather
-/// than allowed to give false assurance.
-///
-/// Each entry is a bug somewhere else, not a decision. Delete the entry when
-/// the upstream fix lands; the check then re-arms on its own.
-const PERMISSIVE_GENERATED_TYPE: &[(&str, &str, &str)] = &[(
-    "https://trusttasks.org/spec/vta/credentials/issue/0.2",
-    "response",
-    "0.2 closes its response with `unevaluatedProperties: false` (it has to — \
-     `additionalProperties` is evaluated per-subschema and would reject the \
-     `allOf`-supplied members). trust-tasks-codegen maps only \
-     `additionalProperties: false` onto `deny_unknown_fields`, so the \
-     generated struct is permissive where 0.1's was strict. Fix belongs in \
-     the codegen, not here.",
-)];
-
 /// a drifted (unknown-member) form of each MUST be rejected, so a witness
 /// cannot pass vacuously against a schema that accepts anything.
 #[test]
@@ -2765,20 +2744,16 @@ fn every_witnessed_task_round_trips_through_its_generated_types() {
         });
 
         // Teeth: an unknown member must be rejected on both sides. The
-        // generated types carry `deny_unknown_fields` wherever the spec is
-        // `additionalProperties: false`, which is all but one published task.
-        // A URI for which this stops holding needs an entry in
-        // `PERMISSIVE_GENERATED_TYPE` stating why, not a silent pass.
+        // generated types carry `deny_unknown_fields` wherever the spec closes
+        // the object — `additionalProperties: false`, or `unevaluatedProperties`
+        // on a composed one, which trust-tasks-rs 0.17.2 also honours. A URI for
+        // which this stops holding needs a KnownDrift-style review, not a silent
+        // pass: the check below injects an unknown member, so a type that
+        // accepts it makes the whole witness pass vacuously.
         for (side, value, parse) in [
             ("request", &w.request, w.parse_request),
             ("response", &w.response, w.parse_response),
         ] {
-            if PERMISSIVE_GENERATED_TYPE
-                .iter()
-                .any(|(u, s, _)| *u == uri && *s == side)
-            {
-                continue;
-            }
             let mut drifted = value.clone();
             drifted
                 .as_object_mut()
