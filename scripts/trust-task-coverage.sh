@@ -25,9 +25,23 @@ mkdir -p "$OBSERVED"
 export TRUST_TASK_OBSERVED_DIR="$OBSERVED"
 
 echo "==> running the vta-service suite (observations -> $OBSERVED/<pid>.tasks)"
+# `--all-features` because half the answer is behind feature gates. Without it
+# every `#![cfg(feature = ...)]` test binary is silently skipped — the
+# `transport-harness` one alone carries `vault/{release,proxy-login,
+# sign-trust-task}` — and those tasks are then reported as uncovered even
+# though a `cargo test --all-features` run exercises them. The failure is
+# invisible in exactly the wrong direction: nothing errors, the number is
+# simply too low, and the missing tasks look like harness gaps to go and
+# write tests for that already exist.
+#
+# It matters on the report line below too, not just the capture: the
+# denominator comes from the dispatch table, which is itself feature-gated,
+# so building the two with different feature sets compares a numerator and a
+# denominator that do not describe the same service.
+#
 # `--no-fail-fast` so a failing binary still contributes what it exercised:
 # coverage of a partial run is a floor, and a floor beats no number.
-cargo test -p vta-service --no-fail-fast "$@" || true
+cargo test -p vta-service --all-features --no-fail-fast "$@" || true
 
 echo "==> coverage"
-cargo test -p vta-service --lib -- --ignored --nocapture report_task_coverage
+cargo test -p vta-service --all-features --lib -- --ignored --nocapture report_task_coverage
