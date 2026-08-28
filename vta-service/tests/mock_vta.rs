@@ -776,7 +776,7 @@ async fn webvh_family_response_shapes() {
         let mut cfg = mock.ctx.config.write().await;
         cfg.public_url = Some("https://vta.test".into());
     }
-    client
+    let challenge = client
         .dispatch_trust_task(
             vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
             serde_json::json!({ "did": did, "label": "coverage-key" }),
@@ -785,10 +785,57 @@ async fn webvh_family_response_shapes() {
         .await
         .expect("passkey-vms/enroll-challenge");
 
-    // `enroll-submit` and `revoke` stay uncovered: submit needs a real
-    // authenticator attestation over the challenge above, and revoke needs an
-    // enrolled VM to remove. Both want the soft-authenticator harness the
-    // `admin_passkeys` suites stand up on the VTC side.
+    // `enroll-submit` runs full WebAuthn verification, so the attestation has
+    // to be real — `SoftAuthenticator` is an authenticator in software rather
+    // than a hand-written fixture, and the challenge, RP-ID hash, flags and
+    // credential key all have to line up or `finish_passkey_registration`
+    // refuses. The RP id is the `public_url`'s domain and the origin is the URL
+    // itself, which is what `build_webauthn` derives.
+    let authenticator = vta_service::test_support::SoftAuthenticator::new(0x60);
+    let registration = authenticator.register(
+        "vta.test",
+        "https://vta.test",
+        challenge["challenge"].as_str().expect("a challenge"),
+    );
+    client
+        .dispatch_trust_task(
+            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
+            serde_json::json!({
+                "did": did,
+                "ceremonyId": challenge["ceremonyId"].as_str().expect("a ceremony id"),
+                "credentialId": registration.credential_id,
+                "publicKeyMultibase": registration.public_key_multibase,
+                "coseAlgorithm": registration.cose_algorithm,
+                "attestationObject": registration.attestation_object,
+                "clientDataJson": registration.client_data_json,
+                "authenticatorData": registration.authenticator_data,
+            }),
+            30,
+        )
+        .await
+        .expect("passkey-vms/enroll-submit");
+
+    // And now `revoke` has something to remove. It refuses a fragment the
+    // document does not carry (`fragmentNotFound`), so this is only reachable
+    // once a VM has really been enrolled — the fragment is derived from the
+    // credential id the same way the enrolment derived it.
+    let fragment = {
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+        use sha2::{Digest, Sha256};
+        let cred = B64URL
+            .decode(&registration.credential_id)
+            .expect("the credential id round-trips");
+        format!("passkey-{}", B64URL.encode(Sha256::digest(&cred)))
+    };
+    client
+        .dispatch_trust_task(
+            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
+            serde_json::json!({ "did": did, "fragment": fragment }),
+            30,
+        )
+        .await
+        .expect("passkey-vms/revoke");
 
     // ── server slot maintenance ───────────────────────────────────────────
     // A slot the host holds with no local record behind it. `reconcile` above
