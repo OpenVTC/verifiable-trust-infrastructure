@@ -14,7 +14,7 @@ repository.workspace = true
 # Reuses the VTA SDK's challenge-response auth (audience-agnostic) and the
 # published join-request protocol types. `session` gates `auth_light` +
 # `protocols`.
-vta-sdk = { path = "../vta-sdk", version = "0.29", features = ["session"] }
+vta-sdk = { path = "../vta-sdk", version = "0.30", features = ["session"] }
 # `TrustTask` — the join-submit document this client signs, and the `#response`
 # envelope the VTC answers it with. Same crate `vta-sdk` builds the document
 # from, so one shape crosses the boundary.
