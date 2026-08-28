@@ -21,7 +21,7 @@ use super::VtaClient;
 use crate::error::VtaError;
 use crate::protocols::device_management::{
     DeviceDisableBody, DeviceHeartbeatBody, DeviceRegisterBody, DeviceSetWakeBody, DeviceWipeBody,
-    WakeHandle,
+    WakeHandle, device_name_ext,
 };
 use crate::trust_tasks;
 
@@ -59,9 +59,35 @@ impl VtaClient {
     /// `device/heartbeat/0.1` — refresh `lastSeenAt` (and `platform` if
     /// supplied). Returns server time + any queued operations for the device.
     pub async fn device_heartbeat(&self, platform: Option<&str>) -> Result<Value, VtaError> {
+        self.device_heartbeat_named(platform, None).await
+    }
+
+    /// `device/heartbeat/0.1` carrying this device's **current** display name.
+    ///
+    /// `displayName` is set once, at registration, and re-registration is
+    /// intentionally refused — so a renamed machine (or an install moved to
+    /// another profile) otherwise keeps announcing a name that no longer picks
+    /// it out of the list the name exists for. Sending it on the heartbeat is
+    /// how a device corrects its own binding; the VTA applies it only when it
+    /// differs, and only to the binding the caller authenticated as.
+    ///
+    /// A separate method rather than a wider `device_heartbeat`: this crate is
+    /// published and consumed across repositories, and changing a public
+    /// signature to add an optional argument would spend a breaking release on a
+    /// diagnostic field.
+    ///
+    /// A VTA that does not understand the extension ignores it (SPEC §4.5.1) —
+    /// the heartbeat still refreshes `lastSeenAt`, and the name simply stays as
+    /// it was.
+    pub async fn device_heartbeat_named(
+        &self,
+        platform: Option<&str>,
+        display_name: Option<&str>,
+    ) -> Result<Value, VtaError> {
         let payload = serde_json::to_value(DeviceHeartbeatBody {
             platform: platform.map(str::to_string),
             vault_seq: None,
+            ext: display_name.map(device_name_ext),
         })?;
         self.dispatch_trust_task(
             trust_tasks::TASK_DEVICE_HEARTBEAT_0_1,
