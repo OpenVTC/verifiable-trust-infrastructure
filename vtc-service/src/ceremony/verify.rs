@@ -191,6 +191,7 @@ mod tests {
                 holder_bound: true,
                 claims: json!({}),
                 valid_until: None,
+                witness_binding: None,
             }],
         }
     }
