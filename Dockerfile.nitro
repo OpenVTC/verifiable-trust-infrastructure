@@ -181,11 +181,11 @@ RUN echo 'int __res_init(void) { return 0; }' > /tmp/res_stub.c && \
 # the baked, PCR0-committed fleet policy: mode=required, allow_* defaults, and
 # tee.allowed_kms_accounts — none of which the overlay can weaken).
 # ---------------------------------------------------------------------------
-FROM alpine:3.21 AS config-true
+FROM alpine:3.24 AS config-true
 RUN mkdir -p /out
 COPY deploy/nitro/config.toml /out/config.toml
 
-FROM alpine:3.21 AS config-false
+FROM alpine:3.24 AS config-false
 RUN mkdir -p /out
 COPY deploy/nitro/config.fleet-base.toml /out/config.toml
 # Bake the PCR0-committed account allowlist from a build-arg into the COPIED file
@@ -207,7 +207,7 @@ FROM config-${BAKE_CONFIG} AS config-src
 # Alpine Linux: ~7 MB base vs ~180 MB for debian:bookworm-slim.
 # Busybox provides `ip` (replacing iproute2) and `sed` natively.
 # gcompat provides glibc compatibility for the Rust binary.
-FROM alpine:3.21
+FROM alpine:3.24
 
 RUN apk add --no-cache \
         ca-certificates \
