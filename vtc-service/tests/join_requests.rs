@@ -1032,11 +1032,13 @@ async fn list_requires_authentication() {
 /// `aud` + `nonce`, framed as an OID4VP DCQL `vp_token` map (keyed by
 /// credential-query id) — exactly the shape `vta-service`'s `present_query`
 /// emits. Returns `(holder_did, vp_token)`.
-fn build_membership_vp_token(
+fn build_vp_token(
     holder_seed: u8,
     aud: &str,
     nonce: &str,
     now_ts: i64,
+    vct: &str,
+    extra_claims: &[(&str, Value)],
 ) -> (String, Value) {
     use affinidi_sd_jwt::error::SdJwtError;
     use affinidi_sd_jwt::hasher::Sha256Hasher;
@@ -1091,11 +1093,16 @@ fn build_membership_vp_token(
         ),
     };
 
-    let vct = "https://openvtc.org/credentials/MembershipCredential";
-    let claims = json!({
+    let mut claims = json!({
         "iss": issuer_did, "sub": holder_did, "vct": vct,
         "iat": now_ts, "exp": now_ts + 3600, "givenName": "Alice"
     });
+    // Issuer-protected and always disclosed — `taskContext` rides here, not in
+    // the `_sd` frame, because a selectively-disclosable binding is one the
+    // holder can withhold from the verifier that has to enforce it.
+    for (key, value) in extra_claims {
+        claims[*key] = value.clone();
+    }
     let frame = json!({ "_sd": ["givenName"] });
     let hasher = Sha256Hasher;
     let holder_jwk = json!({
@@ -1116,6 +1123,38 @@ fn build_membership_vp_token(
         holder_did,
         json!({ "membership": presentation.serialize() }),
     )
+}
+
+/// The membership presentation every pre-existing test in this file uses.
+fn build_membership_vp_token(
+    holder_seed: u8,
+    aud: &str,
+    nonce: &str,
+    now_ts: i64,
+) -> (String, Value) {
+    build_vp_token(
+        holder_seed,
+        aud,
+        nonce,
+        now_ts,
+        "https://openvtc.org/credentials/MembershipCredential",
+        &[],
+    )
+}
+
+/// A `WitnessCredential` presentation, optionally carrying the `taskContext`
+/// DTG Credentials marks REQUIRED on that type.
+fn build_witness_vp_token(
+    holder_seed: u8,
+    aud: &str,
+    nonce: &str,
+    now_ts: i64,
+    task_context: Option<&str>,
+) -> (String, Value) {
+    let extra: Vec<(&str, Value)> = task_context
+        .map(|t| vec![("taskContext", json!(t))])
+        .unwrap_or_default();
+    build_vp_token(holder_seed, aud, nonce, now_ts, "WitnessCredential", &extra)
 }
 
 const VTC_AUD: &str = "did:webvh:vtc.example.com:abc";
@@ -1145,6 +1184,7 @@ async fn credential_exchange_present_auto_admits_under_allow_policy() {
         &vp_token,
         VTC_AUD,
         nonce,
+        "query-thread",
         JoinTransport::DIDComm,
         now,
     )
@@ -1188,6 +1228,7 @@ async fn credential_exchange_present_defers_under_default_policy() {
         &vp_token,
         VTC_AUD,
         nonce,
+        "query-thread",
         JoinTransport::DIDComm,
         now,
     )
@@ -1217,6 +1258,7 @@ async fn credential_exchange_present_rejects_a_wrong_nonce() {
             &vp_token,
             VTC_AUD,
             "wrong-nonce",
+            "query-thread",
             JoinTransport::DIDComm,
             now,
         )
@@ -1277,6 +1319,7 @@ async fn credential_exchange_present_over_a_single_use_challenge_closes_the_loop
         &vp_token,
         &challenge.aud,
         &challenge.nonce,
+        thread,
         JoinTransport::DIDComm,
         now,
     )
@@ -1298,6 +1341,153 @@ async fn credential_exchange_present_over_a_single_use_challenge_closes_the_loop
             .await
             .is_err(),
         "a replayed presentation finds no challenge"
+    );
+}
+
+// ── Trust Task Context Binding (#1065) ──────────────────────────────────────
+
+/// A join policy that admits only on a credential issued **inside this
+/// exchange**. This is what the ceremony facts have to make expressible: the
+/// same credential, cryptographically identical, decides differently depending
+/// on which exchange it came out of.
+const SAME_EXCHANGE_ONLY_JOIN_REGO: &str = "package vtc.join\nimport rego.v1\n\n\
+     default decision := {\"effect\": \"deny\", \"with\": {\"code\": \"foreign-exchange\"}}\n\n\
+     decision := {\"effect\": \"allow\", \"with\": {\"role\": \"member\"}} if {\n\
+     \tsome c in input.evidence.presentation.credentials\n\
+     \tc.task_context.state == \"sameExchange\"\n\
+     }\n";
+
+/// DTG Credentials marks `taskContext` REQUIRED on the VWC. A witness presented
+/// without one is refused at receipt — and refused rather than defaulted to the
+/// thread it happened to arrive on, which would manufacture the binding the
+/// verifier exists to check. The `allow`-everything policy is deliberate: if the
+/// refusal were happening in the policy rather than at receipt, this would admit.
+#[tokio::test]
+async fn credential_exchange_present_refuses_a_witness_with_no_task_context() {
+    use vtc_service::join::JoinTransport;
+    use vtc_service::routes::join_requests::present::present_and_decide_join;
+
+    let fix = build_fixture().await;
+    activate_join_policy(
+        &fix,
+        "package vtc.join\nimport rego.v1\n\n\
+         default decision := {\"effect\": \"allow\", \"with\": {\"role\": \"member\"}}\n",
+    )
+    .await;
+
+    let now = chrono::Utc::now();
+    let nonce = "n";
+    let (holder_did, vp_token) =
+        build_witness_vp_token(0x51, VTC_AUD, nonce, now.timestamp(), None);
+
+    let err = present_and_decide_join(
+        &fix.state,
+        &vp_token,
+        VTC_AUD,
+        nonce,
+        "urn:uuid:this-exchange",
+        JoinTransport::DIDComm,
+        now,
+    )
+    .await
+    .err()
+    .expect("a witness with no taskContext must be refused");
+    assert!(
+        matches!(&err, vti_common::error::AppError::Validation(m) if m.contains("taskContext")),
+        "{err:?}"
+    );
+    assert!(
+        vtc_service::acl::get_acl_entry(&fix.acl_ks, &holder_did)
+            .await
+            .unwrap()
+            .is_none(),
+        "the refusal must land before the decision, so nothing is admitted"
+    );
+}
+
+/// The bound case: a witness naming this exchange satisfies a policy that
+/// requires it.
+#[tokio::test]
+async fn a_witness_from_this_exchange_satisfies_a_same_exchange_policy() {
+    use vtc_service::join::{JoinStatus, JoinTransport};
+    use vtc_service::routes::join_requests::present::present_and_decide_join;
+
+    let fix = build_fixture().await;
+    activate_join_policy(&fix, SAME_EXCHANGE_ONLY_JOIN_REGO).await;
+
+    let now = chrono::Utc::now();
+    let nonce = "n";
+    let thread = "urn:uuid:this-exchange";
+    let (holder_did, vp_token) =
+        build_witness_vp_token(0x52, VTC_AUD, nonce, now.timestamp(), Some(thread));
+
+    let outcome = present_and_decide_join(
+        &fix.state,
+        &vp_token,
+        VTC_AUD,
+        nonce,
+        thread,
+        JoinTransport::DIDComm,
+        now,
+    )
+    .await
+    .expect("present and decide");
+
+    assert_eq!(outcome.request.status, JoinStatus::Approved);
+    assert!(
+        vtc_service::acl::get_acl_entry(&fix.acl_ks, &holder_did)
+            .await
+            .unwrap()
+            .is_some(),
+        "a witness bound to this exchange admits under the same-exchange policy"
+    );
+}
+
+/// Context collapse, and the whole point of #1065: the *same* well-formed,
+/// signed, in-date witness — differing only in the exchange its `taskContext`
+/// names — cannot satisfy the rule it satisfies above. Without the binding in
+/// the facts these two presentations are indistinguishable to the policy.
+#[tokio::test]
+async fn a_witness_from_another_exchange_cannot_satisfy_this_one() {
+    use vtc_service::join::{JoinStatus, JoinTransport};
+    use vtc_service::routes::join_requests::present::present_and_decide_join;
+
+    let fix = build_fixture().await;
+    activate_join_policy(&fix, SAME_EXCHANGE_ONLY_JOIN_REGO).await;
+
+    let now = chrono::Utc::now();
+    let nonce = "n";
+    let (holder_did, vp_token) = build_witness_vp_token(
+        0x53,
+        VTC_AUD,
+        nonce,
+        now.timestamp(),
+        Some("urn:uuid:some-other-exchange"),
+    );
+
+    let outcome = present_and_decide_join(
+        &fix.state,
+        &vp_token,
+        VTC_AUD,
+        nonce,
+        "urn:uuid:this-exchange",
+        JoinTransport::DIDComm,
+        now,
+    )
+    .await
+    .expect("a foreign taskContext is not a rejection at receipt — the policy decides");
+
+    assert_eq!(
+        outcome.request.status,
+        JoinStatus::Rejected,
+        "a witness from another exchange must not satisfy a same-exchange rule"
+    );
+    assert!(
+        vtc_service::acl::get_acl_entry(&fix.acl_ks, &holder_did)
+            .await
+            .unwrap()
+            .is_none(),
+        "and must not admit"
     );
 }
 

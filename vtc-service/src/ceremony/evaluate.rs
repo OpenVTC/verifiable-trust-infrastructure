@@ -132,6 +132,7 @@ cred_trusted(t) if {
                 community_did: "did:webvh:acme.example".into(),
                 channel: "rest".into(),
                 member_count: 10,
+                thread_id: None,
             },
             evidence: Evidence {
                 invitation: None,
@@ -147,6 +148,7 @@ cred_trusted(t) if {
                         claims: json!({}),
                         valid_until: None,
                         witness_binding: None,
+                        task_context: None,
                     }],
                 }),
                 request: Some(json!({ "agreements": {} })),

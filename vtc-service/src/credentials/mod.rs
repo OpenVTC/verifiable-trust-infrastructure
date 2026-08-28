@@ -54,6 +54,7 @@ pub mod invitation_registry;
 pub mod invitation_verify;
 pub mod present_challenge;
 pub mod signer;
+pub mod task_context;
 pub mod vec;
 pub mod vm_resolver;
 pub mod vmc;

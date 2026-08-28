@@ -82,6 +82,31 @@ pub struct VerifiedPresentation {
     /// from [`Self::claims`] because the DI path stores only `credentialSubject`
     /// in `claims`, while `credentialStatus` is a sibling top-level VC field.
     pub credential_status: Option<Value>,
+    /// The credential's `taskContext` — the `threadId` of the trust task
+    /// exchange it was issued in (DTG Credentials §Trust Task Context Binding),
+    /// or `None` when it asserts none.
+    ///
+    /// Captured here for the same reason [`Self::credential_status`] is: it is a
+    /// **top-level** credential property, and the DI and bbs paths keep only
+    /// `credentialSubject` in [`Self::claims`], so a `taskContext` read from
+    /// `claims` downstream would be unconditionally `None` on those paths — a
+    /// verifier that could never see the binding it is required to enforce.
+    /// Resolved into a verdict by [`crate::credentials::task_context`].
+    pub task_context: Option<String>,
+}
+
+/// Read a credential's top-level `taskContext`.
+///
+/// `source` is the whole credential — the SD-JWT-VC payload, or the DI / bbs VC
+/// object — never `credentialSubject`. DTG Credentials places `taskContext`
+/// beside `issuer`, not inside the subject, so looking for it in the subject as
+/// well would accept a shape the issuing catalog cannot produce and the
+/// signature-covered position would stop being the one that counts.
+fn extract_task_context(source: &Value) -> Option<String> {
+    source
+        .get("taskContext")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// Extract a credential's status entry from a verified SD-JWT-VC payload or a DI
@@ -252,6 +277,7 @@ pub async fn verify_presentation(
         .and_then(Value::as_str)
         .map(str::to_string);
     let credential_status = extract_credential_status(&result.claims);
+    let task_context = extract_task_context(&result.claims);
     Ok(VerifiedPresentation {
         issuer_did,
         holder_did,
@@ -261,6 +287,7 @@ pub async fn verify_presentation(
         holder_bound: true,
         claims: result.claims,
         credential_status,
+        task_context,
     })
 }
 
@@ -491,6 +518,10 @@ async fn verify_di_vp(
         // The W3C `credentialStatus` is a top-level VC field (sibling of
         // `credentialSubject`); capture it from the full VC, not the subject.
         let credential_status = extract_credential_status(vc);
+        // Same reasoning as `credentialStatus` directly above: a top-level VC
+        // field, so it has to be taken from the full credential before `claims`
+        // narrows to `credentialSubject`.
+        let task_context = extract_task_context(vc);
         out.push(VerifiedPresentation {
             issuer_did,
             holder_did: holder_did.clone(),
@@ -500,6 +531,7 @@ async fn verify_di_vp(
             holder_bound: true,
             claims: vc.get("credentialSubject").cloned().unwrap_or(Value::Null),
             credential_status,
+            task_context,
         });
     }
     Ok(out)
@@ -700,6 +732,12 @@ async fn verify_bbs_presentation(
         _ => None,
     });
     let credential_status = extract_credential_status(vc);
+    // A derived proof reveals only what the issuer made mandatory-disclosed plus
+    // what the holder chose to disclose. An issuer that leaves `taskContext`
+    // selectively disclosable therefore mints a VWC that a verifier is *unable*
+    // to bind to its exchange, and the receipt gate refuses it — correctly, and
+    // the fix belongs on the issuing side.
+    let task_context = extract_task_context(vc);
 
     Ok(VerifiedPresentation {
         issuer_did,
@@ -710,5 +748,6 @@ async fn verify_bbs_presentation(
         holder_bound,
         claims: vc.get("credentialSubject").cloned().unwrap_or(Value::Null),
         credential_status,
+        task_context,
     })
 }

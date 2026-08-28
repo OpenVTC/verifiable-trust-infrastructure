@@ -156,6 +156,7 @@ mod tests {
                 community_did: "did:webvh:acme.example".into(),
                 channel: "rest".into(),
                 member_count: 10,
+                thread_id: None,
             },
             evidence: Evidence {
                 invitation: None,

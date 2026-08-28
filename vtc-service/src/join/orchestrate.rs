@@ -214,7 +214,10 @@ pub async fn submit_inner(
     // 5. Decide: assemble verified Facts (the route-layer holder-binding
     // makes this presentation `verified`) and run the active join policy.
     let presentation = presentation_from_vp(&applicant_did, &vp);
-    let verdict = decide_join(state, &applicant_did, presentation, invitation).await?;
+    // No thread: this is a synchronous REST submission, not a trust task
+    // exchange. Nothing here can be `sameExchange`, which is the honest answer
+    // — there is no exchange to be the same as.
+    let verdict = decide_join(state, &applicant_did, presentation, invitation, None).await?;
 
     // 6. Realize the verdict (store + audit + auto-admit on allow). On an
     // invitation-driven admit the VIC is burned in the single-use ledger.
@@ -237,13 +240,20 @@ pub async fn submit_inner(
 /// it has already established as `verified` (route-layer holder-binding for the
 /// VP path; cryptographic `vp_token` verification for the credential-exchange
 /// path).
+///
+/// `thread_id` is the trust task exchange the evidence arrived on, or `None` on
+/// the unthreaded REST path. It is what each credential's `taskContext` verdict
+/// is resolved against, so passing `None` where a thread exists would not error
+/// — it would quietly make every credential unbindable.
 pub async fn decide_join(
     state: &AppState,
     applicant_did: &str,
     presentation: Presentation,
     invitation: Option<Invitation>,
+    thread_id: Option<&str>,
 ) -> Result<Verdict, AppError> {
-    let facts = assemble_join_facts(state, applicant_did, presentation, invitation).await?;
+    let facts =
+        assemble_join_facts(state, applicant_did, presentation, invitation, thread_id).await?;
     let verified = VerifiedFacts::assemble(facts)?;
     let policy = load_active_compiled(
         &state.active_policies_ks,
@@ -457,6 +467,7 @@ async fn assemble_join_facts(
     applicant_did: &str,
     presentation: Presentation,
     invitation: Option<Invitation>,
+    thread_id: Option<&str>,
 ) -> Result<Facts, AppError> {
     // The applicant proved holder-binding (route-layer for the VP path,
     // cryptographic kb-jwt for the credential-exchange path) but is not (yet) a
@@ -476,6 +487,7 @@ async fn assemble_join_facts(
                 presentation: Some(presentation),
                 request: None,
             },
+            thread_id: thread_id.map(str::to_string),
         },
     )
     .await
@@ -564,6 +576,11 @@ fn credential_from_vc(vc: &JsonValue) -> Option<Credential> {
         // "we did not check" as "the digest names no edge we hold", which is
         // the fail-safe direction here only by accident.
         witness_binding: None,
+        // Likewise absent rather than `Absent`: this path reads no credential
+        // property under a verified signature, so it has nothing to say about
+        // where the credential came from. `Absent` would assert that the
+        // credential carries no `taskContext`, which we did not check.
+        task_context: None,
     })
 }
 

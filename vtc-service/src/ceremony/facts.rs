@@ -41,6 +41,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+use crate::credentials::task_context::TaskContextBinding;
 use crate::credentials::witness::WitnessBinding;
 
 /// Which ceremony this evaluation is deciding.
@@ -180,6 +181,21 @@ pub struct Context {
     /// Current member count — feeds size-sensitive policy (e.g. a
     /// quorum threshold or a first-member bootstrap branch).
     pub member_count: u64,
+    /// The trust task exchange this ceremony *is* — the `threadId` the
+    /// evidence arrived on. Present for a threaded ceremony (the
+    /// credential-exchange join, whose thread keys the single-use
+    /// presentation challenge); absent for a synchronous REST
+    /// submission, which has no thread.
+    ///
+    /// This is what makes each credential's
+    /// [`Credential::task_context`] verdict mean something: without
+    /// naming the exchange in the facts, "the credential says it came
+    /// from thread X" is unanswerable, and a credential from another
+    /// exchange satisfies a policy rule as readily as one from this
+    /// one (DTG Credentials Security Considerations 5, context
+    /// collapse).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
 }
 
 /// Everything the actor presented, grouped by kind. Each slot is
@@ -300,6 +316,25 @@ pub struct Credential {
     /// cryptography.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness_binding: Option<WitnessBinding>,
+    /// Host verdict: which trust task exchange this credential's own
+    /// `taskContext` names, relative to
+    /// [`Context::thread_id`] — the exchange it is being presented in.
+    ///
+    /// `None` where the path never looked (the raw-VP submit path
+    /// verifies nothing about an embedded VC, so it cannot report on
+    /// this either). Present and
+    /// [`TaskContextBinding::ForeignExchange`] is a different fact
+    /// from absent: it says the credential was issued in some *other*
+    /// exchange, which is ordinary for a witness and disqualifying for
+    /// anything offered as evidence that *this* ceremony reached its
+    /// terminal state (DTG Credentials Security Considerations 5).
+    ///
+    /// A policy asserting a ceremony outcome should require
+    /// `task_context.state == "sameExchange"`; one merely weighing
+    /// background evidence should not, or it refuses every honest
+    /// witness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_context: Option<TaskContextBinding>,
 }
 
 /// Resolved credential status. The host computes this from the
@@ -369,6 +404,7 @@ mod tests {
                 community_did: "did:webvh:acme.example".into(),
                 channel: "rest".into(),
                 member_count: 1421,
+                thread_id: None,
             },
             evidence: Evidence {
                 invitation: None,
@@ -384,6 +420,7 @@ mod tests {
                         claims: json!({ "kind": "proximity" }),
                         valid_until: None,
                         witness_binding: None,
+                        task_context: None,
                     }],
                 }),
                 request: Some(json!({ "agreements": {} })),
@@ -438,6 +475,7 @@ mod tests {
                 community_did: "did:webvh:acme.example".into(),
                 channel: "rest".into(),
                 member_count: 1421,
+                thread_id: None,
             },
             evidence: Evidence {
                 invitation: None,
@@ -479,6 +517,83 @@ mod tests {
             let parsed: Purpose = serde_json::from_value(json!(wire)).unwrap();
             assert_eq!(parsed, purpose);
         }
+    }
+
+    /// The task-context binding reaches the policy under the keys a rule is
+    /// written against — `context.thread_id` names the exchange, and each
+    /// credential's `task_context.state` says where *it* came from. The pair is
+    /// what makes "a credential from another exchange" expressible at all; a
+    /// rule reading either key by a different name matches nothing, and
+    /// matching nothing is indistinguishable from finding no foreign
+    /// credential.
+    #[test]
+    fn the_task_context_binding_reaches_the_policy_input() {
+        let mut facts = Facts {
+            purpose: Purpose::Join,
+            now: "2026-05-30T12:00:00Z".parse().unwrap(),
+            actor: Actor {
+                did: "did:key:z6MkHuman".into(),
+                role: None,
+                authenticated: true,
+            },
+            subject: Subject {
+                did: "did:key:z6MkHuman".into(),
+            },
+            context: Context {
+                community_did: "did:webvh:acme.example".into(),
+                channel: "didcomm".into(),
+                member_count: 1,
+                thread_id: Some("urn:uuid:this-exchange".into()),
+            },
+            evidence: Evidence {
+                invitation: None,
+                presentation: Some(Presentation {
+                    verified: true,
+                    holder: "did:key:z6MkHuman".into(),
+                    credentials: vec![Credential {
+                        credential_type: "WitnessCredential".into(),
+                        issuer: "did:webvh:notary.example".into(),
+                        issuer_trusted: true,
+                        status: CredentialStatus::Valid,
+                        holder_bound: true,
+                        claims: json!({}),
+                        valid_until: None,
+                        witness_binding: None,
+                        task_context: Some(TaskContextBinding::ForeignExchange {
+                            thread_id: "urn:uuid:some-other-exchange".into(),
+                        }),
+                    }],
+                }),
+                request: None,
+            },
+            state: State {
+                subject_member: None,
+            },
+        };
+
+        let wire = serde_json::to_value(&facts).unwrap();
+        assert_eq!(wire["context"]["thread_id"], "urn:uuid:this-exchange");
+        let cred = &wire["evidence"]["presentation"]["credentials"][0];
+        assert_eq!(cred["task_context"]["state"], "foreignExchange");
+        assert_eq!(
+            cred["task_context"]["thread_id"],
+            "urn:uuid:some-other-exchange"
+        );
+        let parsed: Facts = serde_json::from_value(wire).unwrap();
+        assert_eq!(parsed, facts);
+
+        // Unthreaded ceremonies and unexamined credentials omit the keys rather
+        // than sending `null`, matching every other optional slot — a Rego rule
+        // sees `undefined` either way, and the design examples carry neither.
+        facts.context.thread_id = None;
+        facts.evidence.presentation.as_mut().unwrap().credentials[0].task_context = None;
+        let wire = serde_json::to_value(&facts).unwrap();
+        assert!(wire["context"].get("thread_id").is_none());
+        assert!(
+            wire["evidence"]["presentation"]["credentials"][0]
+                .get("task_context")
+                .is_none()
+        );
     }
 
     #[test]

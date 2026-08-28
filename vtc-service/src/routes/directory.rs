@@ -187,6 +187,9 @@ async fn assemble_directory_facts(
                 presentation: None,
                 request,
             },
+            // A directory read is synchronous and unthreaded, and presents no
+            // credentials to bind.
+            thread_id: None,
         },
     )
     .await
