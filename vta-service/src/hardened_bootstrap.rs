@@ -153,9 +153,13 @@ pub fn legacy_aes_gcm_open(key: &[u8; 32], blob: &[u8]) -> Option<Vec<u8>> {
     if blob.len() < 13 {
         return None;
     }
-    let nonce = aes_gcm::Nonce::from_slice(&blob[..12]);
+    // `try_from` rather than the deprecated `from_slice`, which panics on a
+    // wrong length. The bounds check above makes the slice exactly 12, so this
+    // cannot fail — but a panicking conversion on a decrypt path is one
+    // refactor away from being reachable.
+    let nonce = aes_gcm::Nonce::try_from(&blob[..12]).ok()?;
     let cipher = Aes256Gcm::new_from_slice(key).ok()?;
-    cipher.decrypt(nonce, &blob[12..]).ok()
+    cipher.decrypt(&nonce, &blob[12..]).ok()
 }
 
 /// Error variants for [`load_or_generate_jwt_key`].
@@ -485,11 +489,11 @@ mod tests {
     /// AES-GCM seal in the retired format, so the legacy-import test can build
     /// a fixture. Nothing in the crate writes this any more.
     fn legacy_aes_gcm_seal(key: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {
-        use aes_gcm::aead::rand_core::RngCore;
+        use rand::Rng;
         let cipher = Aes256Gcm::new_from_slice(key).expect("32-byte key");
         let mut nonce_bytes = [0u8; 12];
-        aes_gcm::aead::OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = aes_gcm::Nonce::from_slice(&nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
+        let nonce: &aes_gcm::Nonce<_> = (&nonce_bytes).into();
         let mut ct = cipher.encrypt(nonce, plaintext).expect("AES-GCM encrypt");
         let mut out = Vec::with_capacity(12 + ct.len());
         out.extend_from_slice(&nonce_bytes);

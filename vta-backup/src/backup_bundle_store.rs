@@ -13,10 +13,9 @@
 
 use std::path::PathBuf;
 
-use aes_gcm::aead::OsRng;
-use aes_gcm::aead::rand_core::RngCore;
 use base64::Engine;
 use chrono::{DateTime, Utc};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -193,7 +192,7 @@ pub fn mint_token() -> Result<(BundleToken, [u8; 32]), AppError> {
     // `keys::imported` for KEK salts). Stays inside the
     // `aes_gcm::aead` re-export so the workspace pins one
     // rand-core version transitively.
-    OsRng.fill_bytes(&mut raw);
+    rand::rng().fill_bytes(&mut raw);
     let token_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
     let hash = hash_token(&token_b64);
     Ok((BundleToken(token_b64), hash))
@@ -346,7 +345,7 @@ mod tests {
             a.as_str(),
             b.as_str(),
             "two mint_token calls must produce different tokens \
-             (OsRng output collision is effectively impossible)"
+             (CSPRNG output collision is effectively impossible)"
         );
     }
 

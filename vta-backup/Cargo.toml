@@ -28,6 +28,10 @@ tee = ["vta-config/tee", "dep:async-trait"]
 
 [dependencies]
 vti-common = { path = "../vti-common", version = "0.14" }
+# Nonce and bundle-id generation. Was reached through `aes_gcm::aead::OsRng`,
+# a re-export aes-gcm 0.11 dropped; this crate always needed a CSPRNG of its
+# own and was borrowing one from its cipher.
+rand = { workspace = true }
 vta-sdk = { path = "../vta-sdk", version = "0.30" }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.2" }
 vta-keys = { path = "../vta-keys", version = "0.3" }

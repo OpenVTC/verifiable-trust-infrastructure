@@ -43,9 +43,9 @@ pub async fn get_or_create_salt(keys_ks: &KeyspaceHandle) -> Result<Vec<u8>, App
         return Ok(existing);
     }
     // Generate a new random salt and try to claim the slot.
-    use aes_gcm::aead::rand_core::RngCore;
+    use rand::Rng;
     let mut salt = vec![0u8; 32];
-    aes_gcm::aead::OsRng.fill_bytes(&mut salt);
+    rand::rng().fill_bytes(&mut salt);
     if keys_ks
         .insert_raw_if_absent(KEK_SALT_KEY, salt.clone())
         .await?
@@ -85,10 +85,10 @@ pub async fn store_secret(
         Aes256Gcm::new_from_slice(&kek).map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
 
     // Random nonce
-    use aes_gcm::aead::rand_core::RngCore;
+    use rand::Rng;
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    aes_gcm::aead::OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let nonce = (&nonce_bytes).into();
 
     let aad = build_aad(key_id, key_type);
     let ciphertext = cipher
@@ -137,11 +137,17 @@ pub async fn load_secret(
     let cipher =
         Aes256Gcm::new_from_slice(&kek).map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
 
-    let nonce = Nonce::from_slice(&blob[..NONCE_LEN]);
+    // `try_from` rather than the deprecated `from_slice`: the latter *panics* on a
+    // wrong length, and this parses a stored blob. The bounds check above already
+    // guarantees the slice is exactly NONCE_LEN, so this cannot fail — but a
+    // panicking conversion on a decrypt path is one refactor away from being
+    // reachable, and the fallible form costs nothing.
+    let nonce = Nonce::try_from(&blob[..NONCE_LEN])
+        .map_err(|_| AppError::Internal("stored nonce is not NONCE_LEN bytes".into()))?;
     let aad = build_aad(key_id, key_type);
     let mut plaintext = cipher
         .decrypt(
-            nonce,
+            &nonce,
             aes_gcm::aead::Payload {
                 msg: &blob[NONCE_LEN..],
                 aad: &aad,
@@ -205,13 +211,18 @@ pub async fn reencrypt_all(
             continue;
         }
 
-        let old_nonce = Nonce::from_slice(&blob[..NONCE_LEN]);
+        let Ok(old_nonce) = Nonce::try_from(&blob[..NONCE_LEN]) else {
+            // Unreachable given the length check above. `continue` rather than
+            // abort: this is a rewrap loop over every stored key, and one
+            // unreadable blob must not strand the rest mid-rotation.
+            continue;
+        };
         let aad = build_aad(key_id, key_type);
 
         // Decrypt with old KEK
         let mut plaintext = old_cipher
             .decrypt(
-                old_nonce,
+                &old_nonce,
                 aes_gcm::aead::Payload {
                     msg: &blob[NONCE_LEN..],
                     aad: &aad,
@@ -224,10 +235,10 @@ pub async fn reencrypt_all(
             })?;
 
         // Re-encrypt with new KEK
-        use aes_gcm::aead::rand_core::RngCore;
+        use rand::Rng;
         let mut new_nonce_bytes = [0u8; NONCE_LEN];
-        aes_gcm::aead::OsRng.fill_bytes(&mut new_nonce_bytes);
-        let new_nonce = Nonce::from_slice(&new_nonce_bytes);
+        rand::rng().fill_bytes(&mut new_nonce_bytes);
+        let new_nonce = (&new_nonce_bytes).into();
 
         let new_ciphertext = new_cipher
             .encrypt(

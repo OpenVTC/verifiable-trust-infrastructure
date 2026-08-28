@@ -665,13 +665,12 @@ async fn kms_generate_data_key_direct(
 
 /// AES-256-GCM encrypt, returning `[nonce: 12 bytes][ciphertext]`.
 fn aes_gcm_encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, AppError> {
-    use aes_gcm::aead::generic_array::GenericArray;
     use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
 
-    let cipher = Aes256Gcm::new(GenericArray::from_slice(key));
+    let cipher = Aes256Gcm::new(key.into());
     let mut nonce_bytes = [0u8; 12];
     rand::fill(&mut nonce_bytes);
-    let nonce = GenericArray::from_slice(&nonce_bytes);
+    let nonce = (&nonce_bytes).into();
     let ciphertext = cipher
         .encrypt(nonce, plaintext)
         .map_err(|e| tee_attestation_error(format!("AES-GCM encryption failed: {e}")))?;
@@ -684,8 +683,7 @@ fn aes_gcm_encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, AppError
 
 /// AES-256-GCM decrypt a `[nonce: 12 bytes][ciphertext]` blob.
 fn aes_gcm_decrypt(key: &[u8], blob: &[u8]) -> Result<Vec<u8>, AppError> {
-    use aes_gcm::aead::generic_array::GenericArray;
-    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
 
     if key.len() != 32 {
         return Err(tee_attestation_error(format!(
@@ -697,11 +695,17 @@ fn aes_gcm_decrypt(key: &[u8], blob: &[u8]) -> Result<Vec<u8>, AppError> {
         return Err(tee_attestation_error("AES-GCM blob too short"));
     }
 
-    let nonce = GenericArray::from_slice(&blob[..12]);
+    // `key` is a runtime slice whose length was checked above, so this cannot
+    // fail; the nonce slice is fixed at 12 by the same guard.
+    let nonce = Nonce::try_from(&blob[..12])
+        .map_err(|_| tee_attestation_error("AES-GCM nonce is not 12 bytes"))?;
     let ciphertext = &blob[12..];
-    let cipher = Aes256Gcm::new(GenericArray::from_slice(key));
+    let key: &aes_gcm::Key<Aes256Gcm> = key
+        .try_into()
+        .map_err(|_| tee_attestation_error("data key is not 32 bytes"))?;
+    let cipher = Aes256Gcm::new(key);
     cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|e| tee_attestation_error(format!("AES-GCM decryption failed: {e}")))
 }
 
@@ -803,30 +807,39 @@ fn decrypt_cms_envelope(cms_bytes: &[u8], private_key_pkcs8: &[u8]) -> Result<Ve
         plaintext.to_vec()
     } else if fields.content_encryption_oid == aes_256_gcm_oid {
         // AES-256-GCM
-        use aes_gcm::aead::generic_array::GenericArray;
-        use aes_gcm::{AesGcm, KeyInit, aead::Aead};
+        use aes_gcm::{Aes256Gcm, AesGcm, KeyInit, aead::Aead};
+
+        // The CEK and IV are both runtime-sized, so both conversions are
+        // fallible and neither may be unwrapped: a malformed envelope is an
+        // input, not a bug.
+        let cek_arr: &aes_gcm::Key<Aes256Gcm> = cek
+            .as_slice()
+            .try_into()
+            .map_err(|_| tee_attestation_error("CMS content-encryption key is not 32 bytes"))?;
 
         match fields.iv.len() {
             12 => {
-                let cipher = AesGcm::<aes_gcm::aes::Aes256, aes_gcm::aead::consts::U12>::new(
-                    GenericArray::from_slice(&cek),
-                );
+                let cipher =
+                    AesGcm::<aes_gcm::aes::Aes256, aes_gcm::aead::consts::U12>::new(cek_arr);
+                let iv: &aes_gcm::Nonce<aes_gcm::aead::consts::U12> = fields
+                    .iv
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| tee_attestation_error("CMS GCM IV is not 12 bytes"))?;
                 cipher
-                    .decrypt(
-                        GenericArray::from_slice(&fields.iv),
-                        fields.ciphertext.as_ref(),
-                    )
+                    .decrypt(iv, fields.ciphertext.as_ref())
                     .map_err(|e| tee_attestation_error(format!("AES-GCM decryption failed: {e}")))?
             }
             16 => {
-                let cipher = AesGcm::<aes_gcm::aes::Aes256, aes_gcm::aead::consts::U16>::new(
-                    GenericArray::from_slice(&cek),
-                );
+                let cipher =
+                    AesGcm::<aes_gcm::aes::Aes256, aes_gcm::aead::consts::U16>::new(cek_arr);
+                let iv: &aes_gcm::Nonce<aes_gcm::aead::consts::U16> = fields
+                    .iv
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| tee_attestation_error("CMS GCM IV is not 16 bytes"))?;
                 cipher
-                    .decrypt(
-                        GenericArray::from_slice(&fields.iv),
-                        fields.ciphertext.as_ref(),
-                    )
+                    .decrypt(iv, fields.ciphertext.as_ref())
                     .map_err(|e| tee_attestation_error(format!("AES-GCM decryption failed: {e}")))?
             }
             n => {
@@ -1428,7 +1441,6 @@ mod tests {
     /// decrypt_cms_envelope round-trip without needing real KMS or NSM.
     #[test]
     fn test_cms_envelope_roundtrip() {
-        use aes_gcm::aead::generic_array::GenericArray;
         use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
         use aws_lc_rs::rsa::{
             KeySize, OAEP_SHA256_MGF1SHA256, OaepPublicEncryptingKey, PrivateDecryptingKey,
@@ -1447,8 +1459,8 @@ mod tests {
         rand::fill(&mut nonce_bytes);
 
         // AES-GCM encrypt the plaintext
-        let cipher = Aes256Gcm::new(GenericArray::from_slice(&cek));
-        let nonce = GenericArray::from_slice(&nonce_bytes);
+        let cipher = Aes256Gcm::new((&cek).into());
+        let nonce: &aes_gcm::Nonce<aes_gcm::aead::consts::U12> = (&nonce_bytes).into();
         let aes_ciphertext = cipher.encrypt(nonce, original_plaintext.as_ref()).unwrap();
 
         // RSA-OAEP-SHA256 encrypt the CEK using the public key — mirrors
@@ -1645,7 +1657,6 @@ mod tests {
     /// private key, then return both. Tests then mutate one or the
     /// other to test specific tamper classes.
     fn cms_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        use aes_gcm::aead::generic_array::GenericArray;
         use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
         use aws_lc_rs::encoding::AsDer;
         use aws_lc_rs::rsa::{
@@ -1659,9 +1670,9 @@ mod tests {
         let mut nonce_bytes = [0u8; 12];
         rand::fill(&mut nonce_bytes);
 
-        let cipher = Aes256Gcm::new(GenericArray::from_slice(&cek));
+        let cipher = Aes256Gcm::new((&cek).into());
         let aes_ct = cipher
-            .encrypt(GenericArray::from_slice(&nonce_bytes), plaintext.as_ref())
+            .encrypt((&nonce_bytes).into(), plaintext.as_ref())
             .unwrap();
 
         let oaep_pub = OaepPublicEncryptingKey::new(private_key.public_key().clone()).unwrap();
@@ -1732,7 +1743,6 @@ mod tests {
         // AES-GCM's auth tag must catch this regardless of where the
         // bit flip lands inside the ciphertext. Without the tag check,
         // tampered key material would be loaded silently — fatal.
-        use aes_gcm::aead::generic_array::GenericArray;
         use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
         use aws_lc_rs::encoding::AsDer;
         use aws_lc_rs::rsa::{
@@ -1745,9 +1755,9 @@ mod tests {
         rand::fill(&mut cek);
         let mut nonce_bytes = [0u8; 12];
         rand::fill(&mut nonce_bytes);
-        let cipher = Aes256Gcm::new(GenericArray::from_slice(&cek));
+        let cipher = Aes256Gcm::new((&cek).into());
         let mut aes_ct = cipher
-            .encrypt(GenericArray::from_slice(&nonce_bytes), plaintext.as_ref())
+            .encrypt((&nonce_bytes).into(), plaintext.as_ref())
             .unwrap();
         // Flip a bit inside the AES-GCM ciphertext (before the auth tag).
         aes_ct[0] ^= 0x01;

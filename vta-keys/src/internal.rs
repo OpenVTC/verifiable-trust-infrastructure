@@ -32,8 +32,8 @@
 //! Internal keys raise the bar against *export*; they do not by themselves make
 //! a non-TEE VTA tamper-proof.
 
-use aes_gcm::aead::{OsRng, rand_core::RngCore};
 use p256::elliptic_curve::sec1::ToSec1Point;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use vta_sdk::keys::KeyType;
 use vti_common::error::AppError;
@@ -84,7 +84,7 @@ pub async fn generate(
     let (mut secret, public) = match key_type {
         KeyType::Ed25519 => {
             let mut seed = [0u8; 32];
-            OsRng.fill_bytes(&mut seed);
+            rand::rng().fill_bytes(&mut seed);
             let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
             seed.zeroize();
             let public = signing.verifying_key().to_bytes().to_vec();
@@ -92,7 +92,7 @@ pub async fn generate(
         }
         KeyType::P256 => {
             let mut raw = [0u8; 32];
-            OsRng.fill_bytes(&mut raw);
+            rand::rng().fill_bytes(&mut raw);
             let secret = p256::SecretKey::from_slice(&raw)
                 .map_err(|e| AppError::Internal(format!("internal P-256 keygen: {e}")))?;
             raw.zeroize();

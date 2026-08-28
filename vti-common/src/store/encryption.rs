@@ -65,7 +65,7 @@ pub fn encrypt_value(
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
     rand::fill(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce: &Nonce<_> = (&nonce_bytes).into();
 
     let aad = build_aad(keyspace, store_key);
     let ciphertext = cipher
@@ -123,13 +123,14 @@ fn decrypt_value(
     let cipher = Aes256Gcm::new_from_slice(enc_key)
         .map_err(|e| AppError::Internal(format!("AES key error: {e}")))?;
 
-    let nonce = Nonce::from_slice(&body[..NONCE_LEN]);
+    let nonce = Nonce::try_from(&body[..NONCE_LEN])
+        .map_err(|_| AppError::Internal("stored nonce is not NONCE_LEN bytes".into()))?;
     let ciphertext = &body[NONCE_LEN..];
     let aad = build_aad(keyspace, store_key);
 
     cipher
         .decrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: ciphertext,
                 aad: &aad,

@@ -828,8 +828,8 @@ fn encrypt_payload(
     let plaintext =
         serde_json::to_vec(payload).map_err(|e| AppError::Internal(format!("serialize: {e}")))?;
 
-    use aes_gcm::aead::rand_core::RngCore;
-    let mut rng = aes_gcm::aead::OsRng;
+    use rand::Rng;
+    let mut rng = rand::rng();
     let mut salt = [0u8; SALT_LEN];
     rng.fill_bytes(&mut salt);
     let mut nonce_bytes = [0u8; NONCE_LEN];
@@ -850,7 +850,7 @@ fn encrypt_payload(
     // Encrypt with AES-256-GCM
     let cipher =
         Aes256Gcm::new_from_slice(&key).map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = (&nonce_bytes).into();
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_ref())
         .map_err(|e| AppError::Internal(format!("aes encrypt: {e}")))?;
@@ -937,10 +937,13 @@ pub fn decrypt_backup(
     let nonce_bytes = BASE64
         .decode(&envelope.encryption.nonce)
         .map_err(|e| AppError::Validation(format!("invalid nonce: {e}")))?;
-    // Hard length check before `Nonce::from_slice` — the
-    // `aes-gcm` impl of that constructor panics on the wrong length,
-    // which a crafted backup envelope would otherwise weaponise into
-    // a process-killing DoS on `/backup/import`.
+    // Length check before the nonce is built. This used to be the *only*
+    // thing standing between a crafted backup envelope and a process-killing
+    // DoS on `/backup/import`, because `Nonce::from_slice` panicked on the
+    // wrong length. The conversion below is now `TryFrom`, so the panic is
+    // gone by construction and this check is no longer load-bearing for
+    // safety — it stays because it produces the better error: "invalid nonce
+    // length: 11 (expected 12)" rather than a bare conversion failure.
     if nonce_bytes.len() != NONCE_LEN {
         return Err(AppError::Validation(format!(
             "invalid nonce length: {} (expected {NONCE_LEN})",
@@ -971,9 +974,10 @@ pub fn decrypt_backup(
     // Decrypt with AES-256-GCM
     let cipher =
         Aes256Gcm::new_from_slice(&key).map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::try_from(nonce_bytes.as_slice())
+        .map_err(|_| AppError::Validation(format!("nonce must be {NONCE_LEN} bytes")))?;
     let plaintext = cipher
-        .decrypt(nonce, ciphertext.as_ref())
+        .decrypt(&nonce, ciphertext.as_ref())
         .map_err(|_| AppError::Authentication("incorrect backup password".into()))?;
 
     serde_json::from_slice(&plaintext)
@@ -1688,10 +1692,13 @@ mod tests {
 
     // ── Salt / nonce length validation on import ───────────────────
     //
-    // Regression tests for the DoS where a crafted envelope's
-    // wrong-length nonce would panic `Nonce::from_slice`, taking the
-    // import handler (super-admin only, but reachable over REST) down
-    // with it. The length checks fire before `from_slice` is reached.
+    // Regression tests for the DoS where a crafted envelope's wrong-length
+    // nonce would panic `Nonce::from_slice`, taking the import handler
+    // (super-admin only, but reachable over REST) down with it.
+    //
+    // The panic is now impossible by construction — the conversion is
+    // `TryFrom` — but these stay: they assert the *rejection*, not the
+    // absence of a panic, and that is still the behaviour callers depend on.
 
     #[test]
     fn nonce_wrong_length_rejected_without_panic() {

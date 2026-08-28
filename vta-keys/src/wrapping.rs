@@ -154,8 +154,13 @@ impl WrappingKeyCache {
         // Decrypt
         let cipher = Aes256Gcm::new_from_slice(&aes_key)
             .map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let mut plaintext = cipher.decrypt(nonce, ciphertext.as_ref()).map_err(|_| {
+        // Genuinely fallible, unlike the fixed-array sites: `nonce_bytes` is
+        // decoded from the wire, so its length is attacker-controlled. The
+        // deprecated `from_slice` panicked here.
+        let nonce = Nonce::try_from(nonce_bytes.as_slice()).map_err(|_| {
+            AppError::Validation(format!("wrapped-key nonce must be {NONCE_LEN} bytes"))
+        })?;
+        let mut plaintext = cipher.decrypt(&nonce, ciphertext.as_ref()).map_err(|_| {
             AppError::Authentication("failed to unwrap key (ECDH mismatch or tampering)".into())
         })?;
 
@@ -283,10 +288,10 @@ mod tests {
             .unwrap();
 
         let cipher = Aes256Gcm::new_from_slice(&aes_key).unwrap();
-        use aes_gcm::aead::rand_core::RngCore;
+        use rand::Rng;
         let mut nonce_bytes = [0u8; NONCE_LEN];
-        aes_gcm::aead::OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        rand::rng().fill_bytes(&mut nonce_bytes);
+        let nonce: &Nonce<_> = (&nonce_bytes).into();
         let ciphertext = cipher.encrypt(nonce, plaintext).unwrap();
 
         format!(
