@@ -277,7 +277,7 @@ bip39 = "2"
 # Argon2id for hashing admin-invite claim secrets (the out-of-band
 # code the invitee types alongside the install URL). Same pin as
 # `vta-service`'s backup-password KDF.
-argon2 = "0.5"
+argon2 = "0.6"
 # AES-256-GCM for the encrypted backup/restore payload (P3.9). Same
 # workspace pin as `vta-service`'s backup feature.
 aes-gcm = { workspace = true }

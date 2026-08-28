@@ -998,6 +998,40 @@ mod tests {
     use vti_common::config::StoreConfig as VtiStoreConfig;
     use vti_common::store::Store;
 
+    /// The Argon2id key derivation, pinned to a frozen vector.
+    ///
+    /// A backup envelope stores the salt and the KDF parameters, not the key.
+    /// Decryption re-derives it, so this function's output *is* the format:
+    /// change a byte of it and every backup ever written becomes
+    /// undecryptable, with nothing to say so but an AES-GCM tag failure.
+    ///
+    /// The encrypt/decrypt round-trip tests cannot catch that — they derive
+    /// the key twice with the same linked version, so both sides move
+    /// together. This vector was produced by argon2 0.5 and re-checked
+    /// against 0.6 during that upgrade; it does not move.
+    ///
+    /// If this fails, do not regenerate it. It means the linked crate changed
+    /// its derivation, and the change needs a versioned KDF marker in the
+    /// envelope plus a path that reads the old one.
+    #[test]
+    fn argon2id_derivation_matches_the_frozen_vector() {
+        let argon2 = Argon2::new(
+            argon2::Algorithm::Argon2id,
+            argon2::Version::V0x13,
+            argon2::Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, Some(32)).unwrap(),
+        );
+        let mut key = [0u8; 32];
+        argon2
+            .hash_password_into(b"backup-password", b"0123456789abcdef", &mut key)
+            .unwrap();
+        assert_eq!(
+            key.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "3558837960e818d4ae946a900d505053894bf02a6ac9e046f0781fe09a616bf9",
+            "the backup KDF changed — every existing envelope is now \
+             undecryptable"
+        );
+    }
+
     /// Pre-existing daemon REST auth-cache records must be wiped by
     /// the restore path. Otherwise a backup imported on a different
     /// VTA (or a fresh install before re-onboarding the daemons)
