@@ -868,6 +868,20 @@ These are load-bearing — know they exist before adjusting nearby code.
 the Release PR that release-plz maintains; merging that PR is what publishes.
 Merging a feature PR publishes nothing. See [`RELEASING.md`](RELEASING.md).
 
+That includes when the `semver report (informational — never blocks)` check
+goes **red on your PR**. It is doing its job: it compares the crate's public
+API against the version on crates.io, so a PR that adds a struct member or
+renames a `pub const` *should* turn it red. The red is the report, not a
+defect, and the fix is not a version bump in your branch — release-plz reads
+the same signal and puts the bump in the Release PR.
+
+Worth stating because the failure mode is not "someone ignored the rule". It
+is reading a red check as a thing to fix, bumping the crate, watching the
+check go green, and concluding it was the right move — three PRs did exactly
+that before anyone opened the Release PR and found the identical bumps already
+proposed there. A manual bump is not merely redundant: it collides with the
+Release PR and fragments one coordinated release into several.
+
 **20 of 26 crates publish.** The six that do not — `vtc-service`,
 `vta-enclave`, `vta-mcp`, `vta-mobile-core`, `didcomm-test`, `vti-fuzz` — set
 `publish = false` in their own manifest, each with a comment saying why.
