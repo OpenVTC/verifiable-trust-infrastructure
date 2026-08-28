@@ -74,8 +74,17 @@ async function fetchAcl(scope: string | null): Promise<AclListResponse> {
   });
 }
 
+// `acl/grant` answers with `{entry: …}` — the envelope the task publishes,
+// added in #1109. Unwrapped at the seam so callers see a flat entry.
+interface AclEntryEnvelope {
+  entry: AclEntry;
+}
+
 async function createAcl(req: CreateAclRequest): Promise<AclEntry> {
-  return postJson<AclEntry>("/v1/acl", req, { trustTask: TRUST_TASK_GRANT });
+  const body = await postJson<AclEntryEnvelope>("/v1/acl", req, {
+    trustTask: TRUST_TASK_GRANT,
+  });
+  return body.entry;
 }
 
 async function deleteAcl(subject: string): Promise<void> {
@@ -91,7 +100,7 @@ async function patchAclLabel(args: {
   entry: AclEntry;
   label: string;
 }): Promise<AclEntry> {
-  return postJson<AclEntry>(
+  const body = await postJson<AclEntryEnvelope>(
     "/v1/acl",
     {
       entry: {
@@ -105,6 +114,7 @@ async function patchAclLabel(args: {
     },
     { trustTask: TRUST_TASK_GRANT },
   );
+  return body.entry;
 }
 
 // ── Admin invites ────────────────────────────────────────────
