@@ -273,6 +273,19 @@ mod tests {
     // The default test build compiles only `keyring` (see Cargo.toml
     // `default`), so the cloud/config backends are all "not compiled" here —
     // exactly the set-but-uncompiled case P0.8 must fail closed on.
+    //
+    // Each of those tests carries `#[cfg(not(feature = ...))]` for its own
+    // backend, because the assertion is *about* the backend being absent. Left
+    // ungated they were not merely redundant under `--all-features`, they were
+    // guaranteed to fail: with the feature compiled, `create_secret_store`
+    // correctly returns a store, and the test reads that as
+    // "did the feature leak on?". Eight of them failed on every
+    // `cargo test -p vtc-service --all-features` run, which is the sort of
+    // standing red that teaches people to skip the feature matrix.
+    //
+    // The gate is per-backend, not one blanket `not(any(...))`: under
+    // `--features aws-secrets` only the aws case is unaskable, and the other
+    // five still have something to prove.
 
     // `Box<dyn SecretStore>` is not `Debug`, so `expect_err` won't compile;
     // pattern-match the result instead.
@@ -289,6 +302,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "aws-secrets"))]
     #[test]
     fn aws_set_without_feature_is_config_error() {
         let mut config = base_config();
@@ -296,6 +310,7 @@ mod tests {
         assert_config_err_mentions(&config, "aws-secrets");
     }
 
+    #[cfg(not(feature = "gcp-secrets"))]
     #[test]
     fn gcp_set_without_feature_is_config_error() {
         let mut config = base_config();
@@ -303,6 +318,7 @@ mod tests {
         assert_config_err_mentions(&config, "gcp-secrets");
     }
 
+    #[cfg(not(feature = "azure-secrets"))]
     #[test]
     fn azure_set_without_feature_is_config_error() {
         let mut config = base_config();
@@ -310,6 +326,7 @@ mod tests {
         assert_config_err_mentions(&config, "azure-secrets");
     }
 
+    #[cfg(not(feature = "config-secret"))]
     #[test]
     fn config_secret_set_without_feature_is_config_error() {
         let mut config = base_config();
@@ -317,6 +334,7 @@ mod tests {
         assert_config_err_mentions(&config, "config-secret");
     }
 
+    #[cfg(not(feature = "k8s-secrets"))]
     #[test]
     fn k8s_set_without_feature_is_config_error() {
         let mut config = base_config();
@@ -324,6 +342,7 @@ mod tests {
         assert_config_err_mentions(&config, "k8s-secrets");
     }
 
+    #[cfg(not(feature = "vault-secrets"))]
     #[test]
     fn vault_set_without_feature_is_config_error() {
         let mut config = base_config();
@@ -343,6 +362,7 @@ mod tests {
 
     use crate::config::SecretBackend;
 
+    #[cfg(not(feature = "vault-secrets"))]
     #[test]
     fn explicit_backend_uncompiled_is_config_error() {
         // `backend = "vault"` on the keyring-only default test build fails
@@ -352,6 +372,7 @@ mod tests {
         assert_config_err_mentions(&config, "vault-secrets");
     }
 
+    #[cfg(not(feature = "aws-secrets"))]
     #[test]
     fn explicit_aws_uncompiled_is_config_error() {
         let mut config = base_config();
