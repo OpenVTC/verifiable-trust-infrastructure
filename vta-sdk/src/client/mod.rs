@@ -490,22 +490,38 @@ impl VtaClient {
         .await
         .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
 
-        Ok(Self::didcomm_transport(session, rest_url))
+        Ok(Self::didcomm_transport(
+            session,
+            rest_url,
+            Some(ClientIdentity {
+                client_did: client_did.to_string(),
+                private_key_multibase: private_key_multibase.to_string(),
+                vta_did: vta_did.to_string(),
+            }),
+        ))
     }
 
     /// Wrap a connected [`DIDCommSession`](crate::didcomm_session::DIDCommSession)
     /// in a client. One place to build the transport, so a new `connect_*_on`
     /// variant cannot forget the REST fallback or the TSP-leg default.
+    ///
+    /// `identity` is a required argument rather than a `with_identity` call the
+    /// caller makes afterwards, because "afterwards" is exactly what every
+    /// DIDComm and TSP constructor skipped: they built the client with
+    /// `identity: None` and dispatched documents with no in-band `recipient`,
+    /// which a conforming VTA rejects as `malformedRequest`. Passing it here
+    /// makes forgetting it a compile error in the next variant.
     #[cfg(feature = "session")]
     fn didcomm_transport(
         session: crate::didcomm_session::DIDCommSession,
         rest_url: Option<String>,
+        identity: Option<ClientIdentity>,
     ) -> Self {
         let rest_client = rest_url.as_ref().map(|_| crate::http::rest_client());
         Self {
             #[cfg(feature = "test-loopback")]
             loopback: None,
-            identity: None,
+            identity: identity.map(std::sync::Arc::new),
             transport: Transport::DIDComm {
                 session,
                 rest_client,
@@ -562,7 +578,15 @@ impl VtaClient {
         .await
         .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
 
-        Ok(Self::didcomm_transport(session, rest_url))
+        Ok(Self::didcomm_transport(
+            session,
+            rest_url,
+            Some(ClientIdentity {
+                client_did: client_did.to_string(),
+                private_key_multibase: private_key_multibase.to_string(),
+                vta_did: vta_did.to_string(),
+            }),
+        ))
     }
 
     /// Connect via DIDComm through a mediator using a hosted-DID secrets
@@ -604,7 +628,12 @@ impl VtaClient {
         .await
         .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
 
-        Ok(Self::didcomm_transport(session, rest_url))
+        // No `ClientIdentity`: the holder here is `bundle.did` — a
+        // `did:webvh` — and `trust_task_sign` signs for `did:key` holders
+        // only. Carrying an unsignable identity would buy an in-band
+        // `recipient` and then fail at the proof, so the gap is left visible
+        // to `signed_task_document` instead.
+        Ok(Self::didcomm_transport(session, rest_url, None))
     }
 
     /// Connect from a hosted-DID secrets bundle as one identity **on a shared
@@ -634,7 +663,12 @@ impl VtaClient {
         .await
         .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
 
-        Ok(Self::didcomm_transport(session, rest_url))
+        // No `ClientIdentity`: the holder here is `bundle.did` — a
+        // `did:webvh` — and `trust_task_sign` signs for `did:key` holders
+        // only. Carrying an unsignable identity would buy an in-band
+        // `recipient` and then fail at the proof, so the gap is left visible
+        // to `signed_task_document` instead.
+        Ok(Self::didcomm_transport(session, rest_url, None))
     }
 
     /// Connect via **TSP** through a mediator — the transport-agnostic
@@ -693,6 +727,11 @@ impl VtaClient {
             vta_did,
             mediator_did,
             rest_url,
+            Some(ClientIdentity {
+                client_did: client_did.to_string(),
+                private_key_multibase: private_key_multibase.to_string(),
+                vta_did: vta_did.to_string(),
+            }),
         ))
     }
 
@@ -727,24 +766,31 @@ impl VtaClient {
             vta_did,
             mediator_did,
             rest_url,
+            Some(ClientIdentity {
+                client_did: client_did.to_string(),
+                private_key_multibase: private_key_multibase.to_string(),
+                vta_did: vta_did.to_string(),
+            }),
         ))
     }
 
     /// Wrap a connected [`TspSession`](crate::session::TspSession) in a client —
     /// the TSP counterpart of
-    /// [`didcomm_transport`](Self::didcomm_transport).
+    /// [`didcomm_transport`](Self::didcomm_transport), including its required
+    /// `identity` argument and the reason for it.
     #[cfg(all(feature = "session", feature = "tsp"))]
     fn tsp_transport(
         session: crate::session::TspSession,
         vta_did: &str,
         mediator_did: &str,
         rest_url: Option<String>,
+        identity: Option<ClientIdentity>,
     ) -> Self {
         let rest_client = rest_url.as_ref().map(|_| crate::http::rest_client());
         Self {
             #[cfg(feature = "test-loopback")]
             loopback: None,
-            identity: None,
+            identity: identity.map(std::sync::Arc::new),
             transport: Transport::Tsp {
                 session: std::sync::Arc::new(session),
                 vta_did: vta_did.to_string(),
@@ -1007,19 +1053,6 @@ impl VtaClient {
     pub fn with_identity(mut self, identity: ClientIdentity) -> Self {
         self.identity = Some(std::sync::Arc::new(identity));
         self
-    }
-
-    /// Whether this client is carrying a bearer token.
-    async fn has_token(&self) -> bool {
-        match &self.transport {
-            Transport::Rest { auth, .. } => auth.lock().await.token.is_some(),
-            // The other transports authenticate per-message rather than with a
-            // bearer token, so "has a token" is not the question there.
-            #[cfg(feature = "session")]
-            Transport::DIDComm { .. } => false,
-            #[cfg(feature = "tsp")]
-            Transport::Tsp { .. } => false,
-        }
     }
 
     pub async fn set_token_async(&self, token: String) {
@@ -2657,21 +2690,24 @@ impl VtaClient {
         let identity = self.identity.clone();
         let doc = build_task_document(type_uri, payload, identity.as_deref());
         let Some(identity) = identity else {
-            // Authenticated but identity-less: the document is missing an
+            // Identity-less on any transport: the document is missing an
             // in-band `recipient` (SPEC §7.2 item 5b) and a `proof` (item 7a),
             // and a conforming VTA refuses it. Say so here rather than let the
             // caller read `malformedRequest: … no in-band recipient` off the
             // wire and go looking for a payload bug — the fault is in how this
             // client was built, and this is where that is knowable.
-            if self.has_token().await {
-                return Err(VtaError::Protocol(format!(
-                    "this VtaClient is authenticated but carries no ClientIdentity, so the \
-                     document it would send for `{type_uri}` has no in-band recipient and no \
-                     proof — build it with `VtaClient::authenticated(url, identity, token)` \
-                     or `.with_identity(…)`"
-                )));
-            }
-            return Ok(doc);
+            //
+            // This check was once gated on carrying a bearer token, which is
+            // REST-only by construction — so it covered the one transport whose
+            // constructor already set the identity, and stayed silent for the
+            // DIDComm and TSP clients that did not.
+            return Err(VtaError::Protocol(format!(
+                "this VtaClient carries no ClientIdentity, so the document it would send for \
+                 `{type_uri}` has no in-band recipient (SPEC §7.2 item 5b) and no proof (item \
+                 7a), and a conforming VTA refuses it as `malformedRequest` — build it with \
+                 `VtaClient::authenticated(url, identity, token)`, `.with_identity(…)`, or a \
+                 `connect_*` constructor that takes the client DID and key"
+            )));
         };
         let mut typed: trust_tasks_rs::TrustTask<serde_json::Value> = serde_json::from_value(doc)
             .map_err(|e| {
@@ -2795,5 +2831,105 @@ mod idempotency_document_tests {
                 );
             })
             .await;
+    }
+}
+
+/// The producer-side invariants of SPEC §7.2 that a `VtaClient` is responsible
+/// for: every dispatched document carries an in-band `issuer`/`recipient`, and
+/// a client that cannot produce one says so locally instead of putting a
+/// document on the wire that the VTA will reject as `malformedRequest`.
+#[cfg(test)]
+mod client_identity_tests {
+    use super::*;
+    use crate::trust_tasks;
+
+    const TYPE: &str = trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0;
+
+    fn did_key_from_seed(seed_byte: u8) -> (String, String) {
+        let seed = [seed_byte; 32];
+        let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let did = format!(
+            "did:key:{}",
+            crate::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes())
+        );
+        let mut buf = vec![0x80, 0x26];
+        buf.extend_from_slice(&seed);
+        (did, multibase::encode(multibase::Base::Base58Btc, &buf))
+    }
+
+    fn identity() -> ClientIdentity {
+        let (client_did, private_key_multibase) = did_key_from_seed(0xc1);
+        ClientIdentity {
+            client_did,
+            private_key_multibase,
+            vta_did: "did:key:z6MkVta".to_string(),
+        }
+    }
+
+    /// The regression that shipped: an identity-less client used to return an
+    /// unsigned, recipient-less document and let the VTA reject it on the wire.
+    /// The check was gated on carrying a bearer token, which is REST-only by
+    /// construction — so it never fired for the DIDComm and TSP clients that
+    /// were the ones missing an identity.
+    #[tokio::test]
+    async fn an_identity_less_client_refuses_to_build_a_document() {
+        let client = VtaClient::new("http://vta.invalid");
+        let err = client
+            .signed_task_document(TYPE, serde_json::json!({}))
+            .await
+            .expect_err("an identity-less client must not produce a document");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ClientIdentity"),
+            "the error must name the missing piece, got: {msg}"
+        );
+    }
+
+    /// The other half: given an identity, the document carries both envelope
+    /// members SPEC §7.2 item 5b requires, plus the item 7a proof.
+    #[tokio::test]
+    async fn a_client_with_an_identity_addresses_and_signs_the_document() {
+        let id = identity();
+        let client = VtaClient::new("http://vta.invalid").with_identity(id.clone());
+        let doc = client
+            .signed_task_document(TYPE, serde_json::json!({}))
+            .await
+            .expect("a client with an identity produces a document");
+
+        assert_eq!(
+            doc.get("issuer").and_then(|v| v.as_str()),
+            Some(id.client_did.as_str()),
+            "issuer must be the producer DID (item 6)"
+        );
+        assert_eq!(
+            doc.get("recipient").and_then(|v| v.as_str()),
+            Some(id.vta_did.as_str()),
+            "recipient must be the VTA DID (item 5b)"
+        );
+        assert!(
+            doc.get("proof").is_some(),
+            "a signable identity must yield a proof (item 7a)"
+        );
+    }
+
+    /// `build_task_document` is the single place both envelope members are set,
+    /// so the DIDComm/TSP constructors only have to carry an identity for the
+    /// whole surface to become conforming.
+    #[test]
+    fn the_envelope_members_come_from_the_identity() {
+        let id = identity();
+        let doc = build_task_document(TYPE, serde_json::json!({}), Some(&id));
+        assert_eq!(
+            doc.get("issuer").and_then(|v| v.as_str()),
+            Some(id.client_did.as_str())
+        );
+        assert_eq!(
+            doc.get("recipient").and_then(|v| v.as_str()),
+            Some(id.vta_did.as_str())
+        );
+
+        let without = build_task_document(TYPE, serde_json::json!({}), None);
+        assert!(without.get("issuer").is_none());
+        assert!(without.get("recipient").is_none());
     }
 }
