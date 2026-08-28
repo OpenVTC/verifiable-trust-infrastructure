@@ -3187,6 +3187,83 @@ mod response_coverage {
         .await;
     }
 
+    /// `credential-exchange/pending/approve` — answer a deferral the holder can
+    /// satisfy.
+    ///
+    /// The refusal path (nothing held matches the query) is covered in
+    /// `tests/pending_presentation_trust_task.rs`. This is the other side, and
+    /// it needs two things that fixture cannot give it: a credential the DCQL
+    /// query matches, and a holder key this VTA manages — presenting means
+    /// signing as the holder.
+    ///
+    /// The credential is minted and received rather than written straight into
+    /// storage. The DCQL match runs off the index the receive path builds, so a
+    /// hand-written row would exercise a different lookup than production does.
+    #[tokio::test]
+    async fn pending_approve_presents_a_held_credential() {
+        use crate::operations::credential_exchange::pending::{
+            PendingPresentation, put as put_pending,
+        };
+
+        const VCT: &str = "https://openvtc.org/credentials/MembershipCredential";
+
+        let (state, _dir) = build_signing_test_app_state().await;
+
+        // A holder key, not the VTA's signing identity: presenting means
+        // signing *as the subject*, and `resolve_holder_keys` looks the subject
+        // up in the keys keyspace. Using `vta_did` here is refused with
+        // "holder key … is not managed by this VTA", correctly.
+        let holder = crate::test_support::seed_holder_key(&state, "m/26'/2'/0'/0'", None).await;
+        let credential_id =
+            crate::test_support::seed_held_credential(&state.vault_ks, VCT, "givenName", &holder)
+                .await;
+
+        let record: PendingPresentation = serde_json::from_value(json!({
+            "id": "cov-pending-1",
+            "verifier_did": "did:web:stranger.example",
+            // The *real* stored id, not a placeholder. The consent is built by
+            // mapping the requested claims onto the matched credential, so an
+            // id that matches nothing yields an empty reveal set — which the
+            // operation refuses as authorizing nothing.
+            "requested": [{
+                "credential_query_id": "membership",
+                "credential_id": credential_id,
+                "claims": ["givenName"]
+            }],
+            "purpose": "coverage",
+            "query": {
+                "dcql_query": {
+                    "credentials": [{
+                        "id": "membership",
+                        "format": "dc+sd-jwt",
+                        "meta": { "vct_values": [VCT] },
+                        // The reveal set comes from the *query's* claim paths,
+                        // not from `requested` — a query that names no claims
+                        // discloses nothing, and the operation refuses an empty
+                        // reveal set as authorizing nothing.
+                        "claims": [{ "path": ["givenName"] }]
+                    }]
+                },
+                "nonce": "n-1",
+                "purpose": "coverage"
+            },
+            "status": "pending",
+            "created_at": "2026-06-12T00:00:00Z",
+            "expires_at": "2126-06-12T00:00:00Z"
+        }))
+        .expect("pending record deserialises");
+        put_pending(&state.vault_ks, &record)
+            .await
+            .expect("seed the deferral");
+
+        ok(
+            &state,
+            vta_sdk::protocols::credential_exchange::PENDING_APPROVE,
+            json!({ "id": "cov-pending-1" }),
+        )
+        .await;
+    }
+
     /// The runtime service-management read paths.
     ///
     /// Only the reads: `enable`/`update`/`disable`/`rollback` publish a new

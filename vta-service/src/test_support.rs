@@ -2380,3 +2380,156 @@ impl SoftAuthenticator {
         }
     }
 }
+
+// ── Held credentials ─────────────────────────────────────────────────────────
+
+/// Mint an SD-JWT-VC and receive it into the vault, as a holder would.
+///
+/// `credential-exchange/pending/approve` answers a deferred presentation, so it
+/// needs a credential that actually satisfies the deferred query — it refuses
+/// with "no held credential satisfies the deferred query" otherwise, which is
+/// why that task sat uncovered. Seeding a stored row directly would skip the
+/// receive path that decides how a credential is indexed, and the DCQL match
+/// runs off that index; so this mints and receives rather than writing a row.
+///
+/// Returns the stored credential's id.
+/// `subject_did` must be a holder key this VTA manages: presenting the
+/// credential means signing as the holder, and the operation refuses a subject
+/// whose key it does not hold. The VTA's own DID is the one a test fixture has.
+pub async fn seed_held_credential(
+    vault_ks: &KeyspaceHandle,
+    vct: &str,
+    disclosable_claim: &str,
+    subject_did: &str,
+) -> String {
+    use affinidi_sd_jwt::error::SdJwtError;
+    use affinidi_sd_jwt::signer::JwtSigner;
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use ed25519_dalek::{Signer, SigningKey};
+    use vta_vault::mint::{MintRequest, mint_sd_jwt_vc};
+
+    /// The issuer. A `did:key`, so the receive path can resolve it without a
+    /// network or a resolver fixture.
+    struct EddsaSigner {
+        key: SigningKey,
+        kid: String,
+    }
+    impl JwtSigner for EddsaSigner {
+        fn algorithm(&self) -> &str {
+            "EdDSA"
+        }
+        fn key_id(&self) -> Option<&str> {
+            Some(&self.kid)
+        }
+        fn sign_jwt(
+            &self,
+            header: &serde_json::Value,
+            payload: &serde_json::Value,
+        ) -> Result<String, SdJwtError> {
+            let h = URL_SAFE_NO_PAD.encode(serde_json::to_string(header)?.as_bytes());
+            let p = URL_SAFE_NO_PAD.encode(serde_json::to_string(payload)?.as_bytes());
+            let input = format!("{h}.{p}");
+            let sig = self.key.sign(input.as_bytes());
+            Ok(format!(
+                "{input}.{}",
+                URL_SAFE_NO_PAD.encode(sig.to_bytes())
+            ))
+        }
+    }
+
+    let issuer_key = SigningKey::from_bytes(&[0x71; 32]);
+    let issuer_did =
+        affinidi_crypto::did_key::ed25519_pub_to_did_key(issuer_key.verifying_key().as_bytes());
+    let signer = EddsaSigner {
+        key: issuer_key,
+        kid: format!("{issuer_did}#key-0"),
+    };
+
+    let compact = mint_sd_jwt_vc(
+        &MintRequest {
+            vct,
+            issuer_did: &issuer_did,
+            subject_did,
+            claims: &serde_json::json!({ disclosable_claim: "Alice" }),
+            disclosable: &[disclosable_claim],
+            iat: 1_700_000_000,
+            exp: Some(1_900_000_000),
+        },
+        &signer,
+    )
+    .expect("mint the SD-JWT-VC");
+
+    // Nested under `credential_response`, which is where the issue message
+    // carries it — a bare `credential` member is refused as "no credential".
+    let body = serde_json::from_value(
+        serde_json::json!({ "credential_response": { "credential": compact } }),
+    )
+    .expect("issue body deserialises");
+    let cred = crate::operations::credential_exchange::receive_issued_credential(
+        vault_ks,
+        &body,
+        None,
+        None,
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("receive the issued credential");
+    cred.id
+}
+
+/// Seed a **holder** key this VTA manages, and return its `did:key`.
+///
+/// Distinct from the VTA's own signing identity, which is not a holder key:
+/// presenting a credential means signing *as the subject*, and
+/// `resolve_holder_keys` looks the subject up in the keys keyspace under
+/// `{did:key}#{multibase}`. A test that uses `vta_did` as the subject is
+/// refused with "holder key … is not managed by this VTA", correctly.
+///
+/// Derived from the app state's own seed at `derivation_path`, so the record
+/// and the key material agree — a record whose public half did not match the
+/// seed would resolve and then fail to sign.
+pub async fn seed_holder_key(
+    state: &crate::server::AppState,
+    derivation_path: &str,
+    context_id: Option<&str>,
+) -> String {
+    use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
+    use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
+
+    let seed = state
+        .seed_store
+        .get()
+        .await
+        .expect("read the seed")
+        .expect("an active seed");
+    let bip32 = ExtendedSigningKey::from_seed(&seed).expect("seed is a valid BIP-32 root");
+    let derived = bip32
+        .derive(&derivation_path.parse::<DerivationPath>().expect("a path"))
+        .expect("derive");
+    let did = affinidi_crypto::did_key::ed25519_pub_to_did_key(
+        derived.signing_key.verifying_key().as_bytes(),
+    );
+    let multibase = did.strip_prefix("did:key:").expect("a did:key");
+    let key_id = format!("{did}#{multibase}");
+
+    let record = KeyRecord {
+        key_id: key_id.clone(),
+        derivation_path: derivation_path.to_string(),
+        key_type: KeyType::Ed25519,
+        status: KeyStatus::Active,
+        public_key: multibase.to_string(),
+        label: None,
+        context_id: context_id.map(str::to_string),
+        seed_id: None,
+        origin: KeyOrigin::Derived,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    state
+        .keys_ks
+        .insert(crate::keys::store_key(&key_id), &record)
+        .await
+        .expect("store the holder key record");
+    did
+}
