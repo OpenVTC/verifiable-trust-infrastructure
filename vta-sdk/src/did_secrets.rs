@@ -53,6 +53,25 @@ pub struct SecretEntry {
     pub private_key_multibase: String,
 }
 
+impl DidSecretsBundle {
+    /// The bundle's Ed25519 assertion key, as a Trust Task signing key.
+    ///
+    /// A provisioned integration holds a `did:webvh` and the keys under it. Its
+    /// verification method is [`SecretEntry::key_id`] — the DID document
+    /// decided what the key is called, and that name is in the bundle, so
+    /// nothing here has to guess it.
+    ///
+    /// `None` when the bundle carries no Ed25519 entry: X25519 is a key
+    /// agreement key and signs nothing, and P-256 is not what `eddsa-jcs-2022`
+    /// verifies.
+    #[must_use]
+    pub fn trust_task_signing_key(&self) -> Option<&SecretEntry> {
+        self.secrets
+            .iter()
+            .find(|e| matches!(e.key_type, KeyType::Ed25519))
+    }
+}
+
 /// Convert a [`GetKeySecretResponse`](crate::client::GetKeySecretResponse) into a [`SecretEntry`].
 #[cfg(feature = "client")]
 impl From<crate::client::GetKeySecretResponse> for SecretEntry {

@@ -152,6 +152,7 @@ pub(crate) async fn run_rest_attempt_full_setup(
             client_did: setup_did.clone(),
             private_key_multibase: setup_privkey_mb.clone(),
             vta_did: vta_did.to_string(),
+            verification_method: None,
         },
         token_result.access_token,
     )
@@ -327,6 +328,7 @@ pub(crate) async fn run_rest_attempt_admin_rotated(
             client_did: setup_did.clone(),
             private_key_multibase: setup_privkey_mb.clone(),
             vta_did: vta_did.to_string(),
+            verification_method: None,
         },
         token_result.access_token,
     )

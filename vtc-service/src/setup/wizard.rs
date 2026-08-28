@@ -887,6 +887,7 @@ async fn connect_setup_client(
                 client_did: setup_key.did.clone(),
                 private_key_multibase: setup_key.private_key_multibase().to_string(),
                 vta_did: resolved.vta_did.clone(),
+                verification_method: None,
             },
             auth.access_token,
         )

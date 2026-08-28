@@ -224,6 +224,16 @@ pub(crate) const REMOVAL_NOTICE_DELIVER_BY: std::time::Duration =
     std::time::Duration::from_secs(30 * 24 * 3600);
 
 impl AppState {
+    /// The resolver Trust Task Data-Integrity proofs are verified with.
+    ///
+    /// Carries the configured DID cache, so a proof by any DID that names a key
+    /// — `did:webvh:<scid>:example.com:glenn#key-0` as much as a `did:key` —
+    /// resolves. With no cache configured this degrades to `did:key` only,
+    /// which is what a deployment with no outbound DID resolution gets.
+    pub fn trust_task_vm_resolver(&self) -> vti_common::auth::TrustTaskVmResolver {
+        vti_common::auth::TrustTaskVmResolver::from_optional(self.did_resolver.clone())
+    }
+
     /// Current cached member-row count (equal to
     /// `members::list_members(..).len()`). O(1) — see
     /// [`Self::member_count_cache`].

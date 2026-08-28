@@ -120,7 +120,12 @@ pub(super) async fn handle_decision(
     };
 
     // Authority is the proof: verify it and take the *proven* signer DID.
-    let approver = match crate::auth::di_proof::verify_trust_task_proof(&doc).await {
+    let approver = match crate::auth::di_proof::verify_trust_task_proof_with(
+        &doc,
+        &state.trust_task_vm_resolver(),
+    )
+    .await
+    {
         Ok(did) => did,
         Err(e) => {
             // The only decision path that reaches no audit row: every later

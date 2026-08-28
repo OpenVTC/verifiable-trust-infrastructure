@@ -659,6 +659,7 @@ impl SessionStore {
                 client_did: session.client_did.clone(),
                 private_key_multibase: session.private_key.clone(),
                 vta_did,
+                verification_method: None,
             },
             token,
         )

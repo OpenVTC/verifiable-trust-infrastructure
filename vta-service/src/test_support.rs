@@ -735,6 +735,7 @@ impl TestAppContext {
                 client_did: did,
                 private_key_multibase,
                 vta_did: vta_did.to_string(),
+                verification_method: None,
             },
             token,
         )

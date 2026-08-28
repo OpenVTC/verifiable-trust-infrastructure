@@ -27,6 +27,8 @@ use trust_tasks_rs::{ErrorPayload, ErrorResponse, RejectReason, TrustTask, TypeU
 use uuid::Uuid;
 use vti_common::error::AppError;
 
+use crate::server::AppState;
+
 use vta_sdk::protocols::join_requests::VerdictResponse;
 
 /// The transport-neutral result of dispatching a Trust Task: the framework
@@ -234,8 +236,11 @@ pub(crate) fn body_parse_error_response(reason: &str) -> TrustTaskOutcome {
 /// (`eddsa-jcs-2022` canonicalises the proofless document via JCS). The
 /// returned DID is *proven*, not merely claimed — binding it to an expected
 /// identity is the caller's job. `did:key` resolution is local (no network).
-pub(crate) async fn verify_trust_task_proof(doc: &TrustTask<Value>) -> Result<String, AppError> {
-    vti_common::auth::di_proof::verify_trust_task_proof(doc)
+pub(crate) async fn verify_trust_task_proof(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+) -> Result<String, AppError> {
+    vti_common::auth::di_proof::verify_trust_task_proof_with(doc, &state.trust_task_vm_resolver())
         .await
         .map_err(|e| AppError::Unauthorized(format!("Trust Task {e}")))
 }

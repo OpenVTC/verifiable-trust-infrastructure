@@ -1,9 +1,10 @@
 # `proofRequired` on `pnm contexts create` — the envelope-conformance gap
 
-**Status:** root cause identified and already fixed for the affected
-constructors (#1184, released in `vta-sdk` 0.31.1); this note records the
-diagnosis, the operator-visible remedy, and the instances of the same root cause
-that are **still live on `main`**.
+**Status:** root cause identified and fixed. The transport constructors were
+fixed in #1184 (released in `vta-sdk` 0.31.1); the deeper restriction — that
+only a `did:key` holder could sign a Trust Task at all — is lifted in the
+follow-up recorded below. This note carries the diagnosis, the operator-visible
+remedy, and the rule that replaced the restriction.
 
 ## The report
 
@@ -86,23 +87,62 @@ Remedies, in order of preference:
 Three instances remain. None is a regression from #1184; all are the same shape
 — *a client that cannot produce a conforming envelope*.
 
-### 1. `did:webvh` bundle holders cannot sign at all
+### 1. `did:webvh` bundle holders cannot sign at all — **fixed**
 
-`VtaClient::connect_didcomm_bundle` and `connect_didcomm_bundle_on` pass
-`identity: None` **deliberately**: the holder is the bundle's `did:webvh`, and
-`trust_task_sign` refuses any holder that is not a `did:key`, because both
-services verify with a `did:key`-only resolver
-(`vti_common::auth::di_proof`).
+`VtaClient::connect_didcomm_bundle` and `connect_didcomm_bundle_on` passed
+`identity: None` deliberately: the holder is the bundle's `did:webvh`, and
+`trust_task_sign` refused any holder that was not a `did:key`, because both
+services verified with a `did:key`-only resolver.
 
-The consequence is not a missing member but a missing capability: **a provisioned
-integration cannot dispatch any of the 210 proof-requiring Trust Tasks**, over
-any transport. This is reachable through the documented
-`AgentConnect` ladder (`ConnectMode::DidWebvhBundle`), i.e. every mediator,
-did-hosting daemon and app provisioned through `provision-integration`.
+The consequence was not a missing member but a missing capability: **a
+provisioned integration could not dispatch any of the 210 proof-requiring Trust
+Tasks**, over any transport — every mediator, did-hosting daemon and app
+provisioned through `provision-integration`.
 
-Fixing it is a design decision, not a patch: either the DI verifier learns to
-resolve `did:webvh`, or provisioned integrations are issued a `did:key` signing
-identity alongside their `did:webvh`. Deliberately not decided here.
+**The rule is: any DID that can name a key may sign.** The DID method is not
+the authorization; resolving the verification method and checking the signature
+is. `did:key:z6Mk…#z6Mk…`, `did:webvh:<scid>:example.com:glenn#key-0` and
+`did:web:example.com#key-1` are all ordinary holders.
+
+The restriction was never a policy anyone chose. It was the shape of two
+helpers:
+
+- **The signer** took `(holder_did, private_key)` and *derived* the
+  verification method as `<did>#<multibase>`. That derivation only exists for
+  `did:key`, whose key is its identifier. A `did:webvh` document decides what
+  its keys are called, so nothing can guess `#key-0` — and a signer that takes
+  only a DID therefore cannot serve any method but one.
+  `HolderKey` now carries the verification method explicitly;
+  `HolderKey::from_did_key` keeps the derivation for the one method that has
+  one.
+- **The verifier** used `DidKeyResolver`, which refuses everything else.
+  `TrustTaskVmResolver` resolves `did:key` locally and every other method
+  through the configured DID cache.
+
+`ClientIdentity` gained `verification_method`, and the bundle constructors now
+build one from the bundle's own Ed25519 `SecretEntry` — whose `key_id` *is* the
+verification method the DID document publishes, so nothing has to be guessed.
+
+#### What this costs, and why it is still right
+
+`did:key` resolves with no I/O. Every other method needs a DID document, which
+means network resolution — on the login routes, before the caller is anybody.
+That widening is real and is bounded rather than dismissed:
+
+- the `did:key` fast path is checked first, so the common case never touches
+  the network;
+- resolution goes through the shared `DIDCacheClient`, which caches and carries
+  its own timeouts, so a flood of repeats costs one resolution;
+- the unauthenticated routes that verify proofs are already behind the
+  per-source-IP rate limiter;
+- a resolver is optional — `TrustTaskVmResolver::did_key_only()` is exactly the
+  previous behaviour, and `verify_trust_task_proof` still means that, so a
+  deployment that wants no outbound resolution on an unauthenticated route
+  configures it and a caller that wants it says so.
+
+The alternative is that no `did:webvh` holder can ever authenticate, which is
+not a security property — it is the absence of a feature the rest of the stack
+already assumes.
 
 ### 2. `VtaClient::new(url)` + `set_token_async(token)` carries no identity
 

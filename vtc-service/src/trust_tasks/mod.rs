@@ -181,12 +181,13 @@ pub(crate) const PERSONHOOD_ASSERT_TYPE: &str = <pa::Payload as trust_tasks_rs::
 /// authcrypt sender; REST → the document proof signer. When the document
 /// carries an `issuer`, it must match the proven identity (anti-spoof).
 async fn resolve_holder(
+    state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
 ) -> Result<String, TrustTaskOutcome> {
     let proven = match &ctx.sender_did {
         Some(did) => did.clone(),
-        None => match verify_trust_task_proof(doc).await {
+        None => match verify_trust_task_proof(state, doc).await {
             Ok(did) => did,
             Err(e) => return Err(app_error_to_reject(doc, &e)),
         },
@@ -214,7 +215,7 @@ async fn handle_submit(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let applicant_did = match resolve_holder(ctx, &doc).await {
+    let applicant_did = match resolve_holder(state, ctx, &doc).await {
         Ok(did) => did,
         Err(reject) => return reject,
     };
@@ -327,7 +328,7 @@ async fn handle_status(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let applicant_did = match resolve_holder(ctx, &doc).await {
+    let applicant_did = match resolve_holder(state, ctx, &doc).await {
         Ok(did) => did,
         Err(reject) => return reject,
     };
@@ -385,7 +386,7 @@ async fn handle_self_remove(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let member_did = match resolve_holder(ctx, &doc).await {
+    let member_did = match resolve_holder(state, ctx, &doc).await {
         Ok(did) => did,
         Err(reject) => return reject,
     };
@@ -444,7 +445,7 @@ async fn handle_personhood_challenge(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let caller = match resolve_holder(ctx, &doc).await {
+    let caller = match resolve_holder(state, ctx, &doc).await {
         Ok(did) => did,
         Err(reject) => return reject,
     };
@@ -493,7 +494,7 @@ async fn handle_personhood_assert(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let caller = match resolve_holder(ctx, &doc).await {
+    let caller = match resolve_holder(state, ctx, &doc).await {
         Ok(did) => did,
         Err(reject) => return reject,
     };
@@ -547,7 +548,7 @@ async fn handle_member_vmc(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let member_did = match resolve_holder(ctx, &doc).await {
+    let member_did = match resolve_holder(state, ctx, &doc).await {
         Ok(did) => did,
         Err(reject) => return reject,
     };

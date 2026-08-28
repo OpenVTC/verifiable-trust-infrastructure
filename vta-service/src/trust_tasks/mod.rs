@@ -969,7 +969,12 @@ async fn dispatch_trust_task_validated(
     // keep their own calls — they bind the signer to a *specific* party (the
     // approver), which is a stronger claim than "the issuer signed this".
     if doc.proof.is_some() {
-        match vti_common::auth::di_proof::verify_trust_task_proof(&doc).await {
+        match vti_common::auth::di_proof::verify_trust_task_proof_with(
+            &doc,
+            &state.trust_task_vm_resolver(),
+        )
+        .await
+        {
             Ok(signer) => {
                 // A valid proof by some *other* DID is not a proof by the
                 // issuer; without this the signature would establish only that

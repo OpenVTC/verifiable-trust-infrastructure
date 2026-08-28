@@ -9843,6 +9843,7 @@ dependencies = [
  "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-delivery",
+ "affinidi-secrets-resolver",
  "affinidi-tdk",
  "async-trait",
  "axum",
