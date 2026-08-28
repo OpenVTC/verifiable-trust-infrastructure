@@ -301,7 +301,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Web framework — pinned at workspace level so vta-service and vtc-service
 # (and vti-common's axum extractors) never drift onto different majors.
 axum = "0.8"
-tower-http = "0.6"
+tower-http = "0.7"
 tokio-util = "0.7"
 
 # OpenAPI 3.1 generation. `utoipa` derives schemas (ToSchema) + per-handler
