@@ -58,7 +58,11 @@ use crate::store::KeyspaceHandle;
 use crate::webvh_store;
 
 mod errors;
-mod multikey;
+// `pub(crate)` rather than private: the soft authenticator in `test_support`
+// derives the same Multikey the submission path re-derives, and sharing the one
+// function is what makes them agree by construction rather than by two
+// implementations that happen to match today.
+pub(crate) mod multikey;
 
 pub use errors::PasskeyVmError;
 pub use multikey::{MultikeyError, cose_key_to_multikey, parse_auth_data_to_multikey};

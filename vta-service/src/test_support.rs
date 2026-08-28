@@ -2241,3 +2241,142 @@ mod transport_harness_tests {
         mock.shutdown().await;
     }
 }
+
+// ── Soft WebAuthn authenticator ──────────────────────────────────────────────
+
+/// A WebAuthn authenticator in software, enough to complete a registration
+/// ceremony against this VTA.
+///
+/// `vta/passkey-vms/enroll-submit` runs `finish_passkey_registration`, which is
+/// full WebAuthn verification — the challenge, the RP-ID hash, the flags, and
+/// the credential public key all have to line up. There is no way to reach that
+/// handler with a hand-written fixture, which is why `enroll-submit` and
+/// `revoke` (which needs a verification method that was really enrolled) sat
+/// uncovered.
+///
+/// Attestation format is `none`: it carries no attestation statement, which is
+/// what a platform authenticator sends when the RP asks for none, and what this
+/// VTA's `finish_passkey_registration` is configured to accept. Producing a
+/// packed or TPM statement would prove something about a certificate chain
+/// rather than about this service.
+pub struct SoftAuthenticator {
+    signing_key: p256::ecdsa::SigningKey,
+    credential_id: Vec<u8>,
+}
+
+/// The members a registration produces, in the shapes `enroll-submit` takes.
+pub struct SoftRegistration {
+    pub credential_id: String,
+    pub public_key_multibase: String,
+    pub cose_algorithm: i64,
+    pub attestation_object: String,
+    pub client_data_json: String,
+    pub authenticator_data: String,
+}
+
+impl SoftAuthenticator {
+    /// Deterministic from `seed`, so a test that wants two authenticators asks
+    /// for two seeds and neither has to be written down.
+    pub fn new(seed: u8) -> Self {
+        let signing_key = p256::ecdsa::SigningKey::from_bytes(&[seed; 32].into())
+            .expect("a fixed 32-byte scalar is a valid P-256 key");
+        Self {
+            signing_key,
+            credential_id: vec![seed; 32],
+        }
+    }
+
+    /// Complete a registration for `challenge` (base64url, as the challenge
+    /// response carries it).
+    pub fn register(&self, rp_id: &str, origin: &str, challenge: &str) -> SoftRegistration {
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+        use sha2::{Digest, Sha256};
+
+        // The COSE_Key the authenticator would have generated. Built as CBOR
+        // rather than through a helper because the byte layout is the thing
+        // under test: the VTA re-derives its Multikey from exactly these bytes.
+        let point = self.signing_key.verifying_key().to_sec1_point(false);
+        let cose = ciborium::value::Value::Map(vec![
+            // kty: EC2
+            (
+                ciborium::value::Value::Integer(1.into()),
+                ciborium::value::Value::Integer(2.into()),
+            ),
+            // alg: ES256
+            (
+                ciborium::value::Value::Integer(3.into()),
+                ciborium::value::Value::Integer((-7).into()),
+            ),
+            // crv: P-256
+            (
+                ciborium::value::Value::Integer((-1).into()),
+                ciborium::value::Value::Integer(1.into()),
+            ),
+            (
+                ciborium::value::Value::Integer((-2).into()),
+                ciborium::value::Value::Bytes(point.x().expect("uncompressed point").to_vec()),
+            ),
+            (
+                ciborium::value::Value::Integer((-3).into()),
+                ciborium::value::Value::Bytes(point.y().expect("uncompressed point").to_vec()),
+            ),
+        ]);
+        let mut cose_bytes = Vec::new();
+        ciborium::ser::into_writer(&cose, &mut cose_bytes).expect("COSE key serialises");
+
+        // authData = rpIdHash | flags | signCount | attestedCredentialData
+        let mut auth_data = Vec::new();
+        auth_data.extend_from_slice(&Sha256::digest(rp_id.as_bytes()));
+        // UP (0x01) | UV (0x04) | AT (0x40). AT is what says an attested
+        // credential follows; without it the VTA finds no public key at all.
+        auth_data.push(0x45);
+        auth_data.extend_from_slice(&0u32.to_be_bytes());
+        auth_data.extend_from_slice(&[0u8; 16]); // AAGUID: none, for `none` attestation
+        auth_data.extend_from_slice(&(self.credential_id.len() as u16).to_be_bytes());
+        auth_data.extend_from_slice(&self.credential_id);
+        auth_data.extend_from_slice(&cose_bytes);
+
+        let attestation = ciborium::value::Value::Map(vec![
+            (
+                ciborium::value::Value::Text("fmt".into()),
+                ciborium::value::Value::Text("none".into()),
+            ),
+            (
+                ciborium::value::Value::Text("attStmt".into()),
+                ciborium::value::Value::Map(vec![]),
+            ),
+            (
+                ciborium::value::Value::Text("authData".into()),
+                ciborium::value::Value::Bytes(auth_data.clone()),
+            ),
+        ]);
+        let mut attestation_bytes = Vec::new();
+        ciborium::ser::into_writer(&attestation, &mut attestation_bytes)
+            .expect("attestation object serialises");
+
+        let client_data = serde_json::json!({
+            "type": "webauthn.create",
+            "challenge": challenge,
+            "origin": origin,
+            "crossOrigin": false,
+        });
+        let client_data_json = serde_json::to_vec(&client_data).expect("client data serialises");
+
+        // Through the VTA's own converter, so the advisory value the producer
+        // sends and the authoritative one the VTA re-derives cannot disagree
+        // for want of two implementations.
+        let (cose_algorithm, public_key_multibase) =
+            crate::operations::passkey_vms::multikey::cose_key_to_multikey(&cose_bytes)
+                .expect("the COSE key converts to a Multikey");
+
+        SoftRegistration {
+            credential_id: B64URL.encode(&self.credential_id),
+            public_key_multibase,
+            cose_algorithm,
+            attestation_object: B64URL.encode(&attestation_bytes),
+            client_data_json: B64URL.encode(&client_data_json),
+            authenticator_data: B64URL.encode(&auth_data),
+        }
+    }
+}
