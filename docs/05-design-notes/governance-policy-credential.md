@@ -94,7 +94,7 @@ Every element of (2) and (3) is verifiable without trusting the gateway host. Th
 
 | #804 ask | Carried by | New tasks |
 |---|---|---|
-| Issuance | `vta/credentials/issue/0.1` + `GovernancePolicyCredential` claims profile | 0 |
+| Issuance | `vta/credentials/issue/0.2` + `GovernancePolicyCredential` claims profile | 0 |
 | Revocation | `vta/credentials/revoke/0.1` + published status list (endorsements mechanic) | 0 |
 | Distribution | `credential-exchange/query` → `present` | 0 |
 

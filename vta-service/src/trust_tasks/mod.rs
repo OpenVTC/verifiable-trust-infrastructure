@@ -1410,7 +1410,7 @@ dispatch_table! {
         [ Destructive None false ],
     // ─── Issued-credential lifecycle (spec/vta/credentials/*) ────
     // Mint + revoke VTA-signed VCs; Admin-gated + operator step-up (AAL2).
-    vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_0_1 => credentials::handle_issue
+    vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_0_2 => credentials::handle_issue
         [ Mutating None true ],
     vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_REVOKE_0_1 => credentials::handle_revoke
         [ Destructive None false ],
@@ -2767,7 +2767,7 @@ mod response_coverage {
         let (state, _dir) = build_signing_test_app_state().await;
         let issued = ok(
             &state,
-            t::TASK_VTA_CREDENTIALS_ISSUE_0_1,
+            t::TASK_VTA_CREDENTIALS_ISSUE_0_2,
             json!({
                 "holder": "did:key:z6MkCoverageHolder",
                 "claims": { "role": "coverage" },

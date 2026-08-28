@@ -32,7 +32,7 @@ use crate::server::AppState;
 
 use super::helpers::{TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, success_response};
 
-/// Handler for `spec/vta/credentials/issue/0.1`.
+/// Handler for `spec/vta/credentials/issue/0.2`.
 pub(super) async fn handle_issue(
     state: &AppState,
     auth: &AuthClaims,
@@ -90,6 +90,7 @@ pub(super) async fn handle_issue(
             credential_id: record.id,
             credential: record.credential,
             expires_at: record.expires_at,
+            issued_at: Some(record.issued_at),
         },
     )
 }
@@ -152,7 +153,7 @@ mod tests {
     use crate::test_support::{build_signing_test_app_state, super_admin_claims};
     use serde_json::json;
     use trust_tasks_rs::TypeUri;
-    use vta_sdk::trust_tasks::{TASK_VTA_CREDENTIALS_ISSUE_0_1, TASK_VTA_CREDENTIALS_REVOKE_0_1};
+    use vta_sdk::trust_tasks::{TASK_VTA_CREDENTIALS_ISSUE_0_2, TASK_VTA_CREDENTIALS_REVOKE_0_1};
 
     /// AAL2 (stepped-up) admin — passes both the capability + step-up gates.
     fn stepped_up_admin() -> AuthClaims {
@@ -164,7 +165,7 @@ mod tests {
 
     /// Build an `issue` trust-task document for the given payload.
     fn issue_doc(payload: Value) -> TrustTask<Value> {
-        let uri: TypeUri = TASK_VTA_CREDENTIALS_ISSUE_0_1.parse().expect("issue uri");
+        let uri: TypeUri = TASK_VTA_CREDENTIALS_ISSUE_0_2.parse().expect("issue uri");
         TrustTask::new(format!("urn:uuid:{}", uuid::Uuid::new_v4()), uri, payload)
     }
 
@@ -229,7 +230,7 @@ mod tests {
         let out = super::super::policy_gate::policy_gate(
             &state,
             &auth,
-            vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_0_1,
+            vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_0_2,
             &doc,
             &mut Vec::new(),
         )

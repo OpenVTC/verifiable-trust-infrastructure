@@ -741,10 +741,10 @@ pub const TASK_VAULT_CREDENTIALS_PURGE_0_1: &str =
 // dispatcher-routed and gated by operator step-up (AAL2) + an admin capability
 // check. See `vta-service::trust_tasks::credentials`.
 
-/// `spec/vta/credentials/issue/0.1` — issue a scoped, time-boxed Verifiable
+/// `spec/vta/credentials/issue/0.2` — issue a scoped, time-boxed Verifiable
 /// Credential to a holder DID. Auth: Admin + operator step-up (AAL2).
-pub const TASK_VTA_CREDENTIALS_ISSUE_0_1: &str =
-    "https://trusttasks.org/spec/vta/credentials/issue/0.1";
+pub const TASK_VTA_CREDENTIALS_ISSUE_0_2: &str =
+    "https://trusttasks.org/spec/vta/credentials/issue/0.2";
 
 /// `spec/vta/credentials/revoke/0.1` — revoke a previously-issued credential by
 /// id. Auth: Admin + operator step-up (AAL2).
@@ -1711,7 +1711,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONSENT_APPROVER_SET_1_0,
     TASK_CONSENT_APPROVER_LIST_1_0,
     // Issued-credential lifecycle (spec/vta/credentials/*)
-    TASK_VTA_CREDENTIALS_ISSUE_0_1,
+    TASK_VTA_CREDENTIALS_ISSUE_0_2,
     TASK_VTA_CREDENTIALS_REVOKE_0_1,
     // Agent-memory slice (spec/vta/memory/*)
     TASK_VTA_MEMORY_PUT_0_1,
