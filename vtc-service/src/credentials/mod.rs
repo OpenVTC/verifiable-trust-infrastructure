@@ -57,6 +57,7 @@ pub mod signer;
 pub mod vec;
 pub mod vm_resolver;
 pub mod vmc;
+pub mod witness;
 
 pub use custom_endorsement::{CustomEndorsementParams, build_custom_endorsement};
 pub use exchange::{

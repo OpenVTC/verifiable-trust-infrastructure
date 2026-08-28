@@ -41,6 +41,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+use crate::credentials::witness::WitnessBinding;
+
 /// Which ceremony this evaluation is deciding.
 ///
 /// This is the **pipeline** vocabulary (`docs/05-design-notes/
@@ -284,6 +286,20 @@ pub struct Credential {
     /// against [`Facts::now`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_until: Option<DateTime<Utc>>,
+    /// Host verdict: for a `WitnessCredential`, which edge its
+    /// `credentialSubject.digest` actually names — recomputed against the VRC
+    /// bodies this service holds, comparing decoded digest bytes.
+    ///
+    /// `None` for every other credential type, where the question does not
+    /// arise. Present and [`WitnessBinding::Unresolved`] is a different fact
+    /// from absent, and a policy that conflates them accepts a witness whose
+    /// digest was never checked.
+    ///
+    /// Resolved by the host for the same reason `issuer_trusted` and `status`
+    /// are: the policy branches on a settled state instead of doing
+    /// cryptography.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness_binding: Option<WitnessBinding>,
 }
 
 /// Resolved credential status. The host computes this from the
@@ -367,6 +383,7 @@ mod tests {
                         holder_bound: true,
                         claims: json!({ "kind": "proximity" }),
                         valid_until: None,
+                        witness_binding: None,
                     }],
                 }),
                 request: Some(json!({ "agreements": {} })),

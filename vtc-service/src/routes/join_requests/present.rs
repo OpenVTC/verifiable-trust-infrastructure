@@ -38,6 +38,7 @@ use vti_common::error::AppError;
 
 use crate::ceremony::{Credential, CredentialStatus, Presentation};
 use crate::credentials::present_challenge::{self, DEFAULT_CHALLENGE_TTL};
+use crate::credentials::witness::{self, WitnessBinding};
 use crate::credentials::{VerifiedPresentation, VerifiedPresentationSet, verify_vp_token};
 use affinidi_data_integrity::VerificationMethodResolver;
 
@@ -312,7 +313,37 @@ async fn presentation_from_verified_set(
             &status_fetcher,
         )
         .await;
-        credentials.push(credential_from_verified(p, trusted, status));
+        // A VWC names the edge it witnessed by digest, and nothing else in the
+        // credential says which one. Resolved here — where the relationships
+        // keyspace is in hand — so the policy branches on a settled verdict
+        // rather than being handed an unchecked assertion. DTG Credentials
+        // Security Considerations 4: without recomputing the digest against
+        // the referenced VRC, a VWC is not evidence of *which* edge was
+        // witnessed.
+        //
+        // A storage failure resolves to `Unresolved` rather than aborting the
+        // whole presentation: one unreadable keyspace must not decide a
+        // ceremony, and `Unresolved` is the honest answer — we could not find
+        // the edge. The policy still sees an unbound witness.
+        let witness_binding = if is_witness_credential(p) {
+            Some(
+                witness::resolve_binding(&state.relationships_ks, &p.claims)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, issuer = %p.issuer_did,
+                            "could not resolve witness digest binding");
+                        witness::WitnessBinding::Unresolved
+                    }),
+            )
+        } else {
+            None
+        };
+        credentials.push(credential_from_verified(
+            p,
+            trusted,
+            status,
+            witness_binding,
+        ));
     }
 
     Presentation {
@@ -320,6 +351,25 @@ async fn presentation_from_verified_set(
         holder: set.holder.clone(),
         credentials,
     }
+}
+
+/// Whether this verified credential is a VWC, and so has a digest binding to
+/// resolve.
+///
+/// Matches on the credential type rather than on the presence of a `digest`
+/// member: a credential that should carry one and does not is exactly the case
+/// worth surfacing as [`WitnessBinding::Absent`], and keying off the member
+/// would silently classify it as "not a witness" instead.
+fn is_witness_credential(p: &VerifiedPresentation) -> bool {
+    p.vct.as_deref() == Some("WitnessCredential")
+        || p.claims
+            .get("type")
+            .and_then(|t| t.as_array())
+            .is_some_and(|types| {
+                types
+                    .iter()
+                    .any(|t| t.as_str() == Some("WitnessCredential"))
+            })
 }
 
 /// Pure projection of a single [`VerifiedPresentation`] into a ceremony
@@ -330,6 +380,7 @@ fn credential_from_verified(
     p: &VerifiedPresentation,
     issuer_trusted: bool,
     status: CredentialStatus,
+    witness_binding: Option<WitnessBinding>,
 ) -> Credential {
     Credential {
         credential_type: p
@@ -347,6 +398,10 @@ fn credential_from_verified(
             .get("exp")
             .and_then(JsonValue::as_i64)
             .and_then(|s| DateTime::from_timestamp(s, 0)),
+        // Resolved by the caller, which has the keyspace this needs. Kept out
+        // of the pure projection so it stays unit-testable without storage,
+        // for the same reason `issuer_trusted` and `status` are parameters.
+        witness_binding,
     }
 }
 
@@ -537,7 +592,8 @@ mod tests {
 
     #[test]
     fn projects_a_verified_presentation_into_a_ceremony_credential() {
-        let c = credential_from_verified(&sample_presentation(), true, CredentialStatus::Valid);
+        let c =
+            credential_from_verified(&sample_presentation(), true, CredentialStatus::Valid, None);
         assert_eq!(
             c.credential_type,
             "https://openvtc.org/credentials/MembershipCredential"
@@ -551,7 +607,12 @@ mod tests {
 
     #[test]
     fn resolved_status_carries_through_to_the_credential() {
-        let c = credential_from_verified(&sample_presentation(), true, CredentialStatus::Revoked);
+        let c = credential_from_verified(
+            &sample_presentation(),
+            true,
+            CredentialStatus::Revoked,
+            None,
+        );
         assert_eq!(c.status, CredentialStatus::Revoked);
     }
 
@@ -607,7 +668,8 @@ mod tests {
 
     #[test]
     fn untrusted_issuer_carries_through_to_the_credential() {
-        let c = credential_from_verified(&sample_presentation(), false, CredentialStatus::Valid);
+        let c =
+            credential_from_verified(&sample_presentation(), false, CredentialStatus::Valid, None);
         assert!(!c.issuer_trusted);
     }
 

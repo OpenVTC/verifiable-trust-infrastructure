@@ -559,6 +559,11 @@ fn credential_from_vc(vc: &JsonValue) -> Option<Credential> {
         holder_bound: false,
         claims: JsonValue::Null,
         valid_until: None,
+        // Absent, not `Unresolved`. This path never looked, and `Unresolved`
+        // says it looked and found nothing — a policy reading it would treat
+        // "we did not check" as "the digest names no edge we hold", which is
+        // the fail-safe direction here only by accident.
+        witness_binding: None,
     })
 }
 
