@@ -30,6 +30,29 @@ name: Release-plz
 on:
   push:
     branches: [main]
+  # Recovery hatch. release-plz publishes the workspace in one pass, and a
+  # single crate failing leaves the release *half-shipped* — consumers can
+  # resolve the crates that made it and not the ones that did not.
+  #
+  # That happened: release-plz attempted `vta-backup` before `vta-webvh`,
+  # which `vta-backup` depends on non-optionally, so the requirement
+  # `vta-webvh = "^0.2"` could not resolve and eleven of nineteen crates
+  # shipped. Re-running changed nothing, because the ordering is
+  # deterministic, and with `push` as the only trigger there was no way to
+  # publish the one blocking crate from CI. It had to be done from a laptop
+  # with a personal crates.io token — the exact thing Trusted Publishing
+  # exists to avoid.
+  #
+  # `package` publishes one crate and stops, which is enough to unblock a
+  # stalled ordering; leaving it empty behaves exactly as a push does.
+  workflow_dispatch:
+    inputs:
+      package:
+        description: >-
+          Publish only this crate (leave empty to publish everything not yet
+          on crates.io, as a push to main would).
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -102,7 +125,25 @@ jobs:
         uses: rust-lang/crates-io-auth-action@v1
         id: auth
 
+      # Single-crate recovery. Deliberately `cargo publish` rather than
+      # release-plz: the thing being worked around IS release-plz's ordering,
+      # so routing the fix back through it would inherit the problem. Note
+      # `release-plz/action` has no `args` input (checked against v0.5.131 —
+      # command, registry, config, forge, backend, manifest_path,
+      # project_manifest, version, token, verbose, dry_run, prs, pr, releases),
+      # so there is no way to pass `--package` through it at all; a `with: args:`
+      # would be accepted by YAML and silently ignored.
+      - name: Publish one crate
+        if: inputs.package != ''
+        run: cargo publish -p "${{ inputs.package }}"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
       - name: Run release-plz
+        # Skipped when recovering a single crate — that run has already done
+        # its one job, and letting release-plz follow would re-attempt the same
+        # broken ordering in the same run.
+        if: inputs.package == ''
         # Pinned to a full version: release-plz/action does NOT publish a
         # moving major tag, so `@v0` resolves to nothing and the job fails at
         # "Set up job" before running a step. (actions/checkout@v6 works
@@ -116,6 +157,10 @@ jobs:
 
   release-plz-pr:
     name: Release-plz PR
+    # Only on push. The Release PR tracks what has landed on main, so a
+    # recovery dispatch has nothing to tell it — regenerating it there would
+    # burn a run to produce the same PR.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
