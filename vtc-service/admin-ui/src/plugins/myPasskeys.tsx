@@ -167,6 +167,10 @@ export function MyPasskeys() {
     queryFn: fetchPasskeys,
   });
 
+  // `register/start` challenges an existing credential before issuing a new
+  // one, so the button is only meaningful once at least one is enrolled.
+  const canRegister = (query.data?.credentials.length ?? 0) > 0;
+
   const registerMutation = useMutation({
     mutationFn: registerPasskey,
     onSuccess: () => {
@@ -203,6 +207,12 @@ export function MyPasskeys() {
         </section>
       )}
 
+      {/* Registering steps up against a passkey you already hold, so it
+          cannot mint the first one — the bootstrap path is the install URL.
+          Offering the button with none enrolled sent operators at a ceremony
+          that answers 404 from `register/start`, on the page whose whole
+          purpose is to tell them how to get one. */}
+      {canRegister && (
       <section className="card">
         <div className="toolbar">
           <div className="spacer" />
@@ -223,6 +233,7 @@ export function MyPasskeys() {
           </button>
         </div>
       </section>
+      )}
 
       {showRegister && (
         <section className="card">
@@ -303,7 +314,13 @@ export function MyPasskeys() {
                       <KeyRound />
                     </span>
                     <h4>No passkeys registered</h4>
-                    <p>Claim the install URL or register a new passkey.</p>
+                    <p>
+                      Your session is authenticated another way — by your VTA
+                      wallet — so there is no passkey here to add a second
+                      device against. Registering one starts from an install
+                      URL, which an operator mints on the host with{" "}
+                      <code>vtc admin invite --did &lt;your-did&gt;</code>.
+                    </p>
                   </div>
                 </td>
               </tr>
