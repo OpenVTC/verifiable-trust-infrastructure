@@ -55,7 +55,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use vti_common::error::AppError;
 
 /// The VTC's role taxonomy. See module docs for the wire shape.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, utoipa::ToSchema)]
+///
+/// `ToSchema` is implemented by hand below, not derived: `Serialize` is written
+/// by hand too, and a derive cannot see that.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum VtcRole {
     /// Full management access. Spec §5.3 default permission matrix.
     Admin,
@@ -143,6 +146,41 @@ impl FromStr for VtcRole {
         }
     }
 }
+
+/// Describe the role to OpenAPI as what it actually is on the wire: one string.
+///
+/// This is written out because deriving it is **wrong here**, quietly. A derived
+/// `ToSchema` describes the enum's Rust shape — `"Admin" | "Moderator" | … |
+/// {"Custom": "…"}` — while the hand-written `Serialize` above sends
+/// `"admin"` / `"custom:editor"`. Nothing reconciles the two: the derive cannot
+/// see a manual `Serialize`, and no test compared them, so the document
+/// described every ACL entry's `role` as a capitalised variant or a tagged
+/// object for as long as both have existed.
+///
+/// That is not a cosmetic error. `role` decides what an operator may do, the
+/// console compares it against `"admin"`, and `admin-ui/src/lib/wire.ts` is
+/// generated from this schema — so a generated client would have been told the
+/// comparison the console actually makes can never be true. It surfaced when
+/// that generation was first attempted, as a type error on the promote-to-admin
+/// guard.
+///
+/// The rule this stands for: a type with a hand-written `Serialize` must have a
+/// hand-written `ToSchema`. Deriving one half is how the halves diverge.
+impl utoipa::PartialSchema for VtcRole {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::SchemaType::Type(
+                utoipa::openapi::Type::String,
+            ))
+            .description(Some(
+                "One of `admin`, `moderator`, `issuer`, `member`, or                  `custom:<name>` where `<name>` is 1..=64 lowercase                  alphanumerics, `-`, or `_`.",
+            ))
+            .examples([serde_json::json!("admin")])
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for VtcRole {}
 
 impl Serialize for VtcRole {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

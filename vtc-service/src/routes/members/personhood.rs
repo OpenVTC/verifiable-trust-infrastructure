@@ -163,7 +163,8 @@ pub struct ChallengeResponse {
 /// POST /members/{did}/personhood/challenge — mint a personhood challenge.
 /// Auth: any authenticated session.
 #[utoipa::path(
-    post, path = "/members/{did}/personhood/challenge", tag = "members",
+    post, path = "/members/{did}/personhood/challenge",
+    operation_id = "personhoodChallenge", tag = "members",
     security(("bearer_jwt" = [])),
     params(("did" = String, Path, description = "Member DID")),
     responses(
@@ -534,7 +535,8 @@ pub struct RevokeResponse {
 
 /// DELETE /members/{did}/personhood — revoke personhood. Auth: Admin or self.
 #[utoipa::path(
-    delete, path = "/members/{did}/personhood", tag = "members",
+    delete, path = "/members/{did}/personhood",
+    operation_id = "personhoodRevoke", tag = "members",
     security(("bearer_jwt" = [])),
     params(("did" = String, Path, description = "Member DID")),
     responses(

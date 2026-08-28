@@ -32,27 +32,6 @@ const TRUST_TASK_INVITES_CREATE =
 const TRUST_TASK_INVITES_REVOKE =
   "https://trusttasks.org/spec/vtc/admin/invites/revoke/0.1";
 
-// Canonical `acl/_shared` AclEntry. `did` -> `subject`,
-// `allowed_contexts` -> `scopes`, and every timestamp is now an
-// RFC3339 string rather than a unix epoch.
-interface AclEntry {
-  subject: string;
-  role: string;
-  label?: string | null;
-  scopes: string[];
-  createdAt: string;
-  createdBy: string;
-  updatedAt?: string | null;
-  updatedBy?: string | null;
-  expiresAt?: string | null;
-}
-
-interface AclListResponse {
-  entries: AclEntry[];
-  truncated: boolean;
-  cursor?: string | null;
-}
-
 // `acl/grant` wraps the entry; server-owned provenance is not settable.
 interface CreateAclRequest {
   entry: {
@@ -65,6 +44,14 @@ interface CreateAclRequest {
   reason?: string;
 }
 
+import type {
+  AclEntry,
+  AclEntryEnvelope,
+  AclListResponse,
+  CreateInviteResponse,
+  InviteSummary,
+  InvitesListResponse,
+} from "@/lib/wire-types";
 async function fetchAcl(scope: string | null): Promise<AclListResponse> {
   const q = new URLSearchParams();
   if (scope) q.set("scope", scope);
@@ -72,12 +59,6 @@ async function fetchAcl(scope: string | null): Promise<AclListResponse> {
   return getJson<AclListResponse>(`/v1/acl${suffix ? `?${suffix}` : ""}`, {
     trustTask: TRUST_TASK_LIST,
   });
-}
-
-// `acl/grant` answers with `{entry: …}` — the envelope the task publishes,
-// added in #1109. Unwrapped at the seam so callers see a flat entry.
-interface AclEntryEnvelope {
-  entry: AclEntry;
 }
 
 async function createAcl(req: CreateAclRequest): Promise<AclEntry> {
@@ -119,42 +100,10 @@ async function patchAclLabel(args: {
 
 // ── Admin invites ────────────────────────────────────────────
 
-interface InviteSummary {
-  jti: string;
-  status: "issued" | "consumed" | "expired";
-  /**
-   * Admin DID the invite was minted for. Missing on legacy rows
-   * from before the daemon started persisting the target DID;
-   * those can be cleared with Revoke (Regenerate can't act on
-   * them — there's nothing to re-invite).
-   */
-  targetDid?: string;
-  expiresAt?: string;
-  consumedAt?: string;
-}
-
-interface InvitesListResponse {
-  invites: InviteSummary[];
-}
-
 interface CreateInviteRequest {
   did: string;
   ttlSeconds?: number;
   label?: string;
-}
-
-interface CreateInviteResponse {
-  jti: string;
-  installUrl: string;
-  /**
-   * Out-of-band claim code the invitee must type alongside the URL
-   * to claim their passkey. Returned by the daemon once on invite
-   * creation; not persisted plaintext. Operators deliver URL and
-   * code through separate channels.
-   */
-  claimCode: string;
-  expiresAt: string;
-  aclEntryCreated: boolean;
 }
 
 async function fetchInvites(): Promise<InvitesListResponse> {

@@ -230,7 +230,8 @@ fn revoke_target_key(revocation_id: &str) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 #[utoipa::path(
-    get, path = "/admin/passkeys", tag = "admin",
+    get, path = "/admin/passkeys",
+    operation_id = "adminPasskeyList", tag = "admin",
     security(("bearer_jwt" = [])),
     responses(
         (status = 200, description = "Registered admin passkeys", body = ListResponse),

@@ -30,16 +30,7 @@ const TRUST_TASK_MANAGE =
 const TRUST_TASK_REVOKE =
   "https://trusttasks.org/spec/auth/revoke-session/0.1";
 
-type SessionState = "Pending" | "Authenticated" | "Revoked";
-
-interface SessionSummary {
-  sessionId: string;
-  did: string;
-  state: SessionState;
-  createdAt: number;
-  refreshExpiresAt: number | null;
-}
-
+import type { SessionSummary } from "@/lib/wire-types";
 async function fetchSessions(): Promise<SessionSummary[]> {
   return getJson<SessionSummary[]>("/v1/auth/sessions", {
     trustTask: TRUST_TASK_MANAGE,
@@ -135,10 +126,15 @@ export function Sessions() {
       const av = a[sortKey];
       const bv = b[sortKey];
       if (av === bv) return 0;
-      // Nulls sort last regardless of direction so blanks don't
-      // crowd the top.
-      if (av === null) return 1;
-      if (bv === null) return -1;
+      // Blanks sort last regardless of direction so they don't crowd the top.
+      // Both emptinesses count: the daemon sends `refreshExpiresAt: null`, and
+      // the schema marks it optional, so the generated type admits `undefined`
+      // too. Testing only for `null` left the other one comparing as a value.
+      const aEmpty = av === null || av === undefined;
+      const bEmpty = bv === null || bv === undefined;
+      if (aEmpty && bEmpty) return 0;
+      if (aEmpty) return 1;
+      if (bEmpty) return -1;
       const cmp = av < bv ? -1 : 1;
       return sortDir === "asc" ? cmp : -cmp;
     });

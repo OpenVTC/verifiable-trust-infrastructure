@@ -67,7 +67,8 @@ pub struct IssueInvitationResponse {
 }
 
 #[utoipa::path(
-    post, path = "/invitations", tag = "invitations",
+    post, path = "/invitations",
+    operation_id = "invitationIssue", tag = "invitations",
     security(("bearer_jwt" = [])),
     request_body = IssueInvitationBody,
     responses(
@@ -272,7 +273,8 @@ async fn require_inviter(state: &AppState, did: &str) -> Result<(), AppError> {
 }
 
 #[utoipa::path(
-    get, path = "/invitations", tag = "invitations",
+    get, path = "/invitations",
+    operation_id = "invitationList", tag = "invitations",
     security(("bearer_jwt" = [])),
     responses(
         (status = 200, description = "Issued invitations", body = InvitationListResponse),
@@ -303,7 +305,8 @@ pub struct RevokeResponse {
 }
 
 #[utoipa::path(
-    delete, path = "/invitations/{id}", tag = "invitations",
+    delete, path = "/invitations/{id}",
+    operation_id = "invitationRevoke", tag = "invitations",
     params(("id" = String, Path, description = "VIC id (urn:uuid)")),
     security(("bearer_jwt" = [])),
     responses(

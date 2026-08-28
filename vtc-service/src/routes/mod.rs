@@ -63,6 +63,13 @@ use crate::server::AppState;
         version = env!("CARGO_PKG_VERSION"),
     ),
     modifiers(&SecurityAddon),
+    // Schemas reachable *only* from a query parameter. utoipa collects
+    // schemas transitively from `request_body` and `body =`, but not through
+    // an `IntoParams` field, so a `params(...)`-only type is referenced by the
+    // document and absent from its components — a dangling `$ref`, which
+    // `no_dangling_refs` below fails on and `openapi-typescript` refuses to
+    // generate from at all.
+    components(schemas(policies::read::PolicyStatusFilter)),
 )]
 pub struct ApiDoc;
 

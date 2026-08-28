@@ -59,7 +59,7 @@ pub struct ImportRequest {
     security(("bearer_jwt" = [])),
     request_body = ExportRequest,
     responses(
-        (status = 200, description = "Encrypted full-state backup", body = BackupEnvelope),
+        (status = 200, description = "Encrypted full-state backup", body = ExportResponse),
         (status = 400, description = "Password too short"),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not a super-admin"),

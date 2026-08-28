@@ -588,7 +588,8 @@ pub struct RevokeBody {
 /// one place on the pairwise path where that linkage could plausibly become
 /// durable. See `docs/05-design-notes/vrc-publish-proof-of-possession.md`.
 #[utoipa::path(
-    delete, path = "/relationships/{id}", tag = "relationships",
+    delete, path = "/relationships/{id}",
+    operation_id = "relationshipRevoke", tag = "relationships",
     security(("bearer_jwt" = [])),
     params(("id" = String, Path, description = "Relationship (VRC) id")),
     request_body(content = RevokeBody, description = "Optional. Required only \

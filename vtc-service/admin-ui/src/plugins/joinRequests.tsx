@@ -29,34 +29,12 @@ const TRUST_TASK_DECIDE =
 
 type JoinStatus = "pending" | "approved" | "rejected" | "withdrawn" | "deferred";
 
-interface JoinRequestRow {
-  id: string;
-  applicantDid: string;
-  vp: unknown;
-  vpClaims: unknown;
-  submittedAt: string;
-  status: JoinStatus;
-  policyDecision: unknown;
-  registryConsent: boolean;
-  extensions: unknown;
-}
-
-interface JoinRequestsPage {
-  items: JoinRequestRow[];
-  nextCursor: string | null;
-  totalEstimate?: number;
-}
-
-// What `join-requests/decide/0.1` actually answers with: the decided
-// request's id and its new status, plus the credentials an approval issued.
-// It does not echo the row back.
-interface DecideResponse {
-  requestId: string;
-  status: JoinStatus;
-  vmc?: unknown;
-  roleVec?: unknown;
-}
-
+import type {
+  DecideResponse,
+  JoinRequestEnvelope,
+  JoinRequestRow,
+  JoinRequestsPage,
+} from "@/lib/wire-types";
 async function fetchJoinRequests(params: {
   status: JoinStatus;
   cursor: string | null;
@@ -72,12 +50,6 @@ async function fetchJoinRequests(params: {
   return getJson<JoinRequestsPage>(`/v1/join-requests?${q.toString()}`, {
     trustTask: TRUST_TASK_SUBMIT,
   });
-}
-
-// `join-requests/show/0.1` publishes `{request: …}`; the row was returned
-// bare until #1093. Unwrapped here so the detail view reads a flat row.
-interface JoinRequestEnvelope {
-  request: JoinRequestRow;
 }
 
 async function fetchJoinRequest(id: string): Promise<JoinRequestRow> {

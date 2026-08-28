@@ -67,6 +67,13 @@ export function Login() {
 
   const signIn = async () => {
     setPhase({ kind: "running" });
+    // Did we get as far as handing the challenge to the browser? Everything
+    // before that point is the daemon's response and our handling of it;
+    // everything after is the authenticator and the operator. The two have
+    // completely different remedies, and an operator can see which side they
+    // are on — "it never asked me for my passkey" — so the console should be
+    // able to say it too.
+    let reachedPrompt = false;
     try {
       // `login/start/0.2` sends the *inner* WebAuthn options — the value that
       // goes in `navigator.credentials.get({ publicKey: … })` — not
@@ -76,12 +83,20 @@ export function Login() {
         options: JsonPublicKeyOptions;
       }>("/v1/auth/passkey-login/start", undefined, {
         trustTask: TRUST_TASK_START,
+        // The sign-in screen is where an unhelpful error costs the most: it
+        // is the one page an operator cannot navigate away from. Without
+        // this, a daemon newer than the bundle fails inside
+        // `decodePublicKeyOptions` as "Cannot read properties of undefined
+        // (reading 'challenge')" — with no passkey prompt, because the throw
+        // happens on the line before `navigator.credentials.get`.
+        requires: ["authId", "options.challenge"],
       });
 
       const publicKey = decodePublicKeyOptions(
         start.options,
       ) as PublicKeyCredentialRequestOptions;
 
+      reachedPrompt = true;
       const credential = (await navigator.credentials.get({
         publicKey,
       })) as PublicKeyCredential | null;
@@ -118,6 +133,18 @@ export function Login() {
         err.name === "NotAllowedError"
       ) {
         hint = "Passkey prompt cancelled or denied by the browser.";
+      } else if (!reachedPrompt) {
+        // No prompt was ever shown, so nothing about the operator's passkey,
+        // authenticator, or browser can be at fault — the challenge the
+        // daemon sent could not be used. Saying so rules out the whole half
+        // of the problem space an operator would otherwise search first.
+        hint =
+          "This failed before the browser could ask for your passkey, so it " +
+          "is not your passkey, your authenticator, or your browser — the " +
+          "daemon's sign-in challenge could not be used. Hard-reload the page " +
+          "(Cmd/Ctrl-Shift-R). If that doesn't help, this console and the " +
+          "daemon serving it were built from different sources; the daemon " +
+          "needs rebuilding from its own tree.";
       }
       setPhase({ kind: "error", message: e.message ?? String(err), hint });
     }

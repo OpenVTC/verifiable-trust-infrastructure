@@ -242,7 +242,7 @@ pub struct RemovedMember {
     get, path = "/members/removed", tag = "members",
     security(("bearer_jwt" = [])),
     responses(
-        (status = 200, description = "Departed (tombstoned/historical) members", body = [RemovedMember]),
+        (status = 200, description = "Departed (tombstoned/historical) members", body = RemovedMembersResponse),
         (status = 403, description = "Caller is not an admin"),
     ),
 )]

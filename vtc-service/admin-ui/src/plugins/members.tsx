@@ -59,32 +59,14 @@ const TRUST_TASK_PURGE =
 const TRUST_TASK_REQUEST_VMC =
   "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1";
 
-interface MemberRow {
-  did: string;
-  role: string;
-  label: string | null;
-  joinedAt: string;
-  publishConsent: boolean;
-  departurePreference: string;
-  statusListIndex: number | null;
-  currentVmcId: string | null;
-  currentRoleVecId: string | null;
-  extensions: unknown;
-  personhood: boolean;
-  personhoodAssertedAt: string | null;
-  joinedViaInvitation: boolean;
-  /** Top-level `id` of the member-issued reciprocal VMC, once received. */
-  memberVmcId?: string | null;
-  /** When the member's reciprocal VMC was received + stored. */
-  memberVmcReceivedAt?: string | null;
-}
-
-interface MembersPage {
-  items: MemberRow[];
-  nextCursor: string | null;
-  totalEstimate?: number;
-}
-
+import type {
+  MemberEnvelope,
+  MemberRow,
+  MembersPage,
+  RemovedMemberRow,
+  RemovedMembersResponse,
+  RequestVmcResponse,
+} from "@/lib/wire-types";
 async function fetchMembers(params: {
   cursor: string | null;
   role: string | null;
@@ -99,24 +81,12 @@ async function fetchMembers(params: {
   });
 }
 
-// `members/show/0.1` publishes `{member: …}`; the row was returned bare until
-// #1093. Unwrapped here so the detail view keeps reading a flat `MemberRow`.
-interface MemberEnvelope {
-  member: MemberRow;
-}
-
 async function fetchMember(did: string): Promise<MemberRow> {
   const body = await getJson<MemberEnvelope>(
     `/v1/members/${encodeURIComponent(did)}`,
     { trustTask: TRUST_TASK_SHOW },
   );
   return body.member;
-}
-
-interface RequestVmcResponse {
-  memberDid: string;
-  requested: boolean;
-  threadId: string;
 }
 
 /** Ask an active member to issue + send their reciprocal VMC (member →
@@ -146,7 +116,10 @@ async function stepUpSession(): Promise<void> {
   const start = await postJson<StepUpStartResponse>(
     "/v1/auth/passkey-login/start",
     { purpose: "stepUp" },
-    { trustTask: TRUST_TASK_PASSKEY_STEP_UP_START },
+    {
+      trustTask: TRUST_TASK_PASSKEY_STEP_UP_START,
+      requires: ["authId", "options.challenge"],
+    },
   );
 
   const publicKey = decodePublicKeyOptions(
@@ -195,19 +168,6 @@ async function adminRemove(args: {
     trustTask: TRUST_TASK_ADMIN_REMOVE,
     body: { reason: args.reason || null },
   });
-}
-
-interface RemovedMemberRow {
-  did: string;
-  removedAt: string;
-  statusListIndex: number | null;
-  status: string;
-}
-
-// `members/removed/0.1` publishes `{removed: […]}`; the handler returned a
-// top-level array until #1082.
-interface RemovedMembersResponse {
-  removed: RemovedMemberRow[];
 }
 
 async function fetchRemovedMembers(): Promise<RemovedMemberRow[]> {

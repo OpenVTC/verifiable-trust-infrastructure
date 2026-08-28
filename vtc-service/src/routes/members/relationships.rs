@@ -40,7 +40,8 @@ pub struct ListQuery {
 /// GET /members/{did}/relationships — paginated VRC list for a member.
 /// Auth: any authenticated session.
 #[utoipa::path(
-    get, path = "/members/{did}/relationships", tag = "members",
+    get, path = "/members/{did}/relationships",
+    operation_id = "memberRelationshipList", tag = "members",
     security(("bearer_jwt" = [])),
     params(("did" = String, Path, description = "Member DID"), ListQuery),
     responses(

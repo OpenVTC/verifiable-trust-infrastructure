@@ -43,7 +43,8 @@ fn parse_purpose(s: &str) -> Option<StatusPurpose> {
 /// GET /status-lists/{purpose} — public BitstringStatusList credential.
 /// Unauthenticated, Trust-Task-exempt verifier endpoint.
 #[utoipa::path(
-    get, path = "/status-lists/{purpose}", tag = "status-lists",
+    get, path = "/status-lists/{purpose}",
+    operation_id = "statusListShow", tag = "status-lists",
     params(("purpose" = String, Path, description = "'revocation' or 'suspension'")),
     responses(
         (status = 200, description = "Bitstring status list credential", content_type = "application/json"),
