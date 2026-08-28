@@ -77,6 +77,8 @@ mod passkey_vms;
 pub(crate) mod planner;
 mod policy;
 mod policy_gate;
+#[cfg(test)]
+mod produced_census;
 #[cfg(feature = "webvh")]
 mod provision_integration;
 mod seeds;
