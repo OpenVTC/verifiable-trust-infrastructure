@@ -862,6 +862,45 @@ async fn webvh_family_response_shapes() {
         .await
         .expect("servers/retire-orphan");
 
+    // ── promoting a serverless DID ────────────────────────────────────────
+    // `dids/register-with-server` is the one webvh path that cannot be reached
+    // from the DID above: it refuses anything already server-managed, so it
+    // needs a *second* DID minted the other way — `url` set, `server_id`
+    // unset, which is what puts `"serverless"` on the record. That mint also
+    // writes the local `did.jsonl` the register pushes; a hand-seeded record
+    // would satisfy the serverless check and then fail at `LogMissing`, which
+    // is the reject arm, not the shape this is here for.
+    let serverless = client
+        .create_did_webvh(CreateDidWebvhRequest {
+            context_id: "ctx1".into(),
+            server_id: None,
+            url: Some(vta_service::test_support::STUB_WEBVH_DID_URL.into()),
+            path: None,
+            path_mode: None,
+            domain: None,
+            label: None,
+            portable: false,
+            add_mediator_service: false,
+            add_tsp_service: false,
+            additional_services: None,
+            pre_rotation_count: 0,
+            did_document: None,
+            did_log: None,
+            set_primary: false,
+            signing_key_id: None,
+            ka_key_id: None,
+            template: None,
+            template_context: None,
+            template_vars: Default::default(),
+        })
+        .await
+        .expect("mint a serverless DID");
+    let promoted = client
+        .register_did_with_server(&serverless.did, MockVta::WEBVH_SERVER_ID, false, None)
+        .await
+        .expect("dids/register-with-server");
+    assert_eq!(promoted.server_id, MockVta::WEBVH_SERVER_ID);
+
     // ── the DID itself ────────────────────────────────────────────────────
     // Rotate before delete: a rotation on a deleted DID has nothing to rotate,
     // and delete is terminal.
