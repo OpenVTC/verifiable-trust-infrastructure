@@ -30,7 +30,7 @@ vti-common = { path = "../vti-common", version = "0.14" }
 vti-secrets = { path = "../vti-secrets", version = "0.2" }
 # Types only: the declarative approvals rule shape, so a config seed and the
 # runtime row are the same struct rather than two that must be kept in step.
-vta-sdk = { path = "../vta-sdk", version = "0.29", default-features = false }
+vta-sdk = { path = "../vta-sdk", version = "0.30", default-features = false }
 serde = { workspace = true }
 toml = { workspace = true }
 serde_ignored = { workspace = true }

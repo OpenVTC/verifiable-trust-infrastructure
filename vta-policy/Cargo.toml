@@ -25,7 +25,7 @@ vta-config = { path = "../vta-config", version = "0.3" }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.2" }
 # Types only (default features off): the declarative approvals model + its Rego
 # synthesizer, shared with the CLI so both sides derive the same module.
-vta-sdk = { path = "../vta-sdk", version = "0.29", default-features = false }
+vta-sdk = { path = "../vta-sdk", version = "0.30", default-features = false }
 regorus = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

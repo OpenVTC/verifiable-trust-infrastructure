@@ -54,7 +54,7 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 
 # Onboarding feature: the SDK session/auth state machine + local did:key mint.
-vta-sdk = { path = "../vta-sdk", version = "0.29", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.30", features = [
   "session",
 ], optional = true }
 ed25519-dalek = { workspace = true, optional = true }

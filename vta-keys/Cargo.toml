@@ -38,7 +38,7 @@ vta-keyspaces = { path = "../vta-keyspaces", version = "0.2" }
 vta-config = { path = "../vta-config", version = "0.3" }
 vti-common = { path = "../vti-common", version = "0.14" }
 vti-secrets = { path = "../vti-secrets", version = "0.2" }
-vta-sdk = { path = "../vta-sdk", version = "0.29", features = ["sealed-transfer"] }
+vta-sdk = { path = "../vta-sdk", version = "0.30", features = ["sealed-transfer"] }
 affinidi-tdk = { workspace = true }
 affinidi-crypto = { workspace = true }
 ed25519-dalek = { workspace = true }
