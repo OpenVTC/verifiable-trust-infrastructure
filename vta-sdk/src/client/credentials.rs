@@ -40,7 +40,7 @@ impl VtaClient {
             payload["purpose"] = Value::String(p.to_string());
         }
         self.dispatch_trust_task(
-            trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_0_1,
+            trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_0_2,
             payload,
             CREDENTIALS_TT_TIMEOUT,
         )

@@ -1,5 +1,5 @@
 //! Wire payloads for the issued-credential lifecycle Trust Tasks
-//! (`spec/vta/credentials/{issue,revoke}/0.1`).
+//! (`spec/vta/credentials/issue/0.2` and `spec/vta/credentials/revoke/0.1`).
 //!
 //! These mint / revoke a VTA-signed W3C Verifiable Credential addressed to a
 //! holder DID, distinct from the credential-vault slice (`vault/credentials/*`)
@@ -10,7 +10,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// `spec/vta/credentials/issue/0.1` request body.
+/// `spec/vta/credentials/issue/0.2` request body.
+///
+/// Unchanged from 0.1 — the version moved for the response only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IssueCredentialBody {
@@ -38,7 +40,11 @@ pub struct IssueCredentialBody {
     pub authorization_context: Option<Value>,
 }
 
-/// `spec/vta/credentials/issue/0.1` response body.
+/// `spec/vta/credentials/issue/0.2` response body.
+///
+/// 0.2 composes this from `credentials/_shared/0.2`'s `IssuedCredentialBase`
+/// rather than restating the members inline, which is what the two versions
+/// differ by. The composition adds one member, `issuedAt`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueCredentialResponse {
@@ -49,6 +55,14 @@ pub struct IssueCredentialResponse {
     pub credential: Value,
     /// RFC 3339 expiry (`validUntil`).
     pub expires_at: String,
+    /// RFC 3339 mint time (`validFrom`).
+    ///
+    /// `Option` because the shared definition declares it optional, so a
+    /// response without it is schema-valid and must still deserialize. The VTA
+    /// always sends it: the stored record has carried `issued_at` since the
+    /// family existed, and 0.1 simply had nowhere to put it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issued_at: Option<String>,
 }
 
 /// `spec/vta/credentials/revoke/0.1` request body.

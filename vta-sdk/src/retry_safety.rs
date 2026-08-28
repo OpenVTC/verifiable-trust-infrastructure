@@ -383,7 +383,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Credentials ─────────────────────────────────────────────────────
     // Every issuance mints a new credential id; a lost reply leaves one issued
     // and unknown to the holder.
-    (trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_0_1, Keyed),
+    (trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_0_2, Keyed),
     (trust_tasks::TASK_VTA_CREDENTIALS_REVOKE_0_1, RetrySafe),
     // ── Memory ──────────────────────────────────────────────────────────
     (trust_tasks::TASK_VTA_MEMORY_PUT_0_1, RetrySafe),
