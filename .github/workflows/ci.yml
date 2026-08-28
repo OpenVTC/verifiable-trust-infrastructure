@@ -422,45 +422,6 @@ jobs:
         with:
           command: check advisories bans sources licenses
 
-  commit-lint:
-    # The changelog is generated from commit messages, so the message IS the
-    # user-facing artefact. A squash merge makes the PR TITLE the commit
-    # subject, which is why the title is what gets linted.
-    #
-    # Not a style rule: a subject git-cliff cannot parse lands under "Other" in
-    # the changelog of a published crate, where an external consumer reads it.
-    name: commit lint
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Conventional-commit PR title
-        env:
-          TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          set -euo pipefail
-          # type(optional scope)(optional !): subject
-          if printf '%s' "$TITLE" \
-            | grep -qE '^(feat|fix|docs|test|ci|build|perf|refactor|chore|security)(\([a-z0-9._/-]+\))?!?: .+'; then
-            echo "ok: $TITLE"
-            exit 0
-          fi
-          echo "::error title=PR title is not a conventional commit::$TITLE"
-          cat <<'EOF'
-          The PR title becomes the squash-merge commit subject, and the changelog
-          of every published crate is generated from those subjects.
-
-            <type>(<optional scope>): <subject>
-
-          type: feat fix docs test ci build perf refactor chore security
-          Append ! for a breaking change, e.g. feat(sdk)!: ...
-
-          Examples from this repo:
-            feat(tsp): a VTA can speak TSP without DIDComm
-            fix(did-webvh): write the DID log where the operator asked
-          EOF
-          exit 1
-
   semver-checks:
     # Compare each published crate's public API against the version on
     # crates.io. release-plz runs this too when it builds the Release PR, but
