@@ -13,6 +13,7 @@
 //! configured, `consent/request` is default-denied (`noApprover`) and a context
 //! admin is the fallback decider.
 
+use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 // Carries the same gate as `CONSENT_APPROVE_REQUEST_TYPE` below: its only use is
@@ -408,12 +409,85 @@ async fn maybe_wake_consent_approver(
         if let Some(d) = first_message_digest {
             prompt_payload.insert("firstMessageDigest".into(), serde_json::json!(d));
         }
-        let approve_request = serde_json::json!({
+        // Signed, like every other document this stack pushes to a human's
+        // device. It was not, and that was the whole of its protection: a
+        // prompt asking a person to approve something, authenticated by
+        // nothing the device could check.
+        //
+        // The sibling task-consent request (`consent_request.rs`) already
+        // signs with this key and cryptosuite, and the step-up prompt's mobile
+        // parser refuses to render without a verified proof from an enrolled
+        // issuer (`vta-mobile-core::task::parse_step_up_request`). This is the
+        // odd one out rather than a deliberate exception.
+        //
+        // `issuer` and `recipient` come with it, not as decoration: SPEC §7.2
+        // item 5b makes `recipient` REQUIRED and item 6 requires the in-band
+        // issuer to match the transport identity. A proof over a document
+        // naming neither party can be replayed at a different approver.
+        let Some(vta_did) = state.config.read().await.vta_did.clone() else {
+            tracing::warn!(
+                approver = %approver,
+                "VTA DID not configured; cannot sign consent approve-request, skipping wake"
+            );
+            return;
+        };
+        let secret = match crate::operations::credentials::load_vta_issuer_secret(
+            state,
+            &vta_did,
+            "consent-approve-request",
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e, approver = %approver,
+                    "could not load issuer key to sign consent approve-request, skipping wake"
+                );
+                return;
+            }
+        };
+
+        let unsigned = serde_json::json!({
             "id": format!("urn:uuid:{}", Uuid::new_v4()),
             "type": CONSENT_APPROVE_REQUEST_TYPE,
+            "issuer": vta_did,
+            "recipient": approver,
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": prompt_payload,
         });
+
+        // Fail closed. The existing buffer-failure arm below warns and leaves
+        // the approver to mediator pickup, and an unsignable prompt takes the
+        // same route — a document that cannot be authenticated must not be the
+        // one that reaches the phone, and "no prompt" is recoverable in a way
+        // that "unverifiable prompt" is not.
+        let proof = match DataIntegrityProof::sign(
+            &unsigned,
+            &secret,
+            SignOptions::new()
+                .with_proof_purpose("assertionMethod")
+                .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e, approver = %approver,
+                    "failed to sign consent approve-request, skipping wake"
+                );
+                return;
+            }
+        };
+        let mut approve_request = unsigned;
+        match serde_json::to_value(&proof) {
+            Ok(v) => approve_request["proof"] = v,
+            Err(e) => {
+                tracing::warn!(error = %e, approver = %approver, "could not serialize proof");
+                return;
+            }
+        }
         let pending = crate::messaging::registry::PendingResponse {
             recipient_did: approver.to_string(),
             // Envelope type, not the task type. `approve_request` above is a
@@ -906,6 +980,33 @@ mod envelope_push_tests {
                 .expect("prompt payload is an object")
                 .contains_key("firstMessageDigest"),
             "an unset hint is absent, not null"
+        );
+
+        // The prompt is authenticated, and the proof verifies against the
+        // document as sent.
+        //
+        // Asserting the `proof` member merely exists would pass on a proof
+        // over different content, which is the failure mode that matters: a
+        // signature copied from another document authenticates that one, not
+        // this one. So this runs the real verifier, and it also pins the two
+        // members that make the proof non-replayable — without `recipient`,
+        // the same signed prompt is valid at any approver.
+        let signer = crate::auth::di_proof::verify_trust_task_proof(
+            &serde_json::from_value(pushed[0].body.clone())
+                .expect("the pushed document parses as a Trust Task"),
+        )
+        .await
+        .expect("the consent prompt's proof verifies");
+        assert_eq!(
+            pushed[0].body["issuer"].as_str(),
+            Some(signer.as_str()),
+            "SPEC §7.2 item 6: the in-band issuer must be the party that signed"
+        );
+        assert_eq!(
+            pushed[0].body["recipient"].as_str(),
+            Some(APPROVER),
+            "SPEC §7.2 item 5b: recipient is REQUIRED, and it is what stops \
+             this prompt being replayed at a different approver"
         );
     }
 }
