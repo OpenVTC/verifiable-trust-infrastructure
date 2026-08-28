@@ -54,15 +54,6 @@ use std::path::{Path, PathBuf};
 /// the only thing this file can buy.
 const PRODUCED_UNPUBLISHED: &[(&str, &str)] = &[
     (
-        "https://trusttasks.org/spec/consent/approve-request/0.1",
-        "The consent prompt pushed to a `wake`-routed approver's device. Now \
-         signed (#1180), so a verifier has something to check; publishing it \
-         with `proof` REQUIRED is what makes that normative rather than this \
-         implementation's local convention. Tracked in #1177 — no fold \
-         target: `consent/request/1.0` is the requester-side task and \
-         `auth/step-up/approve-request/0.2` is a different ceremony.",
-    ),
-    (
         "https://trusttasks.org/spec/vta/attestation/status/1.0",
         "Found by this census on the day it was written, which is the case \
          for having it: REST-routed rather than dispatched, so the served-URI \

@@ -1008,5 +1008,19 @@ mod envelope_push_tests {
             "SPEC §7.2 item 5b: recipient is REQUIRED, and it is what stops \
              this prompt being replayed at a different approver"
         );
+
+        // And the payload matches the schema we published for it.
+        //
+        // Nothing on this side would otherwise catch a divergence: the prompt
+        // is *produced*, never served, so it never reaches the dispatcher's
+        // `validate_payload`. The party that validates it is the approver's
+        // device — which means a mismatch surfaces as a refused prompt on
+        // someone's phone rather than as a failing build here. That is the
+        // shape of both shipped payload defects this workspace has had
+        // (#895, #919): found by a person, from a rejected request.
+        let schema = trust_tasks_rs::schema_index::schema_for(super::CONSENT_APPROVE_REQUEST_TYPE)
+            .expect("consent/approve-request/0.1 is published");
+        trust_tasks_rs::validate::against_schema(schema, &pushed[0].body["payload"])
+            .expect("the prompt we send validates against the schema we published");
     }
 }
