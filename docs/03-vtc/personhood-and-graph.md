@@ -352,9 +352,18 @@ credential:
 }
 ```
 
-`complete` is true only when a VRC exists in **both** directions.
-A single-direction edge is a *half-edge* — one party's claim that
-the other has not answered.
+`complete` is true only when an **in-force** VRC exists in both
+directions. A single-direction edge is a *half-edge* — one party's
+claim that the other has not answered.
+
+"In force" and not merely "present": a half whose VRC has expired,
+or which has been suspended, superseded or withdrawn, no longer
+completes an edge. Before this the graph was read back without
+re-checking anything, so a half-edge whose reciprocal had expired
+years ago was indistinguishable from a live mutual relationship.
+The halves themselves are still listed whatever their state — the
+credential was published, and hiding it would make a lapsed edge
+look like one that never existed.
 
 The distinction matters because it is what replaced a check.
 Publishing used to require the subject to be a current member; that
@@ -376,6 +385,56 @@ not for two credentials.
 
 Design record:
 [`../05-design-notes/vrc-publish-proof-of-possession.md`](../05-design-notes/vrc-publish-proof-of-possession.md).
+
+### Edge lifecycle: suspend, restore, supersede
+
+An edge used to have two states — published, and deleted. A
+community with a reason to stop relying on one *temporarily* had to
+destroy it, and the member had to re-issue and re-publish to get it
+back. That is not a smaller version of revocation; it is a
+different act.
+
+| Verb | Endpoint | Reversible |
+|---|---|---|
+| suspend | `POST /v1/relationships/{id}/suspend` | yes, by restore |
+| restore | `POST /v1/relationships/{id}/restore` | — |
+| supersede | automatic, on publishing a new VRC to the same counterparty | no |
+| withdraw | `DELETE /v1/relationships/{id}` (deletes the row) | no |
+
+Suspend and restore are authorized exactly as revocation is: the
+issuer's session DID, an admin, or — for an edge published under a
+pairwise relationship DID — a `VrcSuspendAuthorization` /
+`VrcRestoreAuthorization` proving control of that DID, in the same
+request-body `pop` field revocation uses. Both take an optional
+`reason`, stored verbatim on the event and in the audit trail.
+
+Neither touches the credential. The VRC's signature, its window and
+its digest are unchanged; what changes is what the community has
+recorded against it. That separation is what lets suspension exist
+at all for a credential type that deliberately carries no
+`credentialStatus` (planning-review D7).
+
+**Supersession is automatic.** Publishing a second VRC to a
+counterparty you already have an edge to records the displacement
+on the earlier row. DTG Credentials requires an R-DID to be unique
+per counterparty, so the (issuer, subject) pair *is* the
+relationship, and re-issuing to it is a renewal or a correction
+rather than a second relationship. Re-sending an identical
+credential is still idempotent and displaces nothing.
+
+**Restoration reverses a suspension and nothing else.** An edge
+that has been superseded or withdrawn is terminal — you give effect
+back by issuing a fresh VRC, which produces a new signature, a new
+window and a record that a *new* assertion was made. Restoring an
+edge whose `validUntil` passed while it was suspended succeeds and
+still reports `expired`: a recorded event can put an artifact out
+of force at any time, but no event can put one **into** force that
+its own window excludes.
+
+The precedence rule is stated once, in
+`vtc-service/src/credentials/lifecycle.rs`, and every read path
+resolves through it rather than re-deriving dates at the call
+site.
 
 ## Custom endorsements
 
@@ -403,6 +462,9 @@ registration to keep the workspace's role taxonomy stable.
 | `PersonhoodRevoked { reason, revoker_did_hash }` | Any revoke path |
 | `VrcPublished { vrc_id, issuer_did_hash, subject_did_hash }` | `POST /v1/relationships` success |
 | `VrcRevoked { vrc_id }` | `DELETE /v1/relationships/{id}` |
+| `VrcSuspended { vrc_id, recorded_by, reason? }` | `POST /v1/relationships/{id}/suspend` |
+| `VrcRestored { vrc_id, recorded_by, reason? }` | `POST /v1/relationships/{id}/restore` |
+| `VrcSuperseded { vrc_id, superseded_by_digest_multibase }` | A later VRC to the same counterparty displaced this one |
 | `CustomEndorsementIssued { endorsement_id, type_uri, ... }` | Endorsement issuance |
 | `CustomEndorsementRevoked { endorsement_id, type_uri }` | Endorsement revoke + paired `StatusListFlipped` |
 | `EndorsementTypeRegistered { type_uri }` | Admin uploads type |

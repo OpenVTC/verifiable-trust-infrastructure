@@ -55,7 +55,10 @@ use serde_json::{Value as JsonValue, json};
 use tracing::info;
 use trust_tasks_rs::TrustTask as TrustTaskDoc;
 use uuid::Uuid;
-use vti_common::audit::{AuditEvent, VpcAnnotationData, VrcPublishedData, VrcRevokedData};
+use vti_common::audit::{
+    AuditEvent, VpcAnnotationData, VrcLifecycleData, VrcPublishedData, VrcRevokedData,
+    VrcSupersededData,
+};
 use vti_common::error::AppError;
 
 use crate::acl::get_acl_entry;
@@ -401,11 +404,39 @@ pub async fn publish(
         // A persona is asserted separately, against an edge that already
         // exists — see [`attach_persona`].
         persona: None,
+        // A freshly published edge has had nothing recorded against it. Every
+        // later state — suspended, restored, superseded, withdrawn — is an
+        // append to this log, never a mutation of the row's other fields.
+        lifecycle: crate::relationships::LifecycleLog::default(),
     };
     store_relationship(
         &state.relationships_ks,
         &state.relationships_by_did_ks,
         &rel,
+    )
+    .await?;
+
+    // 9b. A VRC to a counterparty this issuer already has an edge to is a new
+    //     version of one assertion, not a second relationship — DTG
+    //     Credentials makes an R-DID unique per counterparty, so the pair
+    //     *is* the relationship. Record the displacement on the earlier rows
+    //     so the graph can say which one the issuer currently stands behind.
+    //
+    //     After the store, not before: superseding first and then failing to
+    //     write the replacement would leave the issuer with no edge at all,
+    //     where this ordering's worst case is a brief window in which both
+    //     stand. The redundant-but-live reading is the safe one.
+    //
+    //     The idempotent-publish branch above returns before reaching here, so
+    //     re-sending the identical credential cannot supersede its own row.
+    let superseded = crate::relationships::supersede_prior_edges(
+        &state.relationships_ks,
+        &state.relationships_by_did_ks,
+        &issuer_did,
+        &subject_did,
+        id,
+        &vrc_digest_multibase,
+        now,
     )
     .await?;
 
@@ -460,10 +491,30 @@ pub async fn publish(
             .await?;
     }
 
+    // Supersession is a lifecycle change to an edge the community already
+    // held, so it is audited in its own right rather than folded into the
+    // publish entry — an operator asking "what happened to edge X" must find
+    // the answer under X, not under the credential that replaced it.
+    if let Some(writer) = state.audit_writer.as_ref() {
+        for displaced in &superseded {
+            writer
+                .write(
+                    &signer_did,
+                    Some(&subject_did),
+                    AuditEvent::VrcSuperseded(VrcSupersededData {
+                        vrc_id: displaced.to_string(),
+                        superseded_by_digest_multibase: vrc_digest_multibase.clone(),
+                    }),
+                )
+                .await?;
+        }
+    }
+
     info!(
         vrc_id = %id,
         issuer = %issuer_did,
         subject = %subject_did,
+        superseded = superseded.len(),
         "VRC published"
     );
 
@@ -563,58 +614,19 @@ pub async fn revoke(
         .ok_or_else(|| AppError::NotFound(format!("VRC {id} not found")))?;
 
     let pop = body.and_then(|Json(b)| b.pop);
-    let is_issuer = auth.did == rel.issuer_did;
-    let is_admin = auth.role == vti_common::acl::Role::Admin;
-
-    // Cheapest gate first, before the resolver is touched: with none of the
-    // three routes available this is a caller error, and reaching the
-    // daemon-config prerequisite below would report it as a 500. Same ordering
-    // rule the publish path documents.
-    if !is_issuer && !is_admin && pop.is_none() {
-        return Err(AppError::Forbidden(
-            "only the issuer or an admin can revoke a VRC — an edge issued \
-             under a relationship DID needs a revoke authorization (`pop`) \
-             proving control of it"
-                .into(),
-        ));
-    }
-
-    // A supplied authorization must verify, whoever supplied it. Accepting a
-    // request that carried an authorization we then ignored would make the
-    // failure of a *bad* one indistinguishable from success.
-    let mut proved_control = false;
-    if let Some(pop) = &pop {
-        let resolver = state.did_resolver.as_ref().cloned().ok_or_else(|| {
-            AppError::Internal(
-                "DID resolver not configured — VRC revoke authorization requires it".into(),
-            )
-        })?;
-        let aud = crate::routes::recognise::vtc_did(&state).await?;
-        check_authorization_envelope(pop, REVOKE_AUTHORIZATION_TYPE, &aud, &auth.session_id)
-            .and_then(|()| {
-                let edge = authorization_field(pop, "relationship")?;
-                if edge != id.to_string() {
-                    return Err("authorization is bound to a different edge".into());
-                }
-                Ok(())
-            })
-            .map_err(|e| AppError::Forbidden(format!("VrcRevokeAuthorizationInvalid: {e}")))?;
-        verify_di_proof(pop, &rel.issuer_did, &resolver)
-            .await
-            .map_err(|e| AppError::Forbidden(format!("VrcRevokeAuthorizationInvalid: {e}")))?;
-        proved_control = true;
-    }
+    let revoked_by = authorize_edge_control(
+        &state,
+        &auth,
+        &rel,
+        id,
+        pop.as_ref(),
+        REVOKE_AUTHORIZATION_TYPE,
+        "revoke",
+    )
+    .await?;
 
     delete_relationship(&state.relationships_ks, &state.relationships_by_did_ks, id).await?;
 
-    // Proving control of the issuing key *is* being the issuer. Recording it
-    // as an admin action would misattribute a member's own retraction in the
-    // one trail an operator uses to answer who did what.
-    let revoked_by = if is_issuer || proved_control {
-        "issuer"
-    } else {
-        "admin"
-    };
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
@@ -631,6 +643,329 @@ pub async fn revoke(
     info!(vrc_id = %id, revoked_by, "VRC revoked");
 
     Ok((StatusCode::OK, Json(RevokeResponse { id: id.to_string() })))
+}
+
+/// Establish that the caller may change the state of an existing edge, and
+/// report which of the two capacities they acted in.
+///
+/// Extracted from [`revoke`] when suspension and restoration arrived, because
+/// all three verbs answer the identical question — *does this caller control
+/// this edge* — and three copies of a three-branch authorization check is
+/// exactly how the ingress-window check ended up implemented three different
+/// ways and enforced on one path (#1069). The verb differs only in the
+/// authorization `type` it will accept, which is a parameter.
+///
+/// Three routes, in the order the publish path documents (caller errors before
+/// daemon-config prerequisites):
+///
+/// - **attributed** — the session DID is the row's issuer. The session already
+///   demonstrates control of that key; no proof is needed.
+/// - **admin** — moderation, keyed on the row id and not on issuer identity.
+/// - **pairwise** — an authorization signed by the row's `issuerDid`, bound to
+///   this edge, this community, this session. For an edge published under a
+///   relationship DID this is the *only* route, because the session DID is an
+///   M-DID and the comparison is false by construction.
+///
+/// The authorization is verified and discarded — never stored, logged or
+/// audited. It carries `sessionId`, which is attributable to a membership DID,
+/// and these handlers write to the audit store, so this is the one place on
+/// the pairwise path where that linkage could plausibly become durable. See
+/// `docs/05-design-notes/vrc-publish-proof-of-possession.md`.
+///
+/// `authorization_type` must be distinct per verb: a signature the member made
+/// to suspend an edge must not be replayable to delete it.
+///
+/// Returns `"issuer"` or `"admin"` for the audit trail. Proving control of the
+/// issuing key *is* being the issuer — recording it as an admin action would
+/// misattribute a member's own decision in the one trail an operator uses to
+/// answer who did what.
+async fn authorize_edge_control(
+    state: &AppState,
+    auth: &AuthClaims,
+    rel: &Relationship,
+    id: Uuid,
+    pop: Option<&JsonValue>,
+    authorization_type: &str,
+    verb: &str,
+) -> Result<&'static str, AppError> {
+    let is_issuer = auth.did == rel.issuer_did;
+    let is_admin = auth.role == vti_common::acl::Role::Admin;
+
+    // Cheapest gate first, before the resolver is touched: with none of the
+    // three routes available this is a caller error, and reaching the
+    // daemon-config prerequisite below would report it as a 500.
+    if !is_issuer && !is_admin && pop.is_none() {
+        return Err(AppError::Forbidden(format!(
+            "only the issuer or an admin can {verb} a VRC — an edge issued \
+             under a relationship DID needs an authorization (`pop`) proving \
+             control of it"
+        )));
+    }
+
+    // A supplied authorization must verify, whoever supplied it. Accepting a
+    // request that carried an authorization we then ignored would make the
+    // failure of a *bad* one indistinguishable from success.
+    let mut proved_control = false;
+    if let Some(pop) = pop {
+        let resolver = state.did_resolver.as_ref().cloned().ok_or_else(|| {
+            AppError::Internal(format!(
+                "DID resolver not configured — a VRC {verb} authorization requires it"
+            ))
+        })?;
+        let aud = crate::routes::recognise::vtc_did(state).await?;
+        check_authorization_envelope(pop, authorization_type, &aud, &auth.session_id)
+            .and_then(|()| {
+                let edge = authorization_field(pop, "relationship")?;
+                if edge != id.to_string() {
+                    return Err("authorization is bound to a different edge".into());
+                }
+                Ok(())
+            })
+            .map_err(|e| AppError::Forbidden(format!("{authorization_type}Invalid: {e}")))?;
+        verify_di_proof(pop, &rel.issuer_did, &resolver)
+            .await
+            .map_err(|e| AppError::Forbidden(format!("{authorization_type}Invalid: {e}")))?;
+        proved_control = true;
+    }
+
+    Ok(if is_issuer || proved_control {
+        "issuer"
+    } else {
+        "admin"
+    })
+}
+
+// ─── Suspend / restore ───────────────────────────────────
+//
+// The two verbs #1079 says the graph has no vocabulary for. Until they
+// existed, an edge had exactly two states — published and deleted — so a
+// community with a reason to stop relying on an edge *temporarily* had to
+// destroy it, and the member had to re-issue and re-publish to get it back.
+// That is not a smaller version of revocation; it is a different act, and
+// collapsing the two is what makes "suspended" unrepresentable.
+//
+// Neither verb touches the credential. The VRC's signature, its window and
+// its digest are all unchanged — what changes is what this community records
+// against it, and `credentials::lifecycle` states once how the two combine.
+// That separation is what lets suspension exist at all for a credential type
+// that deliberately carries no `credentialStatus` (planning-review D7).
+
+/// The two verbs [`record_edge_lifecycle`] serves.
+///
+/// An enum rather than a bundle of `&str` parameters because the three things
+/// that vary — the authorization `type` accepted, the event appended, and the
+/// audit variant emitted — must vary *together*. Passing them separately is
+/// how a handler ends up accepting a restore authorization and recording a
+/// suspension, and nothing about the types would object.
+#[derive(Debug, Clone, Copy)]
+enum EdgeLifecycleVerb {
+    Suspend,
+    Restore,
+}
+
+impl EdgeLifecycleVerb {
+    /// `type` of the authorization object this verb will accept. Distinct per
+    /// verb — and distinct from revocation's — so a signature made to suspend
+    /// an edge cannot be replayed to restore or delete it.
+    fn authorization_type(self) -> &'static str {
+        match self {
+            Self::Suspend => "VrcSuspendAuthorization",
+            Self::Restore => "VrcRestoreAuthorization",
+        }
+    }
+
+    /// The verb as it appears in a rejection message.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Suspend => "suspend",
+            Self::Restore => "restore",
+        }
+    }
+
+    fn event(self, reason: Option<String>) -> crate::relationships::LifecycleEventKind {
+        match self {
+            Self::Suspend => crate::relationships::LifecycleEventKind::Suspended { reason },
+            Self::Restore => crate::relationships::LifecycleEventKind::Restored { reason },
+        }
+    }
+
+    fn audit(self, data: VrcLifecycleData) -> AuditEvent {
+        match self {
+            Self::Suspend => AuditEvent::VrcSuspended(data),
+            Self::Restore => AuditEvent::VrcRestored(data),
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+pub struct LifecycleBody {
+    /// Proof that the caller controls the key behind the row's `issuerDid`,
+    /// when that is not the caller's session DID — i.e. for every edge
+    /// published under a pairwise relationship DID. Verified by the same
+    /// `authorize_edge_control` gate revocation uses, with a `type` distinct
+    /// to this verb.
+    #[serde(default)]
+    pub pop: Option<JsonValue>,
+    /// Optional operator- or member-supplied note, stored verbatim on the
+    /// event.
+    ///
+    /// Recorded because a suspension a reader cannot interpret is close to
+    /// useless: "temporarily ineffective, cause unstated" gives the
+    /// counterparty nothing to act on. It is deliberately free text and
+    /// deliberately optional — the state machine never reads it.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct LifecycleResponse {
+    pub id: Uuid,
+    /// The edge's resolved state after the event, as
+    /// [`crate::credentials::lifecycle::resolve`] computes it.
+    ///
+    /// The *resolved* state, not the event that was just recorded, because
+    /// those are not the same thing and the difference is the point of the
+    /// precedence rule: restoring an edge whose `validUntil` has passed
+    /// records a restoration and still answers `expired`.
+    pub state: crate::relationships::InForce,
+}
+
+/// `POST /v1/relationships/{id}/suspend` — make an edge temporarily
+/// ineffective without withdrawing it.
+///
+/// Authorized exactly as revocation is (issuer session DID, admin, or a
+/// `VrcSuspendAuthorization` proving control of a pairwise issuer), because it
+/// is the same question about the same edge. It is not, however, the same
+/// *act*: revocation deletes the row and is unrecoverable, while this appends
+/// an event and leaves a supported way back.
+///
+/// Refused with a 409 if the edge is already suspended, or if it has been
+/// superseded or withdrawn. Those are conflicts rather than validation errors
+/// — the request is well-formed and the caller is entitled to make it; it is
+/// the edge's state that refuses, and for a suspension a retry after a
+/// restoration would succeed.
+#[utoipa::path(
+    post, path = "/relationships/{id}/suspend", tag = "relationships",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Relationship (VRC) id")),
+    request_body(content = LifecycleBody, description = "Optional. `pop` is \
+        required only for an edge issued under a pairwise relationship DID."),
+    responses(
+        (status = 200, description = "Relationship suspended", body = LifecycleResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not the issuer or an admin"),
+        (status = 404, description = "Relationship not found"),
+        (status = 409, description = "Edge is already suspended, superseded or withdrawn"),
+    ),
+)]
+pub async fn suspend(
+    auth: AuthClaims,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    body: Option<Json<LifecycleBody>>,
+) -> Result<(StatusCode, Json<LifecycleResponse>), AppError> {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    record_edge_lifecycle(auth, state, id, body, EdgeLifecycleVerb::Suspend).await
+}
+
+/// `POST /v1/relationships/{id}/restore` — reverse a suspension.
+///
+/// Reverses a suspension and nothing else. An edge that has expired, been
+/// superseded or been withdrawn is refused with a 409, and the boundary is
+/// deliberate — see the module doc of [`crate::credentials::lifecycle`] on
+/// restoration versus replacement. Restoring an edge whose `validUntil` passed
+/// while it was suspended *succeeds* (the suspension is genuinely reversed)
+/// and the response reports `expired`, because a recorded event cannot extend
+/// a window the issuer signed.
+#[utoipa::path(
+    post, path = "/relationships/{id}/restore", tag = "relationships",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Relationship (VRC) id")),
+    request_body(content = LifecycleBody, description = "Optional. `pop` is \
+        required only for an edge issued under a pairwise relationship DID."),
+    responses(
+        (status = 200, description = "Suspension reversed", body = LifecycleResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not the issuer or an admin"),
+        (status = 404, description = "Relationship not found"),
+        (status = 409, description = "Edge is not suspended"),
+    ),
+)]
+pub async fn restore(
+    auth: AuthClaims,
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    body: Option<Json<LifecycleBody>>,
+) -> Result<(StatusCode, Json<LifecycleResponse>), AppError> {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    record_edge_lifecycle(auth, state, id, body, EdgeLifecycleVerb::Restore).await
+}
+
+/// The shared spine of [`suspend`] and [`restore`]: load, authorize, append,
+/// audit, report the resolved state.
+///
+/// One function rather than two near-identical handlers because everything
+/// except the verb is common, and the ordering *is* the security property —
+/// authorize before touching the log, and read `now` once so the appended
+/// event and the state reported back cannot straddle two instants.
+async fn record_edge_lifecycle(
+    auth: AuthClaims,
+    state: AppState,
+    id: Uuid,
+    body: LifecycleBody,
+    verb: EdgeLifecycleVerb,
+) -> Result<(StatusCode, Json<LifecycleResponse>), AppError> {
+    let now = Utc::now();
+    let rel = get_relationship(&state.relationships_ks, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("VRC {id} not found")))?;
+
+    let actor = authorize_edge_control(
+        &state,
+        &auth,
+        &rel,
+        id,
+        body.pop.as_ref(),
+        verb.authorization_type(),
+        verb.as_str(),
+    )
+    .await?;
+
+    let updated = crate::relationships::record_lifecycle_event(
+        &state.relationships_ks,
+        &state.relationships_by_did_ks,
+        id,
+        verb.event(body.reason.clone()),
+        now,
+    )
+    .await?;
+
+    // The actor is the authenticated member, not the edge's issuer, for the
+    // reason the publish and persona trails record it that way: under a
+    // pairwise identifier the issuer names nobody, so a trail keyed on it
+    // could never answer who changed this edge's state.
+    if let Some(writer) = state.audit_writer.as_ref() {
+        let event = verb.audit(VrcLifecycleData {
+            vrc_id: id.to_string(),
+            recorded_by: actor.into(),
+            reason: body.reason,
+        });
+        writer
+            .write(&auth.did, Some(&updated.subject_did), event)
+            .await?;
+    }
+
+    info!(vrc_id = %id, actor, verb = verb.as_str(), "VRC lifecycle event recorded");
+
+    Ok((
+        StatusCode::OK,
+        Json(LifecycleResponse {
+            id,
+            state: updated.in_force_at(now),
+        }),
+    ))
 }
 
 // ─── Persona annotation (VPC) ────────────────────────────
@@ -1341,9 +1676,24 @@ pub struct GraphEdge {
     /// published several VRCs in the same direction, which nothing prevents
     /// (idempotency is per credential hash, not per direction).
     pub halves: Vec<GraphHalf>,
-    /// A VRC exists in **both** directions — a complete DTG edge, and the only
-    /// form in which both parties have consented. False means a half-edge: one
-    /// party's unilateral claim, which the other has not reciprocated.
+    /// An **in-force** VRC exists in both directions — a complete DTG edge,
+    /// and the only form in which both parties currently consent.
+    ///
+    /// "In force" and not merely "present" since #1079. A half whose VRC has
+    /// expired, or which has been suspended, superseded or withdrawn, no
+    /// longer completes an edge — resolved through
+    /// [`Relationship::in_force_at`], which is the one place the precedence
+    /// rule lives. Before this the graph was read back without re-checking
+    /// anything, so a half-edge whose reciprocal had expired years ago was
+    /// indistinguishable from a live mutual relationship.
+    ///
+    /// The halves themselves are still listed whatever their state: an
+    /// operator looking at a graph needs to see that a VRC was published, and
+    /// removing it would make a withdrawn edge look like one that never
+    /// existed. Which halves are in force is not yet surfaced per half — that
+    /// needs a field on `GraphHalf`, and `relationships/graph/0.2` pins the
+    /// response shape with `additionalProperties: false`, so it waits on a
+    /// spec revision upstream rather than shipping a body the task rejects.
     pub complete: bool,
 }
 
@@ -1356,7 +1706,12 @@ pub struct RelationshipsGraph {
 
 /// Group stored VRCs into pair-edges. Pure, so the half/complete rule is
 /// testable without standing up a keyspace.
-fn build_graph(mut rels: Vec<Relationship>) -> RelationshipsGraph {
+///
+/// `now` is a parameter rather than read here because whether an edge is
+/// complete is a question about an instant, and a test that cannot choose the
+/// instant cannot pin an expiry boundary. Same reason the publish handler
+/// reads `now` once at the top and passes it down.
+fn build_graph(mut rels: Vec<Relationship>, now: chrono::DateTime<Utc>) -> RelationshipsGraph {
     // Oldest first, id-tiebroken, so `halves` ordering is stable across calls
     // rather than inheriting whatever order the keyspace scan produced.
     rels.sort_by_key(|r| (r.created_at, r.id));
@@ -1365,7 +1720,11 @@ fn build_graph(mut rels: Vec<Relationship>) -> RelationshipsGraph {
     // BTreeMap, not HashMap: the response order is then a function of the data
     // and not of hash seeding, which keeps the admin view from reshuffling on
     // every poll.
-    let mut pairs: std::collections::BTreeMap<(String, String), Vec<GraphHalf>> =
+    //
+    // The resolved state rides alongside each half rather than on `GraphHalf`
+    // itself: it decides `complete`, but it cannot be serialised until the
+    // graph task's response schema admits it (see [`GraphEdge::complete`]).
+    let mut pairs: std::collections::BTreeMap<(String, String), Vec<(GraphHalf, bool)>> =
         std::collections::BTreeMap::new();
 
     for r in rels {
@@ -1376,15 +1735,19 @@ fn build_graph(mut rels: Vec<Relationship>) -> RelationshipsGraph {
         } else {
             (r.subject_did.clone(), r.issuer_did.clone())
         };
+        let in_force = r.in_force_at(now).is_in_force();
         // Taken before the DIDs are moved into the half below.
         let persona_did = r.persona.map(|p| p.persona_did);
-        pairs.entry(key).or_default().push(GraphHalf {
-            id: r.id.to_string(),
-            issuer_did: r.issuer_did,
-            subject_did: r.subject_did,
-            created_at: r.created_at.to_rfc3339(),
-            persona_did,
-        });
+        pairs.entry(key).or_default().push((
+            GraphHalf {
+                id: r.id.to_string(),
+                issuer_did: r.issuer_did,
+                subject_did: r.subject_did,
+                created_at: r.created_at.to_rfc3339(),
+                persona_did,
+            },
+            in_force,
+        ));
     }
 
     let edges = pairs
@@ -1394,16 +1757,20 @@ fn build_graph(mut rels: Vec<Relationship>) -> RelationshipsGraph {
             // reciprocate, so it can never be complete — without the `lo != hi`
             // guard the two `any` checks below would both match the same row
             // and report a self-vouch as a mutual relationship.
-            let complete = lo != hi
-                && halves
+            //
+            // Each direction must be satisfied by a half that is *in force*.
+            // An expired or suspended VRC is still a published fact and still
+            // appears below; what it no longer does is stand in for a party's
+            // current consent.
+            let live = |from: &String, to: &String| {
+                halves
                     .iter()
-                    .any(|h| h.issuer_did == lo && h.subject_did == hi)
-                && halves
-                    .iter()
-                    .any(|h| h.issuer_did == hi && h.subject_did == lo);
+                    .any(|(h, ok)| *ok && &h.issuer_did == from && &h.subject_did == to)
+            };
+            let complete = lo != hi && live(&lo, &hi) && live(&hi, &lo);
             GraphEdge {
                 endpoints: vec![lo, hi],
-                halves,
+                halves: halves.into_iter().map(|(h, _)| h).collect(),
                 complete,
             }
         })
@@ -1436,7 +1803,7 @@ pub async fn graph(
     State(state): State<AppState>,
 ) -> Result<Json<RelationshipsGraph>, AppError> {
     let rels = crate::relationships::list_all(&state.relationships_ks).await?;
-    Ok(Json(build_graph(rels)))
+    Ok(Json(build_graph(rels, Utc::now())))
 }
 
 #[cfg(test)]
@@ -1577,12 +1944,22 @@ mod tests {
             // independent of whether a persona was asserted. The persona
             // rendering has its own tests.
             persona: None,
+            lifecycle: crate::relationships::LifecycleLog::default(),
         }
+    }
+
+    /// The instant the grouping tests resolve at: inside every `row`'s window
+    /// and after every event they record. Fixed rather than `Utc::now()` so a
+    /// test about grouping cannot start failing on a clock, and so the
+    /// lifecycle tests below can name an instant on either side of an event.
+    fn at(day: u32) -> chrono::DateTime<Utc> {
+        use chrono::TimeZone;
+        Utc.with_ymd_and_hms(2026, 2, day, 0, 0, 0).unwrap()
     }
 
     #[test]
     fn a_reciprocated_pair_is_one_complete_edge() {
-        let g = build_graph(vec![row(A, B, 0), row(B, A, 1)]);
+        let g = build_graph(vec![row(A, B, 0), row(B, A, 1)], at(1));
         assert_eq!(g.edges.len(), 1, "two VRCs one each way are ONE edge");
         assert_eq!(g.edges[0].endpoints, vec![A.to_string(), B.to_string()]);
         assert_eq!(g.edges[0].halves.len(), 2);
@@ -1592,7 +1969,7 @@ mod tests {
 
     #[test]
     fn an_unreciprocated_vrc_is_a_half_edge() {
-        let g = build_graph(vec![row(A, B, 0)]);
+        let g = build_graph(vec![row(A, B, 0)], at(1));
         assert_eq!(g.edges.len(), 1);
         assert_eq!(g.edges[0].halves.len(), 1);
         assert!(
@@ -1608,7 +1985,7 @@ mod tests {
     /// parties are not evidence of reciprocity if they all point one way.
     #[test]
     fn repeated_vrcs_in_one_direction_do_not_complete_an_edge() {
-        let g = build_graph(vec![row(A, B, 0), row(A, B, 1), row(A, B, 2)]);
+        let g = build_graph(vec![row(A, B, 0), row(A, B, 1), row(A, B, 2)], at(1));
         assert_eq!(g.edges.len(), 1);
         assert_eq!(g.edges[0].halves.len(), 3);
         assert!(!g.edges[0].complete);
@@ -1619,8 +1996,8 @@ mod tests {
     /// edges depending on publish order.
     #[test]
     fn pair_identity_does_not_depend_on_publish_order() {
-        let forward = build_graph(vec![row(A, B, 0), row(B, A, 1)]);
-        let reverse = build_graph(vec![row(B, A, 0), row(A, B, 1)]);
+        let forward = build_graph(vec![row(A, B, 0), row(B, A, 1)], at(1));
+        let reverse = build_graph(vec![row(B, A, 0), row(A, B, 1)], at(1));
         assert_eq!(forward.edges[0].endpoints, reverse.edges[0].endpoints);
         assert!(forward.edges[0].complete && reverse.edges[0].complete);
     }
@@ -1630,7 +2007,7 @@ mod tests {
     /// "a VRC each way" test would report it complete.
     #[test]
     fn a_self_issued_vrc_is_never_complete() {
-        let g = build_graph(vec![row(A, A, 0)]);
+        let g = build_graph(vec![row(A, A, 0)], at(1));
         assert_eq!(g.edges.len(), 1);
         assert_eq!(g.edges[0].endpoints, vec![A.to_string(), A.to_string()]);
         assert!(!g.edges[0].complete);
@@ -1639,7 +2016,7 @@ mod tests {
     #[test]
     fn distinct_pairs_stay_distinct_and_ordering_is_stable() {
         let rows = vec![row(B, C, 2), row(A, B, 0), row(B, A, 1)];
-        let g = build_graph(rows);
+        let g = build_graph(rows, at(1));
         assert_eq!(g.edges.len(), 2);
         // BTreeMap keyed on the sorted pair: (A,B) before (B,C).
         assert_eq!(g.edges[0].endpoints, vec![A.to_string(), B.to_string()]);
@@ -1649,5 +2026,139 @@ mod tests {
         // Halves are oldest-first regardless of the order rows came back in.
         assert_eq!(g.edges[0].halves[0].issuer_did, A);
         assert_eq!(g.edges[0].halves[1].issuer_did, B);
+    }
+
+    // ─── Precedence in the graph read (#1079) ───────────────
+    //
+    // Until this, the graph was read back without re-checking anything on the
+    // reasoning that each edge had been validated at ingress. True, and
+    // insufficient: it says nothing about the months since, and for a VRC
+    // with no `validUntil` it says nothing at all. These pin the two ways an
+    // edge can stop counting — its own window closing, and this community
+    // recording something against it — as producing the same answer.
+
+    /// A row whose VRC states an upper bound, so the window can be crossed
+    /// inside a test.
+    fn row_expiring(issuer: &str, subject: &str, minute: u32, until_day: u32) -> Relationship {
+        use chrono::TimeZone;
+        let mut rel = row(issuer, subject, minute);
+        let until = Utc.with_ymd_and_hms(2026, 2, until_day, 0, 0, 0).unwrap();
+        rel.vrc_jsonld["validUntil"] = json!(until.to_rfc3339());
+        rel
+    }
+
+    /// The symptom #1079 names: "a half-edge whose reciprocal has expired is
+    /// indistinguishable from one that never arrived". It is distinguishable
+    /// now — the pair stops being complete the instant the reciprocal lapses,
+    /// with no event recorded and nothing deleted.
+    #[test]
+    fn an_expired_reciprocal_no_longer_completes_an_edge() {
+        let rows = || vec![row(A, B, 0), row_expiring(B, A, 1, 10)];
+
+        let live = build_graph(rows(), at(9));
+        assert!(
+            live.edges[0].complete,
+            "both halves in date: this is a mutual relationship"
+        );
+
+        let lapsed = build_graph(rows(), at(11));
+        assert!(
+            !lapsed.edges[0].complete,
+            "B's half has expired, so B no longer consents to anything"
+        );
+        assert_eq!(
+            lapsed.edges[0].halves.len(),
+            2,
+            "the expired half is still shown — it was published, and hiding it \
+             would make a lapsed edge look like one that never existed"
+        );
+    }
+
+    /// The other half of the precedence rule: a later recorded event beats a
+    /// still-valid credential. Nothing about B's VRC has changed — its
+    /// signature verifies and its window is open — and the edge is no longer
+    /// complete.
+    #[test]
+    fn a_suspended_half_does_not_complete_an_edge() {
+        let mut suspended = row(B, A, 1);
+        suspended
+            .lifecycle
+            .record(
+                crate::relationships::LifecycleEventKind::Suspended { reason: None },
+                at(5),
+            )
+            .expect("first event on a fresh log");
+
+        assert!(
+            !build_graph(vec![row(A, B, 0), suspended.clone()], at(6)).edges[0].complete,
+            "a suspended half is not consent"
+        );
+        // And it was genuinely the event doing the work: an instant before it
+        // was recorded, the same rows read as complete.
+        assert!(
+            build_graph(vec![row(A, B, 0), suspended], at(4)).edges[0].complete,
+            "the suspension must not apply before it was recorded"
+        );
+    }
+
+    /// Restoration puts the edge back, which is the difference between
+    /// suspension and revocation actually meaning something.
+    #[test]
+    fn a_restored_half_completes_the_edge_again() {
+        let mut half = row(B, A, 1);
+        let kinds = crate::relationships::LifecycleEventKind::Suspended { reason: None };
+        half.lifecycle.record(kinds, at(5)).unwrap();
+        half.lifecycle
+            .record(
+                crate::relationships::LifecycleEventKind::Restored { reason: None },
+                at(7),
+            )
+            .unwrap();
+
+        assert!(!build_graph(vec![row(A, B, 0), half.clone()], at(6)).edges[0].complete);
+        assert!(build_graph(vec![row(A, B, 0), half], at(8)).edges[0].complete);
+    }
+
+    /// A superseded half is displaced, not deleted — and the replacement is
+    /// what carries the pair. Without this, a re-issued edge would read as two
+    /// live claims in the same direction.
+    #[test]
+    fn a_superseded_half_is_displaced_by_its_replacement() {
+        let mut old_half = row(A, B, 0);
+        old_half
+            .lifecycle
+            .record(
+                crate::relationships::LifecycleEventKind::Superseded {
+                    by: "zReplacement".into(),
+                },
+                at(5),
+            )
+            .unwrap();
+        let replacement = row(A, B, 2);
+
+        let g = build_graph(vec![old_half.clone(), replacement, row(B, A, 1)], at(6));
+        assert_eq!(g.edges[0].halves.len(), 3);
+        assert!(g.edges[0].complete, "the replacement carries A's direction");
+
+        // Remove the replacement and the pair is no longer complete: the
+        // displaced half cannot stand in for it.
+        let without = build_graph(vec![old_half, row(B, A, 1)], at(6));
+        assert!(!without.edges[0].complete);
+    }
+
+    /// A stored VRC whose window will not parse resolves to
+    /// `Indeterminate`, which is not in force. Rows written before #1075
+    /// entered the graph without their window ever being read, so this is
+    /// reachable — and treating an unreadable bound as "no bound stated" is
+    /// the failure mode that makes the whole check ornamental.
+    #[test]
+    fn an_unreadable_window_is_not_in_force() {
+        let mut broken = row(B, A, 1);
+        broken.vrc_jsonld["validUntil"] = json!("whenever");
+        assert!(matches!(
+            broken.in_force_at(at(1)),
+            crate::relationships::InForce::Indeterminate { .. }
+        ));
+        assert!(!build_graph(vec![row(A, B, 0), broken], at(1)).edges[0].complete);
     }
 }

@@ -262,6 +262,7 @@ async fn seed_relationship(fix: &Fixture, issuer: &str, subject: &str) -> Uuid {
         },
         created_at: chrono::Utc::now(),
         persona: None,
+        lifecycle: Default::default(),
     };
     store_relationship(&fix.relationships_ks, &fix.relationships_by_did_ks, &rel)
         .await
@@ -358,6 +359,163 @@ async fn revoke_404_on_unknown() {
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ─── Suspend / restore (#1079) ───────────────────────────
+//
+// The states the graph had no vocabulary for. These exercise the routes end to
+// end rather than the resolver in isolation — the unit tests in
+// `credentials::lifecycle` pin the precedence rule, and what has to be checked
+// here is that the HTTP surface is gated the way revocation is, that the log is
+// actually persisted, and that the graph read changes as a result.
+
+/// Post a lifecycle verb with no body. Deliberately body-less: an edge issued
+/// under a membership DID needs no authorization object, and a route that only
+/// worked with one would be unusable by the attributed form.
+async fn lifecycle_verb(fix: &Fixture, id: Uuid, verb: &str, token: &str) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/relationships/{id}/{verb}"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+}
+
+/// Whether the community graph currently reports the pair as a mutual
+/// relationship. Read through the admin surface rather than the keyspace,
+/// because the claim is about what an operator is told.
+async fn pair_is_complete(fix: &Fixture) -> bool {
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/relationships/graph")
+        .header("authorization", format!("Bearer {}", fix.admin_token))
+        .header("trust-task", GRAPH_TASK)
+        .body(Body::empty())
+        .unwrap();
+    let (status, v) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    v["edges"]
+        .as_array()
+        .expect("edges array")
+        .iter()
+        .any(|e| e["complete"].as_bool().unwrap_or(false))
+}
+
+/// The whole point of the verb: an edge can stop counting and start counting
+/// again, without the credential being destroyed and re-issued.
+#[tokio::test]
+async fn suspending_a_half_breaks_the_edge_and_restoring_it_returns() {
+    let fix = build_fixture().await;
+    let a_to_b = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
+    seed_relationship(&fix, SUBJECT_DID, ISSUER_DID).await;
+    assert!(pair_is_complete(&fix).await, "precondition: reciprocated");
+
+    let (status, v) = lifecycle_verb(&fix, a_to_b, "suspend", &fix.issuer_token).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["state"]["state"], "suspended", "{v}");
+    assert!(
+        !pair_is_complete(&fix).await,
+        "a suspended half is not consent"
+    );
+
+    // The credential itself is untouched — this is what makes suspension a
+    // different act from revocation, which deletes the row outright.
+    let row = vtc_service::relationships::get_relationship(&fix.relationships_ks, a_to_b)
+        .await
+        .unwrap()
+        .expect("the row survives a suspension");
+    assert_eq!(row.vrc_jsonld, fake_vrc(ISSUER_DID, SUBJECT_DID));
+
+    let (status, v) = lifecycle_verb(&fix, a_to_b, "restore", &fix.issuer_token).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["state"]["state"], "yes", "{v}");
+    assert!(pair_is_complete(&fix).await, "restoration puts it back");
+}
+
+/// Gated exactly as revocation is. A member who is merely *named* by an edge
+/// does not control it — otherwise a counterparty could mute another party's
+/// assertion about them.
+#[tokio::test]
+async fn suspend_is_forbidden_for_the_subject() {
+    let fix = build_fixture().await;
+    let id = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
+    let (status, _) = lifecycle_verb(&fix, id, "suspend", &fix.subject_token).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let row = vtc_service::relationships::get_relationship(&fix.relationships_ks, id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        row.lifecycle.is_empty(),
+        "a refused request must not have recorded anything"
+    );
+}
+
+/// Moderation. Same route admins already have for revocation, and the trail
+/// distinguishes the two capacities.
+#[tokio::test]
+async fn an_admin_can_suspend_and_the_trail_says_so() {
+    let fix = build_fixture().await;
+    let id = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
+    let (status, v) = lifecycle_verb(&fix, id, "suspend", &fix.admin_token).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+
+    let mut saw = false;
+    for (_k, raw) in fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap() {
+        let env: AuditEnvelope = serde_json::from_slice(&raw).unwrap();
+        if let AuditEvent::VrcSuspended(d) = env.event {
+            assert_eq!(d.vrc_id, id.to_string());
+            assert_eq!(d.recorded_by, "admin");
+            saw = true;
+        }
+    }
+    assert!(saw, "a suspension must leave an audit entry");
+}
+
+/// Restoration reverses a suspension and nothing else — 409, not 400: the
+/// request is well formed and the caller is entitled to make it; it is the
+/// edge's state that refuses.
+#[tokio::test]
+async fn restoring_an_edge_that_is_not_suspended_is_a_conflict() {
+    let fix = build_fixture().await;
+    let id = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
+    let (status, v) = lifecycle_verb(&fix, id, "restore", &fix.issuer_token).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{v}");
+}
+
+#[tokio::test]
+async fn suspending_an_already_suspended_edge_is_a_conflict() {
+    let fix = build_fixture().await;
+    let id = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
+    assert_eq!(
+        lifecycle_verb(&fix, id, "suspend", &fix.issuer_token)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let (status, _) = lifecycle_verb(&fix, id, "suspend", &fix.issuer_token).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let row = vtc_service::relationships::get_relationship(&fix.relationships_ks, id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.lifecycle.events().len(),
+        1,
+        "the refused second suspension must not have appended"
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_verbs_404_on_an_unknown_edge() {
+    let fix = build_fixture().await;
+    for verb in ["suspend", "restore"] {
+        let (status, _) = lifecycle_verb(&fix, Uuid::new_v4(), verb, &fix.admin_token).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{verb}");
+    }
 }
 
 // ─── List ────────────────────────────────────────────────
@@ -1119,6 +1277,93 @@ mod pairwise {
         let second = sign(RDID, body).await;
         let (status, b) = body_value(post(&fix, &second, true).await).await;
         assert_eq!(status, StatusCode::CREATED, "body: {b}");
+    }
+
+    /// …and the earlier credential is *displaced* by the later one (#1079).
+    ///
+    /// Re-issuing to the same counterparty is a new version of one assertion,
+    /// not a second relationship — an R-DID is unique per counterparty, so the
+    /// pair identifies the relationship. Before this both rows simply
+    /// accumulated and nothing said which the issuer currently stood behind.
+    #[tokio::test]
+    async fn a_reissued_edge_supersedes_the_one_it_replaces() {
+        let fix = fixture().await;
+
+        let first = vrc(RDID, PEER_RDID).await;
+        let (_, first_body) = body_value(post(&fix, &first, true).await).await;
+        let first_id: Uuid = first_body["payload"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("publish response carries an id: {first_body}"))
+            .parse()
+            .expect("id is a UUID");
+
+        let mut body = json!({
+            "@context": [
+                "https://www.w3.org/ns/credentials/v2",
+                "https://firstperson.network/credentials/dtg/v1"
+            ],
+            "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
+            "issuer": did_for(RDID),
+            "validFrom": "2021-06-01T00:00:00Z",
+            "credentialSubject": { "id": did_for(PEER_RDID) },
+        });
+        body["validUntil"] = json!("2999-01-01T00:00:00Z");
+        let second = sign(RDID, body).await;
+        let (status, second_body) = body_value(post(&fix, &second, true).await).await;
+        assert_eq!(status, StatusCode::CREATED, "body: {second_body}");
+        let replacement_digest = second_body["payload"]["vrcDigestMultibase"]
+            .as_str()
+            .expect("publish response carries the digest")
+            .to_string();
+
+        // The first row survives — displacement is a record, not a deletion —
+        // and it is no longer in force.
+        let displaced =
+            vtc_service::relationships::get_relationship(&fix.relationships_ks, first_id)
+                .await
+                .unwrap()
+                .expect("the displaced edge is still stored");
+        assert!(!displaced.in_force_at(chrono::Utc::now()).is_in_force());
+
+        // And it names *which* credential displaced it, by the digest the
+        // publish response returned for the replacement — not by a row id,
+        // which means nothing to a reader holding only the credential.
+        let mut saw = false;
+        for (_k, raw) in fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap() {
+            let env: AuditEnvelope = serde_json::from_slice(&raw).unwrap();
+            if let AuditEvent::VrcSuperseded(d) = env.event {
+                assert_eq!(d.vrc_id, first_id.to_string());
+                assert_eq!(d.superseded_by_digest_multibase, replacement_digest);
+                saw = true;
+            }
+        }
+        assert!(
+            saw,
+            "supersession must leave an audit entry under the old edge"
+        );
+    }
+
+    /// Re-sending the *identical* credential is still idempotent, and must not
+    /// supersede the row it is identical to. The publish path returns early on
+    /// a digest hit, before anything is displaced — without that ordering a
+    /// client retry would put its own edge out of force.
+    #[tokio::test]
+    async fn an_idempotent_republish_does_not_supersede_its_own_row() {
+        let fix = fixture().await;
+        let v = vrc(RDID, PEER_RDID).await;
+        let (_, first) = body_value(post(&fix, &v, true).await).await;
+        let id: Uuid = first["payload"]["id"].as_str().unwrap().parse().unwrap();
+
+        let (status, again) = body_value(post(&fix, &v, true).await).await;
+        assert_eq!(status, StatusCode::OK, "{again}");
+        assert_eq!(again["payload"]["id"].as_str().unwrap(), id.to_string());
+
+        let row = vtc_service::relationships::get_relationship(&fix.relationships_ks, id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(row.lifecycle.is_empty(), "a retry displaces nothing");
+        assert!(row.in_force_at(chrono::Utc::now()).is_in_force());
     }
 
     /// The public-community case. In an open-source community everyone is

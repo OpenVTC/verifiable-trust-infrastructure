@@ -52,6 +52,7 @@ pub mod ingress;
 pub mod invitation;
 pub mod invitation_registry;
 pub mod invitation_verify;
+pub mod lifecycle;
 pub mod present_challenge;
 pub mod signer;
 pub mod vec;
