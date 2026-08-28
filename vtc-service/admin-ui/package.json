@@ -3,12 +3,14 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "VTC admin console — React shell that hosts web-component plugins.",
+  "description": "VTC admin console \u2014 React shell that hosts web-component plugins.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "lint": "tsc -b --noEmit"
+    "lint": "npm run wire:check && tsc -b --noEmit",
+    "wire:generate": "openapi-typescript openapi.json -o src/lib/wire.ts",
+    "wire:check": "openapi-typescript openapi.json -o /tmp/vtc-wire-check.ts && diff -q src/lib/wire.ts /tmp/vtc-wire-check.ts"
   },
   "dependencies": {
     "@fontsource-variable/fraunces": "^5.2.9",
@@ -27,6 +29,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.0.0",
+    "openapi-typescript": "^7.13.0",
     "typescript": "^5.7.2",
     "vite": "^8.0.0"
   }

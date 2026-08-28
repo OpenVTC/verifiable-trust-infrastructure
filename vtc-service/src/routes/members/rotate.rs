@@ -201,7 +201,8 @@ pub struct ChallengeBody {
 /// POST /members/me/rotate/challenge — mint a DID-rotation challenge.
 /// Auth: any authenticated member.
 #[utoipa::path(
-    post, path = "/members/me/rotate/challenge", tag = "members",
+    post, path = "/members/me/rotate/challenge",
+    operation_id = "memberRotateChallenge", tag = "members",
     security(("bearer_jwt" = [])),
     request_body = Option<ChallengeBody>,
     responses(

@@ -85,7 +85,10 @@ async function registerPasskey(args: {
   const start = await postJson<RegisterStartResponse>(
     "/v1/admin/passkeys/register/start",
     undefined,
-    { trustTask: TRUST_TASK_ENROLL_START },
+    {
+      trustTask: TRUST_TASK_ENROLL_START,
+      requires: ["enrollmentId", "options.challenge", "uvOptions.challenge"],
+    },
   );
 
   const createPublicKey = decodePublicKeyOptions(
@@ -127,7 +130,10 @@ async function revokePasskey(args: {
   const start = await postJson<RevokeStartResponse>(
     "/v1/admin/passkeys/revoke/start",
     { credential_id: args.credentialId },
-    { trustTask: TRUST_TASK_REVOKE_START },
+    {
+      trustTask: TRUST_TASK_REVOKE_START,
+      requires: ["revocationId", "uvOptions.challenge"],
+    },
   );
 
   const uvPublicKey = decodePublicKeyOptions(

@@ -91,6 +91,7 @@ function csrfTokenFromCookie(): string | null {
 async function request<T>(
   path: string,
   init: RequestInit = {},
+  requires?: string[],
 ): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
@@ -144,7 +145,62 @@ async function request<T>(
   if (res.status === 204) {
     return undefined as T;
   }
-  return (await res.json()) as T;
+  const body = (await res.json()) as T;
+  assertShape(path, body, requires);
+  return body;
+}
+
+/**
+ * Fail loudly, and where the cause is, when a response is missing something
+ * the caller is about to read.
+ *
+ * The console and the daemon ship as **one artefact** — `build.rs` bakes this
+ * bundle into the binary — so a missing member is never a version negotiation
+ * that failed. It means the two halves were built from sources that disagreed,
+ * or that something between the browser and the daemon is serving a stale
+ * bundle. Either way it is a deployment fact, and saying so is more use to an
+ * operator than the value they would otherwise get, which is `undefined`.
+ *
+ * Why this exists at all: the generated wire types (`wire.ts`) make this class
+ * of mismatch a compile error, so in a correctly-built console these checks can
+ * never fire. They are here for the console that was *not* correctly built —
+ * the one an operator is actually looking at when something has gone wrong. The
+ * cost of being wrong in that moment was measured: a passkey sign-in against a
+ * daemon newer than the bundle threw `Cannot read properties of undefined
+ * (reading 'challenge')` from inside a WebAuthn helper, three frames below the
+ * response that was actually at fault, with no passkey prompt and nothing on
+ * screen naming the endpoint, the field, or the daemon.
+ */
+function assertShape(path: string, body: unknown, requires?: string[]): void {
+  if (!requires?.length) return;
+  const missing = requires.filter((p) => !hasPath(body, p));
+  if (missing.length === 0) return;
+
+  const present =
+    body && typeof body === "object" ? Object.keys(body).join(", ") : typeof body;
+  const err: ApiError = {
+    status: 200,
+    message:
+      `${path} answered without ${missing.map((m) => `\`${m}\``).join(", ")}. ` +
+      `It sent: ${present || "(nothing)"}. This console is built into the ` +
+      `daemon binary, so the two cannot disagree unless the bundle being ` +
+      `served is not the one this daemon was built with. Two things do that: ` +
+      `a browser holding a cached copy — hard-reload with Cmd/Ctrl-Shift-R — ` +
+      `or a daemon built with VTC_SKIP_ADMIN_UI_BUILD=1 over a stale ` +
+      `admin-ui/dist/, which embeds it as-is. Compare /admin/build-info with ` +
+      `the daemon's source tree to tell which.`,
+  };
+  throw err;
+}
+
+/** Is `path` (dotted) present and not null/undefined on `value`? */
+function hasPath(value: unknown, path: string): boolean {
+  let at: unknown = value;
+  for (const key of path.split(".")) {
+    if (at === null || at === undefined || typeof at !== "object") return false;
+    at = (at as Record<string, unknown>)[key];
+  }
+  return at !== undefined && at !== null;
 }
 
 // Every `/v1/*` route is gated by `TrustTaskRouter::
@@ -159,6 +215,18 @@ async function request<T>(
 
 export interface TrustTaskOpts {
   trustTask: string;
+  /**
+   * Dotted paths this caller is about to read, checked against the response
+   * before it is handed back. See [`assertShape`] for why — briefly: the
+   * generated wire types make a mismatch a compile error, so these only fire
+   * on a console that was not built with the daemon serving it, which is
+   * precisely when a legible error is worth the most.
+   *
+   * Worth declaring on any call whose failure the operator would otherwise
+   * meet as `undefined` several frames away — the sign-in ceremony above all,
+   * where there is no other screen to fall back to.
+   */
+  requires?: string[];
 }
 
 export const getJson = <T>(
@@ -168,7 +236,7 @@ export const getJson = <T>(
   request<T>(path, {
     method: "GET",
     headers: { "Trust-Task": extra.trustTask },
-  });
+  }, extra.requires);
 
 export const postJson = <T>(
   path: string,
@@ -179,7 +247,7 @@ export const postJson = <T>(
     method: "POST",
     body: body === undefined ? undefined : JSON.stringify(body),
     headers: { "Trust-Task": extra.trustTask },
-  });
+  }, extra.requires);
 
 export const putJson = <T>(
   path: string,
@@ -190,7 +258,7 @@ export const putJson = <T>(
     method: "PUT",
     body: body === undefined ? undefined : JSON.stringify(body),
     headers: { "Trust-Task": extra.trustTask },
-  });
+  }, extra.requires);
 
 export const patchJson = <T>(
   path: string,
@@ -201,7 +269,7 @@ export const patchJson = <T>(
     method: "PATCH",
     body: body === undefined ? undefined : JSON.stringify(body),
     headers: { "Trust-Task": extra.trustTask },
-  });
+  }, extra.requires);
 
 export const deleteJson = <T>(
   path: string,
@@ -211,7 +279,7 @@ export const deleteJson = <T>(
     method: "DELETE",
     body: extra.body === undefined ? undefined : JSON.stringify(extra.body),
     headers: { "Trust-Task": extra.trustTask },
-  });
+  }, extra.requires);
 
 // ---------------------------------------------------------------------------
 // Exempt helpers — for `/health`, `/admin/build-info.json`,
@@ -277,7 +345,14 @@ const SIGN_OUT_TASK = "https://trusttasks.org/spec/auth/revoke-session/0.1";
 
 /** Fetch the caller's session identity. Throws on 401/403. */
 export const fetchWhoami = (): Promise<WhoamiResponse> =>
-  getJson<WhoamiResponse>("/v1/auth/whoami", { trustTask: WHOAMI_TASK });
+  getJson<WhoamiResponse>("/v1/auth/whoami", {
+    trustTask: WHOAMI_TASK,
+    // The shell renders the session badge from this before anything else, so
+    // a mismatch here takes the whole console down rather than one view. That
+    // is how #1186 was reported: `shortenDid(undefined)`, on load, with the
+    // stack in minified bundle frames.
+    requires: ["session.subject", "roles", "scopes"],
+  });
 
 /** Revoke the server-side session and clear browser cookies. */
 export const signOut = (): Promise<void> =>

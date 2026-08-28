@@ -310,7 +310,8 @@ fn manifests() -> Vec<CeremonyManifest> {
 /// (any session); the payload is admin-UI metadata, not secret, but
 /// the surface lives behind the same gate as the rest of the API.
 #[utoipa::path(
-    get, path = "/ceremonies", tag = "ceremonies",
+    get, path = "/ceremonies",
+    operation_id = "ceremonyList", tag = "ceremonies",
     security(("bearer_jwt" = [])),
     responses(
         (status = 200, description = "Ceremony manifests", body = CeremonyListResponse),

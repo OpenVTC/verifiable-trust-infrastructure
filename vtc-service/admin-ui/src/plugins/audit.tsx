@@ -86,37 +86,23 @@ const SYSTEM_EVENT_KINDS = new Set([
 
 const TRUST_TASK = "https://trusttasks.org/spec/audit/list/0.1";
 
-// Canonical `audit/list/0.1` entry shape. The maintainer-specific
-// fields VTC used to expose at the top level (keyed actor/target
-// hashes, the audit key id, the per-variant version) now live under
-// `ext.vtc`, because the canonical envelope is
-// `additionalProperties: false`.
-interface AuditEntry {
-  eventId: string;
-  recordedAt: string;
-  action: string;
-  actor: string | null;
-  target?: string | null;
-  schemaVersion: number;
-  prevHash: string;
-  entryHash: string;
-  detail: Record<string, unknown>;
-  ext?: {
-    vtc?: {
-      eventVersion?: number;
-      auditKeyId?: string;
-      actorDidHash?: string;
-      targetDidHash?: string | null;
-    };
-  };
-}
+import type { AuditEntry, AuditListResponse } from "@/lib/wire-types";
 
-interface AuditListResponse {
-  entries: AuditEntry[];
-  truncated: boolean;
-  cursor?: string | null;
+/**
+ * Did RTBF redact this envelope's target?
+ *
+ * `ext` is typed open by the schema — vendor-namespaced extension members are
+ * the point of it — so the marker inside cannot be read off the generated type
+ * and is narrowed here instead. Deliberately a function rather than a widened
+ * `AuditEntry`: keeping the assumption at the one place that depends on it
+ * leaves the rest of the console reading the daemon's shape unmodified.
+ */
+function rtbfRedacted(env: AuditEntry): boolean {
+  const vtc = (env.ext as Record<string, unknown> | undefined)?.["vtc"];
+  return Boolean(
+    vtc && typeof vtc === "object" && "targetDidHash" in vtc,
+  );
 }
-
 async function fetchAuditPage(
   cursor: string | null,
   pageSize: number,
@@ -349,7 +335,7 @@ function AuditRow({ env }: { env: AuditEntry }) {
         <td>
           {env.target ? (
             <NamedDid book={nameBook} did={env.target} />
-          ) : env.ext?.vtc?.targetDidHash ? (
+          ) : rtbfRedacted(env) ? (
             <span className="muted" title="Redacted by RTBF">
               redacted
             </span>

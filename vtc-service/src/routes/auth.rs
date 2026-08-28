@@ -32,7 +32,8 @@ use vti_common::store::KeyspaceHandle;
 /// Thin dispatcher — every substantive concern (ACL, rate
 /// limit, session persistence) lives in the canonical handler.
 #[utoipa::path(
-    post, path = "/auth/challenge", tag = "auth",
+    post, path = "/auth/challenge",
+    operation_id = "authChallenge", tag = "auth",
     request_body = ChallengeRequest,
     responses(
         (status = 200, description = "DID-auth challenge nonce", body = ChallengeResponse),
@@ -63,7 +64,7 @@ pub async fn challenge(
     post, path = "/auth/", tag = "auth",
     request_body(content = String, description = "DIDComm envelope, SIOP id_token envelope, or Trust-Task auth document"),
     responses(
-        (status = 200, description = "Access + refresh tokens"),
+        (status = 200, description = "Access + refresh tokens", body = AuthenticateResponse),
         (status = 401, description = "Authentication failed (bad proof, challenge mismatch, or replay)"),
     ),
 )]
@@ -1105,7 +1106,7 @@ const REFRESH_TASK_URI: &str = <refresh::Payload as trust_tasks_rs::Payload>::TY
     post, path = "/auth/refresh", tag = "auth",
     request_body(content = String, description = "DIDComm envelope or Trust-Task refresh document"),
     responses(
-        (status = 200, description = "Rotated access + refresh tokens"),
+        (status = 200, description = "Rotated access + refresh tokens", body = AuthenticateResponse),
         (status = 401, description = "Refresh token not found, revoked, or already used"),
     ),
 )]

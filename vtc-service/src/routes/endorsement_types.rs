@@ -57,11 +57,12 @@ pub struct RegisterBody {
 }
 
 #[utoipa::path(
-    post, path = "/endorsement-types", tag = "endorsement-types",
+    post, path = "/endorsement-types",
+    operation_id = "endorsementTypeRegister", tag = "endorsement-types",
     security(("bearer_jwt" = [])),
     request_body = RegisterBody,
     responses(
-        (status = 201, description = "Endorsement type registered", body = EndorsementType),
+        (status = 201, description = "Endorsement type registered", body = RegisterResponse),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
     ),
@@ -147,7 +148,8 @@ pub struct ListQuery {
 }
 
 #[utoipa::path(
-    get, path = "/endorsement-types", tag = "endorsement-types",
+    get, path = "/endorsement-types",
+    operation_id = "endorsementTypeList", tag = "endorsement-types",
     security(("bearer_jwt" = [])),
     params(ListQuery),
     responses(

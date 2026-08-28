@@ -234,7 +234,7 @@ pub struct AuditListResponse {
     security(("bearer_jwt" = [])),
     params(AuditQuery),
     responses(
-        (status = 200, description = "Paginated audit envelopes", body = Object),
+        (status = 200, description = "Paginated audit envelopes", body = AuditListResponse),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not a super-admin"),
     ),

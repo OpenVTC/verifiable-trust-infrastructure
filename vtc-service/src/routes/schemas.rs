@@ -49,7 +49,8 @@ pub struct RegisterSchemaBody {
 
 /// `POST /v1/schemas` — register (or update) a per-type schema entry.
 #[utoipa::path(
-    post, path = "/schemas", tag = "schemas",
+    post, path = "/schemas",
+    operation_id = "schemaRegister", tag = "schemas",
     security(("bearer_jwt" = [])),
     request_body = RegisterSchemaBody,
     responses(
@@ -106,7 +107,8 @@ pub async fn register(
 
 /// `GET /v1/schemas` — list every registered per-type schema.
 #[utoipa::path(
-    get, path = "/schemas", tag = "schemas",
+    get, path = "/schemas",
+    operation_id = "schemaList", tag = "schemas",
     security(("bearer_jwt" = [])),
     responses(
         (status = 200, description = "List of registered schemas", body = Vec<SchemaEntry>),

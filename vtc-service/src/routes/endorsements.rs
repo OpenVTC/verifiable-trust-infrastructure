@@ -149,7 +149,8 @@ pub struct IssueResponse {
 }
 
 #[utoipa::path(
-    post, path = "/credentials/endorsements", tag = "endorsements",
+    post, path = "/credentials/endorsements",
+    operation_id = "endorsementIssue", tag = "endorsements",
     security(("bearer_jwt" = [])),
     request_body = IssueBody,
     responses(
@@ -345,7 +346,8 @@ pub struct ListQuery {
 }
 
 #[utoipa::path(
-    get, path = "/credentials/endorsements", tag = "endorsements",
+    get, path = "/credentials/endorsements",
+    operation_id = "endorsementList", tag = "endorsements",
     security(("bearer_jwt" = [])),
     params(ListQuery),
     responses(
@@ -389,7 +391,8 @@ pub async fn list(
 // ─── Show ────────────────────────────────────────────────
 
 #[utoipa::path(
-    get, path = "/credentials/endorsements/{id}", tag = "endorsements",
+    get, path = "/credentials/endorsements/{id}",
+    operation_id = "endorsementShow", tag = "endorsements",
     security(("bearer_jwt" = [])),
     params(("id" = String, Path, description = "Endorsement id")),
     responses(
@@ -441,7 +444,8 @@ pub struct RevocationDetail {
 }
 
 #[utoipa::path(
-    delete, path = "/credentials/endorsements/{id}", tag = "endorsements",
+    delete, path = "/credentials/endorsements/{id}",
+    operation_id = "endorsementRevoke", tag = "endorsements",
     security(("bearer_jwt" = [])),
     params(("id" = String, Path, description = "Endorsement id")),
     responses(
