@@ -1788,18 +1788,44 @@ impl VtaClient {
     /// Address a trust-task document for a **mediator** transport and serialize
     /// it.
     ///
-    /// `issuer`/`recipient` are set here rather than at document construction
-    /// because only a mediator transport knows both DIDs — the REST leg posts to
-    /// an already-addressed endpoint. Shared by every TSP path so the wire shape
-    /// cannot drift between them.
+    /// Both members are already set by [`build_task_document`] from the client's
+    /// [`ClientIdentity`]; this only fills them in for a document that somehow
+    /// arrived without them, and otherwise checks that the transport agrees with
+    /// what was signed.
+    ///
+    /// It used to assign both unconditionally, which is the shape of a bug this
+    /// path has already produced once in the other direction. A Data-Integrity
+    /// proof covers every member but `proof`, so writing `issuer` or `recipient`
+    /// *after* signing changes the bytes the signature was computed over: the
+    /// document leaves looking correctly addressed and is refused at the far end
+    /// as `proofInvalid`, which reads like a key problem rather than a
+    /// client-side rewrite. Today the values come from the same triple the
+    /// identity was built from, so the assignment was a no-op — but "it happens
+    /// to be equal" is not something the next constructor has to keep true, and
+    /// nothing was checking.
+    ///
+    /// A disagreement is refused rather than resolved, because neither answer is
+    /// safe: honouring the transport breaks the proof, and honouring the
+    /// document sends it somewhere the caller did not ask for.
     #[cfg(feature = "tsp")]
     fn address_trust_task(
         mut doc: serde_json::Value,
         issuer: &str,
         recipient: &str,
     ) -> Result<Vec<u8>, VtaError> {
-        doc["issuer"] = serde_json::Value::String(issuer.to_string());
-        doc["recipient"] = serde_json::Value::String(recipient.to_string());
+        for (member, from_transport) in [("issuer", issuer), ("recipient", recipient)] {
+            match doc.get(member).and_then(serde_json::Value::as_str) {
+                Some(signed) if signed == from_transport => {}
+                Some(signed) => {
+                    return Err(VtaError::Protocol(format!(
+                        "trust-task `{member}` is `{signed}` in the document but `{from_transport}`                          on the transport; rewriting it would invalidate the proof that covers it"
+                    )));
+                }
+                None => {
+                    doc[member] = serde_json::Value::String(from_transport.to_string());
+                }
+            }
+        }
         serde_json::to_vec(&doc).map_err(|e| VtaError::Protocol(format!("trust-task encode: {e}")))
     }
 
@@ -2676,9 +2702,18 @@ impl VtaClient {
     /// Build the document this client puts on the wire, signed when it can be.
     ///
     /// Signing is unconditional rather than keyed on whether *this* spec
-    /// declares `proof` REQUIRED: 72 of the 109 do, the flag lives in the
-    /// registry rather than here, and a proof on a task that merely RECOMMENDs
-    /// one is legal and strictly more attributable. The one thing it must not
+    /// declares `proof` REQUIRED: 210 of the 344 request payloads in
+    /// `trust-tasks-rs` 0.17 do, the flag lives in the registry rather than
+    /// here, and a proof on a task that merely RECOMMENDs one is legal and
+    /// strictly more attributable.
+    ///
+    /// `recipient` is the sharper number, and the reason the guard below is a
+    /// hard error rather than a warning: **343 of those 344** declare it
+    /// REQUIRED, so an identity-less client cannot dispatch essentially
+    /// anything to a consumer that enforces SPEC §7.2. The proof split falls
+    /// almost exactly along read-versus-mutate — `contexts/list` needs none,
+    /// `contexts/create` does — which is what let the gap survive: the reads a
+    /// client makes first all worked. The one thing it must not
     /// do is attach a proof with no in-band `recipient` — §7.2 item 8 refuses
     /// that on a non-bearer spec — and `build_task_document` sets both from the
     /// same [`ClientIdentity`], so the two cannot come apart.
@@ -2909,6 +2944,100 @@ mod client_identity_tests {
         assert!(
             doc.get("proof").is_some(),
             "a signable identity must yield a proof (item 7a)"
+        );
+    }
+
+    /// The check the hand-written assertions above cannot make: run the
+    /// document the SDK actually builds through **its own specification's**
+    /// policy, the same `SpecPolicy::enforce` the VTA's dispatch spine calls.
+    ///
+    /// This is the test that was missing. Both halves of SPEC §7.2 shipped —
+    /// the VTA began enforcing the flags, and the client began signing — but
+    /// nothing compared one against the other, so a constructor that carried no
+    /// identity produced a document no test rejected and every VTA did. Which
+    /// member it was refused for depended on the transport, which is why the
+    /// same defect was reported twice under two different names: over DIDComm
+    /// the document reaches item 5b first and comes back `malformedRequest: …
+    /// no in-band recipient`, while over TSP `address_trust_task` had already
+    /// filled `recipient` in, so it sailed past 5b and landed on item 7a —
+    /// `proofRequired: proof required but not present`.
+    ///
+    /// Asserting against the registry rather than a list of member names is the
+    /// point: when a spec adds a flag, this test starts checking it without
+    /// being edited.
+    #[tokio::test]
+    async fn the_built_document_satisfies_its_own_specification() {
+        // A mutation and a read. The pair matters: the proof flag falls almost
+        // exactly along that line — `contexts/create` requires one and
+        // `contexts/list` does not — which is why the gap survived long enough
+        // to reach an operator. A client that only ever listed saw nothing
+        // wrong.
+        const URIS: [&str; 3] = [
+            trust_tasks::TASK_CONTEXTS_CREATE_1_0,
+            trust_tasks::TASK_ACL_GRANT_0_1,
+            trust_tasks::TASK_CONTEXTS_LIST_1_0,
+        ];
+
+        let id = identity();
+        let client = VtaClient::new("http://vta.invalid").with_identity(id.clone());
+        let mut saw_proof_required = false;
+
+        for uri in URIS {
+            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri).unwrap_or_else(|| {
+                panic!("{uri} has no published policy — the registry moved under this test")
+            });
+            saw_proof_required |= policy.is_proof_required;
+
+            let doc = client
+                .signed_task_document(uri, serde_json::json!({}))
+                .await
+                .unwrap_or_else(|e| panic!("{uri}: building the document failed: {e}"));
+            let typed: trust_tasks_rs::TrustTask<serde_json::Value> =
+                serde_json::from_value(doc).expect("the built document is a TrustTask");
+
+            policy
+                .enforce(&typed)
+                .unwrap_or_else(|r| panic!("{uri}: the VTA would refuse this document: {r:?}"));
+        }
+
+        // Without this the set could drift to reads only, and the test would
+        // pass while checking nothing about the member that actually broke.
+        assert!(
+            saw_proof_required,
+            "no URI under test requires a proof — this has stopped covering its own case"
+        );
+    }
+
+    /// A signed document must not be re-addressed on its way onto the wire.
+    ///
+    /// `address_trust_task` assigned `issuer` and `recipient` unconditionally,
+    /// after signing. The proof covers both, so any disagreement between the
+    /// document and the transport silently turned a valid signature into
+    /// `proofInvalid` at the far end — a failure that names the proof and says
+    /// nothing about the rewrite that caused it.
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn addressing_refuses_to_rewrite_what_the_proof_covers() {
+        let doc = serde_json::json!({
+            "id": "urn:uuid:1", "type": TYPE,
+            "issuer": "did:key:zIssuer", "recipient": "did:key:zVta",
+            "payload": {}, "proof": { "type": "DataIntegrityProof" },
+        });
+
+        // Agreement is the ordinary case and passes through untouched.
+        let bytes = VtaClient::address_trust_task(doc.clone(), "did:key:zIssuer", "did:key:zVta")
+            .expect("matching addressing is accepted");
+        let out: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        assert_eq!(out["issuer"], "did:key:zIssuer");
+        assert_eq!(out["recipient"], "did:key:zVta");
+
+        // Disagreement is refused, not silently resolved either way.
+        let err = VtaClient::address_trust_task(doc, "did:key:zSomeoneElse", "did:key:zVta")
+            .expect_err("a differing issuer must not be written over a signed document");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("issuer") && msg.contains("proof"),
+            "the error must name the member and why it matters, got: {msg}"
         );
     }
 
