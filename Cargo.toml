@@ -349,7 +349,7 @@ kube = { version = "3.1", default-features = false, features = [
   "client",
   "rustls-tls",
 ] }
-k8s-openapi = { version = "0.27", features = ["latest"] }
+k8s-openapi = { version = "0.28", features = ["latest"] }
 
 # Hoist DID-resolver-cache feature drift: every crate uses 0.8 but a few
 # omit the `network` feature. The default here turns it on; dependents
