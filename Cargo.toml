@@ -320,7 +320,7 @@ dirs = "6"
 hex = "0.4"
 
 # Symmetric crypto helpers used by sealed-transfer + storage encryption.
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 hkdf = "0.13"
 
 # HMAC-SHA256 for vti-common's audit-log actor/target identifier

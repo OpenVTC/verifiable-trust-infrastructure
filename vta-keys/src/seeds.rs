@@ -78,10 +78,10 @@ fn encrypt_archived_seed(
     let cipher = Aes256Gcm::new_from_slice(&kek)
         .map_err(|e| AppError::Internal(format!("archive aes key: {e}")))?;
 
-    use aes_gcm::aead::rand_core::RngCore;
+    use rand::Rng;
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    aes_gcm::aead::OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let nonce = (&nonce_bytes).into();
 
     let aad = archive_aad(seed_id);
     let ciphertext = cipher
@@ -115,11 +115,11 @@ fn decrypt_archived_seed(
     }
     let mut kek = derive_archive_kek(active_seed, salt);
     let cipher = Aes256Gcm::new_from_slice(&kek).ok()?;
-    let nonce = Nonce::from_slice(&blob[..NONCE_LEN]);
+    let nonce = Nonce::try_from(&blob[..NONCE_LEN]).ok()?;
     let aad = archive_aad(seed_id);
     let pt = cipher
         .decrypt(
-            nonce,
+            &nonce,
             aes_gcm::aead::Payload {
                 msg: &blob[NONCE_LEN..],
                 aad: &aad,

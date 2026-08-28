@@ -13,13 +13,13 @@
 
 use std::collections::BTreeMap;
 
-use aes_gcm::aead::rand_core::RngCore;
-use aes_gcm::aead::{Aead, OsRng};
+use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use argon2::Argon2;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use chrono::{DateTime, Utc};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use vti_common::error::AppError;
@@ -443,15 +443,15 @@ fn encrypt_payload_inner(
         .map_err(|e| AppError::Internal(format!("backup serialize: {e}")))?;
 
     let mut salt = [0u8; SALT_LEN];
-    OsRng.fill_bytes(&mut salt);
+    rand::rng().fill_bytes(&mut salt);
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce_bytes);
+    rand::rng().fill_bytes(&mut nonce_bytes);
 
     let key = derive_key(password, &salt, ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST)?;
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|e| AppError::Internal(format!("backup aes key: {e}")))?;
     let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_ref())
+        .encrypt((&nonce_bytes).into(), plaintext.as_ref())
         .map_err(|e| AppError::Internal(format!("backup encrypt: {e}")))?;
 
     Ok(BackupEnvelope {
@@ -554,8 +554,14 @@ pub fn decrypt_backup(
     )?;
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|e| AppError::Internal(format!("backup aes key: {e}")))?;
+    // `try_from`, not the deprecated `from_slice`, which panicked on a wrong
+    // length. The check at the top of this function already rejects that, so
+    // this cannot fail — the point is that it can no longer panic if that
+    // check is ever moved or removed.
+    let nonce = Nonce::try_from(nonce_bytes.as_slice())
+        .map_err(|_| AppError::Validation(format!("nonce must be {NONCE_LEN} bytes")))?;
     let plaintext = cipher
-        .decrypt(Nonce::from_slice(&nonce_bytes), ciphertext.as_ref())
+        .decrypt(&nonce, ciphertext.as_ref())
         .map_err(|_| AppError::Authentication("incorrect backup password".into()))?;
 
     serde_json::from_slice(&plaintext)
