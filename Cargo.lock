@@ -3007,7 +3007,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -8669,9 +8669,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-capability-client"
-version = "0.17.1"
+version = "0.17.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd89e31d13896e945f95674dd36fa7f40607be72434967cfa1fc5954dcc6f5b1"
+checksum = "8b98bc63ee0c95b3d0778aa03264da922cb23cd098326fb7406c8b1bd0fa5550"
 dependencies = [
  "chrono",
  "serde",
@@ -8683,9 +8683,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-didcomm"
-version = "0.17.1"
+version = "0.17.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69b72951b407ef3d30fed0572f108ad72ea9ab969c90b0dc269c46e1e44c5738"
+checksum = "b20a9db1b7be64041806c7b17e8be51c9c26122dacd9c5cbd132c5a742e8f0ab"
 dependencies = [
  "affinidi-messaging-didcomm",
  "base64 0.22.1",
@@ -8699,9 +8699,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-https"
-version = "0.17.1"
+version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e675e8e84f98701f2c5afb28bf20edc5576fa516bb60c5c38080b1cda48f6a0"
+checksum = "941b8f7370e736e8981f2b67d0f4a47ff0bdd5dad4de0af358cb413710dd78ed"
 dependencies = [
  "axum",
  "chrono",
@@ -8718,9 +8718,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-proof"
-version = "0.17.1"
+version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7395dec266796624f255530d5820dd5e1418edf886885f6c9581dc1e634e7bf6"
+checksum = "158491d91a627ff16875f15851c4b9ff08eb38e21427485a838faefe333dc7ba"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -8735,9 +8735,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.17.2"
+version = "0.17.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f532daea6f7b98859b06254aa61d0972bb2da85780ea52743eeb4fe3913e3d8"
+checksum = "41d841bf16638473fed22f94ce446cadcc932afc60ca3f623eef184d546d945b"
 dependencies = [
  "async-trait",
  "chrono",
