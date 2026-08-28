@@ -2,6 +2,55 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.2.0...vta-audit-v0.3.0) — 2026-08-28
+
+
+### Added
+
+- **audit**: Bound the operator reason an audit row keeps ([#1132](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1132))
+
+Framework 0.5.0 requires every free-text member to carry a bound. Most of that
+  is upstream schema work, but one free-text path is this workspace's own and was
+  bounded by nothing: the operator `reason` that `record_with_detail` writes into
+  the audit log.
+
+  The cost here is worse than the wire cost 0.5.0 argues from. The row goes into
+  a hash-chained, append-only log, so an oversized `detail` is permanent and
+  cannot be trimmed later without breaking the chain that makes the log evidence.
+
+  Truncated at 4096 characters rather than rejected, and that choice is the
+  substance: this runs after the operation it records has already happened, so
+  refusing the row would trade an over-long reason for no audit record at all —
+  losing the evidence to protect its formatting. The cut is marked, because a
+  silently shortened reason reads as the operator's own words.
+
+  Cut on a character boundary: byte-slicing panics mid-codepoint, and would do so
+  on the first operator who wrote a reason in a language this workspace did not
+  anticipate.
+
+  The rest of the free-text rule is upstream and already in hand: 1013 of 1067
+  registry free-text members carry no maxLength, and dtgwg-trust-tasks-tf#296 is
+  open across 275 files to fix exactly that. Taking the latest trust-tasks-rs
+  today would not bound free text — 0.14.0 predates it.
+
+
+
+### Chore
+
+- **sdk**: Release vta-sdk 0.30.0 for the added CreateKeyBody field ([#1156](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1156))
+
+`CreateKeyBody` gained a `key_id` field while the crate stayed at 0.29.0.
+  The struct is exhaustively constructible through the public API, so an
+  existing literal no longer compiles — a breaking change under 0.x rules,
+  which the semver report has been flagging as its one real finding
+  (195 pass, 1 fail) since the field landed.
+
+  Bumps the crate and the nineteen intra-workspace requirements that pin it,
+  so `cargo check --workspace` still resolves the path copy and a consumer
+  resolving from the registry gets a version that admits the break.
+
+
+
 ## [0.2.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.1.10...vta-audit-v0.2.0) — 2026-08-26
 
 

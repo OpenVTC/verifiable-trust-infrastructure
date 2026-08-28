@@ -2,6 +2,48 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.31.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.30.0...vta-sdk-v0.31.0) — 2026-08-28
+
+
+### Added
+
+- **credentials**: Move vta/credentials/issue to 0.2 ([#1159](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1159))
+
+The last family behind its latest published spec. Checked against
+  `website/registry.json` rather than the schema files on disk: every other
+  implemented family is already on the newest published version.
+
+  0.1 and 0.2 have identical payloads. The response differs only in how it is
+  written — 0.2 composes it from `credentials/_shared/0.2`'s
+  `IssuedCredentialBase` instead of restating the members inline, which is
+  what stops the two drifting. The composition brings one new member,
+  `issuedAt`.
+
+  That member costs nothing to fill: `IssuedCredentialRecord` has carried
+  `issued_at` since the family existed, and 0.1 simply had nowhere to put it,
+  so the value was being computed, stored, and then dropped on the way out.
+  It stays `Option` on our side because the shared definition declares it
+  optional — a response without it is schema-valid and must still
+  deserialize — but the VTA always sends it.
+
+  The conformance sweep caught something on the way through, which is what it
+  is for. Its drifted-witness check asserts the generated type rejects an
+  unknown member, and 0.2's response type does not: closing a composed object
+  requires `unevaluatedProperties` (`additionalProperties` is evaluated
+  per-subschema and would reject the `allOf`-supplied members), and
+  trust-tasks-codegen maps only `additionalProperties: false` onto
+  `deny_unknown_fields`. So the generated struct is permissive where 0.1's
+  was strict.
+
+  The wire is unaffected — the schema itself is strict, so `validate_payload`
+  still rejects the member. What is lost is the type-level guard, which makes
+  the drifted-witness check pass vacuously. Recorded in
+  `PERMISSIVE_GENERATED_TYPE` with its reason and skipped rather than left to
+  give false assurance. The fix belongs in the codegen; deleting the entry
+  re-arms the check.
+
+
+
 ## [0.29.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.28.0...vta-sdk-v0.29.0) — 2026-08-26
 
 
