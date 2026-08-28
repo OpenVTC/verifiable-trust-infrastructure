@@ -65,9 +65,9 @@ jobs:
             # a user boundary. Asserting non-root here would be wrong.
             expect_non_root: false
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # Deliberately NO build cache — neither `type=gha` nor actions/cache.
       # GitHub's Actions cache is a single ~10 GB allowance shared across the
@@ -77,7 +77,7 @@ jobs:
       # the runner out of disk. Path-filtering this job is the cheaper lever —
       # it makes the build rare rather than making it fast.
       - name: Build image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.file }}

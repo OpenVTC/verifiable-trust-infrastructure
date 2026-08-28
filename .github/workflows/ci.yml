@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -97,7 +97,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           # `target/` is deliberately NOT cached. Every crate in this
           # workspace is a **path** dependency, so a source-only change does not
@@ -133,7 +133,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # `cargo test --workspace` builds a test binary for every crate with
       # full debuginfo, and the total (target/ plus the linker's scratch)
@@ -192,7 +192,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           # `target/` is deliberately NOT cached. Every crate in this
           # workspace is a **path** dependency, so a source-only change does not
@@ -225,7 +225,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -269,7 +269,7 @@ jobs:
         with:
           components: clippy
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           # `target/` is deliberately NOT cached. Every crate in this
           # workspace is a **path** dependency, so a source-only change does not
@@ -299,7 +299,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -316,7 +316,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Same reclaim as the Test job, and for the same reason: this job
       # also links the whole workspace. It ran out of disk mid-`cargo
@@ -376,7 +376,7 @@ jobs:
         with:
           toolchain: ${{ steps.msrv.outputs.msrv }}
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           # `target/` is deliberately NOT cached here any more.
           #
@@ -417,7 +417,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans sources licenses
@@ -486,7 +486,7 @@ jobs:
     timeout-minutes: 45
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -631,7 +631,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Lockfile self-pin guard
         run: bash scripts/check-lockfile-self-pins.sh
 
@@ -643,7 +643,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -685,7 +685,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           # `target/` is deliberately NOT cached. Every crate in this
           # workspace is a **path** dependency, so a source-only change does not
@@ -839,7 +839,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -881,7 +881,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           # `target/` is deliberately NOT cached. Every crate in this
           # workspace is a **path** dependency, so a source-only change does not
@@ -919,7 +919,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -929,7 +929,7 @@ jobs:
         with:
           tool: cargo-ndk
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           # `target/` is deliberately NOT cached. Every crate in this
           # workspace is a **path** dependency, so a source-only change does not

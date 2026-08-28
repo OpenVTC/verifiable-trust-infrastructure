@@ -51,7 +51,7 @@ jobs:
       # See docs/05-design-notes/trusted-publishing.md.
       id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Full history + tags: release-plz diffs each crate against the
           # commit its last release was tagged at.
@@ -127,7 +127,7 @@ jobs:
       group: release-plz-${{ github.ref }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
