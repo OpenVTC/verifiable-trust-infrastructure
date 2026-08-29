@@ -2,6 +2,53 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.2.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.2.3...vta-keyspaces-v0.2.4) — 2026-08-29
+
+
+### Added
+
+- **vta**: Cascade, refuse and revoke when a DID is deleted ([#1198](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1198))
+
+`dids delete` removed the daemon-side DID, the local webvh record and log, and
+  the DID's keys. Nothing else. ACL entries, issued credentials, sessions and
+  per-DID state were left behind.
+
+  That is the VTC's ACL-revoke orphan (#1194, #1196) one level up: a surface
+  owning part of a multi-part identity and knowing nothing about the rest. There
+  it produced a live member row with no authorization and credentials that still
+  verified for anyone holding them, found in production. The VTA had the same
+  shape and had not been asked the question yet.
+
+  Deleting a DID is four relationships, not one, and treating them alike gets one
+  wrong in a way nobody notices until it matters:
+
+  - what the DID **owns** goes with it;
+  - what **names it as a subject of authorization** must go with it, or it
+    becomes authority for an identity that can no longer be resolved or rotated;
+  - what **depends on it to function** must stop the deletion, because cascading
+    would silently break it;
+  - what the VTA **issued** cannot be deleted at all, because third parties hold
+    copies — so the only honest action is revocation.
+
+  The fourth is the one most likely to be got wrong, because it looks most like a
+  cascade. Deleting our record of an issued credential does not invalidate the
+  copies; it destroys the only means of revoking them.
+
+  This implements the three decisions taken on that model. A deletion revokes the
+  credentials it cannot destroy. A dependency refuses the deletion and names the
+  command that unpicks it, rather than cascading through something still in use.
+  There is no `--force` — the same call as `would_violate_last_service`, for the
+  same reason.
+
+  Revocation runs first, before any deletion, remote or local. If a later step
+  fails the credentials are already dead and the DID still exists, which is
+  recoverable by re-running; the other order leaves live credentials for a DID
+  nobody can revoke through any more. When a partial failure is possible, the
+  state that survives should be the over-restrictive one. The preflight is
+  read-only, so a refusal leaves the VTA exactly as it found it.
+
+
+
 ## [0.2.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.2.2...vta-keyspaces-v0.2.3) — 2026-08-29
 
 

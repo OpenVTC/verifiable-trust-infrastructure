@@ -2,6 +2,41 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.32.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.32.0...vta-sdk-v0.32.1) — 2026-08-29
+
+
+### Fixed
+
+- **sdk**: Dispatch provision/integration 0.3 on every transport, not just REST ([#1200](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1200))
+
+#1147 cut provision-integration over to 0.3 and removed 0.2 outright — 0.2
+  requires a bare-hex `digest` and forbids the `digestMultibase` 0.3 requires, and
+  both close their response with `additionalProperties: false`, so no single
+  response satisfies the two. The server moved, the REST runner moved, and the
+  response-parsing side moved. The other three dispatch sites did not:
+
+  | site | asked for |
+  |---|---|
+  | `provision_client/runner_tsp` | `0.2` (trust-task spine) |
+  | `provision_client/runner_didcomm` ×2 | `0.1` (DIDComm protocol message) |
+  | `client/bootstrap` DIDComm arm | `0.1` |
+
+  Each held its own literal, and each was correct on the day it was written — TSP
+  and DIDComm genuinely addressed different versions of this operation before the
+  cut-over collapsed them onto one URI. So nothing looked wrong, and nothing
+  failed in CI: both halves were internally consistent. What shipped is a VTA that
+  can only be provisioned over REST. Every TSP and DIDComm attempt returns
+
+      trust task failed [unsupportedType]: unsupported type:
+      https://trusttasks.org/spec/provision/integration/0.2
+
+  against a VTA that is otherwise healthy — and it surfaces as a `PostAuthFailure`
+  *after* auth succeeds, so the runner reports it as terminal and never falls back
+  to the REST leg that would have worked. OpenVTC's setup wizard prefers TSP, so
+  this is every fresh OpenVTC install.
+
+
+
 ## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.31.1...vta-sdk-v0.32.0) — 2026-08-29
 
 

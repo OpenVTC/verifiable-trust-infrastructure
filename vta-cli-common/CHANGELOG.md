@@ -2,6 +2,27 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.12.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.12.1...vta-cli-common-v0.12.2) — 2026-08-29
+
+
+### Fixed
+
+- **vta**: Refuse a malformed DID instead of reporting it missing ([#1195](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1195))
+
+`pnm did-mgmt dids delete <did>` answered `webvh DID not found` for a DID
+  that was sitting in the registry. The argument was the problem: it had been
+  copied out of the `dids list` table, which elides the middle of the SCID, so
+  it carried a literal `…` (U+2026). The store was asked for a DID that does not
+  exist and said so, accurately.
+
+  Accurately, and misleadingly. "Not found" is a claim about the world — it says
+  the DID is not here — so it sends the reader looking for something deleted
+  rather than at what they typed. It cost two people an hour and a wrong
+  diagnosis each: one concluded an earlier command had removed the DID, the
+  other that the VTA had never hosted it. Neither was true.
+
+
+
 ## [0.12.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.12.0...vta-cli-common-v0.12.1) — 2026-08-29
 
 

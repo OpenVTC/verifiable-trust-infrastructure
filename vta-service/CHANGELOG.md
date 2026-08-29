@@ -2,6 +2,136 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.23.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.23.0...vta-service-v0.23.1) — 2026-08-29
+
+
+### Added
+
+- **vta**: Show what a DID deletion would destroy, and ask first ([#1199](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1199))
+
+Deleting a DID is irreversible and, since #1198, also *revokes* — credentials
+  in other people's wallets stop being good and no undo puts them back. It did
+  that with no warning and no confirmation.
+
+  `plan_did_deletion` computes what a deletion would do without doing any of it,
+  and the deletion consults the same plan. One function, both callers: a preview
+  computed separately agrees with the deletion only for as long as somebody keeps
+  the two agreeing, and a preview that under-reports is worse than no preview,
+  because it is a promise the operator acted on. The read halves of the credential
+  and session scans are now shared with the write halves for the same reason.
+
+  The offline `vta did-mgmt dids delete` renders the plan and prompts, following
+  the `contexts delete` precedent beside it.
+
+  Credentials are listed **by id**, not counted. An operator deciding whether to
+  proceed is deciding about *those* credentials, and "3 will be revoked" cannot be
+  checked against what they expected — which is the only question a confirmation
+  prompt actually asks.
+
+  `--force` skips the prompt. It does not skip the blockers: a DID something
+  still depends on is refused inside the operation regardless, and that refusal
+  still has no override. Those are different things and the flag name is the
+  obvious place to confuse them, so both the help text and the code say which one
+  it is.
+
+  A plan that touches nothing beyond the DID's own records does not prompt. The
+  ceremony is for consequences, not for deletions.
+
+  The **online** path still has no preview, and this does not invent one. A
+  server-side preview needs a published `webvh/dids/preview-delete` URI, and a
+  new Trust Task family cannot be dispatched until its schema lands in
+  trustoverip/dtgwg-trust-tasks-tf and trust-tasks-rs bumps.
+  `vta/contexts/preview-delete/1.0` is the precedent to copy; the spec PR is the
+  prerequisite, not something to route around.
+
+- **vta**: Cascade, refuse and revoke when a DID is deleted ([#1198](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1198))
+
+`dids delete` removed the daemon-side DID, the local webvh record and log, and
+  the DID's keys. Nothing else. ACL entries, issued credentials, sessions and
+  per-DID state were left behind.
+
+  That is the VTC's ACL-revoke orphan (#1194, #1196) one level up: a surface
+  owning part of a multi-part identity and knowing nothing about the rest. There
+  it produced a live member row with no authorization and credentials that still
+  verified for anyone holding them, found in production. The VTA had the same
+  shape and had not been asked the question yet.
+
+  Deleting a DID is four relationships, not one, and treating them alike gets one
+  wrong in a way nobody notices until it matters:
+
+  - what the DID **owns** goes with it;
+  - what **names it as a subject of authorization** must go with it, or it
+    becomes authority for an identity that can no longer be resolved or rotated;
+  - what **depends on it to function** must stop the deletion, because cascading
+    would silently break it;
+  - what the VTA **issued** cannot be deleted at all, because third parties hold
+    copies — so the only honest action is revocation.
+
+  The fourth is the one most likely to be got wrong, because it looks most like a
+  cascade. Deleting our record of an issued credential does not invalidate the
+  copies; it destroys the only means of revoking them.
+
+  This implements the three decisions taken on that model. A deletion revokes the
+  credentials it cannot destroy. A dependency refuses the deletion and names the
+  command that unpicks it, rather than cascading through something still in use.
+  There is no `--force` — the same call as `would_violate_last_service`, for the
+  same reason.
+
+  Revocation runs first, before any deletion, remote or local. If a later step
+  fails the credentials are already dead and the DID still exists, which is
+  recoverable by re-running; the other order leaves live credentials for a DID
+  nobody can revoke through any more. When a partial failure is possible, the
+  state that survives should be the over-restrictive one. The preflight is
+  read-only, so a refusal leaves the VTA exactly as it found it.
+
+
+
+### Fixed
+
+- **sdk**: Dispatch provision/integration 0.3 on every transport, not just REST ([#1200](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1200))
+
+#1147 cut provision-integration over to 0.3 and removed 0.2 outright — 0.2
+  requires a bare-hex `digest` and forbids the `digestMultibase` 0.3 requires, and
+  both close their response with `additionalProperties: false`, so no single
+  response satisfies the two. The server moved, the REST runner moved, and the
+  response-parsing side moved. The other three dispatch sites did not:
+
+  | site | asked for |
+  |---|---|
+  | `provision_client/runner_tsp` | `0.2` (trust-task spine) |
+  | `provision_client/runner_didcomm` ×2 | `0.1` (DIDComm protocol message) |
+  | `client/bootstrap` DIDComm arm | `0.1` |
+
+  Each held its own literal, and each was correct on the day it was written — TSP
+  and DIDComm genuinely addressed different versions of this operation before the
+  cut-over collapsed them onto one URI. So nothing looked wrong, and nothing
+  failed in CI: both halves were internally consistent. What shipped is a VTA that
+  can only be provisioned over REST. Every TSP and DIDComm attempt returns
+
+      trust task failed [unsupportedType]: unsupported type:
+      https://trusttasks.org/spec/provision/integration/0.2
+
+  against a VTA that is otherwise healthy — and it surfaces as a `PostAuthFailure`
+  *after* auth succeeds, so the runner reports it as terminal and never falls back
+  to the REST leg that would have worked. OpenVTC's setup wizard prefers TSP, so
+  this is every fresh OpenVTC install.
+
+- **vta**: Refuse a malformed DID instead of reporting it missing ([#1195](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1195))
+
+`pnm did-mgmt dids delete <did>` answered `webvh DID not found` for a DID
+  that was sitting in the registry. The argument was the problem: it had been
+  copied out of the `dids list` table, which elides the middle of the SCID, so
+  it carried a literal `…` (U+2026). The store was asked for a DID that does not
+  exist and said so, accurately.
+
+  Accurately, and misleadingly. "Not found" is a claim about the world — it says
+  the DID is not here — so it sends the reader looking for something deleted
+  rather than at what they typed. It cost two people an hour and a wrong
+  diagnosis each: one concluded an earlier command had removed the DID, the
+  other that the VTA had never hosted it. Neither was true.
+
+
+
 ## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.22.0...vta-service-v0.23.0) — 2026-08-29
 
 
