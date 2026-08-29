@@ -78,6 +78,31 @@ change is most likely to get wrong:
 - `audit` is **never** cascaded — the record that a DID was deleted is the one
   thing that must survive deleting it.
 
+## Preview and confirm
+
+Deletion is irreversible and now also *revokes* — credentials in other people's
+wallets stop being good, and no undo puts them back. So the operator sees the
+plan first.
+
+`plan_did_deletion` is read-only and returns the same plan the deletion acts
+on. One function, both callers: a preview computed separately would agree with
+the deletion only as long as somebody kept the two agreeing, and a preview that
+under-reports is worse than none, because it is a promise the operator acted
+on.
+
+Credentials are listed **by id**, not counted. Someone deciding whether to
+proceed is deciding about *those* credentials, and "3 will be revoked" cannot be
+checked against what they expected — which is the only question a confirmation
+prompt actually asks.
+
+`--force` skips the *prompt*. It does not skip the blockers: those are refused
+inside the operation regardless, and still have no override. The two are
+different things and the flag name is the obvious place to confuse them, so it
+says so.
+
+A plan that touches nothing beyond the DID's own records does not prompt at
+all. The ceremony is for consequences, not for deletions.
+
 ## A caller that cannot cascade cannot delete
 
 `WebvhDeps::delete_cascade` is `None` on the paths that only read or publish.
@@ -87,9 +112,13 @@ construction site can opt into by omission.
 
 ## Not done yet
 
-- **Preview/confirm.** Deletion is irreversible and now also revokes. The
-  operator should see what is about to be destroyed and revoked before it
-  happens, in the shape backup import's descriptor flow already uses.
+- **Preview/confirm on the *online* path.** The offline `vta did-mgmt dids
+  delete` now shows the plan and prompts (see below). The Trust Task surface
+  cannot yet: there is no published `webvh/dids/preview-delete` URI, and a new
+  Trust Task family cannot be dispatched until its schema lands in
+  `trustoverip/dtgwg-trust-tasks-tf` and `trust-tasks-rs` bumps.
+  `vta/contexts/preview-delete/1.0` is the precedent to copy, and a spec PR is
+  the prerequisite — not something to work around by inventing a URI.
 - **The remaining cascades.** Classified but not yet executed: vault, consent,
   task_consent, app_state, memory, outbox, cache, passkey_vms, imported_secrets.
   The census names them; the code does not clear them yet.

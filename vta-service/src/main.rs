@@ -860,6 +860,11 @@ enum WebvhCommands {
     DeleteDid {
         /// The DID to delete
         did: String,
+        /// Skip the confirmation prompt. Skips the *prompt* only — a DID
+        /// something still depends on is refused regardless, and that refusal
+        /// has no override.
+        #[arg(long)]
+        force: bool,
     },
     /// Print the raw `did.jsonl` log for a webvh DID the VTA knows.
     ///
@@ -1082,6 +1087,11 @@ enum DidMgmtDidCommands {
     Delete {
         /// The DID to delete.
         did: String,
+        /// Skip the confirmation prompt. Skips the *prompt* only — a DID
+        /// something still depends on is refused regardless, and that refusal
+        /// has no override.
+        #[arg(long)]
+        force: bool,
     },
     /// Print the raw `did.jsonl` log for a DID the VTA knows.
     ///
@@ -1165,7 +1175,9 @@ impl From<DidMgmtCommands> for WebvhCommands {
                 DidMgmtDidCommands::List { context, server } => {
                     WebvhCommands::ListDids { context, server }
                 }
-                DidMgmtDidCommands::Delete { did } => WebvhCommands::DeleteDid { did },
+                DidMgmtDidCommands::Delete { did, force } => {
+                    WebvhCommands::DeleteDid { did, force }
+                }
                 DidMgmtDidCommands::GetLog { did, out } => WebvhCommands::DidLog { did, out },
             },
         }
@@ -2389,7 +2401,9 @@ async fn run_webvh_dispatch(config_path: Option<PathBuf>, command: WebvhCommands
         WebvhCommands::ListDids { context, server } => {
             webvh_cli::run_list_dids(config_path, context, server).await
         }
-        WebvhCommands::DeleteDid { did } => webvh_cli::run_delete_did(config_path, did).await,
+        WebvhCommands::DeleteDid { did, force } => {
+            webvh_cli::run_delete_did(config_path, did, force).await
+        }
         WebvhCommands::DidLog { did, out } => webvh_cli::run_did_log(config_path, did, out).await,
         WebvhCommands::EditDid {
             did,

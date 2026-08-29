@@ -1515,7 +1515,7 @@ pub async fn delete_did_webvh(
     // "operator errors should suggest the fix" convention. There is no
     // `--force`: the same call as `would_violate_last_service`, for the same
     // reason — the escape hatch is what gets used at 2am.
-    let blockers = delete_blockers(deps, auth, did, vta_did).await?;
+    let blockers = plan_did_deletion(deps, auth, did, vta_did).await?.blockers;
     if !blockers.is_empty() {
         return Err(AppError::Conflict(format!(
             "{did} cannot be deleted — {} still depend{} on it:\n{}",
@@ -1638,6 +1638,68 @@ pub async fn delete_did_webvh(
     })
 }
 
+/// What deleting `did` would do, computed without doing any of it.
+///
+/// One plan, produced by one function, used by both the preview and the
+/// deletion. The alternative — a preview that walks the state and a delete that
+/// walks it again — is two implementations of the same question that agree only
+/// as long as somebody keeps them agreeing. A preview that under-reports is
+/// worse than no preview: it is a promise the operator acted on.
+#[derive(Debug, Default)]
+pub struct DidDeletionPlan {
+    /// Things that still depend on the DID. Non-empty means the deletion is
+    /// refused; each line names the command that unpicks it.
+    pub blockers: Vec<String>,
+    /// Ids of credentials the VTA issued to this DID that would be revoked.
+    /// Named individually rather than counted: an operator deciding whether to
+    /// proceed is deciding about *these*, and a number cannot be checked
+    /// against what they expected.
+    pub credentials_to_revoke: Vec<String>,
+    /// How many live sessions would be ended.
+    pub sessions_to_revoke: usize,
+    /// Whether an ACL entry names this DID, and would go with it.
+    pub has_acl_entry: bool,
+}
+
+impl DidDeletionPlan {
+    /// Whether this deletion would destroy or revoke anything beyond the DID's
+    /// own records. Drives whether the CLI bothers to prompt — deleting a DID
+    /// nothing else touches does not need a ceremony.
+    #[must_use]
+    pub fn touches_anything_else(&self) -> bool {
+        !self.credentials_to_revoke.is_empty() || self.sessions_to_revoke > 0 || self.has_acl_entry
+    }
+}
+
+/// Compute what deleting `did` would do. Read-only: no writes, so a caller may
+/// run this to show an operator, and a refusal leaves the VTA untouched.
+pub async fn plan_did_deletion(
+    deps: &WebvhDeps<'_>,
+    auth: &AuthClaims,
+    did: &str,
+    vta_did: Option<&str>,
+) -> Result<DidDeletionPlan, AppError> {
+    let blockers = delete_blockers(deps, auth, did, vta_did).await?;
+
+    // Without the cascade keyspaces there is nothing further to report — and
+    // the deletion itself will refuse for the same reason.
+    let Some(cascade) = deps.delete_cascade.as_ref() else {
+        return Ok(DidDeletionPlan {
+            blockers,
+            ..Default::default()
+        });
+    };
+
+    Ok(DidDeletionPlan {
+        blockers,
+        credentials_to_revoke: credentials_issued_to(cascade.issued_credentials_ks, did).await?,
+        sessions_to_revoke: sessions_for_did(cascade.sessions_ks, did).await?.len(),
+        has_acl_entry: vti_common::acl::get_acl_entry(cascade.acl_ks, did)
+            .await?
+            .is_some(),
+    })
+}
+
 /// Everything that still depends on `did`, as operator-facing lines naming the
 /// command that unpicks each one.
 ///
@@ -1672,6 +1734,49 @@ async fn delete_blockers(
 
     let _ = auth;
     Ok(blockers)
+}
+
+/// Ids of the not-yet-revoked credentials the VTA issued to `did`.
+///
+/// The read half of [`revoke_credentials_for_did`], so the preview reports
+/// exactly the set the deletion will act on rather than its own approximation
+/// of it.
+async fn credentials_issued_to(
+    issued_credentials_ks: &KeyspaceHandle,
+    did: &str,
+) -> Result<Vec<String>, AppError> {
+    use crate::operations::credentials::IssuedCredentialRecord;
+
+    let mut ids = Vec::new();
+    for (_key, raw) in issued_credentials_ks
+        .prefix_iter_raw(b"cred:".to_vec())
+        .await?
+    {
+        let Ok(record) = serde_json::from_slice::<IssuedCredentialRecord>(&raw) else {
+            continue;
+        };
+        if record.holder == did && record.revoked_at.is_none() {
+            ids.push(record.id);
+        }
+    }
+    Ok(ids)
+}
+
+/// The live sessions held by `did`.
+///
+/// The read half of [`revoke_sessions_for_did`], for the same reason.
+async fn sessions_for_did(
+    sessions_ks: &KeyspaceHandle,
+    did: &str,
+) -> Result<Vec<String>, AppError> {
+    use vti_common::auth::session::list_sessions;
+
+    Ok(list_sessions(sessions_ks)
+        .await?
+        .into_iter()
+        .filter(|s| s.did == did)
+        .map(|s| s.session_id)
+        .collect())
 }
 
 /// Revoke every credential the VTA issued to `did`, returning how many moved.
@@ -1719,16 +1824,13 @@ async fn revoke_sessions_for_did(
     sessions_ks: &KeyspaceHandle,
     did: &str,
 ) -> Result<usize, AppError> {
-    use vti_common::auth::session::{delete_session, list_sessions};
+    use vti_common::auth::session::delete_session;
 
-    let mut revoked = 0usize;
-    for session in list_sessions(sessions_ks).await? {
-        if session.did == did {
-            delete_session(sessions_ks, &session.session_id).await?;
-            revoked += 1;
-        }
+    let ids = sessions_for_did(sessions_ks, did).await?;
+    for session_id in &ids {
+        delete_session(sessions_ks, session_id).await?;
     }
-    Ok(revoked)
+    Ok(ids.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -2404,6 +2506,64 @@ mod delete_cascade_tests {
             .unwrap()
             .expect("record present");
         serde_json::from_slice(&raw).unwrap()
+    }
+
+    /// The preview reports exactly the set the deletion acts on.
+    ///
+    /// One plan, one function, both callers. A preview computed separately from
+    /// the deletion agrees only as long as somebody keeps the two agreeing —
+    /// and a preview that under-reports is worse than none, because it is a
+    /// promise the operator acted on.
+    #[tokio::test]
+    async fn the_plan_names_the_credentials_the_deletion_would_revoke() {
+        let (ks, _dir) = credential_ks();
+        seed(&ks, "a", "did:key:zGone", None).await;
+        seed(&ks, "b", "did:key:zGone", None).await;
+        seed(&ks, "c", "did:key:zStays", None).await;
+        seed(&ks, "d", "did:key:zGone", Some("2026-02-02T00:00:00Z")).await;
+
+        let mut planned = credentials_issued_to(&ks, "did:key:zGone").await.unwrap();
+        planned.sort();
+        assert_eq!(
+            planned,
+            vec!["a".to_string(), "b".to_string()],
+            "an already-revoked credential is not offered up for revoking again, and \
+             another holder's is not in scope at all"
+        );
+
+        // And the deletion moves exactly that many.
+        let revoked = revoke_credentials_for_did(&ks, "did:key:zGone")
+            .await
+            .unwrap();
+        assert_eq!(revoked, planned.len());
+    }
+
+    /// A DID nothing else touches needs no ceremony — the prompt is for
+    /// consequences, not for deletions.
+    #[test]
+    fn a_plan_that_touches_nothing_else_needs_no_confirmation() {
+        assert!(!DidDeletionPlan::default().touches_anything_else());
+        assert!(
+            DidDeletionPlan {
+                has_acl_entry: true,
+                ..Default::default()
+            }
+            .touches_anything_else()
+        );
+        assert!(
+            DidDeletionPlan {
+                credentials_to_revoke: vec!["a".into()],
+                ..Default::default()
+            }
+            .touches_anything_else()
+        );
+        assert!(
+            DidDeletionPlan {
+                sessions_to_revoke: 1,
+                ..Default::default()
+            }
+            .touches_anything_else()
+        );
     }
 
     /// Credentials issued to the deleted DID are revoked — and *only* those.
