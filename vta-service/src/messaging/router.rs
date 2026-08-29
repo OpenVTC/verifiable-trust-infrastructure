@@ -546,10 +546,14 @@ pub async fn dispatch(
     // ── Provision-integration (webvh) ────────────────────────────────
     #[cfg(feature = "webvh")]
     {
-        // 0.3 only, matching the Trust-Task dispatcher: the response carries
-        // `digestMultibase`, which 0.1's and 0.2's closed response schemas
-        // reject.
-        if t == provision_integration_management::CANONICAL_PROVISION_INTEGRATION_0_3 {
+        // One version only, matching the Trust-Task dispatcher: the response
+        // carries `digestMultibase`, which 0.1's and 0.2's closed response
+        // schemas reject. Read from `CURRENT` rather than pinned to the 0.3
+        // constant so that the URI this accepts, the URI the handler answers
+        // under, and the URI vta-sdk's clients dispatch are one knob — the
+        // 0.3 cut-over moved two of those three and left provisioning broken
+        // on both counts.
+        if t == provision_integration_management::ProvisionSpecVersion::CURRENT.request_uri() {
             return finish(
                 handlers::handle_provision_integration(ctx, msg, Extension(vta_state)).await,
             );
