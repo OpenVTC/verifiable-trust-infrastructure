@@ -32,9 +32,12 @@ pub struct UpdatePlan {
 
     /// Update keys authorized to sign before this update.
     pub prior_update_keys: Vec<String>,
-    /// Update keys that would be authorized after it. Differs from
-    /// `prior_update_keys` whenever the document changes — that rotation is the
-    /// consequence the payload does not mention.
+    /// Update keys that would be authorized after it. A document change rotates
+    /// them — that rotation is the consequence the payload does not mention.
+    ///
+    /// One exception: the entry that *activates* pre-rotation leaves them in
+    /// place, because from that entry on the next update is authorized by the
+    /// key committed in `new_next_key_hashes`, not by anything minted here.
     pub new_update_keys: Vec<String>,
 
     /// Pre-rotation commitments the update would publish.
@@ -101,7 +104,7 @@ impl UpdatePlan {
             effects.push(
                 Effect::new(
                     "keyRotation",
-                    "Rotates this DID's update key. Any change to the document rotates it — the \
+                    "Rotates this DID's update key. A change to the document rotates it — the \
                      current update key stops being able to authorize further changes.",
                 )
                 .before(json!(self.prior_update_keys))
