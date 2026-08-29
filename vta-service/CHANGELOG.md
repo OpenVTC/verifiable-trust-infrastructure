@@ -2,6 +2,96 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.22.0...vta-service-v0.23.0) — 2026-08-29
+
+
+### Added
+
+- **sdk**: Any DID that names a key may sign a Trust Task ([#1193](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1193))
+
+A Trust Task proof could only be made by a `did:key`. That was never a policy
+  anyone chose — it was the shape of two helpers, and it meant a provisioned
+  integration could not dispatch any of the 210 proof-requiring Trust Tasks, over
+  any transport, because every DID this workspace provisions is a `did:webvh`.
+
+  The rule is now the obvious one: **any DID that can name a key may sign**. The
+  DID method is not the authorization; resolving the verification method and
+  checking the signature is. `did:key:z6Mk…#z6Mk…`,
+  `did:webvh:<scid>:example.com:glenn#key-0` and `did:web:example.com#key-1` are
+  all ordinary holders.
+
+  What actually stood in the way:
+
+  The signer took `(holder_did, private_key)` and *derived* the verification
+  method as `<did>#<multibase>`. That derivation exists only for `did:key`, whose
+  key is its identifier — a `did:webvh` document decides what its keys are
+  called, so nothing can guess `#key-0`. A signer that takes only a DID
+  structurally cannot serve any other method. `HolderKey` now carries the
+  verification method; `HolderKey::from_did_key` keeps the derivation for the one
+  method that has one, and refuses to invent one for the others.
+
+  The verifier used `DidKeyResolver`, which refuses everything else.
+  `TrustTaskVmResolver` resolves `did:key` locally and any other method through
+  the configured DID cache, matching a proof's absolute `verificationMethod`
+  against a document that may name it relatively. It is hoisted from the
+  equivalent the VTC already had for credential verification.
+
+  `ClientIdentity` gains `verification_method`, and `connect_didcomm_bundle{,_on}`
+  build an identity from the bundle's own Ed25519 `SecretEntry` — whose `key_id`
+  *is* the verification method the DID document publishes, so nothing is guessed.
+  Those constructors passed `identity: None` deliberately; that reason is gone.
+
+  Every verifying call site now takes a resolver: the VTA's dispatch spine, REST
+  login, step-up and consent; the VTC's dispatch, REST login and relationships.
+  Threading it is the half that makes the signer change real.
+
+- **device**: Let a device correct its display name on the heartbeat ([#1191](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1191))
+
+`displayName` was written exactly once, at registration, and nothing in the
+  device family could change it. `device/register` is intentionally not
+  idempotent — a binding hangs off the caller's ACL entry, one per DID, and a
+  second claim is refused with `device/register:alreadyRegistered` — so a
+  renamed machine, or an install moved to another profile, kept announcing a
+  name that no longer identified it. The spec is explicit that `displayName`
+  exists "to help a human pick their own laptop out of a list", which is the
+  thing that degrades.
+
+  Heartbeat is where the spec already puts metadata drift: `platform` is
+  defined there as "updated platform descriptor if it changed since
+  registration". `ext` is the slot it provides for the rest, so a device now
+  sends `org.openvtc.device-name: { displayName }` and the VTA applies it.
+
+  Nothing about the register refusal moves. The binding, its `deviceId` and
+  its `registeredAt` are untouched, no new binding can be claimed this way,
+  and the entry `version` does not bump: a rename is metadata, and the spec
+  forbids `displayName` being used as a security input by anything that
+  renders it, so no policy decision can turn on it. The entry is fetched by
+  `auth.did`, so a device can only correct the binding it authenticated as.
+
+  A malformed extension is **ignored, not rejected**. A heartbeat's real job
+  is refreshing `lastSeenAt`, and failing the call over a bad name would make
+  a device with a client-side bug look offline — the more expensive error,
+  because it is the one that sends an operator after a machine that is running
+  fine. The 1..=128 bound the untyped `ext` slot cannot inherit from the
+  register schema is enforced here instead.
+
+  The extension key is defined once, in the SDK that produces it, and imported
+  by the service that honours it — the two sides otherwise agree by string,
+  and a typo on either would be a rename that silently never happens.
+
+  `device_heartbeat_named` is a new method rather than a wider
+  `device_heartbeat`: this crate is consumed across repositories, and
+  widening a public signature would spend a breaking release on a diagnostic
+  field. The new `ext` member on `DeviceHeartbeatBody` is still a public-field
+  addition, so this is a **minor** for `vta-sdk`, not a patch — nothing in the
+  workspace or in OpenVTC constructs that struct, but the semver report will
+  name it and the release should follow it.
+
+  A VTA that does not understand the extension ignores it (SPEC §4.5.1): the
+  heartbeat still refreshes liveness and the name stays as it was.
+
+
+
 ## [0.22.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.21.0...vta-service-v0.22.0) — 2026-08-28
 
 

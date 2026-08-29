@@ -24,7 +24,7 @@ config-session = ["vta-sdk/config-session"]
 # accept-all on connect (`vta_sdk::acl_setup::set_client_acl_on_connection`).
 # Without it the MCP server's ACL is never configured and the mediator silently
 # drops message types it was not told to accept.
-vta-sdk = { path = "../vta-sdk", version = "0.31", features = ["client", "session", "sealed-transfer", "didcomm", "vp", "crypto-provider", "acl-setup"] }
+vta-sdk = { path = "../vta-sdk", version = "0.32", features = ["client", "session", "sealed-transfer", "didcomm", "vp", "crypto-provider", "acl-setup"] }
 # `elicitation` is what lets the bridge put a destructive operation back in
 # front of a human. An MCP host approves a *tool*; once `vta_call` is approved,
 # every Trust Task URI rides that one approval, so per-operation consent has to

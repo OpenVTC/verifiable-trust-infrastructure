@@ -2,7 +2,7 @@
 name = "vta-sweepers"
 description = "Background TTL sweepers for the VTA's core keyspaces — ACL grant expiry, pending-consent expiry, and soft-deleted-vault purge"
 readme = "README.md"
-version = "0.3.1"
+version = "0.3.2"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -20,7 +20,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.15" }
+vti-common = { path = "../vti-common", version = "0.16" }
 vta-audit = { path = "../vta-audit", version = "0.3" }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.2" }
 vta-vault = { path = "../vta-vault", version = "0.5" }

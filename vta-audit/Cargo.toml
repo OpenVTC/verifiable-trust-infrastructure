@@ -2,7 +2,7 @@
 name = "vta-audit"
 description = "Structured audit logging for the VTA — the `audit!` tracing macro plus the audit-keyspace persistence helpers"
 readme = "README.md"
-version = "0.3.0"
+version = "0.3.1"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -20,8 +20,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.15" }
-vta-sdk = { path = "../vta-sdk", version = "0.31" }
+vti-common = { path = "../vti-common", version = "0.16" }
+vta-sdk = { path = "../vta-sdk", version = "0.32" }
 async-trait = "0.1"
 tracing = { workspace = true }
 uuid = { workspace = true }
