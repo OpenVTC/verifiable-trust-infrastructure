@@ -9284,7 +9284,7 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-crypto",
@@ -9375,7 +9375,7 @@ dependencies = [
 
 [[package]]
 name = "vta-keyspaces"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "vti-common",
 ]
@@ -9446,7 +9446,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.32.0"
+version = "0.32.1"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -9510,7 +9510,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.23.0"
+version = "0.23.1"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-bbs",
