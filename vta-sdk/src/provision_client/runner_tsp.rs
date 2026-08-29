@@ -17,17 +17,22 @@
 //!
 //! - `spec/vta/webvh/servers/list/1.0`
 //!   ([`TASK_WEBVH_SERVERS_LIST_1_0`]) — the webvh-host catalogue.
-//! - `spec/provision/integration/0.2`
-//!   ([`TASK_PROVISION_INTEGRATION_0_2`]) — the VP-framed bootstrap
+//! - `spec/provision/integration/0.3`
+//!   ([`TASK_PROVISION_INTEGRATION_0_3`]) — the VP-framed bootstrap
 //!   request and its sealed reply.
 //!
 //! So the request and reply documents are byte-identical to the ones the
 //! other two transports carry, and this module is wiring rather than
-//! protocol design. Note the **0.2** URI: the DIDComm leg addresses
-//! `provision/integration/0.1` as a DIDComm *protocol message* (routed by
-//! `messaging::handlers_protocol`, not by the trust-task spine), and only
-//! 0.2 is on the spine. The signed VP inside is byte-identical either way
-//! — `spec_version` selects the casing of the *options* around it.
+//! protocol design.
+//!
+//! The version is [`ProvisionSpecVersion::CURRENT`] and never a literal
+//! spelled here. TSP and DIDComm once addressed *different* versions of this
+//! operation — the spine carried 0.2, while the DIDComm leg addressed 0.1 as a
+//! protocol message routed by `messaging::handlers_protocol` — so each
+//! transport held its own constant. The 0.3 cut-over collapsed that: both
+//! surfaces now dispatch the same URI, and both moved on the same day the
+//! server dropped the old ones. Keeping the literal here is what made this
+//! module miss that day.
 //!
 //! # What TSP does not share with DIDComm
 //!
@@ -59,7 +64,8 @@
 //! don't pretend the DID document was at fault.
 //!
 //! [`TASK_WEBVH_SERVERS_LIST_1_0`]: crate::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0
-//! [`TASK_PROVISION_INTEGRATION_0_2`]: crate::trust_tasks::TASK_PROVISION_INTEGRATION_0_2
+//! [`TASK_PROVISION_INTEGRATION_0_3`]: crate::trust_tasks::TASK_PROVISION_INTEGRATION_0_3
+//! [`ProvisionSpecVersion::CURRENT`]: crate::protocols::provision_integration_management::ProvisionSpecVersion::CURRENT
 //! [`VtaClient::dispatch_trust_task`]: crate::client::VtaClient::dispatch_trust_task
 //! [`DiagCheck::AuthenticateTSP`]: super::diagnostics::DiagCheck::AuthenticateTSP
 //! [`DiagCheck::AuthenticateDIDComm`]: super::diagnostics::DiagCheck::AuthenticateDIDComm
@@ -383,7 +389,7 @@ async fn tsp_full_setup(
     }
 }
 
-/// Send the VP-framed bootstrap request as a `provision/integration/0.2`
+/// Send the VP-framed bootstrap request as a `provision/integration`
 /// trust task over `client`'s transport and open the sealed reply.
 ///
 /// The VP is signed with the setup key and the bundle is sealed to it, so
@@ -430,10 +436,11 @@ async fn provision_admin_rotation_over(
     admin_rotation_response_to_reply(&seed, nonce, response)
 }
 
-/// The one place the `provision/integration/0.2` trust task is built and
+/// The one place the `provision/integration` trust task is built and
 /// dispatched, so the two callers above cannot disagree about the wire
-/// shape. `0.2` because that is the version registered on the VTA's shared
-/// trust-task spine — the only surface the TSP inbound dispatcher feeds.
+/// shape — addressed at [`ProvisionSpecVersion::CURRENT`], which is what the
+/// VTA registers on the shared trust-task spine that the TSP inbound
+/// dispatcher feeds.
 #[cfg(feature = "tsp")]
 async fn dispatch_provision_integration(
     client: &crate::client::VtaClient,
@@ -455,7 +462,7 @@ async fn dispatch_provision_integration(
         vc_validity_seconds: None,
         create_context: false,
     };
-    let request_uri = ProvisionSpecVersion::V0_2.request_uri();
+    let request_uri = ProvisionSpecVersion::CURRENT.request_uri();
     let payload = request_body_for_version(&body_struct, request_uri)
         .map_err(ProvisionError::Serialization)?;
 

@@ -66,7 +66,7 @@ pub async fn provision_via_didcomm(
             None,
             None,
             false,
-            ProvisionSpecVersion::V0_1,
+            ProvisionSpecVersion::CURRENT,
         )
         .await?;
         response_to_result(&seed, nonce, response)
@@ -395,7 +395,7 @@ pub async fn provision_admin_rotation_via_didcomm(
             None,
             None,
             false,
-            ProvisionSpecVersion::V0_1,
+            ProvisionSpecVersion::CURRENT,
         )
         .await?;
         crate::provision_client::result::admin_rotation_response_to_reply(&seed, nonce, response)

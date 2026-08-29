@@ -71,11 +71,17 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// [`crate::provision_integration::http::ProvisionIntegrationRequest::context`]
 /// for the full inference rules + error semantics.
 ///
-/// `spec_version` selects the Trust Task wire version. [`ProvisionSpecVersion::V0_1`]
-/// emits the legacy snake_case option fields + kebab `assertion` under the
-/// `provision/integration/0.1` URI; [`ProvisionSpecVersion::V0_2`] emits
+/// `spec_version` selects the Trust Task wire version, and a caller in this
+/// workspace passes [`ProvisionSpecVersion::CURRENT`] — the VTA serves exactly
+/// one version of this operation at a time. The older variants remain callable
+/// because they still describe wire forms this crate can *render*, which is
+/// what makes them testable: [`ProvisionSpecVersion::V0_1`] emits the legacy
+/// snake_case option fields + kebab `assertion` under the
+/// `provision/integration/0.1` URI, and [`ProvisionSpecVersion::V0_2`] emits
 /// lowerCamelCase (`vcValiditySeconds` / `createContext` / `didSigned`) under
-/// the `0.2` URI. The signed VP carried in `request` is left byte-identical
+/// the `0.2` URI. Neither is dispatchable against a current VTA — both were
+/// removed rather than deprecated, so they come back `unsupportedType`.
+/// The signed VP carried in `request` is left byte-identical
 /// either way — its casing is the holder's, and the VTA dual-accepts both.
 /// That is why `request` is a raw [`Value`] and not a typed
 /// [`BootstrapRequest`](super::BootstrapRequest): the claim above was
