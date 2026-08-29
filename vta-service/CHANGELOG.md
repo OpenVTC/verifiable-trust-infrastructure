@@ -2,6 +2,176 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.23.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.23.1...vta-service-v0.23.2) — 2026-08-29
+
+
+### Fixed
+
+- **vta**: Refuse an ambiguous provisioning context with the code its spec declares ([#1204](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1204))
+
+`provision/integration` declares one error code of its own —
+  `provision/integration:contextRequired`, whose `details.candidates` lists the
+  contexts the caller must choose between. `ProvisionIntegrationRequest::context`
+  documents exactly that contract. No transport was honouring it:
+
+  | transport | what it actually sent |
+  |---|---|
+  | DIDComm | a problem-report, code right, candidates under `args` |
+  | REST | a bare 400, message inline, no code at all |
+  | Trust-Task spine | `malformedRequest`, candidates joined into the sentence |
+
+  Three renderings of one refusal, none of them the documented one, on the only
+  provisioning error a wallet has a recovery UX for: it shows the candidates as
+  a picker so the operator chooses and retries inside the ephemeral grant's TTL.
+  Off the spine that recovery has to come from a rendered sentence — which is
+  the string-matching a machine-readable code exists to prevent (guide rule
+  R3.7).
+
+  The spine is the path all three transports converge on, so it is the one worth
+  fixing: a wallet that provisions over the dispatcher gets the documented shape
+  whichever channel carried it.
+
+  `RejectReason` could not express it. Every variant maps to a `StandardCode`,
+  so a task whose own specification declares a code had no way to put it on the
+  wire — the nearest fit, `TaskFailed`, says "attempted and could not complete",
+  which is the wrong thing to tell a producer whose request was refused before
+  anything was attempted. The framework was never the limitation:
+  `ErrorPayload::new` takes any `TrustTaskCode` including
+  `Extended { slug, local }`, and `TrustTask::reject_with` takes a payload. The
+  seam between the two was missing, and `reject_with_code` is it.
+
+  `bound_details` still runs on this path. `reject_with`'s comment calls itself
+  "the one funnel every rejection passes through, so a new site cannot be added
+  that skips the check" — a second funnel that skipped it would falsify that
+  sentence quietly, which is how the unbounded-`details` bug arrived the first
+  time.
+
+  The code string is parsed from vta-sdk's existing constant rather than rebuilt
+  from a slug/local pair, so the spine and the DIDComm problem-report cannot
+  drift into two spellings of one refusal — the drift SPEC §4.10 rule 4 exists
+  to prevent. `context_required` falls back to `taskFailed` if that constant ever
+  stops parsing, because panicking a request thread over a malformed constant
+  serves nobody; a test asserts the constant parses and round-trips, which is
+  what keeps the fallback unreachable rather than merely unlikely.
+
+- **vta**: Let an update turn pre-rotation on for a DID that never had it ([#1203](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1203))
+
+* fix(vta): let an update turn pre-rotation on for a DID that never had it
+
+  Editing a DID and answering "yes" to `pnm did-mgmt dids edit`'s "Override
+  pre-rotation count?" prompt on a DID reporting "Pre-rotation: disabled (never
+  enabled on this DID)" failed, and failed opaquely:
+
+      ✗ Protocol error: trust task failed [internalError]
+      webvh library error: update_did: ValidationError: nextKeyHashes must be
+      defined when pre-rotation is active
+
+  A document change mints a fresh update key, so the entry carried both
+  `updateKeys` and the DID's first-ever `nextKeyHashes`. didwebvh-rs then demanded
+  those new keys hash into a commitment the previous entry had never made —
+  unsatisfiable, so no such entry could ever be written. That is a library defect,
+  fixed separately in didwebvh-rs 0.6.1, but the entry this service was asking for
+  was the wrong shape regardless.
+
+  The entry that *activates* pre-rotation no longer rotates `updateKeys`, and the
+  reason is structural rather than a way around the library. From that entry
+  forward the next update is authorized by the key committed in `nextKeyHashes`,
+  not by anything minted alongside the document (didwebvh 1.0 §Authorized Keys,
+  Pre-rotation: "the active list is the updateKeys from the current log entry").
+  A key minted here would be published, installed, and never able to sign
+  anything, while burning a derivation index to do it.
+
+  It also removes a live ambiguity. §Authorized Keys selects the rule by whether
+  pre-rotation is active, and on the activating entry the two readings of "active"
+  disagree: keyed on the previous entry (what the verification algorithm's step 7
+  parenthetical says, and what didwebvh-rs implements) the proof comes from the
+  previous entry's updateKeys; keyed on the entry itself, from its own. An entry
+  that restates `updateKeys` resolves differently under the two. An entry that
+  inherits them resolves the same either way — so this shape is the one that
+  interoperates.
+
+  Inheriting is legal precisely because pre-rotation was not yet in force on the
+  *previous* entry; the "must restate updateKeys" rule binds from the next entry
+  on, which is exactly when this service starts restating them.
+
+  `set_update_keys` now keys off `derived_auth` being non-empty rather than
+  restating the predicate that sized the derivation, so the two cannot disagree
+  about whether an entry rotates. `sends_next_key_hashes` is likewise computed once
+  and consumed by both the derivation sizing and the builder call.
+
+  Regression test drives the real flow end-to-end on the persisted did.jsonl:
+  genesis without pre-rotation, then a document edit that activates it (asserting
+  the entry publishes the commitment and omits `updateKeys`), then a further update
+  that reveals the committed key and restates `updateKeys`, with full chain
+  validation after each. It fails on the old code with the operator's exact error,
+  and passes against the *published* didwebvh-rs 0.6.0 — this fix does not wait on
+  the library release.
+
+- **vta**: Answer provision/integration under the version the body was rendered in ([#1202](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1202))
+
+#1147 made 0.3 the only provision-integration version the DIDComm router
+  accepts, and #1200 moved the client dispatch sites onto it. The reply's
+  *type URI* stayed behind. `result_uri_for` tested for one version and fell
+  through:
+
+      if request_uri == CANONICAL_PROVISION_INTEGRATION_0_2 {
+          CANONICAL_PROVISION_INTEGRATION_0_2_RESULT
+      } else {
+          CANONICAL_PROVISION_INTEGRATION_RESULT   // 0.1, for everything else
+      }
+
+  so 0.3 — the only URI that can now reach the handler — took the `else` arm.
+  `CANONICAL_PROVISION_INTEGRATION_0_3_RESULT` was declared and never read.
+
+  Two lines apart in `handle_provision_integration`, the result URI comes from
+  `result_uri_for` and the body from `response_body_for_version`. The body was
+  rendered 0.3; the URI said 0.1. Every DIDComm provisioning reply went out as
+  a `digestMultibase` body labelled `provision/integration/0.1#response` — a
+  message that cannot satisfy the schema it names, because 0.1's response
+  requires a bare-hex `digest` and closes with `additionalProperties: false`.
+  `ProvisionIntegrationResponse` has carried `digest_multibase` and no `digest`
+  since #1147, so under that label the reply was unserveable by construction.
+
+  Nothing in this workspace noticed, because both halves were wrong the same
+  way: `provision_integration/didcomm.rs` computes the reply type it waits for
+  with the same `result_uri_for`, so the Rust client asked for `0.1#response`
+  and the server sent `0.1#response` and they agreed. It takes an independent
+  client to see it — the browser wallet reads the URI from the trust-tasks
+  registry bindings, expects `0.3#response`, and rejects the reply. What the
+  operator sees is a provisioning run that has fully succeeded — bundle sealed,
+  admin rolled over, secret written — reported as a failure, with the whole
+  successful response body quoted back inside the error. The holder discards a
+  bundle the VTA has already committed to.
+
+  `result_uri_for` now resolves through `ProvisionSpecVersion`, which grows the
+  two halves a reverse map needs: `ALL`, and `from_request_uri` as a search over
+  it rather than a hand-written second table. This is the same correction
+  `is_v0_1` already carries — a predicate about one version has to name that
+  version, because a fall-through arm silently claims every version nobody has
+  written yet. An unrecognised URI resolves to `CURRENT`, which is what
+  `response_body_for_version` renders it as, so the label and the body agree
+  even on the branch the router cannot reach.
+
+  The router now dispatches on `CURRENT.request_uri()` instead of the 0.3
+  constant, so the URI it accepts, the URI the handler answers under, and the
+  URI the clients send are one knob rather than three that have now twice been
+  moved separately.
+
+  Guards, at the level that can actually catch this: asserting
+  `result_uri_for(0.3) == 0.3#response` alone would pin the symptom, so the new
+  tests assert the rule over `ALL` — every version's result URI is its request
+  URI plus `#response` (SPEC.md §4.4.1), and `result_uri_for` agrees with the
+  version the request URI names. Both fail on the old implementation, naming
+  V0_3. The test they replace asserted the fallback *was* 0.1 and called the
+  branch "unreachable in production, the router only advertises 0.1 and 0.2" —
+  true when written, false since #1147, and it pinned the defect in place.
+
+  Also corrects three comments that outlived their subject: the enum doc stopped
+  at 0.2, `response_body_for_version` still named the removed `digest`, and the
+  handler still described a "legacy FPN URI" retired several releases ago.
+
+
+
 ## [0.23.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.23.0...vta-service-v0.23.1) — 2026-08-29
 
 
