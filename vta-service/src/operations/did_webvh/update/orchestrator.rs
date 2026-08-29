@@ -1012,9 +1012,15 @@ async fn run_update(
         .map_err(|e| UpdateDidWebvhError::Library(format!("build update config: {e}")))?;
 
     // 10. Append the new log entry via the library.
+    //
+    // `Rejected`, not `Library`: this is webvh judging the transition built
+    // from the caller's request, so the reason is about their update and
+    // belongs in their error rather than only in this VTA's log. Failures that
+    // are ours — a stored log that will not parse, a missing record — stay
+    // `Library` and stay opaque.
     let result = update_did(cfg)
         .await
-        .map_err(|e| UpdateDidWebvhError::Library(format!("update_did: {e}")))?;
+        .map_err(|e| UpdateDidWebvhError::Rejected(e.to_string()))?;
     let new_log_entry = result.log_entry();
     let new_version_id = new_log_entry
         .get_version_id_fields()

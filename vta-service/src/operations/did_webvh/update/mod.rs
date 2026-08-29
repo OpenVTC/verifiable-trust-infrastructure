@@ -139,6 +139,39 @@ mod tests {
         );
     }
 
+    /// A transition webvh refuses is the caller's update being unsatisfiable,
+    /// not a broken invariant. As a 500 it reached the operator as
+    /// `internalError` with a fixed string — correct for `Library`, which the
+    /// Trust Task framework requires to stay opaque, and useless here: the one
+    /// fact needed to fix the request went only to the VTA log.
+    #[test]
+    fn rejected_maps_to_400() {
+        assert_eq!(
+            status_of(UpdateDidWebvhError::Rejected("x".into())),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    /// ...and carries the reason, framed. The wire message is what the operator
+    /// reads, so a reclassification that dropped the cause would fix the status
+    /// and leave the diagnosis exactly where it was.
+    #[test]
+    fn rejected_carries_the_reason_to_the_caller() {
+        let app: AppError = UpdateDidWebvhError::Rejected(
+            "ValidationError: nextKeyHashes must be defined when pre-rotation is active".into(),
+        )
+        .into();
+        let message = app.to_string();
+        assert!(
+            message.contains("nextKeyHashes must be defined"),
+            "the reason must survive into the caller-facing message: {message}"
+        );
+        assert!(
+            message.contains("webvh rejected this update"),
+            "and keep the framing that says what refused it: {message}"
+        );
+    }
+
     #[test]
     fn publish_maps_to_500() {
         assert_eq!(
