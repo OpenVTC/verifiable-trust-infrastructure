@@ -374,3 +374,115 @@ async fn list_filters_and_paginates() {
         "a cursor must not carry across a filter change: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Revoking a *member's* ACL entry would orphan their member row.
+//
+// Two surfaces own the ACL row and only one knows membership exists. The leave
+// ceremony deletes the ACL, tombstones the member row, and revokes the
+// credentials; this route deleted the ACL and stopped — leaving a live member
+// row with no authorization and a VMC that still verified for anyone holding
+// it. `members::read` called the result "genuine out-of-band corruption (e.g.
+// an interrupted purge)" and warned on every list; it was not corruption, it
+// was this route doing what it was asked.
+// ---------------------------------------------------------------------------
+
+/// Store a live member row for `did` — what admission leaves behind.
+async fn make_member(fix: &Fixture, did: &str) {
+    vtc_service::members::store_member(
+        &fix.vtc.state.members_ks,
+        &vtc_service::members::Member::fresh(did),
+    )
+    .await
+    .expect("store member row");
+}
+
+#[tokio::test]
+async fn revoking_a_members_acl_is_refused_and_names_the_removal_command() {
+    let fix = build().await;
+    let token = admin_token(&fix).await;
+    const DID: &str = "did:key:z6MkHurdle";
+    grant(&fix, &token, DID, "member", json!(["ctx-a"])).await;
+    make_member(&fix, DID).await;
+
+    let (status, body) = call(
+        &fix,
+        "DELETE",
+        &format!("/v1/acl/{DID}"),
+        REVOKE,
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // "Operator errors should suggest the fix" — the message must carry the
+    // command that actually removes a member, not just refuse.
+    let msg = body.to_string();
+    assert!(
+        msg.contains("/v1/members/"),
+        "the refusal must name the leave ceremony: {msg}"
+    );
+
+    // And the entry must survive: a refusal that already deleted the row would
+    // be the same bug wearing a 409.
+    let (status, body) = call(&fix, "GET", &format!("/v1/acl/{DID}"), SHOW, &token, None).await;
+    assert_eq!(status, StatusCode::OK, "entry must be untouched: {body}");
+}
+
+/// A *departed* member row does not block the revoke. Tombstone and historical
+/// departures keep the row as a "who was a member" record, and cleaning up a
+/// stray ACL entry beside one is a legitimate admin action — the guard is about
+/// orphaning a live membership, not about the row existing.
+#[tokio::test]
+async fn revoking_the_acl_of_a_departed_member_is_allowed() {
+    let fix = build().await;
+    let token = admin_token(&fix).await;
+    const DID: &str = "did:key:z6MkDeparted";
+    grant(&fix, &token, DID, "member", json!(["ctx-a"])).await;
+
+    let mut member = vtc_service::members::Member::fresh(DID);
+    member.tombstone();
+    vtc_service::members::store_member(&fix.vtc.state.members_ks, &member)
+        .await
+        .expect("store tombstoned member");
+
+    let (status, body) = call(
+        &fix,
+        "DELETE",
+        &format!("/v1/acl/{DID}"),
+        REVOKE,
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+}
+
+/// Scope *reduction* orphans nothing — the entry survives, minus those scopes —
+/// so the guard must sit after that branch has returned. Putting it earlier
+/// would block an ordinary privilege reduction on every member in the
+/// community.
+#[tokio::test]
+async fn reducing_a_members_scopes_is_still_allowed() {
+    let fix = build().await;
+    let token = admin_token(&fix).await;
+    const DID: &str = "did:key:z6MkScoped";
+    grant(&fix, &token, DID, "member", json!(["ctx-a", "ctx-b"])).await;
+    make_member(&fix, DID).await;
+
+    let (status, body) = call(
+        &fix,
+        "DELETE",
+        &format!("/v1/acl/{DID}?scopes=ctx-a"),
+        REVOKE,
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let (status, body) = call(&fix, "GET", &format!("/v1/acl/{DID}"), SHOW, &token, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["entry"]["scopes"], json!(["ctx-b"]));
+}

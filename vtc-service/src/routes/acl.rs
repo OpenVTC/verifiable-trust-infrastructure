@@ -13,6 +13,7 @@ use crate::acl::{
 };
 use crate::auth::{AdminAuth, AuthClaims, ManageAuth, session::now_epoch};
 use crate::error::AppError;
+use crate::members::get_member;
 use crate::server::AppState;
 use vti_common::audit::{AclChangeData, AclRevokedData, AuditEvent};
 use vti_common::pagination::{Cursor, MAX_LIMIT};
@@ -680,6 +681,39 @@ pub async fn delete_acl(
             "ACL scopes reduced",
         );
         return Ok(StatusCode::NO_CONTENT);
+    }
+
+    // Revoking the ACL of a **member** would orphan their member row.
+    //
+    // Two surfaces own the ACL row and only one of them knows membership
+    // exists. The leave ceremony (`DELETE /v1/members/{did}` →
+    // `ceremony::execute::depart`) deletes the ACL, tombstones the member row,
+    // *and* flips the revocation bit on their VMC + VEC. This route deletes the
+    // ACL and stops — so a revoke aimed at a member left a live member row with
+    // no authorization and, worse, credentials that still verify for anyone
+    // holding them.
+    //
+    // The reader already believed this could not happen: `members::read` calls
+    // a live member row with no ACL entry "genuine out-of-band corruption (e.g.
+    // an interrupted purge)" and warns on every list. It was not corruption. It
+    // was this handler, doing exactly what it was asked, on a DID it could see
+    // was a member — the audit row it writes even records `priorRole: "member"`.
+    //
+    // Refused rather than quietly routed to `depart`: removal runs the removal
+    // policy, resolves a disposition, and revokes credentials. An operator who
+    // asked to revoke an ACL entry should not get all of that without saying
+    // so. So this names the command that does. (Scope *reduction* is untouched
+    // — it leaves the entry in place and orphans nothing, which is why this
+    // guard sits after that branch has already returned.)
+    if let Some(member) = get_member(&state.members_ks, &did).await?
+        && !member.is_removed()
+    {
+        return Err(AppError::Conflict(format!(
+            "{did} is a member of this community — revoking their ACL entry would leave the \
+             member row with no authorization and their membership credentials unrevoked. \
+             To remove them from the community, use the leave ceremony instead:\n    \
+             DELETE /v1/members/{did}"
+        )));
     }
 
     delete_acl_entry(&acl, &did).await?;
