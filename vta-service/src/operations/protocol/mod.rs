@@ -277,6 +277,8 @@ impl<'a> ServiceOpDeps<'a> {
             imported_ks: self.imported_ks,
             contexts_ks: self.contexts_ks,
             webvh_ks: self.webvh_ks,
+            // This bundle serves the protocol ops, none of which delete a DID.
+            delete_cascade: None,
             audit: self.audit,
             seed_store: self.seed_store,
             did_resolver: self.did_resolver,

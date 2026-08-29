@@ -288,3 +288,159 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// What a DID deletion means for each keyspace
+// ---------------------------------------------------------------------------
+
+/// What happens to a keyspace's DID-keyed contents when that DID is deleted.
+///
+/// Deleting a DID is not one cleanup. It is four different relationships, and
+/// treating them alike gets one of them wrong in a way nobody notices until it
+/// matters:
+///
+/// * things the DID **owns** go with it;
+/// * things that **name it as a subject of authorization** must go with it, or
+///   they become authority for an identity that no longer resolves;
+/// * things that **depend on it to function** must *stop* the deletion, because
+///   cascading would silently break them;
+/// * credentials the VTA **issued** cannot be deleted at all — copies exist
+///   elsewhere — so the only honest action is revocation.
+///
+/// # Why this is an enum and not a list in a function
+///
+/// The failure mode is not getting today's answers wrong. It is a keyspace
+/// added next quarter that nobody classifies, whose rows then quietly outlive
+/// the DID they belong to. [`ALL`] is already pinned by a census test for the
+/// backup partition, for exactly the same reason; this rides the same rail, so
+/// "we forgot" is a red test rather than an orphan found months later in a log.
+///
+/// The classifications below are judgements and several are arguable. That is
+/// fine — the point of the census is to force the question to be asked, not to
+/// claim these answers are the last word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DidDeleteEffect {
+    /// Rows belonging to the DID are removed with it.
+    Cascade,
+    /// A row referencing the DID **blocks** the deletion: something still in
+    /// use would break. Refused, never forced — the operator is told what to
+    /// unpick first.
+    Blocks,
+    /// Rows cannot be removed, because the VTA is not the only holder. They
+    /// are revoked instead.
+    Revoke,
+    /// Nothing here is keyed to a DID.
+    Unrelated,
+}
+
+/// The effect a DID deletion has on `keyspace`, or `None` if the name is not a
+/// keyspace this build knows.
+///
+/// Every entry in [`ALL`] is classified — see `did_delete_census` in this
+/// module's tests.
+#[must_use]
+pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
+    use DidDeleteEffect::*;
+    // `const fn` cannot match on `&str`, so this is a byte-slice match.
+    Some(match keyspace.as_bytes() {
+        // ---- Owned by the DID -------------------------------------------
+        // Key material derived under it, its own log, its advertised name.
+        b"keys" | b"internal_keys" | b"imported_secrets" | b"webvh" => Cascade,
+        // Resolution + protocol caches keyed by DID: stale the moment it goes.
+        b"cache" | b"outbox" => Cascade,
+
+        // ---- Names the DID as a subject of authorization -----------------
+        // An ACL entry outliving its DID is the worst of the orphans: live
+        // authority for an identity that can no longer be resolved or rotated.
+        // The VTC learned this the expensive way (#1194, #1196).
+        b"acl" | b"sessions" | b"passkey_vms" => Cascade,
+        // Consent state and the vault are held *for* a holder; with the holder
+        // gone they are unreachable by anyone.
+        b"consent" | b"task_consent" | b"vault" => Cascade,
+        // Per-DID application state the VTA stores on a holder's behalf.
+        b"app_state" | b"memory" => Cascade,
+
+        // ---- Depends on the DID to function ------------------------------
+        // A context whose `did` is this one, a DID named in an advertised
+        // service entry (or its rollback snapshot), a policy or approver set
+        // that names it. Cascading any of these breaks something that is still
+        // in use; refusing tells the operator what to unpick.
+        b"contexts" | b"service_state" | b"service_prev_config" => Blocks,
+        b"policy" | b"consent_approvers" => Blocks,
+
+        // ---- Cannot be deleted, only revoked -----------------------------
+        // Third parties hold copies. Deleting our record achieves nothing but
+        // losing our ability to revoke it.
+        b"issued_credentials" => Revoke,
+
+        // ---- Not keyed to a DID ------------------------------------------
+        // The audit log is deliberately here: it is append-only, and the record
+        // that a DID was deleted is the one thing that must survive deleting it.
+        b"audit" => Unrelated,
+        b"did_templates" | b"sealed_nonces" | b"backup_bundles" => Unrelated,
+        b"drains" | b"bootstrap" | b"idempotency" => Unrelated,
+
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod did_delete_tests {
+    use super::*;
+
+    /// Every keyspace must have an answer to "what happens to this when a DID
+    /// is deleted".
+    ///
+    /// This is the whole point of the classification. Adding a keyspace is
+    /// easy; remembering that its rows might outlive the DID they belong to is
+    /// not, and nothing about adding one prompts the question. This test asks
+    /// it, once, at the only moment anyone is looking.
+    ///
+    /// A new keyspace fails here until it is classified. `Unrelated` is a
+    /// perfectly good answer — but it has to be a chosen one.
+    #[test]
+    fn every_keyspace_is_classified_for_did_deletion() {
+        let unclassified: Vec<&str> = ALL
+            .iter()
+            .copied()
+            .filter(|ks| did_delete_effect(ks).is_none())
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "these keyspaces have no DID-deletion effect declared: {unclassified:?}\n\
+             Add them to `did_delete_effect`. `Unrelated` is a fine answer if \
+             nothing in the keyspace is keyed to a DID — but it must be chosen, \
+             not defaulted."
+        );
+    }
+
+    /// An unknown name is not silently `Unrelated`. The distinction matters:
+    /// `None` means "this build does not know that keyspace", and answering
+    /// `Unrelated` to it would let a typo read as "nothing to clean up".
+    #[test]
+    fn an_unknown_keyspace_has_no_effect_rather_than_a_harmless_one() {
+        assert_eq!(did_delete_effect("not_a_keyspace"), None);
+        assert_eq!(did_delete_effect(""), None);
+    }
+
+    /// The credential keyspace must never be classified `Cascade`.
+    ///
+    /// Pinned explicitly because it is the one that looks most like a cascade
+    /// and is not: the VTA is not the only holder of what it issued, so
+    /// deleting our record destroys the ability to revoke it while leaving
+    /// every copy in the wild valid forever. That is the exact residue an ACL
+    /// revoke left behind on the VTC.
+    #[test]
+    fn issued_credentials_are_revoked_never_deleted() {
+        assert_eq!(
+            did_delete_effect(ISSUED_CREDENTIALS),
+            Some(DidDeleteEffect::Revoke)
+        );
+    }
+
+    /// The audit log must survive the deletion it records.
+    #[test]
+    fn the_audit_log_is_never_cascaded() {
+        assert_eq!(did_delete_effect(AUDIT), Some(DidDeleteEffect::Unrelated));
+    }
+}

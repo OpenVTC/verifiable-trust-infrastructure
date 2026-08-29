@@ -294,6 +294,12 @@ pub async fn run_delete_did(
     let audit: vta_audit::SharedAuditSink =
         std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
+    // The offline delete cascades exactly as the online one does. An operator
+    // reaching for the break-glass CLI is the *last* person who should be left
+    // with a half-deleted DID.
+    let acl_ks = cs.keyspace(crate::keyspaces::ACL)?;
+    let sessions_ks = cs.keyspace(crate::keyspaces::SESSIONS)?;
+    let issued_credentials_ks = cs.keyspace(crate::keyspaces::ISSUED_CREDENTIALS)?;
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&config)?);
 
@@ -302,6 +308,11 @@ pub async fn run_delete_did(
     let no_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
     let deps = operations::did_webvh::WebvhDeps {
+        delete_cascade: Some(crate::operations::did_webvh::DeleteCascadeDeps {
+            acl_ks: &acl_ks,
+            sessions_ks: &sessions_ks,
+            issued_credentials_ks: &issued_credentials_ks,
+        }),
         keys_ks: &keys_ks,
         imported_ks: &imported_ks,
         contexts_ks: &contexts_ks,
@@ -490,6 +501,8 @@ pub async fn run_edit_did(
     let vta_did = config.vta_did.clone();
     let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
     let deps = crate::operations::did_webvh::WebvhDeps {
+        // `update` publishes a new log entry; it deletes nothing.
+        delete_cascade: None,
         keys_ks: &keys_ks,
         imported_ks: &imported_ks,
         contexts_ks: &contexts_ks,
@@ -578,6 +591,8 @@ pub async fn run_register_did(
 
     let auth = cli_super_admin();
     let deps = operations::did_webvh::WebvhDeps {
+        // This surface publishes; it deletes nothing.
+        delete_cascade: None,
         keys_ks: &keys_ks,
         imported_ks: &imported_ks,
         contexts_ks: &contexts_ks,

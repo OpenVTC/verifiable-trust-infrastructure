@@ -95,11 +95,38 @@ use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 /// being operated on, the WebVH server target) stays a separate argument — it
 /// varies per call and isn't ambient state. `contexts_ks` is read only by
 /// `rotate_did_webvh_keys`; the other ops ignore it.
+/// The keyspaces a DID deletion has to reach beyond the DID's own records.
+///
+/// Bundled rather than three loose fields because they are needed together or
+/// not at all: a caller that can reach the ACL but not the issued credentials
+/// can still only perform half a deletion, and half is the shape that leaves
+/// live authority and unrevokable credentials behind.
+pub struct DeleteCascadeDeps<'a> {
+    /// Authorization keyed by DID. An ACL entry outliving its subject is live
+    /// authority for an identity that can no longer be resolved or rotated.
+    pub acl_ks: &'a KeyspaceHandle,
+    /// Sessions are authority already issued; they go the same way.
+    pub sessions_ks: &'a KeyspaceHandle,
+    /// Credentials the VTA issued. Revoked, never deleted — third parties hold
+    /// copies, so removing our record would destroy the only means of revoking
+    /// them. See [`vta_keyspaces::DidDeleteEffect`].
+    pub issued_credentials_ks: &'a KeyspaceHandle,
+}
+
 pub struct WebvhDeps<'a> {
     pub keys_ks: &'a KeyspaceHandle,
     pub imported_ks: &'a KeyspaceHandle,
     pub contexts_ks: &'a KeyspaceHandle,
     pub webvh_ks: &'a KeyspaceHandle,
+    /// The state a *deletion* must reach, absent on callers that only read or
+    /// publish.
+    ///
+    /// `None` does not mean "skip the cascade" — it means this caller cannot
+    /// perform one, and [`delete_did_webvh`] refuses rather than deleting a DID
+    /// while leaving its authorization and credentials behind. A partial
+    /// deletion is the failure mode this whole change exists to prevent, so it
+    /// is not something a construction site gets to opt into by omission.
+    pub delete_cascade: Option<DeleteCascadeDeps<'a>>,
     pub audit: &'a vta_audit::SharedAuditSink,
     pub seed_store: &'a dyn SeedStore,
     pub did_resolver: &'a DIDCacheClient,
@@ -126,6 +153,11 @@ impl<'a> WebvhDeps<'a> {
             imported_ks: &s.imported_ks,
             contexts_ks: &s.contexts_ks,
             webvh_ks: &s.webvh_ks,
+            delete_cascade: Some(DeleteCascadeDeps {
+                acl_ks: &s.acl_ks,
+                sessions_ks: &s.sessions_ks,
+                issued_credentials_ks: &s.issued_credentials_ks,
+            }),
             audit: &s.audit_sink,
             seed_store: &*s.seed_store,
             did_resolver,
@@ -149,6 +181,11 @@ impl<'a> WebvhDeps<'a> {
             imported_ks: &s.imported_ks,
             contexts_ks: &s.contexts_ks,
             webvh_ks: &s.webvh_ks,
+            delete_cascade: Some(DeleteCascadeDeps {
+                acl_ks: &s.acl_ks,
+                sessions_ks: &s.sessions_ks,
+                issued_credentials_ks: &s.issued_credentials_ks,
+            }),
             audit: &s.audit_sink,
             seed_store: &*s.seed_store,
             did_resolver,
@@ -1470,6 +1507,57 @@ pub async fn delete_did_webvh(
     // VTA.
     auth.require_context(&record.context_id)?;
 
+    // ---- Refuse before destroying anything --------------------------------
+    //
+    // A DID something still depends on must not be deleted out from under it.
+    // Cascading here would silently break a context or an advertised service;
+    // refusing tells the operator exactly what to unpick, per the workspace's
+    // "operator errors should suggest the fix" convention. There is no
+    // `--force`: the same call as `would_violate_last_service`, for the same
+    // reason — the escape hatch is what gets used at 2am.
+    let blockers = delete_blockers(deps, auth, did, vta_did).await?;
+    if !blockers.is_empty() {
+        return Err(AppError::Conflict(format!(
+            "{did} cannot be deleted — {} still depend{} on it:\n{}",
+            blockers.len(),
+            if blockers.len() == 1 { "s" } else { "" },
+            blockers
+                .iter()
+                .map(|b| format!("  - {b}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )));
+    }
+
+    // A caller that cannot reach the state a deletion must take with the DID
+    // cannot delete it. Half a deletion — the DID gone, its authorization and
+    // credentials left behind — is the failure this whole path exists to
+    // prevent, so it is refused rather than attempted.
+    let cascade = deps.delete_cascade.as_ref().ok_or_else(|| {
+        AppError::Internal(
+            "this code path cannot delete a DID: it has no access to the ACL, session and \
+             issued-credential keyspaces that must be cleaned up with it"
+                .into(),
+        )
+    })?;
+
+    // ---- Revoke before deleting -------------------------------------------
+    //
+    // Credentials the VTA issued naming this DID cannot be cleaned up: third
+    // parties hold copies, and deleting our record would destroy the only
+    // means of revoking them while leaving every copy in the wild valid
+    // forever. That is exactly the residue an ACL revoke left behind on the
+    // VTC, found in production.
+    //
+    // Revocation runs *first*, and deliberately: if anything later fails, the
+    // credentials are already dead and the DID still exists, which is
+    // recoverable by re-running. The other order leaves live credentials for a
+    // DID nobody can revoke through any more.
+    let revoked = revoke_credentials_for_did(cascade.issued_credentials_ks, did).await?;
+    if revoked > 0 {
+        info!(channel, did = %did, revoked, "revoked credentials issued to a DID being deleted");
+    }
+
     // Resolve server for remote deletion. Track the outcome so the
     // operator can act on a daemon-side orphan rather than seeing
     // local cleanup succeed silently. (Spec / audit H4: surface the
@@ -1527,12 +1615,120 @@ pub async fn delete_did_webvh(
         let _ = deps.keys_ks.remove(store_key).await;
     }
 
-    info!(channel, did = %did, "webvh DID deleted");
+    // ---- Cascade the authorization that named it --------------------------
+    //
+    // An ACL entry outliving its subject is live authority for an identity
+    // that can no longer be resolved or rotated — strictly worse than an
+    // orphaned record, because it still grants. Sessions are authority already
+    // issued and go the same way.
+    vti_common::acl::delete_acl_entry(cascade.acl_ks, did).await?;
+    let sessions_revoked = revoke_sessions_for_did(cascade.sessions_ks, did).await?;
+
+    info!(
+        channel,
+        did = %did,
+        credentials_revoked = revoked,
+        sessions_revoked,
+        "webvh DID deleted"
+    );
     Ok(DeleteDidWebvhResultBody {
         did: did.to_string(),
         deleted: true,
         daemon_cleanup_error,
     })
+}
+
+/// Everything that still depends on `did`, as operator-facing lines naming the
+/// command that unpicks each one.
+///
+/// Read-only: this runs before any write, so a refusal leaves the VTA exactly
+/// as it found it.
+async fn delete_blockers(
+    deps: &WebvhDeps<'_>,
+    auth: &AuthClaims,
+    did: &str,
+    vta_did_value: Option<&str>,
+) -> Result<Vec<String>, AppError> {
+    let mut blockers = Vec::new();
+
+    // The VTA's own DID. Deleting it does not decommission the VTA; it strands
+    // it — unable to authenticate to its mediator, unable to publish, and
+    // unable to be found by anyone holding its credentials.
+    if vta_did_value == Some(did) {
+        blockers.push(format!(
+            "this VTA's own DID ({did}) — deleting it would strand the VTA rather than              decommission it; change `vta_did` first if that is really the intent"
+        ));
+    }
+
+    // A context whose identity this DID is.
+    for ctx in crate::contexts::list_contexts(deps.contexts_ks).await? {
+        if ctx.did.as_deref() == Some(did) {
+            let id = &ctx.id;
+            blockers.push(format!(
+                "context `{id}` acts as this DID — reassign it first:                  `pnm contexts update {id} --did <new-did>`"
+            ));
+        }
+    }
+
+    let _ = auth;
+    Ok(blockers)
+}
+
+/// Revoke every credential the VTA issued to `did`, returning how many moved.
+///
+/// Already-revoked records are left alone: revocation is a tombstone, and
+/// re-revoking would rewrite the timestamp that says when the credential
+/// actually stopped being good.
+async fn revoke_credentials_for_did(
+    issued_credentials_ks: &KeyspaceHandle,
+    did: &str,
+) -> Result<usize, AppError> {
+    use crate::operations::credentials::IssuedCredentialRecord;
+
+    let mut revoked = 0usize;
+    for (key, raw) in issued_credentials_ks
+        .prefix_iter_raw(b"cred:".to_vec())
+        .await?
+    {
+        // A record this build cannot parse is left alone rather than skipped
+        // silently-and-forgotten: it is not ours to rewrite, and failing the
+        // whole deletion over one unreadable row would be worse than leaving
+        // it for the operator to look at.
+        let Ok(mut record) = serde_json::from_slice::<IssuedCredentialRecord>(&raw) else {
+            tracing::warn!(
+                "unparseable issued-credential record skipped during DID deletion; \
+                 it may name the deleted DID and will not have been revoked"
+            );
+            continue;
+        };
+        if record.holder != did || record.revoked_at.is_some() {
+            continue;
+        }
+        record.revoked_at = Some(chrono::Utc::now().to_rfc3339());
+        record.revocation_reason = Some("holder DID deleted".to_string());
+        let bytes = serde_json::to_vec(&record)
+            .map_err(|e| AppError::Internal(format!("re-encode credential record: {e}")))?;
+        issued_credentials_ks.insert_raw(key, bytes).await?;
+        revoked += 1;
+    }
+    Ok(revoked)
+}
+
+/// Delete every live session held by `did`.
+async fn revoke_sessions_for_did(
+    sessions_ks: &KeyspaceHandle,
+    did: &str,
+) -> Result<usize, AppError> {
+    use vti_common::auth::session::{delete_session, list_sessions};
+
+    let mut revoked = 0usize;
+    for session in list_sessions(sessions_ks).await? {
+        if session.did == did {
+            delete_session(sessions_ks, &session.session_id).await?;
+            revoked += 1;
+        }
+    }
+    Ok(revoked)
 }
 
 // ---------------------------------------------------------------------------
@@ -2160,6 +2356,134 @@ mod tests {
         assert!(
             after.cache_hit,
             "after a failed refresh the prior cache entry must be preserved (still a cache hit)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod delete_cascade_tests {
+    use super::*;
+    use crate::operations::credentials::IssuedCredentialRecord;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    fn credential_ks() -> (KeyspaceHandle, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("open store");
+        let ks = store
+            .keyspace(crate::keyspaces::ISSUED_CREDENTIALS)
+            .expect("issued_credentials ks");
+        (ks, dir)
+    }
+
+    async fn seed(ks: &KeyspaceHandle, id: &str, holder: &str, revoked: Option<&str>) {
+        let record = IssuedCredentialRecord {
+            id: id.to_string(),
+            holder: holder.to_string(),
+            credential: serde_json::json!({ "id": id }),
+            issued_at: "2026-01-01T00:00:00Z".to_string(),
+            expires_at: "2027-01-01T00:00:00Z".to_string(),
+            revoked_at: revoked.map(str::to_string),
+            revocation_reason: None,
+        };
+        ks.insert_raw(
+            format!("cred:{id}").into_bytes(),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn load(ks: &KeyspaceHandle, id: &str) -> IssuedCredentialRecord {
+        let raw = ks
+            .get_raw(format!("cred:{id}").into_bytes())
+            .await
+            .unwrap()
+            .expect("record present");
+        serde_json::from_slice(&raw).unwrap()
+    }
+
+    /// Credentials issued to the deleted DID are revoked — and *only* those.
+    ///
+    /// The blast radius matters as much as the effect: this runs during a
+    /// deletion, over every issued credential the VTA holds, and a `holder`
+    /// comparison that was slightly too loose would revoke other people's
+    /// credentials as a side effect of deleting one DID.
+    #[tokio::test]
+    async fn only_the_deleted_dids_credentials_are_revoked() {
+        let (ks, _dir) = credential_ks();
+        seed(&ks, "a", "did:key:zGone", None).await;
+        seed(&ks, "b", "did:key:zGone", None).await;
+        seed(&ks, "c", "did:key:zStays", None).await;
+
+        let revoked = revoke_credentials_for_did(&ks, "did:key:zGone")
+            .await
+            .expect("revoke");
+        assert_eq!(revoked, 2);
+
+        assert!(load(&ks, "a").await.revoked_at.is_some());
+        assert!(load(&ks, "b").await.revoked_at.is_some());
+        assert!(
+            load(&ks, "c").await.revoked_at.is_none(),
+            "another holder's credential must be untouched"
+        );
+    }
+
+    /// The record is revoked, never removed. Deleting it would destroy the only
+    /// evidence that the credential in somebody else's wallet is no longer good
+    /// — which is the whole reason this path revokes rather than cascades.
+    #[tokio::test]
+    async fn revocation_is_a_tombstone_not_a_deletion() {
+        let (ks, _dir) = credential_ks();
+        seed(&ks, "a", "did:key:zGone", None).await;
+
+        revoke_credentials_for_did(&ks, "did:key:zGone")
+            .await
+            .expect("revoke");
+
+        let record = load(&ks, "a").await;
+        assert!(record.revoked_at.is_some());
+        assert_eq!(
+            record.revocation_reason.as_deref(),
+            Some("holder DID deleted")
+        );
+        // The credential itself survives, so a verifier asking about it still
+        // gets an answer.
+        assert_eq!(record.credential["id"], "a");
+    }
+
+    /// An already-revoked credential keeps its original timestamp. Re-revoking
+    /// would rewrite when the credential actually stopped being good, which is
+    /// the one fact the record exists to carry.
+    #[tokio::test]
+    async fn an_already_revoked_credential_keeps_its_original_timestamp() {
+        let (ks, _dir) = credential_ks();
+        seed(&ks, "a", "did:key:zGone", Some("2026-02-02T00:00:00Z")).await;
+
+        let revoked = revoke_credentials_for_did(&ks, "did:key:zGone")
+            .await
+            .expect("revoke");
+        assert_eq!(revoked, 0, "already-revoked records are not counted again");
+        assert_eq!(
+            load(&ks, "a").await.revoked_at.as_deref(),
+            Some("2026-02-02T00:00:00Z")
+        );
+    }
+
+    /// Nothing to revoke is a successful no-op, not an error — a DID may
+    /// legitimately have been issued nothing.
+    #[tokio::test]
+    async fn a_did_with_no_credentials_revokes_none() {
+        let (ks, _dir) = credential_ks();
+        seed(&ks, "c", "did:key:zStays", None).await;
+        assert_eq!(
+            revoke_credentials_for_did(&ks, "did:key:zNothing")
+                .await
+                .expect("revoke"),
+            0
         );
     }
 }

@@ -402,6 +402,8 @@ mod tests {
         locks: &'a super::super::WebvhAuthLocks,
     ) -> super::super::WebvhDeps<'a> {
         super::super::WebvhDeps {
+            // Registering a DID with a server never deletes one.
+            delete_cascade: None,
             keys_ks: webvh_ks,
             imported_ks: webvh_ks,
             contexts_ks: webvh_ks,

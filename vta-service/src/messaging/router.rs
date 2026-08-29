@@ -88,6 +88,9 @@ pub struct VtaState {
     pub service_state_ks: KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh_ks: KeyspaceHandle,
+    /// Credentials the VTA issued — needed so a DID deletion over this
+    /// transport can revoke them rather than orphan them.
+    pub issued_credentials_ks: KeyspaceHandle,
     /// Anti-replay log for sealed-bootstrap `bundle_id`s — required by
     /// the DIDComm provision-integration handler so it can drive the
     /// same shared library function the REST handler does.
@@ -199,6 +202,7 @@ impl From<&AppState> for VtaState {
             service_state_ks: state.service_state_ks.clone(),
             #[cfg(feature = "webvh")]
             webvh_ks: state.webvh_ks.clone(),
+            issued_credentials_ks: state.issued_credentials_ks.clone(),
             sealed_nonces_ks: state.sealed_nonces_ks.clone(),
             #[cfg(feature = "webvh")]
             drains_ks: state.drains_ks.clone(),
