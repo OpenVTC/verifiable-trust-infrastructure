@@ -119,6 +119,23 @@ pub enum ProvisionSpecVersion {
 }
 
 impl ProvisionSpecVersion {
+    /// The version every client in this workspace dispatches under.
+    ///
+    /// Named once, because the per-transport alternative already failed: when
+    /// the VTA cut over to 0.3 (#1147) the REST runner and the server moved,
+    /// and the TSP runner (0.2) and the DIDComm runners (0.1) were left behind
+    /// — each holding its own literal, none of them wrong on its face. The
+    /// server had removed both, so every provisioning attempt over those two
+    /// transports came back `unsupportedType` against a VTA that was working
+    /// perfectly. A dispatch site should ask *which version do we speak*, not
+    /// answer it.
+    ///
+    /// The older variants stay: they still describe the historical wire forms
+    /// that [`request_body_for_version`] and `is_v0_1` case bodies for, and
+    /// they are public API. What they no longer are is something a client
+    /// picks.
+    pub const CURRENT: Self = Self::V0_3;
+
     /// The canonical request URI to address this version at.
     pub fn request_uri(self) -> &'static str {
         match self {

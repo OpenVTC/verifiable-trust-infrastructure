@@ -1995,6 +1995,36 @@ mod tests {
         }
     }
 
+    /// The provisioning clients dispatch the version this service serves.
+    ///
+    /// This is the test that was missing when #1147 cut provision-integration
+    /// over to 0.3. That change moved the server and the REST runner and left
+    /// the TSP runner on 0.2 and the DIDComm runners on 0.1 — versions it had
+    /// just *removed*, because 0.2 requires a bare-hex `digest` and forbids the
+    /// `digestMultibase` 0.3 requires. Nothing failed in CI: each half was
+    /// self-consistent, and the census tests below check that everything this
+    /// service serves is specced, never that a client asks for it. Provisioning
+    /// over TSP and DIDComm was dead from the release until an operator hit
+    /// `unsupportedType` against a VTA that was otherwise healthy.
+    ///
+    /// `ProvisionSpecVersion::CURRENT` is now the single thing every client
+    /// dispatch site reads, so this one assertion covers all of them: move the
+    /// server to 0.4 without moving `CURRENT`, or the reverse, and this fails.
+    #[test]
+    fn provision_clients_dispatch_the_version_this_service_serves() {
+        use vta_sdk::protocols::provision_integration_management::ProvisionSpecVersion;
+
+        let uri = ProvisionSpecVersion::CURRENT.request_uri();
+        let dispatched = dispatched_uris();
+        assert!(
+            dispatched.contains(&uri) || KNOWN_FEATURE_GATED_URIS.contains(&uri),
+            "vta-sdk's provisioning clients dispatch `{uri}` \
+             (`ProvisionSpecVersion::CURRENT`), but this service does not serve \
+             it. A provision-integration version cut-over has to move both \
+             halves: the `dispatch_table!` entry and `CURRENT`."
+        );
+    }
+
     /// Defensive guard against double-tracking. A URI should appear in
     /// exactly one of (`dispatched_uris()`, `REST_ROUTED`,
     /// `KNOWN_FEATURE_GATED_URIS`) — except that `KNOWN_FEATURE_GATED_URIS`
