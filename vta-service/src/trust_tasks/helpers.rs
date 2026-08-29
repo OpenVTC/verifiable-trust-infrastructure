@@ -25,7 +25,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use trust_tasks_https::status_for_code;
-use trust_tasks_rs::{ErrorPayload, ErrorResponse, RejectReason, TrustTask, TypeUri};
+use trust_tasks_rs::{
+    ErrorPayload, ErrorResponse, RejectReason, TrustTask, TrustTaskCode, TypeUri,
+};
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -211,6 +213,40 @@ pub(super) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> Trust
     error_response(routed)
 }
 
+/// Reject with a **specification-extended** code (SPEC.md §8.5,
+/// `<slug>:<local>`) rather than one of the framework's standard codes.
+///
+/// [`RejectReason`] cannot express one: every variant maps to a
+/// [`StandardCode`](trust_tasks_rs::StandardCode), so a task whose own
+/// specification declares an error code has no way to put it on the wire
+/// through [`reject_with`] — the nearest fit, `TaskFailed`, says "attempted
+/// and could not complete", which is the wrong thing to tell a producer whose
+/// request was refused before anything was attempted. The framework itself is
+/// not the limitation: `ErrorPayload::new` takes any [`TrustTaskCode`], and
+/// `TrustTask::reject_with` takes a payload. This is the missing seam between
+/// the two.
+///
+/// Use it only for a code the task's specification actually declares. A code
+/// invented here is one no consumer can look up, which is worse than
+/// `taskFailed` — that at least means something everywhere.
+///
+/// `details` passes through [`bound_details`] exactly as in [`reject_with`],
+/// so this cannot become the construction site that skips the framework's
+/// size bound.
+pub(super) fn reject_with_code(
+    doc: &TrustTask<Value>,
+    code: TrustTaskCode,
+    message: impl Into<String>,
+    details: Option<Value>,
+) -> TrustTaskOutcome {
+    let mut payload = ErrorPayload::new(code).with_message(message);
+    if let Some(d) = bound_details(details) {
+        payload = payload.with_details(d);
+    }
+    let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
+    error_response(routed)
+}
+
 /// Build a routed success document with the given payload and wrap
 /// it in an HTTP 200 response.
 pub(super) fn success_response<R: serde::Serialize>(
@@ -352,6 +388,56 @@ mod tests {
             .as_str()
             .expect("payload carries a message")
             .to_string()
+    }
+
+    /// An extended code reaches the wire in its `<slug>:<local>` spelling.
+    ///
+    /// `RejectReason` cannot express one — every variant maps to a standard
+    /// code — so before `reject_with_code` a task whose own specification
+    /// declared an error code had to render it as prose in `message` and let
+    /// the caller string-match, which is the thing machine-readable codes
+    /// exist to prevent.
+    #[test]
+    fn an_extended_code_survives_to_the_wire() {
+        let code: TrustTaskCode = "provision/integration:contextRequired"
+            .parse()
+            .expect("a legal extended code");
+        let outcome = reject_with_code(
+            &doc(),
+            code,
+            "which context?",
+            Some(json!({ "candidates": ["a", "b"] })),
+        );
+        let parsed: Value = serde_json::from_slice(&outcome.body).expect("error doc");
+        assert_eq!(
+            parsed["payload"]["code"],
+            "provision/integration:contextRequired"
+        );
+        assert_eq!(parsed["payload"]["details"]["candidates"][1], "b");
+    }
+
+    /// The `details` bound is enforced on this path too.
+    ///
+    /// `reject_with`'s comment calls itself "the one funnel every rejection
+    /// passes through, so a new site cannot be added that skips the check" —
+    /// `reject_with_code` is a second funnel, and this is what keeps that
+    /// sentence true.
+    #[test]
+    fn an_extended_code_rejection_bounds_its_details_too() {
+        let code: TrustTaskCode = "provision/integration:contextRequired"
+            .parse()
+            .expect("a legal extended code");
+        let huge = json!({ "explanation": "x".repeat(DETAILS_MAX_JCS_BYTES + 1) });
+        let outcome = reject_with_code(&doc(), code, "which context?", Some(huge));
+        let parsed: Value = serde_json::from_slice(&outcome.body).expect("error doc");
+        assert_eq!(
+            parsed["payload"]["code"], "provision/integration:contextRequired",
+            "an oversized annex must never cost the code: {parsed}"
+        );
+        assert!(
+            parsed["payload"]["details"].is_null(),
+            "the oversized details should have been dropped: {parsed}"
+        );
     }
 
     /// An oversized `details` is dropped, and the `code` still goes out.
