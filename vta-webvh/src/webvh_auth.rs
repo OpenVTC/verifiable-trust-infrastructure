@@ -56,9 +56,11 @@ use vti_common::error::AppError;
 
 /// DIDComm `type` URI for the initial authenticate request — the
 /// canonical `spec/auth/authenticate/0.1` per dtgwg-trust-tasks-tf.
-/// did-hosting accepts this natively (and recognises the historical
-/// `affinidi.com/webvh/1.0/authenticate` form during the alias-table
-/// migration window).
+///
+/// This is now the *only* form did-hosting accepts. The historical
+/// `affinidi.com/webvh/1.0/authenticate` alias it also recognised was removed
+/// across every surface — REST acceptors and clients, the witness's DIDComm
+/// router — in affinidi-webvh-service #172 and #174.
 pub const AUTHENTICATE_TYPE: &str = "https://trusttasks.org/spec/auth/authenticate/0.1";
 
 /// DIDComm `type` URI for the refresh request — `spec/auth/refresh/0.1`.
@@ -267,11 +269,13 @@ mod tests {
     fn authenticate_message_type_is_canonical_spec_uri() {
         // The VTA's outbound authenticate to did-hosting carries the
         // canonical Trust-Task spec URI per dtgwg-trust-tasks-tf.
-        // did-hosting accepts both this and the historical
-        // `affinidi.com/webvh/1.0/authenticate` form via its alias
-        // table during the migration window; once that alias is
-        // dropped (Phase 3 cleanup on did-hosting) this is the only
-        // form on the wire.
+        //
+        // The migration window this used to describe has closed: the
+        // `affinidi.com/webvh/1.0/authenticate` alias was removed from every
+        // did-hosting surface (affinidi-webvh-service #172, #174), so the
+        // canonical form is not merely preferred, it is the only one that
+        // routes. This assertion is now load-bearing rather than
+        // forward-looking.
         assert_eq!(
             AUTHENTICATE_TYPE,
             "https://trusttasks.org/spec/auth/authenticate/0.1",
