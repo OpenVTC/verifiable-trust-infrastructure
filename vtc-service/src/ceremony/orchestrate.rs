@@ -21,7 +21,7 @@ use super::{
     Evidence, FactsInputs, Purpose, Verdict, VerifiedFacts, assemble_facts, decide,
     effects::EffectPlan, load_actor_role, member_state,
 };
-use crate::acl::get_acl_entry;
+use crate::acl::{VtcRole, get_acl_entry};
 use crate::members::{Disposition, get_member};
 use crate::policy::{PolicyPurpose, load_active_compiled};
 use crate::server::AppState;
@@ -294,11 +294,35 @@ pub async fn remove_inner(
         .as_ref()
         .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
 
-    let target_acl = get_acl_entry(&state.acl_ks, target_did)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("member not found: {target_did}")))?;
-
+    let target_acl = get_acl_entry(&state.acl_ks, target_did).await?;
     let target_member = get_member(&state.members_ks, target_did).await?;
+
+    // Removal needs *a* subject, not specifically an ACL entry.
+    //
+    // This used to require the ACL row and 404 `member not found` without one,
+    // which closed the only door out of the exact state an `acl/revoke` aimed
+    // at a member left behind: a live member row, no authorization, and
+    // credentials still unrevoked (#1194 stops new ones being created; this
+    // is how the existing ones get cleaned up). The operator was told the
+    // member did not exist while `members list` was warning about that very
+    // row — two surfaces disagreeing about whether somebody is here.
+    //
+    // Only genuinely-absent is still `not found`: neither row.
+    if target_acl.is_none() && target_member.is_none() {
+        return Err(AppError::NotFound(format!(
+            "member not found: {target_did}"
+        )));
+    }
+
+    // The subject's role, for the removal policy and the audit row. With no
+    // ACL entry there is no role to read, and `member` is the honest answer
+    // rather than a cautious one: role *is* the ACL entry, so a subject
+    // without one holds no authority — they cannot be the admin the policy
+    // protects, and `depart`'s no-last-admin invariant reads the same absent
+    // row and reaches the same conclusion.
+    let subject_role = target_acl
+        .as_ref()
+        .map_or_else(|| VtcRole::Member.to_string(), |a| a.role.to_string());
 
     // Decide. Assemble verified leave Facts and run the active removal-purpose
     // decision policy. The no-last-admin invariant + the credential revocation
@@ -307,7 +331,7 @@ pub async fn remove_inner(
         state,
         actor_did,
         target_did,
-        &target_acl.role.to_string(),
+        &subject_role,
         target_member.as_ref(),
         disposition,
         &reason,
@@ -374,7 +398,7 @@ pub async fn remove_inner(
             AuditEvent::MemberRemoved(MemberRemovedData {
                 disposition: disposition_str.into(),
                 reason: reason.clone(),
-                prior_role: Some(target_acl.role.to_string()),
+                prior_role: target_acl.as_ref().map(|a| a.role.to_string()),
             }),
         )
         .await?;
