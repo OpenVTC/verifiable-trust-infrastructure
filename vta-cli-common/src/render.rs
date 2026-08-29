@@ -56,6 +56,26 @@ pub fn is_full_display() -> bool {
     FULL_DISPLAY.load(Ordering::Relaxed)
 }
 
+/// Tell the reader that this table shortens identifiers, and how to get them
+/// whole.
+///
+/// The compact table is the right default — it is readable, and most of the
+/// time nobody needs the full value. But a shortened identifier still *looks*
+/// like an identifier, and the obvious thing to do with one is select it and
+/// paste it into the next command. That produces an argument containing a
+/// literal `…` (U+2026), which is not a DID and never was.
+///
+/// `--full-display` already existed. The gap was that you only learned it
+/// existed after being caught by its absence, so the hint goes where the
+/// truncation happens rather than in `--help`.
+pub fn print_truncation_hint() {
+    println!(
+        "  {DIM}Identifiers are shortened to fit. Re-run with `{} --full-display …` \
+         to copy one in full.{RESET}",
+        bin_name()
+    );
+}
+
 /// Emit a list entry as aligned `label: value` lines. Used in
 /// full-display mode where ratatui-Table truncation would hide full
 /// identifiers.
