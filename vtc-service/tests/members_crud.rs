@@ -668,3 +668,56 @@ async fn promoting_an_existing_admin_is_an_idempotent_no_op() {
         .unwrap();
     assert_eq!(entry.role, VtcRole::Admin);
 }
+
+/// Removal must work on a member whose ACL entry is already gone.
+///
+/// `remove_inner` used to read the ACL entry first and 404 `member not found`
+/// without one — which closed the only exit from the exact state an
+/// `acl/revoke` aimed at a member leaves behind: a live member row, no
+/// authorization, credentials unrevoked. The operator was told the member did
+/// not exist while `members list` was warning about that very row, which is two
+/// surfaces disagreeing about whether somebody is here.
+#[tokio::test]
+async fn removing_a_member_whose_acl_is_already_gone_succeeds() {
+    let fix = build_fixture().await;
+    // A live member row with no ACL entry — what an `acl/revoke` leaves.
+    store_member(&fix.members_ks, &Member::fresh("did:key:zOrphan"))
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        &fix.router,
+        "DELETE",
+        "/v1/members/did:key:zOrphan",
+        "https://trusttasks.org/spec/vtc/members/admin-remove/0.1",
+        Some(&fix.admin_token),
+        Some(json!({ "reason": "clearing an orphaned member row" })),
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a member row with no ACL entry is still a member to remove: {body}"
+    );
+    assert!(
+        status.is_success(),
+        "removal should succeed: {status} {body}"
+    );
+}
+
+/// A DID with neither row is still genuinely absent — the guard must not turn
+/// "not found" into "removed nothing, successfully".
+#[tokio::test]
+async fn removing_a_did_with_no_rows_at_all_is_still_not_found() {
+    let fix = build_fixture().await;
+    let (status, _) = send(
+        &fix.router,
+        "DELETE",
+        "/v1/members/did:key:zNeverExisted",
+        "https://trusttasks.org/spec/vtc/members/admin-remove/0.1",
+        Some(&fix.admin_token),
+        Some(json!({ "reason": "clearing an orphaned member row" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
