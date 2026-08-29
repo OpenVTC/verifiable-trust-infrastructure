@@ -2,6 +2,76 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.32.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.32.1...vta-sdk-v0.32.2) — 2026-08-29
+
+
+### Fixed
+
+- **vta**: Answer provision/integration under the version the body was rendered in ([#1202](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1202))
+
+#1147 made 0.3 the only provision-integration version the DIDComm router
+  accepts, and #1200 moved the client dispatch sites onto it. The reply's
+  *type URI* stayed behind. `result_uri_for` tested for one version and fell
+  through:
+
+      if request_uri == CANONICAL_PROVISION_INTEGRATION_0_2 {
+          CANONICAL_PROVISION_INTEGRATION_0_2_RESULT
+      } else {
+          CANONICAL_PROVISION_INTEGRATION_RESULT   // 0.1, for everything else
+      }
+
+  so 0.3 — the only URI that can now reach the handler — took the `else` arm.
+  `CANONICAL_PROVISION_INTEGRATION_0_3_RESULT` was declared and never read.
+
+  Two lines apart in `handle_provision_integration`, the result URI comes from
+  `result_uri_for` and the body from `response_body_for_version`. The body was
+  rendered 0.3; the URI said 0.1. Every DIDComm provisioning reply went out as
+  a `digestMultibase` body labelled `provision/integration/0.1#response` — a
+  message that cannot satisfy the schema it names, because 0.1's response
+  requires a bare-hex `digest` and closes with `additionalProperties: false`.
+  `ProvisionIntegrationResponse` has carried `digest_multibase` and no `digest`
+  since #1147, so under that label the reply was unserveable by construction.
+
+  Nothing in this workspace noticed, because both halves were wrong the same
+  way: `provision_integration/didcomm.rs` computes the reply type it waits for
+  with the same `result_uri_for`, so the Rust client asked for `0.1#response`
+  and the server sent `0.1#response` and they agreed. It takes an independent
+  client to see it — the browser wallet reads the URI from the trust-tasks
+  registry bindings, expects `0.3#response`, and rejects the reply. What the
+  operator sees is a provisioning run that has fully succeeded — bundle sealed,
+  admin rolled over, secret written — reported as a failure, with the whole
+  successful response body quoted back inside the error. The holder discards a
+  bundle the VTA has already committed to.
+
+  `result_uri_for` now resolves through `ProvisionSpecVersion`, which grows the
+  two halves a reverse map needs: `ALL`, and `from_request_uri` as a search over
+  it rather than a hand-written second table. This is the same correction
+  `is_v0_1` already carries — a predicate about one version has to name that
+  version, because a fall-through arm silently claims every version nobody has
+  written yet. An unrecognised URI resolves to `CURRENT`, which is what
+  `response_body_for_version` renders it as, so the label and the body agree
+  even on the branch the router cannot reach.
+
+  The router now dispatches on `CURRENT.request_uri()` instead of the 0.3
+  constant, so the URI it accepts, the URI the handler answers under, and the
+  URI the clients send are one knob rather than three that have now twice been
+  moved separately.
+
+  Guards, at the level that can actually catch this: asserting
+  `result_uri_for(0.3) == 0.3#response` alone would pin the symptom, so the new
+  tests assert the rule over `ALL` — every version's result URI is its request
+  URI plus `#response` (SPEC.md §4.4.1), and `result_uri_for` agrees with the
+  version the request URI names. Both fail on the old implementation, naming
+  V0_3. The test they replace asserted the fallback *was* 0.1 and called the
+  branch "unreachable in production, the router only advertises 0.1 and 0.2" —
+  true when written, false since #1147, and it pinned the defect in place.
+
+  Also corrects three comments that outlived their subject: the enum doc stopped
+  at 0.2, `response_body_for_version` still named the removed `digest`, and the
+  handler still described a "legacy FPN URI" retired several releases ago.
+
+
+
 ## [0.32.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.32.0...vta-sdk-v0.32.1) — 2026-08-29
 
 
