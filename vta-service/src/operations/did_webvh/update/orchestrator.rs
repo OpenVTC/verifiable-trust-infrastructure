@@ -808,6 +808,28 @@ async fn run_update(
 
     // 5. Resolve effective pre-rotation count.
     let pre_rotation_count = opts.pre_rotation_count.unwrap_or(record.pre_rotation_count);
+    // Whether this entry restates `nextKeyHashes` at all (step 9 consumes this),
+    // and whether what it restates is a live commitment rather than the empty
+    // array that turns pre-rotation off. Computed once so the derivation sizing
+    // here and the builder call in step 9 cannot drift apart.
+    let sends_next_key_hashes = opts.pre_rotation_count.is_some() || record.pre_rotation_count > 0;
+    let commits_next_key_hashes = sends_next_key_hashes && pre_rotation_count > 0;
+    // This entry *turns pre-rotation on*: the previous entry committed no
+    // hashes, this one does.
+    //
+    // Such an entry must not also mint a new update key, and the reason is
+    // structural rather than a workaround. Under pre-rotation the next entry is
+    // authorized by its own `updateKeys`, which must hash into the commitment
+    // this entry publishes (didwebvh 1.0 verification algorithm step 7) — so a
+    // key minted here would authorize nothing: the next entry has to reveal a
+    // pre-rotation key instead. Rotating on the way in burns a derivation index
+    // to install a handle that can never sign, and leaves an "active update key"
+    // on record that the next update will not consult.
+    //
+    // Leaving `updateKeys` unrestated is legal precisely because pre-rotation is
+    // not yet in force on the *previous* entry: inheritance is only forbidden
+    // once the predecessor has committed hashes.
+    let activates_pre_rotation = !pre_rotation_active && commits_next_key_hashes;
 
     // 6. Resolve context base path for BIP-32 derivation.
     let context = crate::contexts::get_context(contexts_ks, &record.context_id)
@@ -834,7 +856,8 @@ async fn run_update(
     let path_counter_pin = peek_path_counter(keys_ks, &context.base_path)
         .await
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("peek_path_counter: {e}")))?;
-    let auth_count: u32 = u32::from(new_doc.is_some() && !pre_rotation_active);
+    let auth_count: u32 =
+        u32::from(new_doc.is_some() && !pre_rotation_active && !activates_pre_rotation);
     let total_keys = auth_count + pre_rotation_count;
 
     // Plan and execute derive the *same contiguous block* and split it the same
@@ -921,7 +944,11 @@ async fn run_update(
     // Deriving it twice would be the same mistake this whole plan/apply split
     // exists to avoid: a second implementation of the handler's semantics that
     // is free to drift from the first.
-    let set_update_keys: Option<Vec<Multibase>> = if new_doc.is_some() && !pre_rotation_active {
+    //
+    // Keyed on `derived_auth` rather than restating the predicate that sized it:
+    // a fresh update key is declared exactly when one was derived, so the two
+    // cannot disagree about whether this entry rotates.
+    let set_update_keys: Option<Vec<Multibase>> = if !derived_auth.is_empty() {
         Some(
             derived_auth
                 .iter()
@@ -963,7 +990,7 @@ async fn run_update(
     // Always pass next_key_hashes when caller toggled pre-rotation OR
     // when the DID currently uses pre-rotation — keeps the commitment
     // chain unbroken. Empty vec disables pre-rotation going forward.
-    if opts.pre_rotation_count.is_some() || record.pre_rotation_count > 0 {
+    if sends_next_key_hashes {
         let hashes: Vec<Multibase> = derived_pre_rotation
             .iter()
             .map(|k| Multibase::from(k.hash.clone()))

@@ -1069,6 +1069,139 @@ mod pre_rotation_e2e_tests {
         assert_chain_validates(&ts, &did).await;
     }
 
+    /// Read the `parameters` object of the most recent log entry.
+    async fn head_parameters(ts: &TestStore, did: &str) -> serde_json::Value {
+        let log = crate::webvh_store::get_did_log(&ts.webvh_ks, did)
+            .await
+            .expect("get_did_log")
+            .expect("log present");
+        let last = log
+            .lines()
+            .rfind(|l| !l.trim().is_empty())
+            .expect("log has an entry");
+        let entry: serde_json::Value = serde_json::from_str(last).expect("parse log entry");
+        entry
+            .get("parameters")
+            .cloned()
+            .expect("entry has parameters")
+    }
+
+    /// Regression: turning pre-rotation ON for a DID that has never used it,
+    /// in the same entry that edits the document. This is what an operator does
+    /// answering "yes" to `pnm did-mgmt dids edit`'s "Override pre-rotation
+    /// count?" prompt on a DID reporting "never enabled".
+    ///
+    /// It used to fail with didwebvh-rs `ValidationError: nextKeyHashes must be
+    /// defined when pre-rotation is active`, surfaced to the operator as a bare
+    /// `internalError`. A document change mints a fresh update key, so the entry
+    /// carried both `updateKeys` and the DID's first `nextKeyHashes` — and the
+    /// library demanded the new keys hash into a commitment the previous entry
+    /// had never made.
+    ///
+    /// The activating entry now leaves `updateKeys` unrestated. That is not a
+    /// workaround for the library: under pre-rotation the *next* entry is
+    /// authorized by its own pre-committed keys, so a key minted here could
+    /// never sign anything.
+    #[tokio::test]
+    async fn enabling_pre_rotation_on_a_did_without_it_succeeds() {
+        let (ts, seed_store) = setup("ctx-pre-enable").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+
+        // Genesis without pre-rotation.
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-pre-enable",
+            0,
+        )
+        .await;
+        let genesis_params = head_parameters(&ts, &did).await;
+        assert!(
+            genesis_params.get("nextKeyHashes").is_none(),
+            "genesis must not commit pre-rotation hashes: {genesis_params}"
+        );
+        let genesis_update_keys = genesis_params
+            .get("updateKeys")
+            .cloned()
+            .expect("genesis declares updateKeys");
+        sleep(VERSION_TIME_GAP).await;
+
+        // Document edit + first-ever pre-rotation commitment, one entry.
+        let result = update_did_webvh(
+            &deps,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "v2")),
+                pre_rotation_count: Some(1),
+                ..Default::default()
+            },
+            None,
+            "test",
+        )
+        .await
+        .expect("enabling pre-rotation alongside a document edit must succeed");
+
+        assert!(result.new_version_id.starts_with("2-"));
+        assert_eq!(result.pre_rotation_key_count, 1);
+
+        let activating_params = head_parameters(&ts, &did).await;
+        assert_eq!(
+            activating_params
+                .get("nextKeyHashes")
+                .and_then(|v| v.as_array())
+                .map(Vec::len),
+            Some(1),
+            "activating entry must publish the commitment: {activating_params}"
+        );
+        assert!(
+            activating_params.get("updateKeys").is_none(),
+            "activating entry must inherit updateKeys rather than mint a key that \
+             could never sign: {activating_params}"
+        );
+        assert_chain_validates(&ts, &did).await;
+        sleep(VERSION_TIME_GAP).await;
+
+        // The commitment is real: the next update reveals the committed key,
+        // restates `updateKeys` (inheritance is forbidden while pre-rotation is
+        // active), and the chain still validates end-to-end.
+        let result2 = update_did_webvh(
+            &deps,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "v3")),
+                ..Default::default()
+            },
+            None,
+            "test",
+        )
+        .await
+        .expect("update after activation must reveal the committed key");
+
+        assert!(result2.new_version_id.starts_with("3-"));
+        assert_eq!(result2.pre_rotation_key_count, 1);
+        let revealed_params = head_parameters(&ts, &did).await;
+        let revealed_keys = revealed_params
+            .get("updateKeys")
+            .cloned()
+            .expect("an entry published under pre-rotation must restate updateKeys");
+        assert_ne!(
+            revealed_keys, genesis_update_keys,
+            "the revealed key must be the pre-committed one, not the genesis key"
+        );
+        assert_chain_validates(&ts, &did).await;
+    }
+
     /// Disabling pre-rotation mid-chain: signing key still must come
     /// from the previous entry's `next_key_hashes`, but the new
     /// entry's `next_key_hashes` is empty (turning off the feature).

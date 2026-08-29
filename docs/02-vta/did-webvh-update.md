@@ -26,6 +26,15 @@ Both are exposed via three surfaces: REST, DIDComm, and `vta-sdk`'s
 - **Metadata-only updates skip key rotation.** Witness / watcher / TTL
   changes (and toggling pre-rotation on/off) all leave VM keys
   untouched.
+- **The entry that turns pre-rotation on does not rotate `update_keys`,
+  even when it carries a new document.** From that entry forward the
+  next update is authorized by the key committed in `next_key_hashes`,
+  not by anything minted alongside the document — so a fresh update key
+  here would be published, stored, and never able to sign. The previous
+  entry's `update_keys` stay in force (inheritance is legal because
+  pre-rotation was not yet active on that entry), and the next update
+  reveals the committed key as required. Later entries, with pre-rotation
+  already active, restate `update_keys` on every update.
 - **`rotate-keys`** is the explicit "rotate everything" entry point.
   Same effective state as `update` with a freshly rebuilt doc.
 

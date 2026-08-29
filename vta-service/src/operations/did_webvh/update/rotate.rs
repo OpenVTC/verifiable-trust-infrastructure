@@ -17,7 +17,10 @@ use crate::webvh_store;
 /// Rotate every verificationMethod's keys (preserving role/type but
 /// minting fresh public-key bytes + bumping fragment ids), then drive
 /// the doc-bearing [`update_did_webvh`] path. Auth keys + pre-rotation
-/// rotate as a consequence of the document update.
+/// rotate as a consequence of the document update — except on an entry
+/// that *activates* pre-rotation, where the authorization keys stay in
+/// force because the commitment this entry publishes is what authorizes
+/// the next one.
 pub async fn rotate_did_webvh_keys(
     deps: &super::super::WebvhDeps<'_>,
     auth: &AuthClaims,
@@ -153,7 +156,8 @@ pub async fn rotate_did_webvh_keys(
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("store_did (frag bump): {e}")))?;
 
     // 5. Drive the generic update path. The doc-bearing branch will
-    //    rotate auth keys + pre-rotation as a side effect.
+    //    rotate auth keys + pre-rotation as a side effect (see the note
+    //    above for the one entry where it does not).
     let label = opts
         .label
         .or_else(|| Some(format!("rotate-keys for {}", record.did)));
