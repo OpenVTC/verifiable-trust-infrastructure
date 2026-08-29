@@ -110,6 +110,7 @@ impl VtaClient {
                         client_did: input.credential_did.to_string(),
                         private_key_multibase: input.private_key_multibase.to_string(),
                         vta_did: input.vta_did.to_string(),
+                        verification_method: None,
                     },
                     token.access_token.clone(),
                 )

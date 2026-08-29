@@ -331,9 +331,12 @@ async fn authenticate_trust_task(
     }
 
     // From here the caller's intent is unambiguous; failures are real.
-    let signer_did = vti_common::auth::di_proof::verify_trust_task_proof(&doc)
-        .await
-        .map_err(|e| AppError::Authentication(e.to_string()))?;
+    let signer_did = vti_common::auth::di_proof::verify_trust_task_proof_with(
+        &doc,
+        &state.trust_task_vm_resolver(),
+    )
+    .await
+    .map_err(|e| AppError::Authentication(e.to_string()))?;
     let payload: authenticate::Payload = serde_json::from_value(doc.payload.clone())
         .map_err(|e| AppError::Authentication(format!("invalid authenticate payload: {e}")))?;
 

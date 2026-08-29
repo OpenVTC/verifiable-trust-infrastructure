@@ -171,9 +171,12 @@ pub async fn publish(
     //     the key for. Removing them from the community does stop
     //     them immediately, because `is_current_member` reads the
     //     ACL live.
-    let signer_did = vti_common::auth::di_proof::verify_trust_task_proof(&doc)
-        .await
-        .map_err(|e| AppError::Forbidden(format!("document proof: {e}")))?;
+    let signer_did = vti_common::auth::di_proof::verify_trust_task_proof_with(
+        &doc,
+        &state.trust_task_vm_resolver(),
+    )
+    .await
+    .map_err(|e| AppError::Forbidden(format!("document proof: {e}")))?;
 
     // 0c. Per-DID rate limiting, keyed on the HMAC of the signer
     //     rather than the DID itself — the discipline the audit

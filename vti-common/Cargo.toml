@@ -79,6 +79,7 @@ bytes = "1"
 # Secrets resolver (for error type)
 affinidi-tdk = { workspace = true }
 affinidi-data-integrity = { workspace = true }
+affinidi-secrets-resolver = { workspace = true }
 trust-tasks-rs = { workspace = true }
 trust-tasks-capability-client = { workspace = true }
 # DID resolution for SIOPv2 id_token verification (auth::siop). The

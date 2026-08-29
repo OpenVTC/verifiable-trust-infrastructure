@@ -92,6 +92,7 @@ fn test_identity() -> vta_sdk::client::ClientIdentity {
             sk.to_bytes().as_slice(),
         ),
         vta_did: "did:key:z6MkTestVta".into(),
+        verification_method: None,
     }
 }
 

@@ -36,26 +36,74 @@ pub(super) struct RestAuth {
 /// SPEC §7.2 turns two of these into hard requirements, and this SDK carried
 /// neither until the VTA started enforcing them:
 ///
-/// * **item 5b** — every one of the 109 tasks this SDK dispatches declares
+/// * **item 5b** — 343 of the 344 published request payloads declare
 ///   `recipient` REQUIRED, so a document with no in-band recipient is
 ///   `malformedRequest`. `build_task_document` used to emit exactly that.
-/// * **item 7a** — 72 of them declare `proof` REQUIRED. A bearer token
+/// * **item 7a** — 210 of them declare `proof` REQUIRED. A bearer token
 ///   authenticates the *connection*; it says nothing about the document, and
 ///   §7.2 item 7 admits no transport substitute.
 ///
 /// Held together because they are not independent: attaching a proof without an
 /// in-band recipient trips item 8 (audience binding) on any non-bearer spec, so
 /// a client that can sign must also know who it is signing *to*.
+///
+/// # Any DID may be the producer
+///
+/// `client_did` is not restricted to `did:key`. A `did:webvh` holder — which is
+/// what every integration this workspace provisions actually has — signs by
+/// naming its key in [`verification_method`](Self::verification_method);
+/// see [`HolderKey`](crate::trust_task_sign::HolderKey).
 #[derive(Clone, Debug)]
 pub struct ClientIdentity {
-    /// The producer's `did:key`. Becomes the document's `issuer`, and must
-    /// match the identity the transport authenticates as — item 6 rejects a
-    /// document whose in-band issuer disagrees with it.
+    /// The producer's DID. Becomes the document's `issuer`, and must match the
+    /// identity the transport authenticates as — item 6 rejects a document
+    /// whose in-band issuer disagrees with it.
     pub client_did: String,
-    /// Multibase-encoded Ed25519 seed for `client_did`.
+    /// Multibase-encoded Ed25519 seed for the signing key.
     pub private_key_multibase: String,
     /// The VTA's DID. Becomes the document's `recipient`.
     pub vta_did: String,
+    /// The verification method the proof names, when `client_did` does not
+    /// determine it.
+    ///
+    /// `None` means "derive it", which is only possible for a `did:key`, whose
+    /// key *is* its identifier. Every other method must name one —
+    /// `did:webvh:<scid>:example.com:glenn#key-0` — because a DID document
+    /// decides what its keys are called and no amount of string manipulation
+    /// can guess it.
+    pub verification_method: Option<String>,
+}
+
+impl ClientIdentity {
+    /// A `did:key` producer, whose verification method is derivable.
+    pub fn did_key(
+        client_did: impl Into<String>,
+        private_key_multibase: impl Into<String>,
+        vta_did: impl Into<String>,
+    ) -> Self {
+        Self {
+            client_did: client_did.into(),
+            private_key_multibase: private_key_multibase.into(),
+            vta_did: vta_did.into(),
+            verification_method: None,
+        }
+    }
+
+    /// The signing key this identity produces proofs with.
+    ///
+    /// Fails only when the identity cannot name a key at all: no
+    /// `verification_method` and a `client_did` that is not a `did:key`.
+    pub fn holder_key(
+        &self,
+    ) -> Result<crate::trust_task_sign::HolderKey, crate::trust_task_sign::TrustTaskSignError> {
+        match &self.verification_method {
+            Some(vm) => crate::trust_task_sign::HolderKey::new(vm, &self.private_key_multibase),
+            None => crate::trust_task_sign::HolderKey::from_did_key(
+                &self.client_did,
+                &self.private_key_multibase,
+            ),
+        }
+    }
 }
 
 /// Cloneable transport layer.
@@ -416,6 +464,7 @@ impl VtaClient {
             client_did: cred.did.clone(),
             private_key_multibase: cred.private_key_multibase.clone(),
             vta_did: cred.vta_did.clone(),
+            verification_method: None,
         };
 
         Ok(Self {
@@ -497,6 +546,7 @@ impl VtaClient {
                 client_did: client_did.to_string(),
                 private_key_multibase: private_key_multibase.to_string(),
                 vta_did: vta_did.to_string(),
+                verification_method: None,
             }),
         ))
     }
@@ -585,6 +635,7 @@ impl VtaClient {
                 client_did: client_did.to_string(),
                 private_key_multibase: private_key_multibase.to_string(),
                 vta_did: vta_did.to_string(),
+                verification_method: None,
             }),
         ))
     }
@@ -628,12 +679,11 @@ impl VtaClient {
         .await
         .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
 
-        // No `ClientIdentity`: the holder here is `bundle.did` — a
-        // `did:webvh` — and `trust_task_sign` signs for `did:key` holders
-        // only. Carrying an unsignable identity would buy an in-band
-        // `recipient` and then fail at the proof, so the gap is left visible
-        // to `signed_task_document` instead.
-        Ok(Self::didcomm_transport(session, rest_url, None))
+        Ok(Self::didcomm_transport(
+            session,
+            rest_url,
+            bundle_identity(bundle, vta_did),
+        ))
     }
 
     /// Connect from a hosted-DID secrets bundle as one identity **on a shared
@@ -663,12 +713,11 @@ impl VtaClient {
         .await
         .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
 
-        // No `ClientIdentity`: the holder here is `bundle.did` — a
-        // `did:webvh` — and `trust_task_sign` signs for `did:key` holders
-        // only. Carrying an unsignable identity would buy an in-band
-        // `recipient` and then fail at the proof, so the gap is left visible
-        // to `signed_task_document` instead.
-        Ok(Self::didcomm_transport(session, rest_url, None))
+        Ok(Self::didcomm_transport(
+            session,
+            rest_url,
+            bundle_identity(bundle, vta_did),
+        ))
     }
 
     /// Connect via **TSP** through a mediator — the transport-agnostic
@@ -731,6 +780,7 @@ impl VtaClient {
                 client_did: client_did.to_string(),
                 private_key_multibase: private_key_multibase.to_string(),
                 vta_did: vta_did.to_string(),
+                verification_method: None,
             }),
         ))
     }
@@ -770,6 +820,7 @@ impl VtaClient {
                 client_did: client_did.to_string(),
                 private_key_multibase: private_key_multibase.to_string(),
                 vta_did: vta_did.to_string(),
+                verification_method: None,
             }),
         ))
     }
@@ -2682,6 +2733,30 @@ mod tests {
     }
 }
 
+/// The [`ClientIdentity`] a hosted-DID secrets bundle can sign as.
+///
+/// The holder is the bundle's `did:webvh`, which names its keys in its own DID
+/// document — so the identity carries the verification method verbatim from the
+/// bundle rather than deriving one, which is only possible for a `did:key`.
+///
+/// `None` when the bundle has no Ed25519 key to sign with. That is the honest
+/// answer rather than a placeholder identity: `signed_task_document` then
+/// refuses locally and names the missing piece, instead of building a document
+/// that fails at the far end.
+#[cfg(feature = "session")]
+fn bundle_identity(
+    bundle: &crate::did_secrets::DidSecretsBundle,
+    vta_did: &str,
+) -> Option<ClientIdentity> {
+    let entry = bundle.trust_task_signing_key()?;
+    Some(ClientIdentity {
+        client_did: bundle.did.clone(),
+        private_key_multibase: entry.private_key_multibase.clone(),
+        vta_did: vta_did.to_string(),
+        verification_method: Some(entry.key_id.clone()),
+    })
+}
+
 /// Build the Trust Task document a dispatch sends.
 ///
 /// Split out of [`VtaClient::dispatch_trust_task`] so the one interesting thing
@@ -2748,13 +2823,14 @@ impl VtaClient {
             .map_err(|e| {
             VtaError::Protocol(format!("could not build a Trust Task document: {e}"))
         })?;
-        crate::trust_task_sign::sign_in_place(
-            &mut typed,
-            &identity.client_did,
-            &identity.private_key_multibase,
-        )
-        .await
-        .map_err(|e| VtaError::Protocol(format!("could not sign the Trust Task document: {e}")))?;
+        let key = identity
+            .holder_key()
+            .map_err(|e| VtaError::Protocol(format!("this client cannot sign: {e}")))?;
+        crate::trust_task_sign::sign_in_place_with(&mut typed, &key)
+            .await
+            .map_err(|e| {
+                VtaError::Protocol(format!("could not sign the Trust Task document: {e}"))
+            })?;
         serde_json::to_value(&typed)
             .map_err(|e| VtaError::Protocol(format!("could not serialise the document: {e}")))
     }
@@ -2898,6 +2974,7 @@ mod client_identity_tests {
             client_did,
             private_key_multibase,
             vta_did: "did:key:z6MkVta".to_string(),
+            verification_method: None,
         }
     }
 

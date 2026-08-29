@@ -281,6 +281,18 @@ pub struct AppState {
     pub metrics_handle: Option<crate::metrics::PrometheusHandle>,
 }
 
+impl AppState {
+    /// The resolver Trust Task Data-Integrity proofs are verified with.
+    ///
+    /// Carries the configured DID cache, so a proof by any DID that names a key
+    /// — `did:webvh:<scid>:example.com:glenn#key-0` as much as a `did:key` —
+    /// resolves. With no cache configured this degrades to `did:key` only,
+    /// which is what a deployment with no outbound DID resolution gets.
+    pub fn trust_task_vm_resolver(&self) -> vti_common::auth::TrustTaskVmResolver {
+        vti_common::auth::TrustTaskVmResolver::from_optional(self.did_resolver.clone())
+    }
+}
+
 impl AuthState for AppState {
     fn jwt_keys(&self) -> Option<&Arc<JwtKeys>> {
         self.jwt_keys.as_ref()

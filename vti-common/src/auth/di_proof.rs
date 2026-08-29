@@ -16,11 +16,27 @@
 //! same wire shape* — a divergence between them is a divergence in what a
 //! signature means, which is not a thing to let happen twice.
 //!
-//! `did:key` resolution is local (no network I/O) — the mobile holder key is
-//! always a `did:key`, matching the engine's signing side, and it keeps proof
-//! verification off the network on an unauthenticated route.
+//! # Which DIDs may sign
+//!
+//! Any DID that can name a key. A proof's `verificationMethod` is resolved by
+//! [`TrustTaskVmResolver`](super::vm_resolver::TrustTaskVmResolver), which
+//! handles `did:key` locally and every other method through the configured DID
+//! cache — so `did:webvh:<scid>:example.com:glenn#key-0` signs a Trust Task
+//! exactly as a `did:key` does.
+//!
+//! This used to be `did:key` only, on the reasoning that the mobile holder key
+//! is always a `did:key` and it kept proof verification off the network on an
+//! unauthenticated route. The first half was never true of the whole surface:
+//! every DID this workspace provisions for an integration is a `did:webvh`, so
+//! the restriction meant a provisioned integration could not sign a Trust Task
+//! at all. The second half is a real cost and is bounded rather than dismissed
+//! — see the resolver's own module docs, and
+//! [`verify_trust_task_proof`], whose `did:key`-only behaviour is unchanged for
+//! callers that want it.
 
-use affinidi_data_integrity::{DataIntegrityProof, DidKeyResolver, VerifyOptions};
+use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
+
+use super::vm_resolver::TrustTaskVmResolver;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 
@@ -77,6 +93,17 @@ impl std::fmt::Display for DiProofError {
     }
 }
 
+/// Verify the proof on `doc` **against `did:key` only**, with no network I/O.
+///
+/// The narrow form, kept for callers whose signer is a `did:key` by
+/// construction and who do not want an unauthenticated request to be able to
+/// trigger DID resolution. Anything that must accept a provisioned
+/// integration's `did:webvh` holder wants
+/// [`verify_trust_task_proof_with`] and a configured resolver.
+pub async fn verify_trust_task_proof(doc: &TrustTask<Value>) -> Result<String, DiProofError> {
+    verify_trust_task_proof_with(doc, &TrustTaskVmResolver::did_key_only()).await
+}
+
 /// Verify the `eddsa-jcs-2022` Data-Integrity proof on `doc` and return the
 /// proven signer DID — the base DID (before `#`) of the proof's
 /// `verificationMethod`.
@@ -84,8 +111,14 @@ impl std::fmt::Display for DiProofError {
 /// The signature is verified over the document with its `proof` block removed
 /// (`eddsa-jcs-2022` canonicalises the proofless document via JCS). The
 /// returned DID is *proven*, not merely claimed; binding it to an expected
-/// identity (session DID, document issuer) is the caller's job.
-pub async fn verify_trust_task_proof(doc: &TrustTask<Value>) -> Result<String, DiProofError> {
+/// identity (session DID, document issuer) is the caller's job — and remains so
+/// however the verification method resolved. A proof by
+/// `did:webvh:…:someone-else#key-0` verifies perfectly well; that it is not the
+/// party you expected is a separate check, and not one this function makes.
+pub async fn verify_trust_task_proof_with(
+    doc: &TrustTask<Value>,
+    resolver: &TrustTaskVmResolver,
+) -> Result<String, DiProofError> {
     let proof = doc.proof.as_ref().ok_or(DiProofError::NoProof)?;
 
     // The framework `Proof` round-trips into a `DataIntegrityProof` (same shape;
@@ -107,7 +140,7 @@ pub async fn verify_trust_task_proof(doc: &TrustTask<Value>) -> Result<String, D
 
     let mut unsigned = doc.clone();
     unsigned.proof = None;
-    di.verify(&unsigned, &DidKeyResolver, VerifyOptions::new())
+    di.verify(&unsigned, resolver, VerifyOptions::new())
         .await
         .map_err(|e| DiProofError::VerifyFailed(e.to_string()))?;
 

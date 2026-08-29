@@ -249,7 +249,7 @@ async fn try_authenticate_trust_task(
     }
 
     // From here the caller's intent is unambiguous; failures are real.
-    let signer_did = verify_authenticate_proof(&doc).await?;
+    let signer_did = verify_authenticate_proof(state, &doc).await?;
     let payload: authenticate::Payload = serde_json::from_value(doc.payload.clone())
         .map_err(|e| AppError::Authentication(format!("invalid authenticate payload: {e}")))?;
     let session_id = payload.session_id.to_string();
@@ -288,9 +288,14 @@ async fn try_authenticate_trust_task(
 /// the subject is *unknown a priori* — it's derived from the proof rather than
 /// checked against an expected value. The signer↔session binding is enforced
 /// downstream by the canonical handler (`signer_did == session.did`).
-/// `did:key` resolution is local (no I/O), matching the mobile holder key.
-async fn verify_authenticate_proof(doc: &TrustTask<Value>) -> Result<String, AppError> {
-    crate::auth::di_proof::verify_trust_task_proof(doc)
+/// Verified against the state's resolver, so a `did:webvh` holder — which is
+/// what every provisioned integration has — can authenticate. `did:key` still
+/// resolves locally, so the mobile holder's login costs no I/O.
+async fn verify_authenticate_proof(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+) -> Result<String, AppError> {
+    crate::auth::di_proof::verify_trust_task_proof_with(doc, &state.trust_task_vm_resolver())
         .await
         .map_err(|e| AppError::Authentication(e.to_string()))
 }
