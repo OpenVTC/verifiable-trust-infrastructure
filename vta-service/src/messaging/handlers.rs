@@ -1522,12 +1522,15 @@ pub async fn handle_provision_integration(
         },
     };
 
-    // Match the response URI to whichever request URI the caller used.
-    // A client targeting the canonical Trust Task URI
-    // (`https://trusttasks.org/spec/provision/integration/0.1`) receives
-    // the canonical `#response` fragment; the legacy FPN URI gets the
-    // legacy `…-result`. Both share one handler so the routing decision
-    // lives in `result_uri_for` rather than two parallel branches here.
+    // Match the response URI to whichever request URI the caller used: the
+    // request URI plus a `#response` fragment, per SPEC.md §4.4.1. The
+    // decision lives in `result_uri_for` rather than in a literal here, so
+    // that it stays beside the URI constants it chooses between.
+    //
+    // It has to name the same version as `response_body_for_version` below,
+    // which is the pairing that came apart at 0.3: the body was rendered 0.3
+    // and this line answered 0.1, so a successful provisioning went out under
+    // a schema its own body could not satisfy and holders discarded it.
     let result_uri =
         vta_sdk::protocols::provision_integration_management::result_uri_for(&message.typ);
 

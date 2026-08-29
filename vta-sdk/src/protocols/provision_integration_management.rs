@@ -75,15 +75,31 @@ pub const CANONICAL_PROVISION_INTEGRATION_0_3_RESULT: &str =
 
 /// Match the result URI to whichever request URI the caller used.
 /// Centralised here so the routing decision lives next to the URI
-/// constants — handlers downstream just call this. The 0.2 request URI
-/// maps to the 0.2 `#response`; the 0.1 request URI (the only other shape
-/// the router advertises) maps to the 0.1 `#response`.
+/// constants — handlers downstream just call this.
+///
+/// Resolved through [`ProvisionSpecVersion::from_request_uri`] rather than by
+/// testing for one version and falling through, which is what this function
+/// used to do: `== 0.2` picked the 0.2 `#response`, and *everything else* —
+/// including the 0.3 that #1147 made the only version the router accepts —
+/// picked the 0.1 `#response`. The handler beside it rendered a 0.3 body, so
+/// every DIDComm reply went out as a `digestMultibase` body labelled
+/// `provision/integration/0.1#response`: a message invalid under the schema
+/// it names, since 0.1's response requires a bare-hex `digest` and closes
+/// with `additionalProperties: false`. A wallet checking the reply type
+/// rejected a provisioning run that had actually succeeded — the bundle was
+/// sealed and the admin rolled over, and the holder threw the result away.
+///
+/// The same shape of bug was fixed in [`is_v0_1`] for the same reason: a
+/// predicate about one version has to name that version, because the
+/// fall-through arm silently claims every version nobody has written yet.
+///
+/// An unrecognised URI resolves to [`ProvisionSpecVersion::CURRENT`], which
+/// is the version [`response_body_for_version`] renders it in — the URI and
+/// the body it labels stay the same version even here.
 pub fn result_uri_for(request_uri: &str) -> &'static str {
-    if request_uri == CANONICAL_PROVISION_INTEGRATION_0_2 {
-        CANONICAL_PROVISION_INTEGRATION_0_2_RESULT
-    } else {
-        CANONICAL_PROVISION_INTEGRATION_RESULT
-    }
+    ProvisionSpecVersion::from_request_uri(request_uri)
+        .unwrap_or(ProvisionSpecVersion::CURRENT)
+        .result_uri()
 }
 
 pub mod request {
@@ -107,10 +123,13 @@ use crate::provision_integration::http::{
     ProvisionIntegrationRequest, ProvisionIntegrationResponse,
 };
 
-/// Which casing convention a provision-integration body is emitted under. The
-/// 0.1 wire form is snake_case fields + kebab-case `assertion`; the 0.2 form is
-/// lowerCamelCase throughout, per `dtgwg-trust-tasks-tf`'s
-/// `provision/integration/0.2` schema.
+/// Which version of the provision-integration wire form a body is emitted
+/// under. The 0.1 form is snake_case fields + kebab-case `assertion`; 0.2 and
+/// 0.3 are lowerCamelCase throughout, per `dtgwg-trust-tasks-tf`'s schemas.
+/// 0.3 additionally replaces the response's bare-hex `digest` with
+/// `digestMultibase`, which is why it could not be served from the same
+/// response body as its predecessors — both close with
+/// `additionalProperties: false`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProvisionSpecVersion {
     V0_1,
@@ -119,6 +138,15 @@ pub enum ProvisionSpecVersion {
 }
 
 impl ProvisionSpecVersion {
+    /// Every version this crate can name, newest last.
+    ///
+    /// Exists so [`from_request_uri`](Self::from_request_uri) can be a search
+    /// rather than a hand-written reverse map. A reverse map is the half that
+    /// gets forgotten: `request_uri` below is an exhaustive `match`, so a new
+    /// variant cannot compile without an entry, but nothing forced the
+    /// corresponding *inbound* mapping to move — and at 0.3 it did not.
+    pub const ALL: &'static [Self] = &[Self::V0_1, Self::V0_2, Self::V0_3];
+
     /// The version every client in this workspace dispatches under.
     ///
     /// Named once, because the per-transport alternative already failed: when
@@ -143,6 +171,30 @@ impl ProvisionSpecVersion {
             ProvisionSpecVersion::V0_2 => CANONICAL_PROVISION_INTEGRATION_0_2,
             ProvisionSpecVersion::V0_3 => CANONICAL_PROVISION_INTEGRATION_0_3,
         }
+    }
+
+    /// The canonical result URI a request at this version is answered under.
+    ///
+    /// Per SPEC.md §4.4.1 of `dtgwg-trust-tasks-tf` this is always the request
+    /// URI plus a `#response` fragment, which
+    /// `result_uri_is_request_uri_plus_response_fragment` asserts for every
+    /// variant — the constants are written out rather than concatenated so
+    /// that the test compares two independently-derived strings.
+    pub fn result_uri(self) -> &'static str {
+        match self {
+            ProvisionSpecVersion::V0_1 => CANONICAL_PROVISION_INTEGRATION_RESULT,
+            ProvisionSpecVersion::V0_2 => CANONICAL_PROVISION_INTEGRATION_0_2_RESULT,
+            ProvisionSpecVersion::V0_3 => CANONICAL_PROVISION_INTEGRATION_0_3_RESULT,
+        }
+    }
+
+    /// Which version a request URI addresses, or `None` if it names no
+    /// version this crate knows.
+    pub fn from_request_uri(request_uri: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|v| v.request_uri() == request_uri)
     }
 }
 
@@ -220,10 +272,11 @@ pub fn request_body_for_version(
 }
 
 /// Serialise a provision-integration **response** body in the casing
-/// `request_uri` implies. 0.2 is the canonical serialization (identity); for
-/// a **0.1** requester the `summary` object's keys are down-cased
-/// (`clientDid` → `client_did`, `bundleIdHex` → `bundle_id_hex`, …). The
-/// top-level `bundle`/`digest` are opaque single-word fields and unchanged.
+/// `request_uri` implies. lowerCamelCase is the canonical serialization
+/// (identity for 0.2 and 0.3); for a **0.1** requester the `summary` object's
+/// keys are down-cased (`clientDid` → `client_did`, `bundleIdHex` →
+/// `bundle_id_hex`, …). The top-level `bundle`/`digestMultibase` are opaque
+/// single-word fields and unchanged.
 pub fn response_body_for_version(
     resp: &ProvisionIntegrationResponse,
     request_uri: &str,
@@ -257,15 +310,76 @@ mod tests {
         );
     }
 
-    /// Unknown / future URIs default to the 0.1 result URI. The router
-    /// only advertises the 0.1 and 0.2 URIs, so this branch is unreachable
-    /// in production — but exercising it pins the fallback so a future
-    /// widening doesn't silently change the default response shape.
     #[test]
-    fn result_uri_for_unknown_request_defaults_to_v0_1() {
+    fn result_uri_for_v0_3_request_emits_v0_3_response() {
+        assert_eq!(
+            result_uri_for(CANONICAL_PROVISION_INTEGRATION_0_3),
+            CANONICAL_PROVISION_INTEGRATION_0_3_RESULT
+        );
+    }
+
+    /// The response URI and the response *body* are two decisions taken off
+    /// the same `request_uri`, one line apart in the DIDComm handler. They
+    /// have to name the same version, and for 0.3 they did not: the body was
+    /// rendered 0.3 and the URI came back 0.1, so the reply announced a
+    /// schema it could not satisfy.
+    ///
+    /// Asserted over `ALL` rather than per-version, because the failure this
+    /// catches is a *new* version arriving and one of the two halves not
+    /// moving with it.
+    #[test]
+    fn result_uri_for_agrees_with_the_version_the_request_uri_names() {
+        for v in ProvisionSpecVersion::ALL {
+            assert_eq!(
+                result_uri_for(v.request_uri()),
+                v.result_uri(),
+                "{v:?}: result_uri_for disagrees with the version's own result URI"
+            );
+        }
+    }
+
+    /// SPEC.md §4.4.1 of `dtgwg-trust-tasks-tf`: a success response is emitted
+    /// under the request URI with a `#response` fragment. Holds for every
+    /// version, so assert the rule rather than three more pinned strings.
+    #[test]
+    fn result_uri_is_request_uri_plus_response_fragment() {
+        for v in ProvisionSpecVersion::ALL {
+            assert_eq!(v.result_uri(), format!("{}#response", v.request_uri()));
+        }
+    }
+
+    /// `ALL` has to list every variant, or `from_request_uri` answers `None`
+    /// for a version this crate can otherwise name — and `result_uri_for`
+    /// then silently falls back to `CURRENT`. The `match` is exhaustive, so
+    /// adding a variant fails to compile here until it is named.
+    #[test]
+    fn all_lists_every_version() {
+        for v in [
+            ProvisionSpecVersion::V0_1,
+            ProvisionSpecVersion::V0_2,
+            ProvisionSpecVersion::V0_3,
+        ] {
+            match v {
+                ProvisionSpecVersion::V0_1
+                | ProvisionSpecVersion::V0_2
+                | ProvisionSpecVersion::V0_3 => {}
+            }
+            assert!(
+                ProvisionSpecVersion::ALL.contains(&v),
+                "{v:?} is missing from ProvisionSpecVersion::ALL"
+            );
+        }
+    }
+
+    /// An unrecognised URI cannot reach the handler — the router binds
+    /// `CURRENT` alone — but if one ever did, the reply must be labelled the
+    /// version its body was actually rendered in. `response_body_for_version`
+    /// recases only for 0.1, so anything unknown is rendered `CURRENT`.
+    #[test]
+    fn result_uri_for_unknown_request_matches_the_body_it_would_render() {
         assert_eq!(
             result_uri_for("https://example.invalid/something-else"),
-            CANONICAL_PROVISION_INTEGRATION_RESULT
+            ProvisionSpecVersion::CURRENT.result_uri()
         );
     }
 
