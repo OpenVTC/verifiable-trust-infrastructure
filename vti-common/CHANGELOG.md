@@ -2,6 +2,77 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.15.0...vti-common-v0.16.0) — 2026-08-29
+
+
+### Added
+
+- **sdk**: Any DID that names a key may sign a Trust Task ([#1193](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1193))
+
+A Trust Task proof could only be made by a `did:key`. That was never a policy
+  anyone chose — it was the shape of two helpers, and it meant a provisioned
+  integration could not dispatch any of the 210 proof-requiring Trust Tasks, over
+  any transport, because every DID this workspace provisions is a `did:webvh`.
+
+  The rule is now the obvious one: **any DID that can name a key may sign**. The
+  DID method is not the authorization; resolving the verification method and
+  checking the signature is. `did:key:z6Mk…#z6Mk…`,
+  `did:webvh:<scid>:example.com:glenn#key-0` and `did:web:example.com#key-1` are
+  all ordinary holders.
+
+  What actually stood in the way:
+
+  The signer took `(holder_did, private_key)` and *derived* the verification
+  method as `<did>#<multibase>`. That derivation exists only for `did:key`, whose
+  key is its identifier — a `did:webvh` document decides what its keys are
+  called, so nothing can guess `#key-0`. A signer that takes only a DID
+  structurally cannot serve any other method. `HolderKey` now carries the
+  verification method; `HolderKey::from_did_key` keeps the derivation for the one
+  method that has one, and refuses to invent one for the others.
+
+  The verifier used `DidKeyResolver`, which refuses everything else.
+  `TrustTaskVmResolver` resolves `did:key` locally and any other method through
+  the configured DID cache, matching a proof's absolute `verificationMethod`
+  against a document that may name it relatively. It is hoisted from the
+  equivalent the VTC already had for credential verification.
+
+  `ClientIdentity` gains `verification_method`, and `connect_didcomm_bundle{,_on}`
+  build an identity from the bundle's own Ed25519 `SecretEntry` — whose `key_id`
+  *is* the verification method the DID document publishes, so nothing is guessed.
+  Those constructors passed `identity: None` deliberately; that reason is gone.
+
+  Every verifying call site now takes a resolver: the VTA's dispatch spine, REST
+  login, step-up and consent; the VTC's dispatch, REST login and relationships.
+  Threading it is the half that makes the signer change real.
+
+
+
+### Fixed
+
+- **vti-common**: Gate the keyspace name on the feature that reads it ([#1190](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1190))
+
+`cargo build -p pnm-cli` (and every other default-feature consumer) warned
+  `field `name` is never read` on `LocalKeyspaceHandle`. The field is not
+  unused — it is the keyspace name bound into the AES-GCM associated data, so
+  a value cannot be relocated to another keyspace that shares the storage key
+  and still authenticate. But every read of it builds an AAD, and all of them
+  sit behind `#[cfg(feature = "encryption")]`, which is off by default. With
+  the feature off there is genuinely nothing to read it.
+
+  So it is now gated with the feature it serves, exactly as the sibling
+  `encryption_key` field already is, and cfg'd at its one construction site.
+  The alternative — carrying it unconditionally under an `allow(dead_code)` —
+  would leave a security-relevant field looking like it might be doing
+  something in builds where it cannot.
+
+  No behaviour change in either configuration: with `encryption` on the field
+  and its readers are unchanged; with it off nothing referenced the field.
+  Verified warning-free on `cargo build --release -p pnm-cli` (defaults and
+  `config-session`), `cargo check -p vti-common --all-features --all-targets`,
+  and `cargo test -p vti-common --all-features` (476 passing).
+
+
+
 ## [0.15.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.14.0...vti-common-v0.15.0) — 2026-08-28
 
 

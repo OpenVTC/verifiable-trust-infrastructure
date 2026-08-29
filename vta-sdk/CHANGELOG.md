@@ -2,6 +2,162 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.31.1...vta-sdk-v0.32.0) — 2026-08-29
+
+
+### Added
+
+- **sdk**: Any DID that names a key may sign a Trust Task ([#1193](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1193))
+
+A Trust Task proof could only be made by a `did:key`. That was never a policy
+  anyone chose — it was the shape of two helpers, and it meant a provisioned
+  integration could not dispatch any of the 210 proof-requiring Trust Tasks, over
+  any transport, because every DID this workspace provisions is a `did:webvh`.
+
+  The rule is now the obvious one: **any DID that can name a key may sign**. The
+  DID method is not the authorization; resolving the verification method and
+  checking the signature is. `did:key:z6Mk…#z6Mk…`,
+  `did:webvh:<scid>:example.com:glenn#key-0` and `did:web:example.com#key-1` are
+  all ordinary holders.
+
+  What actually stood in the way:
+
+  The signer took `(holder_did, private_key)` and *derived* the verification
+  method as `<did>#<multibase>`. That derivation exists only for `did:key`, whose
+  key is its identifier — a `did:webvh` document decides what its keys are
+  called, so nothing can guess `#key-0`. A signer that takes only a DID
+  structurally cannot serve any other method. `HolderKey` now carries the
+  verification method; `HolderKey::from_did_key` keeps the derivation for the one
+  method that has one, and refuses to invent one for the others.
+
+  The verifier used `DidKeyResolver`, which refuses everything else.
+  `TrustTaskVmResolver` resolves `did:key` locally and any other method through
+  the configured DID cache, matching a proof's absolute `verificationMethod`
+  against a document that may name it relatively. It is hoisted from the
+  equivalent the VTC already had for credential verification.
+
+  `ClientIdentity` gains `verification_method`, and `connect_didcomm_bundle{,_on}`
+  build an identity from the bundle's own Ed25519 `SecretEntry` — whose `key_id`
+  *is* the verification method the DID document publishes, so nothing is guessed.
+  Those constructors passed `identity: None` deliberately; that reason is gone.
+
+  Every verifying call site now takes a resolver: the VTA's dispatch spine, REST
+  login, step-up and consent; the VTC's dispatch, REST login and relationships.
+  Threading it is the half that makes the signer change real.
+
+- **device**: Let a device correct its display name on the heartbeat ([#1191](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1191))
+
+`displayName` was written exactly once, at registration, and nothing in the
+  device family could change it. `device/register` is intentionally not
+  idempotent — a binding hangs off the caller's ACL entry, one per DID, and a
+  second claim is refused with `device/register:alreadyRegistered` — so a
+  renamed machine, or an install moved to another profile, kept announcing a
+  name that no longer identified it. The spec is explicit that `displayName`
+  exists "to help a human pick their own laptop out of a list", which is the
+  thing that degrades.
+
+  Heartbeat is where the spec already puts metadata drift: `platform` is
+  defined there as "updated platform descriptor if it changed since
+  registration". `ext` is the slot it provides for the rest, so a device now
+  sends `org.openvtc.device-name: { displayName }` and the VTA applies it.
+
+  Nothing about the register refusal moves. The binding, its `deviceId` and
+  its `registeredAt` are untouched, no new binding can be claimed this way,
+  and the entry `version` does not bump: a rename is metadata, and the spec
+  forbids `displayName` being used as a security input by anything that
+  renders it, so no policy decision can turn on it. The entry is fetched by
+  `auth.did`, so a device can only correct the binding it authenticated as.
+
+  A malformed extension is **ignored, not rejected**. A heartbeat's real job
+  is refreshing `lastSeenAt`, and failing the call over a bad name would make
+  a device with a client-side bug look offline — the more expensive error,
+  because it is the one that sends an operator after a machine that is running
+  fine. The 1..=128 bound the untyped `ext` slot cannot inherit from the
+  register schema is enforced here instead.
+
+  The extension key is defined once, in the SDK that produces it, and imported
+  by the service that honours it — the two sides otherwise agree by string,
+  and a typo on either would be a rename that silently never happens.
+
+  `device_heartbeat_named` is a new method rather than a wider
+  `device_heartbeat`: this crate is consumed across repositories, and
+  widening a public signature would spend a breaking release on a diagnostic
+  field. The new `ext` member on `DeviceHeartbeatBody` is still a public-field
+  addition, so this is a **minor** for `vta-sdk`, not a patch — nothing in the
+  workspace or in OpenVTC constructs that struct, but the semver report will
+  name it and the release should follow it.
+
+  A VTA that does not understand the extension ignores it (SPEC §4.5.1): the
+  heartbeat still refreshes liveness and the name stays as it was.
+
+
+
+### Fixed
+
+- **sdk**: Stop rewriting the envelope a Trust Task proof covers ([#1192](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1192))
+
+An operator running `pnm contexts create` against a production VTA got:
+
+      Protocol error: trust task failed [proofRequired]: proof required but
+      not present
+
+  That is `SpecPolicy::enforce` on the VTA's dispatch spine refusing a document
+  whose specification declares `proof` REQUIRED (SPEC §7.2 item 7a).
+
+  The cause is the one #1184 fixed: `didcomm_transport` and `tsp_transport` built
+  every client with `identity: None`, so `build_task_document` set no `issuer` or
+  `recipient` and `signed_task_document` attached no proof. What is new here is
+  why it reported itself as `proofRequired` rather than the `malformedRequest:
+  … no in-band recipient` #1184's changelog describes. `address_trust_task`
+  back-fills both members on the TSP paths, which satisfies item 5b — so a TSP
+  document sails past the recipient check and lands on the proof check instead.
+  Same defect, two names, depending on transport.
+
+  It is released in vta-sdk 0.31.1; pnm-cli 0.14.0 was cut against 0.31.0 and has
+  not been re-released, so an installed binary still carries it. Rebuilding, or
+  `--transport rest`, is the operator's way out.
+
+  Three things this changes.
+
+  `address_trust_task` no longer assigns `issuer` and `recipient`
+  unconditionally. A Data-Integrity proof covers every member but `proof`, so
+  writing either one *after* signing turns a valid signature into `proofInvalid`
+  at the far end — a failure that names the proof and says nothing about the
+  rewrite that caused it. The values come from the same triple the identity was
+  built from, so the assignment was a no-op; "it happens to be equal" is not
+  something the next constructor has to keep true, and nothing was checking. It
+  now fills only an absent member and refuses a disagreement, since neither
+  answer is safe: honouring the transport breaks the proof, honouring the
+  document sends it somewhere the caller did not ask for.
+
+  A new test builds the document the SDK actually sends and runs it through
+  `schema_index::spec_policy_for(uri).enforce(..)` — the same call the VTA makes.
+  The existing tests checked `issuer`, `recipient` and `proof` by name and
+  passed, because they were written from the same understanding as the code.
+  Asserting against the registry means a new flag starts being checked without
+  the test being edited. It covers a mutation and a read deliberately: the proof
+  flag falls almost exactly along that line, so a client that only ever listed
+  saw nothing wrong.
+
+  The rationale on `signed_task_document` said "72 of the 109" specs require a
+  proof. It is 210 of 344 in trust-tasks-rs 0.17 — and the number that actually
+  justifies the hard error is `recipient`, which 343 of 344 require.
+
+  `docs/05-design-notes/trust-task-envelope-conformance.md` records the
+  diagnosis and the two instances of the same root cause still live on main: a
+  `did:webvh` bundle holder cannot sign at all, because `trust_task_sign` refuses
+  a non-`did:key` holder — so a provisioned integration cannot dispatch any of
+  the 210 proof-requiring tasks; and `VtaClient::new` + `set_token_async` carries
+  no identity, which is the documented `url + token` rung of the `AgentConnect`
+  ladder. Neither is fixed here: the first needs a decision about how a
+  `did:webvh` integration signs.
+
+  Verified with `cargo fmt --all --check`, `cargo check --workspace
+  --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo test -p vta-sdk` (298 passing).
+
+
+
 ## [0.31.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.31.0...vta-sdk-v0.31.1) — 2026-08-28
 
 
