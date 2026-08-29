@@ -561,6 +561,9 @@ pub async fn cmd_webvh_did_list(
 
     let height = resp.dids.len() as u16 + 4;
     print_widget(table, height);
+    // The DID column is the one people copy out of, and it is the one that gets
+    // shortened. Say so here rather than leaving it to be discovered.
+    crate::render::print_truncation_hint();
 
     Ok(())
 }

@@ -68,6 +68,26 @@ use super::helpers::{
 
 // ─── Server CRUD ────────────────────────────────────────────────────────
 
+/// Refuse a syntactically invalid `did` before it reaches a store lookup.
+///
+/// [`vti_common::identifier::validate_did`] has always existed and names the
+/// offending character and its position. Nothing on this surface called it, so
+/// a malformed DID fell through to `webvh_store::get_did`, missed, and came
+/// back as `not found`.
+///
+/// That is the wrong answer, not merely a worse one. "Not found" is a claim
+/// about the world — it says the DID does not exist here — and it sends the
+/// operator looking for something that was deleted instead of at the argument
+/// they passed. The case that produced this: a DID copy-pasted out of the
+/// `dids list` table, which elides the middle of the SCID, so the argument
+/// carried a literal `…` (U+2026). The store answered honestly and the answer
+/// was misleading. It cost two people an hour and a wrong diagnosis each.
+fn reject_malformed_did(doc: &TrustTask<Value>, did: &str) -> Option<TrustTaskOutcome> {
+    vti_common::identifier::validate_did("did", did)
+        .err()
+        .map(|e| app_error_to_reject(doc, e))
+}
+
 /// `webvh/servers/list/1.0` — list registered webvh hosts.
 pub(super) async fn handle_servers_list(
     state: &AppState,
@@ -224,6 +244,9 @@ pub(super) async fn handle_dids_get(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
+        return reject;
+    }
     match operations::did_webvh::get_did_webvh(
         &state.webvh_ks,
         auth,
@@ -249,6 +272,9 @@ pub(super) async fn handle_dids_delete(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
+        return reject;
+    }
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
         None => {
@@ -298,6 +324,9 @@ pub(super) async fn handle_dids_update(
         Err(resp) => return resp,
     };
     let UpdateDidWithDid { did, body } = req;
+    if let Some(reject) = reject_malformed_did(&doc, &did) {
+        return reject;
+    }
     let options = match update_body_to_options(body) {
         Ok(o) => o,
         Err(resp) => return reject_with(&doc, resp),
@@ -353,6 +382,9 @@ pub(super) async fn handle_agent_name_list(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
+        return reject;
+    }
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
         None => {
@@ -394,6 +426,9 @@ pub(super) async fn handle_agent_name_check(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
+        return reject;
+    }
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
         None => {
@@ -482,6 +517,9 @@ async fn handle_agent_name(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
+        return reject;
+    }
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
         None => {
@@ -530,6 +568,9 @@ pub(super) async fn handle_dids_rotate_keys(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
+        return reject;
+    }
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
         None => {
@@ -574,6 +615,9 @@ pub(super) async fn handle_dids_register_with_server(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    if let Some(reject) = reject_malformed_did(&doc, &req.did) {
+        return reject;
+    }
     let did_resolver = match state.did_resolver.as_ref() {
         Some(r) => r,
         None => {
@@ -819,5 +863,79 @@ pub(super) async fn handle_servers_domains(
     {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn doc(did: &str) -> TrustTask<Value> {
+        serde_json::from_value(serde_json::json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
+            "type": "https://trusttasks.org/spec/vta/webvh/dids/delete/1.0",
+            "issuer": "did:key:z6MkIssuer",
+            "recipient": "did:key:z6MkVta",
+            "payload": { "did": did },
+        }))
+        .expect("a well-formed Trust Task")
+    }
+
+    /// The case that sent two people to the wrong conclusion: a DID copied out
+    /// of the `dids list` table, which elides the middle of the SCID, so the
+    /// argument carries a literal `…` (U+2026).
+    ///
+    /// Before this guard it reached the store, missed, and came back as `not
+    /// found` — which reads as "that DID was deleted" rather than "look at what
+    /// you typed".
+    #[test]
+    fn a_truncated_did_is_refused_as_malformed_not_as_missing() {
+        let bad = "did:webvh:QmbsoTcwkM\u{2026}:webvh.storm.ws:hurdle-surface";
+        let outcome = reject_malformed_did(&doc(bad), bad).expect("a truncated DID is refused");
+
+        let rendered = String::from_utf8_lossy(&outcome.body).to_string();
+        assert!(
+            rendered.contains("malformedRequest"),
+            "must be malformedRequest, not a lookup miss: {rendered}"
+        );
+        // Naming the character is the whole value: `…` is invisible enough in a
+        // terminal that "invalid character" alone would not land.
+        assert!(
+            rendered.contains("invalid character"),
+            "the reason must name what is wrong with the argument: {rendered}"
+        );
+    }
+
+    /// Other ways an argument fails to be a DID, each refused here rather than
+    /// deeper.
+    #[test]
+    fn other_non_dids_are_refused_too() {
+        for bad in [
+            "",
+            "not-a-did",
+            "did:webvh:has space",
+            "did:webvh:tab\tchar",
+        ] {
+            assert!(
+                reject_malformed_did(&doc(bad), bad).is_some(),
+                "`{bad}` must be refused"
+            );
+        }
+    }
+
+    /// A real DID passes through untouched — the guard must not become a
+    /// second, stricter DID grammar that rejects things the store holds.
+    #[test]
+    fn a_well_formed_did_is_not_refused() {
+        for good in [
+            "did:webvh:QmbsoTcwkMjqaezmeFW4c6yth2sKDGtDiaGrzS1e3BvdZX:webvh.storm.ws:hurdle-surface",
+            "did:key:z6MkhBYkvHQSLDmhVQWoy6ZiQc2VU3EFYjLz2KQ2YQDQ77Ag",
+            "did:web:example.com%3A8443:path",
+        ] {
+            assert!(
+                reject_malformed_did(&doc(good), good).is_none(),
+                "`{good}` must pass"
+            );
+        }
     }
 }
