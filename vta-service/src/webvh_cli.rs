@@ -281,9 +281,46 @@ pub async fn run_list_dids(
     Ok(())
 }
 
+/// Print what deleting a DID would destroy and revoke.
+///
+/// Credentials are listed by id rather than counted. An operator deciding
+/// whether to proceed is deciding about *those* credentials, and "3 will be
+/// revoked" cannot be checked against what they expected — which is the only
+/// question a confirmation prompt is actually asking.
+fn render_did_deletion_plan(did: &str, plan: &operations::did_webvh::DidDeletionPlan) {
+    println!("Deleting {did} would:");
+    if plan.has_acl_entry {
+        println!("  - remove its ACL entry (its authorization at this VTA)");
+    }
+    if plan.sessions_to_revoke > 0 {
+        println!("  - end {} live session(s)", plan.sessions_to_revoke);
+    }
+    if plan.credentials_to_revoke.is_empty() {
+        println!("  - revoke no credentials");
+    } else {
+        println!(
+            "  - REVOKE {} credential(s) issued to it — copies held by others stop being \
+             valid, and this cannot be undone:",
+            plan.credentials_to_revoke.len()
+        );
+        for id in &plan.credentials_to_revoke {
+            println!("      {id}");
+        }
+    }
+    println!("  - delete its keys, its local record and its published log");
+    if !plan.blockers.is_empty() {
+        println!("\nIt will be refused, because these still depend on it:");
+        for blocker in &plan.blockers {
+            println!("  - {blocker}");
+        }
+    }
+    println!();
+}
+
 pub async fn run_delete_did(
     config_path: Option<PathBuf>,
     did: String,
+    force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let cs = CliStore::open(&config).await?;
@@ -323,6 +360,26 @@ pub async fn run_delete_did(
         didcomm_bridge: &no_bridge,
         auth_locks: &auth_locks,
     };
+    // Show what this would do before doing it.
+    //
+    // Deleting a DID is irreversible and now also *revokes* — credentials in
+    // other people's wallets stop being good, and no undo puts them back. The
+    // same plan the deletion acts on is rendered here, so the preview cannot
+    // under-report what is about to happen.
+    let plan =
+        operations::did_webvh::plan_did_deletion(&deps, &auth, &did, config.vta_did.as_deref())
+            .await?;
+    render_did_deletion_plan(&did, &plan);
+    // `force` skips the *prompt*, not the blockers — those are refused by
+    // `delete_did_webvh` regardless, and deliberately have no escape hatch.
+    if plan.touches_anything_else()
+        && !force
+        && !vta_cli_common::commands::contexts::confirm_destructive("Proceed with deletion?")?
+    {
+        println!("Aborted.");
+        return Ok(());
+    }
+
     operations::did_webvh::delete_did_webvh(&deps, &auth, &did, config.vta_did.as_deref(), "cli")
         .await?;
     cs.persist().await?;
