@@ -128,6 +128,8 @@ pub async fn strip_all_passkey_vms(
             imported_ks,
             contexts_ks,
             webvh_ks,
+            // Publishing a service change never deletes a DID.
+            delete_cascade: None,
             audit,
             seed_store,
             did_resolver,

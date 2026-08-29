@@ -652,6 +652,8 @@ mod pre_rotation_e2e_tests {
         locks: &'a crate::operations::did_webvh::WebvhAuthLocks,
     ) -> crate::operations::did_webvh::WebvhDeps<'a> {
         crate::operations::did_webvh::WebvhDeps {
+            // The update path publishes a log entry; it deletes nothing.
+            delete_cascade: None,
             keys_ks: &ts.keys_ks,
             imported_ks: &ts.imported_ks,
             contexts_ks: &ts.contexts_ks,
