@@ -2,6 +2,29 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.2.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-webvh-v0.2.1...vta-webvh-v0.2.2) — 2026-08-30
+
+
+### Documentation
+
+- **webvh**: The authenticate alias window has closed ([#1205](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1205))
+
+`webvh_auth.rs` described did-hosting as recognising the historical
+  `affinidi.com/webvh/1.0/authenticate` form "via its alias table during the
+  migration window", and its test looked forward to "once that alias is dropped
+  (Phase 3 cleanup on did-hosting)".
+
+  It was dropped: affinidi-webvh-service #172 removed the alias from the three
+  REST acceptors and moved their clients, and #174 moved the witness's DIDComm
+  router. The canonical URI is not merely preferred now, it is the only one that
+  routes anywhere.
+
+  No behaviour change — this crate has always sent the canonical form. What
+  changes is that the assertion is load-bearing rather than forward-looking, and
+  a reader is no longer told a fallback exists that does not.
+
+
+
 ## [0.2.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-webvh-v0.2.0...vta-webvh-v0.2.1) — 2026-08-29
 
 
