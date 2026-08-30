@@ -80,6 +80,31 @@ export interface ApiError {
   message: string;
 }
 
+/**
+ * The daemon's own error message for a failed response, falling back to the
+ * status line when the body isn't the JSON error shape.
+ *
+ * `vti_common::error::AppError` serialises as `{ "error": "<display>" }` for
+ * every variant bar the Trust-Task ones, which carry `message`. Reading it
+ * matters most where the status code alone is ambiguous: `/auth/challenge`
+ * answers 403 for "DID not in ACL", "ACL entry expired" and "DID is not
+ * permitted to authenticate on this VTC" alike, and only the body says which.
+ *
+ * Consumes the response body, so call it at most once per response.
+ */
+export async function daemonErrorMessage(
+  res: Response,
+  fallback: string = `${res.status} ${res.statusText}`,
+): Promise<string> {
+  try {
+    const body = (await res.json()) as { error?: string; message?: string };
+    return body.error || body.message || fallback;
+  } catch {
+    /* non-JSON body */
+    return fallback;
+  }
+}
+
 function csrfTokenFromCookie(): string | null {
   // The CSRF cookie is set by login (`/v1/auth/passkey-login/finish`
   // or `/v1/auth/admin-session`). HttpOnly is **not** set on this
@@ -111,14 +136,7 @@ async function request<T>(
   });
 
   if (!res.ok) {
-    let message = `${res.status} ${res.statusText}`;
-    try {
-      const body = (await res.json()) as { error?: string; message?: string };
-      if (body.error) message = body.error;
-      else if (body.message) message = body.message;
-    } catch {
-      /* non-JSON body */
-    }
+    const message = await daemonErrorMessage(res);
     // 401/403 on a request issued *while authenticated* means the
     // session has expired (cookie cleared server-side, JWT past
     // `exp`, or admin role revoked). Dispatch a window event so the
