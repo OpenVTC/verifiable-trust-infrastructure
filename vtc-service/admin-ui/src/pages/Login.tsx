@@ -22,9 +22,11 @@ import {
 } from "@/lib/webauthn";
 import {
   isWalletAvailable,
+  isWalletProfileAvailable,
   isWalletProxyAvailable,
   listProxyCandidates,
   loginWithWallet,
+  loginWithWalletProfile,
   loginWithWalletProxy,
   type ProxyVaultEntry,
 } from "@/lib/wallet";
@@ -52,6 +54,7 @@ export function Login() {
 
   const walletAvailable = isWalletAvailable();
   const proxyAvailable = isWalletProxyAvailable();
+  const profileAvailable = isWalletProfileAvailable();
   const busy = phase.kind === "running" || walletPhase.kind === "running";
 
   // Shared success tail: the wallet returned a bearer; mirror it into the
@@ -178,7 +181,29 @@ export function Login() {
     }
   };
 
+  // The wallet owns "which identity does this VTC know me as". It resolves the
+  // entry for this origin, or — on a first sign-in — asks the operator to pick
+  // a persona and remembers it. The flow this replaces asked the wallet to
+  // enumerate every entry pinned to this VTC just to find one, and on a fresh
+  // wallet returned nothing and dead-ended with "add an entry, then retry".
   const handleProxyStart = async () => {
+    setWalletPhase({ kind: "running" });
+    setCandidates(null);
+    try {
+      const result = await loginWithWalletProfile();
+      await finishWithBearer(result.accessToken);
+    } catch (err) {
+      const e = err as { message?: string };
+      setWalletPhase({ kind: "error", message: e.message ?? String(err) });
+    }
+  };
+
+  // Escape hatch, not the default: pick from the entries pinned to this VTC.
+  // Kept because an operator may hold more than one persona here — an Admin and
+  // a member identity, say — and the wallet's own answer is the one bound to
+  // this origin. It stays behind an explicit click because reaching it costs a
+  // consent prompt that enumerates the vault to this page.
+  const handleChooseIdentity = async () => {
     setWalletPhase({ kind: "running" });
     setCandidates(null);
     try {
@@ -187,7 +212,7 @@ export function Login() {
         setWalletPhase({
           kind: "error",
           message: "No did-self-issued vault entry is pinned to this VTC.",
-          hint: "Open the wallet, add an entry targeting this VTC's DID, then retry.",
+          hint: "Use “Sign in via VTA-proxied SIOP” instead — the wallet will ask which identity to use and remember it.",
         });
         return;
       }
@@ -242,7 +267,7 @@ export function Login() {
           </p>
         )}
 
-        {proxyAvailable && (
+        {profileAvailable && (
           <button
             type="button"
             className="secondary"
@@ -250,6 +275,24 @@ export function Login() {
             disabled={busy}
           >
             Sign in via VTA-proxied SIOP
+          </button>
+        )}
+
+        {/* Secondary, and worded as the exception it is. The primary button
+            uses whichever identity the wallet has bound to this site; this is
+            for an operator holding more than one here. On a wallet too old to
+            resolve an identity itself it is the only proxy route, so it stays
+            visible in that case. */}
+        {proxyAvailable && (
+          <button
+            type="button"
+            className="link"
+            onClick={handleChooseIdentity}
+            disabled={busy}
+          >
+            {profileAvailable
+              ? "Sign in as a different identity…"
+              : "Sign in via VTA-proxied SIOP (choose an entry)"}
           </button>
         )}
 
