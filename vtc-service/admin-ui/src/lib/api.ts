@@ -439,7 +439,7 @@ export const revokeInvitation = (
   );
 
 const RELATIONSHIPS_GRAPH_TASK =
-  "https://trusttasks.org/spec/vtc/relationships/graph/0.1";
+  "https://trusttasks.org/spec/vtc/relationships/graph/0.2";
 
 export interface GraphNode {
   did: string;

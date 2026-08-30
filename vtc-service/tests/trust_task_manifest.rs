@@ -598,16 +598,96 @@ fn collect_prefixed(dir: &Path, prefix: &str, out: &mut BTreeSet<String>) {
             .extension()
             .is_some_and(|e| e == "rs" || e == "ts" || e == "tsx")
         {
-            let text = std::fs::read_to_string(&path).expect("read source file");
-            for (idx, _) in text.match_indices(prefix) {
-                if idx == 0 || !text[..idx].ends_with('"') {
-                    continue;
-                }
-                let rest = &text[idx..];
-                let Some(end) = rest.find('"') else { continue };
-                let uri = rest[..end].split('#').next().expect("head").to_owned();
-                out.insert(uri);
-            }
+            collect_prefixed_in_file(&path, prefix, out);
         }
     }
+}
+
+/// As [`collect_prefixed`], for one named file — the router wiring is a
+/// single file, and scanning the crate instead would let a URI mentioned in
+/// a test fixture stand in for a route that binds a different one.
+fn collect_prefixed_in_file(path: &Path, prefix: &str, out: &mut BTreeSet<String>) {
+    let text = std::fs::read_to_string(path).expect("read source file");
+    for (idx, _) in text.match_indices(prefix) {
+        if idx == 0 || !text[..idx].ends_with('"') {
+            continue;
+        }
+        let rest = &text[idx..];
+        let Some(end) = rest.find('"') else { continue };
+        let uri = rest[..end].split('#').next().expect("head").to_owned();
+        out.insert(uri);
+    }
+}
+
+// ─── The admin SPA against the router (#1211) ──────────────────────────────
+
+/// The admin console is the router's only in-repo REST client, and every call
+/// it makes carries a `Trust-Task` header that
+/// [`vti_common::trust_task`]'s gate matches **exactly**. A URI the router
+/// does not bind is a 415 before the handler runs.
+///
+/// Nothing checked the two against each other. The census above asks whether a
+/// bound URI *exists upstream*, which `relationships/graph/0.1` did — it is a
+/// real published task, just not the one the service mounts after #1112
+/// retargeted the mount to `/0.2` and left the SPA's copy behind. The result
+/// was a Relationships page that could only ever render "Could not load the
+/// relationships graph.", shipped by a `!`-flagged commit whose whole subject
+/// was conformance.
+///
+/// The generated wire types cannot catch this. `utoipa` does not put the
+/// Trust-Task value in the OpenAPI document — the `graph` operation comes out
+/// as `header?: never` — so the URI is hand-copied on both sides, in two
+/// languages, and only this assertion pairs them.
+///
+/// There is no exception table. A header the router does not enforce is not a
+/// case to document; it is a dead page.
+#[test]
+fn every_admin_ui_task_is_enforced_by_a_route() {
+    const SPEC_PREFIX: &str = "https://trusttasks.org/spec/";
+    let root = workspace_root();
+
+    let mut sent = BTreeSet::new();
+    collect_prefixed(
+        &root.join("vtc-service/admin-ui/src"),
+        SPEC_PREFIX,
+        &mut sent,
+    );
+
+    // `routes/mod.rs` is the sole binding site: every `tt` / `ttl` call in the
+    // crate lives there. Scanning it alone rather than `src/` keeps a task URI
+    // that only appears in a test fixture from vouching for a route that
+    // binds a different one.
+    let mut enforced = BTreeSet::new();
+    collect_prefixed_in_file(
+        &root.join("vtc-service/src/routes/mod.rs"),
+        SPEC_PREFIX,
+        &mut enforced,
+    );
+
+    // Both scans read paths that a directory move would silently empty, and an
+    // empty set on either side passes the difference below vacuously. Floors,
+    // not exact counts — this is a guard against reading nothing, not a census.
+    assert!(
+        sent.len() >= 10,
+        "found only {} Trust-Task URIs in the admin UI — the scan path is wrong",
+        sent.len()
+    );
+    assert!(
+        enforced.len() >= 20,
+        "found only {} Trust-Task URIs in routes/mod.rs — the scan path is wrong",
+        enforced.len()
+    );
+
+    let orphans: Vec<&String> = sent.difference(&enforced).collect();
+    assert!(
+        orphans.is_empty(),
+        "the admin UI sends {} Trust-Task header(s) no route enforces — each is \
+         a 415 and a dead page. Point the SPA at the URI the router binds:\n  {}",
+        orphans.len(),
+        orphans
+            .iter()
+            .map(|u| u.as_str())
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
 }
