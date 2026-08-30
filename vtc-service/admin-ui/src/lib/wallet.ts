@@ -84,11 +84,31 @@ interface VtaWalletProvider {
     secretKind?: SecretKind;
   }): Promise<VaultListWireResult>;
   proxyLogin?(params: {
-    entryId: string;
+    entryId?: string;
     nonce?: string;
     target?: { kind: string; [k: string]: unknown };
     ttlSecondsHint?: number;
   }): Promise<ProxyLoginWireResult>;
+  /** Which persona this site knows the user as, resolving or binding one.
+   *  Mints nothing. Present from the wallet build that added first-use
+   *  persona binding (OpenVTC/vta-browser-plugin#145). */
+  walletProfile?(params: {
+    target?: { kind: string; [k: string]: unknown };
+  }): Promise<WalletProfileWireResult>;
+}
+
+interface WalletProfileWireResult {
+  /** The persona DID this VTC knows the operator as. `/auth/challenge` is
+   *  bound to it, so it has to be known before a nonce can be asked for. */
+  did: string;
+  /** The vault entry backing it — passed straight to `proxyLogin` so the
+   *  wallet does not repeat the lookup it just did. */
+  entryId: string;
+  /** True when the wallet bound this persona just now, i.e. the operator was
+   *  prompted. The VTC has never seen it, so the sign-in that follows will be
+   *  refused until the DID is on the ACL — which is worth saying plainly
+   *  rather than surfacing as an opaque 403. */
+  bound: boolean;
 }
 
 declare global {
@@ -112,6 +132,18 @@ export function isWalletProxyAvailable(): boolean {
     isWalletAvailable() &&
     typeof window.vtaWallet?.proxyLogin === "function" &&
     typeof window.vtaWallet?.vaultList === "function"
+  );
+}
+
+/** True iff the wallet can resolve-or-bind a persona for this origin itself.
+ *
+ *  A capability probe, not a compatibility fold: without it the proxy path can
+ *  only work for an operator who has already bound an entry by hand, and the
+ *  difference is worth an accurate message rather than a `TypeError`. */
+export function isWalletProfileAvailable(): boolean {
+  return (
+    isWalletProxyAvailable() &&
+    typeof window.vtaWallet?.walletProfile === "function"
   );
 }
 
@@ -191,6 +223,63 @@ export async function loginWithWalletProxy(
       "Chosen entry has no principal DID — only did-self-issued entries can proxy-login.",
     );
   }
+  return runProxySiop(entry.principalDid, entry.id);
+}
+
+/**
+ * The preferred VTA-proxied sign-in: let the wallet say which persona this
+ * VTC knows the operator as, then run the round-trip as that persona.
+ *
+ * Why this and not `listProxyCandidates()` first — the flow it replaces asked
+ * the wallet to enumerate *every* vault entry pinned to this VTC in order to
+ * find one, which is a disclosure of the operator's vault to answer a question
+ * about a single entry, and on a fresh wallet it returned nothing and dead-ended
+ * with "add an entry, then retry". The wallet now owns that question: it
+ * resolves the entry for this origin, or asks the operator to choose a persona
+ * and remembers the answer.
+ *
+ * The persona DID has to be known *before* the challenge, because
+ * `/auth/challenge` is bound to it — which is why this cannot be folded into
+ * `proxyLogin` as a single call.
+ */
+export async function loginWithWalletProfile(): Promise<VtaWalletLoginResult> {
+  if (!isWalletProfileAvailable()) {
+    throw new Error(
+      "This VTA wallet build cannot choose an identity for a site. " +
+        "Update the extension, or pin a did-self-issued vault entry to this VTC by hand.",
+    );
+  }
+  const rp = await rpDid();
+  const profile = await window.vtaWallet!.walletProfile!({
+    target: { kind: "did", did: rp },
+  });
+  if (!profile.did || !profile.entryId) {
+    throw new Error("wallet returned no identity for this site");
+  }
+  try {
+    return await runProxySiop(profile.did, profile.entryId);
+  } catch (err) {
+    if (!profile.bound) throw err;
+    // The persona was created a moment ago, so this VTC has never seen it and
+    // the ACL gate in `handle_challenge` is by far the likeliest cause. Say
+    // which DID needs admitting: the operator cannot act on a 403 alone, and
+    // the DID is not otherwise on screen anywhere.
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `${message}\n\nThis was the first sign-in as ${profile.did}. ` +
+        "If the VTC refused it, that DID needs an Admin entry in this VTC's ACL — " +
+        `ask another admin to run \`vtc admin invite --did ${profile.did}\`.`,
+    );
+  }
+}
+
+/** Challenge → mint → authenticate, as a known persona. Shared by the
+ *  wallet-resolved path and the hand-picked-entry path, so both apply the same
+ *  rule and the same error handling. */
+async function runProxySiop(
+  principalDid: string,
+  entryId: string,
+): Promise<VtaWalletLoginResult> {
   const rp = await rpDid();
   const base = walletApiBase().replace(/\/+$/, "");
 
@@ -199,7 +288,7 @@ export async function loginWithWalletProxy(
     method: "POST",
     headers: { "content-type": "application/json" },
     credentials: "include",
-    body: JSON.stringify({ did: entry.principalDid }),
+    body: JSON.stringify({ did: principalDid }),
   });
   if (!chRes.ok) {
     // Carry the daemon's message, not just the code. A 403 here is the ACL
@@ -221,7 +310,7 @@ export async function loginWithWalletProxy(
 
   // 2. VTA mints the SIOP id_token (long-term key stays in the VTA).
   const pl = await window.vtaWallet!.proxyLogin!({
-    entryId: entry.id,
+    entryId,
     nonce: ch.challenge,
     target: { kind: "did", did: rp },
   });
@@ -259,6 +348,6 @@ export async function loginWithWalletProxy(
     accessToken: tokenResp.tokens.accessToken,
     refreshToken: tokenResp.tokens.refreshToken ?? "",
     sessionId: tokenResp.session.id,
-    holderDid: entry.principalDid,
+    holderDid: principalDid,
   };
 }
