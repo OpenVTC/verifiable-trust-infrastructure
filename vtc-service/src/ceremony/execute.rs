@@ -216,8 +216,14 @@ async fn admit(
     let (vmc, role_vec, status_list_index) =
         issue_member_credentials(state, subject_did, role).await?;
     member.status_list_index = Some(status_list_index);
-    member.current_vmc_id = top_level_id(&vmc);
-    member.current_role_vec_id = top_level_id(&role_vec);
+    // Keep the bodies, not just the ids: the member's acknowledgement carries a
+    // digest of the grant, and an id cannot be digested. See
+    // [`crate::members::Member::current_vmc`].
+    let vmc_value = serde_json::to_value(&vmc)
+        .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
+    let role_vec_value = serde_json::to_value(&role_vec)
+        .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+    member.record_issued_credentials(vmc_value, role_vec_value);
     store_member(&state.members_ks, &member).await?;
 
     // A new member row exists; keep the cached count in step (still under
@@ -349,7 +355,11 @@ async fn remint(
     // Re-mint the role VEC at the new role + repoint the member.
     let role_vec = issue_role_vec(state, subject_did, new_role).await?;
     if let Some(mut member) = get_member(&state.members_ks, subject_did).await? {
-        member.current_role_vec_id = top_level_id(&role_vec);
+        let role_vec_value = serde_json::to_value(&role_vec)
+            .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+        // The grant is untouched by a role change, so the member's
+        // acknowledgement of it still stands — only the VEC is repointed.
+        member.record_role_vec(role_vec_value);
         store_member(&state.members_ks, &member).await?;
     }
 
@@ -539,5 +549,6 @@ async fn flip_revocation(state: &AppState, slot: u32) -> Result<(), AppError> {
 pub(crate) fn top_level_id(vc: &VerifiableCredential) -> Option<String> {
     serde_json::to_value(vc)
         .ok()
-        .and_then(|v| v.get("id").and_then(|i| i.as_str().map(str::to_string)))
+        .as_ref()
+        .and_then(crate::members::top_level_id)
 }

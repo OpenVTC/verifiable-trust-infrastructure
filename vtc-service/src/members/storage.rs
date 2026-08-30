@@ -196,7 +196,9 @@ mod tests {
             publish_consent: true,
             departure_preference: Disposition::Historical,
             current_vmc_id: Some("vmc-1".into()),
+            current_vmc: Some(serde_json::json!({ "id": "vmc-1" })),
             current_role_vec_id: Some("vec-1".into()),
+            current_role_vec: Some(serde_json::json!({ "id": "vec-1" })),
             extensions: serde_json::json!({ "team": "platform" }),
             removed_at: None,
             personhood: false,
@@ -206,6 +208,7 @@ mod tests {
             joined_via_invitation: false,
             member_vmc: None,
             member_vmc_id: None,
+            member_vmc_bound: false,
             member_vmc_received_at: None,
         };
         let json = serde_json::to_value(&m).unwrap();
@@ -231,7 +234,9 @@ mod tests {
             publish_consent: false,
             departure_preference: Disposition::PolicyDefault,
             current_vmc_id: None,
+            current_vmc: None,
             current_role_vec_id: None,
+            current_role_vec: None,
             extensions: serde_json::Value::Null,
             removed_at: None,
             personhood: true,
@@ -241,6 +246,7 @@ mod tests {
             joined_via_invitation: false,
             member_vmc: None,
             member_vmc_id: None,
+            member_vmc_bound: false,
             member_vmc_received_at: None,
         };
         let json = serde_json::to_value(&m).unwrap();

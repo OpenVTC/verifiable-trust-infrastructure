@@ -3,6 +3,13 @@
 // Passkey: POST `/v1/auth/passkey-login/start` → `navigator.credentials.get`
 // → POST `/finish` → daemon sets the `vtc_admin_session` + `csrf` cookies.
 //
+// The community's DID is shown before sign-in, from the unauthenticated
+// `/health`. Two reasons it belongs here rather than only on the dashboard:
+// it tells an operator which community this console is for before they
+// authenticate to it — several VTCs look identical at the login screen — and it
+// is the string a prospective member needs in order to join, which until now
+// could only be read from behind a login they did not have.
+//
 // VTA wallet (additive — passkey is unchanged): the browser wallet extension
 // runs a SIOPv2 login against the VTC's header-exempt `/v1/wallet` surface
 // and returns a bearer token; we exchange it for the same cookie session via
@@ -11,10 +18,11 @@
 // probe so the shell re-renders into the authenticated tree.
 
 import { useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fingerprint, Wallet } from "lucide-react";
 
-import { postJson } from "@/lib/api";
+import { fetchHealth, postJson, type HealthResponse } from "@/lib/api";
+import { CopyButton } from "@/components/CopyButton";
 import {
   decodePublicKeyOptions,
   serializeAssertion,
@@ -45,6 +53,16 @@ type Phase =
   | { kind: "error"; message: string; hint?: string };
 
 export function Login() {
+  // `/health` is header-exempt and unauthenticated, so this resolves on the
+  // login screen. It carries only `{status, version, vtc_did}` — the
+  // infrastructure detail moved to the admin-gated diagnostics route, so
+  // reading it here discloses nothing that resolving the DID would not.
+  const health = useQuery<HealthResponse>({
+    queryKey: ["health"],
+    queryFn: fetchHealth,
+  });
+  const vtcDid = health.data?.vtc_did;
+
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [walletPhase, setWalletPhase] = useState<Phase>({ kind: "idle" });
   const [candidates, setCandidates] = useState<ProxyVaultEntry[] | null>(null);
@@ -210,6 +228,27 @@ export function Login() {
         <p className="lead">
           Sign in with your registered passkey or your VTA wallet.
         </p>
+
+        {/* Absent while `/health` is in flight, and on a daemon that has not
+            been set up yet — which is a real state, not an error, so it says
+            so rather than rendering an empty box or a spinner. */}
+        {vtcDid ? (
+          <p className="login-did">
+            <span className="muted">Community</span>
+            <code>{vtcDid}</code>
+            <CopyButton
+              value={vtcDid}
+              label="Copy VTC DID"
+              successMessage="VTC DID copied"
+            />
+          </p>
+        ) : (
+          health.isSuccess && (
+            <p className="lead muted">
+              This VTC has no DID yet — it has not been set up.
+            </p>
+          )
+        )}
 
         <button
           type="button"

@@ -3007,7 +3007,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -3354,9 +3354,9 @@ dependencies = [
 
 [[package]]
 name = "dtg-credentials"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79320f11d8abf62975f95ff10b363598f6635ede485fa9ceafc167668d8bcd09"
+checksum = "cc5be7eee44969838e942b07a3e383e936f2d307f7b2b880daa715817261f132"
 dependencies = [
  "affinidi-data-integrity",
  "affinidi-secrets-resolver",
@@ -7425,7 +7425,7 @@ checksum = "7bd22781911de0ca6debda95f073c8f18bec65d1a94f1fa9573f3102e514cea4"
 dependencies = [
  "ahash",
  "annotate-snippets",
- "base64 0.21.7",
+ "base64 0.22.1",
  "encoding_rs_io",
  "getrandom 0.3.4",
  "granit-parser",

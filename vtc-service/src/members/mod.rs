@@ -40,6 +40,16 @@ pub use storage::{
     list_members, list_members_paginated, store_member,
 };
 
+/// Pull the top-level `id` off a credential in its wire (JSON) form.
+///
+/// The typed `VerifiableCredential` does not expose `id` — issuance splices it
+/// onto the wire form — so the id is only readable from JSON, which is also the
+/// form the bodies are stored in. [`crate::ceremony::execute::top_level_id`] is
+/// the typed front door onto this.
+pub(crate) fn top_level_id(vc: &JsonValue) -> Option<String> {
+    vc.get("id").and_then(JsonValue::as_str).map(str::to_string)
+}
+
 /// One community member. 1:1 with a [`crate::acl::VtcAclEntry`]
 /// row by DID.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -64,10 +74,40 @@ pub struct Member {
     /// Populated by Phase 2's issuance flow.
     #[serde(default)]
     pub current_vmc_id: Option<String>,
+    /// The community-issued VMC itself — the membership **grant**, the
+    /// community → member half of the edge.
+    ///
+    /// Kept, not just pointed at. Three things need the body and not the id:
+    ///
+    /// 1. **Digest verification.** A member-issued VMC carries a `digest` of
+    ///    the grant it acknowledges, and DTG Core Credentials says an
+    ///    acknowledgement whose digest matches no valid grant MUST NOT be
+    ///    treated as completing a membership edge. Checking that needs the
+    ///    grant's claims, which an id does not carry.
+    /// 2. **Re-delivery.** A member who lost their copy could previously only
+    ///    be given a *newly minted* one, which is a different credential with
+    ///    a different digest — silently invalidating the acknowledgement they
+    ///    had already sent.
+    /// 3. **Operator visibility.** "Which credentials does this member hold
+    ///    from us" was unanswerable from this row.
+    ///
+    /// `None` on rows written before this field existed, and on members whose
+    /// issuance predates it; the id is still there, so those rows stay
+    /// readable and are treated as pre-digest (see
+    /// [`crate::members::inbound_vmc`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_vmc: Option<JsonValue>,
     /// ID of the currently-active role VEC (spec §6.1).
     /// Populated by Phase 2's issuance flow.
     #[serde(default)]
     pub current_role_vec_id: Option<String>,
+    /// The role VEC itself, kept for the same reasons as
+    /// [`Self::current_vmc`] — re-delivery and operator visibility. It is not
+    /// digest-bound to anything, so nothing verifies against it; it is here so
+    /// that "what did we issue this member" has one answer rather than two
+    /// half-answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_role_vec: Option<JsonValue>,
     /// Community-defined extensions slot (spec §3-M). Bounded by
     /// [`MEMBER_EXTENSIONS_MAX_BYTES`] = 16 KiB at the route
     /// layer.
@@ -137,6 +177,20 @@ pub struct Member {
     /// [`Self::member_vmc`].
     #[serde(default)]
     pub member_vmc_received_at: Option<DateTime<Utc>>,
+    /// Whether [`Self::member_vmc`]'s `digest` was verified against
+    /// [`Self::current_vmc`] when it arrived — i.e. whether the membership edge
+    /// is **complete**.
+    ///
+    /// Storing the answer rather than recomputing it on read is deliberate:
+    /// what was verified is a fact about the moment of receipt, and the grant
+    /// can be re-issued afterwards. Recomputing would let a later renewal
+    /// silently re-decide a past verification.
+    ///
+    /// `#[serde(default)]` reads `false` on every row written before this
+    /// existed, which is the truthful answer for all of them: nothing checked
+    /// a digest, so nothing verified one.
+    #[serde(default)]
+    pub member_vmc_bound: bool,
 }
 
 impl Member {
@@ -156,7 +210,9 @@ impl Member {
             publish_consent: false,
             departure_preference: Disposition::default_preference(),
             current_vmc_id: None,
+            current_vmc: None,
             current_role_vec_id: None,
+            current_role_vec: None,
             extensions: JsonValue::Null,
             removed_at: None,
             personhood: false,
@@ -166,17 +222,73 @@ impl Member {
             joined_via_invitation: false,
             member_vmc: None,
             member_vmc_id: None,
+            member_vmc_bound: false,
             member_vmc_received_at: None,
         }
     }
 
+    /// Record the community-issued VMC + role VEC this member was granted,
+    /// keeping both the ids and the bodies.
+    ///
+    /// Replacing the grant invalidates any acknowledgement bound to the old
+    /// one — the digest covers the grant's claims, so a re-issued grant has a
+    /// different digest — and the member owes a fresh acknowledgement. That is
+    /// deliberate: it is what stops consent to one membership carrying over to
+    /// a different one. Clearing [`Self::member_vmc`] here is what makes the
+    /// obligation visible rather than leaving a stale acknowledgement standing
+    /// against a grant it no longer matches.
+    pub fn record_issued_credentials(&mut self, vmc: JsonValue, role_vec: JsonValue) {
+        let vmc_id = top_level_id(&vmc);
+        let superseded = self.current_vmc_id.is_some() && self.current_vmc_id != vmc_id;
+
+        self.current_vmc_id = vmc_id;
+        self.current_vmc = Some(vmc);
+        self.current_role_vec_id = top_level_id(&role_vec);
+        self.current_role_vec = Some(role_vec);
+
+        if superseded {
+            self.member_vmc = None;
+            self.member_vmc_id = None;
+            self.member_vmc_received_at = None;
+            self.member_vmc_bound = false;
+        }
+    }
+
+    /// Record a re-minted role VEC, leaving the membership grant alone.
+    ///
+    /// A role change re-mints the VEC only. The grant is untouched, so the
+    /// member's acknowledgement of it still stands and MUST NOT be dropped —
+    /// which is why this is separate from
+    /// [`Self::record_issued_credentials`].
+    pub fn record_role_vec(&mut self, role_vec: JsonValue) {
+        self.current_role_vec_id = top_level_id(&role_vec);
+        self.current_role_vec = Some(role_vec);
+    }
+
     /// Record the member-issued reciprocal VMC (member → community half of the
     /// pair), stamping the receipt time. The caller verifies the credential
-    /// (issuer, subject binding, proof) before calling this.
-    pub fn record_member_vmc(&mut self, vmc_id: impl Into<String>, vmc: JsonValue) {
+    /// (issuer, subject binding, proof, and its digest against
+    /// [`Self::current_vmc`]) before calling this.
+    pub fn record_member_vmc(&mut self, vmc_id: impl Into<String>, vmc: JsonValue, bound: bool) {
         self.member_vmc_id = Some(vmc_id.into());
         self.member_vmc = Some(vmc);
         self.member_vmc_received_at = Some(Utc::now());
+        self.member_vmc_bound = bound;
+    }
+
+    /// Is this membership edge complete — both VMCs of the pair present, with
+    /// the member's half bound to the grant this community issued?
+    ///
+    /// The single definition of "complete" for this row. The graph, the admin
+    /// UI, and anything that asserts this member's membership to a third party
+    /// all have to answer it the same way, and a community asserting a
+    /// membership MUST be able to produce the member-issued VMC that completes
+    /// the edge.
+    ///
+    /// Says nothing about validity windows or revocation: those are questions
+    /// about an instant, and this row does not get to choose the instant.
+    pub fn membership_edge_complete(&self) -> bool {
+        self.current_vmc_id.is_some() && self.member_vmc_id.is_some() && self.member_vmc_bound
     }
 
     /// Record the member-issued reciprocal VC that closes the
@@ -203,7 +315,9 @@ impl Member {
         self.publish_consent = false;
         self.departure_preference = Disposition::default_preference();
         self.current_vmc_id = None;
+        self.current_vmc = None;
         self.current_role_vec_id = None;
+        self.current_role_vec = None;
         self.extensions = JsonValue::Null;
         self.removed_at = Some(Utc::now());
         // Tombstone wipes personhood — it's a PII-bearing
@@ -222,6 +336,7 @@ impl Member {
         self.member_vmc = None;
         self.member_vmc_id = None;
         self.member_vmc_received_at = None;
+        self.member_vmc_bound = false;
     }
 
     /// Mark the row historical — keep all fields verbatim, just

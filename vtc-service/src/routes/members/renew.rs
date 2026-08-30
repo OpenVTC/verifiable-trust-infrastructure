@@ -195,8 +195,17 @@ pub async fn renew(
 
     // 5. Update the Member row.
     member.status_list_index = Some(slot);
-    member.current_vmc_id = Some(vmc_id.clone());
-    member.current_role_vec_id = Some(vec_id.clone());
+    // Keep the bodies, not just the ids — see [`crate::members::Member::current_vmc`].
+    // A renewed grant carries different claims and therefore a different digest, so
+    // any acknowledgement bound to the previous one no longer matches it and is
+    // dropped: `record_issued_credentials` does that, leaving the member visibly
+    // owing a fresh one rather than a stale consent standing against a grant it
+    // does not match.
+    let vmc_value = serde_json::to_value(&vmc)
+        .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
+    let role_vec_value = serde_json::to_value(&role_vec)
+        .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+    member.record_issued_credentials(vmc_value, role_vec_value);
     if downgrade_audit {
         // Renewal-policy downgrade clears the asserted-at
         // timestamp alongside the flag. The member must

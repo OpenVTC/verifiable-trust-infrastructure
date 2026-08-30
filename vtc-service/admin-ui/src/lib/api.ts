@@ -444,7 +444,10 @@ const RELATIONSHIPS_GRAPH_TASK =
 export interface GraphNode {
   did: string;
 }
-/** One published VRC: a directed half of an edge. */
+/** One published edge credential: a directed half of an edge. Either a VRC
+ *  between two members, or one of the two VMCs of a membership edge — DTG Core
+ *  Credentials makes both subtypes of *edge credential*, and "in both cases, a
+ *  bi-directional pair of credentials forms a complete DTG edge". */
 export interface GraphHalf {
   id: string;
   issuerDid: string;
@@ -456,9 +459,15 @@ export interface GraphHalf {
    *  entitled to draw between two pairwise identifiers. */
   personaDid?: string;
 }
-/** One edge between a pair of identifiers. A DTG edge is *two* VRCs, one in
- * each direction; `complete` says whether both have been published. A
- * half-edge is one party's unilateral claim, not a mutual relationship. */
+/** One edge between a pair of identifiers. A DTG edge is *two* credentials,
+ * one in each direction; `complete` says whether both stand. A half-edge is one
+ * party's unilateral claim, not a mutual relationship.
+ *
+ * An edge with the community's own DID as an endpoint is a **membership** edge
+ * (the VMC pair); anything else is a relationship edge (the VRC pair). The
+ * response carries no `kind` field to say so — `relationships/graph/0.2` pins
+ * the shape with `additionalProperties: false` — and none is needed: the
+ * community knows its own DID. */
 export interface GraphEdge {
   /** The two endpoints, DID-sorted. Always length 2. */
   endpoints: string[];
@@ -471,12 +480,40 @@ export interface RelationshipsGraph {
   edges: GraphEdge[];
 }
 
-/** The community's relationship (VRC) graph — every trust edge between
- * members, for the connections-graph view. Admin-gated. */
+/** The community's trust graph — every edge, membership (VMC pairs) and
+ * relationship (VRC pairs) alike, for the connections-graph view.
+ * Admin-gated. */
 export const fetchRelationshipsGraph = (): Promise<RelationshipsGraph> =>
   getJson<RelationshipsGraph>("/v1/relationships/graph", {
     trustTask: RELATIONSHIPS_GRAPH_TASK,
   });
+
+const MEMBER_RELATIONSHIPS_TASK =
+  "https://trusttasks.org/spec/vtc/relationships/list/0.2";
+
+/** One relationship row as the community stored it, credential body included.
+ *  Unlike `GraphHalf` — which is body-free by design, because the graph shows
+ *  the shape of the network rather than credential contents — this is the
+ *  credential itself, for an operator who needs to read one. */
+export interface MemberRelationship {
+  id: string;
+  issuerDid: string;
+  subjectDid: string;
+  vrcJsonld: unknown;
+  createdAt: string;
+}
+
+/** Every relationship credential naming this member, either direction.
+ *  Paginated server-side; the console reads the first page, which is the
+ *  operator-relevant case — a member with more than 50 published edges is a
+ *  graph question, not a credential-inspection one. */
+export const fetchMemberRelationships = (
+  did: string,
+): Promise<{ items: MemberRelationship[]; nextCursor?: string | null }> =>
+  getJson<{ items: MemberRelationship[]; nextCursor?: string | null }>(
+    `/v1/members/${encodeURIComponent(did)}/relationships`,
+    { trustTask: MEMBER_RELATIONSHIPS_TASK },
+  );
 
 const RECOGNITION_CHECK_TASK =
   "https://trusttasks.org/spec/vtc/recognition/check/0.1";

@@ -4,6 +4,23 @@
 // `GET /v1/members/{did}` for the detail view. Mutations (promote,
 // admin-remove) land in a follow-up commit; this is the read
 // surface only.
+//
+// The detail view also answers "what does this member hold from us, and what
+// have they published?" — which nothing in this console could answer before.
+// Two sources, because `members/show/0.1` cannot be the one:
+//
+//   - the trust graph (`relationships/graph/0.2`) for whether this member's
+//     membership edge is complete. The graph already computes it, so reading it
+//     here keeps one definition of "complete" rather than a second one drifting
+//     alongside the first.
+//   - `relationships/list/0.2` for the relationship credentials naming this
+//     member, bodies included.
+//
+// The membership credential + role VEC *bodies* are not here: the
+// `members/show/0.1` response is `additionalProperties: false` and its own text
+// says "The credential body is not echoed here", so surfacing them needs a task
+// authored upstream rather than a field added locally. Their ids and receipt
+// state are shown, which is what that schema does carry.
 
 import { useState } from "react";
 import {
@@ -22,7 +39,17 @@ import {
   Users as UsersIcon,
 } from "lucide-react";
 
-import { deleteJson, getJson, patchJson, postJson } from "@/lib/api";
+import {
+  deleteJson,
+  fetchMemberRelationships,
+  fetchRelationshipsGraph,
+  getJson,
+  patchJson,
+  postJson,
+  type MemberRelationship,
+  type RelationshipsGraph,
+} from "@/lib/api";
+import { CopyButton } from "@/components/CopyButton";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate, shortenDid } from "@/lib/format";
 import {
@@ -447,6 +474,31 @@ function MemberDetail() {
     enabled: decoded.length > 0,
   });
 
+  // Whether this member's membership edge is complete comes from the graph
+  // rather than being recomputed here. One definition, one answer — a second
+  // one living in this file would be free to disagree with the graph the
+  // operator is looking at on the next page.
+  const graph = useQuery<RelationshipsGraph>({
+    queryKey: ["relationships-graph"],
+    queryFn: fetchRelationshipsGraph,
+    enabled: decoded.length > 0,
+  });
+
+  const relationships = useQuery<{ items: MemberRelationship[] }>({
+    queryKey: ["member-relationships", decoded],
+    queryFn: () => fetchMemberRelationships(decoded),
+    enabled: decoded.length > 0,
+  });
+
+  // The membership edge is the one joining this member to the community. The
+  // community is the endpoint that is not the member — no need to know its DID
+  // separately, and it stays right if the community ever rotates its own.
+  const membershipEdge = graph.data?.edges.find(
+    (e) =>
+      e.endpoints.includes(decoded) &&
+      e.halves.some((h) => h.issuerDid !== decoded && h.subjectDid === decoded),
+  );
+
   const promoteMutation = useMutation({
     mutationFn: promoteToAdmin,
     onSuccess: () => {
@@ -563,7 +615,77 @@ function MemberDetail() {
                   </span>
                 )}
               </dd>
+              <dt>Membership edge</dt>
+              <dd>
+                {graph.isPending ? (
+                  <span className="muted">…</span>
+                ) : membershipEdge?.complete ? (
+                  <>
+                    <Check size={14} aria-hidden="true" /> complete — both
+                    credentials stand
+                  </>
+                ) : query.data.memberVmcId ? (
+                  <span className="muted">
+                    incomplete — the member's credential is stored, but its{" "}
+                    <code>digest</code> was not verified against the membership
+                    credential we issued. It may predate that binding, or the
+                    grant may have been re-issued since. Request a fresh one
+                    below.
+                  </span>
+                ) : (
+                  <span className="muted">
+                    half-edge — this community has asserted the membership and
+                    the member has not acknowledged it
+                  </span>
+                )}
+              </dd>
             </dl>
+          </section>
+
+          <section className="card">
+            <h3>Published relationships</h3>
+            <p className="muted">
+              Relationship credentials (VRCs) naming this member, in either
+              direction. These are the member's own edges to other members —
+              separate from their membership edge with this community.
+            </p>
+            {relationships.isPending && <p className="muted">Loading…</p>}
+            {relationships.isError && (
+              <p className="muted">Could not load this member's credentials.</p>
+            )}
+            {relationships.data &&
+              (relationships.data.items.length === 0 ? (
+                <p className="muted">
+                  None published. A member's relationships are private to them
+                  until they publish an edge here.
+                </p>
+              ) : (
+                <ul style={{ paddingLeft: "1.1em", margin: 0 }}>
+                  {relationships.data.items.map((r) => (
+                    <li key={r.id} style={{ marginBottom: "var(--space-3)" }}>
+                      <code>{shortenDid(r.issuerDid)}</code> →{" "}
+                      <code>{shortenDid(r.subjectDid)}</code>
+                      <span className="muted"> · {formatDate(r.createdAt)}</span>
+                      <CopyButton
+                        value={JSON.stringify(r.vrcJsonld, null, 2)}
+                        label="Copy credential JSON"
+                        successMessage="Credential copied"
+                      />
+                      <details>
+                        <summary className="muted">Credential</summary>
+                        <pre
+                          style={{
+                            overflowX: "auto",
+                            fontSize: "var(--text-sm)",
+                          }}
+                        >
+                          {JSON.stringify(r.vrcJsonld, null, 2)}
+                        </pre>
+                      </details>
+                    </li>
+                  ))}
+                </ul>
+              ))}
           </section>
 
           <section className="card">

@@ -1,25 +1,41 @@
-// Relationships plugin — a connections graph of the community's member-to-member
-// trust edges (Verifiable Relationship Credentials, VRCs).
+// Relationships plugin — a connections graph of the community's trust edges.
 //
-// Unlike the recognition graph (external, query-only), member relationships are
-// local + enumerable, so we can draw the whole thing. Layout is a deterministic
-// circle: endpoints are nodes, each edge joins a pair. Click a node to highlight
-// its connections and list its edges.
+// Two kinds of edge, both first-class. DTG Core Credentials makes VRCs and VMCs
+// the two subtypes of *edge credential* — "in both cases, a bi-directional pair
+// of credentials forms a complete DTG edge" — and the community is a node like
+// any other ("DTG node types include persons, devices, AI agents, and VTCs").
 //
-// A DTG edge is *two* VRCs, one in each direction. The two are drawn
-// differently on purpose: a solid double-headed line is a complete edge, where
-// both parties have published; a dashed single-headed line is a half-edge — one
-// party's claim that the other has not reciprocated. These used to render
-// identically, so the view could not tell a mutual relationship from a
-// unilateral one (#1054).
+//   relationship — a VRC pair between two members
+//   membership   — the VMC pair between a member and this community
+//
+// This view rendered only the first, so a community whose members had published
+// no VRCs saw an empty page and read it as "no trust here", when every
+// membership was an edge it was not drawing.
+//
+// There is no `kind` on the wire: `relationships/graph/0.2` pins the response
+// with `additionalProperties: false`, and none is needed — an edge with the
+// community's own DID as an endpoint is the membership one, and the community
+// knows its own DID.
+//
+// Unlike the recognition graph (external, query-only), these are local +
+// enumerable, so we can draw the whole thing. Layout is a deterministic circle:
+// endpoints are nodes, each edge joins a pair. Click a node to highlight its
+// connections and list its edges.
+//
+// A complete edge is a solid double-headed line, where both parties' halves
+// stand; a half-edge is dashed and single-headed — one party's claim the other
+// has not answered. These used to render identically, so the view could not
+// tell a mutual relationship from a unilateral one (#1054).
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Share2 } from "lucide-react";
 
 import {
+  fetchHealth,
   fetchRelationshipsGraph,
   type GraphEdge,
+  type HealthResponse,
   type RelationshipsGraph,
 } from "@/lib/api";
 import { useNameBook } from "@/lib/names";
@@ -51,6 +67,22 @@ export function Relationships() {
     queryFn: fetchRelationshipsGraph,
   });
 
+  // The community's own DID is what separates the two kinds of edge. Read from
+  // `/health`, which the dashboard already uses for it — a graph rendered
+  // before it resolves simply shows every edge as a relationship, which is what
+  // this view did for its whole life and is a safe intermediate state.
+  const health = useQuery<HealthResponse>({
+    queryKey: ["health"],
+    queryFn: fetchHealth,
+  });
+  const communityDid = health.data?.vtc_did;
+
+  const isMembership = useMemo(
+    () => (e: GraphEdge) =>
+      communityDid !== undefined && e.endpoints.includes(communityDid),
+    [communityDid],
+  );
+
   const placed = useMemo<Placed[]>(() => {
     const nodes = query.data?.nodes ?? [];
     const n = nodes.length;
@@ -69,6 +101,8 @@ export function Relationships() {
   const edges = query.data?.edges ?? [];
   const completeCount = edges.filter((e) => e.complete).length;
   const halfCount = edges.length - completeCount;
+  const membershipCount = edges.filter(isMembership).length;
+  const relationshipCount = edges.length - membershipCount;
 
   const selectedEdges = selected
     ? edges.filter((e) => e.endpoints.includes(selected))
@@ -86,12 +120,21 @@ export function Relationships() {
           <Share2 size={20} strokeWidth={1.75} /> Relationships
         </h2>
         <p className="muted">
-          The community's trust graph. Each node is an identifier a member
-          published a Verifiable Relationship Credential (VRC) under; each edge
-          joins a pair. An edge is <strong>complete</strong> when both parties
-          have published a VRC naming the other — that reciprocal credential is
-          how a member consents to the edge. A <strong>half-edge</strong> is one
-          party's claim the other has not answered.
+          The community's trust graph. Each node is an identifier — a member, or
+          this community itself — and each edge joins a pair. An edge is{" "}
+          <strong>complete</strong> when both parties have issued a credential
+          naming the other; that reciprocal credential is how each consents to
+          the edge. A <strong>half-edge</strong> is one party's claim the other
+          has not answered.
+        </p>
+        <p className="muted">
+          <strong>Membership</strong> edges join a member to this community: the
+          membership credential (VMC) this community issued, and the member's
+          acknowledgement of it. An acknowledgement counts only when its{" "}
+          <code>digest</code> matches the credential it names, so a member who
+          has not answered — or whose answer predates that binding — shows as a
+          half-edge until they re-issue. <strong>Relationship</strong> edges
+          join two members by a pair of relationship credentials (VRCs).
         </p>
       </header>
 
@@ -108,7 +151,8 @@ export function Relationships() {
       {isEmpty && (
         <section className="card">
           <p className="muted">
-            No relationships published yet — members haven't published any VRCs.
+            Nothing to draw yet — no memberships have been issued and no member
+            has published a relationship credential.
           </p>
         </section>
       )}
@@ -155,6 +199,14 @@ export function Relationships() {
                 const b = posByDid.get(to);
                 if (!a || !b) return null;
                 const active = !selected || e.endpoints.includes(selected);
+                // Membership and relationship edges are both real edges, so
+                // neither is drawn as the lesser: same weights and dash rules,
+                // different hue. Colour alone never carries the complete /
+                // half-edge distinction — that stays in the line style, which
+                // survives greyscale and colour-blindness.
+                const hue = isMembership(e)
+                  ? "var(--accent, #7c5cff)"
+                  : "var(--brand)";
                 return (
                   <line
                     key={edgeKey(e)}
@@ -162,7 +214,7 @@ export function Relationships() {
                     y1={a.y}
                     x2={b.x}
                     y2={b.y}
-                    stroke={active ? "var(--brand)" : "var(--border)"}
+                    stroke={active ? hue : "var(--border)"}
                     strokeWidth={e.complete ? (active ? 2 : 1.5) : active ? 1.5 : 1}
                     strokeDasharray={e.complete ? undefined : "4 3"}
                     opacity={selected && !active ? 0.25 : 0.8}
@@ -184,12 +236,29 @@ export function Relationships() {
                     opacity={dim ? 0.35 : 1}
                     onClick={() => setSelected(isSel ? null : p.did)}
                   >
-                    <circle
-                      r={isSel ? 9 : 6}
-                      fill={isSel ? "var(--brand)" : "var(--brand-tint-strong)"}
-                      stroke="var(--border-strong)"
-                      strokeWidth={1}
-                    />
+                    {p.did === communityDid ? (
+                      // The community is a node, but it is not a peer of its
+                      // members — a square says so without needing a legend
+                      // entry to be read first.
+                      <rect
+                        x={isSel ? -9 : -6}
+                        y={isSel ? -9 : -6}
+                        width={isSel ? 18 : 12}
+                        height={isSel ? 18 : 12}
+                        fill={
+                          isSel ? "var(--accent, #7c5cff)" : "var(--brand-tint-strong)"
+                        }
+                        stroke="var(--border-strong)"
+                        strokeWidth={1}
+                      />
+                    ) : (
+                      <circle
+                        r={isSel ? 9 : 6}
+                        fill={isSel ? "var(--brand)" : "var(--brand-tint-strong)"}
+                        stroke="var(--border-strong)"
+                        strokeWidth={1}
+                      />
+                    )}
                     <text
                       x={p.x > C ? 11 : -11}
                       y={4}
@@ -205,7 +274,7 @@ export function Relationships() {
             </svg>
 
             <svg
-              viewBox="0 0 260 40"
+              viewBox="0 0 260 58"
               style={{ width: "min(100%, 260px)", height: "auto" }}
               role="img"
               aria-label="Legend"
@@ -251,6 +320,19 @@ export function Relationships() {
               <text x={48} y={34} fontSize="10" fill="var(--text-muted)">
                 half-edge — not reciprocated
               </text>
+              <line
+                x1={4}
+                y1={48}
+                x2={40}
+                y2={48}
+                stroke="var(--accent, #7c5cff)"
+                strokeWidth={2}
+                markerStart="url(#rel-arrow-legend)"
+                markerEnd="url(#rel-arrow-legend)"
+              />
+              <text x={48} y={52} fontSize="10" fill="var(--text-muted)">
+                membership — a VMC pair
+              </text>
             </svg>
           </div>
 
@@ -261,6 +343,10 @@ export function Relationships() {
                 {placed.length} identifier{placed.length === 1 ? "" : "s"} ·{" "}
                 {completeCount} complete edge{completeCount === 1 ? "" : "s"} ·{" "}
                 {halfCount} half-edge{halfCount === 1 ? "" : "s"}.
+                <br />
+                {membershipCount} membership
+                {membershipCount === 1 ? "" : "s"} · {relationshipCount}{" "}
+                relationship{relationshipCount === 1 ? "" : "s"}.
                 <br />
                 Select a node to see its edges.
               </p>
@@ -294,7 +380,31 @@ export function Relationships() {
                       );
                       return (
                         <li key={edgeKey(e)} style={{ marginBottom: 4 }}>
-                          {e.complete ? (
+                          {isMembership(e) ? (
+                            // A membership edge reads in the community's
+                            // vocabulary, not the peer-vouching one: "vouched
+                            // for by the community" would describe a
+                            // relationship the VMC pair does not assert.
+                            e.complete ? (
+                              <>
+                                ↔ member of <code>{name}</code>
+                              </>
+                            ) : selected === communityDid ? (
+                              <>
+                                → issued membership to <code>{name}</code>{" "}
+                                <span className="muted">
+                                  (not acknowledged)
+                                </span>
+                              </>
+                            ) : (
+                              <>
+                                ← granted membership by <code>{name}</code>{" "}
+                                <span className="muted">
+                                  (not acknowledged)
+                                </span>
+                              </>
+                            )
+                          ) : e.complete ? (
                             <>
                               ↔ mutual with <code>{name}</code>
                             </>
