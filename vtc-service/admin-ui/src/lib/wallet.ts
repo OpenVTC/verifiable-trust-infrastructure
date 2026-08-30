@@ -18,7 +18,7 @@
 // with no Trust-Task header, so we point `baseUrl` at the VTC's header-exempt
 // `/v1/wallet` surface.
 
-import { fetchHealth } from "@/lib/api";
+import { daemonErrorMessage, fetchHealth } from "@/lib/api";
 
 interface VtaWalletLoginParams {
   rpDid: string;
@@ -202,7 +202,16 @@ export async function loginWithWalletProxy(
     body: JSON.stringify({ did: entry.principalDid }),
   });
   if (!chRes.ok) {
-    throw new Error(`/auth/challenge failed (${chRes.status})`);
+    // Carry the daemon's message, not just the code. A 403 here is the ACL
+    // gate in `handle_challenge` and it has three distinct causes — the
+    // principal DID is absent from the VTC ACL, its entry has expired, or its
+    // role is not `Admin` — which the status code alone cannot tell apart.
+    throw new Error(
+      `/auth/challenge failed (${chRes.status}): ${await daemonErrorMessage(
+        chRes,
+        chRes.statusText,
+      )}`,
+    );
   }
   // Challenge response is camelCase; the authenticate payload is snake_case.
   const ch = (await chRes.json()) as { challenge: string; sessionId: string };
@@ -232,7 +241,12 @@ export async function loginWithWalletProxy(
     }),
   });
   if (!authRes.ok) {
-    throw new Error(`/auth/ failed (${authRes.status})`);
+    throw new Error(
+      `/auth/ failed (${authRes.status}): ${await daemonErrorMessage(
+        authRes,
+        authRes.statusText,
+      )}`,
+    );
   }
   const tokenResp = (await authRes.json()) as {
     session: { id: string };
