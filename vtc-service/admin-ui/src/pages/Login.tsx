@@ -22,7 +22,6 @@ import {
 } from "@/lib/webauthn";
 import {
   isWalletAvailable,
-  isWalletProfileAvailable,
   isWalletProxyAvailable,
   listProxyCandidates,
   loginWithWallet,
@@ -54,7 +53,6 @@ export function Login() {
 
   const walletAvailable = isWalletAvailable();
   const proxyAvailable = isWalletProxyAvailable();
-  const profileAvailable = isWalletProfileAvailable();
   const busy = phase.kind === "running" || walletPhase.kind === "running";
 
   // Shared success tail: the wallet returned a bearer; mirror it into the
@@ -267,33 +265,30 @@ export function Login() {
           </p>
         )}
 
-        {profileAvailable && (
-          <button
-            type="button"
-            className="secondary"
-            onClick={handleProxyStart}
-            disabled={busy}
-          >
-            Sign in via VTA-proxied SIOP
-          </button>
-        )}
-
-        {/* Secondary, and worded as the exception it is. The primary button
-            uses whichever identity the wallet has bound to this site; this is
-            for an operator holding more than one here. On a wallet too old to
-            resolve an identity itself it is the only proxy route, so it stays
-            visible in that case. */}
         {proxyAvailable && (
-          <button
-            type="button"
-            className="link"
-            onClick={handleChooseIdentity}
-            disabled={busy}
-          >
-            {profileAvailable
-              ? "Sign in as a different identity…"
-              : "Sign in via VTA-proxied SIOP (choose an entry)"}
-          </button>
+          <>
+            <button
+              type="button"
+              className="secondary"
+              onClick={handleProxyStart}
+              disabled={busy}
+            >
+              Sign in via VTA-proxied SIOP
+            </button>
+
+            {/* Secondary, and worded as the exception it is. The button above
+                uses whichever identity the wallet has bound to this site; this
+                is for an operator holding more than one here, and it costs a
+                consent prompt that enumerates the vault to this page. */}
+            <button
+              type="button"
+              className="link"
+              onClick={handleChooseIdentity}
+              disabled={busy}
+            >
+              Sign in as a different identity…
+            </button>
+          </>
         )}
 
         {candidates && (

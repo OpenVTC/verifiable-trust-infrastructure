@@ -125,25 +125,20 @@ export function isWalletAvailable(): boolean {
   );
 }
 
-/** True iff the wallet additionally exposes the proxy-login + vault-list
- *  APIs (newer extension builds). */
+/** True iff the wallet exposes the whole proxy-login surface this page drives:
+ *  `walletProfile` to resolve the identity, `proxyLogin` to mint as it, and
+ *  `vaultList` for the pick-a-different-identity path.
+ *
+ *  Presence detection, not version negotiation — the extension may simply not
+ *  be installed. There is deliberately no separate probe per method: every
+ *  build that has one has all three, so a second probe would only describe a
+ *  wallet that does not exist. */
 export function isWalletProxyAvailable(): boolean {
   return (
     isWalletAvailable() &&
+    typeof window.vtaWallet?.walletProfile === "function" &&
     typeof window.vtaWallet?.proxyLogin === "function" &&
     typeof window.vtaWallet?.vaultList === "function"
-  );
-}
-
-/** True iff the wallet can resolve-or-bind a persona for this origin itself.
- *
- *  A capability probe, not a compatibility fold: without it the proxy path can
- *  only work for an operator who has already bound an entry by hand, and the
- *  difference is worth an accurate message rather than a `TypeError`. */
-export function isWalletProfileAvailable(): boolean {
-  return (
-    isWalletProxyAvailable() &&
-    typeof window.vtaWallet?.walletProfile === "function"
   );
 }
 
@@ -243,11 +238,8 @@ export async function loginWithWalletProxy(
  * `proxyLogin` as a single call.
  */
 export async function loginWithWalletProfile(): Promise<VtaWalletLoginResult> {
-  if (!isWalletProfileAvailable()) {
-    throw new Error(
-      "This VTA wallet build cannot choose an identity for a site. " +
-        "Update the extension, or pin a did-self-issued vault entry to this VTC by hand.",
-    );
+  if (!isWalletProxyAvailable()) {
+    throw new Error("VTA wallet doesn't expose proxy-login APIs.");
   }
   const rp = await rpDid();
   const profile = await window.vtaWallet!.walletProfile!({
