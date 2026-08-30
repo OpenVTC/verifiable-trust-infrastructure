@@ -489,8 +489,16 @@ pub(crate) async fn assert_inner(
     member.personhood = true;
     member.personhood_asserted_at = Some(now);
     member.status_list_index = Some(slot);
-    member.current_vmc_id = Some(vmc_id.clone());
-    member.current_role_vec_id = Some(vec_id.clone());
+    // Keep the bodies, not just the ids — see [`crate::members::Member::current_vmc`].
+    // Asserting or revoking personhood re-mints the grant (the flag is a claim on
+    // it), so the digest changes and the acknowledgement bound to the previous
+    // grant no longer matches: `record_issued_credentials` drops it, leaving the
+    // member visibly owing a fresh one.
+    let vmc_value = serde_json::to_value(&vmc)
+        .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
+    let role_vec_value = serde_json::to_value(&role_vec)
+        .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+    member.record_issued_credentials(vmc_value, role_vec_value);
     store_member(&state.members_ks, &member).await?;
 
     // 9. Audit.
@@ -621,8 +629,16 @@ pub async fn revoke(
 
     member.personhood = false;
     member.personhood_asserted_at = None;
-    member.current_vmc_id = Some(vmc_id.clone());
-    member.current_role_vec_id = Some(vec_id.clone());
+    // Keep the bodies, not just the ids — see [`crate::members::Member::current_vmc`].
+    // Asserting or revoking personhood re-mints the grant (the flag is a claim on
+    // it), so the digest changes and the acknowledgement bound to the previous
+    // grant no longer matches: `record_issued_credentials` drops it, leaving the
+    // member visibly owing a fresh one.
+    let vmc_value = serde_json::to_value(&vmc)
+        .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
+    let role_vec_value = serde_json::to_value(&role_vec)
+        .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+    member.record_issued_credentials(vmc_value, role_vec_value);
     store_member(&state.members_ks, &member).await?;
 
     audit_writer

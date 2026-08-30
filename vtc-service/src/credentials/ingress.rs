@@ -595,8 +595,11 @@ mod tests {
 /// service and its peer computing different digests for the same credential
 /// and neither able to see why.
 ///
-/// The same recipe `dtg_credentials::DTGCredential::digest_multibase` uses, and
-/// the same one `_framework/0.3#/$defs/DigestMultibase` describes.
+/// This is the **Trust Task framework** digest — what
+/// `_framework/0.3#/$defs/DigestMultibase` describes, used to bind a publish
+/// authorization to the credential it authorizes. It is not the digest a DTG
+/// credential carries in `credentialSubject.digest`; that one is
+/// [`dtg_credential_digest`], and the two differ in both encoding and coverage.
 pub fn digest_multibase(doc: &JsonValue) -> Result<String, AppError> {
     use sha2::{Digest, Sha256};
     let canonical = serde_json_canonicalizer::to_vec(doc)
@@ -605,6 +608,59 @@ pub fn digest_multibase(doc: &JsonValue) -> Result<String, AppError> {
     multihash.extend_from_slice(&[0x12, 0x20]);
     multihash.extend_from_slice(&Sha256::digest(&canonical));
     Ok(multibase::encode(multibase::Base::Base58Btc, multihash))
+}
+
+/// Digest of a credential in the form DTG Core Credentials specifies for
+/// `credentialSubject.digest`: SHA-256 over the RFC 8785 (JCS)
+/// canonicalization of the document **with its top-level `proof` removed**,
+/// encoded as `sha256:` followed by the lowercase hexadecimal digest.
+///
+/// This is what a member-issued VMC carries of the grant it acknowledges, and
+/// what a VWC carries of the edge credential it attests. Distinct from
+/// [`digest_multibase`] in encoding *and* coverage — do not substitute one for
+/// the other.
+///
+/// # Over the document as it stands, not a re-serialised model
+///
+/// Same discipline as [`digest_multibase`], and it matters more here: the
+/// counterparty computed their digest over the JSON they received. A
+/// credential may carry members this service's model does not know, and
+/// digesting a parsed-and-re-serialised model would drop them — leaving the
+/// two sides computing different digests for the same credential, with nothing
+/// to show why.
+///
+/// # Why `proof` is excluded
+///
+/// The digest binds to what the credential *says*, not to a signature over it,
+/// so an acknowledgement survives its grant being re-signed. A re-issued grant
+/// carries different claims and therefore a different digest, which is what
+/// makes renewal force re-acknowledgement.
+pub fn dtg_credential_digest(doc: &JsonValue) -> Result<String, AppError> {
+    use sha2::{Digest, Sha256};
+
+    let proofless = match doc {
+        JsonValue::Object(members) => {
+            let mut members = members.clone();
+            members.remove("proof");
+            JsonValue::Object(members)
+        }
+        // Not an object: canonicalize as-is and let the digest simply not match
+        // anything. A shape check belongs to the caller, which has a better
+        // error to give than this one would.
+        other => other.clone(),
+    };
+
+    let canonical = serde_json_canonicalizer::to_vec(&proofless)
+        .map_err(|e| AppError::Validation(format!("credential is not canonicalizable: {e}")))?;
+
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity("sha256:".len() + 64);
+    out.push_str("sha256:");
+    for byte in Sha256::digest(&canonical) {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -628,6 +684,65 @@ mod digest_tests {
         assert!(
             d.starts_with('z'),
             "expected a base58btc multibase, got {d}"
+        );
+    }
+
+    /// The `sha256:<hex>` digest is an interoperability surface: the member
+    /// computes it and this service recomputes it, in two codebases. Pinned
+    /// against a literal computed outside both — the same fixture
+    /// `dtg-credentials` asserts — so the two implementations are checked
+    /// against one definition rather than against each other.
+    #[test]
+    fn dtg_credential_digest_matches_the_cross_implementation_fixture() {
+        let grant = serde_json::json!({
+            "@context": [
+                "https://www.w3.org/ns/credentials/v2",
+                "https://firstperson.network/credentials/dtg/v1"
+            ],
+            "type": ["VerifiableCredential", "DTGCredential", "MembershipCredential"],
+            "id": "urn:uuid:2a4e1d90-6e0c-4d3f-9a4a-6d0a8f7c1b52",
+            "issuer": "did:example:community",
+            "validFrom": "2025-12-11T00:00:00Z",
+            "credentialSubject": { "id": "did:example:member" }
+        });
+
+        assert_eq!(
+            dtg_credential_digest(&grant).unwrap(),
+            "sha256:49c9d5135ab4b5659a343bc79d351e37d64f05add58408cae6eef022828495c2"
+        );
+    }
+
+    /// Signing the grant must not change its digest, or the community could
+    /// never re-sign a credential without silently invalidating every
+    /// acknowledgement already made against it.
+    #[test]
+    fn dtg_credential_digest_ignores_the_proof() {
+        let unsigned = serde_json::json!({
+            "type": ["VerifiableCredential", "DTGCredential", "MembershipCredential"],
+            "issuer": "did:example:community",
+            "credentialSubject": { "id": "did:example:member" }
+        });
+        let mut signed = unsigned.clone();
+        signed["proof"] = serde_json::json!({
+            "type": "DataIntegrityProof",
+            "proofValue": "z3FXQ..."
+        });
+
+        assert_eq!(
+            dtg_credential_digest(&unsigned).unwrap(),
+            dtg_credential_digest(&signed).unwrap()
+        );
+    }
+
+    /// The two digests answer different questions and must never be swapped:
+    /// the framework one binds a publish authorization, the DTG one binds a
+    /// credential to the credential it references.
+    #[test]
+    fn the_two_digests_are_not_interchangeable() {
+        let doc = serde_json::json!({ "a": 1 });
+        assert_ne!(
+            digest_multibase(&doc).unwrap(),
+            dtg_credential_digest(&doc).unwrap()
         );
     }
 

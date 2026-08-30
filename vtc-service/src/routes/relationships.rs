@@ -1708,14 +1708,116 @@ pub struct RelationshipsGraph {
     pub edges: Vec<GraphEdge>,
 }
 
-/// Group stored VRCs into pair-edges. Pure, so the half/complete rule is
-/// testable without standing up a keyspace.
+/// One directed half of a **membership** edge, lifted out of a member row into
+/// the shape a published VRC contributes to the graph.
+///
+/// DTG Core Credentials makes VRCs and VMCs the two subtypes of *edge
+/// credential*: "a bi-directional pair of credentials forms a complete DTG
+/// edge" in both cases, and the community is a node like any other ("DTG node
+/// types include persons, devices, AI agents, and VTCs"). A graph that renders
+/// only VRC pairs is showing half the trust graph.
+///
+/// Membership halves are lifted rather than stored in the relationships
+/// keyspace: they already exist, verified, on the member row. Copying them into
+/// a second store would create two records of one fact, free to disagree — and
+/// the VMC pair has its own lifecycle (status list, renewal, departure
+/// handling) that the relationships keyspace does not model.
+#[derive(Debug, Clone)]
+pub struct MembershipHalf {
+    /// The credential's own `id`. Not a relationships-keyspace row id, so it is
+    /// not something `DELETE /v1/relationships/{id}` can take — a membership
+    /// half is retracted by leaving the community, not by revoking an edge.
+    pub id: String,
+    pub issuer_did: String,
+    pub subject_did: String,
+    pub created_at: chrono::DateTime<Utc>,
+    /// Whether this half currently stands. For the community's grant that is
+    /// its validity window; for the member's acknowledgement it is the window
+    /// **and** that its digest was verified against the grant — an unbound
+    /// acknowledgement is still shown, but it does not complete an edge.
+    pub in_force: bool,
+}
+
+/// Lift both halves of one member's membership edge.
+///
+/// Returns at most two halves: the community's grant (community → member) and
+/// the member's acknowledgement (member → community). A member who has not
+/// acknowledged yields one, which renders as the half-edge it is: the
+/// community's claim, unanswered.
+///
+/// # A missing grant body does not fabricate a window
+///
+/// Rows written before the service kept credential bodies have the grant's `id`
+/// but not its claims, so its window cannot be read. Such a half is treated as
+/// standing — the ACL row is the community's live assertion of membership, and
+/// it is the better evidence here than an absent document. This cannot
+/// overstate an edge: the acknowledgement on those same rows is unbound, so the
+/// edge is incomplete either way.
+pub fn membership_halves(
+    community_did: &str,
+    member: &crate::members::Member,
+    now: chrono::DateTime<Utc>,
+) -> Vec<MembershipHalf> {
+    /// Is a stored credential body inside its validity window? Absent body →
+    /// `true`, per the doc comment above. Unreadable body → `false`: a document
+    /// we cannot parse is not evidence of anything.
+    fn window_stands(body: Option<&JsonValue>, now: chrono::DateTime<Utc>) -> bool {
+        let Some(body) = body else {
+            return true;
+        };
+        match crate::credentials::ingress::validity_window(body, "MembershipCredential") {
+            Ok(window) => matches!(
+                window.state_at(now),
+                crate::credentials::lifecycle::InForce::Yes
+            ),
+            Err(_) => false,
+        }
+    }
+
+    let mut halves = Vec::with_capacity(2);
+
+    // The community's grant. A member with no `current_vmc_id` was admitted but
+    // never issued to — no half to draw.
+    if let Some(id) = &member.current_vmc_id {
+        halves.push(MembershipHalf {
+            id: id.clone(),
+            issuer_did: community_did.to_string(),
+            subject_did: member.did.clone(),
+            created_at: member.joined_at,
+            in_force: window_stands(member.current_vmc.as_ref(), now),
+        });
+    }
+
+    // The member's acknowledgement.
+    if let Some(id) = &member.member_vmc_id {
+        halves.push(MembershipHalf {
+            id: id.clone(),
+            issuer_did: member.did.clone(),
+            subject_did: community_did.to_string(),
+            created_at: member.member_vmc_received_at.unwrap_or(member.joined_at),
+            // `member_vmc_bound` is the digest check made at receipt. Without
+            // it the acknowledgement names some grant, but not demonstrably
+            // this one, and the spec is explicit that such a credential MUST
+            // NOT be treated as completing a membership edge.
+            in_force: member.member_vmc_bound && window_stands(member.member_vmc.as_ref(), now),
+        });
+    }
+
+    halves
+}
+
+/// Group stored VRCs and lifted membership halves into pair-edges. Pure, so the
+/// half/complete rule is testable without standing up a keyspace.
 ///
 /// `now` is a parameter rather than read here because whether an edge is
 /// complete is a question about an instant, and a test that cannot choose the
 /// instant cannot pin an expiry boundary. Same reason the publish handler
 /// reads `now` once at the top and passes it down.
-fn build_graph(mut rels: Vec<Relationship>, now: chrono::DateTime<Utc>) -> RelationshipsGraph {
+fn build_graph(
+    mut rels: Vec<Relationship>,
+    memberships: Vec<MembershipHalf>,
+    now: chrono::DateTime<Utc>,
+) -> RelationshipsGraph {
     // Oldest first, id-tiebroken, so `halves` ordering is stable across calls
     // rather than inheriting whatever order the keyspace scan produced.
     rels.sort_by_key(|r| (r.created_at, r.id));
@@ -1754,9 +1856,43 @@ fn build_graph(mut rels: Vec<Relationship>, now: chrono::DateTime<Utc>) -> Relat
         ));
     }
 
+    // Membership halves join the same pair map, so one `complete` rule covers
+    // both kinds of edge. They are appended after the VRC halves and the pair's
+    // halves are re-sorted below, rather than being merged in `created_at`
+    // order here, because the two come from different stores and only the
+    // combined list has a meaningful order.
+    for half in memberships {
+        nodes.insert(half.issuer_did.clone());
+        nodes.insert(half.subject_did.clone());
+        let key = if half.issuer_did <= half.subject_did {
+            (half.issuer_did.clone(), half.subject_did.clone())
+        } else {
+            (half.subject_did.clone(), half.issuer_did.clone())
+        };
+        let in_force = half.in_force;
+        pairs.entry(key).or_default().push((
+            GraphHalf {
+                id: half.id,
+                issuer_did: half.issuer_did,
+                subject_did: half.subject_did,
+                created_at: half.created_at.to_rfc3339(),
+                // A VPC annotates a relationship edge; membership is not
+                // pseudonymous, so there is nothing to correlate here.
+                persona_did: None,
+            },
+            in_force,
+        ));
+    }
+
     let edges = pairs
         .into_iter()
-        .map(|((lo, hi), halves)| {
+        .map(|((lo, hi), mut halves)| {
+            // Oldest first across both sources, matching the `halves` contract.
+            halves.sort_by(|a, b| {
+                a.0.created_at
+                    .cmp(&b.0.created_at)
+                    .then(a.0.id.cmp(&b.0.id))
+            });
             // A self-issued VRC (`lo == hi`) has no counterparty who could ever
             // reciprocate, so it can never be complete — without the `lo != hi`
             // guard the two `any` checks below would both match the same row
@@ -1806,8 +1942,27 @@ pub async fn graph(
     _auth: crate::auth::AdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<RelationshipsGraph>, AppError> {
+    let now = Utc::now();
     let rels = crate::relationships::list_all(&state.relationships_ks).await?;
-    Ok(Json(build_graph(rels, Utc::now())))
+
+    // Membership halves come from the member rows, where they already sit
+    // verified — see [`membership_halves`] for why they are lifted rather than
+    // copied into the relationships keyspace. A community with no DID
+    // configured has no node to draw them against; the VRC graph still renders.
+    let community_did = state.config.read().await.vtc_did.clone();
+    let memberships = match community_did {
+        Some(community_did) if !community_did.is_empty() => {
+            crate::members::list_members(&state.members_ks)
+                .await?
+                .iter()
+                .filter(|m| !m.is_removed())
+                .flat_map(|m| membership_halves(&community_did, m, now))
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+
+    Ok(Json(build_graph(rels, memberships, now)))
 }
 
 #[cfg(test)]
@@ -1961,9 +2116,164 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 2, day, 0, 0, 0).unwrap()
     }
 
+    /// A member row with both halves of its membership pair, digest verified.
+    fn member_row(did: &str, ack: Option<bool>) -> crate::members::Member {
+        use chrono::TimeZone;
+        let mut m = crate::members::Member::fresh(did);
+        m.joined_at = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+        let grant = dtg_credentials::DTGCredential::new_vmc(
+            COMMUNITY.to_string(),
+            did.to_string(),
+            m.joined_at,
+            None,
+            false,
+        )
+        .with_id("urn:uuid:grant-1");
+        let grant_json = serde_json::to_value(grant.credential()).expect("grant serialises");
+
+        let role_vec = serde_json::json!({ "id": "urn:uuid:vec-1" });
+        m.record_issued_credentials(grant_json, role_vec);
+
+        if let Some(bound) = ack {
+            let ack = dtg_credentials::DTGCredential::new_member_vmc(&grant, m.joined_at, None)
+                .expect("acknowledgement builds")
+                .with_id("urn:uuid:ack-1");
+            let ack_json = serde_json::to_value(ack.credential()).expect("ack serialises");
+            m.record_member_vmc("urn:uuid:ack-1", ack_json, bound);
+            m.member_vmc_received_at = Some(Utc.with_ymd_and_hms(2026, 1, 1, 0, 5, 0).unwrap());
+        }
+
+        m
+    }
+
+    const COMMUNITY: &str = "did:web:community.example";
+
+    /// The membership pair is a DTG edge in exactly the way a VRC pair is —
+    /// "in both cases, a bi-directional pair of credentials forms a complete
+    /// DTG edge" — and the community is a node like any other. A graph that
+    /// rendered only VRC pairs was showing half the trust graph.
+    #[test]
+    fn an_acknowledged_membership_is_one_complete_edge() {
+        let member = member_row(A, Some(true));
+        let g = build_graph(vec![], membership_halves(COMMUNITY, &member, at(1)), at(1));
+
+        assert_eq!(g.edges.len(), 1, "grant + acknowledgement are ONE edge");
+        assert_eq!(
+            g.edges[0].endpoints,
+            {
+                let mut e = vec![COMMUNITY.to_string(), A.to_string()];
+                e.sort();
+                e
+            },
+            "endpoints are DID-sorted, as for any edge"
+        );
+        assert_eq!(g.edges[0].halves.len(), 2);
+        assert!(g.edges[0].complete);
+        assert_eq!(g.nodes.len(), 2, "the community is a node in its own graph");
+    }
+
+    /// A membership the member has not answered is the community's claim, not
+    /// a relationship — the same reading a one-sided VRC gets.
+    #[test]
+    fn an_unacknowledged_membership_is_a_half_edge() {
+        let member = member_row(A, None);
+        let g = build_graph(vec![], membership_halves(COMMUNITY, &member, at(1)), at(1));
+
+        assert_eq!(g.edges.len(), 1);
+        assert_eq!(g.edges[0].halves.len(), 1);
+        assert!(!g.edges[0].complete);
+        assert_eq!(g.edges[0].halves[0].issuer_did, COMMUNITY);
+    }
+
+    /// The spec is explicit: an acknowledgement whose digest does not match a
+    /// valid grant MUST NOT be treated as completing a membership edge. It is
+    /// still *shown* — a published fact is not hidden because it is unbound —
+    /// but it does not stand in for the member's consent.
+    #[test]
+    fn an_unbound_acknowledgement_does_not_complete_the_edge() {
+        let member = member_row(A, Some(false));
+        let g = build_graph(vec![], membership_halves(COMMUNITY, &member, at(1)), at(1));
+
+        assert_eq!(g.edges.len(), 1);
+        assert_eq!(
+            g.edges[0].halves.len(),
+            2,
+            "both halves are listed; a stored credential is not hidden"
+        );
+        assert!(
+            !g.edges[0].complete,
+            "an unverified digest is not the member's consent to THIS membership"
+        );
+    }
+
+    /// Membership and relationship edges share one graph and one `complete`
+    /// rule. They must not merge into each other: a member's VRC to a peer and
+    /// their VMC pair with the community are different edges.
+    #[test]
+    fn membership_and_relationship_edges_coexist() {
+        let member = member_row(A, Some(true));
+        let g = build_graph(
+            vec![row(A, B, 0), row(B, A, 1)],
+            membership_halves(COMMUNITY, &member, at(1)),
+            at(1),
+        );
+
+        assert_eq!(g.edges.len(), 2, "A—B and A—community are separate edges");
+        assert!(g.edges.iter().all(|e| e.complete));
+        assert_eq!(g.nodes.len(), 3, "A, B, and the community");
+
+        // An edge touching the community DID is the membership one. This is how
+        // a consumer tells them apart without a schema change: the community
+        // knows its own DID, and `relationships/graph/0.2` pins the response
+        // shape with `additionalProperties: false`.
+        let membership = g
+            .edges
+            .iter()
+            .find(|e| e.endpoints.contains(&COMMUNITY.to_string()))
+            .expect("the membership edge");
+        assert_eq!(membership.halves.len(), 2);
+    }
+
+    /// An expired grant stops standing for a current membership, exactly as an
+    /// expired VRC stops completing a relationship edge (#1079).
+    #[test]
+    fn an_expired_grant_does_not_complete_the_edge() {
+        use chrono::TimeZone;
+        let mut member = member_row(A, Some(true));
+
+        // Re-issue the stored grant with a window that has already closed.
+        if let Some(grant) = member.current_vmc.as_mut() {
+            grant["validUntil"] = serde_json::Value::String(
+                Utc.with_ymd_and_hms(2026, 1, 2, 0, 0, 0)
+                    .unwrap()
+                    .to_rfc3339(),
+            );
+        }
+
+        let g = build_graph(vec![], membership_halves(COMMUNITY, &member, at(9)), at(9));
+        assert_eq!(g.edges[0].halves.len(), 2, "both are still listed");
+        assert!(!g.edges[0].complete);
+    }
+
+    /// Rows written before the service kept credential bodies still render a
+    /// half — the id is enough to say the grant exists — and are honestly
+    /// incomplete, because nothing verified the acknowledgement against it.
+    #[test]
+    fn a_pre_digest_row_renders_as_an_incomplete_edge() {
+        let mut member = crate::members::Member::fresh(A);
+        member.current_vmc_id = Some("urn:uuid:legacy-grant".into());
+        member.member_vmc_id = Some("urn:uuid:legacy-ack".into());
+        // `member_vmc_bound` defaults false: nothing checked a digest.
+
+        let g = build_graph(vec![], membership_halves(COMMUNITY, &member, at(1)), at(1));
+        assert_eq!(g.edges[0].halves.len(), 2);
+        assert!(!g.edges[0].complete);
+    }
+
     #[test]
     fn a_reciprocated_pair_is_one_complete_edge() {
-        let g = build_graph(vec![row(A, B, 0), row(B, A, 1)], at(1));
+        let g = build_graph(vec![row(A, B, 0), row(B, A, 1)], vec![], at(1));
         assert_eq!(g.edges.len(), 1, "two VRCs one each way are ONE edge");
         assert_eq!(g.edges[0].endpoints, vec![A.to_string(), B.to_string()]);
         assert_eq!(g.edges[0].halves.len(), 2);
@@ -1973,7 +2283,7 @@ mod tests {
 
     #[test]
     fn an_unreciprocated_vrc_is_a_half_edge() {
-        let g = build_graph(vec![row(A, B, 0)], at(1));
+        let g = build_graph(vec![row(A, B, 0)], vec![], at(1));
         assert_eq!(g.edges.len(), 1);
         assert_eq!(g.edges[0].halves.len(), 1);
         assert!(
@@ -1989,7 +2299,11 @@ mod tests {
     /// parties are not evidence of reciprocity if they all point one way.
     #[test]
     fn repeated_vrcs_in_one_direction_do_not_complete_an_edge() {
-        let g = build_graph(vec![row(A, B, 0), row(A, B, 1), row(A, B, 2)], at(1));
+        let g = build_graph(
+            vec![row(A, B, 0), row(A, B, 1), row(A, B, 2)],
+            vec![],
+            at(1),
+        );
         assert_eq!(g.edges.len(), 1);
         assert_eq!(g.edges[0].halves.len(), 3);
         assert!(!g.edges[0].complete);
@@ -2000,8 +2314,8 @@ mod tests {
     /// edges depending on publish order.
     #[test]
     fn pair_identity_does_not_depend_on_publish_order() {
-        let forward = build_graph(vec![row(A, B, 0), row(B, A, 1)], at(1));
-        let reverse = build_graph(vec![row(B, A, 0), row(A, B, 1)], at(1));
+        let forward = build_graph(vec![row(A, B, 0), row(B, A, 1)], vec![], at(1));
+        let reverse = build_graph(vec![row(B, A, 0), row(A, B, 1)], vec![], at(1));
         assert_eq!(forward.edges[0].endpoints, reverse.edges[0].endpoints);
         assert!(forward.edges[0].complete && reverse.edges[0].complete);
     }
@@ -2011,7 +2325,7 @@ mod tests {
     /// "a VRC each way" test would report it complete.
     #[test]
     fn a_self_issued_vrc_is_never_complete() {
-        let g = build_graph(vec![row(A, A, 0)], at(1));
+        let g = build_graph(vec![row(A, A, 0)], vec![], at(1));
         assert_eq!(g.edges.len(), 1);
         assert_eq!(g.edges[0].endpoints, vec![A.to_string(), A.to_string()]);
         assert!(!g.edges[0].complete);
@@ -2020,7 +2334,7 @@ mod tests {
     #[test]
     fn distinct_pairs_stay_distinct_and_ordering_is_stable() {
         let rows = vec![row(B, C, 2), row(A, B, 0), row(B, A, 1)];
-        let g = build_graph(rows, at(1));
+        let g = build_graph(rows, vec![], at(1));
         assert_eq!(g.edges.len(), 2);
         // BTreeMap keyed on the sorted pair: (A,B) before (B,C).
         assert_eq!(g.edges[0].endpoints, vec![A.to_string(), B.to_string()]);
@@ -2059,13 +2373,13 @@ mod tests {
     fn an_expired_reciprocal_no_longer_completes_an_edge() {
         let rows = || vec![row(A, B, 0), row_expiring(B, A, 1, 10)];
 
-        let live = build_graph(rows(), at(9));
+        let live = build_graph(rows(), vec![], at(9));
         assert!(
             live.edges[0].complete,
             "both halves in date: this is a mutual relationship"
         );
 
-        let lapsed = build_graph(rows(), at(11));
+        let lapsed = build_graph(rows(), vec![], at(11));
         assert!(
             !lapsed.edges[0].complete,
             "B's half has expired, so B no longer consents to anything"
@@ -2094,13 +2408,13 @@ mod tests {
             .expect("first event on a fresh log");
 
         assert!(
-            !build_graph(vec![row(A, B, 0), suspended.clone()], at(6)).edges[0].complete,
+            !build_graph(vec![row(A, B, 0), suspended.clone()], vec![], at(6)).edges[0].complete,
             "a suspended half is not consent"
         );
         // And it was genuinely the event doing the work: an instant before it
         // was recorded, the same rows read as complete.
         assert!(
-            build_graph(vec![row(A, B, 0), suspended], at(4)).edges[0].complete,
+            build_graph(vec![row(A, B, 0), suspended], vec![], at(4)).edges[0].complete,
             "the suspension must not apply before it was recorded"
         );
     }
@@ -2119,8 +2433,8 @@ mod tests {
             )
             .unwrap();
 
-        assert!(!build_graph(vec![row(A, B, 0), half.clone()], at(6)).edges[0].complete);
-        assert!(build_graph(vec![row(A, B, 0), half], at(8)).edges[0].complete);
+        assert!(!build_graph(vec![row(A, B, 0), half.clone()], vec![], at(6)).edges[0].complete);
+        assert!(build_graph(vec![row(A, B, 0), half], vec![], at(8)).edges[0].complete);
     }
 
     /// A superseded half is displaced, not deleted — and the replacement is
@@ -2140,13 +2454,17 @@ mod tests {
             .unwrap();
         let replacement = row(A, B, 2);
 
-        let g = build_graph(vec![old_half.clone(), replacement, row(B, A, 1)], at(6));
+        let g = build_graph(
+            vec![old_half.clone(), replacement, row(B, A, 1)],
+            vec![],
+            at(6),
+        );
         assert_eq!(g.edges[0].halves.len(), 3);
         assert!(g.edges[0].complete, "the replacement carries A's direction");
 
         // Remove the replacement and the pair is no longer complete: the
         // displaced half cannot stand in for it.
-        let without = build_graph(vec![old_half, row(B, A, 1)], at(6));
+        let without = build_graph(vec![old_half, row(B, A, 1)], vec![], at(6));
         assert!(!without.edges[0].complete);
     }
 
@@ -2163,6 +2481,6 @@ mod tests {
             broken.in_force_at(at(1)),
             crate::relationships::InForce::Indeterminate { .. }
         ));
-        assert!(!build_graph(vec![row(A, B, 0), broken], at(1)).edges[0].complete);
+        assert!(!build_graph(vec![row(A, B, 0), broken], vec![], at(1)).edges[0].complete);
     }
 }

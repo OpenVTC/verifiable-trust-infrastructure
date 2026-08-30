@@ -664,12 +664,15 @@ async fn reissue_credentials(
 
     // Update Member row pointers.
     let mut member_mut = member;
-    member_mut.current_vmc_id = Some(vmc_id.clone());
-    member_mut.current_role_vec_id = Some(vec_id.clone());
-    store_member(&state.members_ks, &member_mut).await?;
-
     let vmc_value = serde_json::to_value(&vmc)
         .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
+    let role_vec_value = serde_json::to_value(&role_vec)
+        .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+    // Keep the bodies, not just the ids — see [`crate::members::Member::current_vmc`].
+    // Rotation mints a grant naming the new DID, so the acknowledgement the member
+    // sent under the old one no longer matches and is dropped.
+    member_mut.record_issued_credentials(vmc_value.clone(), role_vec_value);
+    store_member(&state.members_ks, &member_mut).await?;
     let vec_value = serde_json::to_value(&role_vec)
         .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?;
 
