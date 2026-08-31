@@ -389,7 +389,7 @@ webauthn-rs = { version = "0.5", features = [
 # `arc` so `regorus::Engine` is `Send + Sync` and `full-opa` for the
 # stdlib builtins (regex, time, etc.) that real policies (`join.rego`,
 # `removal.rego`) lean on. Trim later if compile times bite.
-regorus = "0.10"
+regorus = "0.11"
 
 # OS keyring API (replaces legacy `keyring` v3 crate). keyring-core 1.0 split
 # the API from the backend stores; each binary picks a platform-native store

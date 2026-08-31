@@ -5027,14 +5027,41 @@ dependencies = [
  "getrandom 0.3.4",
  "idna",
  "itoa",
- "jsonschema-regex",
+ "jsonschema-regex 0.46.10",
  "num-cmp",
  "num-traits",
  "percent-encoding",
- "referencing",
+ "referencing 0.46.10",
  "regex",
  "reqwest",
  "rustls",
+ "serde",
+ "serde_json",
+ "unicode-general-category",
+ "uuid-simd",
+]
+
+[[package]]
+name = "jsonschema"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "281c43ff06dcb331e9356d30e38853d559ce3d0a3f693e0b0e102667dec14fb1"
+dependencies = [
+ "ahash",
+ "bytecount",
+ "data-encoding",
+ "email_address",
+ "fancy-regex 0.18.0",
+ "fraction",
+ "getrandom 0.3.4",
+ "idna",
+ "itoa",
+ "jsonschema-regex 0.47.0",
+ "num-cmp",
+ "num-traits",
+ "percent-encoding",
+ "referencing 0.47.0",
+ "regex",
  "serde",
  "serde_json",
  "unicode-general-category",
@@ -5046,6 +5073,15 @@ name = "jsonschema-regex"
 version = "0.46.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbd1086b01b9349fd4ef9a07433965af64c8ce8159abe633a189e4ff817bd13"
+dependencies = [
+ "regex-syntax",
+]
+
+[[package]]
+name = "jsonschema-regex"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee0b351864e7ffbc5db9273daf7fa1b4d5177b0946713d667ca571b83c0b4045"
 dependencies = [
  "regex-syntax",
 ]
@@ -6909,6 +6945,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "referencing"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "348e860aeb0b7bd035778fd11dd9cd5290d32e4aed3b8f2274a00287a9fd362b"
+dependencies = [
+ "ahash",
+ "fluent-uri",
+ "getrandom 0.3.4",
+ "hashbrown 0.17.1",
+ "itoa",
+ "micromap",
+ "parking_lot",
+ "percent-encoding",
+ "serde_json",
+]
+
+[[package]]
 name = "regex"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6945,9 +6998,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "regorus"
-version = "0.10.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "419a0413adeece71e4d4a64fb75adc359cb807496f0dfd10f429517be908b807"
+checksum = "3cc4dc91481b1d4001ba7f2e81f7faf674142e0ac36d37d79e5f02764d06571e"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6956,11 +7009,11 @@ dependencies = [
  "globset",
  "indexmap 2.14.0",
  "ipnet",
- "jsonschema",
+ "jsonschema 0.47.0",
  "lazy_static",
  "lru",
  "msvc_spectre_libs",
- "num-bigint 0.4.8",
+ "num-bigint 0.5.1",
  "num-traits",
  "parking_lot",
  "postcard",
@@ -6970,7 +7023,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "spin 0.10.1",
+ "spin 0.12.3",
  "thiserror 2.0.20",
  "url",
  "uuid",
@@ -7908,9 +7961,9 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.10.1"
+version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
+checksum = "0134f9043ed38b087ac4f7d4af44c79e2c9e5094421fe3164f435ce585953b10"
 
 [[package]]
 name = "spinning_top"
@@ -8741,7 +8794,7 @@ checksum = "41d841bf16638473fed22f94ce446cadcc932afc60ca3f623eef184d546d945b"
 dependencies = [
  "async-trait",
  "chrono",
- "jsonschema",
+ "jsonschema 0.46.10",
  "regress",
  "serde",
  "serde_json",
@@ -9792,7 +9845,7 @@ dependencies = [
  "hmac 0.13.0",
  "http-body-util",
  "include_dir",
- "jsonschema",
+ "jsonschema 0.46.10",
  "jsonwebtoken 11.0.0",
  "keyring-core",
  "mime_guess",
