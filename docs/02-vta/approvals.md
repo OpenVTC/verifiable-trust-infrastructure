@@ -65,6 +65,18 @@ https://trusttasks.org/spec/vta/webvh/dids/update/1.0
   approvers: 1 member(s) — fewer than the 2 required, so this task can never run
 ```
 
+On a VTA that has never had an approval rule there is no `approvals` policy row,
+and both commands print an empty model — that is the shipping default, not an
+error. `pnm policy list` shows the same thing from the other side: only the
+`default` baseline row, no `approvals`.
+
+> **If instead you see `trust task failed [taskFailed]: … policy \`approvals\`
+> not found`,** the VTA predates the fix that lets the CLI recognise an absent
+> row. The framework defines no `notFound` code, so the outcome rides out as
+> `taskFailed`; the VTA now marks it with `details.reason: "not_found"` and the
+> SDK maps that back to a typed error. Against an older VTA, use `pnm policy
+> list` to check for the row, or the offline `vta approvals list`.
+
 ## Refusals happen when you write, not when you're blocked
 
 A rule that could never be satisfied is refused at the point you create it:

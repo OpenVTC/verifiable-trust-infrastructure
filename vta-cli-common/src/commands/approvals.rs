@@ -61,6 +61,15 @@ async fn load(client: &VtaClient) -> Result<Model, Box<dyn std::error::Error>> {
         }
         // No row yet: an empty model, which is also the shipping default (a VTA
         // that has never had an approval rule gates nothing).
+        //
+        // This surface is Trust-Task-only, and the framework defines no
+        // `notFound` code — the absent row arrives as `taskFailed` carrying
+        // `details.reason: "not_found"`, which the SDK maps back to this
+        // variant. Before it did, this arm could not fire and *every* command
+        // here failed on a fresh VTA, `require` included: the first rule was
+        // uncreatable because `require` reads the row before writing it. If a
+        // change to that mapping strands this arm again, the same lockout
+        // returns silently.
         Err(VtaError::NotFound(_)) => Ok(Model {
             rules: Vec::new(),
             approver_sets: BTreeMap::new(),

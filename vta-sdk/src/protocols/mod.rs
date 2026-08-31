@@ -71,6 +71,53 @@ pub mod problem_report_codes {
     pub const PROVISION_CONTEXT_REQUIRED: &str = "provision/integration:contextRequired";
 }
 
+/// Machine-readable `details.reason` values the VTA puts on a Trust-Task
+/// rejection so the client can recover the outcome the server actually had.
+///
+/// # Why this exists
+///
+/// The Trust-Task framework defines no `notFound` / `conflict` / `gone`
+/// standard code, so all three ride out under `taskFailed`
+/// ([`RejectReason::TaskFailed`]). The code alone therefore cannot distinguish
+/// "the row you asked for is absent" — routinely a *normal* state a caller
+/// handles — from "this operation genuinely failed". Collapsing them loses
+/// information that both the REST path (HTTP 404 / 409 / 410, see
+/// [`VtaError::from_http`]) and the DIDComm protocol-message path
+/// ([`problem_report_codes`], see [`VtaError::from_problem_report`]) preserve,
+/// leaving the Trust-Task transport the only one that hands the caller an
+/// opaque string.
+///
+/// The concrete failure this was written for: a VTA that has never had an
+/// approval rule has no `approvals` policy row, which is the shipping default.
+/// `pnm approvals list` reads that row through `policy/get/0.1` and is written
+/// to treat a missing one as an empty model — but the `NotFound` never arrived
+/// as `NotFound`, so *every* `pnm approvals` subcommand failed on a fresh VTA,
+/// including the `require` that would have created the first rule.
+///
+/// The channel is the one the consent gate already established: `code` is
+/// `taskFailed` for everything, so a consumer keys on a stable `details.reason`
+/// instead.
+///
+/// [`RejectReason::TaskFailed`]: https://docs.rs/trust-tasks-rs
+/// [`VtaError::from_http`]: crate::error::VtaError::from_http
+/// [`VtaError::from_problem_report`]: crate::error::VtaError::from_problem_report
+pub mod trust_task_reject_reasons {
+    /// The requested resource does not exist. Recovers [`VtaError::NotFound`].
+    ///
+    /// [`VtaError::NotFound`]: crate::error::VtaError::NotFound
+    pub const NOT_FOUND: &str = "not_found";
+    /// The request conflicts with existing state (duplicate id, stale
+    /// `expectedVersion`). Recovers [`VtaError::Conflict`].
+    ///
+    /// [`VtaError::Conflict`]: crate::error::VtaError::Conflict
+    pub const CONFLICT: &str = "conflict";
+    /// The resource existed but is permanently gone (a consumed single-use
+    /// carve-out). Recovers [`VtaError::Gone`].
+    ///
+    /// [`VtaError::Gone`]: crate::error::VtaError::Gone
+    pub const GONE: &str = "gone";
+}
+
 /// Extract code and comment from a problem-report message body.
 pub fn extract_problem_report(body: &serde_json::Value) -> (String, String) {
     let code = body

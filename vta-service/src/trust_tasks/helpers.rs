@@ -29,6 +29,7 @@ use trust_tasks_rs::{
     ErrorPayload, ErrorResponse, RejectReason, TrustTask, TrustTaskCode, TypeUri,
 };
 use uuid::Uuid;
+use vta_sdk::protocols::trust_task_reject_reasons as reasons;
 
 use crate::error::AppError;
 
@@ -82,13 +83,25 @@ pub(super) fn parse_payload<T: serde::de::DeserializeOwned>(
     })
 }
 
+/// A `taskFailed` carrying a machine-readable `details.reason`.
+///
+/// See the `NotFound` / `Conflict` / `Gone` arms of [`app_error_to_reject`] for
+/// why the code alone is not enough.
+fn task_failed_because(message: String, reason: &str) -> RejectReason {
+    RejectReason::TaskFailed {
+        reason: message,
+        details: Some(serde_json::json!({ "reason": reason })),
+    }
+}
+
 /// Map an `AppError` (the operation-layer error type) into a routed
 /// trust-task error response with the appropriate framework reject
 /// code:
 ///
 /// - `Authentication` / `Unauthorized` / `Forbidden` → `permission_denied`
 /// - `Validation` / `TrustTaskMalformed` / `InvalidCursor` → `malformed_request`
-/// - `NotFound` / `Conflict` / `Gone` → `task_failed`
+/// - `NotFound` / `Conflict` / `Gone` → `task_failed`, each discriminated by a
+///   `details.reason` from [`vta_sdk::protocols::trust_task_reject_reasons`]
 /// - everything else → `internal_error`
 pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> TrustTaskOutcome {
     let message = err.to_string();
@@ -103,18 +116,35 @@ pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> Trus
         AppError::Validation(_) | AppError::TrustTaskMalformed(_) | AppError::InvalidCursor => {
             RejectReason::MalformedRequest { reason: message }
         }
-        // `Gone` rides with these rather than the `internal_error`
-        // fallback. No task produces it today (its producers are REST-only),
-        // but the fallback is the wrong default for it: a consumed single-use
-        // resource is a terminal *caller-visible* outcome, and reporting it as
-        // an internal error tells the client to retry something that can never
-        // succeed again.
-        AppError::NotFound(_) | AppError::Conflict(_) | AppError::Gone(_) => {
-            RejectReason::TaskFailed {
-                reason: message,
-                details: None,
-            }
-        }
+        // These three have no standard code of their own — §8.3 defines no
+        // `notFound` / `conflict` / `gone` — so all of them ride out under
+        // `taskFailed`. That is the correct wire code, but it is not enough on
+        // its own: a caller cannot tell "the row you asked for is absent" (very
+        // often a *normal* state it knows how to handle) from "this operation
+        // genuinely failed", and it loses the distinction the REST path keeps
+        // in an HTTP status and the DIDComm protocol-message path keeps in a
+        // problem-report code.
+        //
+        // So the discriminator goes in `details.reason`, the channel the
+        // consent gate already established for exactly this problem, and
+        // `VtaClient::trust_task_error` maps it back to the same typed
+        // `VtaError` variant the other two transports produce.
+        //
+        // Concretely: a VTA that has never had an approval rule has no
+        // `approvals` policy row, which is the shipping default. Every `pnm
+        // approvals` subcommand reads it through `policy/get/0.1` and is
+        // written to treat a missing row as an empty model — but with the type
+        // erased, that arm could never fire, so the whole surface failed on a
+        // fresh VTA, `require` included. That made the first rule
+        // uncreatable: `require` has to read the row before writing it.
+        //
+        // `Gone` rides here rather than in the `internal_error` fallback for a
+        // related reason: a consumed single-use resource is a terminal
+        // *caller-visible* outcome, and reporting it as an internal error tells
+        // the client to retry something that can never succeed again.
+        AppError::NotFound(_) => task_failed_because(message, reasons::NOT_FOUND),
+        AppError::Conflict(_) => task_failed_because(message, reasons::CONFLICT),
+        AppError::Gone(_) => task_failed_because(message, reasons::GONE),
         // Framework 0.5.0, *What a `message` May Not Say*: a `message` MUST NOT
         // reveal consumer-internal state. That rule is now normative for every
         // code, and `internalError` is where this service leaked hardest — the
@@ -388,6 +418,55 @@ mod tests {
             .as_str()
             .expect("payload carries a message")
             .to_string()
+    }
+
+    fn details_of(outcome: TrustTaskOutcome) -> Value {
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("error doc parses");
+        doc["payload"]["details"].clone()
+    }
+
+    /// The regression: three distinct outcomes all leave as `taskFailed`, so
+    /// without a discriminator a caller cannot tell an absent resource from a
+    /// genuine failure — and an absent resource is very often a normal state.
+    ///
+    /// `pnm approvals list` is the case that broke. A VTA that has never had an
+    /// approval rule has no `approvals` policy row (the shipping default); the
+    /// CLI reads it and treats a missing row as an empty model, but with the
+    /// type erased that arm could never fire. Every `pnm approvals` subcommand
+    /// failed on a fresh VTA, `require` among them — so the first rule could
+    /// not be created, because `require` reads the row before writing it.
+    ///
+    /// REST keeps this distinction in an HTTP status and DIDComm
+    /// protocol-messages keep it in a problem-report code. This is what stops
+    /// the Trust-Task transport being the one that loses it.
+    #[test]
+    fn a_not_found_is_discriminated_from_a_plain_task_failure() {
+        let outcome = app_error_to_reject(&doc(), AppError::NotFound("policy `x`".into()));
+        assert_eq!(details_of(outcome)["reason"], reasons::NOT_FOUND);
+    }
+
+    #[test]
+    fn a_conflict_is_discriminated_from_a_plain_task_failure() {
+        let outcome = app_error_to_reject(&doc(), AppError::Conflict("already exists".into()));
+        assert_eq!(details_of(outcome)["reason"], reasons::CONFLICT);
+    }
+
+    #[test]
+    fn a_gone_is_discriminated_from_a_plain_task_failure() {
+        let outcome = app_error_to_reject(&doc(), AppError::Gone("carve-out closed".into()));
+        assert_eq!(details_of(outcome)["reason"], reasons::GONE);
+    }
+
+    /// The three reasons must stay distinct. Collapsing any pair would let a
+    /// caller act on the wrong one — retrying a `Gone` that can never succeed,
+    /// or reading a `Conflict` as "absent" and creating a duplicate.
+    #[test]
+    fn the_three_reasons_are_distinct() {
+        let all = [reasons::NOT_FOUND, reasons::CONFLICT, reasons::GONE];
+        let mut seen = std::collections::BTreeSet::new();
+        for r in all {
+            assert!(seen.insert(r), "`{r}` is used for more than one outcome");
+        }
     }
 
     /// An extended code reaches the wire in its `<slug>:<local>` spelling.
