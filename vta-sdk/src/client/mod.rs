@@ -1961,6 +1961,31 @@ impl VtaClient {
             });
         }
 
+        // The framework has no `notFound` / `conflict` / `gone` standard code,
+        // so all three arrive as `taskFailed` and the code alone cannot tell
+        // them from a genuine failure. The service marks them in
+        // `details.reason` for exactly this reason; recovering the typed
+        // variant here is what keeps a Trust-Task caller able to `match` on the
+        // same variants the REST (`from_http`) and DIDComm protocol-message
+        // (`from_problem_report`) paths already produce.
+        //
+        // Without it, a caller that treats an absent resource as a normal state
+        // cannot recognise one — which is how every `pnm approvals` subcommand
+        // came to fail on a VTA that had simply never had an approval rule.
+        if let Some(reason) = payload
+            .get("details")
+            .and_then(|d| d.get("reason"))
+            .and_then(|r| r.as_str())
+        {
+            use crate::protocols::trust_task_reject_reasons as r;
+            match reason {
+                r::NOT_FOUND => return Some(VtaError::NotFound(message.to_string())),
+                r::CONFLICT => return Some(VtaError::Conflict(message.to_string())),
+                r::GONE => return Some(VtaError::Gone(message.to_string())),
+                _ => {}
+            }
+        }
+
         // `unavailable` is the one rejection that means "ask again" rather
         // than "this failed" — the idempotency layer answers with it while a
         // first attempt on the same key is still running. Collapsing it into
@@ -2303,6 +2328,81 @@ mod tests {
             "code": "malformedRequest",
             "message": "payload does not conform",
             "details": { "reason": "schema:invalid" }
+        });
+        assert!(matches!(
+            VtaClient::trust_task_error(&payload),
+            Some(VtaError::Protocol(_))
+        ));
+    }
+
+    // ── outcome typing across the Trust-Task boundary ───────────────
+
+    /// The regression: an absent resource must arrive as [`VtaError::NotFound`],
+    /// not as an opaque string.
+    ///
+    /// A VTA that has never had an approval rule has no `approvals` policy row —
+    /// the shipping default. Every `pnm approvals` subcommand reads that row and
+    /// is written to treat a missing one as an empty model, but the framework
+    /// defines no `notFound` code, so the outcome rode out under `taskFailed`
+    /// and that arm could never fire. The whole surface failed on a fresh VTA,
+    /// `require` included — which made the *first* rule uncreatable, since
+    /// `require` must read the row before it can write it.
+    ///
+    /// The fixture is the service's real shape: `app_error_to_reject` puts the
+    /// discriminator in `details.reason`, the same channel the consent gate
+    /// uses, because `code` is `taskFailed` for all three of these outcomes.
+    #[test]
+    fn a_missing_resource_arrives_as_not_found() {
+        let payload = serde_json::json!({
+            "code": "taskFailed",
+            "message": "task failed: not found: policy `approvals` not found",
+            "details": { "reason": "not_found" }
+        });
+        match VtaClient::trust_task_error(&payload) {
+            Some(VtaError::NotFound(m)) => assert!(m.contains("`approvals`")),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    /// `Conflict` is the variant the CLI switches on to print the command the
+    /// operator should have run instead, so collapsing it costs the guidance as
+    /// well as the type.
+    #[test]
+    fn a_conflict_arrives_as_conflict() {
+        let payload = serde_json::json!({
+            "code": "taskFailed",
+            "message": "task failed: conflict: context `default` already exists",
+            "details": { "reason": "conflict" }
+        });
+        assert!(matches!(
+            VtaClient::trust_task_error(&payload),
+            Some(VtaError::Conflict(_))
+        ));
+    }
+
+    /// `Gone` is terminal: a consumed single-use resource can never succeed
+    /// again, so a caller must be able to tell it from a retryable failure.
+    #[test]
+    fn a_consumed_resource_arrives_as_gone() {
+        let payload = serde_json::json!({
+            "code": "taskFailed",
+            "message": "task failed: gone: the bootstrap carve-out is closed",
+            "details": { "reason": "gone" }
+        });
+        assert!(matches!(
+            VtaClient::trust_task_error(&payload),
+            Some(VtaError::Gone(_))
+        ));
+    }
+
+    /// A `taskFailed` carrying no `details` is a genuine failure and must stay
+    /// one. That is also the shape an older VTA emits, so this fallback is what
+    /// keeps a new client from misreading every pre-upgrade failure as typed.
+    #[test]
+    fn an_undiscriminated_task_failure_is_still_a_protocol_error() {
+        let payload = serde_json::json!({
+            "code": "taskFailed",
+            "message": "task failed: the mediator refused the handshake",
         });
         assert!(matches!(
             VtaClient::trust_task_error(&payload),
