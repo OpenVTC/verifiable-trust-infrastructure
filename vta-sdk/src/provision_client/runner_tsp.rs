@@ -52,9 +52,14 @@
 //! What it *does* share is the shape of the checklist: the socket open is
 //! the [`DiagCheck::AuthenticateTSP`] proxy exactly as the mediator
 //! connect is the [`DiagCheck::AuthenticateDIDComm`] proxy on the DIDComm
-//! leg — neither transport performs a VTA round-trip at connect time. The
-//! first *authorized* round-trip is the real ACL proof, and on the
-//! FullSetup path that is the very next step.
+//! leg — neither transport performs a VTA round-trip at connect time.
+//!
+//! Which is why the socket open is **not** the ACL proof, and was never a
+//! safe thing to render as one. [`DiagCheck::VerifyAuthorization`] runs
+//! immediately after it on every intent: one `trust-task-discovery/0.1`
+//! round-trip that answers "am I granted on this VTA", "is this the VTA I
+//! meant" and "do we agree on the provisioning version" before any key is
+//! minted. See [`super::authz`].
 //!
 //! # Feature gate
 //!
@@ -180,6 +185,10 @@ pub(crate) async fn run_tsp_attempt(
                 DiagStatus::Failed(msg.clone()),
             ));
             let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::VerifyAuthorization,
+                DiagStatus::Skipped("TSP session did not open".into()),
+            ));
+            let _ = tx.send(VtaEvent::CheckDone(
                 DiagCheck::ListWebvhServers,
                 DiagStatus::Skipped("TSP session did not open".into()),
             ));
@@ -201,7 +210,16 @@ pub(crate) async fn run_tsp_attempt(
     // websocket per DID, so a leaked session makes the next connect for
     // this DID fight the old one. Same contract as the DIDComm leg's
     // `session.shutdown()`, and the reason the body cannot just `?`.
-    let outcome = tsp_attempt_body(&client, intent, &setup_did, &setup_privkey_mb, ask, tx).await;
+    let outcome = tsp_attempt_body(
+        &client,
+        intent,
+        &vta_did,
+        &setup_did,
+        &setup_privkey_mb,
+        ask,
+        tx,
+    )
+    .await;
     client.shutdown().await;
     outcome
 }
@@ -212,6 +230,7 @@ pub(crate) async fn run_tsp_attempt(
 async fn tsp_attempt_body(
     client: &crate::client::VtaClient,
     intent: VtaIntent,
+    vta_did: &str,
     setup_did: &str,
     setup_privkey_mb: &str,
     ask: ProvisionAsk,
@@ -220,11 +239,44 @@ async fn tsp_attempt_body(
     use super::diagnostics::{DiagCheck, DiagStatus};
     use super::intent::VtaReply;
 
+    // The socket is open; nothing has asked the VTA anything yet. Do that now,
+    // while the only thing spent is one round-trip — a missing ACL grant, the
+    // wrong VTA, and a provisioning-version skew are all cheap here and all
+    // expensive (or invisible) three steps later.
+    //
+    // `AdminOnly` mints nothing and so names no required task; the other two
+    // name the exact URI they will dispatch, which turns the probe from "can I
+    // reach this VTA" into "can this run finish against this VTA".
+    let required_task = match intent {
+        VtaIntent::AdminOnly => None,
+        VtaIntent::AdminRotated | VtaIntent::FullSetup => Some(
+            crate::protocols::provision_integration_management::ProvisionSpecVersion::CURRENT
+                .request_uri(),
+        ),
+    };
+    if let Err(msg) =
+        super::authz::verify_authorization(client, setup_did, vta_did, required_task, tx).await
+    {
+        // Post-auth in the sense that matters to the runner: the transport
+        // worked, so another transport will hit exactly the same refusal and
+        // trying one is a slower way to print the same message.
+        let _ = tx.send(VtaEvent::CheckDone(
+            DiagCheck::ListWebvhServers,
+            DiagStatus::Skipped("authorization was not verified".into()),
+        ));
+        let _ = tx.send(VtaEvent::CheckDone(
+            DiagCheck::ProvisionIntegration,
+            DiagStatus::Skipped("authorization was not verified".into()),
+        ));
+        return AttemptOutcome::PostAuthFailure(msg);
+    }
+
     match intent {
         VtaIntent::AdminOnly => {
-            // AdminOnly: the setup DID *is* the long-term admin DID. The
-            // session open is the proof the operator's `pnm acl create`
-            // landed — same contract as the DIDComm leg's AdminOnly arm.
+            // AdminOnly: the setup DID *is* the long-term admin DID, and
+            // nothing is minted. The proof the operator's `pnm acl create`
+            // landed is the discovery probe above — the session open is not
+            // one, which is what this arm used to claim.
             let _ = tx.send(VtaEvent::CheckDone(
                 DiagCheck::ListWebvhServers,
                 DiagStatus::Skipped("AdminOnly — no VTA-minted DID so no webvh host needed".into()),
@@ -565,6 +617,10 @@ pub(crate) async fn run_tsp_attempt(
     let _ = tx.send(VtaEvent::CheckDone(
         DiagCheck::AuthenticateTSP,
         DiagStatus::Skipped("built without the `tsp` feature".into()),
+    ));
+    let _ = tx.send(VtaEvent::CheckDone(
+        DiagCheck::VerifyAuthorization,
+        DiagStatus::Skipped("no TSP session".into()),
     ));
     let _ = tx.send(VtaEvent::CheckDone(
         DiagCheck::ListWebvhServers,

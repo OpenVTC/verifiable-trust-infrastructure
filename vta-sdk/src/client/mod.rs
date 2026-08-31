@@ -1986,6 +1986,54 @@ impl VtaClient {
             }
         }
 
+        // `permissionDenied` is the caller's authorization, which is a
+        // different thing to fix from every other rejection and already has a
+        // typed home. Left in `Protocol` it was a sentence a consumer had to
+        // string-match to tell "you have no grant here" from "this task
+        // failed" — the drift a typed error exists to prevent (see the
+        // `VtaError` doc: the CLI switches on variants to emit guidance).
+        if code == "permissionDenied" {
+            return Some(VtaError::Forbidden(message.to_string()));
+        }
+
+        // `unsupportedType` / `unsupportedVersion` mean "upgrade something",
+        // and *which* thing depends on what the peer serves instead — so the
+        // peer's own answer travels as data rather than being flattened into a
+        // sentence. A VTA new enough to send `details.servedVersions` names the
+        // versions it does route; an older one sends nothing, which is why an
+        // empty list must not be read as "this family does not exist".
+        if code == "unsupportedType" || code == "unsupportedVersion" {
+            use crate::protocols::trust_task_reject_details as d;
+            let detail = |k: &str| payload.get("details").and_then(|v| v.get(k)).cloned();
+            let served_versions = detail(d::SERVED_VERSIONS)
+                .and_then(|v| v.as_array().cloned())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            // The framework carries the rejected URI only inside `message`, so
+            // a peer that does not send `requestedType` leaves string-slicing
+            // as the only way to recover it. Both prefixes are the framework's
+            // own `RejectReason` renderings and so are stable; anything else
+            // keeps the whole message, which is worse to read but never wrong.
+            let type_uri = detail(d::REQUESTED_TYPE)
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| {
+                    message
+                        .strip_prefix("unsupported type: ")
+                        .or_else(|| message.strip_prefix("unsupported version: "))
+                        .map(|rest| rest.split(" — ").next().unwrap_or(rest))
+                        .unwrap_or(message)
+                        .to_string()
+                });
+            return Some(VtaError::UnsupportedTaskType {
+                type_uri,
+                served_versions,
+            });
+        }
+
         // `unavailable` is the one rejection that means "ask again" rather
         // than "this failed" — the idempotency layer answers with it while a
         // first attempt on the same key is still running. Collapsing it into
@@ -2408,6 +2456,90 @@ mod tests {
             VtaClient::trust_task_error(&payload),
             Some(VtaError::Protocol(_))
         ));
+    }
+
+    // ── unsupportedType / unsupportedVersion ────────────────────────
+
+    /// The rejection that means "upgrade something" keeps its shape.
+    ///
+    /// REGRESSION (2026-08-31): flattened into `Protocol(String)`, all a
+    /// consumer could render was
+    /// `trust task failed [unsupportedType]: unsupported type: …/0.3`. The
+    /// version in that string is the entire diagnosis — 0.2 would mean the
+    /// client is behind, 0.3 means the VTA is — and no consumer could reach it
+    /// without parsing prose.
+    #[test]
+    fn an_unsupported_version_carries_what_the_peer_does_serve() {
+        let payload = serde_json::json!({
+            "code": "unsupportedVersion",
+            "message": "unsupported version: \
+                        https://trusttasks.org/spec/provision/integration/0.3 — \
+                        this VTA serves https://trusttasks.org/spec/provision/integration/0.2",
+            "details": {
+                "requestedType": "https://trusttasks.org/spec/provision/integration/0.3",
+                "servedVersions": ["https://trusttasks.org/spec/provision/integration/0.2"],
+            },
+        });
+        match VtaClient::trust_task_error(&payload) {
+            Some(VtaError::UnsupportedTaskType {
+                type_uri,
+                served_versions,
+            }) => {
+                assert_eq!(
+                    type_uri,
+                    "https://trusttasks.org/spec/provision/integration/0.3"
+                );
+                assert_eq!(
+                    served_versions,
+                    vec!["https://trusttasks.org/spec/provision/integration/0.2"]
+                );
+            }
+            other => panic!("expected UnsupportedTaskType, got {other:?}"),
+        }
+    }
+
+    /// A peer too old to send `details` still yields a usable `type_uri`.
+    ///
+    /// This is the case that matters most, because the peers that produce this
+    /// rejection are by definition the older ones — a mapping that only worked
+    /// against a current VTA would be useless exactly where it is needed.
+    #[test]
+    fn an_older_peers_bare_message_still_yields_the_uri() {
+        let payload = serde_json::json!({
+            "code": "unsupportedType",
+            "message": "unsupported type: https://trusttasks.org/spec/provision/integration/0.3",
+        });
+        match VtaClient::trust_task_error(&payload) {
+            Some(VtaError::UnsupportedTaskType {
+                type_uri,
+                served_versions,
+            }) => {
+                assert_eq!(
+                    type_uri,
+                    "https://trusttasks.org/spec/provision/integration/0.3"
+                );
+                assert!(
+                    served_versions.is_empty(),
+                    "an older peer sends no served list; empty must not be invented"
+                );
+            }
+            other => panic!("expected UnsupportedTaskType, got {other:?}"),
+        }
+    }
+
+    /// `permissionDenied` is the caller's authorization, and has a typed home.
+    /// Left in `Protocol` a consumer had to string-match a sentence to tell
+    /// "you have no grant here" from "this task failed".
+    #[test]
+    fn permission_denied_maps_to_forbidden() {
+        let payload = serde_json::json!({
+            "code": "permissionDenied",
+            "message": "DID not in ACL: did:key:zAlice",
+        });
+        match VtaClient::trust_task_error(&payload) {
+            Some(VtaError::Forbidden(detail)) => assert!(detail.contains("did:key:zAlice")),
+            other => panic!("expected Forbidden, got {other:?}"),
+        }
     }
 
     // ── extract_trust_task_payload ──────────────────────────────────

@@ -26,12 +26,15 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use trust_tasks_https::status_for_code;
 use trust_tasks_rs::{
-    ErrorPayload, ErrorResponse, RejectReason, TrustTask, TrustTaskCode, TypeUri,
+    ErrorPayload, ErrorResponse, RejectReason, StandardCode, TrustTask, TrustTaskCode, TypeUri,
 };
 use uuid::Uuid;
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
 
 use crate::error::AppError;
+// The SDK owns the spelling of every `details` member both sides touch,
+// so the service cannot drift from the client that reads it.
+use vta_sdk::protocols::trust_task_reject_details as details;
 
 /// Transport label passed to operations for audit-log discrimination
 /// between the legacy REST path (`"rest"`) and the new trust-task
@@ -316,13 +319,108 @@ pub(super) fn not_implemented_yet(doc: TrustTask<Value>, reason: &str) -> TrustT
     error_response(routed)
 }
 
-/// Build an `unsupported_type` rejection for an unrecognised type URI.
-pub(super) fn method_not_found(doc: TrustTask<Value>, type_uri: &str) -> TrustTaskOutcome {
-    let reject = RejectReason::UnsupportedType {
-        type_uri: type_uri.to_string(),
+/// Build an `unsupported_type` rejection for a type URI this VTA has never
+/// heard of.
+///
+/// The narrow arm of [`method_not_found`], which reaches it only after ruling
+/// out the family being served at another version.
+fn unsupported_type(doc: TrustTask<Value>, type_uri: &str) -> TrustTaskOutcome {
+    // The message is the framework's own `RejectReason::UnsupportedType`
+    // rendering, kept byte-identical so a consumer matching on it does not
+    // break; `details.requestedType` is the same fact machine-readably, which
+    // is the half the framework's shape leaves out. A client otherwise has to
+    // recover the URI by string-slicing a human-readable sentence.
+    reject_with_code(
+        &doc,
+        TrustTaskCode::Standard(StandardCode::UnsupportedType),
+        format!("unsupported type: {type_uri}"),
+        Some(serde_json::json!({ details::REQUESTED_TYPE: type_uri })),
+    )
+}
+
+/// The family of a Trust Task Type URI: everything before its trailing
+/// version segment.
+///
+/// `…/spec/provision/integration/0.3` → `…/spec/provision/integration`. The
+/// version is always the last path segment (SPEC §3.1), so a plain
+/// `rsplit_once('/')` is the whole rule — no version grammar to parse, and a
+/// URI with no `/` simply has no family rather than panicking.
+fn task_family(type_uri: &str) -> Option<&str> {
+    type_uri.rsplit_once('/').map(|(family, _version)| family)
+}
+
+/// Versions of `type_uri`'s family that this VTA *does* dispatch, sorted.
+///
+/// Derived from the dispatch table itself ([`super::dispatched_uris`]) rather
+/// than a hand-kept list, for the same reason `trust-task-discovery` is: a
+/// second source of truth for "what we support" goes stale the first time a
+/// handler is added without remembering it exists, and a migration hint that
+/// names a version the VTA does not serve is worse than no hint.
+fn served_versions_of_family(type_uri: &str) -> Vec<&'static str> {
+    let Some(family) = task_family(type_uri) else {
+        return Vec::new();
     };
-    let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), reject);
-    error_response(routed)
+    let mut served: Vec<&'static str> = super::dispatched_uris()
+        .into_iter()
+        .filter(|uri| task_family(uri) == Some(family))
+        .collect();
+    served.sort_unstable();
+    served.dedup();
+    served
+}
+
+/// Reject a type URI this dispatcher has no arm for.
+///
+/// Two different failures wear one code if you let them. "I have never heard
+/// of this task" and "I know this task, at a different version" send the
+/// operator to completely different places — the first to whether the feature
+/// exists at all, the second to which side is out of date — and only the
+/// second is recoverable by upgrading something.
+///
+/// So when the unknown URI's family matches something this VTA dispatches, the
+/// rejection is `unsupportedVersion` (SPEC's code for exactly this: "the
+/// consumer recognizes the type but not at this MAJOR.MINOR") and names the
+/// versions actually served, in `message` for a human and in
+/// `details.servedVersions` for a client. Otherwise it stays
+/// `unsupportedType`.
+///
+/// This exists because of a live incident (2026-08-31): #1147 cut
+/// `provision/integration` 0.2 → 0.3 with no dual-accept window — the two
+/// response schemas are mutually exclusive, so there could not be one — and an
+/// operator whose VTA predated the cut got
+///
+/// ```text
+/// unsupported type: https://trusttasks.org/spec/provision/integration/0.3
+/// ```
+///
+/// against a VTA that was serving 0.2 two lines further down its own dispatch
+/// table. Accurate, and it reads as "this VTA cannot do provisioning" rather
+/// than "this VTA is older than your client". The VTA knew the answer; it just
+/// did not say it.
+///
+/// A family this build does not compile in at all (`provision/integration` is
+/// `#[cfg(feature = "webvh")]`) has no served versions and so still gets
+/// `unsupportedType` — correct, if terse: there is no version to migrate to,
+/// and naming absent features would report the build's configuration to a
+/// caller that has no use for it.
+pub(super) fn method_not_found(doc: TrustTask<Value>, type_uri: &str) -> TrustTaskOutcome {
+    let served = served_versions_of_family(type_uri);
+    if served.is_empty() {
+        return unsupported_type(doc, type_uri);
+    }
+
+    reject_with_code(
+        &doc,
+        TrustTaskCode::Standard(StandardCode::UnsupportedVersion),
+        format!(
+            "unsupported version: {type_uri} — this VTA serves {}",
+            served.join(", ")
+        ),
+        Some(serde_json::json!({
+            details::REQUESTED_TYPE: type_uri,
+            details::SERVED_VERSIONS: served,
+        })),
+    )
 }
 
 /// Wrap a routed `ErrorResponse` in an HTTP response with the right
@@ -467,6 +565,94 @@ mod tests {
         for r in all {
             assert!(seen.insert(r), "`{r}` is used for more than one outcome");
         }
+    }
+
+    /// A family split on its trailing version segment, nothing else.
+    ///
+    /// Written against synthetic paths rather than real Type URIs: a URI
+    /// literal anywhere under `vta-service/src` is counted by
+    /// `produced_census` as a document this service emits, and a test fixture
+    /// is not one.
+    #[test]
+    fn task_family_strips_only_the_version_segment() {
+        assert_eq!(
+            task_family("scheme://host/spec/a/b/0.3"),
+            Some("scheme://host/spec/a/b")
+        );
+        assert_eq!(
+            task_family("scheme://host/spec/a/b/c-d/1.0"),
+            Some("scheme://host/spec/a/b/c-d")
+        );
+        assert_eq!(task_family("no-slashes-at-all"), None);
+    }
+
+    /// The migration hint is derived from the live dispatch table.
+    ///
+    /// Asserted against a URI the table definitely carries — a hard-coded
+    /// expectation here would be the second source of truth the function
+    /// exists to avoid.
+    #[test]
+    fn served_versions_come_from_the_dispatch_table() {
+        let served = crate::trust_tasks::dispatched_uris();
+        let real = served
+            .first()
+            .expect("the dispatch table is not empty")
+            .to_string();
+        let family = task_family(&real).expect("a task URI has a family");
+        let bogus = format!("{family}/99.99");
+
+        let found = served_versions_of_family(&bogus);
+        assert!(
+            found.contains(&real.as_str()),
+            "{real} is dispatched, so a bogus version of its family should name it; got {found:?}"
+        );
+    }
+
+    /// A type this VTA has never heard of still gets `unsupportedType`.
+    ///
+    /// The version arm must not swallow the plain case: "I do not implement
+    /// this" and "I implement this at another version" are different answers
+    /// and only the second is fixed by upgrading something.
+    #[test]
+    fn an_unknown_family_is_still_unsupported_type() {
+        // The URI `produced_census::NOT_PRODUCED` already carries as its
+        // negative fixture. Reused rather than minting a second one, so the
+        // census has one entry to explain instead of two.
+        let outcome = method_not_found(doc(), "https://trusttasks.org/spec/does-not-exist/9.9");
+        let parsed: Value = serde_json::from_slice(&outcome.body).expect("error doc");
+        assert_eq!(parsed["payload"]["code"], "unsupportedType");
+        assert!(parsed["payload"]["details"].get("servedVersions").is_none());
+    }
+
+    /// A known family at an unknown version names the versions served.
+    ///
+    /// REGRESSION (2026-08-31): #1147 cut `provision/integration` 0.2 → 0.3
+    /// with no dual-accept window, and a VTA still on 0.2 answered a 0.3
+    /// client with a bare `unsupported type` — while carrying 0.2 in the very
+    /// table it had just failed to match. The operator read it as "this VTA
+    /// cannot provision" and went looking in the wrong place.
+    #[test]
+    fn a_known_family_at_an_unknown_version_names_what_is_served() {
+        let real = crate::trust_tasks::dispatched_uris()
+            .first()
+            .expect("the dispatch table is not empty")
+            .to_string();
+        let family = task_family(&real).expect("a task URI has a family");
+        let bogus = format!("{family}/99.99");
+
+        let outcome = method_not_found(doc(), &bogus);
+        let parsed: Value = serde_json::from_slice(&outcome.body).expect("error doc");
+
+        assert_eq!(parsed["payload"]["code"], "unsupportedVersion");
+        let message = parsed["payload"]["message"]
+            .as_str()
+            .expect("a message")
+            .to_string();
+        assert!(
+            message.contains(&real),
+            "the message must name the served version; got {message}"
+        );
+        assert_eq!(parsed["payload"]["details"]["servedVersions"][0], real);
     }
 
     /// An extended code reaches the wire in its `<slug>:<local>` spelling.
