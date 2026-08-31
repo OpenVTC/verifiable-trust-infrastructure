@@ -301,6 +301,7 @@ async fn main() {
         Commands::Audit { command } => commands::audit::run(&client, command).await,
         Commands::Backup { command } => commands::backup::run(&client, command).await,
         Commands::Keys { command } => commands::keys::run(&client, command).await,
+        Commands::LlmMemory { command } => commands::llm_memory::run(&client, command).await,
     };
 
     client.shutdown().await;

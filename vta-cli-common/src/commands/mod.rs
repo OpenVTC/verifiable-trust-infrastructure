@@ -11,6 +11,7 @@ pub mod credentials;
 pub mod device;
 pub mod did_templates;
 pub mod keys;
+pub mod memory;
 /// Raw Rego policy management over the canonical `policy/*` family.
 pub mod policy;
 pub mod services;

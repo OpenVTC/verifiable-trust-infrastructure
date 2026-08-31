@@ -278,6 +278,95 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: DidTemplateCommands,
     },
+
+    /// Play with the VTA's per-context agent memory — the key/value notes the
+    /// hosted agent reads before it answers.
+    ///
+    /// The one-command demo that memory drives the model: `plant` a fact,
+    /// ask the agent, then `wipe` it and watch the answer change. Backed by
+    /// the `spec/vta/memory/{put,list,delete}/0.1` Trust Tasks; every
+    /// operation is gated on access to `--context` (default `default`).
+    #[command(name = "memory")]
+    LlmMemory {
+        #[command(subcommand)]
+        command: LlmMemoryCommands,
+    },
+}
+
+/// CRUD over the agent's memory. `plant` creates/updates, `recall` reads,
+/// `forget` deletes one entry, and `wipe` deletes every entry in the context.
+#[derive(Subcommand)]
+pub(crate) enum LlmMemoryCommands {
+    /// Plant a memory: store `value` under `key` so the agent recalls it.
+    ///
+    /// Upsert — re-planting the same key overwrites the old value.
+    Plant {
+        /// Memory key, unique within the context (e.g. `favorite-color`).
+        key: String,
+        /// The value to store (e.g. `green`).
+        value: String,
+        /// Context whose memory to write.
+        #[arg(
+            long,
+            short = 'c',
+            alias = "context-id",
+            value_name = "ID",
+            default_value = "default"
+        )]
+        context: String,
+    },
+
+    /// Recall what the agent knows: list every memory in the context, or
+    /// just the one at `key`.
+    Recall {
+        /// Show only this key. Omit to list the whole context.
+        key: Option<String>,
+        /// Context whose memory to read.
+        #[arg(
+            long,
+            short = 'c',
+            alias = "context-id",
+            value_name = "ID",
+            default_value = "default"
+        )]
+        context: String,
+    },
+
+    /// Forget a single memory by key — the agent loses just that fact.
+    Forget {
+        /// The memory key to delete.
+        key: String,
+        /// Context whose memory to write.
+        #[arg(
+            long,
+            short = 'c',
+            alias = "context-id",
+            value_name = "ID",
+            default_value = "default"
+        )]
+        context: String,
+    },
+
+    /// Wipe every memory in the context. Prompts for confirmation unless
+    /// `--force`; requires `--force` in `--json` mode.
+    ///
+    /// There is no bulk-delete Trust Task, so this deletes entries one by one
+    /// (N round-trips, not atomic). Re-running is safe and resumes if a delete
+    /// fails partway.
+    Wipe {
+        /// Context whose memory to wipe.
+        #[arg(
+            long,
+            short = 'c',
+            alias = "context-id",
+            value_name = "ID",
+            default_value = "default"
+        )]
+        context: String,
+        /// Skip the confirmation prompt.
+        #[arg(long, short = 'f')]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
