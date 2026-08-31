@@ -44,6 +44,7 @@
 
 pub mod ask;
 pub(crate) mod auth_rest;
+pub(crate) mod authz;
 pub mod diagnostics;
 pub mod driver;
 pub mod error;

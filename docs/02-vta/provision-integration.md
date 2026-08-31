@@ -97,6 +97,48 @@ rotation is ever needed — compromised key, operator policy — it's an
 admin operation: revoke the old ACL entry and run
 `provision-integration` again with a fresh request.
 
+## When a run fails: which half is wrong
+
+Three failures look alike from the operator's chair — the wizard stops
+somewhere after "connected" — and each sends you to a different place. The
+checklist separates them deliberately.
+
+**"Open TSP session" / "Open DIDComm session" is not an authorization
+result.** Opening a TSP session seals to the VTA's mediator; DIDComm's connect
+sets this client's ACL *at the mediator*. Neither reads the VTA's ACL, so
+neither can tell you the grant landed. Only the REST leg authenticates against
+the VTA (`/auth/challenge` runs `check_acl_full`), which is why only that row
+says "Authenticate".
+
+**"Verify authorization with the VTA" is the row that asks.** It dispatches
+`trust-task-discovery/0.1` — any authenticated caller, answered from the VTA's
+own dispatch table — before anything is minted:
+
+| what you see | what it means | what to do |
+|---|---|---|
+| `<did> is not authorized on <vta>` | no ACL entry for the setup DID **on the VTA you reached** | run `pnm acl create --did <did> --role admin` against *that* VTA, and check it is the one you meant |
+| `<vta> serves …/0.2 but this client dispatches …/0.3` | version skew | upgrade the VTA, or point the client at one that serves the version it dispatches |
+| `<vta> does not serve …, or anything else in that family` | the VTA has no provisioning surface | it is built without the `webvh` feature, or it is not the VTA you meant |
+| `Skipped` | the probe could not be answered (old VTA, transport error) | not a failure — the provisioning call still decides |
+
+A grant is per-VTA. The most common version of "it worked yesterday" is a
+grant created against one VTA and a wizard pointed at another; the DID in the
+error is the one that needs the grant, and the DID beside it is where.
+
+**A skew is readable from the version in the message.** `provision/integration`
+moved 0.2 → 0.3 in vta-service 0.22.0 (#1147) with no dual-accept window — 0.2
+requires a bare-hex `digest` and forbids the `digestMultibase` 0.3 requires,
+and both close their response with `additionalProperties: false`, so no single
+response could satisfy the two. If a rejection names **0.2**, the client is
+behind; if it names **0.3**, the VTA is.
+
+A VTA new enough to carry this change answers the skew as `unsupportedVersion`
+rather than `unsupportedType`, and names the versions it does serve in the
+rejection itself (`message`, and `details.servedVersions` for a client). An
+older one sends only `unsupportedType` with the URI you asked for — which is
+why the client-side probe above exists: it reads the answer from the VTA's task
+list instead of from the refusal.
+
 ## Built-in templates
 
 Pick the template that matches the integration's deployment role.

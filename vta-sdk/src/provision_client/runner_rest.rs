@@ -46,6 +46,15 @@ pub(crate) async fn run_rest_attempt_admin_only(
                 DiagCheck::AuthenticateREST,
                 DiagStatus::Ok(format!("REST auth as {setup_did}")),
             ));
+            // Unlike the TSP and DIDComm legs, REST authentication *is* a VTA
+            // round-trip that reads the ACL — `check_acl_full` runs at
+            // `/auth/challenge`. A green row above therefore already means the
+            // grant landed, and AdminOnly dispatches no task whose version
+            // could skew, so there is nothing left for the probe to ask.
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::VerifyAuthorization,
+                DiagStatus::Skipped("REST authentication is itself the VTA's ACL check".into()),
+            ));
             let _ = tx.send(VtaEvent::CheckDone(
                 DiagCheck::ListWebvhServers,
                 DiagStatus::Skipped("AdminOnly — no VTA-minted DID so no webvh host needed".into()),
@@ -68,6 +77,10 @@ pub(crate) async fn run_rest_attempt_admin_only(
             let _ = tx.send(VtaEvent::CheckDone(
                 DiagCheck::AuthenticateREST,
                 DiagStatus::Failed(msg.clone()),
+            ));
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::VerifyAuthorization,
+                DiagStatus::Skipped("REST auth did not complete".into()),
             ));
             let _ = tx.send(VtaEvent::CheckDone(
                 DiagCheck::ListWebvhServers,
@@ -128,6 +141,10 @@ pub(crate) async fn run_rest_attempt_full_setup(
                 DiagStatus::Failed(msg.clone()),
             ));
             let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::VerifyAuthorization,
+                DiagStatus::Skipped("REST auth did not complete".into()),
+            ));
+            let _ = tx.send(VtaEvent::CheckDone(
                 DiagCheck::ListWebvhServers,
                 DiagStatus::Skipped("REST auth did not complete".into()),
             ));
@@ -157,6 +174,35 @@ pub(crate) async fn run_rest_attempt_full_setup(
         token_result.access_token,
     )
     .await;
+
+    // REST authentication already proved the ACL grant, so what is left to ask
+    // is whether this VTA serves the provisioning version this client
+    // dispatches. #1147 cut `provision/integration` 0.2 -> 0.3 with no
+    // dual-accept window — the two response schemas are mutually exclusive, so
+    // there could not be one — which makes a client/VTA age gap a hard failure
+    // rather than a degraded one. Better found here than after the VP is signed.
+    if let Err(msg) = super::authz::verify_authorization(
+        &client,
+        &setup_did,
+        vta_did,
+        Some(
+            crate::protocols::provision_integration_management::ProvisionSpecVersion::CURRENT
+                .request_uri(),
+        ),
+        tx,
+    )
+    .await
+    {
+        let _ = tx.send(VtaEvent::CheckDone(
+            DiagCheck::ListWebvhServers,
+            DiagStatus::Skipped("authorization was not verified".into()),
+        ));
+        let _ = tx.send(VtaEvent::CheckDone(
+            DiagCheck::ProvisionIntegration,
+            DiagStatus::Skipped("authorization was not verified".into()),
+        ));
+        return AttemptOutcome::PostAuthFailure(msg);
+    }
 
     let _ = tx.send(VtaEvent::CheckDone(
         DiagCheck::ListWebvhServers,
@@ -304,6 +350,10 @@ pub(crate) async fn run_rest_attempt_admin_rotated(
                 DiagStatus::Failed(msg.clone()),
             ));
             let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::VerifyAuthorization,
+                DiagStatus::Skipped("REST auth did not complete".into()),
+            ));
+            let _ = tx.send(VtaEvent::CheckDone(
                 DiagCheck::ListWebvhServers,
                 DiagStatus::Skipped("REST auth did not complete".into()),
             ));
@@ -333,6 +383,35 @@ pub(crate) async fn run_rest_attempt_admin_rotated(
         token_result.access_token,
     )
     .await;
+
+    // REST authentication already proved the ACL grant, so what is left to ask
+    // is whether this VTA serves the provisioning version this client
+    // dispatches. #1147 cut `provision/integration` 0.2 -> 0.3 with no
+    // dual-accept window — the two response schemas are mutually exclusive, so
+    // there could not be one — which makes a client/VTA age gap a hard failure
+    // rather than a degraded one. Better found here than after the VP is signed.
+    if let Err(msg) = super::authz::verify_authorization(
+        &client,
+        &setup_did,
+        vta_did,
+        Some(
+            crate::protocols::provision_integration_management::ProvisionSpecVersion::CURRENT
+                .request_uri(),
+        ),
+        tx,
+    )
+    .await
+    {
+        let _ = tx.send(VtaEvent::CheckDone(
+            DiagCheck::ListWebvhServers,
+            DiagStatus::Skipped("authorization was not verified".into()),
+        ));
+        let _ = tx.send(VtaEvent::CheckDone(
+            DiagCheck::ProvisionIntegration,
+            DiagStatus::Skipped("authorization was not verified".into()),
+        ));
+        return AttemptOutcome::PostAuthFailure(msg);
+    }
 
     let _ = tx.send(VtaEvent::CheckDone(
         DiagCheck::ListWebvhServers,
@@ -633,6 +712,166 @@ mod tests {
         assert!(
             saw_provision_skipped,
             "ProvisionIntegration row should be Skipped after pre-auth failure"
+        );
+    }
+
+    /// Mount the two-step auth ceremony every post-auth test needs.
+    async fn mount_auth(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/auth/challenge"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "challenge": TEST_CHALLENGE,
+                "sessionId": "test-session",
+                "expiresAt": "2026-12-31T23:59:59Z"
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "session": {
+                    "id": "test-session",
+                    "subject": "did:example:caller",
+                    "issuedAt": "2026-05-23T10:00:00Z",
+                    "expiresAt": "2026-05-23T10:15:00Z",
+                    "amr": ["did"],
+                    "acr": "aal1"
+                },
+                "tokens": {
+                    "accessToken": "test-access-token",
+                    "tokenType": "Bearer",
+                    "expiresIn": 900
+                }
+            })))
+            .mount(server)
+            .await;
+    }
+
+    /// A VTA on the previous provisioning version is stopped before any key is
+    /// minted, and told which version it is on.
+    ///
+    /// REGRESSION (2026-08-31). #1147 cut `provision/integration` 0.2 -> 0.3
+    /// with no dual-accept window; a current client against a VTA still on 0.2
+    /// signed its VP, dispatched, and got back
+    /// `unsupported type: …/provision/integration/0.3` — a sentence that names
+    /// the version the *client* wanted and never the one the VTA has. The
+    /// operator read it as "provisioning is broken on this VTA" and went
+    /// looking in the wrong half of the system.
+    ///
+    /// The `/bootstrap/provision-integration` route is deliberately left
+    /// unmounted: reaching it at all would fail this test with a 404, which is
+    /// how it asserts the run stops *before* the mint rather than during it.
+    #[tokio::test]
+    async fn a_vta_on_the_previous_provision_version_is_named_before_minting() {
+        let server = MockServer::start().await;
+        mount_auth(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/trust-tasks"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "urn:uuid:11111111-1111-4111-8111-111111111111",
+                "type": "https://trusttasks.org/spec/trust-task-discovery/0.1#response",
+                "payload": {
+                    "frameworkVersion": "0.2",
+                    "supportedTypes": [
+                        "https://trusttasks.org/spec/provision/integration/0.2"
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let key = EphemeralSetupKey::generate().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let ask = ProvisionAsk::didcomm_mediator("mediator", "https://mediator.example.com");
+
+        let outcome = run_rest_attempt_full_setup(
+            &server.uri(),
+            &test_vta_did_key(),
+            key.did.clone(),
+            key.private_key_multibase().to_string(),
+            ask,
+            &tx,
+        )
+        .await;
+
+        match outcome {
+            AttemptOutcome::PostAuthFailure(reason) => {
+                assert!(
+                    reason.contains("provision/integration/0.2"),
+                    "must name the version the VTA serves: {reason}"
+                );
+                assert!(
+                    reason.contains("version skew"),
+                    "must say which kind of failure this is: {reason}"
+                );
+            }
+            other => panic!("expected PostAuthFailure, got {other:?}"),
+        }
+
+        drop(tx);
+        let events = drain(&mut rx);
+        assert!(
+            events.iter().any(|ev| matches!(
+                ev,
+                VtaEvent::CheckDone(DiagCheck::VerifyAuthorization, DiagStatus::Failed(_))
+            )),
+            "the authorization row should carry the finding"
+        );
+        assert!(
+            events.iter().any(|ev| matches!(
+                ev,
+                VtaEvent::CheckDone(DiagCheck::ProvisionIntegration, DiagStatus::Skipped(_))
+            )),
+            "provisioning must be skipped, not attempted"
+        );
+    }
+
+    /// A VTA that does not serve discovery is still provisioned.
+    ///
+    /// The probe is a diagnostic, and a diagnostic that refuses to let a
+    /// working VTA be provisioned is worse than no diagnostic. Here the
+    /// discovery call 404s and the run carries on to the provisioning call —
+    /// which is mounted, and fails on its own terms.
+    #[tokio::test]
+    async fn a_vta_without_discovery_still_reaches_the_provision_call() {
+        let server = MockServer::start().await;
+        mount_auth(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/bootstrap/provision-integration"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("template render rejected"))
+            .mount(&server)
+            .await;
+
+        let key = EphemeralSetupKey::generate().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let ask = ProvisionAsk::didcomm_mediator("mediator", "https://mediator.example.com");
+
+        let outcome = run_rest_attempt_full_setup(
+            &server.uri(),
+            &test_vta_did_key(),
+            key.did.clone(),
+            key.private_key_multibase().to_string(),
+            ask,
+            &tx,
+        )
+        .await;
+
+        match outcome {
+            AttemptOutcome::PostAuthFailure(reason) => assert!(
+                reason.contains("REST provision request"),
+                "the provision call must be the thing that failed: {reason}"
+            ),
+            other => panic!("expected PostAuthFailure, got {other:?}"),
+        }
+
+        drop(tx);
+        let events = drain(&mut rx);
+        assert!(
+            events.iter().any(|ev| matches!(
+                ev,
+                VtaEvent::CheckDone(DiagCheck::VerifyAuthorization, DiagStatus::Skipped(_))
+            )),
+            "an unanswerable probe is Skipped, never Failed"
         );
     }
 

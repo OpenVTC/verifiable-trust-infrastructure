@@ -78,8 +78,9 @@ const PRODUCED_UNPUBLISHED: &[(&str, &str)] = &[
 /// something.
 const NOT_PRODUCED: &[(&str, &str)] = &[(
     "https://trusttasks.org/spec/does-not-exist/9.9",
-    "Negative fixture: `class_for` must return `None` for an unknown URI. \
-         Deliberately names nothing.",
+    "Negative fixture: `class_for` must return `None` for an unknown URI, and \
+         `method_not_found` must reject an unknown *family* as `unsupportedType` \
+         rather than as a version skew. Deliberately names nothing.",
 )];
 
 /// Repo root, from this test binary's manifest directory.

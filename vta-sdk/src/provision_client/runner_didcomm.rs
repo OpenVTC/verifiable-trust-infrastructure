@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::client::VtaClient;
 use crate::did_key::decode_private_key_multibase;
 use crate::didcomm_session::DIDCommSession;
 use crate::protocols::did_management::servers::ListWebvhServersResultBody;
@@ -133,6 +134,10 @@ pub(crate) async fn run_didcomm_attempt(
                         DiagStatus::Failed(msg.clone()),
                     ));
                     let _ = tx.send(VtaEvent::CheckDone(
+                        DiagCheck::VerifyAuthorization,
+                        DiagStatus::Skipped("session did not open".into()),
+                    ));
+                    let _ = tx.send(VtaEvent::CheckDone(
                         DiagCheck::ListWebvhServers,
                         DiagStatus::Skipped("session did not open".into()),
                     ));
@@ -148,6 +153,22 @@ pub(crate) async fn run_didcomm_attempt(
                     ));
                 }
             };
+
+            // No discovery probe on this arm: the webvh-server lookup directly
+            // below is already an authorized VTA round-trip, so it surfaces a
+            // missing ACL grant on its own. A probe here would be a second
+            // round-trip buying the same answer — and on a leg where the
+            // mediator permits one socket per DID, extra round-trips are not
+            // free. The legs that *do* probe are the ones where nothing else
+            // asks the VTA anything before a key is minted.
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::VerifyAuthorization,
+                DiagStatus::Skipped(
+                    "the webvh-server lookup below is this leg's first authorized \
+                     round-trip"
+                        .into(),
+                ),
+            ));
 
             // Webvh-server catalogue lookup. Failure here is non-fatal —
             // the serverless path still works — but we surface the
@@ -199,33 +220,47 @@ pub(crate) async fn run_didcomm_attempt(
         VtaIntent::AdminOnly => {
             // AdminOnly: open a DIDComm session as the setup DID and
             // stop there. The setup DID *is* the long-term admin DID
-            // (no rotation) — the session open is the authenticated
-            // proof that the operator's `pnm acl create` landed.
-            // Bind the session out of the match before any `.await`, so the
-            // `Result`'s non-`Send` error payload isn't held across the
-            // `shutdown().await` below (that would make this future non-`Send`
-            // and break `tokio::spawn` in the runner) — same shape as the
-            // AdminRotated probe arm.
-            let session = match DIDCommSession::connect(
+            // (no rotation).
+            //
+            // The session open is NOT the proof that `pnm acl create` landed —
+            // it used to be documented as one, and it never was. Connecting
+            // sets this client's ACL at the *mediator*; the VTA's ACL is a
+            // different store that nothing on this path had ever read. So
+            // AdminOnly could finish entirely green against a VTA that would
+            // refuse the DID's first real call. The discovery probe below is
+            // the round-trip that actually asks.
+            //
+            // A `VtaClient` rather than a bare session, because the probe is a
+            // Trust Task and that is what dispatches one. Bind it out of the
+            // match before any `.await`, so the `Result`'s error payload isn't
+            // held across the `shutdown().await` below (that would make this
+            // future non-`Send` and break `tokio::spawn` in the runner) — same
+            // shape as the AdminRotated probe arm.
+            let client = match VtaClient::connect_didcomm(
                 &setup_did,
                 &setup_privkey_mb,
                 &vta_did,
                 &mediator_did,
+                rest_url.clone(),
             )
             .await
             {
-                Ok(session) => {
+                Ok(client) => {
                     let _ = tx.send(VtaEvent::CheckDone(
                         DiagCheck::AuthenticateDIDComm,
                         DiagStatus::Ok(format!("DIDComm session as {setup_did}")),
                     ));
-                    session
+                    client
                 }
                 Err(e) => {
                     let msg = e.to_string();
                     let _ = tx.send(VtaEvent::CheckDone(
                         DiagCheck::AuthenticateDIDComm,
                         DiagStatus::Failed(msg.clone()),
+                    ));
+                    let _ = tx.send(VtaEvent::CheckDone(
+                        DiagCheck::VerifyAuthorization,
+                        DiagStatus::Skipped("session did not open".into()),
                     ));
                     let _ = tx.send(VtaEvent::CheckDone(
                         DiagCheck::ListWebvhServers,
@@ -244,6 +279,23 @@ pub(crate) async fn run_didcomm_attempt(
                 }
             };
 
+            // AdminOnly mints nothing, so it names no required task — the
+            // question here is only whether this DID is granted on this VTA.
+            let authorized =
+                super::authz::verify_authorization(&client, &setup_did, &vta_did, None, tx).await;
+            client.shutdown().await;
+            if let Err(msg) = authorized {
+                let _ = tx.send(VtaEvent::CheckDone(
+                    DiagCheck::ListWebvhServers,
+                    DiagStatus::Skipped("authorization was not verified".into()),
+                ));
+                let _ = tx.send(VtaEvent::CheckDone(
+                    DiagCheck::ProvisionIntegration,
+                    DiagStatus::Skipped("authorization was not verified".into()),
+                ));
+                return AttemptOutcome::PostAuthFailure(msg);
+            }
+
             let _ = tx.send(VtaEvent::CheckDone(
                 DiagCheck::ListWebvhServers,
                 DiagStatus::Skipped("AdminOnly — no VTA-minted DID so no webvh host needed".into()),
@@ -256,9 +308,6 @@ pub(crate) async fn run_didcomm_attempt(
                         .into(),
                 ),
             ));
-            // The session open *was* the auth proof for AdminOnly — close it
-            // now (no round-trip follows).
-            session.shutdown().await;
             AttemptOutcome::Connected(VtaReply::AdminOnly(AdminCredentialReply {
                 admin_did: setup_did,
                 admin_private_key_mb: setup_privkey_mb,
@@ -274,11 +323,12 @@ pub(crate) async fn run_didcomm_attempt(
             // map to PreAuthFailure (different transport may succeed).
             // Once auth completes, the round-trip itself becomes
             // post-auth.
-            let probe_session = match DIDCommSession::connect(
+            let probe_client = match VtaClient::connect_didcomm(
                 &setup_did,
                 &setup_privkey_mb,
                 &vta_did,
                 &mediator_did,
+                rest_url.clone(),
             )
             .await
             {
@@ -294,6 +344,10 @@ pub(crate) async fn run_didcomm_attempt(
                     let _ = tx.send(VtaEvent::CheckDone(
                         DiagCheck::AuthenticateDIDComm,
                         DiagStatus::Failed(msg.clone()),
+                    ));
+                    let _ = tx.send(VtaEvent::CheckDone(
+                        DiagCheck::VerifyAuthorization,
+                        DiagStatus::Skipped("session did not open".into()),
                     ));
                     let _ = tx.send(VtaEvent::CheckDone(
                         DiagCheck::ListWebvhServers,
@@ -312,10 +366,39 @@ pub(crate) async fn run_didcomm_attempt(
                 }
             };
 
-            // The probe only proved auth; close it before the round-trip below
-            // opens its own session for the SAME DID (two live sessions for one
-            // DID duel on the mediator), and so it doesn't leak.
-            probe_session.shutdown().await;
+            // The connect proved only that the mediator would carry us. Ask the
+            // VTA itself, on the session already open, before anything is
+            // minted — a missing ACL grant and a provisioning-version skew both
+            // land here instead of after the VP is signed.
+            let authorized = super::authz::verify_authorization(
+                &probe_client,
+                &setup_did,
+                &vta_did,
+                Some(
+                    crate::protocols::provision_integration_management::ProvisionSpecVersion::CURRENT
+                        .request_uri(),
+                ),
+                tx,
+            )
+            .await;
+
+            // Close it before the round-trip below opens its own session for
+            // the SAME DID (two live sessions for one DID duel on the
+            // mediator), and so it doesn't leak. Unconditional: the failure
+            // path leaks a socket just as thoroughly as the success path.
+            probe_client.shutdown().await;
+
+            if let Err(msg) = authorized {
+                let _ = tx.send(VtaEvent::CheckDone(
+                    DiagCheck::ListWebvhServers,
+                    DiagStatus::Skipped("authorization was not verified".into()),
+                ));
+                let _ = tx.send(VtaEvent::CheckDone(
+                    DiagCheck::ProvisionIntegration,
+                    DiagStatus::Skipped("authorization was not verified".into()),
+                ));
+                return AttemptOutcome::PostAuthFailure(msg);
+            }
 
             let _ = tx.send(VtaEvent::CheckDone(
                 DiagCheck::ListWebvhServers,

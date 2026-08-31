@@ -118,6 +118,34 @@ pub mod trust_task_reject_reasons {
     pub const GONE: &str = "gone";
 }
 
+/// Machine-readable `details` members the VTA puts on an
+/// `unsupportedType` / `unsupportedVersion` rejection.
+///
+/// # Why this exists
+///
+/// The framework carries the rejected Type URI only inside the human-readable
+/// `message` (`unsupported type: <uri>`), and carries what the responder
+/// *does* serve nowhere at all. So the one rejection whose fix is "upgrade
+/// something" gave a client no way to say **which** thing without slicing a
+/// sentence — and the version in that sentence is the whole diagnosis: an
+/// older version named means the client is behind, a newer one means the
+/// responder is.
+///
+/// Sibling of [`trust_task_reject_reasons`] and here for the same reason: the
+/// service writes these keys and the SDK reads them, so a second spelling in
+/// either place is a wire contract that drifts silently.
+///
+/// Absent from an older responder — a consumer must treat a missing
+/// [`SERVED_VERSIONS`] as "unknown", never as "the family does not exist".
+pub mod trust_task_reject_details {
+    /// The Type URI the producer dispatched, as the consumer received it.
+    /// Machine-readable counterpart to the URI in `message`.
+    pub const REQUESTED_TYPE: &str = "requestedType";
+    /// Type URIs of the **same family** the consumer does serve, sorted.
+    /// Present only on `unsupportedVersion`.
+    pub const SERVED_VERSIONS: &str = "servedVersions";
+}
+
 /// Extract code and comment from a problem-report message body.
 pub fn extract_problem_report(body: &serde_json::Value) -> (String, String) {
     let code = body

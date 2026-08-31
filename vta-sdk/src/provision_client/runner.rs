@@ -244,6 +244,10 @@ pub async fn run_connection_test(
             DiagStatus::Skipped("no REST endpoint".into()),
         ));
         let _ = tx.send(VtaEvent::CheckDone(
+            DiagCheck::VerifyAuthorization,
+            DiagStatus::Skipped("no transport".into()),
+        ));
+        let _ = tx.send(VtaEvent::CheckDone(
             DiagCheck::ListWebvhServers,
             DiagStatus::Skipped("no transport".into()),
         ));

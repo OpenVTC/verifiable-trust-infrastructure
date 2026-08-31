@@ -173,6 +173,49 @@ pub enum VtaError {
         theirs: Vec<crate::protocol::matching::Protocol>,
     },
 
+    /// The peer does not serve this Trust Task type — the standard
+    /// `unsupportedType` / `unsupportedVersion` rejections.
+    ///
+    /// Typed rather than folded into [`Self::Protocol`] because it is the one
+    /// rejection whose fix is **upgrade something**, and a caller can only say
+    /// which thing if it can read the two facts apart: what we asked for, and
+    /// what the peer serves instead.
+    ///
+    /// A live incident (2026-08-31) is why this exists. #1147 cut
+    /// `provision/integration` 0.2 → 0.3 with no dual-accept window — the two
+    /// response schemas are mutually exclusive, so there could not be one — and
+    /// an operator on a current client hit a VTA still serving 0.2. All the
+    /// wizard could render was the flat string
+    ///
+    /// ```text
+    /// trust task failed [unsupportedType]: unsupported type:
+    ///   https://trusttasks.org/spec/provision/integration/0.3
+    /// ```
+    ///
+    /// which reads as "this VTA cannot provision" rather than "this VTA is
+    /// older than your client", and sends the reader to the wrong half of the
+    /// system. The version in that message is the whole diagnosis — 0.2 means
+    /// the *client* is behind, 0.3 means the *VTA* is — and nothing said so.
+    ///
+    /// `served_versions` is the peer's own answer, from the rejection's
+    /// `details.servedVersions`. Empty means the peer does not know the family
+    /// at all **or** is old enough not to send the field, so a consumer must
+    /// not read empty as "the family does not exist".
+    #[error("{}", match .served_versions.is_empty() {
+        true => format!("peer does not serve {}", .type_uri),
+        false => format!(
+            "peer does not serve {} — it serves {}",
+            .type_uri,
+            .served_versions.join(", "),
+        ),
+    })]
+    UnsupportedTaskType {
+        /// The Type URI this client dispatched.
+        type_uri: String,
+        /// Versions of the same family the peer reported serving.
+        served_versions: Vec<String>,
+    },
+
     /// The VTA is temporarily unable to process this task — the standard
     /// `unavailable` rejection (HTTP 503).
     ///
@@ -459,6 +502,12 @@ impl VtaError {
             Self::NoPriorMutation => Some(
                 "No prior mutation for this service kind to roll back from. Use \
                  the direct `enable`/`update`/`disable` command instead.",
+            ),
+            Self::UnsupportedTaskType { .. } => Some(
+                "The peer does not serve this Trust Task at the version this client \
+                 dispatches. When the error names a version the peer does serve, the \
+                 two are different ages and one of them needs upgrading; when it names \
+                 none, check you are pointed at the agent you meant.",
             ),
             Self::NoMatchingProtocol { .. } => Some(
                 "The two parties share no transport protocol. Enable a common \
