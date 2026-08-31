@@ -11,7 +11,8 @@ use uuid::Uuid;
 
 use crate::acl::{
     AclEntry, Capability, CompanionFormFactor, ConsumerKind, DeviceBinding, ServiceKind,
-    WakeChannel, derived_capabilities_for_role, get_acl_entry, list_acl_entries, store_acl_entry,
+    WakeChannel, derived_capabilities_for_role, get_acl_entry, is_acl_entry_visible,
+    list_acl_entries, store_acl_entry,
 };
 use crate::audit;
 use crate::auth::AuthClaims;
@@ -197,9 +198,12 @@ pub async fn heartbeat_device(
     }))
 }
 
-/// List the maintainer's registered devices, filtered per the request. Requires
-/// management rights. Disabled/wiped devices are omitted unless explicitly
-/// included. Returns `{ devices, cursor, truncated }`.
+/// List the registered devices the caller may manage, filtered per the request.
+/// Requires management rights **in the binding's context**: a super-admin sees
+/// every device, a context admin only those whose ACL entry acts in a context
+/// they hold, and an entry authorized nowhere sees none. Disabled/wiped devices
+/// are omitted unless explicitly included. Returns `{ devices, cursor,
+/// truncated }`.
 ///
 /// Cursor pagination is not yet implemented — `pageSize` truncates and sets
 /// `truncated`, with no continuation `cursor` (operators narrow filters). This
@@ -217,6 +221,13 @@ pub async fn list_devices(
         let Some(b) = entry.device.as_ref() else {
             continue;
         };
+        // The caller's *context* scope, not just their role. `require_manage`
+        // above is role-only, and on its own it handed a context-scoped admin
+        // every binding on the VTA — including the hostname, platform and
+        // activity window of machines in contexts they hold no rights in.
+        if !is_acl_entry_visible(auth, entry) {
+            continue;
+        }
         if !payload.include_disabled && b.disabled_at.is_some() {
             continue;
         }
@@ -278,9 +289,43 @@ fn form_factor_matches(
     )
 }
 
+/// Find the entry holding `device_id`, refusing one the caller may not manage.
+///
+/// Shared by `device/disable` and `device/wipe` so the two cannot drift on who
+/// may reach a binding — they had no scope check at all before, so
+/// `require_manage` alone let any context admin disable or wipe **every** device
+/// on the VTA, a super-admin's included.
+///
+/// A binding outside the caller's scope conflates to the same `NotFound` an
+/// absent id returns. That is deliberate: a distinct "forbidden" would confirm
+/// the id exists, turning the error into an oracle for enumerating device ids
+/// the caller cannot otherwise see. Same reading as the vault's use paths.
+///
+/// [`is_acl_entry_visible`] is the *management* predicate, not the wider
+/// [`crate::acl::is_acl_entry_auditable`] used by `acl list`. Both mutations here plainly
+/// need management authority, and `device/list` reads the same way on purpose:
+/// a binding carries operational metadata about a **machine** — hostname,
+/// platform, last-seen — which is a different and more revealing disclosure
+/// than the entry's authority that the auditable predicate exists to surface.
+/// So the read and the mutations agree: you see the devices you may manage.
+async fn find_manageable_device(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    device_id: &str,
+    op: &str,
+) -> Result<AclEntry, AppError> {
+    list_acl_entries(acl_ks)
+        .await?
+        .into_iter()
+        .find(|e| e.device.as_ref().map(|b| b.device_id.as_str()) == Some(device_id))
+        .filter(|e| is_acl_entry_visible(auth, e))
+        .ok_or_else(|| AppError::NotFound(format!("{op} — no device with id {device_id}")))
+}
+
 /// Disable a device by its `deviceId`: set `disabledAt` (idempotent — a
 /// re-disable keeps the original timestamp) so it can no longer authenticate.
-/// Requires management rights. Returns `{ deviceId, disabledAt }`.
+/// Requires management rights over the binding's own entry — see
+/// `find_manageable_device`. Returns `{ deviceId, disabledAt }`.
 ///
 /// NOTE: the auth-path enforcement (a disabled device is rejected at
 /// authentication) is a separate follow-up — this records the state and
@@ -293,13 +338,7 @@ pub async fn disable_device(
 ) -> Result<Value, AppError> {
     auth.require_manage()?;
 
-    let mut entry = list_acl_entries(acl_ks)
-        .await?
-        .into_iter()
-        .find(|e| e.device.as_ref().map(|b| b.device_id.as_str()) == Some(device_id))
-        .ok_or_else(|| {
-            AppError::NotFound(format!("device/disable — no device with id {device_id}"))
-        })?;
+    let mut entry = find_manageable_device(acl_ks, auth, device_id, "device/disable").await?;
 
     let binding = entry.device.as_mut().expect("matched entry has a binding");
     if binding.disabled_at.is_none() {
@@ -333,7 +372,8 @@ pub async fn disable_device(
 /// be able to authenticate) and bumps the entry version. `reason` and `scope`
 /// (`cache` | `cache-and-keys` | `full`) are logged and echoed back; the device
 /// observes the wiped state on its next `device/list` / heartbeat. Idempotent:
-/// re-wiping a wiped device keeps the original `wiped_at`.
+/// re-wiping a wiped device keeps the original `wiped_at`. Requires management
+/// rights over the binding's own entry — see `find_manageable_device`.
 pub async fn wipe_device(
     acl_ks: &KeyspaceHandle,
     audit: &vta_audit::SharedAuditSink,
@@ -344,13 +384,7 @@ pub async fn wipe_device(
 ) -> Result<Value, AppError> {
     auth.require_manage()?;
 
-    let mut entry = list_acl_entries(acl_ks)
-        .await?
-        .into_iter()
-        .find(|e| e.device.as_ref().map(|b| b.device_id.as_str()) == Some(device_id))
-        .ok_or_else(|| {
-            AppError::NotFound(format!("device/wipe — no device with id {device_id}"))
-        })?;
+    let mut entry = find_manageable_device(acl_ks, auth, device_id, "device/wipe").await?;
 
     let now = chrono::Utc::now().to_rfc3339();
     let binding = entry.device.as_mut().expect("matched entry has a binding");
@@ -1068,6 +1102,247 @@ mod tests {
             amr: Vec::new(),
             acr: String::new(),
         }
+    }
+
+    /// A context admin: `Role::Admin` with a **non-empty** context list, so its
+    /// [`ActScope`](vta_sdk::acl::ActScope) is `Contexts`, not `All`.
+    fn context_admin(did: &str, contexts: &[&str]) -> AuthClaims {
+        AuthClaims {
+            did: did.into(),
+            role: Role::Admin,
+            allowed_contexts: contexts.iter().map(|c| (*c).to_string()).collect(),
+            ..admin_auth()
+        }
+    }
+
+    /// Register a device against an ACL entry scoped to `contexts`.
+    async fn registered_in(
+        acl_ks: &KeyspaceHandle,
+        audit: &vta_audit::SharedAuditSink,
+        did: &str,
+        contexts: &[&str],
+        name: &str,
+    ) {
+        store_acl_entry(
+            acl_ks,
+            &AclEntry::new(did, Role::Application, "did:key:zSetup")
+                .with_contexts(contexts.iter().map(|c| (*c).to_string()).collect()),
+        )
+        .await
+        .unwrap();
+        register_device(
+            acl_ks,
+            audit,
+            &device_auth(did),
+            mobile_kind(),
+            name.into(),
+            None,
+            Some("did:key:zHpke".into()),
+            "test",
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn listed_names(acl_ks: &KeyspaceHandle, auth: &AuthClaims) -> Vec<String> {
+        let body = list_devices(acl_ks, auth, &list_payload(json!({})))
+            .await
+            .unwrap();
+        body["devices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["displayName"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    async fn device_id_of(acl_ks: &KeyspaceHandle, did: &str) -> String {
+        get_acl_entry(acl_ks, did)
+            .await
+            .unwrap()
+            .unwrap()
+            .device
+            .unwrap()
+            .device_id
+    }
+
+    /// The #1216 defect: `require_manage` is role-only, so a context admin read
+    /// every binding on the VTA — hostnames and activity windows from contexts
+    /// they hold no rights in.
+    #[tokio::test]
+    async fn a_context_admin_lists_only_its_own_contexts_devices() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        registered_in(&acl_ks, &audit, "did:key:zEng", &["acme/eng"], "eng-laptop").await;
+        registered_in(&acl_ks, &audit, "did:key:zOps", &["acme/ops"], "ops-laptop").await;
+
+        let names = listed_names(&acl_ks, &context_admin("did:key:zEngAdmin", &["acme/eng"])).await;
+        assert_eq!(
+            names,
+            ["eng-laptop"],
+            "a context admin must not see acme/ops"
+        );
+    }
+
+    /// Folder authority: an admin of a parent context covers the whole subtree,
+    /// the same ancestry `has_context_access` applies elsewhere.
+    #[tokio::test]
+    async fn a_parent_context_admin_lists_the_subtree() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        registered_in(
+            &acl_ks,
+            &audit,
+            "did:key:zTeam",
+            &["acme/eng/team-a"],
+            "team-a",
+        )
+        .await;
+        registered_in(&acl_ks, &audit, "did:key:zOther", &["other"], "other").await;
+
+        let names = listed_names(&acl_ks, &context_admin("did:key:zAcmeAdmin", &["acme"])).await;
+        assert_eq!(names, ["team-a"]);
+    }
+
+    /// A super-admin is unchanged — the fix must not narrow the one caller that
+    /// legitimately sees everything.
+    #[tokio::test]
+    async fn a_super_admin_still_lists_every_device() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        registered_in(&acl_ks, &audit, "did:key:zEng", &["acme/eng"], "eng-laptop").await;
+        registered_in(&acl_ks, &audit, "did:key:zOps", &["acme/ops"], "ops-laptop").await;
+        registered_in(&acl_ks, &audit, "did:key:zRoot", &[], "root-box").await;
+
+        let mut names = listed_names(&acl_ks, &admin_auth()).await;
+        names.sort();
+        assert_eq!(names, ["eng-laptop", "ops-laptop", "root-box"]);
+    }
+
+    /// The regression guard for the `allowed_contexts.is_empty()` reading: an
+    /// **Initiator** with no contexts is authorized *nowhere*, not everywhere.
+    /// It passes `require_manage` on role alone, which is exactly why the role
+    /// test was never sufficient.
+    #[tokio::test]
+    async fn an_authorized_nowhere_manager_lists_nothing() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        registered_in(&acl_ks, &audit, "did:key:zEng", &["acme/eng"], "eng-laptop").await;
+
+        let nowhere = AuthClaims {
+            did: "did:key:zNowhere".into(),
+            role: Role::Initiator,
+            allowed_contexts: vec![],
+            ..admin_auth()
+        };
+        assert!(
+            nowhere.require_manage().is_ok(),
+            "role gate alone still passes"
+        );
+        assert!(
+            listed_names(&acl_ks, &nowhere).await.is_empty(),
+            "an acts-nowhere entry must see no devices"
+        );
+    }
+
+    /// A super-admin's own device names no context, so it is not inside any
+    /// context admin's subtree — the `ActScope::All` edge.
+    #[tokio::test]
+    async fn a_context_admin_does_not_see_an_unrestricted_entrys_device() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        store_acl_entry(
+            &acl_ks,
+            &AclEntry::new("did:key:zRoot", Role::Admin, "did:key:zSetup"),
+        )
+        .await
+        .unwrap();
+        register_device(
+            &acl_ks,
+            &audit,
+            &device_auth("did:key:zRoot"),
+            mobile_kind(),
+            "root-box".into(),
+            None,
+            Some("did:key:zHpke".into()),
+            "test",
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            listed_names(&acl_ks, &context_admin("did:key:zEngAdmin", &["acme/eng"]))
+                .await
+                .is_empty()
+        );
+    }
+
+    /// Worse than the listing: disable had no scope check at all, so a context
+    /// admin could disable any device on the VTA by id.
+    #[tokio::test]
+    async fn disable_refuses_a_device_outside_the_callers_contexts() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        registered_in(&acl_ks, &audit, "did:key:zOps", &["acme/ops"], "ops-laptop").await;
+        let id = device_id_of(&acl_ks, "did:key:zOps").await;
+
+        let err = disable_device(
+            &acl_ks,
+            &audit,
+            &context_admin("did:key:zEngAdmin", &["acme/eng"]),
+            &id,
+        )
+        .await
+        .expect_err("a device outside the caller's contexts must be refused");
+        // Conflated to NotFound so the error cannot confirm the id exists.
+        assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
+
+        let binding = get_acl_entry(&acl_ks, "did:key:zOps")
+            .await
+            .unwrap()
+            .unwrap()
+            .device
+            .unwrap();
+        assert!(binding.disabled_at.is_none(), "the refusal must not mutate");
+    }
+
+    #[tokio::test]
+    async fn wipe_refuses_a_device_outside_the_callers_contexts() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        registered_in(&acl_ks, &audit, "did:key:zOps", &["acme/ops"], "ops-laptop").await;
+        let id = device_id_of(&acl_ks, "did:key:zOps").await;
+
+        let err = wipe_device(
+            &acl_ks,
+            &audit,
+            &context_admin("did:key:zEngAdmin", &["acme/eng"]),
+            &id,
+            "lost",
+            "full",
+        )
+        .await
+        .expect_err("a device outside the caller's contexts must be refused");
+        assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
+
+        let binding = get_acl_entry(&acl_ks, "did:key:zOps")
+            .await
+            .unwrap()
+            .unwrap()
+            .device
+            .unwrap();
+        assert!(binding.wiped_at.is_none(), "the refusal must not mutate");
+    }
+
+    /// The in-scope path still works, so the gate is a scope check and not a
+    /// blanket refusal.
+    #[tokio::test]
+    async fn disable_allows_a_device_inside_the_callers_contexts() {
+        let (acl_ks, audit, _dir) = fresh().await;
+        registered_in(&acl_ks, &audit, "did:key:zEng", &["acme/eng"], "eng-laptop").await;
+        let id = device_id_of(&acl_ks, "did:key:zEng").await;
+
+        disable_device(
+            &acl_ks,
+            &audit,
+            &context_admin("did:key:zEngAdmin", &["acme/eng"]),
+            &id,
+        )
+        .await
+        .expect("an in-scope device must be disableable");
     }
 
     fn list_payload(v: Value) -> list_spec::Payload {
