@@ -201,15 +201,17 @@ pub(super) async fn handle_decision(
     }
 
     // The proven signer must be a member of the policy-named approver set.
-    let members = state
-        .config
-        .read()
-        .await
-        .policy
-        .approver_sets
-        .get(&pending.approver_set)
-        .cloned()
-        .unwrap_or_default();
+    //
+    // Resolved through the same row-first helper the gate uses. Reading
+    // `config.policy.approver_sets` directly here — as this did — meant the side
+    // that *asks* for a decision and the side that *accepts* one disagreed about
+    // who was in the set, so every approver added with `pnm approvals approvers
+    // add` (which writes the declarative row) was denied `not_a_member`.
+    let members = match super::policy_gate::approver_set_members(state, &pending.approver_set).await
+    {
+        Ok(m) => m,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
     if !members.iter().any(|m| m == &approver) {
         crate::audit::record_consent(
             &state.audit_sink,
@@ -442,13 +444,25 @@ mod tests {
         );
 
         // …but it IS a member of the set the policy names.
-        state
-            .config
-            .write()
-            .await
-            .policy
-            .approver_sets
-            .insert("webvh-approvers".into(), vec![approver.clone()]);
+        //
+        // Seeded into the **declarative row**, which is what `pnm approvals
+        // approvers add` writes — deliberately not `config.policy.approver_sets`.
+        // Seeding config was the shape of this test before, and it is why the
+        // field failure went unnoticed: the decision handler read config alone,
+        // so a config-seeded test passed while every set built the documented way
+        // was denied `not_a_member`. Seed the row and the test exercises the path
+        // operators actually use.
+        crate::policy::seed_declarative_approvals(
+            &state.policy_ks,
+            &[],
+            &std::collections::HashMap::from([(
+                "webvh-approvers".to_string(),
+                vec![approver.clone()],
+            )]),
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .await
+        .expect("seed the approver set into the declarative row");
 
         // An outstanding pending, as the gate would have minted it for a
         // requester that can authorize the task itself (so no delegation is in
