@@ -72,8 +72,8 @@ pub(crate) use helpers::TrustTaskOutcome;
 // value the reject path emits, rather than a second literal.
 pub(crate) use helpers::framework_error_type_uri;
 use helpers::{
-    app_error_to_reject, body_parse_error_response, parse_payload, reject_with, success_response,
-    verdict_response, verify_trust_task_proof,
+    app_error_to_reject, body_parse_error_response, parse_payload, reject_with, reject_with_code,
+    success_response, verdict_response, verify_trust_task_proof,
 };
 
 /// The transport-resolved caller identity threaded into the dispatcher.
@@ -142,13 +142,85 @@ pub(crate) async fn dispatch_trust_task_core(
         mem::MEMBER_VMC_TYPE => handle_member_vmc(state, ctx, doc).await,
         PERSONHOOD_CHALLENGE_TYPE => handle_personhood_challenge(state, ctx, doc).await,
         PERSONHOOD_ASSERT_TYPE => handle_personhood_assert(state, ctx, doc).await,
-        other => reject_with(
-            &doc,
-            RejectReason::UnsupportedType {
-                type_uri: other.to_string(),
-            },
-        ),
+        other => unsupported_type_or_version(&doc, other),
     }
+}
+
+/// The family of a Trust Task Type URI: everything before its trailing version
+/// segment.
+///
+/// `…/spec/vtc/join-requests/submit/0.2` → `…/spec/vtc/join-requests/submit`.
+/// The version is always the last path segment (SPEC §3.1), so a plain
+/// `rsplit_once('/')` is the whole rule — no version grammar to parse, and a
+/// URI with no `/` simply has no family rather than panicking.
+fn task_family(type_uri: &str) -> Option<&str> {
+    type_uri.rsplit_once('/').map(|(family, _version)| family)
+}
+
+/// Reject a type URI this dispatcher has no arm for, distinguishing the two
+/// failures that used to wear one code.
+///
+/// "I have never heard of this task" and "I know this task, at a different
+/// version" send the operator to completely different places — the first to
+/// whether the verb exists at all, the second to which side is out of date —
+/// and only the second is recoverable by upgrading something.
+///
+/// So a URI whose family this VTC *does* dispatch is rejected as
+/// `unsupportedVersion` — SPEC's code for exactly this, "the consumer
+/// recognizes the type but not at this MAJOR.MINOR" — naming the versions
+/// actually served in `message` and in `details.servedVersions`. Anything else
+/// stays `unsupportedType`.
+///
+/// This is the VTC half of #1220, which did the same on the VTA after an
+/// operator spent an hour reading `unsupported type: …/provision/integration/0.3`
+/// as "this agent cannot provision" when it meant "this agent is older than
+/// your client". The VTC is more exposed to that reading, not less: its
+/// `spec/vtc/*` families are mid-migration, so a member client and a community
+/// can legitimately be at different versions of the same verb.
+///
+/// Both `details` members are bounded by construction — `servedVersions` comes
+/// from a `const` of seven, and `requestedType` echoes a `TypeUri` the
+/// framework already parsed and already puts in `message` — but they still go
+/// through `reject_with_code`'s `bound_details`, because "bounded by
+/// construction" is a property of today's callers rather than of the funnel.
+fn unsupported_type_or_version(doc: &TrustTask<Value>, type_uri: &str) -> TrustTaskOutcome {
+    use trust_tasks_rs::{StandardCode, TrustTaskCode};
+    use vta_sdk::protocols::trust_task_reject_details as details;
+
+    let family = task_family(type_uri);
+    let mut served: Vec<&str> = DISPATCHED_URIS
+        .iter()
+        .copied()
+        .filter(|uri| family.is_some() && task_family(uri) == family)
+        .collect();
+    served.sort_unstable();
+    served.dedup();
+
+    if served.is_empty() {
+        // Message kept byte-identical to the framework's own
+        // `RejectReason::UnsupportedType` rendering so a consumer matching on
+        // it does not break; `details.requestedType` is the same fact
+        // machine-readably, which is the half the framework's shape leaves out.
+        return reject_with_code(
+            doc,
+            TrustTaskCode::Standard(StandardCode::UnsupportedType),
+            format!("unsupported type: {type_uri}"),
+            Some(serde_json::json!({ details::REQUESTED_TYPE: type_uri })),
+        );
+    }
+
+    reject_with_code(
+        doc,
+        TrustTaskCode::Standard(StandardCode::UnsupportedVersion),
+        format!(
+            "unsupported version: {type_uri} — this VTC serves {}",
+            served.join(", ")
+        ),
+        Some(serde_json::json!({
+            details::REQUESTED_TYPE: type_uri,
+            details::SERVED_VERSIONS: served,
+        })),
+    )
 }
 
 /// The Trust Task URIs this dispatcher routes. Kept in lockstep with the
@@ -158,7 +230,11 @@ pub(crate) async fn dispatch_trust_task_core(
 /// inbound path (#833) hands every frame to this dispatcher and has no
 /// protocol-message surface behind it. A verb that is not here is a verb a
 /// member cannot perform over TSP.
-#[cfg_attr(not(test), allow(dead_code))]
+///
+/// Read at runtime as well as by the parity test:
+/// [`unsupported_type_or_version`] answers an unrouted URI from this list, so
+/// the migration hint a client receives cannot name a version this VTC does
+/// not actually serve.
 pub(crate) const DISPATCHED_URIS: &[&str] = &[
     jr::JOIN_REQUEST_SUBMIT_TYPE,
     jr::JOIN_REQUEST_MANIFEST_TYPE,
@@ -597,6 +673,105 @@ async fn handle_member_vmc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn error_doc(outcome: TrustTaskOutcome) -> Value {
+        serde_json::from_slice(&outcome.body).expect("rejection is a framework error document")
+    }
+
+    /// A request document to reject from. Its own type is irrelevant — the
+    /// rejection is built from the URI passed in, not from this.
+    fn request_doc() -> TrustTask<Value> {
+        let uri: trust_tasks_rs::TypeUri = jr::JOIN_REQUEST_MANIFEST_TYPE
+            .parse()
+            .expect("manifest uri");
+        TrustTask::new("urn:uuid:test", uri, serde_json::json!({}))
+    }
+
+    /// A family split on its trailing version segment, nothing else.
+    ///
+    /// Written against synthetic paths: a `trusttasks.org/spec/` literal
+    /// anywhere under `vtc-service/src` is read by `trust_task_manifest`'s
+    /// census as an assertion that the registry publishes that task, and a
+    /// test fixture is not one.
+    #[test]
+    fn task_family_strips_only_the_version_segment() {
+        assert_eq!(
+            task_family("scheme://host/spec/vtc/a/b/0.2"),
+            Some("scheme://host/spec/vtc/a/b")
+        );
+        assert_eq!(task_family("no-slashes-at-all"), None);
+    }
+
+    /// A verb this VTC has never heard of still gets `unsupportedType`.
+    ///
+    /// The version arm must not swallow the plain case: "I do not implement
+    /// this" and "I implement this at another version" are different answers
+    /// and only the second is fixed by upgrading something.
+    #[test]
+    fn an_unknown_family_is_still_unsupported_type() {
+        let outcome =
+            unsupported_type_or_version(&request_doc(), "scheme://host/spec/vtc/nope/1.0");
+        let doc = error_doc(outcome);
+        assert_eq!(doc["payload"]["code"], "unsupportedType");
+        assert!(doc["payload"]["details"].get("servedVersions").is_none());
+    }
+
+    /// A known family at an unknown version names the versions served.
+    ///
+    /// The VTC half of #1220. Its `spec/vtc/*` families are mid-migration, so
+    /// a member client and a community can legitimately sit at different
+    /// versions of the same verb — which makes a bare `unsupported type` read
+    /// as "this community cannot do this" when it means "one of us is older".
+    ///
+    /// Built from `DISPATCHED_URIS` rather than a literal, so the fixture
+    /// cannot claim a version this VTC does not serve.
+    #[test]
+    fn a_known_family_at_an_unknown_version_names_what_is_served() {
+        let real = DISPATCHED_URIS
+            .first()
+            .expect("the dispatcher routes at least one URI");
+        let family = task_family(real).expect("a task URI has a family");
+        let bogus = format!("{family}/99.99");
+
+        let doc = error_doc(unsupported_type_or_version(&request_doc(), &bogus));
+
+        assert_eq!(doc["payload"]["code"], "unsupportedVersion");
+        let message = doc["payload"]["message"].as_str().expect("a message");
+        assert!(
+            message.contains(real),
+            "the message must name the served version; got {message}"
+        );
+        assert_eq!(doc["payload"]["details"]["servedVersions"][0], *real);
+        assert_eq!(doc["payload"]["details"]["requestedType"], bogus);
+    }
+
+    /// The migration hint never names a *neighbouring* family.
+    ///
+    /// `join-requests/submit` and `join-requests/status` share a long prefix
+    /// and are different verbs; offering one as the version to migrate onto
+    /// would send a client at a task that cannot serve its request.
+    #[test]
+    fn a_neighbouring_family_is_not_offered_as_a_version() {
+        let real = DISPATCHED_URIS
+            .first()
+            .expect("the dispatcher routes at least one URI");
+        let family = task_family(real).expect("a task URI has a family");
+        let bogus = format!("{family}/99.99");
+
+        let doc = error_doc(unsupported_type_or_version(&request_doc(), &bogus));
+        let served = doc["payload"]["details"]["servedVersions"]
+            .as_array()
+            .expect("servedVersions is an array");
+
+        for entry in served {
+            let uri = entry.as_str().expect("a URI string");
+            assert_eq!(
+                task_family(uri),
+                Some(family),
+                "{uri} is a different family and must not be offered as a version of {family}"
+            );
+        }
+    }
 
     /// Every URI the dispatcher declares as routed must be a member-facing
     /// request URI declared elsewhere, and vice-versa — so a new verb can't
