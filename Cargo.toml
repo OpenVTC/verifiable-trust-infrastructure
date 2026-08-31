@@ -75,7 +75,7 @@ repository = "https://github.com/OpenVTC/verifiable-trust-infrastructure"
 [workspace.dependencies]
 
 # Foreign-language bindings for the mobile engine crate (`vta-mobile-core`).
-uniffi = "0.28"
+uniffi = "0.32"
 
 # Affinidi Trust Development Kit.
 # Pinned to a minimum patch (not bare `0.8`) because 0.8.5 is the first release
