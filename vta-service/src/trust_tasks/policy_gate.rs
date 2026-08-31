@@ -234,6 +234,65 @@ async fn decide(
     }
 }
 
+/// Members of the named approver set, resolved **row-first**.
+///
+/// The declarative approvals row is authoritative; config is consulted only as a
+/// fallback, for a VTA whose sets are still declared there and which has not yet
+/// been seeded. Row-first is what makes `pnm approvals approvers` take effect
+/// without a restart.
+///
+/// # Why this is one function
+///
+/// Both halves of the ceremony ask "who is in this set?", and they must get the
+/// same answer. They did not: the gate resolved row-first (here) while the
+/// decision handler read `config.policy.approver_sets` alone. So a set built the
+/// documented way — `pnm approvals approvers add`, which writes the row — raised
+/// a pending, pushed the request, and had the approver's valid decision denied
+/// `not_a_member` against a config table that never had the set.
+///
+/// That made DTTE unusable through its own CLI: the only way to get a decision
+/// accepted was to *also* carry the set in `config.toml` and restart, which is
+/// the very thing row-first exists to avoid. Resolving it in one place is what
+/// stops the two sides drifting apart again.
+/// Every approver set as it effectively stands: config, with the row's entries
+/// overriding it **per set name**.
+///
+/// Per-set rather than whole-model, so an operator who declares three sets in
+/// config and then edits one with `pnm approvals approvers` does not lose the
+/// other two. A whole-model "row wins if non-empty" would strand them, and —
+/// worse — would strand them *inconsistently*, since the named lookup below is
+/// per-set: an approver could pass the membership check and still be turned away
+/// by the transport gate.
+pub(crate) async fn effective_approver_sets(
+    state: &AppState,
+) -> Result<std::collections::HashMap<String, Vec<String>>, AppError> {
+    let mut sets = state.config.read().await.policy.approver_sets.clone();
+    let model = crate::policy::approvals::load(&state.policy_ks).await?;
+    for (name, members) in &model.approver_sets {
+        sets.insert(name.clone(), members.clone());
+    }
+    Ok(sets)
+}
+
+pub(crate) async fn approver_set_members(
+    state: &AppState,
+    set_name: &str,
+) -> Result<Vec<String>, AppError> {
+    Ok(effective_approver_sets(state)
+        .await?
+        .remove(set_name)
+        .unwrap_or_default())
+}
+
+/// Whether `did` is named by *any* approver set — the question the pre-auth
+/// transport gate asks before letting a ceremony task past the ACL.
+pub(crate) async fn is_named_approver(state: &AppState, did: &str) -> Result<bool, AppError> {
+    Ok(effective_approver_sets(state)
+        .await?
+        .values()
+        .any(|members| members.iter().any(|m| m == did)))
+}
+
 /// Resolve the PDP `requireConsent` disposition.
 ///
 /// Proceeds (`None`) when a valid grant for this exact task already exists — but
@@ -277,28 +336,8 @@ async fn consent_gate(
     // The approver set as it stands *now*, not as it stood when the request was
     // raised. This is resolved before the grant is consumed, because a grant
     // cannot be honoured against a set that no longer exists.
-    //
-    // The declarative approvals row is authoritative; config is consulted only
-    // as a fallback, for a VTA whose sets are still declared there and which has
-    // not yet been seeded. Row-first is what makes `pnm approvals approvers`
-    // take effect without a restart.
-    let members = match crate::policy::approvals::load(&state.policy_ks).await {
-        Ok(model) => {
-            let from_row = model.approver_set(&require.approver_set);
-            if from_row.is_empty() {
-                state
-                    .config
-                    .read()
-                    .await
-                    .policy
-                    .approver_sets
-                    .get(&require.approver_set)
-                    .cloned()
-                    .unwrap_or_default()
-            } else {
-                from_row.to_vec()
-            }
-        }
+    let members = match approver_set_members(state, &require.approver_set).await {
+        Ok(m) => m,
         Err(e) => return Some(GateReject::Error(e)),
     };
     if members.is_empty() {
@@ -756,6 +795,85 @@ async fn mint_pending(
 mod tests {
     use super::*;
     use crate::policy::types::PolicyModule;
+
+    async fn seed_row(state: &AppState, set: &str, members: &[&str]) {
+        crate::policy::seed_declarative_approvals(
+            &state.policy_ks,
+            &[],
+            &std::collections::HashMap::from([(
+                set.to_string(),
+                members.iter().map(|m| (*m).to_string()).collect::<Vec<_>>(),
+            )]),
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .await
+        .expect("seed the declarative row");
+    }
+
+    async fn seed_config(state: &AppState, set: &str, members: &[&str]) {
+        state.config.write().await.policy.approver_sets.insert(
+            set.to_string(),
+            members.iter().map(|m| (*m).to_string()).collect(),
+        );
+    }
+
+    /// The regression. A set written to the declarative row — which is what
+    /// `pnm approvals approvers add` does — must resolve.
+    ///
+    /// The decision handler used to read `config.policy.approver_sets` alone, so
+    /// a row-only set resolved as empty there and every decision from an approver
+    /// added the documented way was denied `not_a_member`. The gate had already
+    /// raised the pending and pushed the request off the row, so the two halves
+    /// of one ceremony disagreed about who was in the set.
+    #[tokio::test]
+    async fn a_row_only_set_resolves() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        seed_row(&state, "ops", &["did:key:zApprover"]).await;
+        assert_eq!(
+            approver_set_members(&state, "ops").await.unwrap(),
+            vec!["did:key:zApprover".to_string()]
+        );
+    }
+
+    /// Config remains the fallback for a VTA whose sets are still declared there
+    /// and which has not been seeded.
+    #[tokio::test]
+    async fn a_config_only_set_still_resolves() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        seed_config(&state, "ops", &["did:key:zFromConfig"]).await;
+        assert_eq!(
+            approver_set_members(&state, "ops").await.unwrap(),
+            vec!["did:key:zFromConfig".to_string()]
+        );
+    }
+
+    /// Row-first: once the row carries the set, config no longer decides.
+    /// Otherwise removing an approver with `pnm approvals approvers remove`
+    /// would leave a stale config entry still able to approve.
+    #[tokio::test]
+    async fn the_row_wins_over_config() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        seed_config(&state, "ops", &["did:key:zStaleFromConfig"]).await;
+        seed_row(&state, "ops", &["did:key:zFromRow"]).await;
+        assert_eq!(
+            approver_set_members(&state, "ops").await.unwrap(),
+            vec!["did:key:zFromRow".to_string()],
+            "a stale config entry must not outlive the row that replaced it"
+        );
+    }
+
+    /// An unknown set is empty, not an error — the caller turns that into the
+    /// "unknown or empty" denial with the set's name in it.
+    #[tokio::test]
+    async fn an_unknown_set_is_empty() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        assert!(
+            approver_set_members(&state, "nobody")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     fn module(id: &str, priority: i32, rego: &str) -> PolicyModule {
         PolicyModule {

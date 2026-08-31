@@ -91,14 +91,21 @@ pub(crate) async fn may_attempt_ceremony(
     if type_uri != vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1 {
         return true;
     }
-    state
-        .config
-        .read()
+    // Row-first, via the one resolver the whole ceremony shares. Reading
+    // `config.policy.approver_sets` directly here — as this did — turned an
+    // approver added with `pnm approvals approvers add` away at the *transport*
+    // gate, before the decision reached a handler at all. A store error is not a
+    // membership answer, so it fails closed rather than admitting the sender.
+    super::policy_gate::is_named_approver(state, sender_did)
         .await
-        .policy
-        .approver_sets
-        .values()
-        .any(|members| members.iter().any(|m| m == sender_did))
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                error = %e,
+                "could not resolve approver sets for the ceremony transport gate; \
+                 refusing this decision"
+            );
+            false
+        })
 }
 
 /// Read just the `type` member out of a Trust-Task envelope.

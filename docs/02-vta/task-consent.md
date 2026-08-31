@@ -260,6 +260,15 @@ Approve on the device, and the re-submit goes through.
 the block is inert — see [Approvals § Seeding](./approvals.md#seeding-a-new-vta)
 for why re-reading every boot was the trap this replaced.
 
+"The row wins" holds at **every** point the ceremony asks who is in a set: the
+gate that raises the pending, the transport gate that lets a decision past the
+ACL, and the handler that accepts it. All three resolve through one function
+(`policy_gate::effective_approver_sets` — config, overridden per set name by the
+row). Until they did, only the first was row-aware, so a set added with `pnm
+approvals approvers add` raised a request that the other two then refused as
+`not_a_member`, and the only way to get a decision accepted was to also carry the
+set in `config.toml` and restart.
+
 **`vta setup --from` cannot carry them.** `WizardInputs` is
 `#[serde(deny_unknown_fields)]` with no `policy` field
 (`vta-service/src/setup/from_toml.rs:58`), so a `[policy]` section in the wizard
