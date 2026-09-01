@@ -67,6 +67,30 @@ And I4 removed most of what was left. An earlier draft invented a room-specific
 membership credential, a room-specific invitation, and a cross-community special
 case. All three were the DTG model being rebuilt badly one level down.
 
+### 1.1 What you must still trust
+
+"Zero trust" is never zero. It is trust **minimised to a named property**, and
+naming it is what lets the rest of the design be checked.
+
+| Property | Who you must trust | Why not cryptography |
+|---|---|---|
+| Confidentiality | **nobody** | Content is sealed to keys the host never holds (§6) |
+| Integrity of content | **nobody** | Records are signed; relocation and replay are bound out (§6.2) |
+| Integrity of membership | **nobody** | Credentials are issued by the room DID and verified against a self-certifying log (§3.2.1) |
+| Correctness of who is a member | the room's owner | They issue the credentials. This is I1, stated rather than hidden |
+| **Availability and non-destruction** | **whoever hosts** | A host that deletes your bytes has deleted them. There is no cryptographic defence against a host that stops serving |
+
+That last row is irreducible. Bytes live somewhere, and whoever holds them can
+drop them. Owner-hosting (§3.3) does not remove that trust, it moves it to the
+owner and adds confidentiality to what they must be trusted with (§3.3.1).
+
+So the honest claim is narrow and worth stating in exactly these terms: **you
+need not trust the host with confidentiality, integrity, or membership; you must
+trust it with availability.** Everything in §8.1 exists to bound that one
+remaining trust and make it predictable, because an unbounded promise to keep
+data forever is not one any operator can keep.
+
+
 ---
 
 ## 2. Why not the memory family
@@ -756,6 +780,62 @@ Two verbs because they are two different acts.
 *reaching* a room, not the room's continued possession of what was contributed
 to it. The alternative makes a mass departure a mass loss of shared work.
 
+### 8.1 Deciding a room is over
+
+Storage is not free and no operator can promise to hold every room forever. But
+on an encrypted room **the host is structurally the worst-placed party to judge
+whether it still matters** — it cannot read the content, and inactivity is not
+worthlessness. A dormant room may be the most valuable thing in the community: a
+decision record, an incident write-up, terms nobody has needed to reread in two
+years.
+
+So the host must never be the one deciding. **Rooms are renewed, not reaped.**
+
+**The clock already exists.** §5.3 gives epochs a mandatory maximum lifetime, so
+that stale membership decays rather than persisting (F7). That same renewal is a
+liveness signal, produced by exactly the parties competent to give it. One
+mechanism, two jobs, and no separate "is this room still wanted" machinery to
+build or to get wrong.
+
+| State | Trigger | Effect |
+|---|---|---|
+| **Live** | current epoch | Normal |
+| **Lapsed** | epoch expired, not renewed | **Read-only.** Key-holders read; nobody writes. Nothing is destroyed |
+| **Dormant** | lapsed beyond a stated period | The VTC notifies the owner (it can — I1) and posts a notice into the room for members to pull (§3.2.3) |
+| **Reclaimable** | dormant beyond the retention period, no response | Storage may be reclaimed |
+
+Four properties this has to keep:
+
+- **Stated at creation, not discovered.** The retention period is part of what a
+  room *is*, shown when it is made. A reclamation that surprises someone is a
+  failure of the design, not of the member.
+- **Driven by the clock, not by operator judgement.** The operator's role is to
+  run a policy, never to assess a room. This is what keeps the availability
+  trust in §1.1 bounded rather than discretionary.
+- **Recoverable until the last step.** Lapsed and dormant are both reversible by
+  a single renewal. Only reclamation is final.
+- **Exportable before reclamation.** A room must be evacuable — to owner-hosting
+  (§3.3), or to an encrypted archive members keep — so the members' choice is
+  *renew or take it with you*, never *renew or lose it*.
+
+**Owner absence must not silently kill a live room.** Only the owner mints
+epochs (F5), so a room full of active members whose owner has vanished would
+lapse and eventually be reclaimed. Two answers, and both already exist: the
+nominated successor claims ownership (§9), or **the k-of-n quorum from §9.1 may
+renew an epoch when the owner is unreachable.** The quorum is already the
+mechanism for acting when one party cannot; extending it to renewal costs
+nothing and does not weaken F5, because a quorum is not "any member".
+
+**Where the VTC stores nothing, none of this is its business.** On an
+owner-hosted room (§3.3) lifecycle is wholly the owner's, which is the other
+half of what owner-hosting buys and costs.
+
+**Read activity counts as liveness.** On `private` the VTC sees that *someone*
+read, just not who — enough. A room that is actively read and never written is
+alive, and treating write activity as the only signal would reap exactly the
+archives §8.1 opens by defending.
+
+
 ---
 
 ## 9. Ownership and succession
@@ -772,7 +852,9 @@ which is what issues every VIC, VMC and VAC in the room (§5.0).
   I4 bought: the previous model had the new owner reissuing every membership
   credential under their own key at a fresh epoch.
 - **Nominated successor.** The owner may name a successor who can *claim*
-  ownership if the owner's membership lapses. Claiming is explicit — an
+  ownership if the owner's membership lapses. Load-bearing for liveness as well
+  as administration: only the owner mints epochs, so an absent owner is a room
+  that lapses (§8.1). Claiming is explicit — an
   automatic promotion would move an accountable role onto someone who may not
   know they hold it.
 - **No successor, owner gone.** The room freezes: existing key-holders read, no
