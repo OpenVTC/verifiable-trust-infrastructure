@@ -23,7 +23,9 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use serde_json::Value;
 use trust_tasks_https::status_for_code;
-use trust_tasks_rs::{ErrorPayload, ErrorResponse, RejectReason, TrustTask, TypeUri};
+use trust_tasks_rs::{
+    ErrorPayload, ErrorResponse, RejectReason, TrustTask, TrustTaskCode, TypeUri,
+};
 use uuid::Uuid;
 use vti_common::error::AppError;
 
@@ -107,10 +109,81 @@ pub(crate) fn app_error_to_reject(doc: &TrustTask<Value>, err: &AppError) -> Tru
     reject_with(doc, reason)
 }
 
+/// Framework 0.5.0, *Bounding `details`*: where a specification declares no
+/// bound, 4096 bytes of JCS and 16 immediate members apply.
+const DETAILS_MAX_JCS_BYTES: usize = 4096;
+/// Companion to [`DETAILS_MAX_JCS_BYTES`].
+const DETAILS_MAX_MEMBERS: usize = 16;
+
+/// Drop a `details` annex that exceeds the framework's bound, keeping the code.
+///
+/// Twin of `vta-service`'s function of the same name and deliberately identical
+/// — the bound is a framework rule, not a per-service policy, so the two must
+/// not drift into different ideas of how much a rejection may carry.
+///
+/// An oversized `details` is **ignored, never grounds to discard the `code`**:
+/// the code is what the receiving party actually needs, and dropping a whole
+/// rejection because its annex was too long would turn a verbose explanation
+/// into an unexplained failure.
+fn bound_details(details: Option<Value>) -> Option<Value> {
+    let details = details?;
+    let too_many_members = details
+        .as_object()
+        .is_some_and(|o| o.len() > DETAILS_MAX_MEMBERS);
+    let too_large = serde_json_canonicalizer::to_string(&details)
+        .map(|jcs| jcs.len() > DETAILS_MAX_JCS_BYTES)
+        // Uncanonicalisable is worse than oversized: it cannot be bounded, so
+        // it does not go out.
+        .unwrap_or(true);
+    if too_many_members || too_large {
+        tracing::warn!(
+            members = details.as_object().map(serde_json::Map::len),
+            "error `details` exceeds the framework bound and was dropped; the code still went out"
+        );
+        return None;
+    }
+    Some(details)
+}
+
 /// Build a routed rejection document for the given reason. The framework
 /// computes the status code from the reject's standard code.
 pub(crate) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> TrustTaskOutcome {
+    // Bound `details` here rather than at each construction site: this is the
+    // funnel every `RejectReason`-shaped rejection passes through, so a new
+    // site cannot be added that skips the check.
+    let reason = match reason {
+        RejectReason::TaskFailed { reason, details } => RejectReason::TaskFailed {
+            reason,
+            details: bound_details(details),
+        },
+        other => other,
+    };
     let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), reason);
+    error_response(routed)
+}
+
+/// Reject with an explicit [`TrustTaskCode`] and a `details` annex.
+///
+/// [`RejectReason`] carries `details` on `TaskFailed` alone, so a rejection
+/// under any other standard code has no way to attach machine-readable data
+/// through [`reject_with`]. The framework itself is not the limitation:
+/// `ErrorPayload::new` takes any code and `TrustTask::reject_with` takes a
+/// payload. This is the seam between the two, and the twin of `vta-service`'s
+/// helper of the same name.
+///
+/// `details` passes through [`bound_details`] exactly as in [`reject_with`], so
+/// this cannot become the construction site that skips the framework's bound.
+pub(crate) fn reject_with_code(
+    doc: &TrustTask<Value>,
+    code: TrustTaskCode,
+    message: impl Into<String>,
+    details: Option<Value>,
+) -> TrustTaskOutcome {
+    let mut payload = ErrorPayload::new(code).with_message(message);
+    if let Some(d) = bound_details(details) {
+        payload = payload.with_details(d);
+    }
+    let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
     error_response(routed)
 }
 
