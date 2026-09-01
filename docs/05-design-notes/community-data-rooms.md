@@ -282,6 +282,44 @@ Stated plainly so nobody has to discover it:
 A community whose adversary defeats `private` through any of these wants §10,
 not a fourth tier.
 
+### 5.6 Cross-community rooms
+
+**In scope for v1**, and cheaper than it looks, because the owner-issued
+credential already does the work.
+
+A membership proof verifies against the **owner's** issuer key, not the
+community's. So on `private` the VTC cannot tell a foreign member from a local
+one — the question does not arise, because the proof discloses no DID to check
+against a roster. Cross-community rooms are free at the tier where they would
+have been hardest.
+
+On `open` and `attributed`, `memberDid` is disclosed, so the VTC sees a foreign
+DID and needs a rule. That is what §4's `crossCommunity` and `foreign` policy
+inputs are for, and §8.4 recognition supplies the standing check.
+
+Four things follow, and three of them are limits:
+
+- **The room lives on the owner's VTC.** The other community holds no copy, so
+  its members depend on the owner's community for availability. Say so at
+  invitation time.
+- **A foreign member's room access is not tied to their home standing.** §8.4
+  re-verifies recognition per session and refuses to refresh, precisely so a
+  peer community's removal costs access. The room credential knows nothing about
+  that: a member removed at home keeps room access until the owner rotates the
+  epoch. This is F7 in a new place, and the mandatory maximum epoch lifetime
+  (§5.3) is what bounds it. An owner's client re-checking foreign members'
+  standing and rotating early is a worthwhile refinement, not a requirement.
+- **The other community cannot prevent it.** A community can forbid its members
+  *creating* rooms, and cannot stop them *joining* a foreign private room — it
+  has no visibility into a room hosted elsewhere whose proofs disclose nothing.
+  A community whose policy depends on that prohibition is relying on something
+  the architecture does not provide, and should be told rather than left to
+  assume.
+- **Epochs are per room, not per community.** A single owner issues to everyone,
+  which is what keeps this simple; it also means the owner is trusted by members
+  of a community they do not belong to. That is the same trust a room owner
+  always holds, extended across a boundary — worth surfacing in the invitation.
+
 ---
 
 ## 6. Keys, custody, and records
@@ -442,12 +480,60 @@ credential in the room (§5.1).
 The owner being the sole issuer makes succession load-bearing: an unreachable
 owner is a room whose membership can no longer change.
 
-**Which credential type this is** is open (§12.4). §3-C limits credentials to
-the DTG catalog and sends new needs upstream to `dtg-credentials` rather than
-local extension. A member-issued room membership credential fits the pattern the
-VTC already models for VRCs — *the issuer of every stored row is a current
-community member* — but whether it is a custom endorsement type or a new catalog
-entry is a question for that repository, not this one.
+### 9.1 Recovery: a k-of-n re-admission quorum
+
+A member loses their VTA. They no longer hold the room key, and the VTC holds
+only ciphertext.
+
+**The fix is a threshold of members, but not a threshold *secret*.** Shamir
+shares were the obvious construction and they buy nothing here: splitting the
+room key assumes no single party holds it, and every member holds it outright —
+they must, to decrypt. The shares would also sit in the same VTAs that were
+lost. What actually needs splitting is not the secret but the **authority to
+re-issue it**.
+
+So: **any k of the room's n members can jointly authorise re-sealing the current
+epoch's room key to a returning member's restored VTA.** Each approval is a
+signed statement naming the returning member's new key; the owner (or the VTC,
+on presentation of k approvals) completes the re-seal. No new cryptography —
+this is a quorum over an operation the owner already performs at every epoch.
+
+- **Identity is the hard part, not the key.** k members are attesting *this is
+  the same person*, which is a human judgement made out of band, not something
+  the protocol establishes. The UI must say that plainly, because k colluding or
+  careless members can admit an impostor. This is the same problem §10.5 DID
+  rotation already has, and it should reuse whatever answer that has.
+- **k is per-room, set at creation**, and `2` is a bad default for a
+  three-person room. The policy in §4 should be able to floor it.
+- **Room-list recovery falls out of the same mechanism.** A member who has lost
+  everything cannot enumerate their rooms (§12.2) — but the members who
+  re-admit them tell them the room exists. Recovery is social, and that is not a
+  weakness given the members are the only parties who know.
+
+**Total loss stays total.** If every member's VTA is gone, no quorum exists and
+the room is unrecoverable. The operator holds bytes and cannot help. This is the
+irreducible cost of the guarantee and belongs in the UI at room creation, not in
+a footnote — a community should choose `attributed` knowing it.
+
+**The membership credential is a new DTG catalog entry**, authored upstream in
+`dtgwg-cred-spec` before this ships. §3-C limits credentials to the DTG catalog
+and sends new needs upstream rather than allowing local extension, and the
+tempting shortcut — filing it as a community-defined *custom endorsement type*,
+which the VTC already supports and which would need no upstream work — is
+wrong on the merits. This is not an endorsement. An endorsement is a statement
+about someone; this confers a capability, and putting it in the endorsement slot
+would blur a distinction the catalog has been careful about.
+
+Member-issued is not the novel part — the VTC already models member-issued
+credentials for VRCs (*the issuer of every stored row is a current community
+member*). What is novel is that it grants rather than asserts.
+
+**Worth deciding in that PR, not here:** whether this is the first concrete
+instance of the authority-shaped credential the VAC name was reserved for, or
+something narrower that should not claim it. The distinction that reservation
+was protecting — *delegation is not authority* — is exactly the one this
+credential sits on, so it should be settled deliberately rather than by whatever
+the first implementation happens to call itself.
 
 ---
 
@@ -475,6 +561,16 @@ guarantee §5.5 says it does not have.
 
 ## 11. Sequence
 
+**Two upstream repositories gate this, not one.** The membership credential
+(§9) needs a `dtgwg-cred-spec` PR before the Trust Task schemas can reference
+it, and that repository takes DCO sign-off and lands through a personal fork.
+It is the long pole and should start first — the schema work in step 1 can
+proceed in parallel once the credential's shape is agreed, but cannot merge
+citing a catalog entry that does not exist.
+
+0. **Author the membership credential** in `dtgwg-cred-spec`. Settle in that PR
+   whether it is the authority-shaped credential the VAC name was reserved for
+   or something narrower (§9).
 1. **Author the schemas upstream** in `trustoverip/dtgwg-trust-tasks-tf`:
    `spec/vtc/rooms/{create,get,list,transfer,close}/0.1`,
    `spec/vtc/rooms/records/{put,get,list,delete,purge}/0.1`,
@@ -501,12 +597,17 @@ guarantee §5.5 says it does not have.
    against the existing `bbs` verifier. Deliberately last and deliberately
    small: if steps 1–5 are right, this is a presentation-mode change and a
    feature flag, not a new subsystem.
-7. **`vtc-client` + `vta-agent-memory`** — §13.
+7. **Cross-community** (§5.6) — free on `private`, and on the disclosed tiers a
+   `rooms.rego` rule plus the §8.4 recognition check. Lands with step 5, not
+   after it.
+8. **k-of-n recovery quorum** (§9.1) — a signed-approval collection and a
+   re-seal. Needs step 5's epoch machinery and nothing else.
+9. **`vtc-client` + `vta-agent-memory`** — §13.
 
-Steps 1–2 are in another repository and on another team's cadence. Budget a
-correction round: `appstate-store.md` records that implementing found two spec
-defects and one design error in that note, and calls "specify, then implement,
-then correct the spec" the honest shape of it.
+Steps 0–2 are in other repositories on other cadences. Budget a correction
+round: `appstate-store.md` records that implementing found two spec defects and
+one design error in that note, and calls "specify, then implement, then correct
+the spec" the honest shape of it.
 
 **Settle before step 1, not during it:** F3 (the VTA opens records rather than
 releasing keys) is architectural and becomes a breaking change to every room
@@ -544,25 +645,25 @@ rows with empty `capabilities` already fall back to the derived mapping.
 
 ## 12. Still open
 
-1. **Key escrow, and what a VTC backup is worth.** The largest unresolved risk.
-   A backup of an encrypted room restores ciphertext; if every member loses
-   their VTA the room is gone and the operator cannot help. Must be answered
-   before `attributed` ships.
-   **One constraint is settled (F14):** any community- or operator-held escrow
-   makes the escrow holder able to read every room, which deletes the tier's
-   guarantee. If escrow is adopted it must be **member-threshold** — k-of-n
-   shares across room members — never a key one party holds. Recorded because
-   the obvious implementation is what someone reaches for under recovery
-   pressure.
-2. **Room-list recovery.** A member restoring a VTA from a backup predating a
-   room has no way to learn the room exists. Related to (1).
+Four earlier entries are now settled and have moved into the design: recovery
+(§9.1, a k-of-n re-admission quorum rather than the split secret it looked
+like), the credential's catalog status (§9, a new DTG entry), the default-ship
+policy (§4, `open` + `attributed`), and cross-community rooms (§5.6, in v1).
+What remains:
+
+1. **Whether this credential is the VAC** (§9), or something narrower that
+   should not claim the name. To be settled in the `dtgwg-cred-spec` PR, and
+   the one open item that gates the sequence.
+2. **Identity assurance in the recovery quorum** (§9.1). k members attest that a
+   returning member is the same person; the protocol does not establish it, and
+   §10.5 DID rotation has the same problem. Whatever answer that has should be
+   reused rather than reinvented here, and this note does not know what it is.
 3. **Anonymous rate limiting on `private`** (§5.4) — whether room-level caps
-   suffice, or a nullifier scheme is eventually warranted.
-4. **Which credential type the membership credential is** (§9) — a question for
-   `dtg-credentials`, under §3-C.
-5. **Curation semantics.** `deprecated` versus `retracted` is asserted, not
+   suffice, or a nullifier scheme is eventually warranted. Revisit if `private`
+   sees real use.
+4. **Curation semantics.** `deprecated` versus `retracted` is asserted, not
    argued; pinning, review and supersession edges probably arrive from use.
-6. **The family name.** `vtc/rooms` is a spec slug. The product name is a
+5. **The family name.** `vtc/rooms` is a spec slug. The product name is a
    separate decision under the Affinidi `Agent[Capability]` house style.
 
 ---

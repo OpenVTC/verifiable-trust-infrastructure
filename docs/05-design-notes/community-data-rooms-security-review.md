@@ -35,7 +35,7 @@ helped to leave rather than sold a tier that cannot deliver.
 | F11 | Anonymous quota exhaustion | **Partly.** BBS+ gives no nullifier, so no anonymous per-member limit. Room-level caps for v1; note §5.4 keeps it open |
 | F12 | Owner as correlation seed | **Withdrawn.** Invariant I1 makes the owner known by decision; the tension it described is gone |
 | F13 | Read log is a privacy artifact | **Fixed.** Separate retention policy for room read events; actorless option |
-| F14 | Escrow inverts the guarantee | **Constraint recorded.** Escrow, if adopted, must be member-threshold |
+| F14 | Escrow inverts the guarantee | **Resolved without escrow.** A k-of-n quorum re-authorises a re-seal (note §9.1). No party holds a recoverable copy, so there is nothing to invert |
 | F15 | Traffic analysis | **Accepted, documented** in note §5.5 |
 | F16 | Automated reads defeat anomaly detection | **Accepted, documented** in note §7 |
 | F17 | Cross-room contamination | **Mitigated via F8** |
@@ -48,9 +48,16 @@ credential the owner issues and a proof the VTC can verify but not
 correlate removed the class, not the instances.
 
 The remaining live work is **F8** (client-side, independent), **F11**
-(accepted for v1, revisit if `private` sees real use), **F14** plus the
-escrow question in note §12.1, and **F4** as a documented boundary rather
-than a defect.
+(accepted for v1, revisit if `private` sees real use), and **F4** as a
+documented boundary rather than a defect.
+
+**One new surface this review has not examined.** Cross-community rooms
+(note §5.6) and the k-of-n recovery quorum (note §9.1) were both added
+after it was written. The quorum in particular deserves its own pass: it
+is a path by which k members can admit a party to a room, and the
+protocol does not establish that the admitted party is who the quorum
+believes. That is called out in the note as open, but "called out" is not
+"reviewed".
 
 ## Threat model
 
