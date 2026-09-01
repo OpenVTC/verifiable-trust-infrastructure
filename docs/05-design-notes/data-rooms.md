@@ -656,6 +656,26 @@ today's personal memory. And the `MemoryRead`/`MemoryWrite` capability split
 on `vta/memory` (the published spec already assumes it; the implementation
 gates only on context).
 
+### 12.1 In flight
+
+| Step | Where | State |
+|---|---|---|
+| This design set | `verifiable-trust-infrastructure` #1233 | open |
+| **F8** — untrusted-content fencing | `vta-agent-memory` #13 | open |
+| `MemoryRead`/`MemoryWrite` | `verifiable-trust-infrastructure` #1234 | open |
+| **VAC** (§1 of the sequence) | `trustoverip/dtgwg-cred-spec` #29 | open |
+| `Capability` enum reconciliation | `dtgwg-trust-tasks-tf` | in progress |
+
+Two things the implementation work surfaced that the note had not:
+
+- **The registry's `Capability` enum was already behind the workspace**, missing
+  `sign-trust-task` and `credential-write` before this design added two more.
+  The reconciliation PR carries all four rather than widening the gap.
+- **The two published `device/_shared` versions disagree on casing** — 0.1 is
+  kebab-case (which `vti_common::acl::Capability` implements) and 0.2 is
+  camelCase. Additive values go into both in their own convention; the casing
+  divergence is a separate question for whoever owns device bindings.
+
 ---
 
 ## 13. The client
