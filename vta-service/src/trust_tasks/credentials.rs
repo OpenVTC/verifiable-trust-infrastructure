@@ -146,7 +146,6 @@ pub(super) async fn handle_revoke(
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 /// Handler for `spec/vta/credentials/list/0.1`.
 ///
 /// ## Why this is gated differently from its siblings
@@ -206,6 +205,7 @@ pub(super) async fn handle_list(
     success_response(&doc, page)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[cfg(test)]
 mod tests {
     use super::*;
