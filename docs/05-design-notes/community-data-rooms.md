@@ -117,9 +117,13 @@ Different store, different family: `vtc/rooms/*`.
 
 The VTC already stores **VRCs** — member-issued relationship credentials, one
 row per edge, indexed by DID for issuer and subject
-(`vtc-service/src/relationships/`). A pairwise room is the storage projection of
-a relationship the community already models, and creating one should be a single
-action from that edge.
+(`vtc-service/src/relationships/`). Under I4 a pairwise room is *not* the VRC
+edge itself — it is a node both parties hold VMCs to — but the VRC is where such
+a room naturally starts: two people with a relationship edge should be able to
+stand up a room between them in one action from it, and a VRC needs no
+community at all (the DTG spec is explicit that community membership is not a
+precondition for holding one). That is what makes topology 4 in §1.2 ordinary
+rather than special.
 
 ---
 
@@ -153,7 +157,7 @@ One axis: how much the VTC can see. Each rung gives up exactly one thing.
 | Server-side search | ✅ | ❌ | ❌ |
 | Per-member access log at the VTC | ✅ | ✅ | ❌ |
 | Per-member rate limiting | ✅ | ✅ | ❌ (§5.4) |
-| Recoverable from a VTC backup alone | ✅ | ❌ | ❌ (§12.1) |
+| Recoverable from the host's backup alone | ✅ | ❌ | ❌ (§12.1) |
 
 **`open`** — cleartext at rest, gated by `VtcRole` plus policy, fully searchable
 and fully audited. Right for community reference material where the operator
@@ -598,14 +602,16 @@ Stated plainly so nobody has to discover it:
   from the same VTA. An operator denied the membership list at the VTC reads it
   off the mediator. Per I2, the VTC does not defend against an adversary who
   also runs the transport.
-- **Network origin.** A read from a member's IP or TLS session re-links it to a
-  person regardless of what the proof withholds.
+- **Network origin — unless routed.** A direct REST read from a member's IP or
+  TLS session re-links it to a person regardless of what the proof withholds.
+  §3.2.3's mitigation — traffic addressed to the room DID through a mediator —
+  covers members who use it; the tier cannot force them to.
 - **Traffic analysis (F15).** Record sizes and write timing leak document shape
   and collaboration rhythm even with everything sealed.
 - **The owner.** By design (I1).
 
-A community whose adversary defeats `private` through any of these wants §10,
-not a fourth tier.
+A room whose adversary defeats `private` through any of these wants a different
+host (§3.3, §10), not a fourth tier.
 
 ### 5.6 Cross-community rooms
 
