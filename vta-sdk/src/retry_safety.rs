@@ -385,6 +385,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // and unknown to the holder.
     (trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_0_2, Keyed),
     (trust_tasks::TASK_VTA_CREDENTIALS_REVOKE_0_1, RetrySafe),
+    // A read, like `acl/list` and `policy/list`. No durable effect, nothing to
+    // dedup, and `status` is derived at read time — so a retry is not merely
+    // safe, it is the way to get a fresher answer.
+    (trust_tasks::TASK_VTA_CREDENTIALS_LIST_0_1, ReadOnly),
     // ── Memory ──────────────────────────────────────────────────────────
     (trust_tasks::TASK_VTA_MEMORY_PUT_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_MEMORY_LIST_0_1, ReadOnly),

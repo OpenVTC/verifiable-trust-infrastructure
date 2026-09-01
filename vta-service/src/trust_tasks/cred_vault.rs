@@ -17,6 +17,12 @@
 //!   presentation. Not-found is conflated with permission-denied to deny
 //!   enumeration.
 
+// The wire shapes below are `pub(super)` so the conformance table can build a
+// witness from them. That table is what proves this slice's structs and the
+// published `vault/credentials/*` schemas agree, and it could not reach them
+// while they were private — which is why the family went unchecked for as long
+// as it had no specification to be checked against.
+
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
@@ -62,9 +68,9 @@ fn require_cap(
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ReceiveBody {
+pub(super) struct ReceiveBody {
     /// The credential to store — a Data-Integrity W3C VC (object form, with its
     /// own `proof`).
     ///
@@ -72,58 +78,58 @@ struct ReceiveBody {
     /// instead. Exactly one of the two must be present; a body carrying neither,
     /// or both, is rejected. Existing clients send this field alone and are
     /// unaffected.
-    #[serde(default)]
-    credential: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) credential: Option<Value>,
     /// A binary credential, base64url-no-pad. Required when `format` names a
     /// binary format (today: `mso_mdoc`, CBOR `IssuerSigned`), which cannot be
     /// carried as JSON.
-    #[serde(default)]
-    credential_base64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) credential_base64: Option<String>,
     /// Wire format tag. Absent means a Data-Integrity W3C VC — the shape every
     /// existing client sends — so omitting it keeps the current behaviour
     /// exactly.
-    #[serde(default)]
-    format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) format: Option<String>,
     /// Optional explicit storage id; defaults to the VC's top-level `id`, else a
     /// fresh `urn:uuid`.
-    #[serde(default)]
-    id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) id: Option<String>,
     /// Optional custody context override — which context owns the credential
     /// (and whose `ContextPolicy` governs its disclosure). Must be a context the
     /// caller can access. When omitted, the credential auto-binds to the caller's
     /// context iff they have exactly one; a super-admin / multi-context caller
     /// stores it unscoped.
-    #[serde(default)]
-    context_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) context_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ReceiveResponse {
-    id: String,
-    types: Vec<String>,
+pub(super) struct ReceiveResponse {
+    pub(super) id: String,
+    pub(super) types: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    purpose: Option<CredentialPurpose>,
-    status: CredentialStatus,
+    pub(super) purpose: Option<CredentialPurpose>,
+    pub(super) status: CredentialStatus,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct QueryResponse {
-    credentials: Vec<CredentialDescriptor>,
+pub(super) struct QueryResponse {
+    pub(super) credentials: Vec<CredentialDescriptor>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GetBody {
-    id: String,
+pub(super) struct GetBody {
+    pub(super) id: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GetResponse {
+pub(super) struct GetResponse {
     /// The stored credential's full body, for presentation.
-    credential: Value,
+    pub(super) credential: Value,
 }
 
 /// Handler for `spec/vault/credentials/receive/0.1`.
@@ -470,25 +476,43 @@ pub(super) async fn handle_get(
 /// (`archive` / `unarchive` / `delete` / `restore` / `purge`). `reason` is
 /// lifted into the audit row's `detail` by the dispatch spine; `force` is
 /// honoured only by `delete` (skip the grace window → immediate hard delete).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CredLifecycleBody {
-    id: String,
-    #[serde(default)]
+pub(super) struct CredLifecycleBody {
+    pub(super) id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[allow(dead_code)] // read generically by the spine for the audit `detail`
-    reason: Option<String>,
-    #[serde(default)]
-    force: bool,
+    pub(super) reason: Option<String>,
+}
+
+/// `delete`'s body — the one lifecycle verb with a forced form.
+///
+/// Split from [`CredLifecycleBody`] rather than sharing it with a `force` the
+/// other four ignore. Sharing was not merely untidy: `archive`, `unarchive`,
+/// `restore` and `purge` all *accepted* `force` and silently dropped it, so a
+/// caller asking for something stronger than the verb it named got the weaker
+/// thing and a success. Their published schemas declare no such member, and now
+/// neither do their types — the request is refused instead.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct CredDeleteBody {
+    pub(super) id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)] // read generically by the spine for the audit `detail`
+    pub(super) reason: Option<String>,
+    /// Erase immediately rather than tombstoning. Irrecoverable.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) force: bool,
 }
 
 /// Post-transition view for archive / unarchive / delete / restore.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CredLifecycleResponse {
-    id: String,
-    lifecycle: VaultStatus,
+pub(super) struct CredLifecycleResponse {
+    pub(super) id: String,
+    pub(super) lifecycle: VaultStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    grace_until: Option<String>,
+    pub(super) grace_until: Option<String>,
 }
 
 /// `not_found` rejection for a missing credential id on a lifecycle verb.
@@ -619,7 +643,7 @@ pub(super) async fn handle_delete(
     if let Err(r) = require_cap(auth, &doc, Capability::CredentialWrite, "delete") {
         return r;
     }
-    let req: CredLifecycleBody = match parse_payload(&doc) {
+    let req: CredDeleteBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };

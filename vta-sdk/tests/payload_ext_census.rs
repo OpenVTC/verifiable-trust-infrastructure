@@ -59,7 +59,17 @@ use syn::{Fields, Item, ItemStruct, Meta};
 /// for this type — not that adding the field is inconvenient. A type whose
 /// schema has one, listed here, re-opens the defect this file exists to
 /// prevent.
-const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[];
+const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[(
+    "IssuedCredentialSummary",
+    "`vault`-style list row, not a payload root. \
+     `vta/credentials/list/0.1`'s published schema closes \
+     `IssuedCredentialSummary` with `additionalProperties: false` and declares \
+     no `ext` slot on it — SPEC §4.5.1 gives the slot to the payload, which \
+     this type is a member of rather than being. So no conforming producer can \
+     send one here, and adding the field would let this crate emit a document \
+     the schema rejects: the opposite of the defect this census exists to \
+     prevent. Revisit only if that schema gains the slot.",
+)];
 
 /// One `deny_unknown_fields` type that would reject a conforming `ext`.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]

@@ -438,15 +438,21 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
         1,
         "framework error envelope — a response type, not a task; absent from the task index by design",
     ),
-    // The vault + credential-store archival lifecycle (PR #540): archive,
-    // unarchive, restore, purge over both stores. Authored as local
-    // "openvtc 0.1 extensions" and never taken upstream, so each claims a
-    // `trusttasks.org/spec/vault/` ID the registry does not serve. The registry
-    // publishes vault {delete,get,list,proxy-login,release,sign-trust-task,
-    // sync,upsert,usage} — and none of these.
+    // The vault archival lifecycle (PR #540): archive, unarchive, restore,
+    // purge. Authored as local "openvtc 0.1 extensions" and never taken
+    // upstream, so each claims a `trusttasks.org/spec/vault/` ID the registry
+    // does not serve.
+    //
+    // 12 -> 4: the credential-store half of that lifecycle is no longer debt.
+    // The whole `vault/credentials/*` family — receive, query, get, and its
+    // four lifecycle verbs — was specified upstream
+    // (trustoverip/dtgwg-trust-tasks-tf#338) and ships in trust-tasks-rs
+    // 0.17.4, so those eight URIs now resolve against the registry that serves
+    // them. What is left is the four *secrets*-store verbs, which still have
+    // no spec.
     (
         "https://trusttasks.org/spec/vault/",
-        12,
+        4,
         "vault + credential-store archival lifecycle (#540) — never authored upstream",
     ),
     // The bulk of the VTA's own Trust Task surface at 1.0 — keys, contexts,

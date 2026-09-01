@@ -99,6 +99,9 @@ use trust_tasks_rs::specs;
 use trust_tasks_rs::validate::ValidatedPayload;
 use vta_sdk::trust_tasks as uris;
 
+use crate::trust_tasks::cred_vault;
+use crate::vault::model::{CredentialPurpose, CredentialStatus};
+use crate::vault::query::{CredentialDescriptor, CredentialQuery};
 use vta_sdk::acl::ContextDirection;
 use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 use vta_sdk::protocols::acl_management::change_role::ChangeRoleBody;
@@ -128,7 +131,8 @@ use vta_sdk::protocols::credential_exchange::{
     PendingPresentationSummary, PresentBody, RequestedCredentialSummary,
 };
 use vta_sdk::protocols::credentials_issuance::{
-    IssueCredentialBody, IssueCredentialResponse, RevokeCredentialBody, RevokeCredentialResponse,
+    IssueCredentialBody, IssueCredentialResponse, IssuedCredentialStatus, IssuedCredentialSummary,
+    ListCredentialsBody, ListCredentialsResponse, RevokeCredentialBody, RevokeCredentialResponse,
 };
 use vta_sdk::protocols::device_management::{
     DeviceDisableBody, DeviceHeartbeatBody, DeviceRegisterBody, DeviceSetWakeBody, DeviceWipeBody,
@@ -169,6 +173,7 @@ use vta_sdk::protocols::vta_management::get_config::{
 use vta_sdk::protocols::vta_management::update_config::{
     RejectedKey, UpdateConfigBody, UpdateConfigResultBody,
 };
+use vti_common::vault::VaultStatus;
 
 use super::dispatched_uris;
 
@@ -1416,6 +1421,213 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(RevokeCredentialResponse {
                     credential_id: "cred-1".into(),
                     revoked_at: TS.into(),
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_CREDENTIALS_LIST_0_1,
+            checked!(
+                specs::vta::credentials::list::v0_1::Payload,
+                specs::vta::credentials::list::v0_1::Response,
+                // Every filter set at once: the members are AND-combined, and a
+                // witness that set one would not prove the others reach the
+                // wire under their canonical spellings.
+                to_v(ListCredentialsBody {
+                    holder: Some("did:key:z6MkSubject".into()),
+                    credential_type: Some("MembershipCredential".into()),
+                    status: Some(IssuedCredentialStatus::Active),
+                    page_size: Some(50),
+                    cursor: Some("cred:cred-1".into()),
+                    ext: None,
+                }),
+                // Two rows on purpose, one of each shape: the revocation
+                // members are `skip_serializing_if` and an all-active fixture
+                // would never carry them, so the response schema's optional
+                // half would go unexercised.
+                to_v(ListCredentialsResponse {
+                    credentials: vec![
+                        IssuedCredentialSummary {
+                            credential_id: "cred-1".into(),
+                            holder: "did:key:z6MkSubject".into(),
+                            credential_type: Some("MembershipCredential".into()),
+                            issued_at: TS.into(),
+                            expires_at: TS.into(),
+                            status: IssuedCredentialStatus::Active,
+                            revoked_at: None,
+                            revocation_reason: None,
+                        },
+                        IssuedCredentialSummary {
+                            credential_id: "cred-2".into(),
+                            holder: "did:key:z6MkSubject".into(),
+                            credential_type: None,
+                            issued_at: TS.into(),
+                            expires_at: TS.into(),
+                            status: IssuedCredentialStatus::Revoked,
+                            revoked_at: Some(TS.into()),
+                            revocation_reason: Some("role ended".into()),
+                        },
+                    ],
+                    truncated: true,
+                    cursor: Some("cred:cred-2".into()),
+                    ext: None,
+                })
+            ),
+        ),
+        // ─── vault/credentials ───────────────────────────────────
+        //
+        // Dispatched by `cred_vault` since before the family had a
+        // specification. Specifying it (trust-tasks-tf#338) is what made these
+        // URIs *published*, and therefore what made this sweep able to see
+        // them — until then the slice's structs were checked against nothing.
+        (
+            uris::TASK_VAULT_CREDENTIALS_RECEIVE_0_1,
+            checked!(
+                specs::vault::credentials::receive::v0_1::Payload,
+                specs::vault::credentials::receive::v0_1::Response,
+                to_v(cred_vault::ReceiveBody {
+                    credential: Some(json!({
+                        "@context": ["https://www.w3.org/ns/credentials/v2"],
+                        "type": ["VerifiableCredential", "MembershipCredential"],
+                    })),
+                    credential_base64: None,
+                    format: None,
+                    id: Some("cred-1".into()),
+                    context_id: Some("ctx-a".into()),
+                }),
+                to_v(cred_vault::ReceiveResponse {
+                    id: "cred-1".into(),
+                    types: vec!["VerifiableCredential".into(), "MembershipCredential".into()],
+                    purpose: Some(CredentialPurpose::Membership),
+                    status: CredentialStatus::Valid,
+                })
+            ),
+        ),
+        (
+            uris::TASK_VAULT_CREDENTIALS_QUERY_0_1,
+            checked!(
+                specs::vault::credentials::query::v0_1::Payload,
+                specs::vault::credentials::query::v0_1::Response,
+                // Every filter plus both modifiers: the modifiers are
+                // `skip_serializing_if` on a bool, so a fixture leaving them
+                // false would never put them on the wire to be checked.
+                to_v(CredentialQuery {
+                    r#type: Some("MembershipCredential".into()),
+                    community_did: Some("did:web:community.example".into()),
+                    issuer_did: Some("did:web:issuer.example".into()),
+                    purpose: Some(CredentialPurpose::Membership),
+                    status: Some(CredentialStatus::Valid),
+                    include_archived: true,
+                    include_deleted: true,
+                }),
+                to_v(cred_vault::QueryResponse {
+                    credentials: vec![CredentialDescriptor {
+                        id: "cred-1".into(),
+                        types: vec!["VerifiableCredential".into()],
+                        issuer_did: Some("did:web:issuer.example".into()),
+                        purpose: Some(CredentialPurpose::Membership),
+                        status: CredentialStatus::Valid,
+                        lifecycle: VaultStatus::Active,
+                        valid_from: Some(TS.into()),
+                        valid_until: Some(TS.into()),
+                        archived_at: None,
+                        deleted_at: None,
+                        grace_until: None,
+                    }],
+                })
+            ),
+        ),
+        (
+            uris::TASK_VAULT_CREDENTIALS_GET_0_1,
+            checked!(
+                specs::vault::credentials::get::v0_1::Payload,
+                specs::vault::credentials::get::v0_1::Response,
+                to_v(cred_vault::GetBody { id: "cred-1".into() }),
+                to_v(cred_vault::GetResponse {
+                    credential: json!({
+                        "@context": ["https://www.w3.org/ns/credentials/v2"],
+                        "type": ["VerifiableCredential"],
+                    }),
+                })
+            ),
+        ),
+        (
+            uris::TASK_VAULT_CREDENTIALS_ARCHIVE_0_1,
+            checked!(
+                specs::vault::credentials::archive::v0_1::Payload,
+                specs::vault::credentials::archive::v0_1::Response,
+                to_v(cred_vault::CredLifecycleBody {
+                    id: "cred-1".into(),
+                    reason: Some("holder offboarded".into()),
+                }),
+                to_v(cred_vault::CredLifecycleResponse {
+                    id: "cred-1".into(),
+                    lifecycle: VaultStatus::Archived,
+                    grace_until: None,
+                })
+            ),
+        ),
+        (
+            uris::TASK_VAULT_CREDENTIALS_UNARCHIVE_0_1,
+            checked!(
+                specs::vault::credentials::unarchive::v0_1::Payload,
+                specs::vault::credentials::unarchive::v0_1::Response,
+                to_v(cred_vault::CredLifecycleBody {
+                    id: "cred-1".into(),
+                    reason: Some("holder offboarded".into()),
+                }),
+                to_v(cred_vault::CredLifecycleResponse {
+                    id: "cred-1".into(),
+                    lifecycle: VaultStatus::Active,
+                    grace_until: None,
+                })
+            ),
+        ),
+        (
+            uris::TASK_VAULT_CREDENTIALS_DELETE_0_1,
+            checked!(
+                specs::vault::credentials::delete::v0_1::Payload,
+                specs::vault::credentials::delete::v0_1::Response,
+                to_v(cred_vault::CredDeleteBody {
+                    id: "cred-1".into(),
+                    reason: Some("holder offboarded".into()),
+                    force: true,
+                }),
+                to_v(cred_vault::CredLifecycleResponse {
+                    id: "cred-1".into(),
+                    lifecycle: VaultStatus::Deleted,
+                    grace_until: Some("2026-02-01T00:00:00Z".into()),
+                })
+            ),
+        ),
+        (
+            uris::TASK_VAULT_CREDENTIALS_RESTORE_0_1,
+            checked!(
+                specs::vault::credentials::restore::v0_1::Payload,
+                specs::vault::credentials::restore::v0_1::Response,
+                to_v(cred_vault::CredLifecycleBody {
+                    id: "cred-1".into(),
+                    reason: Some("holder offboarded".into()),
+                }),
+                to_v(cred_vault::CredLifecycleResponse {
+                    id: "cred-1".into(),
+                    lifecycle: VaultStatus::Active,
+                    grace_until: None,
+                })
+            ),
+        ),
+        (
+            uris::TASK_VAULT_CREDENTIALS_PURGE_0_1,
+            checked!(
+                specs::vault::credentials::purge::v0_1::Payload,
+                specs::vault::credentials::purge::v0_1::Response,
+                to_v(cred_vault::CredLifecycleBody {
+                    id: "cred-1".into(),
+                    reason: Some("holder offboarded".into()),
+                }),
+                to_v(cred_vault::CredLifecycleResponse {
+                    id: "cred-1".into(),
+                    lifecycle: VaultStatus::Deleted,
+                    grace_until: None,
                 })
             ),
         ),

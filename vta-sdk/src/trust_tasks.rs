@@ -751,6 +751,19 @@ pub const TASK_VTA_CREDENTIALS_ISSUE_0_2: &str =
 pub const TASK_VTA_CREDENTIALS_REVOKE_0_1: &str =
     "https://trusttasks.org/spec/vta/credentials/revoke/0.1";
 
+/// `vta/credentials/list/0.1` — enumerate what this agent has issued, as
+/// metadata.
+///
+/// Bodies are not returned: `vault/list/0.1` states the rule this follows —
+/// *list exists to enumerate; release exists to use*. An issuer that needs a
+/// body minted it and got it back from `issue`.
+///
+/// Exists because `revoke` is keyed on a `credentialId` that `issue` returns
+/// exactly once. Before this, a caller that did not record it at that moment
+/// could not recover it from the agent at all.
+pub const TASK_VTA_CREDENTIALS_LIST_0_1: &str =
+    "https://trusttasks.org/spec/vta/credentials/list/0.1";
+
 // ─── Agent-memory slice (spec/vta/memory/*) ──────────────────────────────
 //
 // A per-context key/value store for AI-agent memory. Dispatcher-routed like
@@ -1713,6 +1726,7 @@ pub const ALL_URIS: &[&str] = &[
     // Issued-credential lifecycle (spec/vta/credentials/*)
     TASK_VTA_CREDENTIALS_ISSUE_0_2,
     TASK_VTA_CREDENTIALS_REVOKE_0_1,
+    TASK_VTA_CREDENTIALS_LIST_0_1,
     // Agent-memory slice (spec/vta/memory/*)
     TASK_VTA_MEMORY_PUT_0_1,
     TASK_VTA_MEMORY_LIST_0_1,
