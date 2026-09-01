@@ -78,13 +78,13 @@ repository = "https://github.com/OpenVTC/verifiable-trust-infrastructure"
 uniffi = "0.32"
 
 # Affinidi Trust Development Kit.
-# Pinned to a minimum patch (not bare `0.8`) because 0.8.5 is the first release
-# carrying the enforced-authcrypt fix (affinidi-tdk-rs #671): it depends on
-# `affinidi-messaging-sdk` 0.19 + `affinidi-messaging-didcomm` 0.15.8, where
-# `unpack` rejects plaintext / anoncrypt / forged-`from` envelopes by default.
-# `0.8` would let a fresh resolve on a clean checkout land on a pre-fix 0.8.x,
-# silently moving sender authentication back out of the library. Do not relax it.
-affinidi-tdk = "0.10"
+# The enforced-authcrypt fix (affinidi-tdk-rs #671 — `unpack` rejects plaintext
+# / anoncrypt / forged-`from` envelopes by default) landed in 0.8.5, which is
+# why this once carried a minimum-patch pin. Every 0.9+ release is past it, so
+# the floor is now structural rather than a specific patch: do not move this
+# back below 0.9, and do not drop to a bare major.
+# 0.11 re-exports `affinidi-mdoc` 0.3 — see the coupling note on `coset` below.
+affinidi-tdk = "0.11"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -122,12 +122,20 @@ affinidi-sd-jwt-vc = "0.2"
 affinidi-sd-jwt = "0.1.2"
 affinidi-bbs = "0.3"
 affinidi-openid4vp = "0.1.2"
-affinidi-mdoc = { version = "0.2.7", default-features = false, features = ["es256"] }
+affinidi-mdoc = { version = "0.3", default-features = false, features = ["es256"] }
 # Both already enter the graph through `affinidi-mdoc`; declared here because
 # the mdoc receive path names their types directly (`coset` for the COSE_Sign1
 # `alg` header, `time` for the `validityInfo` window) and depending on a
 # transitive is how a version bump elsewhere breaks an unrelated crate.
-coset = "0.3"
+#
+# `coset` and `affinidi-mdoc` move TOGETHER, and `affinidi-tdk` with them.
+# `coset` is in `affinidi-mdoc`'s public API — `IssuerSigned::issuer_auth` is a
+# `pub coset::CoseSign1` — and `affinidi-tdk` re-exports `affinidi-mdoc`. Moving
+# any one of the three alone puts two semver-incompatible copies of a shared
+# type in the graph, which fails as `E0308: mismatched types` in `vta-vault`
+# rather than as a version conflict. That is #1225, and this is what closing it
+# took.
+coset = "0.4"
 time = "0.3"
 # X.509 for the mdoc IACA trust path. `verify-aws` rather than the default
 # `verify` feature: that one pulls `ring`, which currently only reaches this

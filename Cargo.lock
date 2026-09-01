@@ -274,14 +274,14 @@ dependencies = [
 
 [[package]]
 name = "affinidi-mdoc"
-version = "0.2.7"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09a923616197dc73661b1b57ad8dfaef7d9297c51c137062c9435b6edd6c98a3"
+checksum = "d69ac8bedce32dcf6798e480166e3601b73b0408e2d51ae40964d09de3457ebc"
 dependencies = [
  "aes-gcm 0.10.3",
  "ciborium",
  "ciborium-io",
- "coset 0.3.8",
+ "coset 0.4.2",
  "hex",
  "hkdf 0.12.4",
  "hmac 0.12.1",
@@ -521,9 +521,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-test-mediator"
-version = "0.4.0"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3858685de0deba7be2b6b7481c2eb0823b7b64dbe6852b474fed4c23360a019f"
+checksum = "3446c5fa52b875a2ad0251a61b95de2cfc50710c121e275bac09b8825677d863"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-didcomm",
@@ -699,9 +699,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-tdk"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "715c365fa19276fb50332e10b922822b25d52d6119721f28abb6cac02029a365"
+checksum = "abceec2e934dfffbc31924d970d650c972660125cd26fe7ecd14e4552713f43f"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -3011,7 +3011,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.4",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -9734,7 +9734,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "chrono",
- "coset 0.3.8",
+ "coset 0.4.2",
  "ed25519-dalek",
  "multibase",
  "rcgen 0.14.9",
