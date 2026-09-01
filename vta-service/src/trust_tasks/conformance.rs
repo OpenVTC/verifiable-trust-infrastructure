@@ -414,6 +414,7 @@ fn acl_entry() -> AclEntry {
         // grants and only a present value proves the member survives the
         // wire under its canonical `allowedKeys` spelling.
         allowed_keys: Some(vec!["tenant-key-a".into()]),
+        ext: None,
     }
 }
 
@@ -731,6 +732,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     subject_prefix: Some("did:key:z6Mk".into()),
                     page_size: Some(50),
                     cursor: Some("cur-1".into()),
+                    ext: None,
                 }),
                 to_v(ListAclResultBody {
                     entries: vec![acl_entry()],
@@ -748,6 +750,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(CreateAclBody {
                     entry: acl_entry(),
                     reason: Some("onboarding".into()),
+                    ext: None,
                 }),
                 to_v(CreateAclResponseBody { entry: acl_entry() })
             ),
@@ -759,6 +762,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::acl::show::v0_1::Response,
                 to_v(GetAclBody {
                     subject: SUBJECT.into(),
+                    ext: None,
                 }),
                 to_v(GetAclResultBody {
                     entry: acl_entry(),
@@ -819,6 +823,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     subject: SUBJECT.into(),
                     scopes: Some(vec!["ctx-a".into()]),
                     reason: Some("offboarding".into()),
+                    ext: None,
                 }),
                 to_v(DeleteAclResultBody { entry: acl_entry() })
             ),
@@ -1388,6 +1393,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     // published schema does not define, so a producer cannot
                     // send it through the validated transport at all.
                     authorization_context: None,
+                    ext: None,
                 }),
                 to_v(IssueCredentialResponse {
                     credential_id: "cred-1".into(),
@@ -1405,6 +1411,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(RevokeCredentialBody {
                     credential_id: "cred-1".into(),
                     reason: Some("holder offboarded".into()),
+                    ext: None,
                 }),
                 to_v(RevokeCredentialResponse {
                     credential_id: "cred-1".into(),
@@ -1422,6 +1429,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     context_id: "ctx-a".into(),
                     key: "greeting".into(),
                     value: "hello".into(),
+                    ext: None,
                 }),
                 to_v(MemoryPutResponse {
                     key: "greeting".into(),
@@ -1435,6 +1443,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::vta::memory::list::v0_1::Response,
                 to_v(MemoryListBody {
                     context_id: "ctx-a".into(),
+                    ext: None,
                 }),
                 to_v(MemoryListResponse {
                     items: vec![MemoryItem {
@@ -1452,6 +1461,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(MemoryDeleteBody {
                     context_id: "ctx-a".into(),
                     key: "greeting".into(),
+                    ext: None,
                 }),
                 to_v(MemoryDeleteResponse {
                     key: "greeting".into(),
@@ -1589,12 +1599,14 @@ fn table() -> Vec<(&'static str, Conformance)> {
                             value: None,
                             merge_patch: Some(serde_json::json!({ "role": "owner" })),
                             expected_version: Some(52),
+                            ext: None,
                         },
                         AppStateWrite {
                             key: "profile/labels".into(),
                             value: Some(serde_json::json!({ "colours": { "acme": "blue" } })),
                             merge_patch: None,
                             expected_version: Some(0),
+                            ext: None,
                         },
                     ],
                     ext: None,
@@ -1648,6 +1660,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     enabled_only: true,
                     cursor: None,
                     page_size: Some(50),
+                    ext: None,
                 }),
                 to_v(ListPoliciesResultBody {
                     policies: vec![policy_module_view()],
@@ -1663,6 +1676,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::policy::get::v0_1::Response,
                 to_v(GetPolicyBody {
                     id: "approvals".into(),
+                    ext: None,
                 }),
                 to_v(GetPolicyResultBody {
                     policy: policy_module_view(),
@@ -1700,6 +1714,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     id: "legacy-rego".into(),
                     expected_version: Some(2),
                     reason: Some("superseded by the declarative rules".into()),
+                    ext: None,
                 }),
                 to_v(DeletePolicyResultBody {
                     id: "legacy-rego".into(),
@@ -1715,6 +1730,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::config::show::v0_1::Response,
                 to_v(GetConfigBody {
                     keys: Some(vec!["public_url".into()]),
+                    ext: None,
                 }),
                 to_v(GetConfigResultBody {
                     fields: vec![ConfigField {
@@ -1735,6 +1751,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     overrides: [("public_url".to_string(), json!("https://vta.example"))]
                         .into_iter()
                         .collect(),
+                    ext: None,
                 }),
                 to_v(UpdateConfigResultBody {
                     applied: vec!["public_url".into()],

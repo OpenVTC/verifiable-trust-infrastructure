@@ -2564,6 +2564,7 @@ mod tests {
                 value: Some(json!(2)),
                 merge_patch: None,
                 expected_version: Some(a.version),
+                ext: None,
             },
             AppStateWrite {
                 key: "b".into(),
@@ -2571,12 +2572,14 @@ mod tests {
                 merge_patch: None,
                 // Stale on purpose.
                 expected_version: Some(999),
+                ext: None,
             },
             AppStateWrite {
                 key: "c".into(),
                 value: Some(json!(1)),
                 merge_patch: None,
                 expected_version: Some(0),
+                ext: None,
             },
         ];
         let (results, high) = put_many(
@@ -2619,12 +2622,14 @@ mod tests {
                 value: Some(json!({"label": "Cyprus"})),
                 merge_patch: None,
                 expected_version: Some(0),
+                ext: None,
             },
             AppStateWrite {
                 key: "index".into(),
                 value: Some(json!({"ids": ["cyprus"]})),
                 merge_patch: None,
                 expected_version: Some(999), // stale
+                ext: None,
             },
         ];
         let err = put_many(&ks, &locks, "ctx", "openvtc", &writes, PutManyMode::Atomic)
@@ -2665,12 +2670,14 @@ mod tests {
                 value: Some(json!({"label": "Cyprus"})),
                 merge_patch: None,
                 expected_version: Some(0),
+                ext: None,
             },
             AppStateWrite {
                 key: "index".into(),
                 value: Some(json!({"ids": ["cyprus"]})),
                 merge_patch: None,
                 expected_version: Some(idx.version),
+                ext: None,
             },
         ];
         let (results, _) = put_many(&ks, &locks, "ctx", "openvtc", &writes, PutManyMode::Atomic)
@@ -2688,12 +2695,14 @@ mod tests {
                 value: Some(json!(1)),
                 merge_patch: None,
                 expected_version: None,
+                ext: None,
             },
             AppStateWrite {
                 key: "k".into(),
                 value: Some(json!(2)),
                 merge_patch: None,
                 expected_version: None,
+                ext: None,
             },
         ];
         let err = put_many(

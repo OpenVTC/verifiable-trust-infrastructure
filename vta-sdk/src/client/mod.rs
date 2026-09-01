@@ -2698,7 +2698,10 @@ mod tests {
         let mut overrides = std::collections::HashMap::new();
         overrides.insert("vta_name".to_string(), serde_json::json!("Test"));
         let req = UpdateConfigRequest {
-            patch: UpdateConfigBody { overrides },
+            patch: UpdateConfigBody {
+                overrides,
+                ext: None,
+            },
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["overrides"]["vta_name"], "Test");

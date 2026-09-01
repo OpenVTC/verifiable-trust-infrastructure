@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use crate::acl::ApproveScope;
 
 use super::create::CreateAclResultBody;
+use serde_json::Value;
 
 /// Per-entry step-up configuration — canonical `AclEntry.stepUp`.
 ///
@@ -148,6 +149,19 @@ pub struct AclEntry {
     pub step_up: Option<StepUp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approve: Option<Approve>,
+    /// Ecosystem-defined extension members (SPEC §4.5.1).
+    ///
+    /// Carried explicitly rather than swept up by relaxing
+    /// `deny_unknown_fields`: the published payload schemas declare an `ext`
+    /// slot, so a conforming producer may send one, and rejecting the whole
+    /// document over it would break interop with a peer doing exactly what the
+    /// spec allows. Keeping `deny_unknown_fields` alongside it means a *typo*
+    /// is still refused rather than silently ignored — which is the guard that
+    /// clause was there for.
+    ///
+    /// The VTA does not interpret the contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
 }
 
 /// Unix epoch seconds → RFC 3339, for the wire.
@@ -188,6 +202,10 @@ impl AclEntry {
             expires_at: r.expires_at.and_then(to_rfc3339),
             step_up: (!step_up.is_empty()).then_some(step_up),
             approve: (!approve.is_empty()).then_some(approve),
+            // The VTA does not author extension members; it only carries a
+            // producer's through. Nothing to put here when building the wire
+            // form from our own row.
+            ext: None,
         }
     }
 
@@ -229,6 +247,7 @@ mod tests {
             expires_at: None,
             step_up: None,
             approve: None,
+            ext: None,
         };
         let v = serde_json::to_value(&e).unwrap();
         assert!(v.get("approve").is_none(), "{v}");
@@ -326,6 +345,7 @@ mod tests {
                 require: Some("delegated".into()),
             }),
             approve: None,
+            ext: None,
         };
         let v = serde_json::to_value(&e).unwrap();
         assert!(v.get("expiresAt").is_some(), "{v}");

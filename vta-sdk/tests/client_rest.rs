@@ -357,6 +357,7 @@ async fn update_config_sends_the_overrides_map() {
         .update_config(UpdateConfigRequest {
             patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody {
                 overrides,
+                ext: None,
             },
         })
         .await
@@ -390,6 +391,7 @@ async fn update_config_reports_identity_as_rejected() {
         .update_config(UpdateConfigRequest {
             patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody {
                 overrides,
+                ext: None,
             },
         })
         .await

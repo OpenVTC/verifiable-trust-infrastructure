@@ -43,7 +43,10 @@ impl VtaClient {
 
     /// `policy/get/0.1` — read one policy module by id.
     pub async fn get_policy(&self, id: &str) -> Result<GetPolicyResultBody, VtaError> {
-        let req = GetPolicyBody { id: id.to_string() };
+        let req = GetPolicyBody {
+            id: id.to_string(),
+            ext: None,
+        };
         self.rpc_tt(
             crate::trust_tasks::TASK_POLICY_GET_0_1,
             serde_json::to_value(&req)?,

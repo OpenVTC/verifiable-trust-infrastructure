@@ -22,6 +22,7 @@
 //! them) — they are exactly how this maintainer selects.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Canonical `policy/_shared` **PolicyModule** — the projection of a stored
 /// policy row returned by `list`, `get`, and `upsert`.
@@ -69,6 +70,19 @@ pub struct ListPoliciesBody {
     pub cursor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_size: Option<u64>,
+    /// Ecosystem-defined extension members (SPEC §4.5.1).
+    ///
+    /// Carried explicitly rather than swept up by relaxing
+    /// `deny_unknown_fields`: the published payload schemas declare an `ext`
+    /// slot, so a conforming producer may send one, and rejecting the whole
+    /// document over it would break interop with a peer doing exactly what the
+    /// spec allows. Keeping `deny_unknown_fields` alongside it means a *typo*
+    /// is still refused rather than silently ignored — which is the guard that
+    /// clause was there for.
+    ///
+    /// The VTA does not interpret the contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
 }
 
 /// `policy/list/0.2` response.
@@ -89,6 +103,19 @@ pub struct ListPoliciesResultBody {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GetPolicyBody {
     pub id: String,
+    /// Ecosystem-defined extension members (SPEC §4.5.1).
+    ///
+    /// Carried explicitly rather than swept up by relaxing
+    /// `deny_unknown_fields`: the published payload schemas declare an `ext`
+    /// slot, so a conforming producer may send one, and rejecting the whole
+    /// document over it would break interop with a peer doing exactly what the
+    /// spec allows. Keeping `deny_unknown_fields` alongside it means a *typo*
+    /// is still refused rather than silently ignored — which is the guard that
+    /// clause was there for.
+    ///
+    /// The VTA does not interpret the contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
 }
 
 /// `policy/get/0.1` response.
@@ -161,6 +188,19 @@ pub struct DeletePolicyBody {
     /// Operator rationale, recorded in the audit row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Ecosystem-defined extension members (SPEC §4.5.1).
+    ///
+    /// Carried explicitly rather than swept up by relaxing
+    /// `deny_unknown_fields`: the published payload schemas declare an `ext`
+    /// slot, so a conforming producer may send one, and rejecting the whole
+    /// document over it would break interop with a peer doing exactly what the
+    /// spec allows. Keeping `deny_unknown_fields` alongside it means a *typo*
+    /// is still refused rather than silently ignored — which is the guard that
+    /// clause was there for.
+    ///
+    /// The VTA does not interpret the contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
 }
 
 /// `policy/delete/0.1` response.

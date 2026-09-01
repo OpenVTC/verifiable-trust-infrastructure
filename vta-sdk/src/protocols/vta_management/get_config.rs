@@ -8,6 +8,7 @@
 //! every other agent.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// `config/show/0.1` request. `keys` narrows the result; omitted returns every
 /// registered key.
@@ -17,6 +18,19 @@ use serde::{Deserialize, Serialize};
 pub struct GetConfigBody {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keys: Option<Vec<String>>,
+    /// Ecosystem-defined extension members (SPEC §4.5.1).
+    ///
+    /// Carried explicitly rather than swept up by relaxing
+    /// `deny_unknown_fields`: the published payload schemas declare an `ext`
+    /// slot, so a conforming producer may send one, and rejecting the whole
+    /// document over it would break interop with a peer doing exactly what the
+    /// spec allows. Keeping `deny_unknown_fields` alongside it means a *typo*
+    /// is still refused rather than silently ignored — which is the guard that
+    /// clause was there for.
+    ///
+    /// The VTA does not interpret the contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
 }
 
 /// One configuration key as the operator currently sees it — canonical
