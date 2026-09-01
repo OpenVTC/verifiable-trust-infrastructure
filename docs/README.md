@@ -179,6 +179,14 @@ are implementer-facing rather than operator-facing.
   versioned, namespaced, per-context application JSON: why agent memory
   and both vaults are the wrong home, what the surface needs, and the
   upstream spec dependency that has to land first. Design only.
+- **[Community data rooms](05-design-notes/community-data-rooms.md)** —
+  member-created, end-to-end encrypted shared spaces on the **VTC**, for
+  shared agent memory and anything else a subset of a community needs to
+  keep between themselves: why it is not the `vta/memory` family, the
+  three-tier visibility ladder (`open` / `attributed` / `blind`) a
+  community selects by Rego policy, room keys held in member VTAs via
+  sealed transfer, and what blinding costs in audit and recovery.
+  Design only.
 - **[vta-service decomposition](05-design-notes/vta-service-decomposition.md)** —
   how the ~114k-line VTA crate was split into subsystem crates, the
   extraction technique, and the rule for where the program stops.
