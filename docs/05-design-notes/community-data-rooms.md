@@ -45,10 +45,12 @@ availability, durability, discovery, quota and someone to hold responsible.
 It does not provide protection against an adversary who also runs the transport
 (F4), and it should stop claiming to.
 
-**I3. Anything beyond that belongs outside the VTC — and that path is
-supported.** §10. Members already hold DIDs, DIDComm and their own VTAs; the
-room key mechanism does not depend on the VTC. A community needing more than I2
-offers should be told how to leave rather than sold a tier that cannot deliver.
+**I3. Who hosts a room is a setting, not an exit.** §3.3. A room's DID control
+and its content storage are separate choices, each either the VTC's or the
+owner's, and the model is identical whichever way they fall. A group needing
+more than I2 offers changes where the room lives rather than leaving for a
+different system — and a community may forbid that, as governance, knowing it
+cannot enforce it (§3.3.2).
 
 **I4. A room is a DTG node with its own identity.** The DTG core credentials
 are generic: they *"create and annotate the nodes and edges of a DTG"*, and a
@@ -201,6 +203,10 @@ valid log entry and a well-formed credential, with nothing to detect.
 | `open`, `attributed` | may live at the VTC | Those tiers already trust the operator with membership; VTC-side issuance is a real convenience |
 | `private` | **the owner's VTA, never the VTC** | Otherwise the operator can issue itself membership |
 
+§3.3 generalises this: the rule is really *whoever controls the room's DID
+controls its credentials*, and a room whose DID the owner controls has the
+property in this table by construction, at every tier.
+
 Transfer on `private` moves the room's authority between VTAs. Use the
 webvh pre-rotation mechanism the workspace already has
 (`vta-keys::derive_pre_rotation_keys`) rather than shipping a key: the outgoing
@@ -238,6 +244,97 @@ If they name services, the spec needs a word for this. That is a question about
 what the DTG model means, and it should be answered there rather than assumed
 here.
 
+### 3.3 Who hosts a room
+
+Hosting is **two separable questions**, and conflating them is what made the
+earlier draft treat member-hosting as an exit from the system rather than a
+setting within it:
+
+1. **Who controls the room's DID** — who can publish log entries, and therefore
+   who can rotate the room's keys and issue its credentials. A *trust* question.
+2. **Who stores the room's content** — who holds the records and serves reads.
+   An *availability* question.
+
+| DID controlled by | Content stored at | |
+|---|---|---|
+| VTC | VTC | The default. Convenient, and §3.2.1's trap is live: the operator serves the log that establishes the room's keys |
+| **Owner** | **VTC** | **The interesting one.** The operator cannot forge the room's log or mint itself a VMC, because it does not control the DID — while durability, availability, quota and backup still ride the VTC |
+| Owner | Owner | Full independence. The VTC is not involved at all |
+| VTC | Owner | No meaningful use — the operator keeps the power and the owner keeps the outage |
+
+**Owner-controlled DID with VTC-stored content is the sweet spot**, and it
+closes §3.2.1 and §3.2.2 outright rather than mitigating them. The trap was that
+a hostile operator could serve a forged log naming its own key; it cannot,
+because the log is published by the owner. The key-custody rule in §3.2.2 —
+*`private` keeps the room's signing key out of the VTC* — stops being a special
+case and becomes the default consequence of who holds the DID.
+
+The owner's VTA can already host this. `vta-webvh` and the `did-host-*`
+templates exist, and the workspace's whole model is that a VTA provisions and
+hosts DIDs. Owner-hosting a room's **DID** is a template render. Owner-hosting a
+room's **content** is a new service — the VTA has memory, app-state and vault
+stores, and no room store — so the two halves are not equally cheap, which is
+another reason to keep them separable.
+
+#### 3.3.1 Member-hosted is not strictly more private
+
+The tempting reading is that owner-hosted beats VTC-hosted on privacy. It does
+not; it **relocates** trust rather than reducing it.
+
+An owner who hosts sees everything: they hold the content, and they issue the
+VMCs, so they already know the membership. On an owner-hosted room the
+visibility ladder largely collapses — encryption at rest still protects a
+seized or compromised disk, but blinding the membership from the host is
+meaningless when the host is the party who assembled it.
+
+So the honest comparison is:
+
+- **You trust the room's owner more than the community operator** → owner-hosted.
+- **You are in a room with someone you do not fully trust** → VTC-hosted
+  `private` may be *better*. A neutral host that cannot read beats a participant
+  host that can.
+
+That second case is the one people get wrong, and the client should not present
+member-hosting as the more private option without it.
+
+#### 3.3.2 What the VTC can and cannot enforce
+
+Worth being exact, because "does the VTC allow member-hosted rooms" sounds like
+an access-control question and is not one.
+
+**It can decide:** whether *it* hosts a room; what its own client tooling
+offers; whether it recognises a member-hosted room in a directory, a backup, or
+support; and whether using one is a breach of the community's rules.
+
+**It cannot prevent one.** A member with a VTA can stand up a room DID and
+invite other members without the VTC's participation, and the VTC has no
+visibility into it. This is the same class as the cross-community finding in
+§5.6: a community can forbid, and cannot block.
+
+**Therefore the default permits owner-hosted rooms.** Not because it is the
+safer setting — §3.3.1 says it is not uniformly safer — but because a
+default-deny here would be a rule the VTC cannot enforce, and a default that
+claims a control it lacks is worse than one that does not. Every other
+default-deny in this note (`private` in §4, `Custom` roles in §5.2) gates
+something the VTC actually decides.
+
+A community may still forbid member-hosted rooms in `rooms.rego`, and should
+understand what it has bought: a governance rule enforced by membership
+consequences, not a technical boundary. That is a legitimate choice — a
+community entitled to say *these are our terms; if they do not suit you, this is
+not your community*. It is simply not the same kind of thing as refusing to host
+one.
+
+#### 3.3.3 What owner-hosting costs
+
+Legible, so the trade is a choice rather than a surprise: the room is
+unavailable when the owner's host is, it is outside the VTC's backup entirely
+(§12.1's recovery problem becomes wholly the members' — the k-of-n quorum in
+§9.1 still works, since it re-authorises a re-seal rather than restoring from a
+host), there is no quota or abuse handling, and there is no accountable operator
+for a community that requires one.
+
+
 ---
 
 ## 4. Community policy: `rooms.rego`
@@ -252,12 +349,16 @@ becomes a new row in §7.1's required-policy table.
   "actor":  { "did": "...", "role": "member", "foreign": false },
   "action": "create" | "invite" | "write" | "transfer",
   "room":   { "visibility": "private", "memberCount": 4, "ownerDid": "...",
-              "crossCommunity": false }
+              "crossCommunity": false,
+              "didControlledBy": "vtc" | "owner",
+              "contentStoredAt": "vtc" | "owner" }
 }
 ```
 
 **Default-ship**: members may create `open` and `attributed` rooms; `private` is
-**denied** until a community turns it on. Not because it is wrong, but because a
+**denied** until a community turns it on. Both hosting axes (§3.3) default to
+**permitted**, for the enforceability reason in §3.3.2 — deny only what the VTC
+actually decides. Not because it is wrong, but because a
 community should meet its consequences — no per-member access log, no per-member
 rate limit, no recovery from a VTC backup — by opting in rather than by
 discovering them. Every other surprising default in this stack is deny-first.
@@ -745,25 +846,31 @@ whatever the first implementation happens to call itself.
 
 ---
 
-## 10. The escape hatch
+## 10. Leaving is a setting, not an exit
 
-I3 made explicit, because a supported exit is what lets the tiers stay honest.
+I3, and §3.3 is what makes it real.
 
-Nothing about a room requires the VTC. Members hold their own DIDs, their own
-VTAs, DIDComm and TSP. A group that needs more privacy than I2 can offer runs
-the same room against storage they control: the room key mechanism (§6), the
-record shape (§6.1) and the membership credential (§5.1) are unchanged, and the
-owner's issuer key is resolvable from their DID without any service in the
-middle.
+An earlier draft framed this as an escape hatch: a group that finds the
+community's VTC in its threat model reimplements the room somewhere else. That
+was worse than it needed to be. **Owner-controlled hosting is a setting inside
+the model** — the room DID, the VIC/VMC/VAC flow (§5), the key mechanism (§6)
+and the record shape (§6.1) are identical whoever hosts. Moving is a change of
+where the DID is published and where records are stored, not a different system.
 
-**What is given up**, so the trade is legible: durability and backup, discovery,
-availability when a member's host is down, the quota and abuse handling a hosted
-service provides, and the accountable party a community may require.
+Two consequences worth stating:
 
-The client should make this a first-class option rather than a workaround. A
-group that has decided the community's VTC is part of its threat model has made
-a reasonable decision, and steering them into `private` instead sells them a
-guarantee §5.5 says it does not have.
+- **The room is portable by construction.** Members address the room by DID, not
+  by a VTC-local id, so re-pointing the DID document at a different host moves
+  the room without invalidating a single credential.
+- **A community that forbids owner-hosting is making a governance choice**
+  (§3.3.2), and the honest version of *don't like it, find another community* is
+  that the community says so plainly in its policy rather than discovering the
+  argument when someone leaves.
+
+**What owner-hosting costs** is in §3.3.3, and **what it does not buy** is in
+§3.3.1 — it relocates trust to the owner rather than removing it. The client
+should offer it as a first-class option and should not sell it as
+unconditionally the more private one.
 
 ---
 
