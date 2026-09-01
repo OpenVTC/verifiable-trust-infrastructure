@@ -187,6 +187,12 @@ are implementer-facing rather than operator-facing.
   community selects by Rego policy, room keys held in member VTAs via
   sealed transfer, and what blinding costs in audit and recovery.
   Design only.
+- **[Community data rooms — security review](05-design-notes/community-data-rooms-security-review.md)** —
+  end-to-end adversarial review of the above, for communities spanning
+  fully public to fully private with zero trust. Seventeen findings, four
+  of which broke a guarantee the design stated; the threat model's central
+  claim is that **the trust boundary is per operator, not per service**.
+  Read before changing the key custody, signature, or client sections.
 - **[vta-service decomposition](05-design-notes/vta-service-decomposition.md)** —
   how the ~114k-line VTA crate was split into subsystem crates, the
   extraction technique, and the rule for where the program stops.
