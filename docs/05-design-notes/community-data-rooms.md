@@ -18,20 +18,21 @@ Reviewed end-to-end in
 [`community-data-rooms-security-review.md`](community-data-rooms-security-review.md);
 findings are cited inline as **F1**–**F17**.
 
-This note is the input to a spec PR in `trustoverip/dtgwg-trust-tasks-tf`,
-because the dispatcher refuses to serve a Trust Task URI the published registry
-has no schema for. §11 sets out the sequence.
+This note is the input to two upstream PRs — one credential type in
+`dtgwg-cred-spec`, and the Trust Task schemas in
+`trustoverip/dtgwg-trust-tasks-tf`, because the dispatcher refuses to serve a
+URI the published registry has no schema for. §11 sets out the sequence.
 
 ---
 
-## 1. Three invariants
+## 1. Four invariants
 
 An earlier draft chased perfect blinding and got worse for it: the tier that hid
 the member list hid it *by omission* — the VTC simply did not store one — which
 is why an ordinary authenticated read handed it straight back (F1). Hiding by
 not asking fails the moment something asks.
 
-These three invariants replace that pursuit. Everything below follows from them.
+These invariants replace that pursuit. Everything below follows from them.
 
 **I1. The room owner is always known.** At every tier, including the most
 private. A community has an administrator and a room has an accountable party;
@@ -49,10 +50,20 @@ supported.** §10. Members already hold DIDs, DIDComm and their own VTAs; the
 room key mechanism does not depend on the VTC. A community needing more than I2
 offers should be told how to leave rather than sold a tier that cannot deliver.
 
+**I4. A room is a DTG node, not a new thing that needs new credentials.** The
+DTG core credentials are generic: they *"create and annotate the nodes and edges
+of a DTG"*, and a room is a node like any other. So a room gets a DID, the owner
+controls it, and membership is an ordinary VMC pair — a real DTG edge, not a
+bespoke artifact. §5.
+
 **What changed by adopting these:** membership privacy stops being an absence of
 data and becomes a cryptographic property — an unlinkable proof the VTC verifies
 and learns nothing from (§5). That is stronger *and* simpler, and it collapses
 five findings into one mechanism.
+
+And I4 removed most of what was left. An earlier draft invented a room-specific
+membership credential, a room-specific invitation, and a cross-community special
+case. All three were the DTG model being rebuilt badly one level down.
 
 ---
 
@@ -127,9 +138,9 @@ The operator cannot read the material and can still enforce membership,
 attribute abuse and rate-limit per member. **The right default**, and the tier a
 community under an obligation to produce per-member access logs must use.
 
-**`private`** — content encrypted; membership proven by an unlinkable BBS+
-proof, so the VTC verifies that a legitimate member is acting without learning
-which one. The owner remains known (I1). This is not anonymity: see §5.5 for
+**`private`** — content encrypted; membership proven by an unlinkable
+zero-knowledge presentation of the room VMC, so the VTC verifies that a
+legitimate member is acting without learning which one. The owner remains known (I1). This is not anonymity: see §5.5 for
 what it does not cover, and §10 for what to do about that.
 
 The tier is **not** named `blind`. The old name overclaimed, and the overclaim
@@ -175,91 +186,143 @@ it to reach backwards has misunderstood what they bought.
 This is the mechanism the redesign turns on, and it is built entirely from
 primitives already in the tree.
 
-### 5.0 Joining a room mirrors joining a community
+### 5.0 The room is a node; the credentials already exist
 
-The community flow is **VIC → present → VMC**: an admin issues a Verifiable
-Invitation Credential to an applicant DID, the applicant presents it in a VP,
-and the VTC mints a VMC plus a role VEC (§6.1, §10.1). A room does the same
-thing one level down: **room VIC → present → room membership credential**, with
-the owner in the issuer's chair.
+The DTG core credentials are six W3C types that *"create and annotate the nodes
+and edges of a DTG"*. They are **not community-scoped** — VMC and VIC are
+already defined against *"a VTC or VTN"*, two node kinds, and the spec
+distinguishes their variants *"by issuer and subject rules (not by separate type
+strings)"*. A room is a third node kind, and it needs no new vocabulary to be
+one.
 
-**This is not only code reuse — it fixes a real gap.** Without it, the owner
-seals a room key and a membership credential to your VTA and you are simply in,
-having agreed to nothing. That is wrong on a shared store: you would hold keys
-to material you may not want, incur the obligations of membership, and on
-`private` nobody outside the room could even tell you were there. **Joining a
-room must be a two-party act,** and an invitation you can decline is what makes
-it one.
+**So the room gets its own DID, and the owner controls it.** Membership is an
+ordinary VMC pair between the member's DID and the room's — a real DTG edge, of
+the same kind the community already forms.
 
-Consent is given once. Epoch reissue (§5.3) renews membership credentials to
-members who already accepted — it does not re-invite them, so rekeying does not
-spam a room with invitations.
+| Job | Credential | Status |
+|---|---|---|
+| Enter the first time | **VIC** issued by the room DID | Existing type, new variant by issuer/subject rules |
+| Re-enter after joining | **VMC** pair, member ↔ room | Existing type |
+| What level of access you hold | **VAC** | The one genuinely new type (§9) |
+| Endorsements inside a room | **VEC** | Existing, available, not required by v1 |
+| Attesting a room's formation | **VWC** | Existing, available, not required by v1 |
 
-**Two credentials, two jobs, and the tempting collapse does not work.** A VIC is
-single-use and consumed by definition, so it cannot also be the thing presented
-on every read; and it names its subject DID, so presenting it per access would
-disclose the member — meaning you would need selective disclosure anyway, having
-reinvented the membership credential and lost the invitation semantics on the
-way. The invitation precedes; the membership credential persists.
+**The flow is the community's flow, one level down**: VIC → present → VMC (+
+VAC), exactly as §10.1 does VIC → present → VMC + role VEC.
 
-**Where the VIC lives differs by tier, and this is load-bearing.** The VTC's
-invitation machinery — the `INVITATIONS` keyspace, `CONSUMED_INVITATIONS`,
-revocation and listing — is server-side. Room VICs riding it would tell the VTC
-the room's membership *at invite time*, which is `private` defeated at the first
-step.
+An earlier draft of this note invented a "room membership credential" for this.
+That was VMC, rebuilt worse — no bidirectional edge, no place in the graph, and
+a new catalog entry to justify.
+
+### 5.0.1 What the node model deletes
+
+Three things stop being problems rather than getting solved:
+
+**Owner transfer is a DID controller change.** The room DID is the issuer, so
+handing over a room re-points its controller. Every VMC, VIC and VAC in the room
+stays valid. The previous design had the new owner reissuing every membership
+credential under their own key at a fresh epoch — a mass reissue on an
+administrative act, now gone.
+
+**Cross-community is not a special case at all.** The room is its own node, so a
+member of community A and a member of community B each hold a VMC to room R and
+neither one's community enters the question. §5.6 keeps only the parts that were
+never about credentials — hosting, and what the disclosed tiers reveal.
+
+**Consent has a home.** Without an invitation step the owner seals a room key to
+your VTA and you are simply in, having agreed to nothing — holding keys to
+material you may not want, and on `private` with nobody outside the room able to
+tell you are there. VIC → present → VMC makes joining a two-party act. Consent
+is given once; epoch reissue (§5.3) renews membership for members who already
+accepted rather than re-inviting them.
+
+The two credentials do not collapse into one, and it is worth saying why: a VIC
+is single-use and consumed by definition, and it names its subject, so
+presenting it per access would both contradict its semantics and disclose the
+member.
+
+### 5.0.2 Where the VIC lives differs by tier
+
+The VTC's invitation machinery — the `INVITATIONS` keyspace,
+`CONSUMED_INVITATIONS`, revocation and listing — is server-side. Room VICs
+riding it would tell the VTC the room's membership *at invite time*, which is
+`private` defeated at the first step.
 
 | | `open` / `attributed` | `private` |
 |---|---|---|
-| Issued by | owner | owner |
 | Delivered | via the VTC's invitation store | DIDComm only, never through the VTC |
-| Replay protection | `CONSUMED_INVITATIONS`, as today | the owner tracks consumption — they are the issuer and know who they invited |
-| Revocable before acceptance | yes, by the VTC | yes, by the owner declining to honour it |
+| Replay protection | `CONSUMED_INVITATIONS`, as today | the owner tracks consumption — they issue, and know who they invited |
+| Revocable before acceptance | by the VTC | by the owner declining to honour it |
 
-On `private` the VTC cannot enforce "only invited parties join", and does not
-need to: the owner is the sole issuer of membership credentials, so an uninvited
-party never gets one. Admission control is the owner's signature. The VIC's job
-there is consent and a record between the parties, not gatekeeping.
+On `private` the VTC cannot enforce "only invited parties join" and does not
+need to: the room DID is the sole VMC issuer, so an uninvited party never holds
+one. Admission control is the room's signature; the VIC's job there is consent
+and a record between the parties.
 
-### 5.1 The construction
+### 5.1 Presenting membership
 
-The **room owner issues each member a BBS+ membership credential** over
-attributes `{roomId, epoch, memberDid, capabilities}`.
+To act on a room, a member presents their **VMC for that room**. The tier
+decides how:
 
-To act on a room, a member presents a **BBS+ proof** disclosing `roomId` and
-`epoch` and withholding `memberDid`. The VTC verifies the proof against the
-owner's issuer public key and learns exactly one thing: *a holder of a valid,
-owner-issued membership credential for this room at this epoch is acting.*
-BBS+ proofs are unlinkable, so two presentations by the same member cannot be
-correlated by the verifier.
+- **`open` / `attributed`** — standard W3C VC presentation. The subject DID is
+  disclosed, which is what those tiers are for.
+- **`private`** — a **zero-knowledge presentation**: *the holder possesses a
+  valid VMC from room R*. The VTC verifies and learns nothing else. Two
+  presentations by the same member cannot be correlated.
 
-On `attributed`, the same credential is presented **with `memberDid` disclosed**.
-One mechanism, one credential shape, one verifier — the tier chooses what the
-presentation reveals. That is what BBS+ selective disclosure is for.
+This is not an invention of this note. It is the spec's own construction — the
+same shape as its Community-Anchored ZKP, with the room DID in the anchor
+position where a C-DID would be, and against a predicate it already names
+(*"Holder has valid VMC from recognized VTC"*). The spec goes further and says
+implementations **SHOULD make ZKP presentation the default** so users get
+privacy without opting in. `attributed` is therefore the tier that opts *out* of
+the default, not `private` that opts in.
 
-**Nothing here is new to the workspace.** `affinidi-bbs` 0.3 (BLS12-381, IETF
-`draft-irtf-cfrg-bbs-signatures`) is already a workspace dependency, the
-`bbs-2023` Data Integrity cryptosuite is already wired, and **`vtc-service`
-already carries a BBS+ verifier** behind its `bbs` feature for
-selectively-disclosed join presentations. No circuits, no trusted setup, no
-proving-key ceremony, and proof generation is milliseconds rather than the
-seconds a SNARK-based membership scheme would cost an agent doing many reads.
+**The workspace can already do this.** `affinidi-bbs` 0.3 (BLS12-381, IETF
+`draft-irtf-cfrg-bbs-signatures`) is a workspace dependency, the `bbs-2023` Data
+Integrity cryptosuite is wired, and **`vtc-service` already carries a BBS+
+verifier** behind its `bbs` feature for selectively-disclosed join
+presentations. No circuits, no trusted setup, and proofs in milliseconds rather
+than the seconds a SNARK-based scheme would cost an agent doing many reads.
 
-`private` rooms require the `bbs` feature, which is off by default — a
-deployment fact, and the natural enforcement point for a community that has not
-enabled the tier.
+`private` rooms require the `bbs` feature, off by default — a deployment fact,
+and the natural enforcement point for a community that has not enabled the tier.
 
-### 5.2 What this fixes, and why the design got simpler
+The DTG spec leaves *"detailed ZK protocols and registry-ZK interactions"* to
+future work, so the concrete presentation format is ours to pin down. Pin it in
+the Trust Task schemas (§11 step 1), not in service code.
+
+### 5.2 Access level is the VAC
+
+Membership and authority are different claims and the DTG model keeps them
+apart. The VMC says *you are in this room*. The **VAC** says *what you may do in
+it* — read, write, curate, admin (§3.1's verbs).
+
+Splitting them is not tidiness. Changing someone's access level reissues one
+small credential and leaves the membership edge alone; and on `private` a member
+can prove *"I hold write access to room R"* without proving which member they
+are, because the two credentials are presented independently.
+
+**This is where the community model has a latent conflation worth noticing.**
+The VTC currently expresses role grants as a VEC with
+`endorsement = { type: "CommunityRole", ... }` (§6.1). An endorsement is a
+statement *about* someone; a role grant confers authority. That is precisely the
+*delegation is not authority* line the VAC name was reserved for. Rooms are a
+clean place to introduce the VAC properly, and doing so opens a path to fixing
+the community case later — a reason to get the VAC right here rather than
+minimally.
+
+### 5.2.1 What this fixes
 
 | Was | Now |
 |---|---|
-| **F2** — nothing said where a client learns the room verification key; from the VTC, the operator substitutes its own and forges every write | The verification key is the **owner's issuer key**, resolvable from the owner's DID (I1). Independently checkable, and the operator cannot forge an owner signature |
-| **F5** — no stated epoch authority, so any key-holder could evict any other | Only the owner issues credentials, so only the owner changes the member set. Enforced by construction, not by a rule |
-| **F6** — a shared signing key that never rotated let a removed member write forever | There is no shared signing key. Removal means not reissuing at epoch N+1 |
-| **F1** — reads on a member session handed back the membership | Reads carry a membership proof. There is no session to leak from, and no question the VTC can accidentally ask |
-| **F12** — the owner as a correlation seed, pulling toward a pseudonymous owner and away from accountability | Resolved by I1. The owner is known. The tension is deleted, not balanced |
+| **F2** — nothing said where a client learns the room verification key; from the VTC, the operator substitutes its own and forges every write | The issuer is the **room DID**, resolvable independently. The operator cannot forge its signature |
+| **F5** — no stated epoch authority, so any key-holder could evict any other | Only the room DID issues VMCs, and only the owner controls it |
+| **F6** — a shared signing key that never rotated let a removed member write forever | There is no shared signing key |
+| **F1** — reads on a member session handed back the membership | Reads carry a VMC presentation. On `private` there is no session to leak from |
+| **F12** — the owner as a correlation seed, pulling toward a pseudonymous owner and away from accountability | Resolved by I1. The owner is known |
 
-Five findings, one mechanism, and the shared-secret outer/inner signature scheme
-they came from is gone entirely.
+Five findings, and the shared-secret signature scheme they came from is gone.
 
 ### 5.3 Epochs
 
@@ -329,20 +392,18 @@ not a fourth tier.
 
 ### 5.6 Cross-community rooms
 
-**In scope for v1**, and cheaper than it looks, because the owner-issued
-credential already does the work.
+**In scope for v1, and under I4 it barely exists as a feature.** A room is its
+own node; a VMC binds a member to *the room*, not to a community. So a member of
+community A and a member of community B each hold a VMC to room R, and neither
+one's community is part of the question. There is no bridging to build.
 
-A membership proof verifies against the **owner's** issuer key, not the
-community's. So on `private` the VTC cannot tell a foreign member from a local
-one — the question does not arise, because the proof discloses no DID to check
-against a roster. Cross-community rooms are free at the tier where they would
-have been hardest.
+On `private` the VTC cannot tell a foreign member from a local one, because the
+presentation discloses no DID to check against any roster. On `open` and
+`attributed` the subject is disclosed, so the VTC sees a foreign DID and needs a
+rule — that is what §4's `crossCommunity` and `foreign` policy inputs are for,
+with §8.4 recognition supplying the standing check.
 
-On `open` and `attributed`, `memberDid` is disclosed, so the VTC sees a foreign
-DID and needs a rule. That is what §4's `crossCommunity` and `foreign` policy
-inputs are for, and §8.4 recognition supplies the standing check.
-
-Four things follow, and three of them are limits:
+What remains are hosting facts, not credential problems:
 
 - **The room lives on the owner's VTC.** The other community holds no copy, so
   its members depend on the owner's community for availability. Say so at
@@ -360,10 +421,10 @@ Four things follow, and three of them are limits:
   A community whose policy depends on that prohibition is relying on something
   the architecture does not provide, and should be told rather than left to
   assume.
-- **Epochs are per room, not per community.** A single owner issues to everyone,
-  which is what keeps this simple; it also means the owner is trusted by members
-  of a community they do not belong to. That is the same trust a room owner
-  always holds, extended across a boundary — worth surfacing in the invitation.
+- **The room DID issues to everyone.** That is what keeps this simple, and it
+  means a member trusts a room controlled by someone outside their own
+  community. The same trust a room owner always holds, extended across a
+  boundary — worth surfacing at invitation time rather than assuming.
 
 ---
 
@@ -507,12 +568,15 @@ to it. The alternative makes a mass departure a mass loss of shared work.
 ## 9. Ownership and succession
 
 Every room has exactly one **known owner** (I1) — accountable for quota and
-abuse, the party any demand reaches, and the issuer of every membership
-credential in the room (§5.1).
+abuse, the party any demand reaches, and the **controller of the room's DID**,
+which is what issues every VIC, VMC and VAC in the room (§5.0).
 
-- **Transferable.** The owner hands ownership to another member; the VTC records
-  it, the transfer is audited, and the new owner reissues membership credentials
-  under their own issuer key at a fresh epoch.
+- **Transferable, and cheaply.** Ownership transfer re-points the room DID's
+  controller. Every credential in the room stays valid, because the issuer did
+  not change — only who holds its keys. The VTC records the transfer and audits
+  it. This is the single largest simplification I4 bought: the previous model
+  had the new owner reissuing every membership credential under their own key at
+  a fresh epoch, a mass reissue triggered by an administrative act.
 - **Nominated successor.** The owner may name a successor who can *claim*
   ownership if the owner's membership lapses. Claiming is explicit — an
   automatic promotion would move an accountable role onto someone who may not
@@ -560,33 +624,28 @@ the room is unrecoverable. The operator holds bytes and cannot help. This is the
 irreducible cost of the guarantee and belongs in the UI at room creation, not in
 a footnote — a community should choose `attributed` knowing it.
 
-**Only one of the two credentials is new.** The invitation half is a **VIC**,
-already in the catalog (§6.1) — a room VIC is a VIC with room-scoped attributes
-and a member rather than the community in the issuer field, which is the same
-move VRCs already make. That halves the upstream ask.
+**Only the VAC is new.** VIC and VMC are existing DTG core credentials, and
+under I4 a room is simply another node they bind to — the spec already defines
+both against *"a VTC or VTN"* and distinguishes their variants *"by issuer and
+subject rules (not by separate type strings)"*, which is exactly the extension a
+room needs. §3-C is satisfied without a catalog addition for either.
 
-**The membership credential is a new DTG catalog entry**, authored upstream in
-`dtgwg-cred-spec` before this ships. Nothing in the catalog fits: VMC is
-community membership issued by the community DID, VEC asserts something about a
-subject, and VRC is a self-issued trust edge with no `credentialStatus`. None of
-them confers a capability. §3-C limits credentials to the DTG catalog
-and sends new needs upstream rather than allowing local extension, and the
-tempting shortcut — filing it as a community-defined *custom endorsement type*,
-which the VTC already supports and which would need no upstream work — is
-wrong on the merits. This is not an endorsement. An endorsement is a statement
-about someone; this confers a capability, and putting it in the endorsement slot
-would blur a distinction the catalog has been careful about.
+**The VAC is the one upstream ask**, authored in `dtgwg-cred-spec` before this
+ships. Nothing in the six core types confers authority: VMC and VRC are edges,
+VIC is an invitation, and VPC/VEC/VWC annotate. The tempting shortcut — filing
+access levels as a community-defined *custom endorsement type*, which the VTC
+already supports and which needs no upstream work — is wrong on the merits. An
+endorsement is a statement **about** someone. A VAC grants what someone **may
+do**. Putting the second in the first's slot blurs the distinction the catalog
+has been careful about, and it is the same conflation §5.2 notes the community's
+own `CommunityRole` VEC already contains.
 
-Member-issued is not the novel part — the VTC already models member-issued
-credentials for VRCs (*the issuer of every stored row is a current community
-member*). What is novel is that it grants rather than asserts.
-
-**Worth deciding in that PR, not here:** whether this is the first concrete
-instance of the authority-shaped credential the VAC name was reserved for, or
-something narrower that should not claim it. The distinction that reservation
-was protecting — *delegation is not authority* — is exactly the one this
-credential sits on, so it should be settled deliberately rather than by whatever
-the first implementation happens to call itself.
+**Worth settling in that PR, not here:** whether rooms are the first concrete
+instance of the authority credential the VAC name was reserved for — with the
+community's role grants a later migration onto it — or whether rooms need
+something narrower that should not claim the name. *Delegation is not authority*
+is the line this sits on, and it should be decided deliberately rather than by
+whatever the first implementation happens to call itself.
 
 ---
 
@@ -621,10 +680,12 @@ It is the long pole and should start first — the schema work in step 1 can
 proceed in parallel once the credential's shape is agreed, but cannot merge
 citing a catalog entry that does not exist.
 
-0. **Author the membership credential** in `dtgwg-cred-spec` — one new type, not
-   two: the invitation half reuses the existing VIC (§9). Settle in that PR
-   whether it is the authority-shaped credential the VAC name was reserved for
-   or something narrower.
+0. **Author the VAC** in `dtgwg-cred-spec` — the only new credential type. VIC
+   and VMC are existing DTG core credentials and a room is another node they
+   bind to (I4, §5.0). Settle in that PR whether rooms are the first instance of
+   the authority credential the VAC name was reserved for, with the community's
+   `CommunityRole` VEC a later migration onto it (§5.2), or whether rooms need
+   something narrower.
 1. **Author the schemas upstream** in `trustoverip/dtgwg-trust-tasks-tf`:
    `spec/vtc/rooms/{create,get,list,transfer,close}/0.1`,
    `spec/vtc/rooms/records/{put,get,list,delete,purge}/0.1`,
