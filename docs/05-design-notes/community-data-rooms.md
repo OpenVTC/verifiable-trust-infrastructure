@@ -50,11 +50,11 @@ supported.** §10. Members already hold DIDs, DIDComm and their own VTAs; the
 room key mechanism does not depend on the VTC. A community needing more than I2
 offers should be told how to leave rather than sold a tier that cannot deliver.
 
-**I4. A room is a DTG node, not a new thing that needs new credentials.** The
-DTG core credentials are generic: they *"create and annotate the nodes and edges
-of a DTG"*, and a room is a node like any other. So a room gets a DID, the owner
-controls it, and membership is an ordinary VMC pair — a real DTG edge, not a
-bespoke artifact. §5.
+**I4. A room is a DTG node with its own identity.** The DTG core credentials
+are generic: they *"create and annotate the nodes and edges of a DTG"*, and a
+room is a node like any other. So a room gets a **DID** — it is addressable,
+messageable, and the issuer of its own credentials (§3.2) — and membership is an
+ordinary VMC pair, a real DTG edge rather than a bespoke artifact. §5.
 
 **What changed by adopting these:** membership privacy stops being an absence of
 data and becomes a cryptographic property — an unlinkable proof the VTC verifies
@@ -140,11 +140,103 @@ community under an obligation to produce per-member access logs must use.
 
 **`private`** — content encrypted; membership proven by an unlinkable
 zero-knowledge presentation of the room VMC, so the VTC verifies that a
-legitimate member is acting without learning which one. The owner remains known (I1). This is not anonymity: see §5.5 for
-what it does not cover, and §10 for what to do about that.
+legitimate member is acting without learning which one. The owner remains known
+(I1). This is not anonymity: see §5.5 for what it does not cover, and §10 for
+what to do about that.
 
 The tier is **not** named `blind`. The old name overclaimed, and the overclaim
 is what F1 exploited.
+
+### 3.2 The room's DID
+
+A room is an entity with an identity, not a row in someone else's table. It gets
+a DID, and that single decision is what makes the rest of this note small.
+
+**What the DID gives it:**
+
+| | |
+|---|---|
+| **Addressable** | Members reference `did:webvh:…:rooms:<id>`, not a VTC-local row id. The room survives being moved, mirrored, or taken off the VTC entirely (§10) |
+| **Messageable** | The DID document advertises a transport, so you can *send to the room* — a join request, a record, a presentation. §3.2.3 |
+| **An issuer** | VIC, VMC and VAC are issued **by the room**, which is what makes ownership transfer a controller change rather than a mass reissue (§9) |
+| **Closable** | Closing a room is DID deactivation. Every credential it issued stops verifying, by the mechanism that already exists, with no revocation list to maintain |
+
+#### 3.2.1 Method, hosting, and the trap in hosting it
+
+**`did:webvh`, served by the VTC** at a pathful location —
+`did:webvh:<scid>:<host>:rooms:<id>` resolving to
+`https://<host>/rooms/<id>/did.jsonl`. The VTC already serves its own log this
+way (`vtc-service/src/routes/did_log.rs`, reading
+`<data_dir>/did/<scid>.jsonl`), and the workspace already supports pathful
+webvh. Room ids are high-entropy (§7.3), so a served log does not enumerate
+rooms; it reveals that *a* room exists at an unguessable path, and a key and an
+endpoint. Nothing about membership.
+
+**The trap:** the VTC serves the log that establishes the room's keys, so a
+malicious operator serving a forged log could name its own key and then issue
+itself a VMC — F2 again, one layer down. `did:webvh` is precisely the defence:
+the log is hash-chained and self-certifying, each entry signed by a key the
+previous entry authorises, with the SCID committing to genesis. **Clients must
+verify the log rather than trust the host that served it.** That is what webvh
+is for, and it is the reason to prefer it here over a method that merely
+resolves.
+
+**`did:peer` was the obvious alternative and costs too much.** It would keep a
+private room's DID unresolvable to anyone not handed it — attractive — but
+`did:peer` encodes its keys in the identifier, so the controller cannot change.
+Ownership transfer would mean a new room DID and the reissue of every
+credential in it: exactly the mass reissue §9 just deleted.
+
+#### 3.2.2 Where the room's signing key lives — and why the tier decides
+
+The room signs with its own key. **Where that key sits determines whether
+`private` means anything.**
+
+If the VTC holds it, the VTC can mint a VMC for itself and join any room it
+hosts. The whole tier is void — and it would be void *legitimately*, through a
+valid log entry and a well-formed credential, with nothing to detect.
+
+| Tier | Room signing key | Rationale |
+|---|---|---|
+| `open`, `attributed` | may live at the VTC | Those tiers already trust the operator with membership; VTC-side issuance is a real convenience |
+| `private` | **the owner's VTA, never the VTC** | Otherwise the operator can issue itself membership |
+
+Transfer on `private` moves the room's authority between VTAs. Use the
+webvh pre-rotation mechanism the workspace already has
+(`vta-keys::derive_pre_rotation_keys`) rather than shipping a key: the outgoing
+owner publishes a log entry rotating to a key the incoming owner already holds.
+
+#### 3.2.3 What being messageable unlocks
+
+The room DID advertises a transport (TSP > DIDComm > REST, per the workspace
+rule), so the room is a correspondent rather than an endpoint on someone else's
+API:
+
+- **The join flow becomes the community's join flow.** Present the VIC *to the
+  room*, receive VMC + VAC back. §10.1, one level down, with a real recipient.
+- **The room can push.** Epoch changes, membership changes and new-record
+  notices go out from the room to its members over the existing delivery layer,
+  instead of the owner reaching each member by hand.
+- **It answers `private`'s residual correlation problem.** §7.2 noted that
+  network origin re-links a read to a person whatever the presentation
+  withholds. Traffic addressed to the room DID and routed through a mediator is
+  the mitigation — and it makes §5.5's transport caveat actionable rather than
+  merely disclosed.
+
+#### 3.2.4 A room is not a small community
+
+Scope discipline, because this is where it would erode. A room has an identity,
+members, and issued credentials. It has **no** trust registry, no personhood
+governance, no public presence, no recognition graph, and no policy of its own —
+it is governed by its host community's `rooms.rego` (§4). It is a node with an
+identity, not a community.
+
+**One question for the cred-spec PR** (§9): a VMC attests membership *"in a VTC
+or VTN"*. If those name graph-node kinds rather than deployed services, a room
+is already a node of the kind VMC serves and the spec needs nothing new for it.
+If they name services, the spec needs a word for this. That is a question about
+what the DTG model means, and it should be answered there rather than assumed
+here.
 
 ---
 
@@ -195,9 +287,9 @@ distinguishes their variants *"by issuer and subject rules (not by separate type
 strings)"*. A room is a third node kind, and it needs no new vocabulary to be
 one.
 
-**So the room gets its own DID, and the owner controls it.** Membership is an
-ordinary VMC pair between the member's DID and the room's — a real DTG edge, of
-the same kind the community already forms.
+**So the room gets its own DID, and the owner controls it** (§3.2). Membership
+is an ordinary VMC pair between the member's DID and the room's — a real DTG
+edge, of the same kind the community already forms.
 
 | Job | Credential | Status |
 |---|---|---|
@@ -572,11 +664,12 @@ abuse, the party any demand reaches, and the **controller of the room's DID**,
 which is what issues every VIC, VMC and VAC in the room (§5.0).
 
 - **Transferable, and cheaply.** Ownership transfer re-points the room DID's
-  controller. Every credential in the room stays valid, because the issuer did
-  not change — only who holds its keys. The VTC records the transfer and audits
-  it. This is the single largest simplification I4 bought: the previous model
-  had the new owner reissuing every membership credential under their own key at
-  a fresh epoch, a mass reissue triggered by an administrative act.
+  controller — on `private`, via a webvh pre-rotation entry to a key the
+  incoming owner already holds (§3.2.2). Every credential in the room stays
+  valid, because the issuer did not change, only who holds its keys. The VTC
+  records the transfer and audits it. This is the single largest simplification
+  I4 bought: the previous model had the new owner reissuing every membership
+  credential under their own key at a fresh epoch.
 - **Nominated successor.** The owner may name a successor who can *claim*
   ownership if the owner's membership lapses. Claiming is explicit — an
   automatic promotion would move an accountable role onto someone who may not
@@ -585,6 +678,9 @@ which is what issues every VIC, VMC and VAC in the room (§5.0).
   writes, and the operator may reclaim storage after a stated period. Freezing
   rather than deleting, because the VTC cannot tell whether the content still
   matters to the people who can read it.
+- **Closing a room is DID deactivation** (§3.2). Every credential it issued
+  stops verifying by the mechanism that already exists — no revocation list, no
+  sweep, and no way for a stale VMC to outlive the room it names.
 
 The owner being the sole issuer makes succession load-bearing: an unreachable
 owner is a room whose membership can no longer change.
