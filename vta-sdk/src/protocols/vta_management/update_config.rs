@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::get_config::GetConfigResultBody;
+use serde_json::Value;
 
 /// `config/patch/0.1` request: `key → value`. Keys outside the registry, and
 /// keys that are immutable at runtime, come back under `rejected` rather than
@@ -38,6 +39,19 @@ use super::get_config::GetConfigResultBody;
 pub struct UpdateConfigBody {
     #[cfg_attr(feature = "openapi", schema(value_type = Object))]
     pub overrides: HashMap<String, serde_json::Value>,
+    /// Ecosystem-defined extension members (SPEC §4.5.1).
+    ///
+    /// Carried explicitly rather than swept up by relaxing
+    /// `deny_unknown_fields`: the published payload schemas declare an `ext`
+    /// slot, so a conforming producer may send one, and rejecting the whole
+    /// document over it would break interop with a peer doing exactly what the
+    /// spec allows. Keeping `deny_unknown_fields` alongside it means a *typo*
+    /// is still refused rather than silently ignored — which is the guard that
+    /// clause was there for.
+    ///
+    /// The VTA does not interpret the contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
 }
 
 /// A key the patch declined to apply, and why — canonical

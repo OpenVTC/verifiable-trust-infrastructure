@@ -570,8 +570,10 @@ impl serde::Serialize for CreateAclRequest {
                 }),
                 step_up: has_step_up.then_some(step_up),
                 approve: has_approve.then_some(approve),
+                ext: None,
             },
             reason: None,
+            ext: None,
         };
         body.serialize(s)
     }

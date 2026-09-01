@@ -28,6 +28,7 @@ pub async fn cmd_list(
             enabled_only,
             cursor: None,
             page_size: None,
+            ext: None,
         })
         .await?;
 
@@ -129,6 +130,7 @@ pub async fn cmd_delete(
             id: id.to_string(),
             expected_version,
             reason,
+            ext: None,
         })
         .await?;
     println!("Deleted policy {} at {}", result.id, result.deleted_at);

@@ -261,6 +261,7 @@ async fn config_registry_round_trips_and_identity_stays_read_only() {
         .update_config(vta_sdk::client::UpdateConfigRequest {
             patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody {
                 overrides,
+                ext: None,
             },
         })
         .await
@@ -282,6 +283,7 @@ async fn config_registry_round_trips_and_identity_stays_read_only() {
         .update_config(vta_sdk::client::UpdateConfigRequest {
             patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody {
                 overrides,
+                ext: None,
             },
         })
         .await

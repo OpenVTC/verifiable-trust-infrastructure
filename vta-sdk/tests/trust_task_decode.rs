@@ -110,6 +110,7 @@ fn agent_acl_entry() -> AclEntry {
         expires_at: Some(ts()),
         step_up: None,
         approve: None,
+        ext: None,
     }
 }
 
