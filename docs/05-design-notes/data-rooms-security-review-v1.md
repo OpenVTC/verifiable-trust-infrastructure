@@ -1,6 +1,11 @@
-# Security review — community data rooms
+# Security review v1 — data rooms (superseded)
 
-Reviewed: `community-data-rooms.md`, design stage, 2026-09-01.
+> **Superseded.** This review examined **revision 2** of the design (then
+> titled `data-rooms.md`, now [`data-rooms.md`](data-rooms.md)).
+> It stands as a dated record; the current review is
+> [`data-rooms-security-review-v2.md`](data-rooms-security-review-v2.md).
+
+Reviewed: `data-rooms.md`, design stage, 2026-09-01.
 Nothing is implemented, so every finding is cheap to act on now and
 expensive later. Seventeen findings: four that break a stated guarantee,
 four high, six medium, three accepted.

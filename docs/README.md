@@ -179,23 +179,21 @@ are implementer-facing rather than operator-facing.
   versioned, namespaced, per-context application JSON: why agent memory
   and both vaults are the wrong home, what the surface needs, and the
   upstream spec dependency that has to land first. Design only.
-- **[Community data rooms](05-design-notes/community-data-rooms.md)** —
-  member-created, end-to-end encrypted shared spaces on the **VTC**, for
-  shared agent memory and anything else a subset of a community needs to
-  keep between themselves: why it is not the `vta/memory` family, the
-  three-tier visibility ladder (`open` / `attributed` / `private`) a
-  community selects by Rego policy, access proven by an owner-issued
-  BBS+ membership credential the VTC can verify but not correlate, room
-  keys held in member VTAs, and a supported path out for groups the
-  hosted tiers cannot serve. Design only.
-- **[Community data rooms — security review](05-design-notes/community-data-rooms-security-review.md)** —
-  end-to-end adversarial review of the above, for communities spanning
-  fully public to fully private with zero trust. Seventeen findings, four
-  of which broke a guarantee the design stated; the threat model's central
-  claim is that **the trust boundary is per operator, not per service**.
-  §0 carries the disposition of each finding against the revised design —
-  five were dissolved rather than patched. Read before changing the key
-  custody, membership-proof, or client sections.
+- **[Data rooms](05-design-notes/data-rooms.md)** —
+  shared, credential-governed, end-to-end-encryptable spaces for humans
+  and their AI agents, built from DTG credentials (VIC/VMC/VAC issued by
+  a room that is itself a DID-bearing DTG node): four host-neutral
+  topologies (personal VTA, in a VTC, cross-community, VRC peers), a
+  three-tier visibility ladder (`open`/`attributed`/`private` with
+  unlinkable BBS+ presentations), MLS (RFC 9420) as the group-key layer,
+  witnessed room DID logs, and renew-not-reap lifecycle. Design only.
+- **[Data rooms — security review v2](05-design-notes/data-rooms-security-review-v2.md)** —
+  current end-to-end review of revision 3: sixteen findings across the
+  host-as-DS, witnesses, mirrors, quorums, attenuated agent capabilities
+  and the human surface; the threat model's central claim remains that
+  **the trust boundary is per operator, not per service**.
+  ([v1](05-design-notes/data-rooms-security-review-v1.md) is the dated
+  record of the revision-2 review that reshaped the design.)
 - **[vta-service decomposition](05-design-notes/vta-service-decomposition.md)** —
   how the ~114k-line VTA crate was split into subsystem crates, the
   extraction technique, and the rule for where the program stops.
