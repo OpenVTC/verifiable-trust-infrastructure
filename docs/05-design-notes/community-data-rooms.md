@@ -175,6 +175,51 @@ it to reach backwards has misunderstood what they bought.
 This is the mechanism the redesign turns on, and it is built entirely from
 primitives already in the tree.
 
+### 5.0 Joining a room mirrors joining a community
+
+The community flow is **VIC → present → VMC**: an admin issues a Verifiable
+Invitation Credential to an applicant DID, the applicant presents it in a VP,
+and the VTC mints a VMC plus a role VEC (§6.1, §10.1). A room does the same
+thing one level down: **room VIC → present → room membership credential**, with
+the owner in the issuer's chair.
+
+**This is not only code reuse — it fixes a real gap.** Without it, the owner
+seals a room key and a membership credential to your VTA and you are simply in,
+having agreed to nothing. That is wrong on a shared store: you would hold keys
+to material you may not want, incur the obligations of membership, and on
+`private` nobody outside the room could even tell you were there. **Joining a
+room must be a two-party act,** and an invitation you can decline is what makes
+it one.
+
+Consent is given once. Epoch reissue (§5.3) renews membership credentials to
+members who already accepted — it does not re-invite them, so rekeying does not
+spam a room with invitations.
+
+**Two credentials, two jobs, and the tempting collapse does not work.** A VIC is
+single-use and consumed by definition, so it cannot also be the thing presented
+on every read; and it names its subject DID, so presenting it per access would
+disclose the member — meaning you would need selective disclosure anyway, having
+reinvented the membership credential and lost the invitation semantics on the
+way. The invitation precedes; the membership credential persists.
+
+**Where the VIC lives differs by tier, and this is load-bearing.** The VTC's
+invitation machinery — the `INVITATIONS` keyspace, `CONSUMED_INVITATIONS`,
+revocation and listing — is server-side. Room VICs riding it would tell the VTC
+the room's membership *at invite time*, which is `private` defeated at the first
+step.
+
+| | `open` / `attributed` | `private` |
+|---|---|---|
+| Issued by | owner | owner |
+| Delivered | via the VTC's invitation store | DIDComm only, never through the VTC |
+| Replay protection | `CONSUMED_INVITATIONS`, as today | the owner tracks consumption — they are the issuer and know who they invited |
+| Revocable before acceptance | yes, by the VTC | yes, by the owner declining to honour it |
+
+On `private` the VTC cannot enforce "only invited parties join", and does not
+need to: the owner is the sole issuer of membership credentials, so an uninvited
+party never gets one. Admission control is the owner's signature. The VIC's job
+there is consent and a record between the parties, not gatekeeping.
+
 ### 5.1 The construction
 
 The **room owner issues each member a BBS+ membership credential** over
@@ -515,8 +560,16 @@ the room is unrecoverable. The operator holds bytes and cannot help. This is the
 irreducible cost of the guarantee and belongs in the UI at room creation, not in
 a footnote — a community should choose `attributed` knowing it.
 
+**Only one of the two credentials is new.** The invitation half is a **VIC**,
+already in the catalog (§6.1) — a room VIC is a VIC with room-scoped attributes
+and a member rather than the community in the issuer field, which is the same
+move VRCs already make. That halves the upstream ask.
+
 **The membership credential is a new DTG catalog entry**, authored upstream in
-`dtgwg-cred-spec` before this ships. §3-C limits credentials to the DTG catalog
+`dtgwg-cred-spec` before this ships. Nothing in the catalog fits: VMC is
+community membership issued by the community DID, VEC asserts something about a
+subject, and VRC is a self-issued trust edge with no `credentialStatus`. None of
+them confers a capability. §3-C limits credentials to the DTG catalog
 and sends new needs upstream rather than allowing local extension, and the
 tempting shortcut — filing it as a community-defined *custom endorsement type*,
 which the VTC already supports and which would need no upstream work — is
@@ -568,9 +621,10 @@ It is the long pole and should start first — the schema work in step 1 can
 proceed in parallel once the credential's shape is agreed, but cannot merge
 citing a catalog entry that does not exist.
 
-0. **Author the membership credential** in `dtgwg-cred-spec`. Settle in that PR
+0. **Author the membership credential** in `dtgwg-cred-spec` — one new type, not
+   two: the invitation half reuses the existing VIC (§9). Settle in that PR
    whether it is the authority-shaped credential the VAC name was reserved for
-   or something narrower (§9).
+   or something narrower.
 1. **Author the schemas upstream** in `trustoverip/dtgwg-trust-tasks-tf`:
    `spec/vtc/rooms/{create,get,list,transfer,close}/0.1`,
    `spec/vtc/rooms/records/{put,get,list,delete,purge}/0.1`,
