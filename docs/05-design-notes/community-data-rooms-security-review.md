@@ -5,6 +5,53 @@ Nothing is implemented, so every finding is cheap to act on now and
 expensive later. Seventeen findings: four that break a stated guarantee,
 four high, six medium, three accepted.
 
+> **Disposition, after the revision this review prompted.** The findings
+> below are kept as written — a review is a dated record and should not be
+> quietly edited into agreement with the design it examined. The table in
+> §0 says what happened to each.
+
+---
+
+## 0. Disposition
+
+The design was reworked around three invariants (note §1) and an
+owner-issued BBS+ membership credential (note §5). Both came out of this
+review plus the decision that **a room owner is always known** and that
+groups wanting more privacy than a hosted service can give should be
+helped to leave rather than sold a tier that cannot deliver.
+
+| | Finding | Disposition |
+|---|---|---|
+| F1 | Authenticated reads leak membership | **Dissolved.** Reads carry an unlinkable membership proof; there is no session to leak from |
+| F2 | Verification key learned from the VTC | **Dissolved.** The verifier is the owner's issuer key, resolvable from the owner's DID |
+| F3 | Room key released to the agent | **Fixed.** The VTA is a decryption + proving oracle; neither key crosses to the agent |
+| F4 | Cross-service correlation | **Accepted and scoped.** Invariant I2 — the VTC does not defend against an adversary running the transport. Note §5.5, §10 |
+| F5 | No epoch authority | **Dissolved.** Only the owner issues credentials, so only the owner changes the member set |
+| F6 | Verification keypair never rotates | **Dissolved.** There is no shared signing key to rotate |
+| F7 | Room keys never expire | **Fixed.** Mandatory maximum epoch lifetime (note §5.3) |
+| F8 | Room content is untrusted agent input | **Open, client-side.** Note §13. Independent of everything else and can land first |
+| F9 | Outer signature scope | **Fixed.** The proof commits to `(roomId, key, version, epoch, H(ciphertext))` |
+| F10 | Unauthenticated epoch label | **Fixed.** Epoch bound into the record's AEAD associated data |
+| F11 | Anonymous quota exhaustion | **Partly.** BBS+ gives no nullifier, so no anonymous per-member limit. Room-level caps for v1; note §5.4 keeps it open |
+| F12 | Owner as correlation seed | **Withdrawn.** Invariant I1 makes the owner known by decision; the tension it described is gone |
+| F13 | Read log is a privacy artifact | **Fixed.** Separate retention policy for room read events; actorless option |
+| F14 | Escrow inverts the guarantee | **Constraint recorded.** Escrow, if adopted, must be member-threshold |
+| F15 | Traffic analysis | **Accepted, documented** in note §5.5 |
+| F16 | Automated reads defeat anomaly detection | **Accepted, documented** in note §7 |
+| F17 | Cross-room contamination | **Mitigated via F8** |
+
+Five findings — F1, F2, F5, F6, F12 — were **dissolved rather than
+patched**: the mechanism they were defects in no longer exists. That is
+the outcome worth noticing. Each was a consequence of authorising by
+shared secret and hiding membership by omission; replacing both with a
+credential the owner issues and a proof the VTC can verify but not
+correlate removed the class, not the instances.
+
+The remaining live work is **F8** (client-side, independent), **F11**
+(accepted for v1, revisit if `private` sees real use), **F14** plus the
+escrow question in note §12.1, and **F4** as a documented boundary rather
+than a defect.
+
 ## Threat model
 
 The design must hold across a range, not at a point: communities that are
