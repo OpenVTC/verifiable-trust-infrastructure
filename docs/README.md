@@ -187,6 +187,10 @@ are implementer-facing rather than operator-facing.
   three-tier visibility ladder (`open`/`attributed`/`private` with
   unlinkable BBS+ presentations), MLS (RFC 9420) as the group-key layer,
   witnessed room DID logs, and renew-not-reap lifecycle. Design only.
+- **[Data rooms — concept document](05-design-notes/data-rooms-concept.html)** —
+  shareable, non-technical-audience write-up of the idea, benefits, design
+  and the case for the VAC, with diagrams of the four topologies, the
+  join flow, the trust stack and VAC attenuation. Open in a browser.
 - **[Data rooms — security review v2](05-design-notes/data-rooms-security-review-v2.md)** —
   current end-to-end review of revision 3: sixteen findings across the
   host-as-DS, witnesses, mirrors, quorums, attenuated agent capabilities

@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<title>Verifiable Data Rooms</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --paper:#F7F9F8; --ink:#16211F; --ink-2:#4A5A55; --ink-3:#7C8B86;
+    --line:#D8E0DD; --line-soft:#E6ECEA;
+    --pine:#1F6F62; --pine-soft:#E3EFEC; --pine-ink:#145248;
+    --amber:#A87B24; --amber-soft:#F5EBD8;
+    --card:#FFFFFF; --well:#EFF3F1;
+    --good:#1F6F62; --none:#B04A3A;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#101816; --ink:#E8EDEA; --ink-2:#A7B5B0; --ink-3:#76847F;
+      --line:#2A3733; --line-soft:#222E2A;
+      --pine:#4FA893; --pine-soft:#1A2A26; --pine-ink:#7FC7B5;
+      --amber:#D9A84E; --amber-soft:#2A2318;
+      --card:#161F1C; --well:#1A2421;
+      --good:#4FA893; --none:#D07B6B;
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#101816; --ink:#E8EDEA; --ink-2:#A7B5B0; --ink-3:#76847F;
+    --line:#2A3733; --line-soft:#222E2A;
+    --pine:#4FA893; --pine-soft:#1A2A26; --pine-ink:#7FC7B5;
+    --amber:#D9A84E; --amber-soft:#2A2318;
+    --card:#161F1C; --well:#1A2421;
+    --good:#4FA893; --none:#D07B6B;
+  }
+  *{box-sizing:border-box}
+  body{
+    background:var(--paper); color:var(--ink);
+    font-family:"IBM Plex Sans",-apple-system,"Segoe UI",sans-serif;
+    font-size:16px; line-height:1.65; margin:0;
+  }
+  .page{max-width:1020px; margin:0 auto; padding:56px 28px 96px}
+  .col{max-width:70ch; margin:0 auto}
+  .wide{max-width:960px; margin:0 auto}
+
+  .eyebrow{
+    font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--pine); font-weight:500; margin:0 0 10px;
+  }
+  h1{
+    font-family:"IBM Plex Serif",Georgia,serif; font-weight:600;
+    font-size:clamp(34px,5.5vw,52px); line-height:1.12; margin:0 0 18px;
+    text-wrap:balance; letter-spacing:-.01em;
+  }
+  h2{
+    font-family:"IBM Plex Serif",Georgia,serif; font-weight:600;
+    font-size:27px; line-height:1.25; margin:0 0 14px; text-wrap:balance;
+  }
+  h3{font-size:17px; font-weight:600; margin:26px 0 8px}
+  p{margin:0 0 16px; color:var(--ink)}
+  .lede{font-size:19px; line-height:1.6; color:var(--ink-2)}
+  a{color:var(--pine-ink); text-decoration-color:var(--line); text-underline-offset:3px}
+  a:focus-visible,button:focus-visible{outline:2px solid var(--pine); outline-offset:2px; border-radius:2px}
+  strong{font-weight:600}
+  em{font-style:italic}
+  code{font-family:"IBM Plex Mono",monospace; font-size:.86em; background:var(--well); padding:1px 5px; border-radius:4px}
+
+  .meta{display:flex; flex-wrap:wrap; gap:10px 22px; padding:14px 0; margin:26px 0 0;
+    border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+    font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--ink-2)}
+  .meta span b{color:var(--ink); font-weight:500}
+
+  section{margin:64px 0 0}
+  .figure-block{margin:30px 0 34px}
+  figure{margin:0; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:22px 22px 14px; overflow-x:auto}
+  figcaption{font-size:13.5px; color:var(--ink-2); padding:10px 2px 2px; border-top:1px solid var(--line-soft); margin-top:12px}
+  svg{max-width:100%; height:auto; display:block; color:var(--ink)}
+  .svg-note{font-family:"IBM Plex Mono",monospace}
+
+  table{border-collapse:collapse; width:100%; font-size:14.5px; background:var(--card);
+    border:1px solid var(--line); border-radius:10px; overflow:hidden}
+  .table-wrap{overflow-x:auto; margin:26px 0 10px; border-radius:10px}
+  th,td{padding:10px 14px; text-align:left; border-bottom:1px solid var(--line-soft); vertical-align:top}
+  thead th{font-family:"IBM Plex Mono",monospace; font-size:11.5px; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--ink-2); font-weight:500; background:var(--well)}
+  tbody tr:last-child td{border-bottom:none}
+  td.yes{color:var(--good); font-weight:600; font-variant-numeric:tabular-nums}
+  td.no{color:var(--none); font-weight:600}
+  td.hd,th.hd{font-weight:600; color:var(--ink)}
+  .tiername{font-family:"IBM Plex Mono",monospace; font-size:13px; font-weight:500}
+
+  .cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px; margin:28px 0 6px}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px 20px}
+  .card h3{margin:0 0 6px; font-size:16.5px}
+  .card p{font-size:14.5px; color:var(--ink-2); margin:8px 0 0}
+  .chips{display:flex; gap:6px; flex-wrap:wrap; margin-top:2px}
+  .chip{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.05em;
+    padding:2px 8px; border-radius:99px; border:1px solid var(--line); color:var(--ink-2)}
+  .chip.t{background:var(--pine-soft); border-color:transparent; color:var(--pine-ink)}
+  .chip.v{background:var(--amber-soft); border-color:transparent; color:var(--amber)}
+
+  .pull{border-left:3px solid var(--pine); background:var(--pine-soft);
+    padding:16px 20px; border-radius:0 10px 10px 0; margin:26px 0}
+  .pull p{margin:0; color:var(--ink)}
+  .pull p + p{margin-top:10px}
+
+  .benefits{display:grid; grid-template-columns:repeat(auto-fit,minmax(290px,1fr)); gap:14px 26px; margin:26px 0 0; padding:0; list-style:none}
+  .benefits li{padding:14px 0 4px; border-top:1px solid var(--line)}
+  .benefits b{display:block; font-weight:600; margin-bottom:4px}
+  .benefits span{font-size:14.5px; color:var(--ink-2)}
+
+  ol.plain{padding-left:22px; margin:0 0 16px}
+  ol.plain li{margin-bottom:8px}
+  ul.plain{padding-left:22px; margin:0 0 16px}
+  ul.plain li{margin-bottom:8px}
+
+  .foot{margin-top:80px; padding-top:18px; border-top:1px solid var(--line);
+    font-size:13px; color:var(--ink-3)}
+  .foot p{color:var(--ink-3); margin:0 0 8px}
+  .srcs{font-size:12.5px; line-height:2}
+  @media (prefers-reduced-motion: no-preference){
+    html{scroll-behavior:smooth}
+  }
+</style>
+<style>
+  html{color-scheme:light dark}
+  body{margin:0}
+  img{max-width:100%}
+  [hidden]{display:none !important}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="col">
+    <p class="eyebrow">Concept · OpenVTC / Verifiable Trust Infrastructure</p>
+    <h1>Verifiable Data Rooms</h1>
+    <p class="lede">A shared space that people read and curate, and their AI&nbsp;agents use as
+    memory — governed entirely by credentials the room itself issues, encryptable so that
+    whoever hosts it cannot read it, and portable across every place it could live.</p>
+    <div class="meta">
+      <span>status <b>design, revision 3</b></span>
+      <span>reviewed <b>2 adversarial passes</b></span>
+      <span>built on <b>DTG credentials · MLS (RFC&nbsp;9420) · did:webvh</b></span>
+      <span>name <b>working title</b></span>
+    </div>
+  </header>
+
+  <section class="col">
+    <p class="eyebrow">The idea</p>
+    <h2>One room, wherever it lives</h2>
+    <p>Teams keep shared knowledge in tools that can read everything they hold. AI agents make
+    that worse: an agent's memory is its owner's most candid data, and today there is no good
+    place for a <em>group's</em> agents to share what they learn without handing the transcript
+    to a platform.</p>
+    <p>A <strong>data room</strong> is the alternative: a set of records — decisions, notes,
+    intelligence, working memory — held by some host, but governed by nobody except the people
+    in it. The room is an entity in its own right: it has a DID, it issues its own membership
+    and access credentials, and it can be messaged, moved, transferred, and closed. The host —
+    whichever host — stores bytes and keeps them available. That is the whole of its role.</p>
+    <p>Because the room, not the host, defines its membership, the same room works in four
+    very different places:</p>
+  </section>
+
+  <div class="wide figure-block">
+    <figure>
+      <svg viewBox="0 0 960 262" role="img" aria-label="Four topologies: the identical room appears hosted on a personal VTA, in a community VTC, in one VTC with a read mirror at another, and on a peer's VTA with no community involved.">
+        <defs>
+          <marker id="ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L8,4 L0,8 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <g font-family="IBM Plex Mono,monospace" font-size="11.5">
+          <!-- T1 -->
+          <g>
+            <text x="118" y="18" text-anchor="middle" fill="var(--pine)" font-weight="500">T1 · PERSONAL</text>
+            <rect x="28" y="30" width="180" height="150" rx="10" fill="none" stroke="currentColor" opacity=".55"/>
+            <text x="118" y="50" text-anchor="middle" fill="currentColor" opacity=".7">my VTA</text>
+            <rect x="58" y="66" width="120" height="72" rx="8" fill="var(--pine-soft)" stroke="var(--pine)" stroke-width="1.5"/>
+            <text x="118" y="97" text-anchor="middle" fill="var(--pine)" font-weight="500">room</text>
+            <text x="118" y="115" text-anchor="middle" fill="var(--pine)" font-size="10">did:webvh</text>
+            <circle cx="118" cy="222" r="7" fill="currentColor" opacity=".8"/>
+            <circle cx="80" cy="222" r="7" fill="none" stroke="currentColor"/>
+            <circle cx="156" cy="222" r="7" fill="none" stroke="currentColor"/>
+            <line x1="118" y1="211" x2="118" y2="146" stroke="currentColor" marker-end="url(#ar)"/>
+            <text x="128" y="185" fill="currentColor" opacity=".7" font-size="10.5">VMC</text>
+            <line x1="84" y1="212" x2="104" y2="146" stroke="currentColor" marker-end="url(#ar)"/>
+            <line x1="152" y1="212" x2="132" y2="146" stroke="currentColor" marker-end="url(#ar)"/>
+            <text x="118" y="250" text-anchor="middle" fill="currentColor" opacity=".65" font-size="10.5">me + anyone I invite</text>
+          </g>
+          <!-- T2 -->
+          <g transform="translate(240,0)">
+            <text x="118" y="18" text-anchor="middle" fill="var(--pine)" font-weight="500">T2 · COMMUNITY</text>
+            <rect x="28" y="30" width="180" height="150" rx="10" fill="none" stroke="currentColor" opacity=".55"/>
+            <text x="118" y="50" text-anchor="middle" fill="currentColor" opacity=".7">community VTC</text>
+            <rect x="58" y="66" width="120" height="72" rx="8" fill="var(--pine-soft)" stroke="var(--pine)" stroke-width="1.5"/>
+            <text x="118" y="97" text-anchor="middle" fill="var(--pine)" font-weight="500">room</text>
+            <text x="118" y="115" text-anchor="middle" fill="var(--pine)" font-size="10">did:webvh</text>
+            <g>
+              <circle cx="80" cy="222" r="7" fill="none" stroke="currentColor"/>
+              <circle cx="106" cy="222" r="7" fill="none" stroke="currentColor"/>
+              <circle cx="132" cy="222" r="7" fill="none" stroke="currentColor"/>
+              <circle cx="158" cy="222" r="7" fill="none" stroke="currentColor"/>
+            </g>
+            <line x1="119" y1="209" x2="119" y2="146" stroke="currentColor" marker-end="url(#ar)"/>
+            <text x="129" y="185" fill="currentColor" opacity=".7" font-size="10.5">VMC</text>
+            <text x="118" y="250" text-anchor="middle" fill="currentColor" opacity=".65" font-size="10.5">members · rooms.rego governs</text>
+          </g>
+          <!-- T3 -->
+          <g transform="translate(480,0)">
+            <text x="118" y="18" text-anchor="middle" fill="var(--pine)" font-weight="500">T3 · CROSS-COMMUNITY</text>
+            <rect x="10" y="30" width="130" height="150" rx="10" fill="none" stroke="currentColor" opacity=".55"/>
+            <text x="75" y="50" text-anchor="middle" fill="currentColor" opacity=".7">VTC A</text>
+            <rect x="26" y="66" width="98" height="72" rx="8" fill="var(--pine-soft)" stroke="var(--pine)" stroke-width="1.5"/>
+            <text x="75" y="97" text-anchor="middle" fill="var(--pine)" font-weight="500">room</text>
+            <text x="75" y="115" text-anchor="middle" fill="var(--pine)" font-size="10">primary</text>
+            <rect x="158" y="30" width="90" height="150" rx="10" fill="none" stroke="currentColor" opacity=".55"/>
+            <text x="203" y="50" text-anchor="middle" fill="currentColor" opacity=".7">VTC B</text>
+            <rect x="168" y="66" width="70" height="72" rx="8" fill="none" stroke="var(--pine)" stroke-dasharray="4 3"/>
+            <text x="203" y="102" text-anchor="middle" fill="var(--pine)" font-size="10">mirror</text>
+            <line x1="124" y1="102" x2="166" y2="102" stroke="currentColor" stroke-dasharray="4 3" marker-end="url(#ar)"/>
+            <text x="145" y="93" text-anchor="middle" fill="currentColor" opacity=".7" font-size="9.5">sync</text>
+            <circle cx="50" cy="222" r="7" fill="none" stroke="currentColor"/>
+            <circle cx="100" cy="222" r="7" fill="none" stroke="currentColor"/>
+            <circle cx="203" cy="222" r="7" fill="none" stroke="currentColor"/>
+            <line x1="60" y1="213" x2="70" y2="146" stroke="currentColor" marker-end="url(#ar)"/>
+            <line x1="197" y1="212" x2="90" y2="144" stroke="currentColor" marker-end="url(#ar)"/>
+            <text x="128" y="250" text-anchor="middle" fill="currentColor" opacity=".65" font-size="10.5">members of A and B, one room</text>
+          </g>
+          <!-- T4 -->
+          <g transform="translate(732,0)">
+            <text x="108" y="18" text-anchor="middle" fill="var(--pine)" font-weight="500">T4 · PEERS</text>
+            <rect x="18" y="30" width="180" height="150" rx="10" fill="none" stroke="currentColor" opacity=".55"/>
+            <text x="108" y="50" text-anchor="middle" fill="currentColor" opacity=".7">a peer's VTA</text>
+            <rect x="48" y="66" width="120" height="72" rx="8" fill="var(--pine-soft)" stroke="var(--pine)" stroke-width="1.5"/>
+            <text x="108" y="97" text-anchor="middle" fill="var(--pine)" font-weight="500">room</text>
+            <text x="108" y="115" text-anchor="middle" fill="var(--pine)" font-size="10">did:webvh</text>
+            <circle cx="78" cy="222" r="7" fill="currentColor" opacity=".8"/>
+            <circle cx="138" cy="222" r="7" fill="none" stroke="currentColor"/>
+            <line x1="94" y1="222" x2="122" y2="222" stroke="currentColor" opacity=".8"/>
+            <text x="108" y="214" text-anchor="middle" fill="currentColor" opacity=".7" font-size="9.5">VRC</text>
+            <line x1="83" y1="211" x2="98" y2="146" stroke="currentColor" marker-end="url(#ar)"/>
+            <line x1="133" y1="211" x2="118" y2="146" stroke="currentColor" marker-end="url(#ar)"/>
+            <text x="108" y="250" text-anchor="middle" fill="currentColor" opacity=".65" font-size="10.5">no community at all</text>
+          </g>
+        </g>
+      </svg>
+      <figcaption>The same room — same identity, same credentials, same records — in four homes.
+      Green is the constant: what changes between panels is only who stores the bytes and who
+      governs creation. Membership arrows are VMCs held against the <em>room's</em> DID, so no
+      panel's host keeps a member list of its own.</figcaption>
+    </figure>
+  </div>
+
+  <section class="col">
+    <p class="eyebrow">Why it matters</p>
+    <h2>Benefits</h2>
+    <ul class="benefits">
+      <li><b>The host can be blind, and things still work</b>
+        <span>Membership is enforced through credentials the host verifies but cannot forge or
+        enumerate. At the strongest tier the host serves a room it cannot read, for members it
+        cannot identify — and still rejects junk, meters quota, and keeps backups.</span></li>
+      <li><b>Humans and agents share one memory</b>
+        <span>Records are human-readable, agent-recallable, and attributed — down to whether a
+        person wrote it or their agent did. No wiki drifting away from the agent store.</span></li>
+      <li><b>Rooms are portable</b>
+        <span>A room is addressed by its DID, not a host's row id. Moving host is re-pointing a
+        DID document; not one credential is reissued. Leaving a platform stops being an exit and
+        becomes a setting.</span></li>
+      <li><b>Accountability survives privacy</b>
+        <span>Every room has one always-known owner: the accountable party, the credential
+        issuer, the recipient of lifecycle notice. Privacy tiers hide members from hosts —
+        never the room from responsibility.</span></li>
+      <li><b>Standards, not inventions</b>
+        <span>Identity and authorization are W3C credentials from the DTG catalog; group keys
+        are MLS (RFC 9420); the room log is a witnessed, self-certifying did:webvh chain. The one
+        new credential this needs is the VAC — argued below.</span></li>
+      <li><b>Honest about trust</b>
+        <span>Confidentiality, integrity, and membership need no trust in the host. Availability
+        does — irreducibly — so the design makes host misbehaviour <em>provable</em> and
+        lifecycle rules explicit, rather than promising a zero that doesn't exist.</span></li>
+    </ul>
+  </section>
+
+  <section class="col">
+    <p class="eyebrow">Design · membership</p>
+    <h2>The room issues its own credentials</h2>
+    <p>Joining a room mirrors joining a community, one level down. The DTG already defines the
+    pieces: a <strong>VIC</strong> invites, a <strong>VMC</strong> attests membership, and both
+    are specified generically enough that a room — a DTG node with its own DID — can sit in the
+    issuer's chair. The room adds one credential the catalog doesn't have yet: the
+    <strong>VAC</strong>, carrying what a member may <em>do</em>.</p>
+  </section>
+
+  <div class="wide figure-block">
+    <figure>
+      <svg viewBox="0 0 960 240" role="img" aria-label="Join flow: the room DID issues a VIC to the invitee over DIDComm; the invitee presents it back and receives a VMC and VAC; thereafter every read and write presents those credentials to the host, which verifies against the room DID and holds no member list.">
+        <defs>
+          <marker id="ar2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L8,4 L0,8 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <g font-family="IBM Plex Mono,monospace" font-size="12">
+          <rect x="40" y="52" width="180" height="80" rx="10" fill="var(--pine-soft)" stroke="var(--pine)" stroke-width="1.5"/>
+          <text x="130" y="86" text-anchor="middle" fill="var(--pine)" font-weight="500">room DID</text>
+          <text x="130" y="106" text-anchor="middle" fill="var(--pine)" font-size="10.5">owner-controlled · witnessed</text>
+
+          <rect x="400" y="52" width="170" height="80" rx="10" fill="none" stroke="currentColor"/>
+          <text x="485" y="86" text-anchor="middle" fill="currentColor">member</text>
+          <text x="485" y="106" text-anchor="middle" fill="currentColor" opacity=".65" font-size="10.5">keys held in their VTA</text>
+
+          <rect x="750" y="52" width="170" height="80" rx="10" fill="none" stroke="currentColor"/>
+          <text x="835" y="86" text-anchor="middle" fill="currentColor">host</text>
+          <text x="835" y="106" text-anchor="middle" fill="currentColor" opacity=".65" font-size="10.5">stores bytes · no roster</text>
+
+          <path d="M222 70 L398 70" stroke="currentColor" marker-end="url(#ar2)" fill="none"/>
+          <text x="310" y="61" text-anchor="middle" fill="currentColor" opacity=".8" font-size="10.5">1 · VIC invite (DIDComm)</text>
+          <path d="M398 96 L222 96" stroke="currentColor" marker-end="url(#ar2)" fill="none"/>
+          <text x="310" y="89" text-anchor="middle" fill="currentColor" opacity=".8" font-size="10.5">2 · present VIC — consent</text>
+          <path d="M222 122 L398 122" stroke="var(--amber)" stroke-width="1.5" marker-end="url(#ar2)" fill="none" color="var(--amber)"/>
+          <text x="310" y="140" text-anchor="middle" fill="var(--amber)" font-size="10.5">3 · VMC + VAC issued</text>
+
+          <path d="M572 92 L748 92" stroke="var(--amber)" stroke-width="1.5" marker-end="url(#ar2)" fill="none" color="var(--amber)"/>
+          <text x="660" y="83" text-anchor="middle" fill="var(--amber)" font-size="10.5">4 · present VMC⊕VAC per op</text>
+          <text x="660" y="112" text-anchor="middle" fill="currentColor" opacity=".7" font-size="10.5">ZK on the private tier</text>
+
+          <path d="M835 134 C 835 190, 320 210, 150 140" stroke="currentColor" stroke-dasharray="4 3" marker-end="url(#ar2)" fill="none"/>
+          <text x="500" y="196" text-anchor="middle" fill="currentColor" opacity=".7" font-size="10.5">verifies against the room's witnessed DID log — never a host ACL</text>
+        </g>
+      </svg>
+      <figcaption>Membership never touches the host. The room invites (1), the invitee consents
+      by presenting (2), the room issues the durable pair (3), and every subsequent operation is
+      a credential presentation the host verifies against the room's public, witnessed log (4).
+      On the <span class="tiername">private</span> tier, step 4 is an unlinkable zero-knowledge
+      proof: the host learns <em>a member acted</em>, and nothing else.</figcaption>
+    </figure>
+  </div>
+
+  <section class="col">
+    <p class="eyebrow">Design · visibility</p>
+    <h2>Three tiers, chosen per room</h2>
+    <p>Rooms differ in what their host may see, and the ladder is deliberate about the cost of
+    each rung. Communities set which tiers their members may create
+    (<code>rooms.rego</code>); a personal host answers to its owner.</p>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>what the host can see / do</th>
+        <th class="hd"><span class="tiername">open</span></th>
+        <th class="hd"><span class="tiername">attributed</span></th>
+        <th class="hd"><span class="tiername">private</span></th>
+      </tr></thead>
+      <tbody>
+        <tr><td>read record content</td><td class="yes">yes</td><td class="no">no</td><td class="no">no</td></tr>
+        <tr><td>see who is acting</td><td class="yes">yes</td><td class="yes">yes</td><td class="no">unlinkable proof</td></tr>
+        <tr><td>see the owner</td><td class="yes">always</td><td class="yes">always</td><td class="yes">always</td></tr>
+        <tr><td>server-side search</td><td class="yes">yes</td><td class="no">—</td><td class="no">—</td></tr>
+        <tr><td>per-member access log &amp; rate limits</td><td class="yes">yes</td><td class="yes">yes</td><td class="no">room-level only</td></tr>
+        <tr><td>recover the room from its own backup</td><td class="yes">yes</td><td class="no">ciphertext only</td><td class="no">ciphertext only</td></tr>
+      </tbody>
+    </table></div>
+    <p><span class="tiername">open</span> is for reference material where search matters more
+    than secrecy. <span class="tiername">attributed</span> is the working default: content
+    sealed, conduct accountable. <span class="tiername">private</span> — the Signal
+    private-group architecture, rebuilt on verifiable credentials — is for rooms whose
+    membership is itself sensitive.</p>
+  </section>
+
+  <section class="col">
+    <p class="eyebrow">Design · trust</p>
+    <h2>Three layers, three different answers to “who do I trust?”</h2>
+  </section>
+
+  <div class="wide figure-block">
+    <figure>
+      <svg viewBox="0 0 984 218" role="img" aria-label="Three stacked layers: DTG credentials answer who, trusted through cryptography; MLS answers keys, providing epochs and post-compromise security; the host answers bytes and is trusted for availability only.">
+        <g font-family="IBM Plex Mono,monospace" font-size="12.5">
+          <rect x="60" y="18" width="600" height="52" rx="9" fill="var(--pine-soft)" stroke="var(--pine)" stroke-width="1.5"/>
+          <text x="84" y="42" fill="var(--pine)" font-weight="500">IDENTITY — DTG credentials</text>
+          <text x="84" y="59" fill="var(--pine)" font-size="10.5">VIC · VMC · VAC issued by the room; VRC · VEC · VWC alongside</text>
+          <text x="688" y="49" fill="currentColor" opacity=".85" font-size="11.5">trusted: nobody — verify proofs</text>
+
+          <rect x="60" y="83" width="600" height="52" rx="9" fill="none" stroke="var(--amber)" stroke-width="1.5"/>
+          <text x="84" y="107" fill="var(--amber)" font-weight="500">KEYS — MLS · RFC 9420</text>
+          <text x="84" y="124" fill="var(--amber)" font-size="10.5">epochs, removal, post-compromise security; storage keys from the exporter</text>
+          <text x="688" y="114" fill="currentColor" opacity=".85" font-size="11.5">trusted: nobody — keys in VTAs</text>
+
+          <rect x="60" y="148" width="600" height="52" rx="9" fill="none" stroke="currentColor" opacity=".7"/>
+          <text x="84" y="172" fill="currentColor">BYTES — the host (VTC or VTA room-host)</text>
+          <text x="84" y="189" fill="currentColor" opacity=".65" font-size="10.5">storage · availability · quota · governance of creation</text>
+          <text x="688" y="179" fill="currentColor" opacity=".85" font-size="11.5">trusted: availability, provably</text>
+        </g>
+      </svg>
+      <figcaption>The split MLS calls Authentication Service / Delivery Service, applied whole:
+      the DTG is the authentication layer, the host is a delivery service. The bottom row is the
+      irreducible trust in any hosted system — so the design spends its effort making host
+      misbehaviour <em>evident</em>: the room's DID log is co-signed by independent witnesses, and
+      each renewal anchors the epoch and a version floor, making suppressed renewals, forked
+      groups, and rolled-back mirrors provable rather than deniable.</figcaption>
+    </figure>
+  </div>
+
+  <section class="col">
+    <p class="eyebrow">The new credential</p>
+    <h2>The case for the VAC</h2>
+    <p>The DTG catalog holds six credentials. Two build edges (VMC, VRC), one invites (VIC),
+    three annotate (VPC, VEC, VWC). <strong>None of them confers authority.</strong> There is no
+    credential whose meaning is <em>“the holder may do X here”</em> — and rooms need exactly
+    that: read, write, curate, admin, as a grant distinct from membership.</p>
+    <p>The near-miss is instructive. Communities today express role grants as a VEC —
+    <code>endorsement: CommunityRole</code>. But an endorsement is a statement
+    <em>about</em> someone; a role grant <em>confers</em> something on them. Packing authority
+    into the endorsement slot blurs a line the catalog has otherwise kept sharp — the same
+    <em>delegation is not authority</em> line that reserved the VAC's name in the first place.
+    Rooms are the clean place to introduce it properly, and once it exists, community role
+    grants have a correct home to migrate to.</p>
+    <p>The VAC also completes work already in flight. We have proposed the
+    <strong>VDC — Verifiable Delegation Credential</strong> — to the DTG credential
+    specification (draft), covering the other half of the pair: <em>acting on someone's
+    behalf</em>. The VDC says “X may act <em>for</em> Y”; the VAC says “X may do
+    <em>this, here</em>.” The word <em>authority</em> was deliberately kept out of the VDC so
+    that the distinction would survive until the VAC existed to carry it. Together they give
+    the catalog a complete, non-overlapping account of conferred power — who may stand in for
+    whom, and who may do what — and an agent typically holds both: a VDC from its human, and
+    an attenuated VAC for each room it works in.</p>
+    <h3>Why authority must be its own credential</h3>
+    <ol class="plain">
+      <li><strong>Membership and permission change at different speeds.</strong> Promoting a
+      member to curator reissues one small VAC and leaves the membership edge untouched.</li>
+      <li><strong>Privacy needs them separable — and bound.</strong> On the
+      <span class="tiername">private</span> tier a member proves membership <em>and</em>
+      authority in zero knowledge, with a linking proof that both credentials describe the same
+      hidden subject — so colluding members cannot pool one's membership with another's write
+      access.</li>
+      <li><strong>Agents must run on less than their humans.</strong> This is the decisive one,
+      drawn below.</li>
+    </ol>
+  </section>
+
+  <div class="wide figure-block">
+    <figure>
+      <svg viewBox="0 0 1000 210" role="img" aria-label="VAC attenuation: the room issues a member a VAC with read, write and curate; the member derives a narrower agent credential with read only, a four-hour expiry, bound to the agent's DID. Attenuation can only narrow.">
+        <defs>
+          <marker id="ar3" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L8,4 L0,8 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <g font-family="IBM Plex Mono,monospace" font-size="12">
+          <rect x="30" y="50" width="190" height="96" rx="10" fill="var(--pine-soft)" stroke="var(--pine)" stroke-width="1.5"/>
+          <text x="125" y="94" text-anchor="middle" fill="var(--pine)" font-weight="500">room DID</text>
+          <text x="125" y="114" text-anchor="middle" fill="var(--pine)" font-size="10.5">issuer</text>
+
+          <rect x="380" y="36" width="240" height="124" rx="10" fill="none" stroke="var(--amber)" stroke-width="1.5"/>
+          <text x="500" y="62" text-anchor="middle" fill="var(--amber)" font-weight="500">member's VAC</text>
+          <g font-size="10.5">
+            <rect x="402" y="76" width="56" height="20" rx="10" fill="var(--amber-soft)"/><text x="430" y="90" text-anchor="middle" fill="var(--amber)">read</text>
+            <rect x="470" y="76" width="60" height="20" rx="10" fill="var(--amber-soft)"/><text x="500" y="90" text-anchor="middle" fill="var(--amber)">write</text>
+            <rect x="542" y="76" width="64" height="20" rx="10" fill="var(--amber-soft)"/><text x="574" y="90" text-anchor="middle" fill="var(--amber)">curate</text>
+          </g>
+          <text x="500" y="140" text-anchor="middle" fill="currentColor" opacity=".7" font-size="10.5">months · audience: member</text>
+
+          <rect x="772" y="52" width="200" height="104" rx="10" fill="none" stroke="currentColor" stroke-dasharray="5 3"/>
+          <text x="872" y="80" text-anchor="middle" fill="currentColor">agent's VAC</text>
+          <g font-size="10.5">
+            <rect x="844" y="92" width="56" height="20" rx="10" fill="var(--well)"/><text x="872" y="106" text-anchor="middle" fill="currentColor" opacity=".85">read</text>
+          </g>
+          <text x="872" y="140" text-anchor="middle" fill="currentColor" opacity=".7" font-size="10.5">4 h · audience: agent DID</text>
+
+          <path d="M222 98 L378 98" stroke="currentColor" marker-end="url(#ar3)" fill="none"/>
+          <text x="300" y="89" text-anchor="middle" fill="currentColor" opacity=".8" font-size="10.5">issue</text>
+          <path d="M622 98 L770 98" stroke="currentColor" marker-end="url(#ar3)" fill="none"/>
+          <text x="696" y="89" text-anchor="middle" fill="currentColor" opacity=".8" font-size="10.5">attenuate</text>
+          <text x="696" y="120" text-anchor="middle" fill="currentColor" opacity=".65" font-size="10">narrow only,</text>
+          <text x="696" y="135" text-anchor="middle" fill="currentColor" opacity=".65" font-size="10">never widen</text>
+        </g>
+      </svg>
+      <figcaption>Attenuation, borrowed from the capability-token literature (UCAN, Biscuit):
+      a member derives their agent's credential from their own — fewer verbs, hours not months,
+      audience-bound to the agent — with no round-trip to the issuer. Verifiers walk the chain
+      and reject any link that widens. A leaked agent credential is a leaked <em>sliver</em>,
+      and record authorship can honestly say “written by Ana's agent”, not just “written by
+      Ana”.</figcaption>
+    </figure>
+  </div>
+
+  <section class="col">
+    <div class="pull" role="note"><p><strong>The ask.</strong> One new DTG credential type — the
+    Verifiable Authority Credential — attenuable and audience-bound, with rooms as its first
+    concrete instance and community role grants as its second. It is the deliberate companion
+    to the already-proposed VDC: delegation and authority, specified as the two distinct
+    things they are. Whether it takes the reserved VAC name, or rooms need something narrower,
+    is a decision for the credential-spec working group, made deliberately rather than by
+    whatever the first implementation calls itself.</p></div>
+  </section>
+
+  <section class="col">
+    <p class="eyebrow">In practice</p>
+    <h2>What people would do with this</h2>
+    <div class="cards">
+      <article class="card">
+        <div class="chips"><span class="chip t">T2 · community</span><span class="chip v">open</span></div>
+        <h3>Team engineering memory</h3>
+        <p>Decisions, conventions, incident write-ups — searchable by people, recalled by every
+        member's coding agent with authorship attached. The community archive, done once instead
+        of per-tool.</p>
+      </article>
+      <article class="card">
+        <div class="chips"><span class="chip t">T3 · cross-community</span><span class="chip v">private</span></div>
+        <h3>Cross-organisation threat intelligence</h3>
+        <p>Analysts from several companies share indicators in a room none of their employers'
+        platforms can read — and whose membership none of the hosts can enumerate. A mirror at
+        each org's VTC keeps reads local.</p>
+      </article>
+      <article class="card">
+        <div class="chips"><span class="chip t">T4 · peers</span><span class="chip v">attributed</span></div>
+        <h3>Deal room</h3>
+        <p>Two counterparties and their advisers, no shared platform, full attribution inside
+        the room. When the deal closes, the owner deactivates the room's DID and every
+        credential it issued stops verifying — clean-room teardown by construction.</p>
+      </article>
+      <article class="card">
+        <div class="chips"><span class="chip t">T1 · personal</span><span class="chip v">attributed</span></div>
+        <h3>A share on my own infrastructure</h3>
+        <p>My research notes, my reading list, my project context — hosted from my own VTA,
+        shared with the three people (and agents) I choose, on terms no platform sets.</p>
+      </article>
+      <article class="card">
+        <div class="chips"><span class="chip t">T2 · community</span><span class="chip v">attributed</span></div>
+        <h3>Incident war room</h3>
+        <p>Spun up in a minute, sealed from the operator, per-member accountable, exported to
+        the archive when it's over. The members-only audit view shows exactly who wrote what,
+        when.</p>
+      </article>
+      <article class="card">
+        <div class="chips"><span class="chip t">T4 · peers</span><span class="chip v">private</span></div>
+        <h3>Care circle</h3>
+        <p>A family coordinating support for someone — medication notes, appointments, what
+        worked — readable to the circle and their assistants, invisible to every platform in
+        between, surviving any one phone.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="col">
+    <p class="eyebrow">Design · guarantees worth naming</p>
+    <h2>The honest fine print</h2>
+    <ul class="plain">
+      <li><strong>The owner is always known.</strong> Privacy tiers hide members from hosts,
+      never the room from accountability. This one decision is what keeps an otherwise-opaque
+      system operable: someone can transfer it, renew it, answer for it.</li>
+      <li><strong>Rooms are renewed, not reaped.</strong> A host can't judge the value of what
+      it can't read, so it never decides a room is over. Rooms lapse to read-only without
+      renewal, members are notified, and only a long, stated, witnessed clock ends in
+      reclamation — with export always available first.</li>
+      <li><strong>Removal is forward-only.</strong> A removed member keeps what they could
+      already read — they held it. What they lose, cryptographically, is everything after.
+      The UI says so, because believing otherwise is the dangerous mistake.</li>
+      <li><strong>Shared content is untrusted input — in both directions.</strong> For agents,
+      room content is data, never instructions; recall shows who wrote what. For humans, room
+      surfaces render inert. A shared space is also a channel, and the design treats it as
+      one.</li>
+      <li><strong>Total loss is total.</strong> If every member loses their keys, the room is
+      ciphertext forever; a quorum of members can re-admit one of their own, but nobody —
+      host included — holds a skeleton key. That is the guarantee, stated as a cost.</li>
+    </ul>
+  </section>
+
+  <section class="col">
+    <p class="eyebrow">Status</p>
+    <h2>Where this stands</h2>
+    <p>Design revision 3, on the <code>design/community-data-rooms</code> branch of
+    <a href="https://github.com/OpenVTC/verifiable-trust-infrastructure">verifiable-trust-infrastructure</a>
+    (<code>docs/05-design-notes/data-rooms.md</code>), with two adversarial security reviews —
+    the first reshaped the design; the second examined what emerged. Nothing is implemented.
+    The path runs: one question to the DTG working group (do VMC/VIC bind to node
+    <em>kinds</em> or to deployed services?), the VAC specification, a host-neutral
+    <code>rooms/*</code> task family, then the tiers in order — <span class="tiername">open</span>
+    first, cryptography on top of a settled model.</p>
+    <p>Feedback most wanted on: the VAC (§ above), the witness-selection policy for room logs,
+    and whether the four topologies match how your community would actually use this.</p>
+  </section>
+
+  <footer class="foot col">
+    <p>Working title — product naming is a separate, later decision. Concept document for
+    discussion; not a specification.</p>
+    <p class="srcs">Grounding:
+      <a href="https://www.rfc-editor.org/info/rfc9420/">MLS, RFC 9420</a> ·
+      <a href="https://datatracker.ietf.org/doc/draft-ietf-mimi-protocol/">IETF MIMI</a> ·
+      <a href="https://eprint.iacr.org/2019/1416">Signal Private Group System</a> ·
+      <a href="https://github.com/matrix-org/matrix-spec-proposals/blob/matthew/msc4291/proposals/4291-room-ids-as-hashes.md">Matrix MSC4291</a> ·
+      <a href="https://github.com/ucan-wg/spec">UCAN</a> ·
+      <a href="https://www.biscuitsec.org/">Biscuit</a> ·
+      DTG core credentials · did:webvh witnessing
+    </p>
+  </footer>
+
+</div>
+</body>
+</html>
