@@ -3011,7 +3011,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.4",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -9734,7 +9734,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "chrono",
- "coset 0.3.8",
+ "coset 0.4.2",
  "ed25519-dalek",
  "multibase",
  "rcgen 0.14.9",

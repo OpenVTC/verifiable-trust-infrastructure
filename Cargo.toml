@@ -127,7 +127,7 @@ affinidi-mdoc = { version = "0.2.7", default-features = false, features = ["es25
 # the mdoc receive path names their types directly (`coset` for the COSE_Sign1
 # `alg` header, `time` for the `validityInfo` window) and depending on a
 # transitive is how a version bump elsewhere breaks an unrelated crate.
-coset = "0.3"
+coset = "0.4"
 time = "0.3"
 # X.509 for the mdoc IACA trust path. `verify-aws` rather than the default
 # `verify` feature: that one pulls `ring`, which currently only reaches this
