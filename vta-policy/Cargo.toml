@@ -2,7 +2,7 @@
 name = "vta-policy"
 description = "VTA policy subsystem — the regorus (Rego) engine, the default policy bundle, consent model, and decision evaluators"
 readme = "README.md"
-version = "0.3.1"
+version = "0.3.2"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own

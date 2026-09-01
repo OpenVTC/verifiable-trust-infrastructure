@@ -2,6 +2,56 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.12.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.12.2...vta-cli-common-v0.12.3) — 2026-09-01
+
+
+### Fixed
+
+- **vta**: Keep not-found, conflict and gone typed across the Trust-Task boundary ([#1219](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1219))
+
+`pnm approvals list` failed on a VTA that had never had an approval rule:
+
+      Protocol error: trust task failed [taskFailed]:
+      task failed: not found: policy `approvals` not found
+
+  A VTA with no approval rule has no `approvals` policy row — that is the
+  shipping default, and the CLI is written for it: `load()` maps a missing
+  row to an empty model. The arm could never fire.
+
+  The Trust-Task framework defines no `notFound` / `conflict` / `gone`
+  standard code, so `app_error_to_reject` sent all three out as `taskFailed`
+  with `details: None`. The SDK had nothing to key on and fell through to
+  `VtaError::Protocol(String)`, so the `Err(VtaError::NotFound(_))` arm in
+  the approvals CLI was dead code on the only transport that surface uses
+  (it is Trust-Task-only; no `/policies` REST route exists).
+
+  The blast radius is the whole surface, not just `list`: every `pnm
+  approvals` subcommand reads the row through the same `load()`, `require`
+  included. Since `require` must read before it writes, the *first* rule was
+  uncreatable — DTTE could not be configured on a fresh VTA at all.
+
+  REST keeps this distinction in an HTTP status (`from_http`) and DIDComm
+  protocol-messages keep it in a problem-report code (`from_problem_report`).
+  The Trust-Task path was the only one that lost it, against the workspace
+  rule to preserve type information across every transport.
+
+  `taskFailed` remains the correct wire code — there is no other. The
+  discriminator goes in `details.reason`, the channel the consent gate
+  already established for exactly this reason, with the values defined once
+  in `vta_sdk::protocols::trust_task_reject_reasons` so both sides derive
+  from one definition. `VtaClient::trust_task_error` maps them back to
+  `NotFound` / `Conflict` / `Gone`.
+
+  Fixing `Conflict` alongside `NotFound` also restores the CLI's
+  suggest-the-fix guidance, which switches on the typed variant.
+
+  A `taskFailed` with no `details` stays `Protocol` — that is both a genuine
+  failure and the shape an older VTA emits, so a new client does not misread
+  every pre-upgrade failure as typed. Against such a VTA the workarounds are
+  `pnm policy list` or the offline `vta approvals list`, both documented.
+
+
+
 ## [0.12.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.12.1...vta-cli-common-v0.12.2) — 2026-08-29
 
 
