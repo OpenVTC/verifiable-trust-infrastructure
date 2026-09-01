@@ -2,6 +2,189 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.23.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.23.3...vta-service-v0.23.4) — 2026-09-01
+
+
+### Fixed
+
+- **vta**: Resolve approver sets from one row-first source, not three ([#1221](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1221))
+
+A consent decision from an approver added with `pnm approvals approvers
+  add` was refused:
+
+      audit: action="consent.decision" outcome="denied:not_a_member"
+
+  Three places ask "who is in this approver set?", and they disagreed:
+
+  | Site | Read |
+  |---|---|
+  | `policy_gate` — raise the pending | row first, config fallback |
+  | `ceremony::may_attempt_ceremony` — transport gate | config only |
+  | `task_consent` — accept the decision | config only |
+
+  `pnm approvals approvers add` writes the declarative policy row. The gate
+  read that row, found the set, raised the pending and pushed the signed
+  request to the approver. The approver signed a valid decision — and the
+  two config-only sites looked in a table that never had the set, so the
+  transport gate turned it away pre-auth and the handler denied it
+  `not_a_member`.
+
+  The effect is that DTTE could not be operated through its own CLI. The
+  documented way to manage an approver set produced a set that could raise
+  requests but never accept an answer, and the only workaround was to *also*
+  carry the set in `config.toml` and restart — the very thing row-first
+  exists to avoid, since `[policy.approver_sets]` is a seed applied once.
+
+  All three now resolve through `policy_gate::effective_approver_sets`:
+  config, overridden by the row **per set name**. Per-set rather than
+  whole-model, so an operator with three sets in config who edits one with
+  the CLI does not strand the other two — and, more importantly, cannot
+  strand them inconsistently, since a whole-model rule would have let an
+  approver pass the named membership check while the transport gate, which
+  scans every set, still turned it away.
+
+  The transport gate fails closed: a store error is not a membership answer,
+  so it refuses the decision and warns rather than admitting the sender.
+
+  `ceremony.rs` was the site that failed most quietly — it runs before
+  authentication, so a decision it rejects never reaches a handler and never
+  appears in the audit trail at all.
+
+- **provisioning**: Say which side is out of date, and check authorization before minting ([#1220](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1220))
+
+An operator ran OpenVTC's setup wizard against a VTA and got:
+
+      X Provision integration DID + admin credential — trust task failed
+        [unsupportedType]: unsupported type:
+        https://trusttasks.org/spec/provision/integration/0.3
+
+  with a green tick on the row above it. Two things were wrong — no ACL grant
+  for the setup DID on the VTA they had reached, and it was not the VTA they
+  meant — and the run reported neither. It took an hour and a wrong diagnosis
+  before anyone suspected the VTA rather than provisioning.
+
+  Every fact needed was already on hand. The VTA was serving
+  `provision/integration/0.2` two lines further down the dispatch table it had
+  just failed to match. The wizard held the VTA's DID and the setup DID. Nothing
+  put the two together, and the message that did reach the operator said only
+  what could not be done.
+
+  **The rejection now names what it can do.** `method_not_found` compares the
+  unknown URI's family against `dispatched_uris()`; a family this VTA serves at
+  another version is `unsupportedVersion` — SPEC's code for exactly this, "the
+  consumer recognizes the type but not at this MAJOR.MINOR" — carrying the
+  served versions in `message` and in `details.servedVersions`. A family it does
+  not serve stays `unsupportedType`. Both now carry `details.requestedType`,
+  because the framework puts the rejected URI only in prose and a client should
+  not have to slice a sentence to recover it. Derived from the dispatch table,
+  not a second list: a migration hint naming a version the VTA does not serve is
+  worse than no hint.
+
+  This half only helps the next skew, since the VTA that produced the bad message
+  is by definition the old one. The other two halves help now.
+
+- **vta**: Keep not-found, conflict and gone typed across the Trust-Task boundary ([#1219](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1219))
+
+`pnm approvals list` failed on a VTA that had never had an approval rule:
+
+      Protocol error: trust task failed [taskFailed]:
+      task failed: not found: policy `approvals` not found
+
+  A VTA with no approval rule has no `approvals` policy row — that is the
+  shipping default, and the CLI is written for it: `load()` maps a missing
+  row to an empty model. The arm could never fire.
+
+  The Trust-Task framework defines no `notFound` / `conflict` / `gone`
+  standard code, so `app_error_to_reject` sent all three out as `taskFailed`
+  with `details: None`. The SDK had nothing to key on and fell through to
+  `VtaError::Protocol(String)`, so the `Err(VtaError::NotFound(_))` arm in
+  the approvals CLI was dead code on the only transport that surface uses
+  (it is Trust-Task-only; no `/policies` REST route exists).
+
+  The blast radius is the whole surface, not just `list`: every `pnm
+  approvals` subcommand reads the row through the same `load()`, `require`
+  included. Since `require` must read before it writes, the *first* rule was
+  uncreatable — DTTE could not be configured on a fresh VTA at all.
+
+  REST keeps this distinction in an HTTP status (`from_http`) and DIDComm
+  protocol-messages keep it in a problem-report code (`from_problem_report`).
+  The Trust-Task path was the only one that lost it, against the workspace
+  rule to preserve type information across every transport.
+
+  `taskFailed` remains the correct wire code — there is no other. The
+  discriminator goes in `details.reason`, the channel the consent gate
+  already established for exactly this reason, with the values defined once
+  in `vta_sdk::protocols::trust_task_reject_reasons` so both sides derive
+  from one definition. `VtaClient::trust_task_error` maps them back to
+  `NotFound` / `Conflict` / `Gone`.
+
+  Fixing `Conflict` alongside `NotFound` also restores the CLI's
+  suggest-the-fix guidance, which switches on the typed variant.
+
+  A `taskFailed` with no `details` stays `Protocol` — that is both a genuine
+  failure and the shape an older VTA emits, so a new client does not misread
+  every pre-upgrade failure as typed. Against such a VTA the workarounds are
+  `pnm policy list` or the offline `vta approvals list`, both documented.
+
+- **vta**: Scope device list, disable and wipe to the caller's contexts ([#1217](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1217))
+
+`device/list`, `device/disable` and `device/wipe` gated on
+  `auth.require_manage()` and nothing else. That check is role-only —
+  `Role::Admin || Role::Initiator`, with no reference to `allowed_contexts` —
+  and all three then reached for `list_acl_entries()`, an unfiltered scan of
+  the `acl` keyspace. At no point was the caller's context scope applied.
+
+  So a context-scoped admin read every `DeviceBinding` on the VTA: the
+  `displayName`, `platform` and `lastSeenAt` of machines belonging to
+  principals in contexts they hold no rights in. For the OpenVTC producer
+  `displayName` is `OpenVTC on {hostname} ({profile})`, so that is a hostname
+  — frequently a person's name — plus an activity window, disclosed to an
+  admin whose grant was deliberately scoped elsewhere.
+
+  The two mutations were worse than the listing. Neither checked anything
+  after finding a binding by `deviceId`, so any context admin could disable or
+  wipe *any* device on the VTA, a super-admin's included. That is authority
+  over another context's principals, not merely visibility into them.
+
+  All three now go through `is_acl_entry_visible`, the existing management
+  predicate the ACL mutation paths already use, so device management and ACL
+  management answer the same question the same way. The two mutations share a
+  new `find_manageable_device` helper for the same reason — they had already
+  drifted apart from the listing, and one lookup means they cannot drift
+  again.
+
+  `is_acl_entry_visible` and not the wider `is_acl_entry_auditable` used by
+  `acl list`: both mutations plainly need management authority, and the
+  listing reads the same way on purpose. A binding carries operational
+  metadata about a *machine*, which is a different and more revealing
+  disclosure than the entry's authority that the auditable predicate exists to
+  surface. Read and mutations now agree — you see the devices you may manage.
+
+  An out-of-scope binding conflates to the same `NotFound` an absent id
+  returns, rather than a distinct `Forbidden` that would confirm the id exists
+  and make the error an oracle for enumerating device ids.
+
+  Behaviour change worth noting for operators: an `Initiator` with an empty
+  `allowed_contexts` is authorized *nowhere*, not everywhere, so it now lists
+  no devices where it previously listed all of them. That is the documented
+  `ActScope` reading — an empty context list means unrestricted only for
+  `Role::Admin` — and it is the specific misreading this defect class keeps
+  producing (#746, #769, #770). Super-admins are unaffected.
+
+  Tests cover the context admin, subtree ancestry, the super-admin
+  no-regression control, the acts-nowhere case, the `ActScope::All` edge (a
+  super-admin's own device names no context, so it is not inside any context
+  admin's subtree), and both refused mutations asserting no write occurred.
+  Six of the seven behavioural tests fail against the pre-fix code; the two
+  controls pass either way.
+
+  Found while assessing sankarshanmukhopadhyay/rahp-toolkit#285, which
+  reported a different and unfounded cross-context correlation claim about the
+  same `displayName` value. This is the real cross-context exposure of that
+  field, and it was not what that finding tested.
+
+
+
 ## [0.23.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.23.2...vta-service-v0.23.3) — 2026-08-30
 
 
