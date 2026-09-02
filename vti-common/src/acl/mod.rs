@@ -143,6 +143,18 @@ pub enum Capability {
     /// *remove* them — removal of a holder's credentials is a higher-trust
     /// action. Granted to the same roles that hold `VaultWrite`.
     CredentialWrite,
+    /// Reading agent memory — `vta/memory/list/0.1`. Split from
+    /// [`Capability::MemoryWrite`] because the published specification already
+    /// assumes the split exists: `vta/memory/delete/0.1` reasons about "a VTA
+    /// whose write capability is granted more freely than its read capability".
+    /// Until this pair, there was no read capability and no write capability —
+    /// only the context gate, which is binary, so any DID that could reach a
+    /// context could also rewrite every memory in it.
+    MemoryRead,
+    /// Writing or deleting agent memory — `vta/memory/{put,delete}/0.1`.
+    /// Deliberately withheld from [`Role::Reader`]: a read-only consumer of a
+    /// context should not be able to rewrite the memories in it.
+    MemoryWrite,
 }
 
 /// Returns true if `role` is granted `cap` by the default capability
@@ -163,6 +175,8 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::VaultRead,
             Capability::VaultWrite,
             Capability::CredentialWrite,
+            Capability::MemoryRead,
+            Capability::MemoryWrite,
             Capability::ProxyLogin,
             Capability::FillRelease,
             Capability::PolicyAdmin,
@@ -175,6 +189,8 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::VaultRead,
             Capability::VaultWrite,
             Capability::CredentialWrite,
+            Capability::MemoryRead,
+            Capability::MemoryWrite,
             Capability::ProxyLogin,
             Capability::FillRelease,
             Capability::DeviceAdmin,
@@ -182,14 +198,20 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::SignTrustTask,
             Capability::KeyMint,
         ],
+        // `application` is the role a memory agent runs as — `vta-agent-memory`
+        // grants exactly it, deliberately, so the memory service is not the
+        // user. It must keep both memory capabilities or every existing
+        // deployment of that plugin stops working.
         Role::Application => vec![
             Capability::VaultRead,
             Capability::ProxyLogin,
             Capability::FillRelease,
             Capability::Sign,
             Capability::SignTrustTask,
+            Capability::MemoryRead,
+            Capability::MemoryWrite,
         ],
-        Role::Reader => vec![Capability::VaultRead],
+        Role::Reader => vec![Capability::VaultRead, Capability::MemoryRead],
         Role::Monitor => vec![],
     }
 }
