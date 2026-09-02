@@ -2464,25 +2464,48 @@ mod freshness_bounds {
         }
     }
 
+    /// A document carrying **no timestamp at all** is refused — and the rule
+    /// is the *window*, not `issuedAt`. SPEC §7.2, *Bounding the record*: a
+    /// policy that retains a bounded window can't place a document in it
+    /// with nothing to measure against. `doc(None, None)` previously always
+    /// seeded a fresh default `issuedAt` regardless of the `None` argument,
+    /// so this case went unexercised for as long as the helper existed.
     #[test]
-    #[ignore = "documents current behavior contradicting this test's own intent — see PR description"]
-    fn a_document_without_issued_at_is_not_refused_here() {
-        // Item 13 bounds the timestamps a document carries; it does not
-        // require one. Requiring `issuedAt` is the *specification's* job for a
-        // consequential task, enforced by that task's schema.
-        //
-        // This test's `doc(None, None)` previously always seeded a fresh
-        // default `issuedAt` regardless of the `None` argument, so it never
-        // actually built a document without one — it silently passed without
-        // exercising the case its name and comment describe. With that helper
-        // bug fixed, `validate_freshness` rejects a truly timestamp-less
-        // document as `expired`, contradicting the comment above. Ignored
-        // (rather than asserting the observed-but-unintended behavior) so
-        // this stays a live, re-enable-when-fixed regression test instead of
-        // silently encoding a bug as spec.
+    fn a_document_with_no_timestamps_cannot_be_placed_in_the_window() {
+        let err = doc(None, None)
+            .validate_freshness(Utc::now(), &freshness_policy())
+            .expect_err("an unbounded document cannot sit in a bounded window");
+        assert!(
+            matches!(
+                err,
+                RejectReason::Stale {
+                    detail: trust_tasks_rs::StaleReason::Unboundable
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    /// `issuedAt` is not required: `expiresAt` alone bounds the record.
+    #[test]
+    fn an_expiry_alone_bounds_a_document_with_no_issued_at() {
+        let expires =
+            (Utc::now() + TimeDelta::minutes(5)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        assert!(
+            doc(None, Some(&expires))
+                .validate_freshness(Utc::now(), &freshness_policy())
+                .is_ok(),
+            "an `expiresAt` is enough to bound a document with no `issuedAt`"
+        );
+    }
+
+    /// With no window to place it in, a timestamp-less document is fine —
+    /// the refusal belongs to the policy, not the document.
+    #[test]
+    fn without_a_window_a_timestampless_document_is_accepted() {
         assert!(
             doc(None, None)
-                .validate_freshness(Utc::now(), &freshness_policy())
+                .validate_freshness(Utc::now(), &trust_tasks_rs::FreshnessPolicy::default())
                 .is_ok()
         );
     }
