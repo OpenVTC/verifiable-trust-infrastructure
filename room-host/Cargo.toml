@@ -1,0 +1,33 @@
+[package]
+name = "room-host"
+description = "Stores data-room records for rooms it does not govern — a delivery service, not a community"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "room-host"
+path = "src/main.rs"
+
+[dependencies]
+# Storage, wire types and authorization. The whole of what hosting a room needs —
+# no member lifecycle, no policy engine, no credential issuance, no admin UI.
+vti-rooms = { path = "../vti-rooms", version = "0.1" }
+# The store and AppError. Nothing else internal.
+vti-common = { path = "../vti-common", version = "0.16" }
+
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

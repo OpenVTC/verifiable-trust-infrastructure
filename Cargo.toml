@@ -1,6 +1,7 @@
 
 [workspace]
 members = [
+  "room-host",
   "cnm-cli",
   "didcomm-test",
   "pnm-cli",
