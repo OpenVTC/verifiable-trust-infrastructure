@@ -179,6 +179,25 @@ are implementer-facing rather than operator-facing.
   versioned, namespaced, per-context application JSON: why agent memory
   and both vaults are the wrong home, what the surface needs, and the
   upstream spec dependency that has to land first. Design only.
+- **[Data rooms](05-design-notes/data-rooms.md)** —
+  shared, credential-governed, end-to-end-encryptable spaces for humans
+  and their AI agents, built from DTG credentials (VIC/VMC/VAC issued by
+  a room that is itself a DID-bearing DTG node): four host-neutral
+  topologies (personal VTA, in a VTC, cross-community, VRC peers), a
+  three-tier visibility ladder (`open`/`attributed`/`private` with
+  unlinkable BBS+ presentations), MLS (RFC 9420) as the group-key layer,
+  witnessed room DID logs, and renew-not-reap lifecycle. Design only.
+- **[Data rooms — concept document](05-design-notes/data-rooms-concept.html)** —
+  shareable, non-technical-audience write-up of the idea, benefits, design
+  and the case for the VAC, with diagrams of the four topologies, the
+  join flow, the trust stack and VAC attenuation. Open in a browser.
+- **[Data rooms — security review v2](05-design-notes/data-rooms-security-review-v2.md)** —
+  current end-to-end review of revision 3: sixteen findings across the
+  host-as-DS, witnesses, mirrors, quorums, attenuated agent capabilities
+  and the human surface; the threat model's central claim remains that
+  **the trust boundary is per operator, not per service**.
+  ([v1](05-design-notes/data-rooms-security-review-v1.md) is the dated
+  record of the revision-2 review that reshaped the design.)
 - **[vta-service decomposition](05-design-notes/vta-service-decomposition.md)** —
   how the ~114k-line VTA crate was split into subsystem crates, the
   extraction technique, and the rule for where the program stops.
