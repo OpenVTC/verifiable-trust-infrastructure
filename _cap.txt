@@ -1,0 +1,22 @@
+    // Blanket vault audit: capture the audit context BEFORE `doc` is moved
+    // into dispatch. Every password-vault and credential-vault task — read or
+    // write, success or denied — produces exactly one persisted audit row here
+    // (the one place that sees the type URI, the authenticated actor, and the
+    // final outcome). Non-vault tasks audit through their own handlers/ops.
+    let vault_audit = vault_audit_action(&type_uri).map(|action| {
+        let resource = vault_audit_resource(&doc.payload);
+        let context_id = doc
+            .payload
+            .get("contextId")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        // Operator-supplied rationale (the `reason` field that delete/archive/
+        // restore/purge carry) — persisted so "audit the reason" is satisfied.
+        let detail = doc
+            .payload
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        (action, resource, context_id, detail)
+    });
+
