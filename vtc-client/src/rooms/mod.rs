@@ -30,6 +30,8 @@
 
 #[cfg(feature = "mls")]
 pub mod mls;
+#[cfg(feature = "mls")]
+pub mod sealed;
 
 use serde::{Deserialize, Serialize};
 

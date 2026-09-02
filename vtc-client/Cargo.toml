@@ -15,7 +15,7 @@ default = []
 # The MLS group layer (`rooms::mls`). Off by default: OpenMLS is a substantial
 # dependency and a caller that only reads an `open` room needs none of it.
 # Mirrors how `vtc-service` gates its `bbs` verifier.
-mls = ["dep:openmls", "dep:openmls_rust_crypto", "dep:openmls_basic_credential", "dep:openmls_traits", "dep:tls_codec"]
+mls = ["dep:openmls", "dep:openmls_rust_crypto", "dep:openmls_basic_credential", "dep:openmls_traits", "dep:tls_codec", "dep:chacha20poly1305", "dep:base64", "dep:getrandom"]
 
 [dependencies]
 # Reuses the VTA SDK's challenge-response auth (audience-agnostic) and the
@@ -31,6 +31,11 @@ openmls_rust_crypto = { version = "0.6", optional = true }
 openmls_basic_credential = { version = "0.6", optional = true }
 openmls_traits = { version = "0.6", optional = true }
 tls_codec = { version = "0.5", optional = true }
+# Record sealing. The AEAD binds each record to its room, key, version and epoch,
+# so a host that relocates one produces a mismatch rather than a readable record.
+chacha20poly1305 = { version = "0.10", optional = true }
+base64 = { version = "0.22", optional = true }
+getrandom = { version = "0.4", optional = true }
 # `TrustTask` — the join-submit document this client signs, and the `#response`
 # envelope the VTC answers it with. Same crate `vta-sdk` builds the document
 # from, so one shape crosses the boundary.
