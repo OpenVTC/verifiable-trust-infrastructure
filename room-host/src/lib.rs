@@ -25,12 +25,23 @@
 //! makes a room host an ordinary provisioned integration with its own DID (the `room-host`
 //! DID template) rather than a new surface on the agent.
 //!
+//! # How a request is authorized
+//!
+//! Two things this host takes from a request and nothing else:
+//!
+//! - the **presenter**, from the document's own `eddsa-jcs-2022` proof. Not from a payload
+//!   field — a presentation says what may be done, not who is doing it, so an unbound one
+//!   is a bearer token anyone observing it inherits.
+//! - the **chain**, verified by [`vti_rooms_dtg`] against credentials the room issued.
+//!
+//! Neither is a lookup in anything this host stores, which is the whole of invariant I5.
+//!
 //! # Status
 //!
-//! The dispatch surface here is the `open` tier. Sealed tiers are refused by
-//! [`vti_rooms::authz`] until chain verification is wired, and that refusal lives in the
-//! shared crate rather than here — so this host and a VTC cannot disagree about what is
-//! safe to serve.
+//! `open` and `attributed` rooms serve. A `private` room is refused, because its subject
+//! binding has to be proved in zero knowledge and the working group has not settled the
+//! profile — the refusal comes from `vti-rooms-dtg`, which is also what a VTC uses, so the
+//! two cannot disagree about what is safe to serve.
 
 use std::sync::Arc;
 
@@ -57,15 +68,43 @@ use vti_rooms::{
     authz::{self, Action},
     storage,
 };
+use vti_rooms_dtg::{DataIntegrityKeys, DtgChainVerifier};
 
 /// Default retention after a room's epoch lapses without renewal.
 const DEFAULT_RETENTION_DAYS: u32 = 90;
 
-/// Everything this host holds. Two keyspaces — and note what is not here.
+/// Everything this host holds. Two keyspaces and a verifier — and note what is not here.
 #[derive(Clone)]
 pub struct HostState {
     rooms: KeyspaceHandle,
     records: KeyspaceHandle,
+    /// How a DID resolves to the key that signed a credential.
+    ///
+    /// A room's credentials are issued by the room, which is normally a `did:webvh`, so a
+    /// host restricted to `did:key` can serve almost nothing. It is still the default when
+    /// no resolver is configured: refusing what it cannot verify is correct, and quietly
+    /// resolving over the network for an unauthenticated caller is not.
+    resolver: vti_common::auth::TrustTaskVmResolver,
+}
+
+impl HostState {
+    /// The presenter — proven, not claimed — and the verifier to judge their chain with.
+    async fn presenter_and_verifier(
+        &self,
+        doc: &TrustTask<Value>,
+    ) -> Result<(String, DtgChainVerifier), AppError> {
+        let presenter =
+            vti_common::auth::di_proof::verify_trust_task_proof_with(doc, &self.resolver)
+                .await
+                .map_err(|e| AppError::Forbidden(format!("request proof: {e}")))?;
+
+        Ok((
+            presenter,
+            // `without_zk`: no zero-knowledge profile, so private rooms are refused rather
+            // than served on a pooling defence nobody checked.
+            DtgChainVerifier::without_zk(Box::new(DataIntegrityKeys(self.resolver.clone()))),
+        ))
+    }
 }
 
 fn now() -> u64 {
@@ -222,9 +261,22 @@ async fn put(
         Ok(r) => r,
         Err(e) => return from_app_error(doc, &e),
     };
-    if let Err(e) = authz::authorize(&room, &req.presentation, Action::Write) {
-        return from_app_error(doc, &e);
-    }
+    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
+        Ok(p) => p,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    let authorized = match authz::authorize(
+        &room,
+        &req.presentation,
+        Action::Write,
+        &presenter,
+        &verifier,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => return from_app_error(doc, &e),
+    };
 
     let record = Record {
         key: req.key.clone(),
@@ -237,12 +289,13 @@ async fn put(
             .cleartext
             .as_ref()
             .map(|c| serde_json::to_value(c).unwrap_or(Value::Null)),
-        // Only where the tier discloses an actor. On a private room authorship lives inside
-        // the sealed body, and the storage layer refuses it here.
+        // The verified subject where the tier discloses an actor — who the chain says is
+        // acting, not the room's owner. On a private room authorship lives inside the
+        // sealed body, and the storage layer refuses it here.
         author: room
             .visibility
             .discloses_actor()
-            .then(|| room.owner_did.clone()),
+            .then(|| authorized.subject().to_string()),
         updated_at: 0,
     };
 
@@ -288,7 +341,19 @@ async fn get(
         Ok(r) => r,
         Err(e) => return from_app_error(doc, &e),
     };
-    if let Err(e) = authz::authorize(&room, &req.presentation, Action::Read) {
+    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
+        Ok(p) => p,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    if let Err(e) = authz::authorize(
+        &room,
+        &req.presentation,
+        Action::Read,
+        &presenter,
+        &verifier,
+    )
+    .await
+    {
         return from_app_error(doc, &e);
     }
     match storage::get_record(&state.records, &req.room_id, &req.key).await {
@@ -317,7 +382,19 @@ async fn list(
         Ok(r) => r,
         Err(e) => return from_app_error(doc, &e),
     };
-    if let Err(e) = authz::authorize(&room, &req.presentation, Action::Read) {
+    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
+        Ok(p) => p,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    if let Err(e) = authz::authorize(
+        &room,
+        &req.presentation,
+        Action::Read,
+        &presenter,
+        &verifier,
+    )
+    .await
+    {
         return from_app_error(doc, &e);
     }
     match storage::list_records(
@@ -366,7 +443,19 @@ async fn mint(
     // `admin`, not `write`: if any key-holder could mint an epoch, any member could evict
     // any other by declining to seal them the new key — and this host, which cannot see the
     // membership, would have no way to notice.
-    if let Err(e) = authz::authorize(&room, &req.presentation, Action::Admin) {
+    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
+        Ok(p) => p,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    if let Err(e) = authz::authorize(
+        &room,
+        &req.presentation,
+        Action::Admin,
+        &presenter,
+        &verifier,
+    )
+    .await
+    {
         return from_app_error(doc, &e);
     }
     match storage::advance_epoch(&state.rooms, &req.room_id, req.epoch, now()).await {
@@ -389,13 +478,30 @@ pub fn router(state: Arc<HostState>) -> Router {
         .with_state(state)
 }
 
+/// Open the store with a `did:key`-only verifier.
+///
+/// The conservative construction, and what a test or the example wants: no network
+/// resolution can be triggered by an unauthenticated request. A deployment serving a
+/// `did:webvh` room wants [`open_state_with_resolver`].
 pub fn open_state(data_dir: &std::path::Path) -> anyhow::Result<Arc<HostState>> {
+    open_state_with_resolver(
+        data_dir,
+        vti_common::auth::TrustTaskVmResolver::did_key_only(),
+    )
+}
+
+/// Open the store with a specific verification-method resolver.
+pub fn open_state_with_resolver(
+    data_dir: &std::path::Path,
+    resolver: vti_common::auth::TrustTaskVmResolver,
+) -> anyhow::Result<Arc<HostState>> {
     let store = Store::open(&StoreConfig {
         data_dir: data_dir.to_path_buf(),
     })?;
     Ok(Arc::new(HostState {
         rooms: store.keyspace(ROOMS_KEYSPACE)?,
         records: store.keyspace(ROOM_RECORDS_KEYSPACE)?,
+        resolver,
     }))
 }
 
@@ -405,32 +511,47 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
+    use vti_rooms::Visibility;
+    use vti_rooms_dtg::test_support::{Party, RoomFixture};
 
+    /// A host over a temporary store.
+    ///
+    /// `did:key`-only resolution is not a limitation being worked around here: the fixture's
+    /// room, owner and agent are all `did:key`, so every credential in these tests verifies
+    /// with no network at all. That is deliberate — a test that reached the network would be
+    /// testing the network.
     fn state() -> (tempfile::TempDir, Arc<HostState>) {
         let dir = tempfile::tempdir().unwrap();
         let state = open_state(dir.path()).expect("open store");
         (dir, state)
     }
 
-    /// Send a request and return the status plus the response document's **payload**.
+    /// Send a **signed** document and return the status plus the response payload.
     ///
-    /// Building a real document here rather than `{type, payload}` is the point: the
-    /// `data_room` example failed on every call against the looser shape, because a client
-    /// parses the reply as a Trust Task document and a bare payload has no `id`.
-    async fn call(app: &Router, type_uri: &str, payload: Value) -> (StatusCode, Value) {
-        let doc = json!({
-            "id": format!("urn:uuid:{}", Uuid::new_v4()),
-            "type": type_uri,
-            "issuer": "did:key:zCaller",
-            "recipient": "did:key:zHost",
-            "payload": payload,
-        });
+    /// Signing is not ceremony: the host reads the presenter from this proof, and an
+    /// unsigned request is refused before any chain is looked at.
+    async fn call(
+        app: &Router,
+        type_uri: &str,
+        payload: Value,
+        signer: &Party,
+    ) -> (StatusCode, Value) {
+        let doc = vta_sdk::trust_task_sign::build_signed(
+            type_uri,
+            payload,
+            &signer.did,
+            &signer.secret_multibase,
+            "did:key:zHost",
+        )
+        .await
+        .expect("sign the request");
+
         let resp = app
             .clone()
             .oneshot(
                 Request::post("/trust-tasks")
                     .header("content-type", "application/json")
-                    .body(Body::from(doc.to_string()))
+                    .body(Body::from(doc))
                     .unwrap(),
             )
             .await
@@ -440,7 +561,6 @@ mod tests {
             .await
             .unwrap();
         let doc: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        // Every reply is a routed document; the test cares about what it carries.
         assert!(
             doc.get("id").is_some(),
             "every reply must be a Trust Task document: {doc}"
@@ -448,83 +568,200 @@ mod tests {
         (status, doc.get("payload").cloned().unwrap_or(Value::Null))
     }
 
-    fn presentation() -> Value {
-        json!({ "membership": "vmc", "authority": ["vac-leaf", "vac-root"] })
+    /// Register `f`'s room with the host.
+    async fn register(app: &Router, f: &RoomFixture) {
+        let (status, body) = call(
+            app,
+            ROOMS_CREATE_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "ownerDid": f.room.owner_did,
+                "visibility": f.room.visibility,
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
     }
 
     #[tokio::test]
-    async fn a_room_is_created_and_a_record_round_trips() {
+    async fn a_record_round_trips_under_a_chain_the_room_issued() {
         let (_d, st) = state();
         let app = router(st);
-
-        let (status, _) = call(
-            &app,
-            ROOMS_CREATE_TYPE,
-            json!({ "roomId": "r1", "visibility": "open", "ownerDid": "did:key:zOwner" }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
 
         let (status, body) = call(
             &app,
             ROOMS_RECORDS_PUT_TYPE,
-            json!({ "roomId": "r1", "key": "k1", "presentation": presentation(),
-                    "cleartext": { "body": "a decision" } }),
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "decision/pricing",
+                "presentation": f.as_owner(),
+                "cleartext": { "body": "a decision" },
+            }),
+            &f.owner,
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["version"], 1);
 
         let (status, body) = call(
             &app,
             ROOMS_RECORDS_GET_TYPE,
-            json!({ "roomId": "r1", "key": "k1", "presentation": presentation() }),
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "decision/pricing",
+                "presentation": f.as_owner(),
+            }),
+            &f.owner,
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["cleartext"]["body"], "a decision");
+        assert_eq!(
+            body["author"], f.owner.did,
+            "the author is the verified subject, not the room's owner field"
+        );
     }
 
-    /// The property that makes this host usable by a room it does not govern: it decides
-    /// from the chain, and there is nothing else it could decide from.
+    /// The arrangement the whole design exists for, end to end through a host.
     #[tokio::test]
-    async fn an_operation_with_no_chain_is_refused() {
+    async fn an_agent_reads_under_a_narrower_chain_and_cannot_write() {
         let (_d, st) = state();
         let app = router(st);
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
         call(
-            &app,
-            ROOMS_CREATE_TYPE,
-            json!({ "roomId": "r1", "visibility": "open", "ownerDid": "did:key:zOwner" }),
-        )
-        .await;
-
-        let (status, _) = call(
             &app,
             ROOMS_RECORDS_PUT_TYPE,
-            json!({ "roomId": "r1", "key": "k", "presentation": { "membership": "vmc", "authority": [] },
-                    "cleartext": { "body": "x" } }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-    }
-
-    /// The shared crate decides this, not the host — so a room host and a VTC cannot
-    /// disagree about what is safe to serve.
-    #[tokio::test]
-    async fn sealed_tiers_are_refused_here_exactly_as_they_are_on_a_vtc() {
-        let (_d, st) = state();
-        let app = router(st);
-        call(
-            &app,
-            ROOMS_CREATE_TYPE,
-            json!({ "roomId": "p1", "visibility": "private", "ownerDid": "did:key:zOwner" }),
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "k",
+                "presentation": f.as_owner(),
+                "cleartext": { "body": "for the agent to read" },
+            }),
+            &f.owner,
         )
         .await;
 
         let (status, body) = call(
             &app,
             ROOMS_RECORDS_GET_TYPE,
-            json!({ "roomId": "p1", "key": "k", "presentation": presentation() }),
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "k",
+                "presentation": f.as_agent(),
+            }),
+            &f.agent,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "the agent reads: {body}");
+
+        let (status, body) = call(
+            &app,
+            ROOMS_RECORDS_PUT_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "k2",
+                "presentation": f.as_agent(),
+                "cleartext": { "body": "but it must not write" },
+            }),
+            &f.agent,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    }
+
+    /// A presentation is not a bearer token: the agent's chain, presented by its human.
+    #[tokio::test]
+    async fn a_captured_presentation_does_not_work_for_someone_else() {
+        let (_d, st) = state();
+        let app = router(st);
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+
+        let (status, body) = call(
+            &app,
+            ROOMS_RECORDS_GET_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "k",
+                "presentation": f.as_agent(),
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    }
+
+    /// A stranger with a perfectly valid chain of their own gets nothing here — because the
+    /// chain does not reach *this* room.
+    #[tokio::test]
+    async fn a_chain_from_another_room_confers_nothing() {
+        let (_d, st) = state();
+        let app = router(st);
+        let f = RoomFixture::new(Visibility::Open).await;
+        let elsewhere = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+
+        let (status, body) = call(
+            &app,
+            ROOMS_RECORDS_GET_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "k",
+                "presentation": elsewhere.as_owner(),
+            }),
+            &elsewhere.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    }
+
+    #[tokio::test]
+    async fn an_operation_with_no_chain_is_refused() {
+        let (_d, st) = state();
+        let app = router(st);
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+
+        let (status, _) = call(
+            &app,
+            ROOMS_RECORDS_PUT_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "k",
+                "presentation": { "membership": f.membership, "authority": [] },
+                "cleartext": { "body": "x" },
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    /// A private room is refused with the message `vti-rooms-dtg` gives it, which is the
+    /// same message a VTC gives — the two cannot disagree about what is safe to serve.
+    #[tokio::test]
+    async fn a_private_room_is_refused_for_want_of_a_zk_profile() {
+        let (_d, st) = state();
+        let app = router(st);
+        let f = RoomFixture::new(Visibility::Private).await;
+        register(&app, &f).await;
+
+        let mut p = f.as_owner();
+        p.subject_binding = Some("a-binding-nobody-can-check".into());
+
+        let (status, body) = call(
+            &app,
+            ROOMS_RECORDS_GET_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "k",
+                "presentation": p,
+            }),
+            &f.owner,
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
@@ -532,7 +769,7 @@ mod tests {
             body["message"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("subject binding"),
+                .contains("zero-knowledge profile"),
             "{body}"
         );
     }
@@ -541,24 +778,29 @@ mod tests {
     async fn a_listing_returns_metadata_and_never_bodies() {
         let (_d, st) = state();
         let app = router(st);
-        call(
-            &app,
-            ROOMS_CREATE_TYPE,
-            json!({ "roomId": "r1", "visibility": "open", "ownerDid": "did:key:zOwner" }),
-        )
-        .await;
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
         call(
             &app,
             ROOMS_RECORDS_PUT_TYPE,
-            json!({ "roomId": "r1", "key": "a", "presentation": presentation(),
-                    "cleartext": { "body": "secret-body-text" } }),
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "a",
+                "presentation": f.as_owner(),
+                "cleartext": { "body": "secret-body-text" },
+            }),
+            &f.owner,
         )
         .await;
 
         let (status, body) = call(
             &app,
             ROOMS_RECORDS_LIST_TYPE,
-            json!({ "roomId": "r1", "presentation": presentation() }),
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "presentation": f.as_owner(),
+            }),
+            &f.owner,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -576,7 +818,8 @@ mod tests {
         let (status, body) = call(
             &router(st),
             "https://trusttasks.org/spec/vtc/members/list/0.1",
-            json!({}),
+            serde_json::json!({}),
+            &Party::new(),
         )
         .await;
         assert!(
@@ -585,8 +828,7 @@ mod tests {
         );
         assert_eq!(
             body["code"], "unsupportedType",
-            "and says so with the framework's own code, so a client can tell it apart \
-             from a task this host implements but refused: {body}"
+            "and says so with the framework's own code: {body}"
         );
     }
 }

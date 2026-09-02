@@ -277,6 +277,32 @@ credentials — which BBS+ supports and the `rooms/*` presentation schema must
 require, not merely permit. This is a spec-level requirement; discovered in
 implementation it would be a silent authorization bypass.
 
+**Which subject.** Implementation settled a detail the paragraph above hides:
+the VMC binds to the chain's **root**, not its leaf. The first version compared
+the leaf and it refused every agent — correctly, by its own rule, because *an
+agent is not a member of anything*. Its human is. The chain's root is the grant
+the room made, so its subject is the member whose standing the whole chain
+descends from; `verify_chain` has already established that each link's issuer is
+its parent's subject, so nothing below the root can escape it. Comparing the
+root admits the agent and still refuses the pooling attack: a chain rooted at
+Bob cannot be presented with Alice's membership, whoever holds the leaf.
+
+### 4.3a A presentation is bound to its presenter, not bearer
+
+A presentation names *what may be done*, never *who is doing it* — so an unbound
+one is a bearer token, and anyone who observes one inherits everything it
+confers. Every room operation therefore also carries the DID that signed the
+request, established by the request document's own `eddsa-jcs-2022` proof, and
+the chain's leaf must grant to that party.
+
+Worth stating explicitly because the reference implementation does **not** do it
+for you: `dtg_credentials::authority::verify_chain` takes a `presenter`, but
+uses it only for the `audience` check on links that name one. Binding the leaf
+is the verifier's job, and a verifier that assumed otherwise would authorize
+every captured presentation. Rooms check it twice — once in the credential
+verifier and once in `authorize` — so the property does not depend on every
+future verifier implementation remembering it.
+
 ### 4.4 Presenting membership
 
 - `open` / `attributed` — standard W3C VC presentation; the subject is

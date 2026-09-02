@@ -3481,6 +3481,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "dtg-credentials"
+version = "0.6.0"
+source = "git+https://github.com/OpenVTC/dtg-credentials?rev=0c1391adfa67d8ae65498f086675404b8bb50b08#0c1391adfa67d8ae65498f086675404b8bb50b08"
+dependencies = [
+ "affinidi-data-integrity",
+ "affinidi-secrets-resolver",
+ "chrono",
+ "multibase",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7890,6 +7907,7 @@ dependencies = [
 name = "room-host"
 version = "0.1.0"
 dependencies = [
+ "affinidi-did-resolver-cache-sdk",
  "anyhow",
  "axum",
  "base64 0.23.1",
@@ -7913,6 +7931,7 @@ dependencies = [
  "vtc-client",
  "vti-common",
  "vti-rooms",
+ "vti-rooms-dtg",
 ]
 
 [[package]]
@@ -10654,7 +10673,7 @@ dependencies = [
  "clap",
  "dialoguer",
  "didwebvh-rs",
- "dtg-credentials",
+ "dtg-credentials 0.4.0",
  "ed25519-dalek 3.0.0",
  "fjall",
  "flate2",
@@ -10701,6 +10720,7 @@ dependencies = [
  "vtc-service",
  "vti-common",
  "vti-rooms",
+ "vti-rooms-dtg",
  "vti-secrets",
  "webauthn-rs",
  "webauthn-rs-proto",
@@ -10788,6 +10808,7 @@ dependencies = [
 name = "vti-rooms"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "serde",
  "serde_json",
@@ -10795,6 +10816,28 @@ dependencies = [
  "tokio",
  "trust-tasks-rs",
  "vti-common",
+]
+
+[[package]]
+name = "vti-rooms-dtg"
+version = "0.1.0"
+dependencies = [
+ "affinidi-data-integrity",
+ "affinidi-secrets-resolver",
+ "affinidi-tdk",
+ "async-trait",
+ "base64 0.23.1",
+ "chrono",
+ "dtg-credentials 0.6.0",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.3.4",
+ "multibase",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "vta-sdk",
+ "vti-common",
+ "vti-rooms",
 ]
 
 [[package]]

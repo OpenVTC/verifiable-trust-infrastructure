@@ -18,6 +18,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # The published schema types `updatedAt` as an RFC 3339 string.
 chrono = { workspace = true }
+# Verification may resolve a DID, so ChainVerifier is async; async-trait keeps it
+# dyn-compatible, as it does for vti_common::auth::backend.
+async-trait = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

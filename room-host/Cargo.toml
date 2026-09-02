@@ -18,6 +18,7 @@ path = "src/main.rs"
 vti-rooms = { path = "../vti-rooms", version = "0.1" }
 # The store and AppError. Nothing else internal.
 vti-common = { path = "../vti-common", version = "0.16" }
+vti-rooms-dtg = { path = "../vti-rooms-dtg" }
 
 axum = { workspace = true }
 tokio = { workspace = true }
@@ -27,6 +28,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 anyhow = "1"
+affinidi-did-resolver-cache-sdk = { workspace = true }
 
 # A room host and a VTC serve the same protocol, so they must speak the same
 # wire form: requests and responses are Trust Task documents, not bare JSON.
@@ -37,6 +39,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", features = ["test-support"] }
 
 # The `data_room` example drives this host with the real client, so it needs the
 # client's MLS layer and a throwaway signer. None of this reaches the binary.

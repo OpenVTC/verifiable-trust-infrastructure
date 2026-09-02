@@ -118,6 +118,7 @@ path = "src/main.rs"
 
 [dependencies]
 vti-rooms = { path = "../vti-rooms", version = "0.1" }
+vti-rooms-dtg = { path = "../vti-rooms-dtg" }
 vti-common = { path = "../vti-common", version = "0.16", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
@@ -306,6 +307,9 @@ tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
 trust-tasks-rs = { workspace = true }
+# Signed room fixtures. Cargo unifies this feature with the normal dependency
+# above, so the fixtures reach tests without shipping in the service binary.
+vti-rooms-dtg = { path = "../vti-rooms-dtg", features = ["test-support"] }
 # Self-dep with `test-support` enabled so integration tests under
 # `tests/` can import `vtc_service::test_support` (`TestVtc`, `MockVtc`).
 vtc-service = { path = ".", features = ["test-support", "didcomm-harness"] }
