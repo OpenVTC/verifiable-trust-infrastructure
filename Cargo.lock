@@ -7892,7 +7892,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.23.1",
  "clap",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.3.4",
+ "multibase",
+ "openmls_rust_crypto",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
@@ -7900,6 +7906,8 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "vta-sdk",
+ "vtc-client",
  "vti-common",
  "vti-rooms",
 ]

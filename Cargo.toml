@@ -1,10 +1,10 @@
 
 [workspace]
 members = [
-  "room-host",
   "cnm-cli",
   "didcomm-test",
   "pnm-cli",
+  "room-host",
   "tests/e2e",
   "vta-cli-common",
   "vta-config",

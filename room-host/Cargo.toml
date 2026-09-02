@@ -31,3 +31,14 @@ anyhow = "1"
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+
+# The `data_room` example drives this host with the real client, so it needs the
+# client's MLS layer and a throwaway signer. None of this reaches the binary.
+vtc-client = { path = "../vtc-client", features = ["mls"] }
+vta-sdk = { path = "../vta-sdk" }
+openmls_rust_crypto = "0.6"
+ed25519-dalek = { workspace = true }
+multibase = { workspace = true }
+base64 = { workspace = true }
+getrandom = "0.3"
+reqwest = { workspace = true }
