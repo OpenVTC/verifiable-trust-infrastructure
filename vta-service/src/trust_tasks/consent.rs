@@ -33,7 +33,10 @@ use vti_common::consent::{
 };
 use vti_common::error::AppError;
 
-use super::helpers::{TrustTaskOutcome, app_error_to_reject, parse_payload, success_response};
+use super::helpers::{
+    TRANSPORT_TRUST_TASK, TrustTaskOutcome, app_error_to_reject, parse_payload, success_response,
+};
+use crate::audit;
 use crate::auth::AuthClaims;
 use crate::server::AppState;
 
@@ -702,6 +705,28 @@ pub(super) async fn handle_revoke(
     if let Err(e) = delete_consent_grant(&state.consent_ks, &subject).await {
         return app_error_to_reject(&doc, e);
     }
+
+    // Withdrawing consent is a change to what an agent may do on someone's
+    // behalf, and the `notFound` path above returns before here on purpose: a
+    // revoke that deleted nothing is not a state change worth a line.
+    if let Err(e) = audit::record_with_detail(
+        &state.audit_sink,
+        "consent.revoke",
+        &auth.did,
+        Some(&subject.conversation_ref),
+        "success",
+        Some(TRANSPORT_TRUST_TASK),
+        None,
+        Some(&format!(
+            "platform={} agent={}",
+            subject.platform, subject.agent
+        )),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "audit record failed for consent.revoke");
+    }
+
     success_response(
         &doc,
         AckResponse {
@@ -769,9 +794,36 @@ pub(super) async fn handle_approver_set(
         route: payload.route,
         route_hint: payload.route_hint,
     };
+    let audit_detail = format!(
+        "platform={} approver={} route={:?}",
+        binding.platform, binding.approver, binding.route
+    );
+    let audit_context = binding.context.clone();
     if let Err(e) = store_approver(&state.consent_approvers_ks, &binding).await {
         return app_error_to_reject(&doc, e);
     }
+
+    // This binding decides *who gets asked* when a task needs a human. Moved
+    // quietly, it is the whole consent path redirected — point it at yourself
+    // and every gated action is approved by you, with the wallet still showing
+    // its prompt to somebody who never sees it. The approver is recorded in the
+    // detail for exactly that reason: knowing the binding changed is not enough,
+    // the reviewer needs to know what it changed *to*.
+    if let Err(e) = audit::record_with_detail(
+        &state.audit_sink,
+        "consent.approver-set",
+        &auth.did,
+        Some(&audit_context),
+        "success",
+        Some(TRANSPORT_TRUST_TASK),
+        Some(&audit_context),
+        Some(&audit_detail),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "audit record failed for consent.approver-set");
+    }
+
     success_response(&doc, ApproverSetResponse { status: "set" })
 }
 

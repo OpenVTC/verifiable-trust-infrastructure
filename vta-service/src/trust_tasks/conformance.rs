@@ -2884,6 +2884,26 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
     v
 }
 
+/// The request payload this table witnesses for `uri`, if it holds one.
+///
+/// Exposed for the audit-coverage census, which needs a schema-valid payload
+/// per dispatched task and should not carry a second copy of these fixtures —
+/// two sets would drift, and the one that drifted would be the one nobody was
+/// looking at.
+///
+/// `None` for a URI with no witness at all, and for a `KnownDrift` entry: that
+/// variant records a shape the table already knows is wrong, and feeding it to
+/// another sweep would spread one defect across two failures.
+pub(super) fn request_payload_for(uri: &str) -> Option<Value> {
+    table()
+        .into_iter()
+        .find(|(u, _)| *u == uri)
+        .and_then(|(_, c)| match c {
+            Conformance::Checked(w) => Some(w.request),
+            Conformance::KnownDrift(_) => None,
+        })
+}
+
 // ─── The sweep ───────────────────────────────────────────────────────────
 
 /// Coverage: the witness table and the derived census agree exactly, in both

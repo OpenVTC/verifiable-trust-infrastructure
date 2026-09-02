@@ -143,13 +143,33 @@ pub(super) async fn handle_revoke_session(
         );
     }
 
-    // 5. Audit.
+    // 5. Audit — both forms, and they are not redundant.
+    //
+    // The `audit!` macro emits a tracing event on the `audit` target: a log
+    // line. It does NOT reach the `AuditSink`, so nothing it records appears in
+    // `audit/list` or in an operator's external sink. Ending a session is a
+    // change to who can act, and it belongs in the queryable trail, so the
+    // sink-routed `record_with_detail` is what actually satisfies that.
     audit!(
         "session.revoke",
         actor = &auth.did,
         resource = &session_id,
         outcome = "success"
     );
+    if let Err(e) = crate::audit::record_with_detail(
+        &state.audit_sink,
+        "session.revoke",
+        &auth.did,
+        Some(&session_id),
+        "success",
+        Some(super::helpers::TRANSPORT_TRUST_TASK),
+        None,
+        None,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "audit record failed for session.revoke");
+    }
     tracing::info!(
         caller = %auth.did,
         session_id = %session_id,
