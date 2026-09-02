@@ -28,6 +28,12 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 anyhow = "1"
 
+# A room host and a VTC serve the same protocol, so they must speak the same
+# wire form: requests and responses are Trust Task documents, not bare JSON.
+trust-tasks-rs = { workspace = true }
+trust-tasks-https = { workspace = true }
+uuid = { workspace = true }
+
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
@@ -42,3 +48,4 @@ multibase = { workspace = true }
 base64 = { workspace = true }
 getrandom = "0.3"
 reqwest = { workspace = true }
+uuid = { workspace = true }

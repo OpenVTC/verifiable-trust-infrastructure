@@ -34,13 +34,18 @@
 
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::{Value, json};
+use trust_tasks_https::status_for_code;
+use trust_tasks_rs::{RejectReason, TrustTask};
+use uuid::Uuid;
 use vti_common::config::StoreConfig;
+use vti_common::error::AppError;
 use vti_common::store::{KeyspaceHandle, Store};
 use vti_rooms::wire::{
     CreateRoomBody, CreateRoomResponse, GetRecordBody, ListRecordsBody, ListRecordsResponse,
@@ -70,41 +75,110 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// A Trust-Task error response.
+/// Refuse a request, as a routed `trust-task-error` document.
 ///
-/// Every authorization failure comes back the same way, with the reason in the body: an
-/// operator reading logs can tell a missing chain from an over-deep one, while a caller
-/// learns only that it was refused.
-fn reject(status: StatusCode, reason: impl std::fmt::Display) -> axum::response::Response {
-    (status, Json(json!({ "error": reason.to_string() }))).into_response()
+/// A room host and a VTC serve the same protocol, so they must refuse it the same way: a
+/// bare `{"error": …}` is not a Trust Task document, and a client that parses one host's
+/// reply cannot parse the other's. The `data_room` example found exactly that — every call
+/// in it failed on `missing field \`id\`` before this existed.
+///
+/// The reason text distinguishes the cases for an operator reading logs; the framework code
+/// is what a caller switches on.
+fn reject(doc: &TrustTask<Value>, reason: RejectReason) -> axum::response::Response {
+    let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), reason);
+    (
+        StatusCode::from_u16(status_for_code(&routed.payload.code))
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        Json(serde_json::to_value(&routed).unwrap_or(Value::Null)),
+    )
+        .into_response()
+}
+
+/// Answer a request, as a routed `#response` document.
+fn respond<R: serde::Serialize>(doc: &TrustTask<Value>, payload: R) -> axum::response::Response {
+    let response = doc.respond_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
+    Json(serde_json::to_value(&response).unwrap_or(Value::Null)).into_response()
+}
+
+/// An `AppError` from the storage or authorization layer, as a rejection.
+///
+/// One mapping, so this host and the VTC classify the same failure identically. Both
+/// services reach these from shared code in `vti-rooms`; disagreeing here would mean the
+/// same refusal read as a different kind of problem depending on who was hosting.
+fn from_app_error(doc: &TrustTask<Value>, e: &AppError) -> axum::response::Response {
+    let reason = e.to_string();
+    reject(
+        doc,
+        match e {
+            AppError::Forbidden(_) => RejectReason::PermissionDenied { reason },
+            AppError::Validation(_) => RejectReason::MalformedRequest { reason },
+            // `TaskFailed` for both, following the VTC: a room that does not exist and a
+            // version precondition that lost a race are caller-visible outcomes, not server
+            // faults, and `InternalError` would tell the caller to retry.
+            AppError::NotFound(_) | AppError::Conflict(_) => RejectReason::TaskFailed {
+                reason,
+                details: None,
+            },
+            _ => RejectReason::InternalError { reason },
+        },
+    )
 }
 
 /// The one entry point: a `rooms/*` document, routed by its own `type`.
 ///
 /// One mount rather than five routes, because the document's `type` is its identity — the
 /// same shape the VTC's holder-facing surface uses.
-async fn trust_task(State(state): State<Arc<HostState>>, body: Json<Value>) -> impl IntoResponse {
-    let doc = body.0;
-    let type_uri = doc.get("type").and_then(Value::as_str).unwrap_or_default();
-    let payload = doc.get("payload").cloned().unwrap_or(Value::Null);
+async fn trust_task(State(state): State<Arc<HostState>>, body: Bytes) -> axum::response::Response {
+    // A body that is not a Trust Task document cannot be *routed* — there is no issuer to
+    // address a rejection to and no thread to correlate it with — so this one case answers
+    // with an unrouted error, exactly as the VTC's `body_parse_error_response` does.
+    let doc: TrustTask<Value> = match serde_json::from_slice(&body) {
+        Ok(d) => d,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("body is not a Trust Task document: {e}"),
+                })),
+            )
+                .into_response();
+        }
+    };
 
-    match type_uri {
-        ROOMS_CREATE_TYPE => create(&state, payload).await,
-        ROOMS_RECORDS_PUT_TYPE => put(&state, payload).await,
-        ROOMS_RECORDS_GET_TYPE => get(&state, payload).await,
-        ROOMS_RECORDS_LIST_TYPE => list(&state, payload).await,
-        ROOMS_EPOCH_MINT_TYPE => mint(&state, payload).await,
+    let payload = doc.payload.clone();
+    match doc.type_uri.to_string().as_str() {
+        ROOMS_CREATE_TYPE => create(&state, &doc, payload).await,
+        ROOMS_RECORDS_PUT_TYPE => put(&state, &doc, payload).await,
+        ROOMS_RECORDS_GET_TYPE => get(&state, &doc, payload).await,
+        ROOMS_RECORDS_LIST_TYPE => list(&state, &doc, payload).await,
+        ROOMS_EPOCH_MINT_TYPE => mint(&state, &doc, payload).await,
         other => reject(
-            StatusCode::NOT_FOUND,
-            format!("this host does not serve `{other}`"),
+            &doc,
+            // The framework's own code for this: a host that does not implement a task
+            // says so by naming the type, and a client can tell that from a task it
+            // implements but refused.
+            RejectReason::UnsupportedType {
+                type_uri: other.to_string(),
+            },
         ),
     }
 }
 
-async fn create(state: &HostState, payload: Value) -> axum::response::Response {
+async fn create(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> axum::response::Response {
     let req: CreateRoomBody = match serde_json::from_value(payload) {
         Ok(r) => r,
-        Err(e) => return reject(StatusCode::BAD_REQUEST, e),
+        Err(e) => {
+            return reject(
+                doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            );
+        }
     };
     let room = Room {
         room_id: req.room_id.clone(),
@@ -117,26 +191,39 @@ async fn create(state: &HostState, payload: Value) -> axum::response::Response {
         updated_at: now(),
     };
     match storage::create_room(&state.rooms, &room).await {
-        Ok(()) => Json(CreateRoomResponse {
-            room_id: req.room_id,
-            epoch: 1,
-        })
-        .into_response(),
-        Err(e) => reject(StatusCode::CONFLICT, e),
+        Ok(()) => respond(
+            doc,
+            CreateRoomResponse {
+                room_id: req.room_id,
+                epoch: 1,
+            },
+        ),
+        Err(e) => from_app_error(doc, &e),
     }
 }
 
-async fn put(state: &HostState, payload: Value) -> axum::response::Response {
+async fn put(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> axum::response::Response {
     let req: PutRecordBody = match serde_json::from_value(payload) {
         Ok(r) => r,
-        Err(e) => return reject(StatusCode::BAD_REQUEST, e),
+        Err(e) => {
+            return reject(
+                doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            );
+        }
     };
     let room = match storage::get_room(&state.rooms, &req.room_id).await {
         Ok(r) => r,
-        Err(e) => return reject(StatusCode::NOT_FOUND, e),
+        Err(e) => return from_app_error(doc, &e),
     };
     if let Err(e) = authz::authorize(&room, &req.presentation, Action::Write) {
-        return reject(StatusCode::FORBIDDEN, e);
+        return from_app_error(doc, &e);
     }
 
     let record = Record {
@@ -169,45 +256,69 @@ async fn put(state: &HostState, payload: Value) -> axum::response::Response {
     )
     .await
     {
-        Ok(stored) => Json(PutRecordResponse {
-            key: stored.key,
-            version: stored.version,
-            epoch: stored.epoch,
-        })
-        .into_response(),
-        Err(e) => reject(StatusCode::CONFLICT, e),
+        Ok(stored) => respond(
+            doc,
+            PutRecordResponse {
+                key: stored.key,
+                version: stored.version,
+                epoch: stored.epoch,
+            },
+        ),
+        Err(e) => from_app_error(doc, &e),
     }
 }
 
-async fn get(state: &HostState, payload: Value) -> axum::response::Response {
+async fn get(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> axum::response::Response {
     let req: GetRecordBody = match serde_json::from_value(payload) {
         Ok(r) => r,
-        Err(e) => return reject(StatusCode::BAD_REQUEST, e),
+        Err(e) => {
+            return reject(
+                doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            );
+        }
     };
     let room = match storage::get_room(&state.rooms, &req.room_id).await {
         Ok(r) => r,
-        Err(e) => return reject(StatusCode::NOT_FOUND, e),
+        Err(e) => return from_app_error(doc, &e),
     };
     if let Err(e) = authz::authorize(&room, &req.presentation, Action::Read) {
-        return reject(StatusCode::FORBIDDEN, e);
+        return from_app_error(doc, &e);
     }
     match storage::get_record(&state.records, &req.room_id, &req.key).await {
-        Ok(record) => Json(record).into_response(),
-        Err(e) => reject(StatusCode::NOT_FOUND, e),
+        Ok(record) => respond(doc, record),
+        Err(e) => from_app_error(doc, &e),
     }
 }
 
-async fn list(state: &HostState, payload: Value) -> axum::response::Response {
+async fn list(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> axum::response::Response {
     let req: ListRecordsBody = match serde_json::from_value(payload) {
         Ok(r) => r,
-        Err(e) => return reject(StatusCode::BAD_REQUEST, e),
+        Err(e) => {
+            return reject(
+                doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            );
+        }
     };
     let room = match storage::get_room(&state.rooms, &req.room_id).await {
         Ok(r) => r,
-        Err(e) => return reject(StatusCode::NOT_FOUND, e),
+        Err(e) => return from_app_error(doc, &e),
     };
     if let Err(e) = authz::authorize(&room, &req.presentation, Action::Read) {
-        return reject(StatusCode::FORBIDDEN, e);
+        return from_app_error(doc, &e);
     }
     match storage::list_records(
         &state.records,
@@ -221,37 +332,52 @@ async fn list(state: &HostState, payload: Value) -> axum::response::Response {
             let limit = req.limit.unwrap_or(usize::MAX);
             // Metadata, never bodies — the same rule the VTC serves under, because it is a
             // property of the task rather than of any one host.
-            Json(ListRecordsResponse {
-                records: records.iter().take(limit).map(|r| r.metadata()).collect(),
-            })
-            .into_response()
+            respond(
+                doc,
+                ListRecordsResponse {
+                    records: records.iter().take(limit).map(|r| r.metadata()).collect(),
+                },
+            )
         }
-        Err(e) => reject(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => from_app_error(doc, &e),
     }
 }
 
-async fn mint(state: &HostState, payload: Value) -> axum::response::Response {
+async fn mint(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> axum::response::Response {
     let req: MintEpochBody = match serde_json::from_value(payload) {
         Ok(r) => r,
-        Err(e) => return reject(StatusCode::BAD_REQUEST, e),
+        Err(e) => {
+            return reject(
+                doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            );
+        }
     };
     let room = match storage::get_room(&state.rooms, &req.room_id).await {
         Ok(r) => r,
-        Err(e) => return reject(StatusCode::NOT_FOUND, e),
+        Err(e) => return from_app_error(doc, &e),
     };
     // `admin`, not `write`: if any key-holder could mint an epoch, any member could evict
     // any other by declining to seal them the new key — and this host, which cannot see the
     // membership, would have no way to notice.
     if let Err(e) = authz::authorize(&room, &req.presentation, Action::Admin) {
-        return reject(StatusCode::FORBIDDEN, e);
+        return from_app_error(doc, &e);
     }
     match storage::advance_epoch(&state.rooms, &req.room_id, req.epoch, now()).await {
-        Ok(updated) => Json(MintEpochResponse {
-            room_id: updated.room_id,
-            epoch: updated.epoch,
-        })
-        .into_response(),
-        Err(e) => reject(StatusCode::CONFLICT, e),
+        Ok(updated) => respond(
+            doc,
+            MintEpochResponse {
+                room_id: updated.room_id,
+                epoch: updated.epoch,
+            },
+        ),
+        Err(e) => from_app_error(doc, &e),
     }
 }
 
@@ -286,8 +412,19 @@ mod tests {
         (dir, state)
     }
 
+    /// Send a request and return the status plus the response document's **payload**.
+    ///
+    /// Building a real document here rather than `{type, payload}` is the point: the
+    /// `data_room` example failed on every call against the looser shape, because a client
+    /// parses the reply as a Trust Task document and a bare payload has no `id`.
     async fn call(app: &Router, type_uri: &str, payload: Value) -> (StatusCode, Value) {
-        let doc = json!({ "type": type_uri, "payload": payload });
+        let doc = json!({
+            "id": format!("urn:uuid:{}", Uuid::new_v4()),
+            "type": type_uri,
+            "issuer": "did:key:zCaller",
+            "recipient": "did:key:zHost",
+            "payload": payload,
+        });
         let resp = app
             .clone()
             .oneshot(
@@ -302,10 +439,13 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
-        (
-            status,
-            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-        )
+        let doc: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        // Every reply is a routed document; the test cares about what it carries.
+        assert!(
+            doc.get("id").is_some(),
+            "every reply must be a Trust Task document: {doc}"
+        );
+        (status, doc.get("payload").cloned().unwrap_or(Value::Null))
     }
 
     fn presentation() -> Value {
@@ -389,7 +529,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(
-            body["error"]
+            body["message"]
                 .as_str()
                 .unwrap_or_default()
                 .contains("subject binding"),
@@ -433,16 +573,20 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_task_is_not_served() {
         let (_d, st) = state();
-        let (status, _) = call(
+        let (status, body) = call(
             &router(st),
             "https://trusttasks.org/spec/vtc/members/list/0.1",
             json!({}),
         )
         .await;
-        assert_eq!(
-            status,
-            StatusCode::NOT_FOUND,
+        assert!(
+            !status.is_success(),
             "a room host serves rooms and nothing else"
+        );
+        assert_eq!(
+            body["code"], "unsupportedType",
+            "and says so with the framework's own code, so a client can tell it apart \
+             from a task this host implements but refused: {body}"
         );
     }
 }

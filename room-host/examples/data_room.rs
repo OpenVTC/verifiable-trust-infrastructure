@@ -156,7 +156,7 @@ async fn act_one(addr: SocketAddr, signer_did: &str, signer_key: &str) -> anyhow
         vec!["vac:agent-read-4h".into(), "vac:alice-rw".into()],
     )?;
     note(&format!(
-        "Alice's chain is {} link deep; her agent's is {}",
+        "Alice's chain is {} link deep; {AGENT}'s is {}",
         alice.chain_depth(),
         agent.chain_depth()
     ));
@@ -184,20 +184,19 @@ async fn act_one(addr: SocketAddr, signer_did: &str, signer_key: &str) -> anyhow
         "5. Mallory presents nothing and gets nothing",
         "Not because the host knows who Mallory is. Because there is no chain.",
     );
-    // A chain of length zero is refused client-side, so build the request the long way to
-    // show the *host* refusing it too.
+    // `RoomSession` refuses an empty chain before it reaches the wire, so send the document
+    // by hand — the point is that the *host* refuses it too, on its own reading.
     let refused = post_raw(
         addr,
         "https://trusttasks.org/spec/rooms/records/get/0.1",
         serde_json::json!({
             "roomId": ROOM,
             "key": "decision/pricing-2026",
-            "presentation": { "membership": format!("vmc:mallory@nowhere"), "authority": [] }
+            "presentation": { "membership": "vmc:mallory@nowhere", "authority": [] }
         }),
     )
     .await?;
-    note(&format!("host says: {}", refused.trim()));
-    let _ = MALLORY;
+    note(&format!("host says: {refused}"));
 
     Ok(())
 }
@@ -340,7 +339,7 @@ async fn act_three(addr: SocketAddr, signer_did: &str, signer_key: &str) -> anyh
         .get_record(&session, "anything", signer_did, signer_key)
         .await
     {
-        Err(e) => note(&format!("host says: {e}")),
+        Err(e) => note(&format!("host says: {}", host_message(&e.to_string()))),
         Ok(_) => unreachable!("a sealed room must not be served on an unverified chain"),
     }
 
@@ -389,17 +388,37 @@ fn mint_signer() -> (String, String) {
     (did, secret)
 }
 
-/// Post a Trust-Task document the client would refuse to build.
+/// Post a Trust-Task document the client would refuse to build, and return what the host
+/// said about it.
 async fn post_raw(
     addr: SocketAddr,
     type_uri: &str,
     payload: serde_json::Value,
 ) -> anyhow::Result<String> {
-    let body = serde_json::json!({ "type": type_uri, "payload": payload });
+    let body = serde_json::json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": type_uri,
+        "issuer": MALLORY,
+        "recipient": "did:key:zHostDid",
+        "payload": payload,
+    });
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/trust-tasks"))
         .json(&body)
         .send()
         .await?;
-    Ok(resp.text().await?)
+    Ok(host_message(&resp.text().await?))
+}
+
+/// Pull the human-readable message out of a `trust-task-error` document.
+///
+/// The whole document is the right thing on the wire and the wrong thing in a demo.
+fn host_message(body: &str) -> String {
+    let start = match body.find("\"message\":\"") {
+        Some(i) => i + 11,
+        None => return body.trim().to_string(),
+    };
+    let rest = &body[start..];
+    let end = rest.find("\",").unwrap_or(rest.len());
+    rest[..end].to_string()
 }
