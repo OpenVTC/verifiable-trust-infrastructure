@@ -28,6 +28,9 @@
 //! bound to the agent. The agent's `RoomSession` is built exactly like the member's — the
 //! difference is entirely in the credentials it was handed, which is the point.
 
+#[cfg(feature = "mls")]
+pub mod mls;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{VtcClient, VtcError};
