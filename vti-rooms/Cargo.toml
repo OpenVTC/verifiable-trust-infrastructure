@@ -16,7 +16,12 @@ vti-common = { path = "../vti-common", version = "0.16" }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The published schema types `updatedAt` as an RFC 3339 string.
+chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# The published rooms/* schemas, so the hand-rolled wire types above are checked
+# against the spec rather than only against themselves.
+trust-tasks-rs = { workspace = true }
 tokio = { workspace = true }

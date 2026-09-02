@@ -220,20 +220,52 @@ pub struct Record {
     pub updated_at: u64,
 }
 
+/// Unix seconds as an RFC 3339 timestamp.
+///
+/// A value beyond what a timestamp can express renders as the epoch rather than panicking:
+/// a listing is a read path, and a corrupt stored time should not take the room down.
+fn rfc3339(unix_seconds: u64) -> String {
+    chrono::DateTime::from_timestamp(unix_seconds as i64, 0)
+        .unwrap_or_else(|| chrono::DateTime::from_timestamp(0, 0).expect("epoch is in range"))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
 impl Record {
     /// The metadata projection a listing returns.
     ///
     /// **Never the body.** Ranking happens on the client, and a service that returned every
     /// body would make a caller pay for the whole room on every listing — and on a sealed
     /// tier could not usefully rank them anyway.
+    /// The schema types every optional member — `epoch` is `integer`, `author` is
+    /// `string` — and sets `additionalProperties: false`, so an absent member has to be
+    /// *absent*. Emitting `null` fails validation rather than reading as "not applicable",
+    /// which is why this builds a map instead of one `json!` literal.
     pub fn metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "key": self.key,
-            "version": self.version,
-            "epoch": self.epoch,
-            "status": self.status,
-            "author": self.author,
-            "updatedAt": self.updated_at,
-        })
+        let mut map = serde_json::Map::new();
+        map.insert("key".into(), serde_json::json!(self.key));
+        map.insert("version".into(), serde_json::json!(self.version));
+        map.insert("status".into(), serde_json::json!(self.status));
+        // RFC 3339, because that is what the published schema types it as
+        // (`format: date-time`) and what every other timestamp on the wire already is.
+        // Storage keeps unix seconds; only the projection renders.
+        map.insert(
+            "updatedAt".into(),
+            serde_json::json!(rfc3339(self.updated_at)),
+        );
+        if let Some(epoch) = self.epoch {
+            map.insert("epoch".into(), serde_json::json!(epoch));
+        }
+        if let Some(author) = &self.author {
+            map.insert("author".into(), serde_json::json!(author));
+        }
+        // `title` and `description` are the open tier's, and live in the cleartext body.
+        if let Some(cleartext) = &self.cleartext {
+            for field in ["title", "description"] {
+                if let Some(v) = cleartext.get(field).filter(|v| v.is_string()) {
+                    map.insert(field.into(), v.clone());
+                }
+            }
+        }
+        serde_json::Value::Object(map)
     }
 }
