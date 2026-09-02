@@ -41,6 +41,7 @@ pub mod policy;
 pub mod recognition;
 pub mod registry;
 pub mod relationships;
+pub mod rooms;
 pub mod routes;
 pub mod routing;
 pub mod schemas;

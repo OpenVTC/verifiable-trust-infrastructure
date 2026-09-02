@@ -114,6 +114,14 @@ pub struct AppState {
     /// Tracked here for list + revoke surfaces; the VEC body
     /// itself is signed + returned at issuance time.
     pub endorsements_ks: KeyspaceHandle,
+    /// Data rooms — one row per room. Carries owner, visibility, epoch and
+    /// retention, and deliberately **no member list**: room membership is
+    /// decided by credentials the room itself issued, so a roster here would
+    /// make the room unmovable and make this service part of its membership.
+    /// See `crate::rooms`.
+    pub rooms_ks: KeyspaceHandle,
+    /// Room records. Ciphertext on the `attributed` and `private` tiers.
+    pub room_records_ks: KeyspaceHandle,
     pub audit_ks: KeyspaceHandle,
     pub audit_key_ks: KeyspaceHandle,
     /// Signed audit checkpoints (#708). Read by `GET /v1/audit/verify`,
@@ -452,6 +460,8 @@ pub async fn run(
     // mints out of the box.
     crate::schemas::seed_default_issues(&schemas_ks).await?;
     let endorsements_ks = store.keyspace(keyspaces::ENDORSEMENTS)?;
+    let rooms_ks = store.keyspace(keyspaces::ROOMS)?;
+    let room_records_ks = store.keyspace(keyspaces::ROOM_RECORDS)?;
     let audit_ks = store.keyspace(keyspaces::AUDIT)?;
     let audit_key_ks = store.keyspace(keyspaces::AUDIT_KEY)?;
     let audit_checkpoint_ks = store.keyspace(keyspaces::AUDIT_CHECKPOINT)?;
@@ -718,6 +728,8 @@ pub async fn run(
         endorsement_types_ks,
         schemas_ks,
         endorsements_ks,
+        rooms_ks,
+        room_records_ks,
         audit_ks,
         audit_key_ks,
         audit_checkpoint_ks: audit_checkpoint_ks.clone(),

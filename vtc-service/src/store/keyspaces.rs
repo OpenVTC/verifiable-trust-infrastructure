@@ -34,6 +34,16 @@ pub const RELATIONSHIPS_BY_DID: &str = "relationships_by_did";
 pub const ENDORSEMENT_TYPES: &str = "endorsement_types";
 pub const SCHEMAS: &str = "schemas";
 pub const ENDORSEMENTS: &str = "endorsements";
+
+/// Data rooms: one row per room at `rooms:<roomId>`.
+///
+/// Holds an owner, a visibility, an epoch and a retention period — and deliberately **no
+/// member list**. Membership is decided by credentials the room itself issued, so a roster
+/// here would make the room unmovable and make this service part of its membership.
+pub const ROOMS: &str = "rooms";
+
+/// Room records at `room_records:<roomId>:<key>`. Ciphertext on the sealed tiers.
+pub const ROOM_RECORDS: &str = "room_records";
 pub const AUDIT: &str = "audit";
 pub const AUDIT_KEY: &str = "audit_key";
 /// Signed audit checkpoints (#708) — periodic Ed25519-signed commitments to
@@ -78,6 +88,8 @@ pub const ALL: &[&str] = &[
     ENDORSEMENT_TYPES,
     SCHEMAS,
     ENDORSEMENTS,
+    ROOMS,
+    ROOM_RECORDS,
     AUDIT,
     AUDIT_KEY,
     AUDIT_CHECKPOINT,
@@ -108,6 +120,8 @@ pub const BACKED_UP: &[&str] = &[
     ENDORSEMENT_TYPES,
     SCHEMAS,
     ENDORSEMENTS,
+    ROOMS,
+    ROOM_RECORDS,
     AUDIT,
     AUDIT_KEY,
     // Required, not optional: restoring the audit log without its
@@ -146,11 +160,11 @@ mod tests {
     use super::*;
 
     /// `ALL` must stay in sync with the `AppState` keyspace fields.
-    /// `server::run` opens 21 keyspaces into 21 `*_ks` fields — if a
+    /// `server::run` opens every one of them into a `*_ks` field — if a
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        assert_eq!(ALL.len(), 25, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 27, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or
