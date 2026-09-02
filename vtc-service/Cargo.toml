@@ -117,6 +117,7 @@ name = "vtc"
 path = "src/main.rs"
 
 [dependencies]
+vti-rooms = { path = "../vti-rooms", version = "0.1" }
 vti-common = { path = "../vti-common", version = "0.16", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper

@@ -40,10 +40,10 @@ pub const ENDORSEMENTS: &str = "endorsements";
 /// Holds an owner, a visibility, an epoch and a retention period — and deliberately **no
 /// member list**. Membership is decided by credentials the room itself issued, so a roster
 /// here would make the room unmovable and make this service part of its membership.
-pub const ROOMS: &str = "rooms";
+pub use vti_rooms::ROOMS_KEYSPACE as ROOMS;
 
 /// Room records at `room_records:<roomId>:<key>`. Ciphertext on the sealed tiers.
-pub const ROOM_RECORDS: &str = "room_records";
+pub use vti_rooms::ROOM_RECORDS_KEYSPACE as ROOM_RECORDS;
 pub const AUDIT: &str = "audit";
 pub const AUDIT_KEY: &str = "audit_key";
 /// Signed audit checkpoints (#708) — periodic Ed25519-signed commitments to

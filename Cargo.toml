@@ -25,6 +25,7 @@ members = [
   "vtc-client",
   "vtc-service",
   "vti-common",
+  "vti-rooms",
   "vti-secrets",
   "vti-webauthn",
 ]

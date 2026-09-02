@@ -22,17 +22,17 @@
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 
-use crate::rooms::authz::{self, Action};
-use crate::rooms::storage;
-use crate::rooms::wire::{
-    CreateRoomBody, CreateRoomResponse, GetRecordBody, ListRecordsBody, ListRecordsResponse,
-    MintEpochBody, MintEpochResponse, PutRecordBody, PutRecordResponse,
-};
-use crate::rooms::{Record, RecordStatus, Room};
 use crate::server::AppState;
 use crate::trust_tasks::helpers::{
     TrustTaskOutcome, app_error_to_reject, parse_payload, success_response,
 };
+use vti_rooms::authz::{self, Action};
+use vti_rooms::storage;
+use vti_rooms::wire::{
+    CreateRoomBody, CreateRoomResponse, GetRecordBody, ListRecordsBody, ListRecordsResponse,
+    MintEpochBody, MintEpochResponse, PutRecordBody, PutRecordResponse,
+};
+use vti_rooms::{Record, RecordStatus, Room};
 
 /// Seconds since the Unix epoch.
 fn now() -> u64 {
@@ -262,7 +262,7 @@ mod tests {
         handle_create(
             state,
             doc(
-                crate::rooms::wire::ROOMS_CREATE_TYPE,
+                vti_rooms::wire::ROOMS_CREATE_TYPE,
                 json!({ "roomId": id, "visibility": visibility, "ownerDid": "did:key:zOwner" }),
             ),
         )
@@ -283,7 +283,7 @@ mod tests {
         let out = handle_put_record(
             state,
             doc(
-                crate::rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
                 json!({
                     "roomId": "r1", "key": "k1", "presentation": presentation(),
                     "cleartext": { "body": "a decision" }
@@ -297,7 +297,7 @@ mod tests {
         let out = handle_get_record(
             state,
             doc(
-                crate::rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
                 json!({ "roomId": "r1", "key": "k1", "presentation": presentation() }),
             ),
         )
@@ -317,7 +317,7 @@ mod tests {
         let out = handle_put_record(
             state,
             doc(
-                crate::rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
                 json!({
                     "roomId": "r1", "key": "k1",
                     "presentation": { "membership": "vmc", "authority": [] },
@@ -341,7 +341,7 @@ mod tests {
         let out = handle_get_record(
             state,
             doc(
-                crate::rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
                 json!({ "roomId": "p1", "key": "k", "presentation": presentation() }),
             ),
         )
@@ -360,7 +360,7 @@ mod tests {
             handle_put_record(
                 state,
                 doc(
-                    crate::rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                    vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
                     json!({
                         "roomId": "r1", "key": k, "presentation": presentation(),
                         "cleartext": { "body": "secret-body-text" }
@@ -373,7 +373,7 @@ mod tests {
         let out = handle_list_records(
             state,
             doc(
-                crate::rooms::wire::ROOMS_RECORDS_LIST_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
                 json!({ "roomId": "r1", "presentation": presentation() }),
             ),
         )
@@ -407,7 +407,7 @@ mod tests {
         let out = handle_mint_epoch(
             state,
             doc(
-                crate::rooms::wire::ROOMS_EPOCH_MINT_TYPE,
+                vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE,
                 json!({ "roomId": "r1", "epoch": 2, "presentation": presentation() }),
             ),
         )
@@ -419,7 +419,7 @@ mod tests {
         let out = handle_mint_epoch(
             state,
             doc(
-                crate::rooms::wire::ROOMS_EPOCH_MINT_TYPE,
+                vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE,
                 json!({ "roomId": "r1", "epoch": 9, "presentation": presentation() }),
             ),
         )
@@ -437,7 +437,7 @@ mod tests {
         let out = handle_get_record(
             state,
             doc(
-                crate::rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
                 json!({
                     "roomId": "r1", "key": "k", "presentation": presentation(),
                     "escalate": true

@@ -296,7 +296,7 @@ pub async fn purge_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rooms::Visibility;
+    use crate::Visibility;
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 
@@ -306,10 +306,8 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .unwrap();
-        let rooms = store.keyspace(crate::store::keyspaces::ROOMS).unwrap();
-        let records = store
-            .keyspace(crate::store::keyspaces::ROOM_RECORDS)
-            .unwrap();
+        let rooms = store.keyspace(crate::ROOMS_KEYSPACE).unwrap();
+        let records = store.keyspace(crate::ROOM_RECORDS_KEYSPACE).unwrap();
         (dir, rooms, records)
     }
 

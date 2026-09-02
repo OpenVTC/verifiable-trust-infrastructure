@@ -29,8 +29,8 @@
 
 use vti_common::error::AppError;
 
-use super::wire::AuthorityPresentation;
-use super::{Room, Visibility};
+use crate::wire::AuthorityPresentation;
+use crate::{Room, Visibility};
 
 /// Maximum links in an authority chain, including the root.
 ///

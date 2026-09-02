@@ -10671,6 +10671,7 @@ dependencies = [
  "vtc-client",
  "vtc-service",
  "vti-common",
+ "vti-rooms",
  "vti-secrets",
  "webauthn-rs",
  "webauthn-rs-proto",
@@ -10751,6 +10752,17 @@ dependencies = [
  "uuid",
  "vta-sdk",
  "vta-service",
+ "vti-common",
+]
+
+[[package]]
+name = "vti-rooms"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
  "vti-common",
 ]
 

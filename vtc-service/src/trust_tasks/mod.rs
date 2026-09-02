@@ -63,7 +63,7 @@ use vta_sdk::protocols::join_requests::{
 };
 use vta_sdk::protocols::members::{self as mem, MemberVmcBody, MemberVmcReceiptBody};
 
-use crate::rooms::wire as rooms_wire;
+use vti_rooms::wire as rooms_wire;
 
 use crate::join::{JoinSubmitOutcome, JoinTransport};
 use crate::server::AppState;

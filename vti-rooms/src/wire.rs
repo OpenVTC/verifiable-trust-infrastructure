@@ -18,7 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::Visibility;
+use crate::Visibility;
 
 /// `rooms/create/0.1`.
 pub const ROOMS_CREATE_TYPE: &str = "https://trusttasks.org/spec/rooms/create/0.1";
@@ -62,7 +62,7 @@ pub struct AuthorityPresentation {
     ///
     /// Without it two parties pool credentials — one contributes membership, the other
     /// authority — and the combination verifies as a single party holding both. Silent when
-    /// wrong, which is why [`super::authz`] refuses a private-room presentation that omits
+    /// wrong, which is why [`crate::authz`] refuses a private-room presentation that omits
     /// it rather than treating it as optional.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject_binding: Option<String>,
