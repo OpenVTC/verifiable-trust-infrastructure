@@ -569,6 +569,7 @@ async fn dispatch_trust_task_inner(
 
     dispatch_audit.record(state, &auth.did, &outcome).await;
 
+
     if let Some(task) = superseded {
         // Whatever the outcome. A superseded task that was *rejected* is still
         // a client sending a URI we want to stop serving, and a client about to
