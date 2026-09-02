@@ -2416,6 +2416,30 @@ fn table() -> Vec<(&'static str, Conformance)> {
     // arrived — `CreateDidWebvhRequest` emitted snake_case and `update_context`
     // emitted `null` for unset members — so building a witness from them would
     // have encoded the defect and passed. The schema is the authority here.
+    // ─── vta/backup/* and the management singleton ───────────────
+    //
+    // Specced at trustoverip/dtgwg-trust-tasks-tf#347 and shipped in
+    // trust-tasks-rs 0.17.7, which is what moved all six off
+    // `UNSPECCED_DISPATCHED_URIS` and brought them here.
+    //
+    // The two `password` fixtures carry an obvious non-secret. The
+    // specification's schema directory deliberately contains no specimen
+    // password — a fixture value is the one thing implementers copy — and the
+    // same reasoning applies to a witness that will be read far more often
+    // than the spec.
+    for (uri, req, resp) in backup_and_management_witnesses() {
+        t.push((
+            uri,
+            Conformance::Checked(Witness {
+                request: req.0,
+                parse_request: req.1,
+                validate_request: req.2,
+                response: resp.0,
+                parse_response: resp.1,
+            }),
+        ));
+    }
+
     for (uri, req, resp) in webvh_and_context_witnesses() {
         t.push((
             uri,
@@ -2440,6 +2464,132 @@ type RespParts = (Value, ParseFn);
 /// Each request carries exactly its schema's required members and nothing else:
 /// an over-specified witness leaves little unset and so would not exercise the
 /// `null`-for-absent class that has already shipped twice (#895, #919).
+/// Witnesses for `vta/backup/*` and `vta/management/reload-services`.
+///
+/// Split out for the same reason the webvh set is: built from the published
+/// schema rather than from the slice's Rust structs, so a struct that disagrees
+/// with its schema is caught rather than encoded.
+///
+/// The descriptor is the interesting shape here — one type shared by both
+/// `initiate-*` responses, read in opposite directions. Its `transportToken` is
+/// a bearer credential for the byte endpoint, so both fixtures use a value that
+/// cannot be mistaken for a real one.
+fn backup_and_management_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
+    const BUNDLE: &str = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+    const SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    // Not a password. Long enough to clear the schema's minLength, and shaped
+    // so that anyone copying it out of here has copied something inert.
+    const NOT_A_PASSWORD: &str = "fixture-value-not-a-password";
+
+    let descriptor = json!({
+        "bundleId": BUNDLE,
+        "algorithm": "stream",
+        "transportUrl": format!("https://vta.test/backup/blob/{BUNDLE}"),
+        "transportToken": "fixture-token-not-a-credential",
+        "expectedSha256": SHA256,
+        "expectedSizeBytes": 1_048_576,
+        "expiresAt": "2026-01-01T00:05:01Z",
+    });
+
+    vec![
+        (
+            vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0,
+            (
+                json!({ "password": NOT_A_PASSWORD, "includeAudit": true }),
+                parses::<specs::vta::backup::initiate_export::v1_0::Payload>,
+                validates::<specs::vta::backup::initiate_export::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "descriptor": descriptor,
+                    "completionHint": "GET the transportUrl with header X-Backup-Token, then send complete-export."
+                }),
+                parses::<specs::vta::backup::initiate_export::v1_0::Response>,
+            ),
+        ),
+        (
+            vta_sdk::trust_tasks::TASK_BACKUP_COMPLETE_EXPORT_1_0,
+            (
+                json!({ "bundleId": BUNDLE }),
+                parses::<specs::vta::backup::complete_export::v1_0::Payload>,
+                validates::<specs::vta::backup::complete_export::v1_0::Payload>,
+            ),
+            (
+                json!({ "bundleId": BUNDLE, "downloaded": true }),
+                parses::<specs::vta::backup::complete_export::v1_0::Response>,
+            ),
+        ),
+        (
+            vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0,
+            (
+                json!({ "expectedSha256": SHA256, "expectedSizeBytes": 1_048_576 }),
+                parses::<specs::vta::backup::initiate_import::v1_0::Payload>,
+                validates::<specs::vta::backup::initiate_import::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "descriptor": descriptor,
+                    "completionHint": "POST the bundle to the transportUrl with header X-Backup-Token, then send finalize-import."
+                }),
+                parses::<specs::vta::backup::initiate_import::v1_0::Response>,
+            ),
+        ),
+        (
+            vta_sdk::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0,
+            (
+                // `confirm: false` — the preview arm. A witness that committed
+                // would be the one shape in this table whose meaning is "replace
+                // the agent", and a fixture is the wrong place to spell that.
+                json!({ "bundleId": BUNDLE, "password": NOT_A_PASSWORD, "confirm": false }),
+                parses::<specs::vta::backup::finalize_import::v1_0::Payload>,
+                validates::<specs::vta::backup::finalize_import::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "bundleId": BUNDLE,
+                    "status": "preview",
+                    "sourceDid": "did:key:z6MkSubject",
+                    "keyCount": 12,
+                    "aclCount": 34,
+                    "contextCount": 3,
+                    "auditCount": 0,
+                    "importedSecretCount": 12,
+                    "message": "Bundle is readable. Nothing has been changed."
+                }),
+                parses::<specs::vta::backup::finalize_import::v1_0::Response>,
+            ),
+        ),
+        (
+            vta_sdk::trust_tasks::TASK_BACKUP_ABORT_1_0,
+            (
+                json!({ "bundleId": BUNDLE }),
+                parses::<specs::vta::backup::abort::v1_0::Payload>,
+                validates::<specs::vta::backup::abort::v1_0::Payload>,
+            ),
+            (
+                json!({ "bundleId": BUNDLE, "aborted": true }),
+                parses::<specs::vta::backup::abort::v1_0::Response>,
+            ),
+        ),
+        (
+            vta_sdk::trust_tasks::TASK_MANAGEMENT_RELOAD_SERVICES_1_0,
+            (
+                // Empty by design: every member this task might carry would be
+                // a way of asking the agent to run on something other than its
+                // configuration. The witness pins that the empty object is what
+                // conforms.
+                json!({}),
+                parses::<specs::vta::management::reload_services::v1_0::Payload>,
+                validates::<specs::vta::management::reload_services::v1_0::Payload>,
+            ),
+            (
+                json!({ "status": "restarting" }),
+                parses::<specs::vta::management::reload_services::v1_0::Response>,
+            ),
+        ),
+    ]
+}
+
 fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
     use specs::vta::{contexts as ctx, services as svc, webvh as wv};
 

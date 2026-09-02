@@ -246,15 +246,16 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     // ─ vta/audit retention pair — candidate `audit/retention/{show,update}`.
     "https://trusttasks.org/spec/vta/audit/get-retention/1.0",
     "https://trusttasks.org/spec/vta/audit/update-retention/1.0",
+    // ─ Management singleton — diff against canonical first.
     // (`vta/discovery/capabilities/1.0` was here until #1043 retired the task;
-    // its debt is discharged by deletion rather than by a spec. The management
-    // singleton and all five of `vta/backup/*` left in the same way this
-    // comment describes for the vault credentials family: specced upstream at
-    // trustoverip/dtgwg-trust-tasks-tf#347, shipped in trust-tasks-rs 0.17.7,
-    // so they now carry schemas and are validated on the spine like anything
-    // else. The reduction plan's §D suggestion of a top-level `backup/*` was
-    // not taken — the family is agent lifecycle, and `vta/` is where the rest
-    // of it lives.)
+    // its debt is discharged by deletion rather than by a spec.)
+    "https://trusttasks.org/spec/vta/management/reload-services/1.0",
+    // ─ vta/backup/* — author top-level `backup/*` (reduction plan §D).
+    "https://trusttasks.org/spec/vta/backup/initiate-export/1.0",
+    "https://trusttasks.org/spec/vta/backup/complete-export/1.0",
+    "https://trusttasks.org/spec/vta/backup/initiate-import/1.0",
+    "https://trusttasks.org/spec/vta/backup/finalize-import/1.0",
+    "https://trusttasks.org/spec/vta/backup/abort/1.0",
     // ─ vta/attestation/* (REST-routed, unauthenticated) — keep-and-spec.
     "https://trusttasks.org/spec/vta/attestation/status/1.0",
     "https://trusttasks.org/spec/vta/attestation/report/1.0",
@@ -567,6 +568,7 @@ async fn dispatch_trust_task_inner(
     let mut outcome = Box::pin(dispatch_trust_task_validated(state, auth, doc)).await;
 
     dispatch_audit.record(state, &auth.did, &outcome).await;
+
 
     if let Some(task) = superseded {
         // Whatever the outcome. A superseded task that was *rejected* is still

@@ -20,7 +20,27 @@ use vti_common::store::KeyspaceHandle;
 pub mod sink;
 pub use sink::{AuditSink, FanOutAuditSink, KeyspaceAuditSink, SharedAuditSink};
 
-/// Emit a structured audit event to the tracing subsystem.
+/// Emit a structured audit event to the tracing subsystem — **a log line, and
+/// nothing else**.
+///
+/// This macro does **not** write to the [`AuditSink`]. Nothing it records
+/// appears in `audit/list`, or in an operator's external sink, or anywhere a
+/// later investigation would query. Persisting is [`record`] /
+/// [`record_with_detail`], and a handler that needs a trail must call one of
+/// those **as well as** this.
+///
+/// The emphasis is here because the call site does not carry it. A handler
+/// containing `audit!("session.revoke", …)` three lines above its response
+/// reads, on every measure a reviewer applies, as a handler that audits. It
+/// compiles, it is named `audit`, it emits an event, and the row an operator
+/// goes looking for is not there.
+///
+/// That is not hypothetical. `vta/management/reload-services` shipped with this
+/// macro and no sink write, so restarting an agent — every open session
+/// dropped, every counterparty disconnected — left nothing in the queryable
+/// trail. It took a runtime census to notice, and the census could not see the
+/// task at all until it was specified upstream (#1239). Two layers of checking
+/// passed over a handler that looked audited and was not.
 ///
 /// Uses `INFO` for successful outcomes and `ERROR` for failures (e.g. `denied:*`).
 #[macro_export]

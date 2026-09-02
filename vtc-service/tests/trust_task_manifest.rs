@@ -463,7 +463,7 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        13,
+        7,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
@@ -496,7 +496,15 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
          audited member by member and found to hold nothing a better source \
          did not already answer. A URI leaves this list either by gaining a \
          spec or by ceasing to exist, and the two are worth telling apart: \
-         the first grows the registry, the second does not",
+         the first grows the registry, the second does not. 13 -> 7 is the whole \
+         `vta/backup/*` family plus `vta/management/reload-services`, specified upstream as \
+         dtgwg-trust-tasks-tf#347 and served here by the move to trust-tasks-rs 0.17.7 — the \
+         same mechanism as the 22 above it, and the same move retired all six from \
+         UNSPECCED_DISPATCHED_URIS into real conformance witnesses. What is left is the seeds \
+         and attestation families and the vault secrets lifecycle. `vta/seeds/*` is the one \
+         entry here that should never leave by the first route: it returns key material, the \
+         browser extension bans its URIs from every bundle it ships, and a spec would not \
+         change either fact",
     ),
 ];
 
