@@ -1,0 +1,10 @@
+test routes::cors_tests::zero_rate_limit_config_is_clamped_not_panicked ... ok
+test operations::seeds::tests::concurrent_rotations_produce_distinct_generations ... ok
+test operations::seeds::tests::test_rotate_seed ... ok
+test routes::backup_blob::tests::get_blob_is_one_shot ... ok
+test routes::backup_blob::tests::get_blob_rejects_import_bundle_as_not_found ... ok
+test routes::backup_blob::tests::get_blob_400_for_malformed_uuid ... ok
+test routes::backup_blob::tests::get_blob_returns_bytes_for_valid_token ... ok
+--
+test result: ok. 1014 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 525.41s
+

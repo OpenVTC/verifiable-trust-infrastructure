@@ -1,0 +1,60 @@
+test trust_tasks::wire_v0_2::tests::vault_proxy_login_response_camelizes_sealed_session_blob_envelope_tag ... ok
+test trust_tasks::wire_v0_2::tests::vault_release_response_camelizes_sealed_secret_envelope_tag ... ok
+test trust_tasks::wire_v0_2::tests::vault_upsert_request_downconverts_sealed_secret_envelope_tag ... ok
+test trust_tasks::wire_v0_2::tests::vault_upsert_request_downconverts_secretkind_and_target ... ok
+test webvh_didcomm::envelope_binding_tests::a_mismatched_response_type_is_refused ... ok
+test webvh_didcomm::envelope_binding_tests::a_response_document_yields_its_payload ... ok
+test webvh_didcomm::envelope_binding_tests::a_trust_task_error_is_a_bad_gateway_at_either_version ... ok
+test webvh_didcomm::envelope_binding_tests::an_enveloped_problem_report_keeps_its_typed_meaning ... ok
+test webvh_didcomm::envelope_binding_tests::an_unknown_issuer_is_omitted_not_guessed ... ok
+test webvh_didcomm::envelope_binding_tests::the_envelope_is_on_the_message_and_the_task_is_in_the_document ... ok
+test webvh_didcomm::tests::auto_assign_omits_path ... ok
+test webvh_didcomm::tests::domain_included_only_when_present ... ok
+test webvh_didcomm::tests::explicit_path_is_sent ... ok
+test webvh_didcomm::tests::no_task_constant_names_a_retired_verb ... ok
+test webvh_didcomm::tests::not_reserved_and_unavailable_is_a_conflict ... ok
+test webvh_didcomm::tests::not_reserved_but_available_is_an_internal_anomaly ... ok
+test webvh_didcomm::tests::parses_legacy_flat_response ... ok
+test webvh_didcomm::tests::parses_spec_record_shaped_response ... ok
+test webvh_didcomm::tests::publish_registers_the_owned_slot_without_forcing ... ok
+test webvh_didcomm::tests::register_body_includes_domain_when_present ... ok
+test webvh_didcomm::tests::reserved_without_did_url_errors ... ok
+test webvh_didcomm::tests::well_known_is_sent_as_path ... ok
+test trust_tasks::step_up::envelope_push_tests::delegated_step_up_push_is_an_envelope ... ok
+test trust_tasks::step_up::envelope_push_tests::self_approval_pushes_nothing ... ok
+test trust_tasks::superseded_task_dispatch_tests::a_current_task_carries_no_notice ... ok
+test trust_tasks::superseded_task_dispatch_tests::a_rejected_superseded_task_still_names_its_successor ... ok
+test trust_tasks::superseded_task_dispatch_tests::a_superseded_task_names_its_successor_in_the_response ... ok
+test trust_tasks::superseded_task_dispatch_tests::the_payload_is_untouched_by_the_notice ... ok
+test trust_tasks::task_consent::tests::a_reader_of_the_context_confers_nothing ... ok
+test trust_tasks::task_consent::tests::a_self_authorized_task_never_delegates ... ok
+test trust_tasks::task_consent::tests::an_approver_absent_from_the_acl_confers_nothing ... ok
+test trust_tasks::task_consent::tests::a_pure_approver_with_approve_scope_confers_without_admin ... ok
+test trust_tasks::task_consent::tests::a_super_admin_approver_can_confer_any_context ... ok
+test trust_tasks::task_consent::tests::an_unenrolled_approvers_decision_mints_the_grant ... ok
+test trust_tasks::task_consent::tests::approval_from_admin_of_another_context_confers_nothing ... ok
+test trust_tasks::task_consent::tests::an_approve_all_approver_confers_any_context_without_admin ... ok
+test trust_tasks::task_consent::tests::delegation_requires_meeting_the_threshold_with_context_admins ... ok
+test trust_tasks::task_consent::tests::context_admin_approval_confers_the_context ... ok
+test trust_tasks::audit_coverage::every_consequential_task_records_an_audit_entry ... FAILED
+
+failures:
+
+---- trust_tasks::audit_coverage::every_consequential_task_records_an_audit_entry stdout ----
+
+thread 'trust_tasks::audit_coverage::every_consequential_task_records_an_audit_entry' (271845412) panicked at vta-service/src/trust_tasks/audit_coverage.rs:314:5:
+3 consequential task(s) SUCCEEDED and recorded no audit entry — the work happened and left no trace:
+  https://trusttasks.org/spec/vta/management/reload-services/1.0
+  https://trusttasks.org/spec/vta/backup/initiate-export/1.0
+  https://trusttasks.org/spec/vta/backup/initiate-import/1.0
+
+Record one (see `credentials::handle_list` for the handler form, or the `vault_audit` arm on the spine for the central one), or add a NO_AUDIT_BY_DESIGN entry stating why no trail is correct here.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    trust_tasks::audit_coverage::every_consequential_task_records_an_audit_entry
+
+test result: FAILED. 1013 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 522.09s
+
+error: test failed, to rerun pass `-p vta-service --lib`
