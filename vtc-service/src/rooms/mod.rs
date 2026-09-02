@@ -33,15 +33,20 @@
 //!
 //! # Scope of this module
 //!
-//! Storage and the operations over it. The Trust-Task dispatch that authorizes those
-//! operations lands separately, once `rooms/*` is published in the task registry
-//! (trustoverip/dtgwg-trust-tasks-tf#346) — the dispatcher refuses a URI the published
-//! registry has no schema for, and growing the unspecced allowlist is the wrong fix. This
-//! layer is written and tested first so that the dispatch layer, when it lands, is a thin
-//! wrapper over settled behaviour rather than a place where storage decisions get made
-//! under time pressure.
+//! Four layers, smallest first:
+//!
+//! - [`storage`] — the keyspaces and their invariants.
+//! - [`wire`] — the Trust-Task payload types, hand-written against the schemas proposed in
+//!   `trustoverip/dtgwg-trust-tasks-tf#346` until its generated bindings publish.
+//! - [`authz`] — deciding whether an operation is allowed, **without reading this service's
+//!   ACL or roster**. The invariant the whole design rests on.
+//! - [`handlers`] — the Trust-Task verbs, which are thin because the three layers below
+//!   them are not.
 
+pub mod authz;
+pub mod handlers;
 pub mod storage;
+pub mod wire;
 
 use serde::{Deserialize, Serialize};
 
