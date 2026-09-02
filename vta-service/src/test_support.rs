@@ -505,6 +505,17 @@ pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegration
 /// [`build_app_state`](crate::server::build_app_state) constructor so the test
 /// state can't diverge from production wiring.
 pub async fn build_signing_test_app_state() -> (crate::server::AppState, tempfile::TempDir) {
+    build_signing_test_app_state_with_sink(None).await
+}
+
+/// As [`build_signing_test_app_state`], with an audit sink installed.
+///
+/// Split out for the audit-coverage census, which needs to observe what a
+/// dispatched task records. Everything else is identical, and the no-sink form
+/// above delegates here so the two states cannot drift.
+pub async fn build_signing_test_app_state_with_sink(
+    audit_sink: Option<vta_audit::SharedAuditSink>,
+) -> (crate::server::AppState, tempfile::TempDir) {
     use crate::server::{AppStateParts, build_app_state};
     use tokio::sync::watch;
 
@@ -533,7 +544,13 @@ pub async fn build_signing_test_app_state() -> (crate::server::AppState, tempfil
         None,
         None,
         restart_tx,
-        AppStateParts::default(),
+        // `..Default::default()` rather than default-then-assign: this is the
+        // same crate, so the non-exhaustive struct literal is available here
+        // even though `tests/audit_sink.rs` cannot use it from outside.
+        AppStateParts {
+            audit_sink,
+            ..Default::default()
+        },
     )
     .await
     .expect("build signing app state");

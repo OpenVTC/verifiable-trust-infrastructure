@@ -52,6 +52,7 @@ pub(super) async fn handle_create(
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    let audit_id = req.id.clone();
     match operations::contexts::create_context(
         &state.contexts_ks,
         auth,
@@ -63,7 +64,27 @@ pub(super) async fn handle_create(
     )
     .await
     {
-        Ok(body) => success_response(&doc, body),
+        Ok(body) => {
+            // A context is the isolation boundary every key, DID and app-state
+            // record hangs off. Creating one is creating a new compartment, and
+            // "when did this appear, and who made it" is a question the trail
+            // has to answer.
+            if let Err(e) = crate::audit::record_with_detail(
+                &state.audit_sink,
+                "contexts.create",
+                &auth.did,
+                Some(&audit_id),
+                "success",
+                Some(TRANSPORT_TRUST_TASK),
+                Some(&audit_id),
+                None,
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "audit record failed for contexts.create");
+            }
+            success_response(&doc, body)
+        }
         Err(e) => app_error_to_reject(&doc, e),
     }
 }

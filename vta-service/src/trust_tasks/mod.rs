@@ -47,6 +47,8 @@ use crate::server::AppState;
 mod acl;
 mod app_state;
 mod audit;
+#[cfg(test)]
+mod audit_coverage;
 mod auth;
 mod backup;
 /// The ceremony-task predicate + the zero-authority claim an unenrolled
