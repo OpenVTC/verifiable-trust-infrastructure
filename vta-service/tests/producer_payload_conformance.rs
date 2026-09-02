@@ -81,17 +81,10 @@ where
 /// not reached, and that is the useful signal: the unvalidatable surface is
 /// exactly the un-folded surface, so each of these closes for free when its
 /// family is folded onto a published spec.
-const UNPUBLISHED: &[(&str, &str)] = &[
-    (
-        "https://trusttasks.org/spec/vta/seeds/rotate/1.0",
-        "The canonical `keys/*` fold (#888) did not reach the seed family.",
-    ),
-    (
-        "https://trusttasks.org/spec/vault/credentials/receive/0.1",
-        "The `vault/*` fold published query/get/upsert/delete but not \
-         `credentials/receive`.",
-    ),
-];
+const UNPUBLISHED: &[(&str, &str)] = &[(
+    "https://trusttasks.org/spec/vta/seeds/rotate/1.0",
+    "The canonical `keys/*` fold (#888) did not reach the seed family.",
+)];
 
 /// Every captured payload conforms to its task's published schema.
 ///

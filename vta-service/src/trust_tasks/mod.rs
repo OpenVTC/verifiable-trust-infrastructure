@@ -265,14 +265,11 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     "https://trusttasks.org/spec/vault/unarchive/0.1",
     "https://trusttasks.org/spec/vault/restore/0.1",
     "https://trusttasks.org/spec/vault/purge/0.1",
-    "https://trusttasks.org/spec/vault/credentials/receive/0.1",
-    "https://trusttasks.org/spec/vault/credentials/query/0.1",
-    "https://trusttasks.org/spec/vault/credentials/get/0.1",
-    "https://trusttasks.org/spec/vault/credentials/archive/0.1",
-    "https://trusttasks.org/spec/vault/credentials/unarchive/0.1",
-    "https://trusttasks.org/spec/vault/credentials/delete/0.1",
-    "https://trusttasks.org/spec/vault/credentials/restore/0.1",
-    "https://trusttasks.org/spec/vault/credentials/purge/0.1",
+    //   The eight `vault/credentials/*` entries that sat here are gone: the
+    //   family was specified upstream (trust-tasks-tf#338) and shipped in
+    //   trust-tasks-rs 0.17.4, so it has a published schema, a conformance
+    //   witness, and payload validation on the dispatch spine. Debt discharged
+    //   by specification rather than by deletion.
 ];
 
 /// Declarative Trust-Task dispatch table.
@@ -1425,6 +1422,13 @@ dispatch_table! {
         [ Mutating None true ],
     vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_REVOKE_0_1 => credentials::handle_revoke
         [ Destructive None false ],
+    // A read. `None` side-effect and no step-up: gated on `require_manage`
+    // like `acl/list`, because "what has my agent issued" is the same category
+    // of question as "who may act at it". What it discloses is the issuer's
+    // holder set rather than any one credential's claims — bodies are never
+    // returned — so the exposure class stays `None` too.
+    vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_LIST_0_1 => credentials::handle_list
+        [ None None false ],
     // ─── Agent-memory slice (spec/vta/memory/*) ──────────────────
     // Per-context key/value store; gated on context access (require_context),
     // NOT operator step-up.

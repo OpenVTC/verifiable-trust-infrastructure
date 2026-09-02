@@ -1,5 +1,5 @@
 //! Issued-credential lifecycle trust-task slice
-//! (`spec/vta/credentials/{issue,revoke}/0.1`).
+//! (`spec/vta/credentials/{issue,revoke,list}`).
 //!
 //! Mints a VTA-signed, scoped, time-boxed W3C Verifiable Credential to a holder
 //! DID and revokes it by id. Distinct from the credential-vault slice
@@ -22,7 +22,8 @@ use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 
 use vta_sdk::protocols::credentials_issuance::{
-    IssueCredentialBody, IssueCredentialResponse, RevokeCredentialBody, RevokeCredentialResponse,
+    IssueCredentialBody, IssueCredentialResponse, ListCredentialsBody, RevokeCredentialBody,
+    RevokeCredentialResponse,
 };
 
 use crate::audit;
@@ -143,6 +144,65 @@ pub(super) async fn handle_revoke(
             revoked_at,
         },
     )
+}
+
+/// Handler for `spec/vta/credentials/list/0.1`.
+///
+/// ## Why this is gated differently from its siblings
+///
+/// `issue` and `revoke` are `require_admin` plus a step-up floor, because each
+/// changes what a holder can prove. This is a read, and it is gated on
+/// `require_manage` — the same gate `acl::handle_list` uses for the equivalent
+/// question about authority.
+///
+/// Admin-only would have been the easy consistency, and the wrong one: it would
+/// mean an operator who may read the ACL and the policy set may not read what
+/// their own agent has issued, which is the same category of question. A
+/// step-up on a read would be worse still — a gate that fires on every page of
+/// a list is a gate people learn to clear without reading.
+///
+/// What the read does disclose is real and is not a per-credential fact: the
+/// response is a map of the issuer's holder set, and the *pattern* of issuance
+/// can be sensitive where no single credential is. That is why the gate is here
+/// at all rather than the task being open to any authenticated caller.
+pub(super) async fn handle_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> super::helpers::TrustTaskOutcome {
+    if let Err(e) = auth.require_manage() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: ListCredentialsBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let page = match credentials::list_issued(state, &req).await {
+        Ok(p) => p,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    // Audited like the mutating siblings. A read that maps the holder set is
+    // worth a trail entry even though it changes nothing — "who enumerated the
+    // issuance log, and when" is exactly the question an incident review asks,
+    // and it cannot be answered afterwards if nothing recorded it.
+    if let Err(e) = audit::record_with_detail(
+        &state.audit_sink,
+        "credentials.list",
+        &auth.did,
+        req.holder.as_deref(),
+        "success",
+        Some(TRANSPORT_TRUST_TASK),
+        None,
+        None,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "audit record failed for credentials.list");
+    }
+
+    success_response(&doc, page)
 }
 
 #[cfg(any(test, feature = "test-support"))]
