@@ -12,10 +12,10 @@ repository.workspace = true
 
 [features]
 default = []
-# The MLS group layer (`rooms::mls`). Off by default: OpenMLS is a substantial
-# dependency and a caller that only reads an `open` room needs none of it.
-# Mirrors how `vtc-service` gates its `bbs` verifier.
-mls = ["dep:openmls", "dep:openmls_rust_crypto", "dep:openmls_basic_credential", "dep:openmls_traits", "dep:tls_codec", "dep:chacha20poly1305", "dep:base64", "dep:getrandom"]
+# The MLS group layer and record sealing, re-exported from `vti-rooms` where
+# they now live. Still off by default here, and still the same types — a caller
+# that had `vtc-client` with `mls` keeps working unchanged.
+mls = ["vti-rooms/mls"]
 
 [dependencies]
 # Reuses the VTA SDK's challenge-response auth (audience-agnostic) and the
@@ -23,19 +23,11 @@ mls = ["dep:openmls", "dep:openmls_rust_crypto", "dep:openmls_basic_credential",
 # `protocols`.
 vta-sdk = { path = "../vta-sdk", version = "0.32", features = ["session"] }
 
-# MLS (RFC 9420) for room group keys, behind the `mls` feature. The design note
-# adopts MLS rather than a hand-rolled epoch scheme: post-compromise security and
-# O(log n) membership change are not things to reimplement.
-openmls = { version = "0.9", optional = true }
-openmls_rust_crypto = { version = "0.6", optional = true }
-openmls_basic_credential = { version = "0.6", optional = true }
-openmls_traits = { version = "0.6", optional = true }
-tls_codec = { version = "0.5", optional = true }
-# Record sealing. The AEAD binds each record to its room, key, version and epoch,
-# so a host that relocates one produces a mismatch rather than a readable record.
-chacha20poly1305 = { version = "0.10", optional = true }
-base64 = { version = "0.22", optional = true }
-getrandom = { version = "0.4", optional = true }
+# The room's wire types, and — under the `mls` feature — its group-key and
+# sealing layers, which this crate re-exports rather than owning. A VTA needs
+# both and must not depend on a VTC client, so they live in the shared leaf.
+vti-rooms = { path = "../vti-rooms", version = "0.1" }
+
 # `TrustTask` — the join-submit document this client signs, and the `#response`
 # envelope the VTC answers it with. Same crate `vta-sdk` builds the document
 # from, so one shape crosses the boundary.

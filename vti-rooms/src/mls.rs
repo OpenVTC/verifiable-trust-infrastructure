@@ -57,7 +57,7 @@ use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::OpenMlsProvider;
 use tls_codec::{Deserialize as _, Serialize as _};
 
-use crate::VtcError;
+use crate::error::RoomKeyError;
 
 /// The MLS ciphersuite every room uses.
 ///
@@ -88,12 +88,12 @@ pub struct RoomIdentity {
 
 impl RoomIdentity {
     /// Create an identity for `member_did`.
-    pub fn new(member_did: &str, provider: &impl OpenMlsProvider) -> Result<Self, VtcError> {
+    pub fn new(member_did: &str, provider: &impl OpenMlsProvider) -> Result<Self, RoomKeyError> {
         let signer = SignatureKeyPair::new(ROOM_CIPHERSUITE.signature_algorithm())
-            .map_err(|e| VtcError::Signing(format!("generate MLS signature key: {e:?}")))?;
+            .map_err(|e| RoomKeyError::Group(format!("generate MLS signature key: {e:?}")))?;
         signer
             .store(provider.storage())
-            .map_err(|e| VtcError::Signing(format!("store MLS signature key: {e:?}")))?;
+            .map_err(|e| RoomKeyError::Group(format!("store MLS signature key: {e:?}")))?;
 
         let credential = Credential::new(CredentialType::Basic, member_did.as_bytes().to_vec());
         Ok(Self {
@@ -110,7 +110,7 @@ impl RoomIdentity {
     /// Published to whoever is inviting them — **over the invitation channel, never through
     /// the host**. A host that collected key packages would learn who is being invited to
     /// what, which un-blinds a sealed room at the door.
-    pub fn key_package(&self, provider: &impl OpenMlsProvider) -> Result<KeyPackage, VtcError> {
+    pub fn key_package(&self, provider: &impl OpenMlsProvider) -> Result<KeyPackage, RoomKeyError> {
         KeyPackage::builder()
             .build(
                 ROOM_CIPHERSUITE,
@@ -119,7 +119,7 @@ impl RoomIdentity {
                 self.credential.clone(),
             )
             .map(|b| b.key_package().clone())
-            .map_err(|e| VtcError::Signing(format!("build MLS key package: {e:?}")))
+            .map_err(|e| RoomKeyError::Group(format!("build MLS key package: {e:?}")))
     }
 }
 
@@ -146,7 +146,7 @@ pub struct MembershipChange {
 
 impl RoomGroup {
     /// Create a room's group. The creator is its first member and its owner.
-    pub fn create(member_did: &str) -> Result<Self, VtcError> {
+    pub fn create(member_did: &str) -> Result<Self, RoomKeyError> {
         let provider = OpenMlsRustCrypto::default();
         let identity = RoomIdentity::new(member_did, &provider)?;
 
@@ -161,7 +161,7 @@ impl RoomGroup {
             &config,
             identity.credential.clone(),
         )
-        .map_err(|e| VtcError::Signing(format!("create MLS group: {e:?}")))?;
+        .map_err(|e| RoomKeyError::Group(format!("create MLS group: {e:?}")))?;
 
         Ok(Self {
             group,
@@ -171,7 +171,7 @@ impl RoomGroup {
     }
 
     /// Join a room from the welcome its owner sent.
-    pub fn join(member_did: &str, welcome: &[u8]) -> Result<Self, VtcError> {
+    pub fn join(member_did: &str, welcome: &[u8]) -> Result<Self, RoomKeyError> {
         let provider = OpenMlsRustCrypto::default();
         let identity = RoomIdentity::new(member_did, &provider)?;
         Self::join_with(identity, provider, welcome)
@@ -186,13 +186,13 @@ impl RoomGroup {
         identity: RoomIdentity,
         provider: OpenMlsRustCrypto,
         welcome: &[u8],
-    ) -> Result<Self, VtcError> {
+    ) -> Result<Self, RoomKeyError> {
         let msg = MlsMessageIn::tls_deserialize_exact(welcome)
-            .map_err(|e| VtcError::Signing(format!("parse welcome: {e:?}")))?;
+            .map_err(|e| RoomKeyError::Group(format!("parse welcome: {e:?}")))?;
         let welcome = match msg.extract() {
             MlsMessageBodyIn::Welcome(w) => w,
             _ => {
-                return Err(VtcError::Signing(
+                return Err(RoomKeyError::Group(
                     "expected a Welcome message, got another MLS body".into(),
                 ));
             }
@@ -202,10 +202,10 @@ impl RoomGroup {
             .use_ratchet_tree_extension(true)
             .build();
         let staged = StagedWelcome::new_from_welcome(&provider, &config, welcome, None)
-            .map_err(|e| VtcError::Signing(format!("stage welcome: {e:?}")))?;
+            .map_err(|e| RoomKeyError::Group(format!("stage welcome: {e:?}")))?;
         let group = staged
             .into_group(&provider)
-            .map_err(|e| VtcError::Signing(format!("join group from welcome: {e:?}")))?;
+            .map_err(|e| RoomKeyError::Group(format!("join group from welcome: {e:?}")))?;
 
         Ok(Self {
             group,
@@ -220,24 +220,27 @@ impl RoomGroup {
     /// precisely because a group where any key-holder can commit is a group where any
     /// member can evict any other. MLS itself does not enforce that; the room's authority
     /// credentials do, and the host checks them before accepting the epoch advance.
-    pub fn add_member(&mut self, key_package: KeyPackage) -> Result<MembershipChange, VtcError> {
+    pub fn add_member(
+        &mut self,
+        key_package: KeyPackage,
+    ) -> Result<MembershipChange, RoomKeyError> {
         let (commit, welcome, _) = self
             .group
             .add_members(&self.provider, &self.identity.signer, &[key_package])
-            .map_err(|e| VtcError::Signing(format!("add member: {e:?}")))?;
+            .map_err(|e| RoomKeyError::Group(format!("add member: {e:?}")))?;
 
         self.group
             .merge_pending_commit(&self.provider)
-            .map_err(|e| VtcError::Signing(format!("merge add commit: {e:?}")))?;
+            .map_err(|e| RoomKeyError::Group(format!("merge add commit: {e:?}")))?;
 
         Ok(MembershipChange {
             commit: commit
                 .tls_serialize_detached()
-                .map_err(|e| VtcError::Signing(format!("serialise commit: {e:?}")))?,
+                .map_err(|e| RoomKeyError::Group(format!("serialise commit: {e:?}")))?,
             welcome: Some(
                 welcome
                     .tls_serialize_detached()
-                    .map_err(|e| VtcError::Signing(format!("serialise welcome: {e:?}")))?,
+                    .map_err(|e| RoomKeyError::Group(format!("serialise welcome: {e:?}")))?,
             ),
             epoch: self.group.epoch().as_u64(),
         })
@@ -249,46 +252,49 @@ impl RoomGroup {
     /// could already read; they held the plaintext. What they lose is everything sealed
     /// under the new epoch. An interface that implies otherwise has mis-stated the
     /// guarantee.
-    pub fn remove_member(&mut self, index: LeafNodeIndex) -> Result<MembershipChange, VtcError> {
+    pub fn remove_member(
+        &mut self,
+        index: LeafNodeIndex,
+    ) -> Result<MembershipChange, RoomKeyError> {
         let (commit, _, _) = self
             .group
             .remove_members(&self.provider, &self.identity.signer, &[index])
-            .map_err(|e| VtcError::Signing(format!("remove member: {e:?}")))?;
+            .map_err(|e| RoomKeyError::Group(format!("remove member: {e:?}")))?;
 
         self.group
             .merge_pending_commit(&self.provider)
-            .map_err(|e| VtcError::Signing(format!("merge remove commit: {e:?}")))?;
+            .map_err(|e| RoomKeyError::Group(format!("merge remove commit: {e:?}")))?;
 
         Ok(MembershipChange {
             commit: commit
                 .tls_serialize_detached()
-                .map_err(|e| VtcError::Signing(format!("serialise commit: {e:?}")))?,
+                .map_err(|e| RoomKeyError::Group(format!("serialise commit: {e:?}")))?,
             welcome: None,
             epoch: self.group.epoch().as_u64(),
         })
     }
 
     /// Apply a commit produced by another member.
-    pub fn apply_commit(&mut self, commit: &[u8]) -> Result<u64, VtcError> {
+    pub fn apply_commit(&mut self, commit: &[u8]) -> Result<u64, RoomKeyError> {
         let msg = MlsMessageIn::tls_deserialize_exact(commit)
-            .map_err(|e| VtcError::Signing(format!("parse commit: {e:?}")))?;
+            .map_err(|e| RoomKeyError::Group(format!("parse commit: {e:?}")))?;
         let protocol_message: ProtocolMessage = msg
             .try_into_protocol_message()
-            .map_err(|e| VtcError::Signing(format!("not a protocol message: {e:?}")))?;
+            .map_err(|e| RoomKeyError::Group(format!("not a protocol message: {e:?}")))?;
 
         let processed = self
             .group
             .process_message(&self.provider, protocol_message)
-            .map_err(|e| VtcError::Signing(format!("process commit: {e:?}")))?;
+            .map_err(|e| RoomKeyError::Group(format!("process commit: {e:?}")))?;
 
         match processed.into_content() {
             ProcessedMessageContent::StagedCommitMessage(staged) => {
                 self.group
                     .merge_staged_commit(&self.provider, *staged)
-                    .map_err(|e| VtcError::Signing(format!("merge staged commit: {e:?}")))?;
+                    .map_err(|e| RoomKeyError::Group(format!("merge staged commit: {e:?}")))?;
                 Ok(self.group.epoch().as_u64())
             }
-            _ => Err(VtcError::Signing(
+            _ => Err(RoomKeyError::Group(
                 "expected a commit, got another message type".into(),
             )),
         }
@@ -307,7 +313,7 @@ impl RoomGroup {
     /// Derived from the MLS exporter under a room-specific label rather than borrowed from
     /// the group's own message keys — so a change to how records are sealed cannot weaken
     /// the group's messaging, and vice versa.
-    pub fn storage_key(&self) -> Result<[u8; STORAGE_KEY_LEN], VtcError> {
+    pub fn storage_key(&self) -> Result<[u8; STORAGE_KEY_LEN], RoomKeyError> {
         let secret = self
             .group
             .export_secret(
@@ -316,7 +322,7 @@ impl RoomGroup {
                 &[],
                 STORAGE_KEY_LEN,
             )
-            .map_err(|e| VtcError::Signing(format!("export storage key: {e:?}")))?;
+            .map_err(|e| RoomKeyError::Group(format!("export storage key: {e:?}")))?;
         let mut key = [0u8; STORAGE_KEY_LEN];
         key.copy_from_slice(&secret);
         Ok(key)

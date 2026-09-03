@@ -322,8 +322,11 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
         alice_group.epoch()
     ));
 
-    let alice_room = SealedRoom::new(session(&f, false), alice_group);
-    let bob_room = SealedRoom::new(session(&f, false), bob_group);
+    // The credentials and the keys are separate objects now, and that is the honest
+    // shape: the session travels to the host on every call, the keys never travel at all.
+    let alice = session(&f, false);
+    let alice_room = SealedRoom::new(&f.room.room_id, alice_group);
+    let bob_room = SealedRoom::new(&f.room.room_id, bob_group);
 
     say(
         "9. Alice mints the epoch the membership change produced",
@@ -331,7 +334,7 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
     );
     let minted = client
         .mint_epoch(
-            alice_room.session(),
+            &alice,
             alice_room.room_epoch(),
             Some("added a member"),
             &f.owner.did,
@@ -363,7 +366,7 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
 
     let put = client
         .put_record(
-            alice_room.session(),
+            &alice,
             &key,
             Some(SealedContent {
                 ciphertext: sealed.ciphertext.clone(),
@@ -383,12 +386,7 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
         "The host served the bytes. It could not read them, and neither can anyone outside.",
     );
     let fetched = client
-        .get_record(
-            alice_room.session(),
-            &key,
-            &f.owner.did,
-            &f.owner.secret_multibase,
-        )
+        .get_record(&alice, &key, &f.owner.did, &f.owner.secret_multibase)
         .await?;
     let from_host = SealedContent {
         ciphertext: fetched["sealed"].as_str().unwrap_or_default().to_string(),
@@ -398,7 +396,7 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
     let opened = bob_room.open_record(&key, put.version, &from_host)?;
     note(&format!("Bob reads: {}", String::from_utf8_lossy(&opened)));
 
-    let outsider = SealedRoom::new(session(&f, false), RoomGroup::create("did:key:zMallory")?);
+    let outsider = SealedRoom::new(&f.room.room_id, RoomGroup::create("did:key:zMallory")?);
     note(match outsider.open_record(&key, put.version, &from_host) {
         Err(_) => "Mallory, holding a perfectly valid group of her own: cannot open it",
         Ok(_) => unreachable!("an outsider must not open a sealed record"),
@@ -419,8 +417,7 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
             alice_room.open_record(&key, put.version + 1, &from_host),
         ),
         ("to another room", {
-            let elsewhere =
-                SealedRoom::new(session(&other, false), RoomGroup::create(&f.owner.did)?);
+            let elsewhere = SealedRoom::new(&other.room.room_id, RoomGroup::create(&f.owner.did)?);
             elsewhere.open_record(&key, put.version, &from_host)
         }),
     ] {

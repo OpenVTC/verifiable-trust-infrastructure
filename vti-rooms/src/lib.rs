@@ -60,6 +60,15 @@
 //! Each host writes its own thin handlers over these three layers.
 
 pub mod authz;
+pub mod error;
+/// The room's group-key layer (RFC 9420), behind the `mls` feature.
+///
+/// Off by default: a host that only stores ciphertext needs none of it, and OpenMLS is a
+/// substantial dependency to make it carry.
+#[cfg(feature = "mls")]
+pub mod mls;
+#[cfg(feature = "mls")]
+pub mod sealed;
 pub mod storage;
 pub mod wire;
 

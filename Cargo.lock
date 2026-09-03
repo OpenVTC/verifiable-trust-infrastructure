@@ -10624,22 +10624,15 @@ dependencies = [
 name = "vtc-client"
 version = "0.5.1"
 dependencies = [
- "base64 0.22.1",
- "chacha20poly1305 0.10.1",
  "chrono",
- "getrandom 0.4.3",
- "openmls",
- "openmls_basic_credential",
- "openmls_rust_crypto",
- "openmls_traits",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "tls_codec",
  "tokio",
  "trust-tasks-rs",
  "vta-sdk",
+ "vti-rooms",
 ]
 
 [[package]]
@@ -10809,10 +10802,19 @@ name = "vti-rooms"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
+ "chacha20poly1305 0.10.1",
  "chrono",
+ "getrandom 0.4.3",
+ "openmls",
+ "openmls_basic_credential",
+ "openmls_rust_crypto",
+ "openmls_traits",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.20",
+ "tls_codec",
  "tokio",
  "trust-tasks-rs",
  "vti-common",

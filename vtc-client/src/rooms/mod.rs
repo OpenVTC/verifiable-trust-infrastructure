@@ -28,103 +28,27 @@
 //! bound to the agent. The agent's `RoomSession` is built exactly like the member's — the
 //! difference is entirely in the credentials it was handed, which is the point.
 
+// The group-key and sealing layers live in `vti-rooms` — a VTA needs both to open a
+// record on an agent's behalf, and a VTA must not depend on a VTC client. Re-exported
+// under their old paths so a caller that had `vtc-client` with `mls` is unaffected.
 #[cfg(feature = "mls")]
-pub mod mls;
-#[cfg(feature = "mls")]
-pub mod sealed;
-
-use serde::{Deserialize, Serialize};
+pub use vti_rooms::{mls, sealed};
 
 use crate::{VtcClient, VtcError};
 
-/// `rooms/create/0.1`.
-pub const ROOMS_CREATE_TYPE: &str = "https://trusttasks.org/spec/rooms/create/0.1";
-/// `rooms/records/put/0.1`.
-pub const ROOMS_RECORDS_PUT_TYPE: &str = "https://trusttasks.org/spec/rooms/records/put/0.1";
-/// `rooms/records/get/0.1`.
-pub const ROOMS_RECORDS_GET_TYPE: &str = "https://trusttasks.org/spec/rooms/records/get/0.1";
-/// `rooms/records/list/0.1`.
-pub const ROOMS_RECORDS_LIST_TYPE: &str = "https://trusttasks.org/spec/rooms/records/list/0.1";
-/// `rooms/epoch/mint/0.1`.
-pub const ROOMS_EPOCH_MINT_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/mint/0.1";
-
-/// Maximum links a host will accept in one chain.
-///
-/// Mirrors the host's own ceiling so a caller finds out here rather than over the wire.
-/// Verification is linear in chain length and runs on every operation, so an unbounded
-/// chain is a denial-of-service surface against the host.
-pub const MAX_CHAIN_DEPTH: usize = 8;
-
-/// How much of a room its host can see. Fixed at creation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Visibility {
-    /// Cleartext, searchable by the host.
-    Open,
-    /// Content sealed; the acting member still disclosed.
-    Attributed,
-    /// Content sealed; membership presented in zero knowledge.
-    Private,
-}
-
-/// The credentials a caller presents to act on a room.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthorityPresentation {
-    pub membership: String,
-    /// Leaf first; the last element is the credential the room issued.
-    pub authority: Vec<String>,
-    /// Required on a `private` room.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject_binding: Option<String>,
-}
-
-/// Sealed record content.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SealedContent {
-    pub ciphertext: String,
-    pub nonce: String,
-    pub epoch: u32,
-}
-
-/// Cleartext record content. `open` rooms only.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CleartextContent {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    pub body: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tags: Vec<String>,
-}
-
-/// What a `put` returns.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PutRecordResponse {
-    pub key: String,
-    pub version: u64,
-    #[serde(default)]
-    pub epoch: Option<u32>,
-}
-
-/// What a `list` returns — metadata, never bodies.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ListRecordsResponse {
-    pub records: Vec<serde_json::Value>,
-}
-
-/// What minting an epoch returns.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MintEpochResponse {
-    pub room_id: String,
-    pub epoch: u32,
-}
+// The wire types and their Type URIs, from the crate that also stores and serves them.
+//
+// These were defined a second time here until the group-key layer moved out and the
+// duplication became a compile error — two structs of one wire form, identical and with
+// nothing checking they stayed that way, which is the drift the schema-conformance suite in
+// `vti-rooms` exists to catch and could not see from over here.
+pub use vti_rooms::Visibility;
+pub use vti_rooms::authz::MAX_CHAIN_DEPTH;
+pub use vti_rooms::wire::{
+    AuthorityPresentation, CleartextContent, ListRecordsResponse, MintEpochResponse,
+    PutRecordResponse, ROOMS_CREATE_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_RECORDS_GET_TYPE,
+    ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, SealedContent,
+};
 
 /// A caller's standing in one room.
 ///

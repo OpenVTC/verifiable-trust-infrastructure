@@ -81,7 +81,7 @@ pub struct SealedContent {
 }
 
 /// Cleartext record content. `open` rooms only.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CleartextContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
