@@ -783,6 +783,13 @@ pub const TASK_VTA_MEMORY_PUT_0_1: &str = "https://trusttasks.org/spec/vta/memor
 /// access. Payload: [`crate::protocols::memory::MemoryListBody`].
 pub const TASK_VTA_MEMORY_LIST_0_1: &str = "https://trusttasks.org/spec/vta/memory/list/0.1";
 
+/// `spec/rooms/keys/present/0.1` — an agent asks the VTA holding its
+/// principal's room credentials to mint a presentation for **one** room
+/// operation. The credentials never cross to the agent; only the presentation
+/// does, and it is scoped to the action and audience it was asked for.
+/// Auth: `roomPresent` capability, plus context access for the principal's key.
+pub const TASK_ROOMS_KEYS_PRESENT_0_1: &str = "https://trusttasks.org/spec/rooms/keys/present/0.1";
+
 /// `spec/vta/memory/delete/0.1` — remove one entry by key (`not_found` if
 /// absent). Auth: context access. Payload:
 /// [`crate::protocols::memory::MemoryDeleteBody`].
@@ -1730,6 +1737,7 @@ pub const ALL_URIS: &[&str] = &[
     // Agent-memory slice (spec/vta/memory/*)
     TASK_VTA_MEMORY_PUT_0_1,
     TASK_VTA_MEMORY_LIST_0_1,
+    TASK_ROOMS_KEYS_PRESENT_0_1,
     TASK_VTA_MEMORY_DELETE_0_1,
     // Application-state slice (spec/vta/app-state/*)
     TASK_VTA_APP_STATE_GET_1_0,
@@ -1890,6 +1898,17 @@ mod tests {
             // Note the family has no sub-path — the version follows the family
             // name directly.
             "https://trusttasks.org/spec/trust-task-discovery/",
+            // Canonical data rooms — `rooms/*`, authored upstream in
+            // dtgwg-trust-tasks-tf#346 / #349 / #354. Top-level rather than
+            // VTA-private because most of the family is a *host's* surface,
+            // not an agent's: a VTC serves it, and so does a standalone room
+            // host that is no kind of agent at all.
+            //
+            // The one member a VTA serves is the oracle side — `rooms/keys/
+            // present`, where a member's own VTA mints a scoped presentation
+            // for their agent. That is squarely an agent's job, and it is why
+            // this prefix appears here for exactly one URI.
+            "https://trusttasks.org/spec/rooms/",
         ];
         for uri in ALL_URIS {
             assert!(

@@ -83,6 +83,7 @@ mod policy_gate;
 mod produced_census;
 #[cfg(feature = "webvh")]
 mod provision_integration;
+mod room_keys;
 mod seeds;
 // `operations::protocol` — every service operation these handlers call — is
 // `#[cfg(feature = "webvh")]`, because advertising a transport means editing
@@ -1527,6 +1528,12 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_DELETE_0_1 => memory::handle_delete
         [ Mutating None false ],
+    // ─── Room oracle (spec/rooms/keys/*) ─────────────────────────
+    // An agent asks for a scoped presentation over its principal's room
+    // credentials. Gated on the `roomPresent` capability plus context access
+    // for the principal's key — NOT on `Sign`, which would grant far more.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_PRESENT_0_1 => room_keys::handle_present
+        [ None Metadata false ],
     // ─── Application-state slice (spec/vta/app-state/*) ──────────
     // Versioned, namespaced per-context JSON the VTA stores but never
     // interprets. Gated on context access (require_context), NOT operator

@@ -155,6 +155,19 @@ pub enum Capability {
     /// Deliberately withheld from [`Role::Reader`]: a read-only consumer of a
     /// context should not be able to rewrite the memories in it.
     MemoryWrite,
+    /// Asking this VTA to mint a scoped room presentation —
+    /// `rooms/keys/present/0.1`.
+    ///
+    /// Registered upstream as `roomPresent` (`trustoverip/dtgwg-trust-tasks-tf`
+    /// #351). Deliberately **not** [`Capability::Sign`]: an agent that may ask
+    /// for a scoped, audience-bound presentation is not thereby an agent that
+    /// may sign anything at all with its principal's key, and gating this on
+    /// the generic signing oracle would grant strictly more than the task
+    /// needs — the opposite of what an oracle is for.
+    ///
+    /// Withheld from [`Role::Reader`]: minting a credential on a principal's
+    /// behalf is not a read.
+    RoomPresent,
 }
 
 /// Returns true if `role` is granted `cap` by the default capability
@@ -177,6 +190,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::CredentialWrite,
             Capability::MemoryRead,
             Capability::MemoryWrite,
+            Capability::RoomPresent,
             Capability::ProxyLogin,
             Capability::FillRelease,
             Capability::PolicyAdmin,
@@ -191,6 +205,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::CredentialWrite,
             Capability::MemoryRead,
             Capability::MemoryWrite,
+            Capability::RoomPresent,
             Capability::ProxyLogin,
             Capability::FillRelease,
             Capability::DeviceAdmin,

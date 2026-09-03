@@ -422,6 +422,33 @@ material never leaves the VTA's process*) extended to room material, it makes
 agent revocation meaningful, and with §4.2's attenuated VACs the agent holds
 narrow, expiring authority rather than the member's own.
 
+**The proving half is built** — `rooms/keys/present/0.1`, served by the VTA
+(`operations::room_oracle`). It is worth naming what the implementation makes
+*impossible* rather than merely discouraged, because each one closes a way the
+oracle could have quietly become the credential hand-off it exists to replace:
+
+- **More than the principal holds** fails in `attenuate`, which refuses to
+  widen — not at a policy check somebody could forget to write.
+- **A presentation covering everything** is unreachable: `action` is a required
+  member and exactly one action is conferred.
+- **A presentation made out to somebody else** is unreachable: the leaf grants
+  to the DID the *transport* authenticated, never one named in the payload. A
+  presentation minted for A is worthless to B even if B obtains it, because
+  §4.3a's presenter binding refuses it on the far side.
+- **A long-lived leaf** is unreachable: the lifetime is a constant, not a
+  request parameter. A caller that could ask for a year would be asking for the
+  standing credential the oracle exists not to hand over.
+
+It is gated on its own capability (`roomPresent`, registered upstream) rather
+than on `Sign`. An agent that may ask for a scoped, audience-bound presentation
+is not thereby an agent that may sign *anything at all* with its principal's
+key — gating an oracle on the generic signing oracle grants strictly more than
+the task needs, which is the opposite of what an oracle is for.
+
+The opening half (`rooms/keys/open/0.1`) is specified and not yet built: it
+needs the VTA to hold the room's MLS group, which needs a welcome-delivery flow
+no specification covers yet.
+
 ### 5.4 Recovery: a quorum re-admits; total loss is total
 
 A member who loses their VTA lost their leaf. Recovery is **k-of-n

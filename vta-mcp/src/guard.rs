@@ -116,6 +116,12 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     ("did-management/registry/admin-register", Risk::Sensitive),
     ("did-management/domain/set-default", Risk::Sensitive),
     ("provision/integration", Risk::Sensitive),
+    // The room oracle mints a credential conferring authority on the caller.
+    // It stores nothing, which is why the verb rule would read it as ordinary,
+    // and it belongs here beside `vta/credentials/issue`: an MCP host approves
+    // a *tool*, so a blanket `vta_call` approval must not silently cover
+    // minting a presentation over its principal's standing in a room.
+    ("rooms/keys/present", Risk::Sensitive),
     // Reads that a verb rule would misread.
     ("vta/contexts/preview-delete", Risk::ReadOnly),
     ("vta/webvh/agent-name/check", Risk::ReadOnly),
