@@ -582,6 +582,19 @@ members-only view covering writes — reads leave no trace anyone can
 reconstruct, including the owner. Agents read constantly, so read-volume
 anomaly detection is a dead end on every tier.
 
+**Which actor a host may record is one decision, not one per host.** It lives in
+`vti_rooms::audit`, beside the authorization it is derived from, and the type it
+returns has no constructor that takes a DID unconditionally — because the failure
+it prevents is silent. Every host has audit machinery and every one of them wants
+to write the acting party's DID into it; on a `private` room that single line
+hands the host the membership it was built never to learn, assembled one entry at
+a time, with nothing breaking and no test going red. The log even looks exactly
+like an `attributed` room's.
+
+So the tier decision is made once, in the crate both hosts already share for
+authorization, and the hosts differ only in where the trail goes — a VTC's
+hash-chained audit keyspace, or a standalone room host's `tracing` output.
+
 ---
 
 ## 9. Lifecycle: renewed, not reaped — and provably so

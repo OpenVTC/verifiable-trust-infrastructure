@@ -59,6 +59,7 @@
 //! and a spine is not extractable — see `docs/05-design-notes/vta-service-decomposition.md`.
 //! Each host writes its own thin handlers over these three layers.
 
+pub mod audit;
 pub mod authz;
 pub mod error;
 pub mod lifecycle;

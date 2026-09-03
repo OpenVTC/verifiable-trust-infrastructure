@@ -26,6 +26,8 @@ use crate::server::AppState;
 use crate::trust_tasks::helpers::{
     TrustTaskOutcome, app_error_to_reject, parse_payload, success_response, verify_trust_task_proof,
 };
+use vti_common::audit::{AuditEvent, RoomOperationData};
+use vti_rooms::audit as rooms_audit;
 use vti_rooms::authz::{self, Action};
 use vti_rooms::storage;
 use vti_rooms::wire::{
@@ -53,6 +55,48 @@ async fn presenter_and_verifier(
         presenter,
         DtgChainVerifier::without_zk(Box::new(DataIntegrityKeys(state.trust_task_vm_resolver()))),
     ))
+}
+
+/// Record a room operation, per §8 of the design note.
+///
+/// **What may be recorded is decided by `vti_rooms::audit`, never here.** On a `private`
+/// room the actor is the actorless marker rather than a DID, because an audit log naming
+/// every actor *is* the membership this service was built never to learn — assembled one
+/// entry at a time by the component least able to notice it is doing so.
+///
+/// A failed write is logged and swallowed. The alternative is refusing an operation that
+/// already succeeded, which turns an audit outage into a room outage and tells the caller
+/// their write failed when it did not. The audit chain's own integrity is protected by its
+/// hash chain, which makes a gap visible to a verifier — that is the right place for this
+/// to be noticed, not in a handler's return value.
+async fn audit_room(
+    state: &AppState,
+    room: &Room,
+    authorized: &authz::AuthorizedAction,
+    record_key: Option<&str>,
+    listed: bool,
+) {
+    let Some(writer) = state.audit_writer.as_ref() else {
+        return;
+    };
+    let entry = rooms_audit::for_operation(room.visibility, authorized, record_key);
+    let action = rooms_audit::action_name(authorized.action(), listed);
+
+    if let Err(e) = writer
+        .write(
+            entry.actor.as_str(),
+            None,
+            AuditEvent::RoomOperation(RoomOperationData {
+                room_id: entry.room_id,
+                action: action.to_string(),
+                record_key: entry.record_key,
+                visibility: format!("{:?}", room.visibility).to_lowercase(),
+            }),
+        )
+        .await
+    {
+        tracing::error!(error = %e, action, "failed to record a room audit entry");
+    }
 }
 
 /// Seconds since the Unix epoch.
@@ -178,14 +222,17 @@ pub(crate) async fn handle_put_record(state: &AppState, doc: TrustTask<Value>) -
     )
     .await
     {
-        Ok(stored) => success_response(
-            &doc,
-            PutRecordResponse {
-                key: stored.key,
-                version: stored.version,
-                epoch: stored.epoch,
-            },
-        ),
+        Ok(stored) => {
+            audit_room(state, &room, &authorized, Some(&stored.key), false).await;
+            success_response(
+                &doc,
+                PutRecordResponse {
+                    key: stored.key,
+                    version: stored.version,
+                    epoch: stored.epoch,
+                },
+            )
+        }
         Err(e) => app_error_to_reject(&doc, &e),
     }
 }
@@ -209,7 +256,7 @@ pub(crate) async fn handle_get_record(state: &AppState, doc: TrustTask<Value>) -
         Ok(p) => p,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    if let Err(e) = authz::authorize(
+    let authorized = match authz::authorize(
         &room,
         &req.presentation,
         Action::Read,
@@ -219,11 +266,15 @@ pub(crate) async fn handle_get_record(state: &AppState, doc: TrustTask<Value>) -
     )
     .await
     {
-        return app_error_to_reject(&doc, &e);
-    }
+        Ok(a) => a,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
 
     match storage::get_record(&state.room_records_ks, &req.room_id, &req.key).await {
-        Ok(record) => success_response(&doc, record),
+        Ok(record) => {
+            audit_room(state, &room, &authorized, Some(&req.key), false).await;
+            success_response(&doc, record)
+        }
         Err(e) => app_error_to_reject(&doc, &e),
     }
 }
@@ -249,7 +300,7 @@ pub(crate) async fn handle_list_records(
         Ok(p) => p,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    if let Err(e) = authz::authorize(
+    let authorized = match authz::authorize(
         &room,
         &req.presentation,
         Action::Read,
@@ -259,8 +310,9 @@ pub(crate) async fn handle_list_records(
     )
     .await
     {
-        return app_error_to_reject(&doc, &e);
-    }
+        Ok(a) => a,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
 
     let records = match storage::list_records(
         &state.room_records_ks,
@@ -275,6 +327,9 @@ pub(crate) async fn handle_list_records(
     };
 
     let limit = req.limit.unwrap_or(usize::MAX);
+    // A listing names no single record, so the entry records the room and the fact of a
+    // listing — which is the event: who has seen what this room holds.
+    audit_room(state, &room, &authorized, None, true).await;
     success_response(
         &doc,
         ListRecordsResponse {
@@ -304,7 +359,7 @@ pub(crate) async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -
         Ok(p) => p,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    if let Err(e) = authz::authorize(
+    let authorized = match authz::authorize(
         &room,
         &req.presentation,
         Action::Admin,
@@ -314,17 +369,21 @@ pub(crate) async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -
     )
     .await
     {
-        return app_error_to_reject(&doc, &e);
-    }
+        Ok(a) => a,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
 
     match storage::advance_epoch(&state.rooms_ks, &req.room_id, req.epoch, now()).await {
-        Ok(updated) => success_response(
-            &doc,
-            MintEpochResponse {
-                room_id: updated.room_id,
-                epoch: updated.epoch,
-            },
-        ),
+        Ok(updated) => {
+            audit_room(state, &room, &authorized, None, false).await;
+            success_response(
+                &doc,
+                MintEpochResponse {
+                    room_id: updated.room_id,
+                    epoch: updated.epoch,
+                },
+            )
+        }
         Err(e) => app_error_to_reject(&doc, &e),
     }
 }
@@ -587,6 +646,141 @@ mod tests {
             "{}",
             payload_of(&out)
         );
+    }
+
+    /// Every room operation leaves a trail. §8: on shared material, reads are the
+    /// interesting event — a write log says what a room holds, a read log says who has
+    /// seen it.
+    #[tokio::test]
+    async fn room_operations_are_audited() {
+        let tv = crate::test_support::TestVtc::builder()
+            .with_audit(true)
+            .build()
+            .await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        create(state, &f).await;
+
+        handle_put_record(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                json!({
+                    "roomId": f.room.room_id, "key": "k", "presentation": f.as_owner(),
+                    "cleartext": { "body": "x" }
+                }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+
+        handle_get_record(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                json!({ "roomId": f.room.room_id, "key": "k", "presentation": f.as_owner() }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+
+        let rows = audit_rows(state).await;
+        assert!(
+            rows.contains("room.records.put") && rows.contains("room.records.get"),
+            "both the write and the read must be recorded: {rows}"
+        );
+        assert!(
+            rows.contains(&f.owner.did),
+            "an open room discloses the actor: {rows}"
+        );
+    }
+
+    /// The property this whole slice exists to protect. An audit log naming every actor on
+    /// a private room *is* the membership the service was built never to learn — assembled
+    /// one entry at a time, with nothing breaking and no test going red.
+    #[tokio::test]
+    async fn a_private_rooms_audit_trail_never_names_the_actor() {
+        let tv = crate::test_support::TestVtc::builder()
+            .with_audit(true)
+            .build()
+            .await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Private).await;
+        create(state, &f).await;
+
+        // A private room is refused for want of a ZK profile, so drive the audit path
+        // directly with an authorization the verifier produced — the point under test is
+        // what gets *recorded*, not what gets served.
+        let room = storage::get_room(&state.rooms_ks, &f.room.room_id)
+            .await
+            .expect("room");
+        let mut presentation = f.as_owner();
+        presentation.subject_binding = Some("a-binding".into());
+        let authorized = authz::authorize(
+            &room,
+            &presentation,
+            Action::Read,
+            &f.owner.did,
+            now(),
+            &AlwaysVouches,
+        )
+        .await
+        .expect("authorized");
+
+        audit_room(state, &room, &authorized, Some("opaque-key"), false).await;
+
+        let rows = audit_rows(state).await;
+        assert!(
+            rows.contains("room.records.get"),
+            "the operation is recorded: {rows}"
+        );
+        assert!(
+            rows.contains("opaque-key"),
+            "the record is recorded — an opaque key identifies without describing: {rows}"
+        );
+        assert!(
+            !rows.contains(&f.owner.did),
+            "but the actor must appear nowhere in the audit trail: {rows}"
+        );
+    }
+
+    /// Stands in for the chain verifier so the audit path can be reached on a tier the
+    /// service otherwise refuses to serve.
+    struct AlwaysVouches;
+
+    #[async_trait::async_trait]
+    impl vti_rooms::authz::ChainVerifier for AlwaysVouches {
+        async fn verify(
+            &self,
+            _: &vti_rooms::Room,
+            _: &vti_rooms::wire::AuthorityPresentation,
+            _: Action,
+            presenter: &str,
+        ) -> Result<vti_rooms::authz::VerifiedChain, vti_common::error::AppError> {
+            Ok(vti_rooms::authz::VerifiedChain {
+                subject: presenter.to_string(),
+                actions: vec!["read".into()],
+            })
+        }
+    }
+
+    /// Every audit row, as one string to assert over.
+    async fn audit_rows(state: &AppState) -> String {
+        let raw = state
+            .audit_ks
+            .prefix_iter_raw(Vec::<u8>::new())
+            .await
+            .expect("read the audit keyspace");
+        raw.into_iter()
+            .map(|(_, v)| String::from_utf8_lossy(&v).into_owned())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[tokio::test]
