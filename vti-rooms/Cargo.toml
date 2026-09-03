@@ -8,6 +8,23 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# The room's group-key layer (`mls`) and record sealing (`sealed`). Off by
+# default: a host that only stores ciphertext needs none of it, and OpenMLS is a
+# substantial dependency to make such a host carry. Mirrors how `vtc-service`
+# gates its `bbs` verifier.
+mls = [
+  "dep:openmls",
+  "dep:openmls_rust_crypto",
+  "dep:openmls_basic_credential",
+  "dep:openmls_traits",
+  "dep:tls_codec",
+  "dep:chacha20poly1305",
+  "dep:base64",
+  "dep:getrandom",
+]
+
 [dependencies]
 # The store abstraction and AppError. This crate's only internal dependency:
 # a room's storage and authorization need nothing from a community service,
@@ -15,9 +32,22 @@ publish.workspace = true
 vti-common = { path = "../vti-common", version = "0.16" }
 
 serde = { workspace = true }
+thiserror = { workspace = true }
 serde_json = { workspace = true }
 # The published schema types `updatedAt` as an RFC 3339 string.
 chrono = { workspace = true }
+
+# MLS (RFC 9420) for room group keys, behind the `mls` feature. The design note
+# adopts MLS rather than a hand-rolled epoch scheme: post-compromise security and
+# O(log n) membership change are not things to reimplement.
+openmls = { version = "0.9", optional = true }
+openmls_rust_crypto = { version = "0.6", optional = true }
+openmls_basic_credential = { version = "0.6", optional = true }
+openmls_traits = { version = "0.6", optional = true }
+tls_codec = { version = "0.5", optional = true }
+chacha20poly1305 = { version = "0.10", optional = true }
+base64 = { version = "0.22", optional = true }
+getrandom = { version = "0.4", optional = true }
 # Verification may resolve a DID, so ChainVerifier is async; async-trait keeps it
 # dyn-compatible, as it does for vti_common::auth::backend.
 async-trait = "0.1"

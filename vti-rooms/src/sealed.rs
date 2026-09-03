@@ -39,29 +39,37 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 
-use super::mls::RoomGroup;
-use super::{RoomSession, SealedContent};
-use crate::VtcError;
+use crate::error::RoomKeyError;
+use crate::mls::RoomGroup;
+use crate::wire::SealedContent;
 
 /// A room whose records are sealed, and the group state that seals them.
 ///
-/// Pairs a [`RoomSession`] — the credentials the host authorizes against — with a
-/// [`RoomGroup`] — the key material the host never sees. Those are two different things and
-/// this type is the only place they meet: authorization travels to the host, keys do not.
+/// Holds the room's identifier and its [`RoomGroup`] — nothing about *credentials*. That
+/// separation is deliberate and it is the reason this type moved out of the client: the
+/// credentials a caller presents travel to the host on every request, and the keys never
+/// travel anywhere. Pairing them in one struct made a client the only place a room could be
+/// opened, which is wrong the moment a VTA has to open one on an agent's behalf.
+///
+/// The identifier is here because it is bound into every record's associated data, not
+/// because this type does anything with it.
 pub struct SealedRoom {
-    session: RoomSession,
+    room_id: String,
     group: RoomGroup,
 }
 
 impl SealedRoom {
-    /// Pair a session with its group.
-    pub fn new(session: RoomSession, group: RoomGroup) -> Self {
-        Self { session, group }
+    /// Pair a room identifier with its group.
+    pub fn new(room_id: impl Into<String>, group: RoomGroup) -> Self {
+        Self {
+            room_id: room_id.into(),
+            group,
+        }
     }
 
-    /// The credentials to present.
-    pub fn session(&self) -> &RoomSession {
-        &self.session
+    /// The room these keys are for.
+    pub fn room_id(&self) -> &str {
+        &self.room_id
     }
 
     /// The group, for membership changes and epoch anchoring.
@@ -103,10 +111,10 @@ impl SealedRoom {
         key: &str,
         version: u64,
         plaintext: &[u8],
-    ) -> Result<SealedContent, VtcError> {
+    ) -> Result<SealedContent, RoomKeyError> {
         let epoch = self.room_epoch();
         let storage_key = self.group.storage_key()?;
-        let aad = associated_data(self.session.room_id(), key, version, epoch);
+        let aad = associated_data(&self.room_id, key, version, epoch);
 
         let cipher = ChaCha20Poly1305::new(Key::from_slice(&storage_key));
         let mut nonce_bytes = [0u8; 12];
@@ -120,7 +128,7 @@ impl SealedRoom {
                     aad: &aad,
                 },
             )
-            .map_err(|e| VtcError::Signing(format!("seal record: {e}")))?;
+            .map_err(|e| RoomKeyError::Seal(format!("seal record: {e}")))?;
 
         Ok(SealedContent {
             ciphertext: B64.encode(ciphertext),
@@ -138,18 +146,18 @@ impl SealedRoom {
         key: &str,
         version: u64,
         sealed: &SealedContent,
-    ) -> Result<Vec<u8>, VtcError> {
+    ) -> Result<Vec<u8>, RoomKeyError> {
         let storage_key = self.group.storage_key()?;
-        let aad = associated_data(self.session.room_id(), key, version, sealed.epoch);
+        let aad = associated_data(&self.room_id, key, version, sealed.epoch);
 
         let ciphertext = B64
             .decode(&sealed.ciphertext)
-            .map_err(|e| VtcError::Signing(format!("decode ciphertext: {e}")))?;
+            .map_err(|e| RoomKeyError::Seal(format!("decode ciphertext: {e}")))?;
         let nonce = B64
             .decode(&sealed.nonce)
-            .map_err(|e| VtcError::Signing(format!("decode nonce: {e}")))?;
+            .map_err(|e| RoomKeyError::Seal(format!("decode nonce: {e}")))?;
         if nonce.len() != 12 {
-            return Err(VtcError::Signing(format!(
+            return Err(RoomKeyError::Seal(format!(
                 "nonce is {} bytes, expected 12",
                 nonce.len()
             )));
@@ -164,13 +172,7 @@ impl SealedRoom {
                     aad: &aad,
                 },
             )
-            .map_err(|_| {
-                VtcError::Signing(
-                    "record did not open: it was sealed under a different key, epoch, or \
-                     location — a relocated record fails here rather than decrypting wrongly"
-                        .into(),
-                )
-            })
+            .map_err(|_| RoomKeyError::DidNotOpen)
     }
 
     /// The value to anchor in the room's witnessed DID log for this epoch.
@@ -197,9 +199,8 @@ mod tests {
     use super::*;
 
     fn room(did: &str) -> SealedRoom {
-        let session = RoomSession::new(did, "vmc", vec!["vac".into()]).expect("session");
         let group = RoomGroup::create("did:key:zAlice").expect("group");
-        SealedRoom::new(session, group)
+        SealedRoom::new(did, group)
     }
 
     #[test]
@@ -233,8 +234,10 @@ mod tests {
             "relabelling the epoch must fail authentication, not decrypt wrongly"
         );
 
-        let other_room = RoomSession::new("did:webvh:zOther", "vmc", vec!["vac".into()]).unwrap();
-        let moved = SealedRoom::new(other_room, RoomGroup::create("did:key:zAlice").unwrap());
+        let moved = SealedRoom::new(
+            "did:webvh:zOther",
+            RoomGroup::create("did:key:zAlice").unwrap(),
+        );
         assert!(
             moved.open_record("k1", 1, &sealed).is_err(),
             "moving it to another room must fail"
@@ -248,7 +251,7 @@ mod tests {
 
         // A different group is a different key, however identical everything else looks.
         let outsider = SealedRoom::new(
-            RoomSession::new("did:webvh:zRoom", "vmc", vec!["vac".into()]).unwrap(),
+            "did:webvh:zRoom",
             RoomGroup::create("did:key:zMallory").unwrap(),
         );
         assert!(outsider.open_record("k1", 1, &sealed).is_err());
