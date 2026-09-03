@@ -260,6 +260,7 @@ fn responses_conform() {
             version: 3,
             epoch: None,
             status: RecordStatus::Active,
+            pinned: false,
             sealed: None,
             nonce: None,
             cleartext: Some(json!({
@@ -275,6 +276,7 @@ fn responses_conform() {
             version: 5,
             epoch: Some(2),
             status: RecordStatus::Retracted,
+            pinned: false,
             sealed: None,
             nonce: None,
             cleartext: None,

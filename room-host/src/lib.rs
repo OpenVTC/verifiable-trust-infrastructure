@@ -60,9 +60,10 @@ use vti_common::error::AppError;
 use vti_common::store::{KeyspaceHandle, Store};
 use vti_rooms::audit as rooms_audit;
 use vti_rooms::wire::{
-    CreateRoomBody, CreateRoomResponse, GetRecordBody, ListRecordsBody, ListRecordsResponse,
-    MintEpochBody, MintEpochResponse, PutRecordBody, PutRecordResponse, ROOMS_CREATE_TYPE,
-    ROOMS_EPOCH_MINT_TYPE, ROOMS_RECORDS_GET_TYPE, ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE,
+    CreateRoomBody, CreateRoomResponse, CurateRecordBody, CurateRecordResponse, GetRecordBody,
+    ListRecordsBody, ListRecordsResponse, MintEpochBody, MintEpochResponse, PutRecordBody,
+    PutRecordResponse, ROOMS_CREATE_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_RECORDS_CURATE_TYPE,
+    ROOMS_RECORDS_GET_TYPE, ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE,
 };
 use vti_rooms::{
     ROOM_RECORDS_KEYSPACE, ROOMS_KEYSPACE, Record, RecordStatus, Room,
@@ -225,6 +226,7 @@ async fn trust_task(State(state): State<Arc<HostState>>, body: Bytes) -> axum::r
         ROOMS_RECORDS_PUT_TYPE => put(&state, &doc, payload).await,
         ROOMS_RECORDS_GET_TYPE => get(&state, &doc, payload).await,
         ROOMS_RECORDS_LIST_TYPE => list(&state, &doc, payload).await,
+        ROOMS_RECORDS_CURATE_TYPE => curate(&state, &doc, payload).await,
         ROOMS_EPOCH_MINT_TYPE => mint(&state, &doc, payload).await,
         other => reject(
             &doc,
@@ -322,6 +324,7 @@ async fn put(
         version: 0,
         epoch: req.sealed.as_ref().map(|s| s.epoch),
         status: RecordStatus::Active,
+        pinned: false,
         sealed: req.sealed.as_ref().map(|s| s.ciphertext.clone()),
         nonce: req.sealed.as_ref().map(|s| s.nonce.clone()),
         cleartext: req
@@ -519,6 +522,88 @@ async fn mint(
                 MintEpochResponse {
                     room_id: updated.room_id,
                     epoch: updated.epoch,
+                },
+            )
+        }
+        Err(e) => from_app_error(doc, &e),
+    }
+}
+
+/// `rooms/records/curate/0.1`.
+///
+/// Gated on `Action::Curate` — not implied by `write`, because deciding what a room's shared
+/// knowledge is worth is a different grant from being able to add to it.
+async fn curate(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> axum::response::Response {
+    let req: CurateRecordBody = match serde_json::from_value(payload) {
+        Ok(r) => r,
+        Err(e) => {
+            return reject(
+                doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            );
+        }
+    };
+    if req.status.is_none() && req.pinned.is_none() {
+        return reject(
+            doc,
+            RejectReason::MalformedRequest {
+                reason: "a curation must change something: supply `status`, `pinned`, or both"
+                    .into(),
+            },
+        );
+    }
+
+    let room = match storage::get_room(&state.rooms, &req.room_id).await {
+        Ok(r) => r,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
+        Ok(p) => p,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    let authorized = match authz::authorize(
+        &room,
+        &req.presentation,
+        Action::Curate,
+        &presenter,
+        now(),
+        &verifier,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => return from_app_error(doc, &e),
+    };
+
+    match storage::curate_record(
+        &state.rooms,
+        &state.records,
+        &req.room_id,
+        &req.key,
+        storage::Curation {
+            status: req.status,
+            pinned: req.pinned,
+            expected_version: req.expected_version,
+        },
+        now(),
+    )
+    .await
+    {
+        Ok(curated) => {
+            audit_room(&room, &authorized, Some(&curated.key), false);
+            respond(
+                doc,
+                CurateRecordResponse {
+                    key: curated.key,
+                    version: curated.version,
+                    status: curated.status,
+                    pinned: curated.pinned,
                 },
             )
         }
