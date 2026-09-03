@@ -373,6 +373,7 @@ mod tests {
             epoch: 1,
             next_version: 1,
             retention_days: 90,
+            epoch_expires_at: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -624,6 +625,7 @@ mod signed {
                 epoch: 1,
                 next_version: 1,
                 retention_days: 90,
+                epoch_expires_at: None,
                 created_at: 0,
                 updated_at: 0,
             },
@@ -957,6 +959,7 @@ pub mod test_support {
                     epoch: 1,
                     next_version: 1,
                     retention_days: 90,
+                    epoch_expires_at: None,
                     created_at: 0,
                     updated_at: 0,
                 },

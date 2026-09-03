@@ -611,10 +611,20 @@ irreducible row — now as **provable misbehaviour** rather than a deniable
 shrug.
 
 Owner absence must not kill a live room: the nominated successor claims
-(§10), or the k-of-n quorum renews. Read activity counts as liveness — a room
-actively read and never written is an archive, which is exactly what this
-section exists to protect. Where the host stores nothing (owner-hosted
+(§10), or the k-of-n quorum renews. Where the host stores nothing (owner-hosted
 content), lifecycle is wholly the owner's.
+
+**Read activity does not extend the clock, and the implementation departs from
+an earlier draft of this paragraph on purpose.** "A room actively read and
+never written is an archive" is right about what deserves protecting and wrong
+about how. A *host* counting reads to decide a sealed room's lifecycle would
+make that lifecycle depend on the one signal the host can see — which is
+exactly the correlation the tiers exist to deny, and it would give a
+`private` room an access-frequency profile its members were promised it would
+not have. Liveness is expressed by renewing, and a room being read is a room
+whose members are in a position to renew it. The archive case is served by
+`retentionDays`, which is the member's own statement of how long the room
+matters, made at creation where it belongs.
 
 ---
 

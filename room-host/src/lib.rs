@@ -73,6 +73,12 @@ use vti_rooms_dtg::{DataIntegrityKeys, DtgChainVerifier};
 /// Default retention after a room's epoch lapses without renewal.
 const DEFAULT_RETENTION_DAYS: u32 = 90;
 
+/// One epoch lifetime in seconds — how long a newly created room is live before it needs
+/// renewing. Not a per-room parameter yet: `rooms/create/0.1` has no member for it, and
+/// inventing one locally would put this host's rooms out of conformance with the schema.
+const EPOCH_LIFETIME_DAYS_SECS: u64 =
+    vti_rooms::lifecycle::DEFAULT_EPOCH_LIFETIME_DAYS as u64 * 24 * 60 * 60;
+
 /// Everything this host holds. Two keyspaces and a verifier — and note what is not here.
 #[derive(Clone)]
 pub struct HostState {
@@ -226,6 +232,9 @@ async fn create(
         epoch: 1,
         next_version: 1,
         retention_days: req.retention_days.unwrap_or(DEFAULT_RETENTION_DAYS),
+        // A room is live from creation for one epoch lifetime; minting the next epoch
+        // renews it. Nothing else moves this clock — see `vti_rooms::lifecycle`.
+        epoch_expires_at: Some(now() + EPOCH_LIFETIME_DAYS_SECS),
         created_at: now(),
         updated_at: now(),
     };
@@ -270,6 +279,7 @@ async fn put(
         &req.presentation,
         Action::Write,
         &presenter,
+        now(),
         &verifier,
     )
     .await
@@ -350,6 +360,7 @@ async fn get(
         &req.presentation,
         Action::Read,
         &presenter,
+        now(),
         &verifier,
     )
     .await
@@ -391,6 +402,7 @@ async fn list(
         &req.presentation,
         Action::Read,
         &presenter,
+        now(),
         &verifier,
     )
     .await
@@ -452,6 +464,7 @@ async fn mint(
         &req.presentation,
         Action::Admin,
         &presenter,
+        now(),
         &verifier,
     )
     .await
