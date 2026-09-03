@@ -221,6 +221,14 @@ pub struct Record {
     /// Curation state.
     pub status: RecordStatus,
 
+    /// Whether a curator has pinned this record.
+    ///
+    /// Orthogonal to [`Record::status`] — a pinned record is still active, deprecated or
+    /// retracted — because pinning answers *what matters here* and status answers *is this
+    /// still current*. A room may well want its superseded canonical decision kept in view.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+
     /// Sealed content, base64url. Present on the sealed tiers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sealed: Option<String>,

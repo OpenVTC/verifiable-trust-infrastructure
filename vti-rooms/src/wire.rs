@@ -18,7 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::Visibility;
+use crate::{RecordStatus, Visibility};
 
 /// `rooms/create/0.1`.
 pub const ROOMS_CREATE_TYPE: &str = "https://trusttasks.org/spec/rooms/create/0.1";
@@ -30,6 +30,8 @@ pub const ROOMS_RECORDS_GET_TYPE: &str = "https://trusttasks.org/spec/rooms/reco
 pub const ROOMS_RECORDS_LIST_TYPE: &str = "https://trusttasks.org/spec/rooms/records/list/0.1";
 /// `rooms/epoch/mint/0.1`.
 pub const ROOMS_EPOCH_MINT_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/mint/0.1";
+/// `rooms/records/curate/0.1`.
+pub const ROOMS_RECORDS_CURATE_TYPE: &str = "https://trusttasks.org/spec/rooms/records/curate/0.1";
 
 /// Every `rooms/*` URI this service dispatches.
 pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
@@ -38,6 +40,7 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_RECORDS_GET_TYPE,
     ROOMS_RECORDS_LIST_TYPE,
     ROOMS_EPOCH_MINT_TYPE,
+    ROOMS_RECORDS_CURATE_TYPE,
 ];
 
 /// What a party presents to act on a room.
@@ -168,6 +171,48 @@ pub struct ListRecordsBody {
 pub struct ListRecordsResponse {
     /// Metadata only — never bodies.
     pub records: Vec<serde_json::Value>,
+}
+
+/// `rooms/records/curate/0.1` request.
+///
+/// Separate from [`PutRecordBody`] because a record's *standing* is not its content: on a
+/// sealed tier a host cannot read what it stores, so "replace this with the same body,
+/// marked deprecated" would make a member re-seal and re-upload bytes the host already
+/// holds, to say something that is not about the bytes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CurateRecordBody {
+    pub room_id: String,
+    pub key: String,
+    /// Must confer `curate` — deliberately not implied by `write`. Deciding what a room's
+    /// shared knowledge is worth is a different grant from being able to add to it.
+    pub presentation: AuthorityPresentation,
+    /// The standing to move to. Omit to change only `pinned`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<RecordStatus>,
+    /// Whether to pin. Omit to leave unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<bool>,
+    /// Why, for the room's audit trail. Member-authored free text — untrusted for both
+    /// rendering and any agent that reads it back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Optional precondition: the record's current version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_version: Option<u64>,
+}
+
+/// `rooms/records/curate/0.1#response`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurateRecordResponse {
+    pub key: String,
+    /// The version the curation assigned. A change others must converge on is a change like
+    /// any other, and one that left the version alone would be invisible to every
+    /// `sinceVersion` watermark in the room.
+    pub version: u64,
+    pub status: RecordStatus,
+    pub pinned: bool,
 }
 
 /// `rooms/epoch/mint/0.1` request.

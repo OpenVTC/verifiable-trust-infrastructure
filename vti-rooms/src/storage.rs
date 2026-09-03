@@ -262,29 +262,97 @@ pub async fn list_records(
     Ok(out)
 }
 
-/// Retract a record: drop the body, keep the tombstone.
+/// What one curation changes.
 ///
-/// Not an erasure. The key, version and epoch remain so that incremental sync converges and
-/// the audit chain still shows the record existed. Hard removal is a separate, higher-trust
-/// operation — two verbs because they are two different acts, and collapsing them makes the
-/// common one too powerful or the rare one impossible.
-pub async fn retract_record(
+/// A struct rather than three parameters because they are one *decision* — a curator
+/// demoting and pinning in the same breath is making a single statement about a record, and
+/// it lands as a single version for others to converge on.
+#[derive(Debug, Clone, Default)]
+pub struct Curation {
+    /// The standing to move to. `None` leaves it alone.
+    pub status: Option<RecordStatus>,
+    /// Whether to pin. `None` leaves it alone.
+    pub pinned: Option<bool>,
+    /// Optional precondition: the record's current version.
+    pub expected_version: Option<u64>,
+}
+
+/// Curate a record: change its standing without rewriting it.
+///
+/// The one entry point for `deprecated`, `retracted`, restoring a demotion, and pinning —
+/// they are one operation because they are one *decision*, and because every one of them
+/// has to assign a new version for the same reason (below).
+///
+/// # Retraction is a tombstone, not an erasure
+///
+/// The body goes; the key, version and epoch stay. Dropping the body is what a member
+/// asking to retract wants. Keeping the rest is what makes incremental sync **converge** —
+/// a caller synchronising on `since_version` learns about the retraction by seeing the
+/// tombstone, and one that never saw it resurrects the record on its next full rebuild.
+/// That is why [`list_records`] returns tombstones rather than filtering them.
+///
+/// Restoring a retracted record to `Active` is refused rather than reported as a success
+/// that restored nothing: the body is already gone, and a status change cannot bring it
+/// back. Hard removal is [`purge_record`], a separate and higher-trust act.
+///
+/// # Every curation assigns a new version
+///
+/// A demotion other members are expected to converge on is a change like any other, and one
+/// that left the version alone would be invisible to every `since_version` watermark in the
+/// room. This is the reason pinning is here too rather than being a cheap side-channel: a
+/// pin nobody syncs is a pin only its author can see.
+pub async fn curate_record(
     rooms: &KeyspaceHandle,
     records: &KeyspaceHandle,
     room_id: &str,
     key: &str,
+    curation: Curation,
     now: u64,
 ) -> Result<Record, AppError> {
+    let Curation {
+        status,
+        pinned,
+        expected_version,
+    } = curation;
     let mut record = get_record(records, room_id, key).await?;
+
+    if let Some(expected) = expected_version
+        && record.version != expected
+    {
+        return Err(AppError::Conflict(format!(
+            "record `{key}` is at version {}, not {expected}",
+            record.version
+        )));
+    }
+
+    if matches!(record.status, RecordStatus::Retracted)
+        && matches!(status, Some(RecordStatus::Active))
+    {
+        return Err(AppError::Validation(format!(
+            "record `{key}` is retracted; its body is gone and a status change cannot bring \
+             it back"
+        )));
+    }
+
     let mut room = get_room(rooms, room_id).await?;
 
-    record.status = RecordStatus::Retracted;
-    record.sealed = None;
-    record.nonce = None;
-    record.cleartext = None;
+    if let Some(status) = status {
+        record.status = status;
+        // Only a retraction drops content. A demotion leaves the body exactly where it is —
+        // `deprecated` means *demote in recall*, not *hide*, and an agent that could no
+        // longer read a deprecated record could not explain why it ranked it lower.
+        if matches!(status, RecordStatus::Retracted) {
+            record.sealed = None;
+            record.nonce = None;
+            record.cleartext = None;
+        }
+    }
+    if let Some(pinned) = pinned {
+        record.pinned = pinned;
+    }
+
     record.version = room.next_version;
     record.updated_at = now;
-
     room.next_version += 1;
     room.updated_at = now;
 
@@ -295,7 +363,9 @@ pub async fn retract_record(
 
 /// Permanently remove a record, tombstone included.
 ///
-/// The erasure path, separate from [`retract_record`] on purpose.
+/// The erasure path, separate from [`curate_record`] on purpose: a retraction keeps the
+/// tombstone that makes sync converge, and removing it is a decision about retention rather
+/// than about the record.
 pub async fn purge_record(
     records: &KeyspaceHandle,
     room_id: &str,
@@ -348,6 +418,7 @@ mod tests {
             version: 0,
             epoch: Some(epoch),
             status: RecordStatus::Active,
+            pinned: false,
             sealed: Some("c2VhbGVk".into()),
             nonce: Some("bm9uY2U".into()),
             cleartext: None,
@@ -362,6 +433,7 @@ mod tests {
             version: 0,
             epoch: None,
             status: RecordStatus::Active,
+            pinned: false,
             sealed: None,
             nonce: None,
             cleartext: Some(serde_json::json!({ "body": "hello" })),
@@ -585,7 +657,20 @@ mod tests {
             .unwrap()
             .version;
 
-        let tomb = retract_record(&rooms, &rec, "r1", "a", 3).await.unwrap();
+        let tomb = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            Curation {
+                status: Some(RecordStatus::Retracted),
+                pinned: None,
+                expected_version: None,
+            },
+            3,
+        )
+        .await
+        .unwrap();
         assert!(
             tomb.sealed.is_none() && tomb.cleartext.is_none(),
             "body is dropped"
@@ -602,6 +687,140 @@ mod tests {
         );
     }
 
+    /// A demotion leaves the body where it is. `deprecated` means *demote in recall*, not
+    /// *hide* — an agent that could no longer read a deprecated record could not explain
+    /// why it ranked it lower.
+    #[tokio::test]
+    async fn deprecating_demotes_without_dropping_the_body() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        put_record(&rooms, &rec, "r1", open_record("a"), None, 1)
+            .await
+            .unwrap();
+
+        let out = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            Curation {
+                status: Some(RecordStatus::Deprecated),
+                pinned: None,
+                expected_version: None,
+            },
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.status, RecordStatus::Deprecated);
+        assert!(out.cleartext.is_some(), "a demotion keeps the body");
+        assert_eq!(out.version, 2, "and assigns a new version to converge on");
+    }
+
+    /// The body is already gone. Reporting success would tell a member their record was
+    /// restored when it was not.
+    #[tokio::test]
+    async fn a_retracted_record_cannot_be_restored() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        put_record(&rooms, &rec, "r1", open_record("a"), None, 1)
+            .await
+            .unwrap();
+        curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            Curation {
+                status: Some(RecordStatus::Retracted),
+                pinned: None,
+                expected_version: None,
+            },
+            2,
+        )
+        .await
+        .unwrap();
+
+        let err = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            Curation {
+                status: Some(RecordStatus::Active),
+                pinned: None,
+                expected_version: None,
+            },
+            3,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err}").contains("cannot bring it back"), "{err}");
+    }
+
+    /// Pinning is orthogonal to status — a room may want its superseded canonical decision
+    /// kept in view.
+    #[tokio::test]
+    async fn a_record_can_be_pinned_and_deprecated_at_once() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        put_record(&rooms, &rec, "r1", open_record("a"), None, 1)
+            .await
+            .unwrap();
+
+        let out = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            Curation {
+                status: Some(RecordStatus::Deprecated),
+                pinned: Some(true),
+                expected_version: None,
+            },
+            2,
+        )
+        .await
+        .unwrap();
+        assert!(out.pinned);
+        assert_eq!(out.status, RecordStatus::Deprecated);
+    }
+
+    /// A curator who read a record before deciding to demote it can require that nothing
+    /// replaced it in between.
+    #[tokio::test]
+    async fn curation_honours_a_version_precondition() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        put_record(&rooms, &rec, "r1", open_record("a"), None, 1)
+            .await
+            .unwrap();
+
+        let err = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            Curation {
+                status: Some(RecordStatus::Deprecated),
+                pinned: None,
+                expected_version: Some(99),
+            },
+            2,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err}").contains("is at version 1"), "{err}");
+    }
+
     #[tokio::test]
     async fn purge_removes_the_tombstone_and_is_not_idempotent() {
         let (_d, rooms, rec) = open().await;
@@ -611,7 +830,20 @@ mod tests {
         put_record(&rooms, &rec, "r1", open_record("a"), None, 1)
             .await
             .unwrap();
-        retract_record(&rooms, &rec, "r1", "a", 2).await.unwrap();
+        curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "a",
+            Curation {
+                status: Some(RecordStatus::Retracted),
+                pinned: None,
+                expected_version: None,
+            },
+            2,
+        )
+        .await
+        .unwrap();
 
         purge_record(&rec, "r1", "a").await.unwrap();
         assert!(

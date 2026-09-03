@@ -156,6 +156,9 @@ pub(crate) async fn dispatch_trust_task_core(
         rooms_wire::ROOMS_RECORDS_LIST_TYPE => {
             crate::rooms::handlers::handle_list_records(state, doc).await
         }
+        rooms_wire::ROOMS_RECORDS_CURATE_TYPE => {
+            crate::rooms::handlers::handle_curate_record(state, doc).await
+        }
         rooms_wire::ROOMS_EPOCH_MINT_TYPE => {
             crate::rooms::handlers::handle_mint_epoch(state, doc).await
         }

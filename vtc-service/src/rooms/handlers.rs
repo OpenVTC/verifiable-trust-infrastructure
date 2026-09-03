@@ -31,8 +31,9 @@ use vti_rooms::audit as rooms_audit;
 use vti_rooms::authz::{self, Action};
 use vti_rooms::storage;
 use vti_rooms::wire::{
-    CreateRoomBody, CreateRoomResponse, GetRecordBody, ListRecordsBody, ListRecordsResponse,
-    MintEpochBody, MintEpochResponse, PutRecordBody, PutRecordResponse,
+    CreateRoomBody, CreateRoomResponse, CurateRecordBody, CurateRecordResponse, GetRecordBody,
+    ListRecordsBody, ListRecordsResponse, MintEpochBody, MintEpochResponse, PutRecordBody,
+    PutRecordResponse,
 };
 use vti_rooms::{Record, RecordStatus, Room};
 use vti_rooms_dtg::{DataIntegrityKeys, DtgChainVerifier};
@@ -202,6 +203,7 @@ pub(crate) async fn handle_put_record(state: &AppState, doc: TrustTask<Value>) -
         version: 0, // assigned by the store from the room's counter
         epoch: req.sealed.as_ref().map(|s| s.epoch),
         status: RecordStatus::Active,
+        pinned: false,
         sealed: req.sealed.as_ref().map(|s| s.ciphertext.clone()),
         nonce: req.sealed.as_ref().map(|s| s.nonce.clone()),
         cleartext: req
@@ -381,6 +383,81 @@ pub(crate) async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -
                 MintEpochResponse {
                     room_id: updated.room_id,
                     epoch: updated.epoch,
+                },
+            )
+        }
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `rooms/records/curate/0.1`.
+///
+/// Gated on `Action::Curate`, which is deliberately not implied by `write`: deciding what a
+/// room's shared knowledge is worth is a different grant from the ability to add to it. A
+/// community can hand an agent `write` without handing it the standing to demote what a
+/// person wrote.
+pub(crate) async fn handle_curate_record(
+    state: &AppState,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: CurateRecordBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if req.status.is_none() && req.pinned.is_none() {
+        return app_error_to_reject(
+            &doc,
+            &vti_common::error::AppError::Validation(
+                "a curation must change something: supply `status`, `pinned`, or both".into(),
+            ),
+        );
+    }
+
+    let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
+        Ok(p) => p,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let authorized = match authz::authorize(
+        &room,
+        &req.presentation,
+        Action::Curate,
+        &presenter,
+        now(),
+        &verifier,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+
+    match storage::curate_record(
+        &state.rooms_ks,
+        &state.room_records_ks,
+        &req.room_id,
+        &req.key,
+        storage::Curation {
+            status: req.status,
+            pinned: req.pinned,
+            expected_version: req.expected_version,
+        },
+        now(),
+    )
+    .await
+    {
+        Ok(curated) => {
+            audit_room(state, &room, &authorized, Some(&curated.key), false).await;
+            success_response(
+                &doc,
+                CurateRecordResponse {
+                    key: curated.key,
+                    version: curated.version,
+                    status: curated.status,
+                    pinned: curated.pinned,
                 },
             )
         }
@@ -781,6 +858,153 @@ mod tests {
             .map(|(_, v)| String::from_utf8_lossy(&v).into_owned())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The grant separation, end to end. The fixture's agent chain confers `read` alone,
+    /// so an agent that can read a room cannot demote what a person wrote in it.
+    #[tokio::test]
+    async fn curating_needs_its_own_grant_and_is_not_implied_by_write() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        create(state, &f).await;
+
+        handle_put_record(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                json!({
+                    "roomId": f.room.room_id, "key": "k", "presentation": f.as_owner(),
+                    "cleartext": { "body": "a decision" }
+                }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+
+        let out = handle_curate_record(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_CURATE_TYPE,
+                json!({
+                    "roomId": f.room.room_id, "key": "k",
+                    "presentation": f.as_agent(), "status": "deprecated"
+                }),
+                &f.agent.did,
+                &f.agent.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            !out.status.is_success(),
+            "a read-only agent must not curate: {}",
+            payload_of(&out)
+        );
+
+        // The owner's chain confers curate.
+        let out = handle_curate_record(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_CURATE_TYPE,
+                json!({
+                    "roomId": f.room.room_id, "key": "k",
+                    "presentation": f.as_owner(), "status": "deprecated", "pinned": true
+                }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+        assert!(out.status.is_success(), "{}", payload_of(&out));
+        let body = payload_of(&out);
+        assert_eq!(body["status"], "deprecated");
+        assert_eq!(body["pinned"], true, "pinned and deprecated at once");
+        assert_eq!(body["version"], 2, "curation assigns a new version");
+    }
+
+    /// A retraction drops the body and keeps the tombstone, and the tombstone is what a
+    /// caller synchronising on `sinceVersion` needs in order to converge.
+    #[tokio::test]
+    async fn a_retraction_leaves_a_tombstone_a_listing_still_reports() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        create(state, &f).await;
+
+        handle_put_record(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_TYPE,
+                json!({
+                    "roomId": f.room.room_id, "key": "k", "presentation": f.as_owner(),
+                    "cleartext": { "body": "secret-body-text" }
+                }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+
+        handle_curate_record(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_CURATE_TYPE,
+                json!({
+                    "roomId": f.room.room_id, "key": "k",
+                    "presentation": f.as_owner(), "status": "retracted"
+                }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+
+        let out = handle_list_records(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
+                json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+        let text = payload_of(&out).to_string();
+        assert!(
+            text.contains("retracted"),
+            "the tombstone must still be listed, or sync cannot converge: {text}"
+        );
+
+        let out = handle_get_record(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+                json!({ "roomId": f.room.room_id, "key": "k", "presentation": f.as_owner() }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            !payload_of(&out).to_string().contains("secret-body-text"),
+            "but the body is gone: {}",
+            payload_of(&out)
+        );
     }
 
     #[tokio::test]
