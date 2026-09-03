@@ -58,6 +58,7 @@ use uuid::Uuid;
 use vti_common::config::StoreConfig;
 use vti_common::error::AppError;
 use vti_common::store::{KeyspaceHandle, Store};
+use vti_rooms::audit as rooms_audit;
 use vti_rooms::wire::{
     CreateRoomBody, CreateRoomResponse, GetRecordBody, ListRecordsBody, ListRecordsResponse,
     MintEpochBody, MintEpochResponse, PutRecordBody, PutRecordResponse, ROOMS_CREATE_TYPE,
@@ -111,6 +112,34 @@ impl HostState {
             DtgChainVerifier::without_zk(Box::new(DataIntegrityKeys(self.resolver.clone()))),
         ))
     }
+}
+
+/// Record a room operation — §8, with the tier decision made by `vti_rooms::audit`.
+///
+/// This host has no audit chain: it is a delivery service, and standing up an HMAC key
+/// store and a hash chain here would be most of a community service again, which is the
+/// thing it exists not to be. So the trail goes to `tracing`, where an operator's own log
+/// pipeline collects it.
+///
+/// What is **not** different from a VTC is *what may be recorded*. The actor comes from
+/// [`vti_rooms::audit::for_operation`], so a `private` room logs that a member acted and
+/// never who — a host that logged the DID because its own logging happened to be simpler
+/// would have handed itself the membership by the back door.
+fn audit_room(
+    room: &Room,
+    authorized: &authz::AuthorizedAction,
+    record_key: Option<&str>,
+    listed: bool,
+) {
+    let entry = rooms_audit::for_operation(room.visibility, authorized, record_key);
+    tracing::info!(
+        action = rooms_audit::action_name(authorized.action(), listed),
+        room = %entry.room_id,
+        actor = %entry.actor.as_str(),
+        record = entry.record_key.as_deref().unwrap_or("-"),
+        visibility = ?room.visibility,
+        "room operation"
+    );
 }
 
 fn now() -> u64 {
@@ -319,14 +348,17 @@ async fn put(
     )
     .await
     {
-        Ok(stored) => respond(
-            doc,
-            PutRecordResponse {
-                key: stored.key,
-                version: stored.version,
-                epoch: stored.epoch,
-            },
-        ),
+        Ok(stored) => {
+            audit_room(&room, &authorized, Some(&stored.key), false);
+            respond(
+                doc,
+                PutRecordResponse {
+                    key: stored.key,
+                    version: stored.version,
+                    epoch: stored.epoch,
+                },
+            )
+        }
         Err(e) => from_app_error(doc, &e),
     }
 }
@@ -355,7 +387,7 @@ async fn get(
         Ok(p) => p,
         Err(e) => return from_app_error(doc, &e),
     };
-    if let Err(e) = authz::authorize(
+    let authorized = match authz::authorize(
         &room,
         &req.presentation,
         Action::Read,
@@ -365,10 +397,14 @@ async fn get(
     )
     .await
     {
-        return from_app_error(doc, &e);
-    }
+        Ok(a) => a,
+        Err(e) => return from_app_error(doc, &e),
+    };
     match storage::get_record(&state.records, &req.room_id, &req.key).await {
-        Ok(record) => respond(doc, record),
+        Ok(record) => {
+            audit_room(&room, &authorized, Some(&req.key), false);
+            respond(doc, record)
+        }
         Err(e) => from_app_error(doc, &e),
     }
 }
@@ -397,7 +433,7 @@ async fn list(
         Ok(p) => p,
         Err(e) => return from_app_error(doc, &e),
     };
-    if let Err(e) = authz::authorize(
+    let authorized = match authz::authorize(
         &room,
         &req.presentation,
         Action::Read,
@@ -407,8 +443,9 @@ async fn list(
     )
     .await
     {
-        return from_app_error(doc, &e);
-    }
+        Ok(a) => a,
+        Err(e) => return from_app_error(doc, &e),
+    };
     match storage::list_records(
         &state.records,
         &req.room_id,
@@ -421,6 +458,8 @@ async fn list(
             let limit = req.limit.unwrap_or(usize::MAX);
             // Metadata, never bodies — the same rule the VTC serves under, because it is a
             // property of the task rather than of any one host.
+            // A listing names no single record; the event is that the room was surveyed.
+            audit_room(&room, &authorized, None, true);
             respond(
                 doc,
                 ListRecordsResponse {
@@ -459,7 +498,7 @@ async fn mint(
         Ok(p) => p,
         Err(e) => return from_app_error(doc, &e),
     };
-    if let Err(e) = authz::authorize(
+    let authorized = match authz::authorize(
         &room,
         &req.presentation,
         Action::Admin,
@@ -469,16 +508,20 @@ async fn mint(
     )
     .await
     {
-        return from_app_error(doc, &e);
-    }
+        Ok(a) => a,
+        Err(e) => return from_app_error(doc, &e),
+    };
     match storage::advance_epoch(&state.rooms, &req.room_id, req.epoch, now()).await {
-        Ok(updated) => respond(
-            doc,
-            MintEpochResponse {
-                room_id: updated.room_id,
-                epoch: updated.epoch,
-            },
-        ),
+        Ok(updated) => {
+            audit_room(&room, &authorized, None, false);
+            respond(
+                doc,
+                MintEpochResponse {
+                    room_id: updated.room_id,
+                    epoch: updated.epoch,
+                },
+            )
+        }
         Err(e) => from_app_error(doc, &e),
     }
 }

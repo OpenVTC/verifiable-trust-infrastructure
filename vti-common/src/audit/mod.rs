@@ -50,8 +50,8 @@ pub use event::{
     MembershipRenewedData, PersonhoodAssertedData, PersonhoodRevokedData, PolicyActivatedData,
     PolicyUploadedData, REDACTED_MARKER, RegistryRecordPolicyOverrideData,
     RegistryStatusChangedData, RegistrySyncOutcomeData, RestartRequestedData, RoleChangedData,
-    SchemaChangeData, SessionRevokedData, SignedOutData, StatusListFlippedData, VpcAnnotationData,
-    VrcLifecycleData, VrcPublishedData, VrcRevokedData, VrcSupersededData,
+    RoomOperationData, SchemaChangeData, SessionRevokedData, SignedOutData, StatusListFlippedData,
+    VpcAnnotationData, VrcLifecycleData, VrcPublishedData, VrcRevokedData, VrcSupersededData,
     WebsiteBundleDeployedData, WebsiteFileDeletedData, WebsiteFileWrittenData,
     WebsiteGenerationRolledBackData,
 };

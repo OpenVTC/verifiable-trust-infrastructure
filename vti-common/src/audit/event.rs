@@ -57,6 +57,18 @@ pub enum AuditEvent {
     /// miss.
     EmergencyBootstrapInvoked(EmergencyBootstrapData),
 
+    /// A data-room operation — §8 of `docs/05-design-notes/data-rooms.md`.
+    ///
+    /// One variant for reads and writes alike, because on shared material **reads are the
+    /// interesting event**: a write log says what a room contains, a read log says who has
+    /// seen it, and the second is the question an incident review asks.
+    ///
+    /// **`actor_did` is not always a DID here.** On a `private` room the caller passes the
+    /// actorless marker, because an audit log naming every actor *is* the membership the
+    /// host was built never to learn — assembled one entry at a time. What may be recorded
+    /// per tier is decided once, in `vti_rooms::audit`, and never at a call site.
+    RoomOperation(RoomOperationData),
+
     /// A passkey was registered against an admin DID (initial enrol
     /// at install **or** a subsequent additional-device enrolment).
     AdminPasskeyRegistered(AdminPasskeyData),
@@ -461,6 +473,7 @@ impl AuditEvent {
             Self::ConfigChanged(..) => "ConfigChanged",
             Self::ConfigReloaded(..) => "ConfigReloaded",
             Self::RestartRequested(..) => "RestartRequested",
+            Self::RoomOperation(..) => "RoomOperation",
             Self::CommunityProfileUpdated(..) => "CommunityProfileUpdated",
             Self::AuditKeyRotated(..) => "AuditKeyRotated",
             Self::MemberUpdated(..) => "MemberUpdated",
@@ -735,6 +748,23 @@ pub struct ConfigReloadedData {
     /// Keys that actually re-applied. Excludes keys whose new value
     /// equalled the live value (no-op).
     pub keys_reloaded: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomOperationData {
+    /// The room's own identifier.
+    pub room_id: String,
+    /// The `room.*` action — `room.records.get`, `room.records.put`, `room.epoch.mint`, …
+    pub action: String,
+    /// The record acted on, where the operation named one.
+    ///
+    /// Opaque on the sealed tiers by schema requirement, so it identifies a record without
+    /// describing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_key: Option<String>,
+    /// The room's visibility, so a reader can tell an actorless entry from a missing one.
+    pub visibility: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
