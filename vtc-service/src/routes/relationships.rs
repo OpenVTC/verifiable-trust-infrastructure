@@ -2133,12 +2133,15 @@ mod tests {
         let grant_json = serde_json::to_value(grant.credential()).expect("grant serialises");
 
         let role_vec = serde_json::json!({ "id": "urn:uuid:vec-1" });
-        m.record_issued_credentials(grant_json, role_vec);
+        m.record_issued_credentials(grant_json.clone(), role_vec);
 
         if let Some(bound) = ack {
-            let ack = dtg_credentials::DTGCredential::new_member_vmc(&grant, m.joined_at, None)
-                .expect("acknowledgement builds")
-                .with_id("urn:uuid:ack-1");
+            // The grant's **wire** form: `DTGCommon` does not model `credentialStatus`, so
+            // digesting a re-serialised parse would drop it and match nothing.
+            let ack =
+                dtg_credentials::DTGCredential::new_member_vmc(&grant_json, m.joined_at, None)
+                    .expect("acknowledgement builds")
+                    .with_id("urn:uuid:ack-1");
             let ack_json = serde_json::to_value(ack.credential()).expect("ack serialises");
             m.record_member_vmc("urn:uuid:ack-1", ack_json, bound);
             m.member_vmc_received_at = Some(Utc.with_ymd_and_hms(2026, 1, 1, 0, 5, 0).unwrap());

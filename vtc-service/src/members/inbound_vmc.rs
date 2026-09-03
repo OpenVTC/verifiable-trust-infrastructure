@@ -337,12 +337,18 @@ mod binding_tests {
         )
         .with_id("urn:uuid:grant-1");
 
-        let ack = dtg_credentials::DTGCredential::new_member_vmc(&grant, valid_from, None)
+        // The acknowledgement digests the grant's **wire** form, not a parsed one —
+        // `DTGCommon` does not model `credentialStatus`, so parsing and re-serialising a
+        // real grant drops it and the digest then matches nothing. 0.5.0 changed the
+        // signature to take the JSON for exactly this reason; serialise first.
+        let grant_wire = serde_json::to_value(grant.credential()).expect("grant serialises");
+
+        let ack = dtg_credentials::DTGCredential::new_member_vmc(&grant_wire, valid_from, None)
             .expect("acknowledgement builds")
             .with_id("urn:uuid:ack-1");
 
         (
-            serde_json::to_value(grant.credential()).expect("grant serialises"),
+            grant_wire,
             serde_json::to_value(ack.credential()).expect("ack serialises"),
         )
     }

@@ -3464,26 +3464,9 @@ dependencies = [
 
 [[package]]
 name = "dtg-credentials"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc5be7eee44969838e942b07a3e383e936f2d307f7b2b880daa715817261f132"
-dependencies = [
- "affinidi-data-integrity",
- "affinidi-secrets-resolver",
- "chrono",
- "multibase",
- "serde",
- "serde_json",
- "serde_json_canonicalizer",
- "sha2 0.10.9",
- "thiserror 2.0.20",
- "tracing",
-]
-
-[[package]]
-name = "dtg-credentials"
 version = "0.6.0"
-source = "git+https://github.com/OpenVTC/dtg-credentials?rev=0c1391adfa67d8ae65498f086675404b8bb50b08#0c1391adfa67d8ae65498f086675404b8bb50b08"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f292eb5ba50d7f69dd9671e87b4d6ceddbeb973cbf0c05715220bee8446ff90"
 dependencies = [
  "affinidi-data-integrity",
  "affinidi-secrets-resolver",
@@ -10666,7 +10649,7 @@ dependencies = [
  "clap",
  "dialoguer",
  "didwebvh-rs",
- "dtg-credentials 0.4.0",
+ "dtg-credentials",
  "ed25519-dalek 3.0.0",
  "fjall",
  "flate2",
@@ -10830,7 +10813,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "chrono",
- "dtg-credentials 0.6.0",
+ "dtg-credentials",
  "ed25519-dalek 3.0.0",
  "getrandom 0.3.4",
  "multibase",

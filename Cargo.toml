@@ -162,7 +162,7 @@ affinidi-messaging-core = "0.1"
 futures-util = "0.3"
 
 # Decentralized Trust Graph Credentials
-dtg-credentials = "0.4"
+dtg-credentials = "0.6"
 
 # JSON Schema validation (issue-time credentialSchema checks)
 jsonschema = "0.46"
