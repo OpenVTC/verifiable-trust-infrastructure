@@ -61,6 +61,7 @@
 
 pub mod authz;
 pub mod error;
+pub mod lifecycle;
 /// The room's group-key layer (RFC 9420), behind the `mls` feature.
 ///
 /// Off by default: a host that only stores ciphertext needs none of it, and OpenMLS is a
@@ -158,6 +159,19 @@ pub struct Room {
     /// Stated at creation rather than discovered later: a reclamation that surprises a
     /// member is a failure of the design, not of the member.
     pub retention_days: u32,
+
+    /// When the current epoch expires, in unix seconds. `None` never lapses.
+    ///
+    /// The clock the whole lifecycle hangs off — see [`lifecycle`]. Set when an epoch is
+    /// minted, and moved by nothing else: a room that is being used renews itself in the
+    /// course of being used, and one nobody has committed to in a year has said something
+    /// real about itself.
+    ///
+    /// `None` is what a room stored before this field existed deserialises to, and it means
+    /// *never lapses* rather than *already lapsed* — a migration should not turn every
+    /// existing room read-only on deploy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch_expires_at: Option<u64>,
 
     /// Unix-epoch seconds.
     pub created_at: u64,

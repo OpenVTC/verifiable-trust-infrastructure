@@ -57,6 +57,15 @@ pub async fn create_room(rooms: &KeyspaceHandle, room: &Room) -> Result<(), AppE
     rooms.insert(room_key(&room.room_id), room).await
 }
 
+/// How long a minted epoch is good for, in seconds.
+///
+/// Not yet a per-room parameter: `rooms/create/0.1` has no member for it, and inventing one
+/// locally would put this implementation's rooms out of conformance with the published
+/// schema. A room that wants a different lifetime is a spec change first.
+fn epoch_lifetime_seconds() -> u64 {
+    u64::from(crate::lifecycle::DEFAULT_EPOCH_LIFETIME_DAYS) * 24 * 60 * 60
+}
+
 /// Fetch a room, or [`AppError::NotFound`].
 pub async fn get_room(rooms: &KeyspaceHandle, room_id: &str) -> Result<Room, AppError> {
     let raw = rooms
@@ -75,6 +84,13 @@ pub async fn get_room(rooms: &KeyspaceHandle, room_id: &str) -> Result<Room, App
 /// point of advancing.
 ///
 /// This service records the number. It never learns the key.
+///
+/// **Minting an epoch is how a room is renewed.** It resets `epoch_expires_at`, which is the
+/// clock the whole lifecycle hangs off (§9) — so a room in use renews itself in the course
+/// of being used, and a lapsed one is brought back by the single operation its members were
+/// already going to perform. There is no separate "renew" verb, and there should not be: one
+/// that could be called without committing would let a room look live while its key material
+/// stood still.
 pub async fn advance_epoch(
     rooms: &KeyspaceHandle,
     room_id: &str,
@@ -89,6 +105,7 @@ pub async fn advance_epoch(
         )));
     }
     room.epoch = new_epoch;
+    room.epoch_expires_at = Some(now + epoch_lifetime_seconds());
     room.updated_at = now;
     rooms.insert(room_key(room_id), &room).await?;
     Ok(room)
@@ -319,6 +336,7 @@ mod tests {
             epoch: 1,
             next_version: 1,
             retention_days: 90,
+            epoch_expires_at: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -478,6 +496,38 @@ mod tests {
             .await
             .unwrap_err();
         assert!(format!("{err}").contains("room `r1` is at 2"), "{err}");
+    }
+
+    /// The round trip §9 turns on: a room lapses, and the single operation its members
+    /// were already going to perform brings it back. Nothing else moves the clock.
+    #[tokio::test]
+    async fn minting_an_epoch_renews_a_lapsed_room() {
+        use crate::lifecycle::Lifecycle;
+        let (_d, rooms, _rec) = open().await;
+
+        let mut r = room("r1", Visibility::Open);
+        r.epoch_expires_at = Some(1_000);
+        create_room(&rooms, &r).await.expect("create");
+
+        let now = 2_000;
+        assert_eq!(
+            get_room(&rooms, "r1").await.unwrap().lifecycle(now),
+            Lifecycle::Lapsed,
+            "expired an epoch ago"
+        );
+
+        let renewed = advance_epoch(&rooms, "r1", 2, now).await.expect("renew");
+        assert_eq!(renewed.lifecycle(now), Lifecycle::Live);
+        assert!(
+            renewed.epoch_expires_at.expect("renewal sets an expiry") > now,
+            "a renewal moves the clock forward, it does not merely clear it"
+        );
+
+        // And it is durable, not just returned.
+        assert_eq!(
+            get_room(&rooms, "r1").await.unwrap().lifecycle(now),
+            Lifecycle::Live
+        );
     }
 
     #[tokio::test]

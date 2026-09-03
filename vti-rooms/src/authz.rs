@@ -205,6 +205,7 @@ pub async fn authorize(
     presentation: &AuthorityPresentation,
     action: Action,
     presenter: &str,
+    now: u64,
     verifier: &dyn ChainVerifier,
 ) -> Result<AuthorizedAction, AppError> {
     // Depth first: it is the cheapest check and the one that bounds the cost of every
@@ -254,6 +255,24 @@ pub async fn authorize(
         ));
     }
 
+    // A room whose epoch has expired is read-only until somebody renews it (§9). Nothing
+    // is destroyed, nothing is hidden, and reads keep working in every state — a lapse is a
+    // condition a member can notice and fix, not a punishment.
+    //
+    // `Admin` is exempt, and the exemption is what makes the state machine have an exit:
+    // minting an epoch *is* the renewal, so a gate that refused it would leave a lapsed
+    // room lapsed forever. It is checked before verification for the same reason depth is —
+    // no point verifying a chain for an operation the room cannot accept.
+    let lifecycle = room.lifecycle(now);
+    if !matches!(action, Action::Admin) && !lifecycle.accepts_writes() && action != Action::Read {
+        return Err(AppError::Forbidden(format!(
+            "room `{}` is {} and accepts no writes until its epoch is renewed; reads and \
+             export still work, and a single `rooms/epoch/mint` restores it",
+            room.room_id,
+            lifecycle.as_str()
+        )));
+    }
+
     // Everything above is shape. This is the decision.
     let verified = verifier
         .verify(room, presentation, action, presenter)
@@ -301,6 +320,7 @@ mod tests {
             epoch: 1,
             next_version: 1,
             retention_days: 90,
+            epoch_expires_at: None,
             created_at: 0,
             updated_at: 0,
         }
@@ -308,6 +328,8 @@ mod tests {
 
     /// The DID the request's own proof established.
     const PRESENTER: &str = "did:key:zAgent";
+    /// Any time at all: the fixtures below have no epoch expiry, so they never lapse.
+    const NOW: u64 = 1_800_000_000;
 
     fn presentation(depth: usize, binding: bool) -> AuthorityPresentation {
         AuthorityPresentation {
@@ -380,6 +402,7 @@ mod tests {
             &presentation(2, false),
             Action::Write,
             PRESENTER,
+            NOW,
             &Vouches::for_all(),
         )
         .await
@@ -402,6 +425,7 @@ mod tests {
             &presentation(2, false),
             Action::Write,
             PRESENTER,
+            NOW,
             &Vouches::read_only(),
         )
         .await
@@ -416,6 +440,7 @@ mod tests {
             &presentation(2, false),
             Action::Read,
             PRESENTER,
+            NOW,
             &Vouches::read_only(),
         )
         .await
@@ -430,6 +455,7 @@ mod tests {
             &presentation(1, false),
             Action::Admin,
             PRESENTER,
+            NOW,
             &Vouches(vec!["read".into(), "write".into(), "curate".into()]),
         )
         .await
@@ -448,6 +474,7 @@ mod tests {
             &presentation(0, false),
             Action::Read,
             PRESENTER,
+            NOW,
             &Vouches::for_all(),
         )
         .await
@@ -462,6 +489,7 @@ mod tests {
             &presentation(MAX_CHAIN_DEPTH + 1, false),
             Action::Read,
             PRESENTER,
+            NOW,
             &Vouches::for_all(),
         )
         .await
@@ -497,6 +525,7 @@ mod tests {
                     &p,
                     Action::Read,
                     PRESENTER,
+                    NOW,
                     &Panics
                 )
                 .await
@@ -513,6 +542,7 @@ mod tests {
             &presentation(2, false),
             Action::Read,
             PRESENTER,
+            NOW,
             &Vouches::for_all(),
         )
         .await
@@ -534,6 +564,7 @@ mod tests {
                 &presentation(2, true),
                 Action::Read,
                 PRESENTER,
+                NOW,
                 &RefusesEverything,
             )
             .await
@@ -554,6 +585,7 @@ mod tests {
             &presentation(2, false),
             Action::Read,
             "   ",
+            NOW,
             &Vouches::for_all(),
         )
         .await
@@ -572,6 +604,7 @@ mod tests {
             &presentation(2, false),
             Action::Read,
             PRESENTER,
+            NOW,
             &VouchesForSomeoneElse,
         )
         .await
@@ -591,6 +624,7 @@ mod tests {
             &p,
             Action::Read,
             PRESENTER,
+            NOW,
             &Vouches::for_all(),
         )
         .await
@@ -599,6 +633,104 @@ mod tests {
             format!("{err}").contains("no membership credential"),
             "{err}"
         );
+    }
+
+    /// A lapsed room is read-only, and the refusal says how to fix it.
+    #[tokio::test]
+    async fn a_lapsed_room_refuses_writes_and_keeps_serving_reads() {
+        let mut r = room(Visibility::Open);
+        r.epoch_expires_at = Some(NOW - 1);
+
+        let err = authorize(
+            &r,
+            &presentation(2, false),
+            Action::Write,
+            PRESENTER,
+            NOW,
+            &Vouches::for_all(),
+        )
+        .await
+        .unwrap_err();
+        let text = format!("{err}");
+        assert!(text.contains("accepts no writes"), "{text}");
+        assert!(
+            text.contains("rooms/epoch/mint"),
+            "the refusal must say how to fix it: {text}"
+        );
+
+        authorize(
+            &r,
+            &presentation(2, false),
+            Action::Read,
+            PRESENTER,
+            NOW,
+            &Vouches::for_all(),
+        )
+        .await
+        .expect("a lapse hides nothing — reads keep working");
+    }
+
+    /// The exemption that gives the state machine an exit. Minting an epoch *is* the
+    /// renewal, so a gate that refused it would leave a lapsed room lapsed forever — and
+    /// that holds all the way to `Reclaimable`, because until the bytes are deleted the
+    /// members' choice is renew or export.
+    #[tokio::test]
+    async fn every_lapsed_state_still_accepts_the_operation_that_renews_it() {
+        let mut r = room(Visibility::Open);
+        r.retention_days = 90;
+
+        for (days_past_expiry, state) in [(1, "lapsed"), (31, "dormant"), (91, "reclaimable")] {
+            r.epoch_expires_at = Some(NOW - days_past_expiry * 24 * 60 * 60);
+            assert_eq!(
+                r.lifecycle(NOW).as_str(),
+                state,
+                "fixture should be {state}"
+            );
+
+            authorize(
+                &r,
+                &presentation(2, false),
+                Action::Admin,
+                PRESENTER,
+                NOW,
+                &Vouches::for_all(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("a {state} room must still accept a renewal: {e}"));
+
+            let err = authorize(
+                &r,
+                &presentation(2, false),
+                Action::Write,
+                PRESENTER,
+                NOW,
+                &Vouches::for_all(),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                format!("{err}").contains("accepts no writes"),
+                "a {state} room must refuse ordinary writes: {err}"
+            );
+        }
+    }
+
+    /// Curation is a write. A room nobody has renewed should not be quietly reorganised.
+    #[tokio::test]
+    async fn a_lapsed_room_refuses_curation() {
+        let mut r = room(Visibility::Open);
+        r.epoch_expires_at = Some(NOW - 1);
+        let err = authorize(
+            &r,
+            &presentation(2, false),
+            Action::Curate,
+            PRESENTER,
+            NOW,
+            &Vouches::for_all(),
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err}").contains("accepts no writes"), "{err}");
     }
 
     /// No action implies another — the property that keeps a permission model from

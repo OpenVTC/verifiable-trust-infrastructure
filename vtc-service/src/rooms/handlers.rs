@@ -69,6 +69,12 @@ fn now() -> u64 {
 /// month, short enough that an abandoned one does not accumulate forever.
 const DEFAULT_RETENTION_DAYS: u32 = 90;
 
+/// One epoch lifetime in seconds — how long a newly created room is live before it needs
+/// renewing. Not a per-room parameter yet: `rooms/create/0.1` has no member for it, and
+/// inventing one locally would put this host's rooms out of conformance with the schema.
+const EPOCH_LIFETIME_DAYS_SECS: u64 =
+    vti_rooms::lifecycle::DEFAULT_EPOCH_LIFETIME_DAYS as u64 * 24 * 60 * 60;
+
 /// `rooms/create/0.1`.
 ///
 /// The creator brings the room's identifier; this service does not assign one. A room
@@ -87,6 +93,9 @@ pub(crate) async fn handle_create(state: &AppState, doc: TrustTask<Value>) -> Tr
         epoch: 1,
         next_version: 1,
         retention_days: req.retention_days.unwrap_or(DEFAULT_RETENTION_DAYS),
+        // A room is live from creation for one epoch lifetime; minting the next epoch
+        // renews it. Nothing else moves this clock — see `vti_rooms::lifecycle`.
+        epoch_expires_at: Some(now() + EPOCH_LIFETIME_DAYS_SECS),
         created_at: now(),
         updated_at: now(),
     };
@@ -124,6 +133,7 @@ pub(crate) async fn handle_put_record(state: &AppState, doc: TrustTask<Value>) -
         &req.presentation,
         Action::Write,
         &presenter,
+        now(),
         &verifier,
     )
     .await
@@ -204,6 +214,7 @@ pub(crate) async fn handle_get_record(state: &AppState, doc: TrustTask<Value>) -
         &req.presentation,
         Action::Read,
         &presenter,
+        now(),
         &verifier,
     )
     .await
@@ -243,6 +254,7 @@ pub(crate) async fn handle_list_records(
         &req.presentation,
         Action::Read,
         &presenter,
+        now(),
         &verifier,
     )
     .await
@@ -297,6 +309,7 @@ pub(crate) async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -
         &req.presentation,
         Action::Admin,
         &presenter,
+        now(),
         &verifier,
     )
     .await
