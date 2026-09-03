@@ -127,6 +127,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY cnm-cli/ cnm-cli/
 COPY didcomm-test/ didcomm-test/
 COPY pnm-cli/ pnm-cli/
+COPY room-host/ room-host/
 COPY tests/ tests/
 COPY vta-cli-common/ vta-cli-common/
 COPY vta-config/ vta-config/
@@ -148,6 +149,8 @@ COPY vta-enclave/ vta-enclave/
 COPY vtc-client/ vtc-client/
 COPY vtc-service/ vtc-service/
 COPY vti-common/ vti-common/
+COPY vti-rooms/ vti-rooms/
+COPY vti-rooms-dtg/ vti-rooms-dtg/
 COPY vti-secrets/ vti-secrets/
 COPY vti-webauthn/ vti-webauthn/
 

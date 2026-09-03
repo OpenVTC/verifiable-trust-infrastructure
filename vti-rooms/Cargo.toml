@@ -1,0 +1,30 @@
+[package]
+name = "vti-rooms"
+description = "Data-room storage, wire types, and authorization — the parts of a room that are not a service"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The store abstraction and AppError. This crate's only internal dependency:
+# a room's storage and authorization need nothing from a community service,
+# which is the whole reason they are extractable.
+vti-common = { path = "../vti-common", version = "0.16" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The published schema types `updatedAt` as an RFC 3339 string.
+chrono = { workspace = true }
+# Verification may resolve a DID, so ChainVerifier is async; async-trait keeps it
+# dyn-compatible, as it does for vti_common::auth::backend.
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+# The published rooms/* schemas, so the hand-rolled wire types above are checked
+# against the spec rather than only against themselves.
+trust-tasks-rs = { workspace = true }
+tokio = { workspace = true }

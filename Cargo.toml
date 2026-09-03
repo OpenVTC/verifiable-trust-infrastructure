@@ -4,6 +4,7 @@ members = [
   "cnm-cli",
   "didcomm-test",
   "pnm-cli",
+  "room-host",
   "tests/e2e",
   "vta-cli-common",
   "vta-config",
@@ -25,6 +26,8 @@ members = [
   "vtc-client",
   "vtc-service",
   "vti-common",
+  "vti-rooms",
+  "vti-rooms-dtg",
   "vti-secrets",
   "vti-webauthn",
 ]

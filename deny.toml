@@ -119,6 +119,25 @@ ignore = [
   Drop when uniffi (0.28.x) removes its `paste` dependency.
   """ },
 
+  { id = "RUSTSEC-2026-0173", reason = """
+  proc-macro-error2 2.0.1 is unmaintained — the author has said so and
+  recommends migrating away. Build-time only, and twice removed from
+  anything we ship: it is a proc-macro, so it runs in the compiler and
+  links into no artifact, and its only path into this workspace is
+  vtc-client's optional, off-by-default `mls` feature —
+  openmls_rust_crypto -> hpke-rs -> libcrux-sha3 -> hax-lib ->
+  hax-lib-macros. A default build of every crate here does not resolve
+  it at all.
+
+  There is no version of this we can pick differently. OpenMLS 0.9 has
+  one production crypto provider and this is what it depends on; the
+  alternative is not a cleaner MLS but a hand-rolled group-key scheme,
+  which the data-rooms design note explicitly declines.
+
+  Drop when hax-lib moves off proc-macro-error2, or when OpenMLS's
+  provider stack stops reaching libcrux.
+  """ },
+
 ]
 
 # License policy. Allow-list is derived from the actual licenses present

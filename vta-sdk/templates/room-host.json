@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "name": "room-host",
+  "kind": "room-host",
+  "description": "A service that stores data-room records. Provisioned as an ordinary integration so that a person can host their own rooms on infrastructure they control (topology T1 of the data-rooms design) without that surface living inside the VTA — the process guarding the master seed must not also terminate presentations from arbitrary DIDs. A room-host holds ciphertext and verifies presentations; it holds no member list and no room keys, so its ACL entry should be scoped to exactly the oracle verbs it needs and nothing wider. Advertises REST for the rooms/* task surface and DIDComm so a room's own DID can route through the same mediator.",
+  "methods": ["webvh"],
+  "requiredVars": ["WEBVH_SERVER", "URL", "MEDIATOR_DID"],
+  "optionalVars": {
+    "ACCEPT": ["didcomm/v2"],
+    "ROUTING_KEYS": [],
+    "LABEL": null
+  },
+  "defaults": {
+    "portable": true
+  },
+  "document": {
+    "@context": [
+      "https://www.w3.org/ns/did/v1",
+      "https://www.w3.org/ns/cid/v1"
+    ],
+    "id": "{DID}",
+    "verificationMethod": [
+      {
+        "id": "{DID}#key-1",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{SIGNING_KEY_MB}"
+      },
+      {
+        "id": "{DID}#key-2",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{KA_KEY_MB}"
+      }
+    ],
+    "assertionMethod": ["{DID}#key-1"],
+    "authentication": ["{DID}#key-1"],
+    "keyAgreement": ["{DID}#key-2"],
+    "service": [
+      {
+        "id": "{DID}#didcomm",
+        "type": "DIDCommMessaging",
+        "serviceEndpoint": [
+          {
+            "accept": "{ACCEPT}",
+            "routingKeys": "{ROUTING_KEYS}",
+            "uri": "{MEDIATOR_DID}"
+          }
+        ]
+      },
+      {
+        "id": "{DID}#rest",
+        "type": "VTARest",
+        "serviceEndpoint": "{URL}"
+      }
+    ]
+  }
+}

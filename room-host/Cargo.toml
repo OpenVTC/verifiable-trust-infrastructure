@@ -1,0 +1,54 @@
+[package]
+name = "room-host"
+description = "Stores data-room records for rooms it does not govern — a delivery service, not a community"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "room-host"
+path = "src/main.rs"
+
+[dependencies]
+# Storage, wire types and authorization. The whole of what hosting a room needs —
+# no member lifecycle, no policy engine, no credential issuance, no admin UI.
+vti-rooms = { path = "../vti-rooms", version = "0.1" }
+# The store and AppError. Nothing else internal.
+vti-common = { path = "../vti-common", version = "0.16" }
+vti-rooms-dtg = { path = "../vti-rooms-dtg" }
+
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+anyhow = "1"
+affinidi-did-resolver-cache-sdk = { workspace = true }
+
+# A room host and a VTC serve the same protocol, so they must speak the same
+# wire form: requests and responses are Trust Task documents, not bare JSON.
+trust-tasks-rs = { workspace = true }
+trust-tasks-https = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", features = ["test-support"] }
+
+# The `data_room` example drives this host with the real client, so it needs the
+# client's MLS layer and a throwaway signer. None of this reaches the binary.
+vtc-client = { path = "../vtc-client", features = ["mls"] }
+vta-sdk = { path = "../vta-sdk" }
+openmls_rust_crypto = "0.6"
+ed25519-dalek = { workspace = true }
+multibase = { workspace = true }
+base64 = { workspace = true }
+getrandom = "0.3"
+reqwest = { workspace = true }
+uuid = { workspace = true }

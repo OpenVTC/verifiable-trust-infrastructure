@@ -361,6 +361,13 @@ fn backed_up_handle<'a>(state: &'a AppState, name: &str) -> Option<&'a KeyspaceH
         x if x == ENDORSEMENT_TYPES => &state.endorsement_types_ks,
         x if x == SCHEMAS => &state.schemas_ks,
         x if x == ENDORSEMENTS => &state.endorsements_ks,
+        // A room's records are backed up like any other community state. On a
+        // sealed tier they are ciphertext this service cannot read, and that is
+        // no reason to skip them: the host is trusted for availability
+        // (invariant I2), and losing the ciphertext loses the room just as
+        // completely as losing plaintext would.
+        x if x == ROOMS => &state.rooms_ks,
+        x if x == ROOM_RECORDS => &state.room_records_ks,
         x if x == INVITATIONS => &state.invitations_ks,
         x if x == CONSUMED_INVITATIONS => &state.consumed_invitations_ks,
         x if x == AUDIT => &state.audit_ks,
@@ -591,6 +598,46 @@ fn derive_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `BACKED_UP` and `backed_up_handle` are two lists of the same thing, and nothing in
+    /// the type system makes them agree — the match ends in `_ => return None`, so a
+    /// keyspace added to one and not the other fails at *backup time* with
+    /// "no AppState handle for keyspace", which is a runtime error on the one operation an
+    /// operator runs when something has already gone wrong.
+    ///
+    /// That is exactly how `rooms` and `room_records` broke every backup test: added to the
+    /// partition, absent from the map, and no compile error anywhere. This pins the two
+    /// together the way the partition census pins the partition.
+    #[tokio::test]
+    async fn every_backed_up_keyspace_has_a_handle() {
+        let tv = crate::test_support::build_test_vtc().await;
+        let missing: Vec<&str> = keyspaces::BACKED_UP
+            .iter()
+            .filter(|name| backed_up_handle(&tv.state, name).is_none())
+            .copied()
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these keyspaces are in BACKED_UP but `backed_up_handle` does not map them, so \
+             every export would fail at runtime: {missing:?}"
+        );
+    }
+
+    /// The other direction: a handle for a keyspace nothing backs up is dead code that
+    /// reads as coverage.
+    #[tokio::test]
+    async fn no_handle_maps_a_keyspace_that_is_not_backed_up() {
+        let tv = crate::test_support::build_test_vtc().await;
+        let stray: Vec<&str> = keyspaces::EXCLUDED_FROM_BACKUP
+            .iter()
+            .filter(|name| backed_up_handle(&tv.state, name).is_some())
+            .copied()
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "`backed_up_handle` maps keyspaces excluded from backup: {stray:?}"
+        );
+    }
 
     fn sample_payload() -> BackupPayload {
         BackupPayload {

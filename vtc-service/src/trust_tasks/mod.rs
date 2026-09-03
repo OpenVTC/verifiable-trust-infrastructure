@@ -63,6 +63,8 @@ use vta_sdk::protocols::join_requests::{
 };
 use vta_sdk::protocols::members::{self as mem, MemberVmcBody, MemberVmcReceiptBody};
 
+use vti_rooms::wire as rooms_wire;
+
 use crate::join::{JoinSubmitOutcome, JoinTransport};
 use crate::server::AppState;
 
@@ -140,6 +142,23 @@ pub(crate) async fn dispatch_trust_task_core(
         jr::JOIN_REQUEST_STATUS_TYPE => handle_status(state, ctx, doc).await,
         jr::MEMBER_SELF_REMOVE_TYPE => handle_self_remove(state, ctx, doc).await,
         mem::MEMBER_VMC_TYPE => handle_member_vmc(state, ctx, doc).await,
+        // The rooms family. Note what these do not take: no `ctx`, and no auth claims.
+        // A room operation is authorized by the authority chain the room itself issued,
+        // never by this service's ACL, roster, or the caller's session — invariant I5 of
+        // `docs/05-design-notes/data-rooms.md`, and what makes a room portable.
+        rooms_wire::ROOMS_CREATE_TYPE => crate::rooms::handlers::handle_create(state, doc).await,
+        rooms_wire::ROOMS_RECORDS_PUT_TYPE => {
+            crate::rooms::handlers::handle_put_record(state, doc).await
+        }
+        rooms_wire::ROOMS_RECORDS_GET_TYPE => {
+            crate::rooms::handlers::handle_get_record(state, doc).await
+        }
+        rooms_wire::ROOMS_RECORDS_LIST_TYPE => {
+            crate::rooms::handlers::handle_list_records(state, doc).await
+        }
+        rooms_wire::ROOMS_EPOCH_MINT_TYPE => {
+            crate::rooms::handlers::handle_mint_epoch(state, doc).await
+        }
         PERSONHOOD_CHALLENGE_TYPE => handle_personhood_challenge(state, ctx, doc).await,
         PERSONHOOD_ASSERT_TYPE => handle_personhood_assert(state, ctx, doc).await,
         other => unsupported_type_or_version(&doc, other),
@@ -243,6 +262,15 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     mem::MEMBER_VMC_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
+    // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
+    // filing it under a service prefix would encode into the URI the one thing the
+    // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
+    // does not cover these; they are pinned by `rooms_dispatch_matches_wire` below.
+    rooms_wire::ROOMS_CREATE_TYPE,
+    rooms_wire::ROOMS_RECORDS_PUT_TYPE,
+    rooms_wire::ROOMS_RECORDS_GET_TYPE,
+    rooms_wire::ROOMS_RECORDS_LIST_TYPE,
+    rooms_wire::ROOMS_EPOCH_MINT_TYPE,
 ];
 
 /// `vtc/members/personhood/challenge/0.1` — mint the single-use nonce
@@ -793,6 +821,18 @@ mod tests {
             mem::MEMBER_VMC_TYPE,
             <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            // rooms/* names hand-written constants rather than a generated
+            // `TYPE_URI`, because its schemas are still in review upstream
+            // (trustoverip/dtgwg-trust-tasks-tf#346). The property this test
+            // exists for is weaker for them until those bindings publish: it
+            // pins the dispatcher against `wire`'s constants, not against the
+            // registry. **Swap these for the generated `TYPE_URI`s when the
+            // crate ships them** — that is what restores the guarantee.
+            rooms_wire::ROOMS_CREATE_TYPE,
+            rooms_wire::ROOMS_RECORDS_PUT_TYPE,
+            rooms_wire::ROOMS_RECORDS_GET_TYPE,
+            rooms_wire::ROOMS_RECORDS_LIST_TYPE,
+            rooms_wire::ROOMS_EPOCH_MINT_TYPE,
         ];
         for u in DISPATCHED_URIS {
             assert!(

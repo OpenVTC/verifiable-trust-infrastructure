@@ -46,6 +46,8 @@ use serde::{Deserialize, Serialize};
 /// a single read, rather than scattered as string literals down the file. A URL
 /// that drifts from the server's is a 400 at runtime, so this list is part of
 /// the client's contract, not decoration.
+pub mod rooms;
+
 pub mod task {
     pub const MEMBERS_LIST: &str = "https://trusttasks.org/spec/vtc/members/list/0.1";
     pub const MEMBERS_UPDATE: &str = "https://trusttasks.org/spec/vtc/members/update/0.1";

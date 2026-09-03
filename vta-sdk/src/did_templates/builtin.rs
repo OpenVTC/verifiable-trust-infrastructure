@@ -18,6 +18,8 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "did-host-tsp",
     "didcomm-mediator",
     "push-gateway",
+    "room",
+    "room-host",
     "vta-admin",
     "vtc-host",
 ];
@@ -26,6 +28,8 @@ const AI_AGENT: &str = include_str!("../../templates/ai-agent.json");
 const AI_AGENT_PEER: &str = include_str!("../../templates/ai-agent-peer.json");
 const DIDCOMM_MEDIATOR: &str = include_str!("../../templates/didcomm-mediator.json");
 const PUSH_GATEWAY: &str = include_str!("../../templates/push-gateway.json");
+const ROOM: &str = include_str!("../../templates/room.json");
+const ROOM_HOST: &str = include_str!("../../templates/room-host.json");
 const VTA_ADMIN: &str = include_str!("../../templates/vta-admin.json");
 const VTC_HOST: &str = include_str!("../../templates/vtc-host.json");
 const DID_HOST_HTTP_DIDCOMM: &str = include_str!("../../templates/did-host-http-didcomm.json");
@@ -44,6 +48,8 @@ pub fn load_embedded(name: &str) -> Result<DidTemplate, TemplateError> {
         "ai-agent-peer" => AI_AGENT_PEER,
         "didcomm-mediator" => DIDCOMM_MEDIATOR,
         "push-gateway" => PUSH_GATEWAY,
+        "room" => ROOM,
+        "room-host" => ROOM_HOST,
         "vta-admin" => VTA_ADMIN,
         "vtc-host" => VTC_HOST,
         "did-host-http-didcomm" => DID_HOST_HTTP_DIDCOMM,
