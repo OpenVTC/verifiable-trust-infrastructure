@@ -7,10 +7,16 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# Not published, and that is what makes the git dependency below tolerable.
-# A published crate cannot depend on a git source, so this crate is where the
-# bridge lives until dtg-credentials 0.6 is on crates.io.
-publish = false
+# Published, now that it can be. This crate was `publish = false` for exactly
+# one reason — a published crate cannot depend on a git source, and
+# dtg-credentials 0.6 was merged but unreleased — and that reason is gone.
+#
+# It should not stay unpublished by inertia. `vti-rooms` publishes so that a
+# room host can reuse a room's storage, wire types and authorization; but
+# `authz::authorize` refuses everything without a `ChainVerifier`, and this is
+# the only one. A published `vti-rooms` with no published verifier is a crate an
+# external consumer can build a room host out of that serves nothing.
+publish.workspace = true
 
 [features]
 # Signed fixtures for downstream tests and the data_room example. Never a default:
@@ -18,19 +24,12 @@ publish = false
 test-support = ["dep:ed25519-dalek", "dep:getrandom", "dep:multibase", "dep:vta-sdk", "dep:affinidi-tdk"]
 
 [dependencies]
-vti-rooms = { path = "../vti-rooms" }
-vti-common = { path = "../vti-common" }
+vti-rooms = { path = "../vti-rooms", version = "0.1" }
+vti-common = { path = "../vti-common", version = "0.16" }
 
-# TEMPORARY, and the only reason this crate is not published: `authority::
-# verify_chain` and the VAC/VDC types landed in dtg-credentials 0.6.0, which is
-# merged but not yet released — that repository had no release path at all until
-# OpenVTC/dtg-credentials#17. Swap this whole line for
-#   dtg-credentials = "0.6"
-# the moment the v0.6.0 tag publishes; nothing else changes.
-#
-# It is pinned to a rev rather than a branch on purpose: a moving branch would
-# change what verifies a credential without changing this repository.
-dtg-credentials = { git = "https://github.com/OpenVTC/dtg-credentials", rev = "0c1391adfa67d8ae65498f086675404b8bb50b08" }
+# `authority::verify_chain` and the VAC/VDC types. Was a pinned git rev while
+# 0.6.0 sat merged and unreleased; released 2026-09-03.
+dtg-credentials = "0.6"
 
 async-trait = "0.1"
 # Both hosts already carry a `VerificationMethodResolver`, so the key adapter wraps
@@ -46,7 +45,7 @@ tracing = { workspace = true }
 ed25519-dalek = { workspace = true, optional = true }
 getrandom = { version = "0.3", optional = true }
 multibase = { workspace = true, optional = true }
-vta-sdk = { path = "../vta-sdk", features = ["didcomm"], optional = true }
+vta-sdk = { path = "../vta-sdk", version = "0.32", features = ["didcomm"], optional = true }
 affinidi-tdk = { workspace = true, optional = true }
 
 [dev-dependencies]
