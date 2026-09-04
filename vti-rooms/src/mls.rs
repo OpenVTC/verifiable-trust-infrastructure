@@ -511,6 +511,25 @@ mod tests {
 /// pending key packages — live in that store under keys OpenMLS owns. Reaching in to pick
 /// out "just the group" would mean reimplementing its layout and re-breaking on every
 /// upgrade. Taking the map whole is duller and survives the library moving.
+/// An identity and its provider, before any group exists.
+///
+/// The state a joiner holds between minting a KeyPackage and receiving the Welcome that
+/// consumes it. Separate from [`GroupSnapshot`] because at this point there *is* no group,
+/// and a type that pretended otherwise would need a throwaway one to satisfy itself.
+///
+/// It is still key material: the private half of the KeyPackage lives here, and it is what
+/// the Welcome is sealed to.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentitySnapshot {
+    /// The provider's key-value store, base64url on both sides.
+    entries: Vec<(String, String)>,
+    /// The member this identity is for.
+    member_did: String,
+    /// The signature public key, base64url — how the keypair is found again.
+    signature_public: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupSnapshot {
@@ -675,6 +694,37 @@ mod custody_tests {
         assert_eq!(restored.member_count(), 2);
     }
 
+    /// The full three-step path a key-holder actually walks: mint, be welcomed, and open
+    /// something the owner sealed. If the identity did not survive the mint→welcome gap,
+    /// the join produces a group whose leaf nobody added and this fails at the read.
+    #[test]
+    fn a_minted_identity_joins_and_can_read_the_room() {
+        let room_id = "did:key:zRoom";
+
+        // The joiner mints and retains; only the bytes travel.
+        let (pending, package_bytes) =
+            IdentitySnapshot::mint("did:key:zBob").expect("mint an identity");
+        // The owner adds and produces a Welcome.
+        let mut owner = RoomGroup::create("did:key:zAlice").expect("create");
+        let change = owner
+            .add_member_from_bytes(&package_bytes)
+            .expect("add from the bytes that travelled");
+        let welcome = change.welcome.expect("adding produces a welcome");
+
+        // The joiner uses the identity it retained — not a fresh one.
+        let joined = RoomGroup::join_from_identity(&pending, &welcome).expect("join");
+        assert_eq!(joined.member_count(), 2);
+
+        // And the two agree on the storage key, which is the whole point.
+        let sealed = SealedRoom::new(room_id, owner)
+            .seal_record("k1", 1, b"for the new member")
+            .expect("seal");
+        let opened = SealedRoom::new(room_id, joined)
+            .open_record("k1", 1, &sealed)
+            .expect("the joiner reads what the owner sealed");
+        assert_eq!(opened, b"for the new member");
+    }
+
     /// A snapshot whose store lost the group is refused rather than half-built — a
     /// `RoomGroup` that loaded its store but not its group would look usable and fail at
     /// the first read, which is the worst time to find out.
@@ -688,5 +738,131 @@ mod custody_tests {
             panic!("a snapshot with no group must not restore");
         };
         assert!(format!("{err}").contains("no group"), "{err}");
+    }
+}
+
+/// Restore a provider from a base64url entry list.
+fn provider_from(entries: &[(String, String)]) -> Result<OpenMlsRustCrypto, RoomKeyError> {
+    let provider = OpenMlsRustCrypto::default();
+    {
+        let mut values = provider
+            .storage()
+            .values
+            .write()
+            .map_err(|_| RoomKeyError::Group("group store lock poisoned".into()))?;
+        for (k, v) in entries {
+            let key = B64
+                .decode(k)
+                .map_err(|e| RoomKeyError::Group(format!("decode a store key: {e}")))?;
+            let value = B64
+                .decode(v)
+                .map_err(|e| RoomKeyError::Group(format!("decode a store value: {e}")))?;
+            values.insert(key, value);
+        }
+    }
+    Ok(provider)
+}
+
+/// Snapshot a provider's store as base64url pairs.
+fn entries_of(provider: &OpenMlsRustCrypto) -> Result<Vec<(String, String)>, RoomKeyError> {
+    let values = provider
+        .storage()
+        .values
+        .read()
+        .map_err(|_| RoomKeyError::Group("group store lock poisoned".into()))?;
+    Ok(values
+        .iter()
+        .map(|(k, v)| (B64.encode(k), B64.encode(v)))
+        .collect())
+}
+
+impl IdentitySnapshot {
+    /// Mint an identity and a KeyPackage for one room, and snapshot both.
+    ///
+    /// Returns the snapshot to retain and the KeyPackage to send. **Mint one per room**: a
+    /// KeyPackage is a stable public identifier, so the same one offered to two rooms tells
+    /// anyone who sees both that one party is in both — the correlation a `private` room
+    /// exists to deny, arriving through the door rather than the wall.
+    pub fn mint(member_did: &str) -> Result<(Self, Vec<u8>), RoomKeyError> {
+        let provider = OpenMlsRustCrypto::default();
+        let identity = RoomIdentity::new(member_did, &provider)?;
+        let package = identity.key_package(&provider)?;
+
+        let bytes = package
+            .tls_serialize_detached()
+            .map_err(|e| RoomKeyError::Group(format!("serialise the key package: {e:?}")))?;
+
+        Ok((
+            Self {
+                entries: entries_of(&provider)?,
+                member_did: member_did.to_string(),
+                signature_public: B64.encode(identity.signer.public()),
+            },
+            bytes,
+        ))
+    }
+
+    /// The member this identity is for.
+    pub fn member_did(&self) -> &str {
+        &self.member_did
+    }
+}
+
+impl RoomGroup {
+    /// Add a member from the KeyPackage bytes they sent.
+    ///
+    /// The counterpart to [`IdentitySnapshot::mint`], which returns bytes: what travels
+    /// between a joiner and an owner is a serialized KeyPackage, and turning it back into
+    /// one means a TLS decode and a validation against the ciphersuite. Both belong in the
+    /// crate that owns MLS rather than in every caller — a caller that skipped the
+    /// validation would be adding a leaf on an unchecked key package.
+    pub fn add_member_from_bytes(
+        &mut self,
+        key_package: &[u8],
+    ) -> Result<MembershipChange, RoomKeyError> {
+        let incoming = KeyPackageIn::tls_deserialize_exact(key_package)
+            .map_err(|e| RoomKeyError::Group(format!("parse the key package: {e:?}")))?;
+        let validated = incoming
+            .validate(self.provider.crypto(), ProtocolVersion::Mls10)
+            .map_err(|e| RoomKeyError::Group(format!("validate the key package: {e:?}")))?;
+        self.add_member(validated)
+    }
+
+    /// Join a group from a Welcome, using the identity whose KeyPackage the owner added.
+    ///
+    /// This is the only correct way to accept a Welcome: joining with a *fresh* identity
+    /// produces a group whose leaf nobody added, which fails at the first read in a way that
+    /// looks like the Welcome was bad rather than the identity wrong.
+    pub fn join_from_identity(
+        snapshot: &IdentitySnapshot,
+        welcome: &[u8],
+    ) -> Result<Self, RoomKeyError> {
+        let provider = provider_from(&snapshot.entries)?;
+        let public = B64
+            .decode(&snapshot.signature_public)
+            .map_err(|e| RoomKeyError::Group(format!("decode the signature key: {e}")))?;
+        let signer = SignatureKeyPair::read(
+            provider.storage(),
+            &public,
+            ROOM_CIPHERSUITE.signature_algorithm(),
+        )
+        .ok_or_else(|| {
+            RoomKeyError::Group("the snapshot's store holds no signature keypair".into())
+        })?;
+
+        let credential = Credential::new(
+            CredentialType::Basic,
+            snapshot.member_did.as_bytes().to_vec(),
+        );
+        let identity = RoomIdentity {
+            member_did: snapshot.member_did.clone(),
+            credential: CredentialWithKey {
+                credential,
+                signature_key: signer.public().into(),
+            },
+            signer,
+        };
+
+        Self::join_with(identity, provider, welcome)
     }
 }
