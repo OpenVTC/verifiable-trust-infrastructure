@@ -161,6 +161,9 @@ vta-keys = { path = "../vta-keys", version = "0.4" }
 # its own crate and re-exported as `crate::vault`. Feature edges: this crate's
 # `bbs` / `webvh` features enable `vta-vault/bbs` / `vta-vault/webvh`.
 vta-vault = { path = "../vta-vault", version = "0.5" }
+
+# The room presentation oracle attenuates a member VAC and signs it.
+dtg-credentials = { workspace = true }
 # Background TTL sweepers (acl/consent/vault), extracted and re-exported as
 # crate::{acl_sweeper,consent_sweeper,vault_sweeper}.
 vta-sweepers = { path = "../vta-sweepers", version = "0.3" }

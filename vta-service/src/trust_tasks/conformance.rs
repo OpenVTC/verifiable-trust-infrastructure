@@ -1975,6 +1975,38 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 })
             ),
         ),
+        // ─── rooms/keys ──────────────────────────────────────────
+        //
+        // The only `rooms/*` task this agent serves: the oracle side, where a
+        // member's own VTA mints a scoped presentation for their agent. The
+        // room tasks proper are a host's surface, not an agent's.
+        //
+        // The response witness pins the chain **leaf first**, because that
+        // ordering is the contract with every verifier — a witness that showed
+        // it either way round would check nothing about the half that matters.
+        (
+            uris::TASK_ROOMS_KEYS_PRESENT_0_1,
+            checked!(
+                specs::rooms::keys::present::v0_1::Payload,
+                specs::rooms::keys::present::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "action": "read",
+                    "audience": "did:key:z6MkHost",
+                    "nonce": "n-1"
+                }),
+                json!({
+                    "presentation": {
+                        "membership": { "id": "urn:uuid:vmc-1" },
+                        "authority": [
+                            { "id": "urn:uuid:vac-agent" },
+                            { "id": "urn:uuid:vac-member" }
+                        ]
+                    },
+                    "expiresAt": TS
+                })
+            ),
+        ),
     ];
 
     // ─── vta/did-templates ────────────────────────────────────────

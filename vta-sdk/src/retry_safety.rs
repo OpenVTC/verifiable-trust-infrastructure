@@ -392,6 +392,19 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Memory ──────────────────────────────────────────────────────────
     (trust_tasks::TASK_VTA_MEMORY_PUT_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_MEMORY_LIST_0_1, ReadOnly),
+    // The room oracle mints a presentation and **stores nothing** — the spec's
+    // own `sideEffects: none`. A second execution leaves this VTA's state
+    // byte-identical, which is what `RetrySafe` means; it does not mean the
+    // call is read-only, and this one signs.
+    //
+    // Not `Keyed`, and the reasoning is worth stating because the conservative
+    // instinct points the other way: a retry mints a second short-lived leaf,
+    // and two live presentations sound worse than one. They are not. Both
+    // confer exactly what the first did, both expire on the same 4-hour bound,
+    // and a caller that lost the reply has no way to use the one it never saw.
+    // Keying it would buy a dedup record against a duplicate that costs
+    // nothing, at the price of failing a retry the caller legitimately needs.
+    (trust_tasks::TASK_ROOMS_KEYS_PRESENT_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_MEMORY_DELETE_0_1, RetrySafe),
     // ── Application state ───────────────────────────────────────────────
     //
