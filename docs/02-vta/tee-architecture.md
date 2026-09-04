@@ -789,7 +789,8 @@ The manifest pins four singletons (see design note §5.1): the **carve-out
 sentinel**, the **ACL keyspace root** (canonical hash over all `acl:{did}`
 rows), the **JWT fingerprint**, and the **path/context counters**. The
 KMS-protected bootstrap ciphertexts are *not* covered — their delete-and-reinit
-is already gated by `allow_kms_reinit` plus the JWT-fingerprint check.
+is gated by the explicit `allow_kms_reinit` reset flag, while the JWT-fingerprint
+check protects against substituting JWT signing key.
 
 ## Implementation Phases
 

@@ -118,35 +118,29 @@ pub async fn bootstrap_secrets(
             }
             Err((class, e)) => {
                 // Auto-clearing the bootstrap keyspace silently re-issues the
-                // VTA's identity. Only ACCESS_DENIED is a legitimate signal
-                // for "expected after an image rebuild with a new PCR0" —
-                // every other class (KMS_INTERNAL, NETWORK, INVALID_CIPHERTEXT,
-                // UNKNOWN) could be a transient outage or active tampering,
-                // and silently nuking the identity would be the wrong move.
-                // Operators who deliberately want to reset must set
-                // `tee.kms.allow_kms_reinit = true` in config.
-                let auto_clear =
-                    matches!(class, KmsErrorClass::AccessDenied) || kms_config.allow_kms_reinit;
-                if !auto_clear {
+                // VTA's identity. Every KMS error class, including
+                // ACCESS_DENIED (for example, a wrong or tampered image),
+                // preserves the identity unless an operator explicitly opts
+                // into a reset with `tee.kms.allow_kms_reinit = true`.
+                if !kms_config.allow_kms_reinit {
                     error!(
                         error = %e,
                         class = ?class,
-                        "KMS decrypt of existing ciphertexts failed with a non-ACCESS_DENIED \
-                         class. Refusing to auto-clear the bootstrap keyspace because doing \
-                         so would silently reset the VTA's identity. Diagnose the cause \
-                         (KMS health, vsock proxy reachability, ciphertext integrity) and, \
-                         if you are certain the existing identity is unrecoverable, set \
-                         tee.kms.allow_kms_reinit = true for a one-time reset."
+                        "KMS decrypt of existing ciphertexts failed. Refusing to auto-clear the \
+                         bootstrap keyspace because doing so would silently reset the VTA's \
+                         identity. Diagnose the cause (PCR policy, KMS health, vsock proxy \
+                         reachability, ciphertext integrity) and, if you are certain the \
+                         existing identity is unrecoverable, set tee.kms.allow_kms_reinit = true \
+                         for a one-time reset."
                     );
                     return Err(e);
                 }
                 warn!(
                     error = %e,
                     class = ?class,
-                    "KMS decrypt of existing ciphertexts failed — clearing stale \
-                     bootstrap data and starting fresh. ACCESS_DENIED is expected after \
-                     an image rebuild with a new PCR0; other classes were authorized \
-                     by allow_kms_reinit. The VTA will generate a new identity."
+                    "KMS decrypt of existing ciphertexts failed — clearing bootstrap data and \
+                     starting fresh because allow_kms_reinit is explicitly enabled. The VTA \
+                     will generate a new identity."
                 );
                 bs_ks.remove(BOOTSTRAP_DK_CT_KEY).await?;
                 bs_ks.remove(BOOTSTRAP_SEED_CT_KEY).await?;
@@ -471,9 +465,9 @@ pub async fn attested_decrypt(
 ///
 /// Without `/dev/nsm` (simulated mode), uses direct KMS Decrypt.
 ///
-/// Returns `(class, AppError)` on failure so the bootstrap path can
-/// branch on `KmsErrorClass::AccessDenied` (legitimate post-rebuild
-/// PCR mismatch) without auto-clearing on every other class.
+/// Returns `(class, AppError)` on failure so the bootstrap path can report the
+/// KMS failure class. No class implicitly permits clearing existing identity
+/// ciphertexts; that requires `allow_kms_reinit`.
 async fn kms_decrypt_data_key(
     config: &TeeKmsConfig,
     ciphertext: &[u8],
@@ -1340,10 +1334,10 @@ mod cms_der {
     }
 }
 
-/// Typed classification of a KMS error. The bootstrap path branches
-/// on this to decide whether to auto-clear stale ciphertexts: only
-/// `AccessDenied` (the post-rebuild PCR-mismatch signal) is treated
-/// as legitimate; anything else preserves the VTA's identity.
+/// Typed classification of a KMS error. The bootstrap path uses this for
+/// diagnostics only: no error class implicitly permits clearing stale
+/// ciphertexts, and every class preserves the VTA's identity unless the
+/// explicit `allow_kms_reinit` flag is enabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KmsErrorClass {
     AccessDenied,

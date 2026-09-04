@@ -572,18 +572,14 @@ pub struct TeeKmsConfig {
     /// once to store the fingerprint, then set back to `false`.
     #[serde(default)]
     pub allow_fingerprint_init: bool,
-    /// Allow auto-clearing existing bootstrap ciphertexts when a KMS
-    /// decrypt **other than ACCESS_DENIED** fails on a subsequent boot.
+    /// Allow auto-clearing existing bootstrap ciphertexts after a KMS decrypt
+    /// failure on a subsequent boot.
     ///
-    /// **Default: false.** ACCESS_DENIED is the legitimate post-rebuild
-    /// signal (PCR mismatch — the enclave's measurements changed and KMS
-    /// won't decrypt the old data key); the bootstrap keyspace is
-    /// auto-cleared without this flag in that case. Any other class
-    /// of decrypt failure (transient KMS error, network glitch,
-    /// ciphertext corruption, attacker-induced byte flip) is *not*
-    /// auto-cleared, because doing so would silently delete the VTA's
-    /// identity. Set to `true` only when you have diagnosed the cause
-    /// and intend to reset the VTA to a fresh first-boot state.
+    /// **Default: false.** Every KMS failure class, including ACCESS_DENIED
+    /// from a wrong or tampered image whose PCRs do not match, preserves the
+    /// VTA's identity and refuses to start. Set to `true` only when you have
+    /// diagnosed the cause and explicitly intend to reset the VTA to a fresh
+    /// first-boot state.
     #[serde(default)]
     pub allow_kms_reinit: bool,
     /// Allow establishing the TEE integrity-manifest baseline when none is

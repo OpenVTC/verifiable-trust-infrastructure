@@ -200,13 +200,12 @@ graph LR
 
 **Boot with a KMS decrypt failure (fail-closed).** On a subsequent boot, if
 `KMS Decrypt` of the stored `seed.enc` / `jwt.enc` fails, the VTA does **not**
-blindly regenerate its identity. Only an `AccessDenied` result -- the expected
-signal after an image rebuild changes PCR0 -- or an explicit
-`tee.kms.allow_kms_reinit = true` clears the bootstrap keyspace and mints a
-fresh identity. Every other error class (KMS internal, network, invalid
-ciphertext, unknown) is treated as a transient outage or possible tampering:
-the VTA refuses to start rather than silently reset its DID and keys. Resetting
-a live identity is thus always a deliberate, logged action.
+blindly regenerate its identity. Every error class, including `AccessDenied`
+from a wrong or tampered image whose PCRs do not match, preserves the bootstrap
+keyspace and causes the VTA to refuse to start. Only an explicit
+`tee.kms.allow_kms_reinit = true` permits clearing the bootstrap keyspace and
+minting a fresh identity. Resetting a live identity is therefore always a
+deliberate, logged action.
 
 ## Authentication Flow
 
