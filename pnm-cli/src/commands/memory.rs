@@ -7,26 +7,26 @@
 use vta_cli_common::commands::memory;
 use vta_sdk::client::VtaClient;
 
-use crate::cli::LlmMemoryCommands;
+use crate::cli::MemoryCommands;
 
 pub(crate) async fn run(
     client: &VtaClient,
-    command: LlmMemoryCommands,
+    command: MemoryCommands,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        LlmMemoryCommands::Plant {
+        MemoryCommands::Plant {
             key,
             value,
             context,
         } => memory::cmd_memory_plant(client, &context, &key, &value).await,
-        LlmMemoryCommands::Recall { key, context } => {
+        MemoryCommands::Recall { key, context } => {
             memory::cmd_memory_recall(client, &context, key.as_deref()).await
         }
-        LlmMemoryCommands::Forget { key, context } => {
+        MemoryCommands::Forget { key, context } => {
             memory::cmd_memory_forget(client, &context, &key).await
         }
-        LlmMemoryCommands::Wipe { context, force } => {
-            memory::cmd_memory_wipe(client, &context, force).await
+        MemoryCommands::Wipe { context, yes } => {
+            memory::cmd_memory_wipe(client, &context, yes).await
         }
     }
 }

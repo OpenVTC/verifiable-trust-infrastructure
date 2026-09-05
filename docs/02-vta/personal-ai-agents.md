@@ -226,11 +226,14 @@ in the agent runtime, the memory survives the runtime being replaced, is audited
 (`memory.put` / `.list` / `.delete`), and is included in the VTA's encrypted
 backups.
 
-The gate is **context access**, not a capability: `require_context(contextId)`,
-the same check the context-scoped key tasks use. That makes the trust context
-the isolation boundary — a context-A agent cannot read, write, or delete
-context-B memory — and it means the least-privilege grant for a memory-only
-agent is an ACL entry with role `application` naming exactly one context.
+Two gates apply, in this order. **Capability**: `MemoryRead` for
+`memory/list/0.1`, `MemoryWrite` for `put` and `delete` — so a `reader` can be
+given the memory without being given the ability to rewrite it. **Context
+access**: `require_context(contextId)`, the same check the context-scoped key
+tasks use, which makes the trust context the isolation boundary — a context-A
+agent cannot read, write, or delete context-B memory. The least-privilege grant
+for a memory-only agent is an ACL entry with role `application` naming exactly
+one context; `application` carries both memory capabilities.
 
 ```bash
 # One context per agent (or per domain) — this is the isolation boundary.
@@ -245,6 +248,23 @@ From a client, `VtaClient::{memory_put, memory_list, memory_delete}` drive the
 three tasks through the generic Trust-Task dispatcher, so they ride TSP, DIDComm
 or REST according to what both DID documents advertise — the agent writes no
 transport code.
+
+From the operator side the same three tasks are `pnm memory`:
+
+```bash
+pnm memory plant favourite-colour green --context my-agent-memory
+pnm memory recall --context my-agent-memory          # or `recall <key>`
+pnm memory forget favourite-colour --context my-agent-memory
+pnm memory wipe --context my-agent-memory            # confirms; --yes to skip
+```
+
+`--context` is required on every subcommand: a super-admin's access check
+passes for any id and these tasks do not require the context to exist, so a
+defaulted or mistyped id would silently read and write a context that isn't
+there — indistinguishable from an empty one. `wipe` needs both capabilities
+(it lists before it deletes) and is N round-trips, not atomic — there is no
+bulk-delete task — so re-running it after a partial failure is safe and
+finishes the job.
 
 Two boundaries worth stating before anything is stored here:
 
@@ -285,7 +305,8 @@ Lower priority unless your agents do credential work.
 | `pnm device …` / `pnm vault …` CLI     | **Added** (this change) — `VtaClient::{device_*,vault_*}` + `pnm` commands, both transports |
 | Sealed vault upsert/release            | **Added** — `seal_vault_secret` / `open_sealed_secret` on the DIDComm session |
 | `pnm acl --capabilities` flag          | **Gap** (deferred Phase 3) — capabilities derive from role / are set at `device/register` |
-| Agent memory Trust Tasks               | Exists (`trust_tasks/memory.rs`, `VtaClient::memory_*`) — context-gated, audited |
+| Agent memory Trust Tasks               | Exists (`trust_tasks/memory.rs`, `VtaClient::memory_*`) — capability- and context-gated, audited |
+| `pnm memory …` CLI                     | **Added** — `plant` / `recall` / `forget` / `wipe` over the same three tasks |
 | Agent-side connect ladder              | Exists (`vta_sdk::agent_connect::AgentConnect`) — one way in for every agent bridge |
 
 ## References

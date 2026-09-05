@@ -4,9 +4,24 @@
 //! A per-context key/value store the hosted agent reads before it answers:
 //! `plant` upserts an entry, `recall` lists (optionally one key), `forget`
 //! deletes one, and `wipe` clears the whole context. Each maps onto one of
-//! the SDK memory methods; every operation is gated server-side on access to
-//! the target context, so a caller can only touch memory in a context it is
-//! permitted to act in.
+//! the SDK memory methods.
+//!
+//! Two server-side gates gate every operation, and both matter to what an
+//! operator sees here:
+//!
+//! - **Capability** — `MemoryRead` for `list`, `MemoryWrite` for `put` and
+//!   `delete` (`vta-service/src/trust_tasks/memory.rs`). `wipe` therefore
+//!   needs both: it lists before it deletes. A `reader` holds only
+//!   `MemoryRead`, so `plant` / `forget` / `wipe` are refused for that role.
+//! - **Context access** — the isolation boundary. A caller can only touch
+//!   memory in a context it is permitted to act in, so a context-A agent
+//!   never reaches context-B memory.
+//!
+//! The context is never defaulted at this layer. A super-admin's access check
+//! passes for *any* context id and the memory tasks do not require the context
+//! to exist, so a guessed or mistyped id would read and write a context that
+//! is not there — silently, and looking exactly like an empty one. The caller
+//! names the context or there is no call.
 
 use serde_json::json;
 use vta_sdk::prelude::*;
@@ -85,16 +100,17 @@ pub async fn cmd_memory_forget(
 }
 
 /// `wipe` → list, then `memory_delete` every key. There is no bulk-delete
-/// Trust Task, so this is N round-trips and *not* atomic.
+/// Trust Task, so this is N round-trips and *not* atomic. Needs both memory
+/// capabilities — `MemoryRead` for the list, `MemoryWrite` for the deletes.
 ///
 /// The confirmation is where the operator consents to a destructive op;
-/// `--force` is the only thing allowed to stand in for it. `--json` selects an
+/// `--yes` is the only thing allowed to stand in for it. `--json` selects an
 /// output format, not consent — so with neither a prompt (JSON mode) nor
-/// `--force`, this refuses rather than proceeds. See [`wipe_guard`].
+/// `--yes`, this refuses rather than proceeds. See [`wipe_guard`].
 pub async fn cmd_memory_wipe(
     client: &VtaClient,
     context: &str,
-    force: bool,
+    assume_yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let items = list_items(client, context).await?;
 
@@ -107,9 +123,9 @@ pub async fn cmd_memory_wipe(
         return Ok(());
     }
 
-    match wipe_guard(force, is_json_output()) {
+    match wipe_guard(assume_yes, is_json_output()) {
         WipeGuard::RefuseJson => {
-            return Err("`memory wipe` needs `--force` in --json mode: there is no \
+            return Err("`memory wipe` needs `--yes` in --json mode: there is no \
                         prompt to confirm to"
                 .into());
         }
@@ -179,7 +195,7 @@ fn decode_items(resp: serde_json::Value) -> Result<Vec<MemoryItem>, serde_json::
 
 /// What `wipe` should do about the confirmation, given the two inputs that
 /// decide it. Pulled out as a pure function because getting it wrong is
-/// destructive (see the `--json` finding): `--force` always proceeds; without
+/// destructive (see the `--json` finding): `--yes` always proceeds; without
 /// it, JSON mode has no one to prompt so it refuses, and otherwise we confirm.
 #[derive(Debug, PartialEq, Eq)]
 enum WipeGuard {
@@ -188,8 +204,8 @@ enum WipeGuard {
     RefuseJson,
 }
 
-fn wipe_guard(force: bool, json: bool) -> WipeGuard {
-    match (force, json) {
+fn wipe_guard(assume_yes: bool, json: bool) -> WipeGuard {
+    match (assume_yes, json) {
         (true, _) => WipeGuard::Proceed,
         (false, true) => WipeGuard::RefuseJson,
         (false, false) => WipeGuard::Confirm,
@@ -210,21 +226,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wipe_force_always_proceeds() {
-        // --force is the operator saying "yes"; it overrides both other inputs.
+    fn wipe_yes_always_proceeds() {
+        // --yes is the operator saying "yes"; it overrides both other inputs.
         assert_eq!(wipe_guard(true, false), WipeGuard::Proceed);
         assert_eq!(wipe_guard(true, true), WipeGuard::Proceed);
     }
 
     #[test]
-    fn wipe_json_without_force_refuses() {
+    fn wipe_json_without_yes_refuses() {
         // The core finding: an output-format flag is not consent, and there is
         // no prompt to answer — so refuse rather than delete unguarded.
         assert_eq!(wipe_guard(false, true), WipeGuard::RefuseJson);
     }
 
     #[test]
-    fn wipe_interactive_without_force_confirms() {
+    fn wipe_interactive_without_yes_confirms() {
         assert_eq!(wipe_guard(false, false), WipeGuard::Confirm);
     }
 
