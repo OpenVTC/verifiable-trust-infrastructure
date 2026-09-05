@@ -1702,6 +1702,18 @@ dispatch_table! {
     // Describes the agent's capabilities, not the holder. Discloses nothing.
     vta_sdk::trust_tasks::TASK_PERSONA_RENDERERS_LIST_1_0 => persona::handle_renderers_list
         [ None None false ],
+    // The context-local surface. Context-callable because authoring below the
+    // boundary is safe; the rule exists to stop reading across it.
+    vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0 => persona::handle_local_profile_put
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_GET_1_0 => persona::handle_local_profile_get
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_LIST_1_0 => persona::handle_local_profile_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_DELETE_1_0 => persona::handle_local_profile_delete
+        [ Destructive None false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_BINDING_SET_1_0 => persona::handle_local_binding_set
+        [ Mutating None false ],
     // ─── Config slice ────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONFIG_SHOW_0_1 => config::handle_get
         [ None Metadata false ],

@@ -1172,3 +1172,252 @@ pub(super) async fn handle_renderers_list(
         }),
     )
 }
+
+// ─── Context-local surface ───────────────────────────────────────────────
+//
+// Authoring BELOW the boundary is safe; the rule exists to stop reading ACROSS
+// it. These are context-callable for that reason, and the store keeps them in
+// their own address space so a scan here cannot reach a pool profile.
+
+pub(super) async fn handle_local_profile_put(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::local::profile::put::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0, Some(&ctx)) {
+        return reject(&doc, e);
+    }
+
+    // The schema admits only inline entries, so a reference is unrepresentable
+    // rather than rejected. The store re-checks anyway: two independent guards
+    // on the property that keeps a context-authored object from acquiring pool
+    // reach.
+    let entries = match serde_json::to_value(&req.entries)
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+    {
+        Some(e) => e,
+        None => {
+            return reject(
+                &doc,
+                AppError::Validation("unrecognised local entry".into()),
+            );
+        }
+    };
+
+    let mut profile = vta_persona::new_profile(req.name.to_string(), entries);
+    if let Some(id) = &req.profile_id {
+        profile.profile_id = id.to_string();
+    }
+    let profile_id = profile.profile_id.clone();
+    let s = store(state);
+
+    let written = match s
+        .put_local_profile(&ctx, profile, req.expected_version.map(|v| *v as u64))
+        .await
+    {
+        Ok(w) => w,
+        Err(e) => return reject(&doc, e),
+    };
+
+    // Local profiles ARE correlation-indexed. The naive implementation skips
+    // them — "they are local, they do not matter" — and loses the guard exactly
+    // where a human most needs it: a throwaway identity is precisely where
+    // somebody reuses a real value.
+    let matches_pool = match s.get_local_profile(&ctx, &profile_id).await {
+        Ok(Some(p)) => {
+            let mut found = false;
+            for entry in &p.entries {
+                if let vta_persona::ProfileEntry::Inline { inline } = entry
+                    && s.correlation_count(&inline.value, "").await.unwrap_or(0) > 0
+                {
+                    found = true;
+                    break;
+                }
+            }
+            found
+        }
+        _ => false,
+    };
+
+    audit_persona(
+        state,
+        "persona.local.profile.put",
+        auth,
+        Some(&profile_id),
+        Some(&ctx),
+    )
+    .await;
+    success_response(
+        &doc,
+        json!({
+            "profileId": profile_id,
+            "version": written.version,
+            "created": written.created,
+            "correlation": {
+                "severity": if matches_pool { "high" } else { "none" },
+                "matchesPoolValue": matches_pool,
+            }
+        }),
+    )
+}
+
+pub(super) async fn handle_local_profile_get(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::local::profile::get::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_LOCAL_PROFILE_GET_1_0, Some(&ctx)) {
+        return reject(&doc, e);
+    }
+    let id = req.profile_id.to_string();
+    // Resolves nothing against the pool, because a local profile references
+    // nothing there.
+    match store(state).get_local_profile(&ctx, &id).await {
+        Ok(Some(p)) => {
+            audit_persona(
+                state,
+                "persona.local.profile.get",
+                auth,
+                Some(&id),
+                Some(&ctx),
+            )
+            .await;
+            success_response(&doc, json!({ "profile": p }))
+        }
+        Ok(None) => reject(&doc, AppError::NotFound(format!("local profile {id}"))),
+        Err(e) => reject(&doc, e),
+    }
+}
+
+pub(super) async fn handle_local_profile_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::local::profile::list::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_LOCAL_PROFILE_LIST_1_0, Some(&ctx)) {
+        return reject(&doc, e);
+    }
+    let profiles = match store(state).list_local_profiles(&ctx).await {
+        Ok(p) => p,
+        Err(e) => return reject(&doc, e),
+    };
+    audit_persona(state, "persona.local.profile.list", auth, None, Some(&ctx)).await;
+    success_response(
+        &doc,
+        json!({
+            "profiles": profiles.iter().map(|p| json!({
+                "profileId": p.profile_id,
+                "name": p.name,
+                "entryCount": p.entries.len(),
+            })).collect::<Vec<_>>()
+        }),
+    )
+}
+
+pub(super) async fn handle_local_profile_delete(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::local::profile::delete::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(
+        auth,
+        uris::TASK_PERSONA_LOCAL_PROFILE_DELETE_1_0,
+        Some(&ctx),
+    ) {
+        return reject(&doc, e);
+    }
+    let id = req.profile_id.to_string();
+    let s = store(state);
+
+    if req.unbind {
+        // Leaves those personas presenting nothing, which is legal and which the
+        // holder is told about rather than discovering from the other side.
+        if let Err(e) = s.set_local_binding(&ctx, "", None).await {
+            tracing::debug!(error = %e, "no local binding to clear");
+        }
+    }
+
+    let existed = match s.delete_local_profile(&ctx, &id).await {
+        Ok(e) => e,
+        Err(e) => return reject(&doc, e),
+    };
+    audit_persona(
+        state,
+        "persona.local.profile.delete",
+        auth,
+        Some(&id),
+        Some(&ctx),
+    )
+    .await;
+    success_response(&doc, json!({ "profileId": id, "existed": existed }))
+}
+
+pub(super) async fn handle_local_binding_set(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::local::binding::set::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    // Safely context-callable — unlike binding/set — because both objects it
+    // names live below the boundary.
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_LOCAL_BINDING_SET_1_0, Some(&ctx)) {
+        return reject(&doc, e);
+    }
+
+    let persona = req.persona_did.to_string();
+    let profile_id = req.profile_id.as_ref().map(|p| p.to_string());
+
+    // The store refuses an identifier naming a POOL profile. That refusal is
+    // the whole distinction from binding/set, and it lives in one place so this
+    // handler cannot forget it.
+    let version = match store(state)
+        .set_local_binding(&ctx, &persona, profile_id.as_deref())
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => return reject(&doc, e),
+    };
+
+    audit_persona(
+        state,
+        "persona.local.binding.set",
+        auth,
+        Some(&persona),
+        Some(&ctx),
+    )
+    .await;
+    success_response(
+        &doc,
+        json!({
+            "contextId": ctx,
+            "personaDid": persona,
+            "profileId": profile_id,
+            "version": version,
+        }),
+    )
+}
