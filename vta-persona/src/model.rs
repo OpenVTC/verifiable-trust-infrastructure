@@ -197,18 +197,42 @@ pub struct Attribute {
 /// marker, because a profile is a whitelist and a blacklist over a growing pool
 /// leaks by default the first time an attribute is added.
 ///
-/// # Variant order is load-bearing — do not reorder
+/// # `deny_unknown_fields` is load-bearing
 ///
-/// `#[serde(untagged)]` tries variants in **declaration order** and serde
-/// ignores unknown fields, so the permissive `Ref` — which matches any document
-/// carrying a `ref` — must come **last**. Declared first, it would swallow
-/// `Override` and `Pinned`, silently degrading an override into a live
-/// reference and a pin into an unpinned one. That is a disclosure changing
-/// behind the holder's back, and `deny_unknown_fields` is not available on a
-/// variant to prevent it. The ordering is pinned by a test.
+/// `#[serde(untagged)]` tries variants in declaration order and takes the first
+/// that deserializes. Without the clause, serde ignores unknown members, so the
+/// permissive `Ref` — which needs only `ref` — also matches `{ref, override}`
+/// and `{ref, pinVersion}`: an override silently degrades into a live reference
+/// and a pin into an unpinned one. That is a disclosure changing behind the
+/// holder's back, and it is *valid* output, so nothing downstream rejects it.
+///
+/// The clause makes an extra member *fail* a variant rather than match it
+/// loosely, which fixes the defect at its cause. The variants are therefore
+/// declared in reading order — general to specific — rather than in the order
+/// that happened to be safe.
+///
+/// That ordering is deliberate and not merely tidier. Declaring the permissive
+/// `Ref` last would also avoid the bug, and holding both mechanisms would mean
+/// neither was ever exercised: a later edit dropping the clause would pass
+/// every test, and the next edit reordering the variants would then be
+/// silently fatal. With `Ref` first, the clause is the only thing standing
+/// between the holder and a degraded disclosure, so
+/// `each_profile_entry_form_survives_a_round_trip` fails the moment it is
+/// removed. The published schema closes each form the same way, and
+/// `trust-tasks-rs` generates the same pair.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum ProfileEntry {
+    /// Reference the pool attribute, live. Editing the pool updates every
+    /// profile referencing it, which is the point.
+    Ref { r#ref: Ulid },
+    /// Reference it as it was at a version. For a profile that must keep
+    /// presenting the value a counterparty already verified.
+    Pinned {
+        r#ref: Ulid,
+        #[serde(rename = "pinVersion")]
+        pin_version: Version,
+    },
     /// The same fact, a different value here.
     ///
     /// Replaces value and label **only**: type, valueType and provenance are
@@ -219,19 +243,9 @@ pub enum ProfileEntry {
         r#ref: Ulid,
         r#override: OverrideValue,
     },
-    /// Reference it as it was at a version. For a profile that must keep
-    /// presenting the value a counterparty already verified.
-    Pinned {
-        r#ref: Ulid,
-        #[serde(rename = "pinVersion")]
-        pin_version: Version,
-    },
     /// A value that never enters the pool, and so can never leak into another
     /// profile.
     Inline { inline: InlineValue },
-    /// Reference the pool attribute, live. Editing the pool updates every
-    /// profile referencing it, which is the point.
-    Ref { r#ref: Ulid },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -356,5 +370,65 @@ mod tests {
             r#ref: "01J8".into(),
         };
         assert_eq!(by_ref.referenced(), Some("01J8"));
+    }
+
+    /// The four forms must stay distinguishable on the wire.
+    ///
+    /// Asserted on round-tripped **bytes**, not on the parsed enum: a
+    /// degradation does not fail to parse, it parses as the wrong thing and
+    /// re-encodes shorter. Comparing the document to itself is what catches
+    /// that; comparing enum variants would only catch it for the one case
+    /// where the variant names differ.
+    ///
+    /// Remove `deny_unknown_fields` from `ProfileEntry` and this test fails on
+    /// the `override` and `pinned` cases.
+    #[test]
+    fn each_profile_entry_form_survives_a_round_trip() {
+        let cases = [
+            ("ref", serde_json::json!({ "ref": "01J8" })),
+            (
+                "pinned",
+                serde_json::json!({ "ref": "01J8", "pinVersion": 3 }),
+            ),
+            (
+                "override",
+                serde_json::json!({
+                    "ref": "01J8",
+                    "override": { "value": "+61 400 000 000" },
+                }),
+            ),
+            (
+                "inline",
+                serde_json::json!({
+                    "inline": {
+                        "type": "name.display",
+                        "value": "Ada",
+                        "valueType": "string",
+                        "provenance": { "kind": "selfAsserted" },
+                    }
+                }),
+            ),
+        ];
+
+        for (label, doc) in cases {
+            let parsed: ProfileEntry =
+                serde_json::from_value(doc.clone()).unwrap_or_else(|e| panic!("{label}: {e}"));
+            let back = serde_json::to_value(&parsed).expect("re-encodes");
+            assert_eq!(back, doc, "{label} form did not survive the round trip");
+        }
+    }
+
+    /// The failure with teeth, stated on its own: a pin that quietly becomes a
+    /// bare reference presents whatever the pool holds *now* instead of the
+    /// version the holder chose to freeze.
+    #[test]
+    fn a_pin_does_not_collapse_into_a_bare_reference() {
+        let parsed: ProfileEntry =
+            serde_json::from_value(serde_json::json!({ "ref": "01J8", "pinVersion": 7 }))
+                .expect("parses");
+        assert!(
+            matches!(parsed, ProfileEntry::Pinned { pin_version, .. } if pin_version == 7),
+            "a pinned entry parsed as {parsed:?}"
+        );
     }
 }
