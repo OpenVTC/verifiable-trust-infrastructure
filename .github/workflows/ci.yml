@@ -220,6 +220,45 @@ jobs:
 
       - run: cargo test --workspace
 
+      # #1243: `vtc-service`'s build.rs used to write into the source tree —
+      # `npm install` refreshed `admin-ui/package-lock.json` (a
+      # `rerun-if-changed` input of that same script) and `npm run build`
+      # regenerated the `include_dir!`-baked bundle (312 compile inputs of the
+      # lib). So every `cargo build` re-ran npm and recompiled the crate from
+      # scratch, and every local `cargo test` / `clippy` / rust-analyzer
+      # check-on-save paid for it. Cold-cache CI never builds the same tree
+      # twice, which is exactly why this went unnoticed.
+      #
+      # The first build is allowed to do work — npm may normalise the lockfile
+      # once against whatever npm the runner ships, which legitimately changes
+      # its content. From there the tree has settled, so the last build must do
+      # nothing at all.
+      - name: vtc-service rebuild is a no-op
+        run: |
+          cargo build -p vtc-service
+          cargo build -p vtc-service
+          out=$(cargo build -p vtc-service 2>&1)
+          echo "$out"
+          if echo "$out" | grep -q 'Compiling vtc-service'; then
+            echo "::error::vtc-service recompiled with nothing changed (#1243). Something in \
+          build.rs is writing to a path cargo watches, or into the include_dir!-baked bundle."
+            echo "--- tracked files the build modified (empty means it was mtime-only) ---"
+            git status --porcelain
+            exit 1
+          fi
+          echo "third build did no work"
+          # Informational: npm normalising the lockfile against the runner's
+          # own npm is a content change, which is legitimately allowed to
+          # rebuild once and is absorbed by the settle builds above. Worth
+          # surfacing — a lockfile that npm rewrites on every clean checkout
+          # should be regenerated and committed — but it is not this guard's
+          # failure condition, so it must not block unrelated PRs.
+          if ! git diff --quiet; then
+            echo "::warning::the build modified tracked files:"
+            git status --porcelain
+            git diff --stat
+          fi
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

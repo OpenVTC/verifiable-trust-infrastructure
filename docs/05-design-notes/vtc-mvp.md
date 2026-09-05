@@ -1179,9 +1179,14 @@ front. Live-mode file-descriptor cache TTL configurable
 > shipped reality. The original placeholder design + the Phase 5
 > deviation note below are retained for context; the live wire
 > shape is React + TypeScript + Vite, baked via `include_dir!`
-> from `vtc-service/admin-ui/dist/` after `build.rs` runs
+> from `$OUT_DIR/admin-ui-dist/` after `build.rs` runs
 > `npm install && npm run build`. Air-gapped operators ship a
-> pre-built `dist/` and set `VTC_SKIP_ADMIN_UI_BUILD=1`.
+> pre-built `vtc-service/admin-ui/dist/` and set
+> `VTC_SKIP_ADMIN_UI_BUILD=1`; `build.rs` reads that directory and
+> bakes it. The bundle moved out of the source tree in #1243 —
+> `include_dir!` makes every baked file a compile input, so
+> regenerating them in-tree made `cargo build -p vtc-service`
+> recompile the crate on every invocation.
 
 The admin UX is a SPA whose source lives **in-tree** at
 `vtc-service/admin-ui/`. The `include_dir!` macro bakes the

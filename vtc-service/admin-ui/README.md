@@ -64,6 +64,14 @@ air-gapped environments shipping a pre-built `dist/`):
 VTC_SKIP_ADMIN_UI_BUILD=1 cargo build -p vtc-service
 ```
 
+**`cargo build` does not write to `dist/`.** It points vite's
+`--outDir` at `$OUT_DIR` and bakes the bundle from there, because
+`include_dir!` makes every baked file a compile input of the lib —
+regenerating them inside the source tree recompiled the whole crate
+on every single `cargo build` (#1243). A plain `npm run build` still
+writes `dist/` for local inspection and for the
+`VTC_SKIP_ADMIN_UI_BUILD=1` path, which reads it if it's there.
+
 ### Develop
 
 ```sh
