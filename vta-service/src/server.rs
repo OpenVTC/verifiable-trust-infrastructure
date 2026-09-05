@@ -181,6 +181,11 @@ pub struct AppState {
     /// delete}/0.1`). Entries keyed `mem:<contextId>:<key>`; gated on context
     /// access. Durable user data.
     pub memory_ks: KeyspaceHandle,
+    /// A member's MLS group for each room they belong to. Group secrets — see
+    /// [`crate::keyspaces::ROOM_GROUPS`].
+    pub room_groups_ks: KeyspaceHandle,
+    /// Invitations already spent joining a room.
+    pub room_invitations_ks: KeyspaceHandle,
     /// Versioned, namespaced application state (`vta/app-state/*`) — the third
     /// store, beside the vault and agent memory, for JSON an application owns
     /// and the VTA does not interpret. Records keyed
@@ -431,6 +436,11 @@ pub async fn build_app_state(
     let issued_credentials_ks =
         apply_encryption(store.keyspace(crate::keyspaces::ISSUED_CREDENTIALS)?);
     let memory_ks = apply_encryption(store.keyspace(crate::keyspaces::MEMORY)?);
+    // Encrypted alongside the key store where a TEE deployment provides a storage key: a
+    // group snapshot decrypts every record its room holds, which is the same class of
+    // material as a derived key and deserves the same treatment.
+    let room_groups_ks = apply_encryption(store.keyspace(crate::keyspaces::ROOM_GROUPS)?);
+    let room_invitations_ks = apply_encryption(store.keyspace(crate::keyspaces::ROOM_INVITATIONS)?);
     let app_state_ks = apply_encryption(store.keyspace(crate::keyspaces::APP_STATE)?);
     let policy_ks = apply_encryption(store.keyspace(crate::keyspaces::POLICY)?);
     let task_consent_ks = apply_encryption(store.keyspace(crate::keyspaces::TASK_CONSENT)?);
@@ -510,6 +520,8 @@ pub async fn build_app_state(
         consent_approvers_ks,
         issued_credentials_ks,
         memory_ks,
+        room_groups_ks,
+        room_invitations_ks,
         app_state_ks,
         app_state_locks: crate::operations::app_state::NamespaceLocks::default(),
         policy_ks,

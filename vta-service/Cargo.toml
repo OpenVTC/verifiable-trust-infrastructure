@@ -164,6 +164,11 @@ vta-vault = { path = "../vta-vault", version = "0.5" }
 
 # The room presentation oracle attenuates a member VAC and signs it.
 dtg-credentials = { workspace = true }
+
+# The room MLS layer (custody, sealing) and the credential verifier whose
+# `VerificationKeys` an invitation check resolves through.
+vti-rooms = { path = "../vti-rooms", version = "0.1", features = ["mls"] }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.1" }
 # Background TTL sweepers (acl/consent/vault), extracted and re-exported as
 # crate::{acl_sweeper,consent_sweeper,vault_sweeper}.
 vta-sweepers = { path = "../vta-sweepers", version = "0.3" }

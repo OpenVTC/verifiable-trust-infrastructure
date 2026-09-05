@@ -122,6 +122,14 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // a *tool*, so a blanket `vta_call` approval must not silently cover
     // minting a presentation over its principal's standing in a room.
     ("rooms/keys/present", Risk::Sensitive),
+    // Secret material, emitted: `open` returns a room record's plaintext. It
+    // belongs beside `vault/release` rather than with the ordinary mutations,
+    // because what comes back is content the room encrypted.
+    ("rooms/keys/open", Risk::Sensitive),
+    // Key material, accepted. A Welcome carries a group's secrets and joining
+    // is a membership change made on the principal's behalf — not something a
+    // blanket `vta_call` approval should cover silently.
+    ("rooms/keys/welcome", Risk::Sensitive),
     // Reads that a verb rule would misread.
     ("vta/contexts/preview-delete", Risk::ReadOnly),
     ("vta/webvh/agent-name/check", Risk::ReadOnly),
@@ -472,6 +480,12 @@ mod tests {
     /// this — `classify` defaults to `Mutating` without consulting it, so a
     /// runtime miss is safe and a compile-time miss is loud.
     const MUTATING_VERBS: &[&str] = &[
+        // Mints a KeyPackage and retains its private half. Consequential, but
+        // what it emits is public by construction — hence Mutating rather than
+        // Sensitive, unlike its siblings `welcome` and `open`.
+        "key-package",
+        // Advances the group one epoch. No secret crosses in either direction.
+        "commit",
         "create",
         "update",
         "update-did",

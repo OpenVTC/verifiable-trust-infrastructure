@@ -83,6 +83,7 @@ mod policy_gate;
 mod produced_census;
 #[cfg(feature = "webvh")]
 mod provision_integration;
+mod room_group;
 mod room_keys;
 mod seeds;
 // `operations::protocol` — every service operation these handlers call — is
@@ -1533,6 +1534,17 @@ dispatch_table! {
     // credentials. Gated on the `roomPresent` capability plus context access
     // for the principal's key — NOT on `Sign`, which would grant far more.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_PRESENT_0_1 => room_keys::handle_present
+        [ None Metadata false ],
+    // Group custody: how a group reaches this VTA, and what it does with one.
+    // Three inbound (a room's owner reaching us) and one outbound-facing; only
+    // `open` is capability-gated, because only it is our own principal asking.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1 => room_group::handle_key_package
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_WELCOME_0_1 => room_group::handle_welcome
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_COMMIT_0_1 => room_group::handle_commit
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1 => room_group::handle_open
         [ None Metadata false ],
     // ─── Application-state slice (spec/vta/app-state/*) ──────────
     // Versioned, namespaced per-context JSON the VTA stores but never

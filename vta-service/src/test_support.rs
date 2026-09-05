@@ -1192,6 +1192,8 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
             .keyspace(crate::keyspaces::ISSUED_CREDENTIALS)
             .unwrap(),
         memory_ks: store.keyspace(crate::keyspaces::MEMORY).unwrap(),
+        room_groups_ks: store.keyspace(crate::keyspaces::ROOM_GROUPS).unwrap(),
+        room_invitations_ks: store.keyspace(crate::keyspaces::ROOM_INVITATIONS).unwrap(),
         app_state_ks: store.keyspace(crate::keyspaces::APP_STATE).unwrap(),
         app_state_locks: crate::operations::app_state::NamespaceLocks::default(),
         policy_ks: policy_ks.clone(),
