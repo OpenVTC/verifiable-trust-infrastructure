@@ -1697,6 +1697,15 @@ dispatch_table! {
     // caller must not have.
     vta_sdk::trust_tasks::TASK_PERSONA_DISCLOSURE_HISTORY_1_0 => persona::handle_disclosure_history
         [ None Metadata false ],
+    // Two calls that cannot be collapsed: present consumes a single-use token
+    // only preview can mint. preview is Mutating despite looking like a read,
+    // because that token is durable state — and it is what makes the summary
+    // unskippable.
+    vta_sdk::trust_tasks::TASK_PERSONA_DISCLOSURE_PREVIEW_1_0 => persona::handle_disclosure_preview
+        [ Mutating Metadata false ],
+    // The only task in the family that releases personal data to a third party.
+    vta_sdk::trust_tasks::TASK_PERSONA_DISCLOSURE_PRESENT_1_0 => persona::handle_disclosure_present
+        [ Mutating Secret true ],
     vta_sdk::trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_0 => persona::handle_correlation_analyze
         [ None Metadata false ],
     // Describes the agent's capabilities, not the holder. Discloses nothing.

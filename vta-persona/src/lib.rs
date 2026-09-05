@@ -42,6 +42,7 @@ pub mod contact;
 pub mod correlation;
 pub mod disclosure;
 pub mod model;
+pub mod present;
 pub mod profile;
 pub mod storage;
 pub mod store;
@@ -53,6 +54,7 @@ pub use model::{
     Attribute, Binding, InlineValue, OverrideValue, Profile, ProfileEntry, ProofRung, Provenance,
     StaleReason, Ulid, ValueType, Version,
 };
+pub use present::{PREVIEW_TTL_SECONDS, Preview, PreviewClaim, Renderer, renderer};
 pub use profile::{ResolvedClaim, is_pool_free, new_profile};
 pub use store::{Deleted, PersonaStore, Written, new_attribute};
 

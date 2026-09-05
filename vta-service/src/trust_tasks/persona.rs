@@ -1421,3 +1421,116 @@ pub(super) async fn handle_local_binding_set(
         }),
     )
 }
+
+// ─── Disclosure: preview, then present ───────────────────────────────────
+
+pub(super) async fn handle_disclosure_preview(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::disclosure::preview::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_DISCLOSURE_PREVIEW_1_0, Some(&ctx)) {
+        return reject(&doc, e);
+    }
+
+    let requested: Option<Vec<String>> = if req.requested_claims.is_empty() {
+        None
+    } else {
+        Some(req.requested_claims.iter().map(|c| c.to_string()).collect())
+    };
+
+    let preview = match store(state)
+        .create_preview(
+            &ctx,
+            &req.persona_did.to_string(),
+            &req.verifier_did.to_string(),
+            req.purpose.as_ref().map(|p| p.to_string()).as_deref(),
+            requested.as_deref(),
+            req.renderer.as_ref().map(|r| r.to_string()).as_deref(),
+        )
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => return reject(&doc, e),
+    };
+
+    // Recorded even though nothing was disclosed: a pattern of previews the
+    // holder declined is itself something they may want to see.
+    audit_persona(
+        state,
+        "persona.disclosure.preview",
+        auth,
+        Some(&preview.preview_id),
+        Some(&ctx),
+    )
+    .await;
+
+    success_response(
+        &doc,
+        json!({
+            "previewId": preview.preview_id,
+            "subject": preview.subject,
+            "claims": preview.claims,
+            "renderer": { "id": preview.renderer_id, "drops": preview.renderer_drops },
+            "expiresAt": preview.expires_at,
+        }),
+    )
+}
+
+pub(super) async fn handle_disclosure_present(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::disclosure::present::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_DISCLOSURE_PRESENT_1_0, Some(&ctx)) {
+        return reject(&doc, e);
+    }
+
+    let durable = req.mint.as_ref().is_some_and(|m| m.durable);
+
+    // The store consumes the preview, refuses an expired one, refuses whole on
+    // a stale claim, and writes the disclosure record BEFORE returning the
+    // artifact — a crash between signing and recording would release data the
+    // holder could never afterwards discover they had released.
+    let (artifact, record) = match store(state)
+        .present(
+            &req.preview_id.to_string(),
+            req.challenge.as_ref().map(|c| c.to_string()).as_deref(),
+            durable,
+        )
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => return reject(&doc, e),
+    };
+
+    audit_persona(
+        state,
+        "persona.disclosure.present",
+        auth,
+        Some(&record.disclosure_id),
+        Some(&ctx),
+    )
+    .await;
+
+    success_response(
+        &doc,
+        json!({
+            "disclosureId": record.disclosure_id,
+            "artifact": artifact,
+            "subject": record.subject,
+            "credentialId": record.durable_credential_id,
+            "disclosedAt": record.disclosed_at,
+        }),
+    )
+}
