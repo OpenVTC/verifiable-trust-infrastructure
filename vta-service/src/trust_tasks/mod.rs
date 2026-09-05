@@ -46,6 +46,7 @@ use crate::server::AppState;
 
 mod acl;
 mod app_state;
+mod persona;
 mod audit;
 #[cfg(test)]
 mod audit_coverage;
