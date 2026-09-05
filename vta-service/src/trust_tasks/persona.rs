@@ -67,6 +67,24 @@ pub enum Reach {
     Holder,
     /// Reachable from inside a context, and confined to the caller's own.
     Context,
+    /// Reachable by any authenticated caller, scoped or not.
+    ///
+    /// One task sits here, and it is not a hole. `renderers/list` returns a
+    /// compile-time constant — the renderer ids this build ships and what each
+    /// one discards — and carries nothing about the holder, any context, or
+    /// any stored state at all.
+    ///
+    /// It needs its own variant because both of the others are wrong for it in
+    /// opposite directions. `Context` refuses the unscoped holder: the payload
+    /// schema has no `contextId`, so there is no context to name, and a
+    /// handler that supplies one from the caller's own claims refuses the
+    /// *most* privileged caller — an `Admin` with an unrestricted (empty)
+    /// context list — while admitting every scoped one. `Holder` would refuse
+    /// the callers who most need it: `disclosure/preview` is context-scoped
+    /// and takes a renderer name, so an application that cannot list renderers
+    /// cannot choose one, and choosing blind is how a holder ends up disclosing
+    /// through a format that silently drops provenance.
+    Any,
 }
 
 /// Every task in the family, paired with the side of the boundary it sits on.
@@ -109,7 +127,8 @@ pub const REACH: &[(&str, Reach)] = &[
     // stranger's web page.
     (uris::TASK_PERSONA_DISCLOSURE_PREVIEW_1_0, Reach::Context),
     (uris::TASK_PERSONA_DISCLOSURE_PRESENT_1_0, Reach::Context),
-    (uris::TASK_PERSONA_RENDERERS_LIST_1_0, Reach::Context),
+    // ── Neither side: the agent's own advertised capabilities ─────────────
+    (uris::TASK_PERSONA_RENDERERS_LIST_1_0, Reach::Any),
     // Authoring below the boundary is safe; the rule stops reading across it.
     (uris::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0, Reach::Context),
     (uris::TASK_PERSONA_LOCAL_PROFILE_GET_1_0, Reach::Context),
@@ -154,6 +173,10 @@ pub fn authorize(claims: &AuthClaims, uri: &str, context_id: Option<&str>) -> Re
                 "a context-scoped persona task must name the context it acts in".into(),
             )),
         },
+        // Authentication is the whole gate. See `Reach::Any` for why this task
+        // does not belong on either side of the boundary, and why supplying a
+        // context on its behalf was a bug rather than a convenience.
+        Some(Reach::Any) => Ok(()),
     }
 }
 
@@ -176,6 +199,23 @@ use vta_persona::{PersonaStore, ValueType, new_attribute};
 /// it never leaves the agent, which is what makes the blinded index blinded.
 fn store(state: &AppState) -> PersonaStore {
     PersonaStore::new(state.persona_ks.clone(), state.persona_correlation_key)
+}
+
+/// Insert `key` into a response body only when `value` is `Some`.
+///
+/// `json!` renders a `None` as `null`, and every optional member in this
+/// family's response schemas is typed `string`, `integer` or `date-time` —
+/// none of which accepts null. An unset optional must be **absent**.
+///
+/// This is the response-side twin of the rule `payload_null_census` pins on
+/// the request side in `vta-sdk`, and unlike that side it has no census: the
+/// response-conformance layer catches it at run time in debug builds, which is
+/// the only reason `disclosure/present`'s `credentialId` was ever noticed. Use
+/// this rather than naming an `Option` inside `json!`.
+fn put_opt<T: serde::Serialize>(body: &mut Value, key: &str, value: Option<T>) {
+    if let Some(v) = value {
+        body[key] = json!(v);
+    }
 }
 
 /// Audit a persona task.
@@ -481,15 +521,47 @@ pub(super) async fn handle_profile_get(
     audit_persona(state, "persona.profile.get", auth, Some(&id), None).await;
     let mut body = json!({ "profile": profile });
     if let Some(r) = resolved {
+        // The published schema types a resolved entry as the pool `Attribute`
+        // shape, which requires `attributeId`, `updatedAt` and `version`. An
+        // INLINE entry has none of the three — it has no pool record behind
+        // it, which is the whole reason inline exists — so a profile carrying
+        // one cannot be described by this response at all.
+        //
+        // That is a defect in the schema I wrote, not in the store: `resolved`
+        // is a projection that may contain non-pool values, and reusing the
+        // pool record's shape for it was wrong. It is refused here rather than
+        // answered non-conformantly, because the two dishonest alternatives
+        // are worse — a synthesised `attributeId` is a lie about where a value
+        // lives, and omitting inline entries returns a profile that appears to
+        // present less than it does, which is the failure mode this whole
+        // store is built to prevent.
+        //
+        // Pinned by `an_inline_entry_is_refused_until_the_schema_allows_one`,
+        // so this stops being interim behaviour the moment the spec lands.
+        if r.iter().any(|c| c.attribute_id.is_none()) {
+            return reject(
+                &doc,
+                AppError::Validation(format!(
+                    "profile {id} contains an inline entry, which this version of                      persona/profile/get/1.0 cannot describe: its response schema requires                      attributeId, updatedAt and version on every resolved entry, and an inline                      value has none of them. Read the profile without `resolve` to see how it is                      built, or use persona/disclosure/preview to see what it would present."
+                )),
+            );
+        }
         body["resolved"] = json!(
             r.iter()
-                .map(|c| json!({
-                    "attributeId": c.attribute_id,
-                    "type": c.r#type,
-                    "value": c.value,
-                    "provenance": c.provenance,
-                    "stale": c.stale,
-                }))
+                .map(|c| {
+                    let mut row = json!({
+                        "type": c.r#type,
+                        "value": c.value,
+                        "valueType": c.value_type,
+                        "provenance": c.provenance,
+                        "stale": c.stale,
+                    });
+                    // Absent, not null — see `put_opt`.
+                    put_opt(&mut row, "attributeId", c.attribute_id.clone());
+                    put_opt(&mut row, "version", c.version);
+                    put_opt(&mut row, "updatedAt", c.updated_at.clone());
+                    row
+                })
                 .collect::<Vec<_>>()
         );
     }
@@ -660,18 +732,24 @@ pub(super) async fn handle_binding_get(
     .await;
     // Thin by construction: whether bound, the label, a claim count. Never
     // contents — those reach an application only through the disclosure path.
-    success_response(
-        &doc,
-        json!({
-            "contextId": ctx,
-            "personaDid": sum.persona_did,
-            "bound": sum.bound,
-            "profileId": sum.profile_id,
-            "profileName": sum.profile_name,
-            "claimCount": sum.claim_count,
-            "boundAt": sum.bound_at,
-        }),
-    )
+    //
+    // Four of the seven members are absent for an *unbound* persona, and
+    // absent is not null — see `put_opt`. The bound case conformed; the
+    // unbound one emitted four nulls and failed schema validation, which is
+    // the reading a caller most needs to be able to trust: "nobody is bound
+    // here" is an answer, not an error.
+    let mut body = json!({
+        "contextId": ctx,
+        "personaDid": sum.persona_did,
+        "bound": sum.bound,
+        // Not optional, and 0 for an unbound persona — a count of nothing is
+        // still a count.
+        "claimCount": sum.claim_count,
+    });
+    put_opt(&mut body, "profileId", sum.profile_id);
+    put_opt(&mut body, "profileName", sum.profile_name);
+    put_opt(&mut body, "boundAt", sum.bound_at);
+    success_response(&doc, body)
 }
 
 pub(super) async fn handle_binding_list(
@@ -693,17 +771,19 @@ pub(super) async fn handle_binding_list(
         Err(e) => return reject(&doc, e),
     };
     audit_persona(state, "persona.binding.list", auth, None, Some(&ctx)).await;
-    success_response(
-        &doc,
-        json!({
-            "personas": sums.iter().map(|s| json!({
+    let personas: Vec<Value> = sums
+        .iter()
+        .map(|s| {
+            let mut row = json!({
                 "personaDid": s.persona_did,
                 "bound": s.bound,
-                "profileName": s.profile_name,
                 "claimCount": s.claim_count,
-            })).collect::<Vec<_>>()
-        }),
-    )
+            });
+            put_opt(&mut row, "profileName", s.profile_name.clone());
+            row
+        })
+        .collect();
+    success_response(&doc, json!({ "personas": personas }))
 }
 
 // ─── Contacts ────────────────────────────────────────────────────────────
@@ -1004,11 +1084,17 @@ pub(super) async fn handle_renderers_list(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    // Context-callable and carries nothing about the holder — it describes the
-    // agent's own capabilities. A caller must still name a context, so the
-    // request is attributable.
-    let ctx = auth.allowed_contexts.first().cloned();
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_RENDERERS_LIST_1_0, ctx.as_deref()) {
+    // `Reach::Any`: authentication is the gate. This response is a
+    // compile-time constant and names nothing the caller does not already know
+    // about themselves.
+    //
+    // This used to pass `auth.allowed_contexts.first()` as the context, on the
+    // reasoning that a caller should name one so the request is attributable.
+    // That reasoning was wrong twice over. The context did not come from the
+    // request, so it attributed nothing; and reading the caller's own list
+    // inverted the gate — an `Admin` with an unrestricted (empty) list is the
+    // most privileged caller there is, and was the only one refused.
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_RENDERERS_LIST_1_0, None) {
         return reject(&doc, e);
     }
 
@@ -1379,16 +1465,26 @@ pub(super) async fn handle_disclosure_present(
     )
     .await;
 
-    success_response(
-        &doc,
-        json!({
-            "disclosureId": record.disclosure_id,
-            "artifact": artifact,
-            "subject": record.subject,
-            "credentialId": record.durable_credential_id,
-            "disclosedAt": record.disclosed_at,
-        }),
-    )
+    // `credentialId` is present only when the holder asked for the disclosure
+    // to be minted as a self-issued credential. It is built member-by-member
+    // rather than with `json!`, because `json!` renders a `None` as `null` and
+    // the schema types the member `string` — the same defect
+    // `payload_null_census` guards against on the request side, where an unset
+    // optional must be *absent* rather than null. There is no equivalent
+    // census for responses; the response-conformance layer catches it at run
+    // time instead, which is how this one was found.
+    let mut body = json!({
+        "disclosureId": record.disclosure_id,
+        "artifact": artifact,
+        "subject": record.subject,
+        "disclosedAt": record.disclosed_at,
+    });
+    put_opt(
+        &mut body,
+        "credentialId",
+        record.durable_credential_id.clone(),
+    );
+    success_response(&doc, body)
 }
 
 // ─────────────────────────────────────────────────────────────────────────

@@ -42,7 +42,17 @@ pub struct ResolvedClaim {
     pub attribute_id: Option<Ulid>,
     pub r#type: String,
     pub value: Option<serde_json::Value>,
+    /// What the value is. An inline entry carries its own; a pool-backed one
+    /// takes the attribute's.
+    pub value_type: crate::ValueType,
     pub provenance: crate::Provenance,
+    /// The pool attribute's version and last-write time — `None` for an inline
+    /// entry, which has no pool record behind it and so has neither. The
+    /// distinction is the point: a holder reading a resolved profile needs to
+    /// know which of its values track something and which are frozen where
+    /// they were typed.
+    pub version: Option<Version>,
+    pub updated_at: Option<String>,
     /// Set when a credential-backed value could not be re-derived. Such a claim
     /// MUST NOT be disclosed; it is surfaced so a holder learns their profile
     /// has quietly stopped being fully presentable.
@@ -165,7 +175,10 @@ impl PersonaStore {
                     attribute_id: None,
                     r#type: inline.r#type.clone(),
                     value: Some(inline.value.clone()),
+                    value_type: inline.value_type,
                     provenance: inline.provenance.clone(),
+                    version: None,
+                    updated_at: None,
                     stale: false,
                 },
             });
@@ -187,7 +200,10 @@ impl PersonaStore {
                 attribute_id: Some(attribute_id.to_string()),
                 r#type: String::new(),
                 value: None,
+                value_type: crate::ValueType::String,
                 provenance: crate::Provenance::SelfAsserted,
+                version: None,
+                updated_at: None,
                 stale: true,
             });
         };
@@ -202,7 +218,10 @@ impl PersonaStore {
             attribute_id: Some(a.attribute_id.clone()),
             r#type: a.r#type.clone(),
             value: if stale { None } else { a.value.clone() },
+            value_type: a.value_type,
             provenance: a.provenance.clone(),
+            version: Some(a.version),
+            updated_at: Some(a.updated_at.clone()),
             stale: stale || a.stale.unwrap_or(false),
         })
     }
