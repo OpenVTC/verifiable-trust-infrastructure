@@ -513,6 +513,37 @@ jobs:
       - name: Check published crates for API breaks
         run: bash scripts/semver-report.sh
 
+  release-bump-guard:
+    # The one place the semver signal must BLOCK rather than report.
+    #
+    # Runs only on a release-plz branch, where every manifest already carries the
+    # version about to be published. That is what makes the check meaningful
+    # here and merely informational elsewhere: cargo-semver-checks derives the
+    # release type from the real delta, so a failure means the PROPOSED BUMP IS
+    # TOO SMALL — the release is about to ship a breaking change as a compatible
+    # one, on a version consumers' caret requirements pick up automatically.
+    #
+    # It exists because release-plz's own semver check and this repo's disagreed,
+    # and only release-plz's decided the version. On 2026-09-05 it proposed
+    # `vti-common` 0.16.2 "(✓ API compatible changes)" against a baseline where
+    # the same tool failed `enum_variant_added` on two exhaustive enums, and
+    # `vta-sdk` 0.32.4 where 16 public wire structs had gained a field. Nothing
+    # reconciled the two verdicts. This does.
+    #
+    # NO continue-on-error, unlike the report above. That is the entire point.
+    name: release bump is large enough
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-plz-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-semver-checks
+      - name: Check the proposed versions cover their API changes
+        env:
+          SEMVER_MODE: enforce
+        run: bash scripts/semver-report.sh
+
   lockfile-self-pins:
     # Sibling guard to release-guards: the version bump can be correct and the
     # release still break if Cargo.lock pins a stale crates.io copy of one of

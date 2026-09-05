@@ -44,7 +44,37 @@
 # A crate appearing in (3) is normal exactly once in its life: between merging
 # and its first release. If one sits there across several releases, something is
 # wrong with the release, not with this script.
+#
+# # Two modes
+#
+# `SEMVER_MODE=report` (default) — on an ordinary PR. A break is EXPECTED and
+# allowed; the job reports it so the release can move the compatibility field.
+#
+# `SEMVER_MODE=enforce` — on a release-plz branch, where the manifest already
+# carries the version about to be published. cargo-semver-checks derives the
+# release type from the real delta (0.16.1 -> 0.16.2 is a patch), so a break
+# under that delta means the PROPOSED BUMP IS TOO SMALL and the release is about
+# to ship a breaking change as a compatible one. That is the one place this must
+# block rather than report.
+#
+# Why the guard exists: release-plz runs cargo-semver-checks itself and is meant
+# to raise the bump on its own. On 2026-09-05 it reported `vti-common: next
+# version is 0.16.2 (✓ API compatible changes)` for a release where the same
+# tool, on the same baseline, failed `enum_variant_added` on two exhaustive
+# enums — and `vta-sdk: 0.32.4` where 16 public wire structs had gained a field.
+# Both would have gone out as patch releases that `^0.16` and `^0.32` consumers
+# take automatically. Nothing reconciled release-plz's verdict against the
+# report's; this is that reconciliation.
 set -euo pipefail
+
+MODE="${SEMVER_MODE:-report}"
+case "$MODE" in
+  report | enforce) ;;
+  *)
+    echo "::error::SEMVER_MODE must be 'report' or 'enforce', got '$MODE'"
+    exit 1
+    ;;
+esac
 
 # Excluded for RUNTIME, not because a break there is acceptable. This job builds
 # rustdoc JSON for every crate twice, current and baseline; including these took
@@ -243,10 +273,23 @@ fi
 echo
 echo "coverage: all ${#expected[@]} expected crates were checked"
 
-if [ "$status" -ne 0 ]; then
-  echo "::warning::API breaks reported — expected on a PR marked '!'; the \
-release moves the compatibility field accordingly."
-else
+if [ "$status" -eq 0 ]; then
   echo "all baselines built; no API breaks reported"
+  exit 0
 fi
+
+if [ "$MODE" = "enforce" ]; then
+  echo "::error::THE PROPOSED RELEASE UNDER-BUMPS A BREAKING CHANGE. Each version above \
+is the one about to be published, so cargo-semver-checks derived the release type from the \
+real delta — and a failure means that delta is too small, not that breaking is forbidden. \
+Shipping this would hand consumers a compile break on a version their caret requirement \
+picks up automatically. Raise each failing crate to its breaking slot: for a 0.x crate that \
+is the MINOR field (0.16.1 -> 0.17.0), not the patch. Alternatively make the change \
+non-breaking (\`#[non_exhaustive]\` on a struct or enum that should never have been \
+exhaustively constructible) and re-run."
+  exit "$status"
+fi
+
+echo "::warning::API breaks reported — expected on a PR marked '!'; the \
+release moves the compatibility field accordingly."
 exit "$status"
