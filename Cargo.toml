@@ -21,6 +21,7 @@ members = [
   "vta-sweepers",
   "vta-vault",
   "vta-webvh",
+  "vta-persona",
   "vta-service",
   "vta-enclave",
   "vtc-client",
@@ -55,6 +56,7 @@ default-members = [
   "vta-service",
   "vta-vault",
   "vta-webvh",
+  "vta-persona",
   "vta-enclave",
   "vtc-client",
   "vtc-service",
@@ -217,6 +219,9 @@ sha2 = "0.11"
 # server-stored hash against a caller-supplied value (e.g.
 # backup-bundle bearer tokens). Already used by vtc-service.
 subtle = "2.6"
+# ULIDs for persona-store record identifiers: the leading 48 bits are a
+# timestamp, so a key-ordered scan is also creation-ordered.
+ulid = { version = "1", features = ["serde"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 multibase = "0.9"
 

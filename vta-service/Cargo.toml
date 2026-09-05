@@ -160,6 +160,7 @@ vta-keys = { path = "../vta-keys", version = "0.4" }
 # Holder credential vault (storage/query/receive/present/status), extracted to
 # its own crate and re-exported as `crate::vault`. Feature edges: this crate's
 # `bbs` / `webvh` features enable `vta-vault/bbs` / `vta-vault/webvh`.
+vta-persona = { path = "../vta-persona", version = "0.1" }
 vta-vault = { path = "../vta-vault", version = "0.5" }
 
 # The room presentation oracle attenuates a member VAC and signs it.

@@ -76,6 +76,7 @@ mod memory;
 mod messaging;
 #[cfg(all(feature = "webvh", feature = "didcomm"))]
 mod passkey_vms;
+mod persona;
 pub(crate) mod planner;
 mod policy;
 mod policy_gate;
@@ -1651,6 +1652,76 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_VTA_APP_STATE_GET_MANY_1_0 => app_state::handle_get_many
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_APP_STATE_PUT_MANY_1_0 => app_state::handle_put_many
+        [ Mutating None false ],
+    // ─── Persona slice (spec/persona/*) ──────────────────────────
+    // The holder's own identity. Eleven of the family's tasks are gated on an
+    // UNSCOPED HOLDER credential rather than context access — see
+    // `trust_tasks::persona::authorize`, where the classification lives and a
+    // census pins it. `attribute/put` is Mutating and `delete` Destructive;
+    // both reads disclose Metadata because they return the holder's own data
+    // to the holder.
+    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_PUT_1_0 => persona::handle_attribute_put
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_LIST_1_0 => persona::handle_attribute_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_DELETE_1_0 => persona::handle_attribute_delete
+        [ Destructive None false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_PUT_1_0 => persona::handle_profile_put
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_GET_1_0 => persona::handle_profile_get
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_LIST_1_0 => persona::handle_profile_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_DELETE_1_0 => persona::handle_profile_delete
+        [ Destructive None false ],
+    // The critical gate. Holder-only, and Mutating because it materialises a
+    // projection into a context — a push across the trust boundary.
+    vta_sdk::trust_tasks::TASK_PERSONA_BINDING_SET_1_0 => persona::handle_binding_set
+        [ Mutating Metadata false ],
+    // Context-callable and deliberately thin: whether bound, the label, a
+    // claim count. Never contents.
+    vta_sdk::trust_tasks::TASK_PERSONA_BINDING_GET_1_0 => persona::handle_binding_get
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_BINDING_LIST_1_0 => persona::handle_binding_list
+        [ None Metadata false ],
+    // Contacts are a third party's disclosed data held for the holder.
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_PUT_1_0 => persona::handle_contact_put
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_GET_1_0 => persona::handle_contact_get
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LIST_1_0 => persona::handle_contact_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_DELETE_1_0 => persona::handle_contact_delete
+        [ Destructive None false ],
+    // Holder-only: both span every context, which is the view a context-scoped
+    // caller must not have.
+    vta_sdk::trust_tasks::TASK_PERSONA_DISCLOSURE_HISTORY_1_0 => persona::handle_disclosure_history
+        [ None Metadata false ],
+    // Two calls that cannot be collapsed: present consumes a single-use token
+    // only preview can mint. preview is Mutating despite looking like a read,
+    // because that token is durable state — and it is what makes the summary
+    // unskippable.
+    vta_sdk::trust_tasks::TASK_PERSONA_DISCLOSURE_PREVIEW_1_0 => persona::handle_disclosure_preview
+        [ Mutating Metadata false ],
+    // The only task in the family that releases personal data to a third party.
+    vta_sdk::trust_tasks::TASK_PERSONA_DISCLOSURE_PRESENT_1_0 => persona::handle_disclosure_present
+        [ Mutating Secret true ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_0 => persona::handle_correlation_analyze
+        [ None Metadata false ],
+    // Describes the agent's capabilities, not the holder. Discloses nothing.
+    vta_sdk::trust_tasks::TASK_PERSONA_RENDERERS_LIST_1_0 => persona::handle_renderers_list
+        [ None None false ],
+    // The context-local surface. Context-callable because authoring below the
+    // boundary is safe; the rule exists to stop reading across it.
+    vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0 => persona::handle_local_profile_put
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_GET_1_0 => persona::handle_local_profile_get
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_LIST_1_0 => persona::handle_local_profile_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_DELETE_1_0 => persona::handle_local_profile_delete
+        [ Destructive None false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_BINDING_SET_1_0 => persona::handle_local_binding_set
         [ Mutating None false ],
     // ─── Config slice ────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONFIG_SHOW_0_1 => config::handle_get

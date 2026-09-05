@@ -193,6 +193,16 @@ pub struct AppState {
     /// `appc:` per-namespace write counter alongside; gated on context access.
     /// Durable user data an account's recoverability depends on.
     pub app_state_ks: KeyspaceHandle,
+    /// The holder's persona store. Encrypted at rest like the vault: these are
+    /// the person's own identity attributes, not application data.
+    pub persona_ks: KeyspaceHandle,
+    /// Per-agent key for the persona correlation index's keyed hash.
+    ///
+    /// Derived beside the at-rest key and never leaving the agent, which is
+    /// what makes the blinded index blinded: the store can answer "does this
+    /// value appear elsewhere" without holding a plaintext index of the
+    /// holder's personal data.
+    pub persona_correlation_key: [u8; 32],
     /// One lock per `(contextId, namespace)`, serialising the read-modify-write
     /// sequences the application-state store needs and that the store layer
     /// cannot make atomic on its own (it serialises individual operations, not
@@ -442,6 +452,16 @@ pub async fn build_app_state(
     let room_groups_ks = apply_encryption(store.keyspace(crate::keyspaces::ROOM_GROUPS)?);
     let room_invitations_ks = apply_encryption(store.keyspace(crate::keyspaces::ROOM_INVITATIONS)?);
     let app_state_ks = apply_encryption(store.keyspace(crate::keyspaces::APP_STATE)?);
+    let persona_ks = apply_encryption(store.keyspace(crate::keyspaces::PERSONA)?);
+    // Domain-separated from the at-rest key so that compromise of one does not
+    // hand over the other.
+    let persona_correlation_key: [u8; 32] = {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"vta-persona/correlation-index/v1");
+        h.update(storage_encryption_key.unwrap_or([0u8; 32]));
+        h.finalize().into()
+    };
     let policy_ks = apply_encryption(store.keyspace(crate::keyspaces::POLICY)?);
     let task_consent_ks = apply_encryption(store.keyspace(crate::keyspaces::TASK_CONSENT)?);
     #[cfg(feature = "webvh")]
@@ -523,6 +543,8 @@ pub async fn build_app_state(
         room_groups_ks,
         room_invitations_ks,
         app_state_ks,
+        persona_ks,
+        persona_correlation_key,
         app_state_locks: crate::operations::app_state::NamespaceLocks::default(),
         policy_ks,
         task_consent_ks,

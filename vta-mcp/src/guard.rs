@@ -130,6 +130,13 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // is a membership change made on the principal's behalf — not something a
     // blanket `vta_call` approval should cover silently.
     ("rooms/keys/welcome", Risk::Sensitive),
+    // The holder's own identity, emitted. `disclosure/present` is the one
+    // persona task that hands claims to a named verifier, under a persona DID,
+    // and writes the record saying it did. It sits beside `rooms/keys/present`
+    // for the same reason: an MCP host approves a *tool*, so a blanket
+    // `vta_call` approval must not silently cover deciding who learns the
+    // principal's name.
+    ("persona/disclosure/present", Risk::Sensitive),
     // Reads that a verb rule would misread.
     ("vta/contexts/preview-delete", Risk::ReadOnly),
     ("vta/webvh/agent-name/check", Risk::ReadOnly),
@@ -159,6 +166,14 @@ const READ_VERBS: &[&str] = &[
     "explain",
     "get-retention",
     "approver-list",
+    // Reads the record of what was disclosed to whom. Only ever a read — the
+    // disclosure itself is written by `present`, not by looking at it later.
+    "history",
+    // Reports how linkable a value would make the holder. It reads the pool
+    // and writes nothing; classifying it above ReadOnly while
+    // `persona/attribute/list` — which returns the values themselves — stays
+    // ReadOnly would be incoherent.
+    "analyze",
 ];
 
 /// Final-segment verbs that remove state or access.
@@ -486,6 +501,12 @@ mod tests {
         "key-package",
         // Advances the group one epoch. No secret crosses in either direction.
         "commit",
+        // `persona/disclosure/preview` reads like a read and is not one: it
+        // mints the single-use token `present` consumes, so a replayed preview
+        // hands out a second authorisation to disclose. `--read-only` must not
+        // permit it. Nothing leaves the agent, which is why it stops here and
+        // does not join `present` among the sensitive slugs.
+        "preview",
         "create",
         "update",
         "update-did",

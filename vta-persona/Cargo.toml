@@ -1,0 +1,40 @@
+[package]
+name = "vta-persona"
+description = "VTA persona store — the holder's own identity attributes, the profiles that project over them, the bindings that assign a profile to a persona DID, and the contacts peers disclose"
+readme = "README.md"
+version = "0.1.0"
+edition.workspace = true
+# Published for the same reason vta-vault is: `vta-service` is published, and a
+# crate cannot go to crates.io without its whole dependency closure. Nothing
+# outside this workspace is expected to depend on it directly.
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.2" }
+vti-common = { path = "../vti-common", version = "0.16", features = ["encryption"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+# Keyed hash for the correlation index. HMAC-SHA256 over a per-agent key, so
+# exact-match lookup works with no plaintext index over the holder's PII.
+hmac = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+# ULIDs: the leading 48 bits are a timestamp, so a key-ordered scan of the
+# store is also creation-ordered and a list needs no secondary sort.
+ulid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# The generated payload types are the contract this crate stores against.
+# A dev-dependency rather than a real one: storage does not need them, and
+# taking them here means a spec change that lands upstream without a matching
+# change to our models fails a test rather than a production dispatch.
+trust-tasks-rs = { workspace = true }

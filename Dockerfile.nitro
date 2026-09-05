@@ -138,6 +138,7 @@ COPY vta-keys/ vta-keys/
 COPY vta-policy/ vta-policy/
 COPY vta-mcp/ vta-mcp/
 COPY vta-mobile-core/ vta-mobile-core/
+COPY vta-persona/ vta-persona/
 COPY vta-sdk/ vta-sdk/
 COPY vta-support/ vta-support/
 COPY vta-tee/ vta-tee/

@@ -255,7 +255,6 @@ enum Conformance {
     /// Known non-conformance, kept visible and counted instead of silently
     /// tolerated. Every entry is a follow-up issue; the reason must name the
     /// drift precisely enough that the fix needs no re-diagnosis.
-    #[allow(dead_code)] // empty today — the variant is the mechanism for future debt
     KnownDrift(&'static str),
 }
 
@@ -2538,6 +2537,46 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ));
     }
 
+    // `persona/attribute/list` is deliberately NOT witnessed against 0.17.9.
+    //
+    // Its default response — the one `includeValues: false` produces, which is
+    // the common case and the non-disclosing one — cannot round-trip, because
+    // the published `Attribute` schema requires `value` while its own
+    // description says the member is absent for a metadata-only view. The
+    // witness found the contradiction; the fix is
+    // trustoverip/dtgwg-trust-tasks-tf#367, merged and awaiting a release.
+    //
+    // Recorded as drift rather than papered over: adding `value` to the fixture
+    // would encode the defect and pass, and the next reader would have no way
+    // to know the default listing had never been exercised. When
+    // trust-tasks-rs 0.18 lands, delete this entry and the witness in
+    // `persona_witnesses()` becomes checkable as written.
+    t.push((
+        vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_LIST_1_0,
+        Conformance::KnownDrift(
+            "Attribute.value is REQUIRED in trust-tasks-rs 0.17.9 while its description says the \
+             member is absent for a metadata-only view, so the default (non-disclosing) listing \
+             response is unrepresentable. Fixed upstream in dtgwg-trust-tasks-tf#367 (merged, \
+             awaiting release); un-drift on the 0.18 bump.",
+        ),
+    ));
+
+    for (uri, req, resp) in persona_witnesses() {
+        if uri == vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_LIST_1_0 {
+            continue;
+        }
+        t.push((
+            uri,
+            Conformance::Checked(Witness {
+                request: req.0,
+                parse_request: req.1,
+                validate_request: req.2,
+                response: resp.0,
+                parse_response: resp.1,
+            }),
+        ));
+    }
+
     for (uri, req, resp) in webvh_and_context_witnesses() {
         t.push((
             uri,
@@ -2572,6 +2611,440 @@ type RespParts = (Value, ParseFn);
 /// `initiate-*` responses, read in opposite directions. Its `transportToken` is
 /// a bearer credential for the byte endpoint, so both fixtures use a value that
 /// cannot be mistaken for a real one.
+/// Witnesses for the `persona/*` family — the holder's own identity.
+///
+/// Written as raw JSON rather than through producer types, for the reason the
+/// backup witnesses record: a producer type that is wrong encodes its own defect
+/// into the witness and passes. The schema is the authority.
+///
+/// The values are deliberately inert. This store exists to hold personal data,
+/// so a fixture here is the last place a specimen phone number or address
+/// belongs — anything an implementer might copy is shaped to be obviously
+/// fictional.
+fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
+    use vta_sdk::trust_tasks as u;
+
+    // Crockford base32, 26 characters. Fixed rather than generated so a failing
+    // witness is reproducible.
+    const ATTR: &str = "01J8ZKAAAAAAAAAAAAAAAAAAAA";
+    const PROFILE: &str = "01J8ZP1BBBBBBBBBBBBBBBBBBB";
+    const CONTACT: &str = "01J8ZC7CCCCCCCCCCCCCCCCCCC";
+    const PREVIEW: &str = "01J8ZV9DDDDDDDDDDDDDDDDDDD";
+    const DISCLOSURE: &str = "01J8ZD3EEEEEEEEEEEEEEEEEEE";
+    const CTX: &str = "ctx-fixture";
+    const PERSONA_DID: &str = "did:webvh:vta.test:persona-fixture";
+    const VERIFIER: &str = "did:web:verifier.test";
+    const SUBJECT: &str = "did:peer:0zfixturepairwisesubject";
+    const NOW: &str = "2026-01-01T00:00:00Z";
+
+    let self_asserted = json!({ "kind": "selfAsserted" });
+
+    vec![
+        (
+            u::TASK_PERSONA_ATTRIBUTE_PUT_1_0,
+            (
+                json!({
+                    "type": "name.display",
+                    "valueType": "string",
+                    "value": "Fixture Name",
+                    "provenance": self_asserted,
+                }),
+                parses::<specs::persona::attribute::put::v1_0::Payload>,
+                validates::<specs::persona::attribute::put::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "attributeId": ATTR, "version": 1, "created": true, "updatedAt": NOW,
+                    // A count, never identifiers: returning them on a write
+                    // would disclose the holder's other compositions to
+                    // whatever tool made it.
+                    "correlation": { "severity": "none", "sharedWithProfileCount": 0 }
+                }),
+                parses::<specs::persona::attribute::put::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_ATTRIBUTE_LIST_1_0,
+            (
+                json!({ "typePrefix": "name" }),
+                parses::<specs::persona::attribute::list::v1_0::Payload>,
+                validates::<specs::persona::attribute::list::v1_0::Payload>,
+            ),
+            (
+                // No `value`: the default withholds it, and the witness shows
+                // the default rather than the disclosing path.
+                json!({ "attributes": [{
+                    "attributeId": ATTR, "type": "name.display", "valueType": "string",
+                    "provenance": self_asserted, "version": 1, "updatedAt": NOW
+                }]}),
+                parses::<specs::persona::attribute::list::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_ATTRIBUTE_DELETE_1_0,
+            (
+                json!({ "attributeId": ATTR }),
+                parses::<specs::persona::attribute::delete::v1_0::Payload>,
+                validates::<specs::persona::attribute::delete::v1_0::Payload>,
+            ),
+            (
+                json!({ "attributeId": ATTR, "existed": true }),
+                parses::<specs::persona::attribute::delete::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_PROFILE_PUT_1_0,
+            (
+                // One entry of each referencing form the pool supports, so the
+                // witness exercises the untagged discrimination that was once
+                // silently degrading overrides into plain references.
+                json!({
+                    "name": "Work",
+                    "entries": [
+                        { "ref": ATTR },
+                        { "ref": ATTR, "pinVersion": 1 },
+                        { "ref": ATTR, "override": { "value": "Fixture Override" } }
+                    ]
+                }),
+                parses::<specs::persona::profile::put::v1_0::Payload>,
+                validates::<specs::persona::profile::put::v1_0::Payload>,
+            ),
+            (
+                json!({ "profileId": PROFILE, "version": 2, "created": true, "updatedAt": NOW }),
+                parses::<specs::persona::profile::put::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_PROFILE_GET_1_0,
+            (
+                json!({ "profileId": PROFILE }),
+                parses::<specs::persona::profile::get::v1_0::Payload>,
+                validates::<specs::persona::profile::get::v1_0::Payload>,
+            ),
+            (
+                json!({ "profile": {
+                    "profileId": PROFILE, "name": "Work",
+                    "entries": [{ "ref": ATTR }], "version": 2, "updatedAt": NOW
+                }}),
+                parses::<specs::persona::profile::get::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_PROFILE_LIST_1_0,
+            (
+                json!({}),
+                parses::<specs::persona::profile::list::v1_0::Payload>,
+                validates::<specs::persona::profile::list::v1_0::Payload>,
+            ),
+            (
+                json!({ "profiles": [{
+                    "profileId": PROFILE, "name": "Work", "entries": [], "version": 2, "updatedAt": NOW
+                }]}),
+                parses::<specs::persona::profile::list::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_PROFILE_DELETE_1_0,
+            (
+                json!({ "profileId": PROFILE }),
+                parses::<specs::persona::profile::delete::v1_0::Payload>,
+                validates::<specs::persona::profile::delete::v1_0::Payload>,
+            ),
+            (
+                json!({ "profileId": PROFILE, "existed": true }),
+                parses::<specs::persona::profile::delete::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_BINDING_SET_1_0,
+            (
+                json!({ "contextId": CTX, "personaDid": PERSONA_DID, "profileId": PROFILE }),
+                parses::<specs::persona::binding::set::v1_0::Payload>,
+                validates::<specs::persona::binding::set::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "contextId": CTX, "personaDid": PERSONA_DID, "profileId": PROFILE,
+                    "version": 3, "materialisedClaimCount": 1, "boundAt": NOW,
+                    "correlation": { "severity": "none", "alsoBoundPersonaCount": 0 }
+                }),
+                parses::<specs::persona::binding::set::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_BINDING_GET_1_0,
+            (
+                json!({ "contextId": CTX, "personaDid": PERSONA_DID }),
+                parses::<specs::persona::binding::get::v1_0::Payload>,
+                validates::<specs::persona::binding::get::v1_0::Payload>,
+            ),
+            (
+                // Thin by construction: bound, a label, a count. There is
+                // nowhere in this shape to put a claim value.
+                json!({
+                    "contextId": CTX, "personaDid": PERSONA_DID, "bound": true,
+                    "profileId": PROFILE, "profileName": "Work", "claimCount": 1, "boundAt": NOW
+                }),
+                parses::<specs::persona::binding::get::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_BINDING_LIST_1_0,
+            (
+                json!({ "contextId": CTX }),
+                parses::<specs::persona::binding::list::v1_0::Payload>,
+                validates::<specs::persona::binding::list::v1_0::Payload>,
+            ),
+            (
+                json!({ "personas": [{
+                    "personaDid": PERSONA_DID, "bound": true, "profileName": "Work", "claimCount": 1
+                }]}),
+                parses::<specs::persona::binding::list::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_PUT_1_0,
+            (
+                json!({
+                    "contextId": CTX,
+                    "subjectDid": "did:peer:0zfixturecounterparty",
+                    "knownByPersona": PERSONA_DID,
+                    "document": { "claims": [
+                        { "type": "name.display", "valueType": "string", "value": "Fixture Peer" }
+                    ]}
+                }),
+                parses::<specs::persona::contact::put::v1_0::Payload>,
+                validates::<specs::persona::contact::put::v1_0::Payload>,
+            ),
+            (
+                // Claim TYPES, not values. A producer needing the old value
+                // reads the prior revision, which is an explicit act.
+                json!({ "contactId": CONTACT, "rev": 2, "created": false,
+                        "changedClaims": ["name.display"] }),
+                parses::<specs::persona::contact::put::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_GET_1_0,
+            (
+                json!({ "contextId": CTX, "contactId": CONTACT }),
+                parses::<specs::persona::contact::get::v1_0::Payload>,
+                validates::<specs::persona::contact::get::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "contactId": CONTACT, "subjectDid": "did:peer:0zfixturecounterparty",
+                    "knownByPersona": PERSONA_DID, "rev": 2,
+                    "document": { "claims": [
+                        { "type": "name.display", "valueType": "string", "value": "Fixture Peer" }
+                    ]}
+                }),
+                parses::<specs::persona::contact::get::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_LIST_1_0,
+            (
+                json!({ "contextId": CTX }),
+                parses::<specs::persona::contact::list::v1_0::Payload>,
+                validates::<specs::persona::contact::list::v1_0::Payload>,
+            ),
+            (
+                json!({ "contacts": [{
+                    "contactId": CONTACT, "subjectDid": "did:peer:0zfixturecounterparty",
+                    "knownByPersona": PERSONA_DID, "rev": 2, "receivedAt": NOW,
+                    "claimCount": 1, "hasUnreviewedChange": true
+                }]}),
+                parses::<specs::persona::contact::list::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CONTACT_DELETE_1_0,
+            (
+                json!({ "contextId": CTX, "contactId": CONTACT }),
+                parses::<specs::persona::contact::delete::v1_0::Payload>,
+                validates::<specs::persona::contact::delete::v1_0::Payload>,
+            ),
+            (
+                // Reports what it KEPT. An incomplete erasure the holder
+                // believes is complete is worse than one they know about.
+                json!({ "contactId": CONTACT, "existed": true,
+                        "revisionsRemoved": 1, "retainedForDisclosure": 1 }),
+                parses::<specs::persona::contact::delete::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_DISCLOSURE_PREVIEW_1_0,
+            (
+                json!({ "contextId": CTX, "personaDid": PERSONA_DID, "verifierDid": VERIFIER,
+                        "purpose": "age check at entry" }),
+                parses::<specs::persona::disclosure::preview::v1_0::Payload>,
+                validates::<specs::persona::disclosure::preview::v1_0::Payload>,
+            ),
+            (
+                json!({
+                    "previewId": PREVIEW,
+                    // Pairwise, not the persona DID: the account is not the face.
+                    "subject": SUBJECT,
+                    "claims": [
+                        { "type": "name.display", "value": "Fixture Name",
+                          "provenance": "selfAsserted", "rung": "whole",
+                          "newToThisVerifier": true },
+                        // A predicate claim carries NO value. That absence is
+                        // the point, and the witness shows it.
+                        { "type": "person.birthDate",
+                          "predicate": { "op": "gte", "arg": 18 },
+                          "provenance": "credentialBacked", "rung": "predicate",
+                          "newToThisVerifier": true }
+                    ],
+                    "renderer": { "id": "rcard", "drops": [] },
+                    "correlation": { "severity": "low" },
+                    "expiresAt": "2026-01-01T00:05:00Z"
+                }),
+                parses::<specs::persona::disclosure::preview::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_DISCLOSURE_PRESENT_1_0,
+            (
+                json!({ "contextId": CTX, "previewId": PREVIEW, "challenge": "fixture-nonce" }),
+                parses::<specs::persona::disclosure::present::v1_0::Payload>,
+                validates::<specs::persona::disclosure::present::v1_0::Payload>,
+            ),
+            (
+                json!({ "disclosureId": DISCLOSURE, "artifact": "{\"unsigned\":true}",
+                        "subject": SUBJECT, "disclosedAt": NOW }),
+                parses::<specs::persona::disclosure::present::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_DISCLOSURE_HISTORY_1_0,
+            (
+                // The question the agent-scoped pool owes the holder: where has
+                // this fact reached.
+                json!({ "attributeType": "address.postal" }),
+                parses::<specs::persona::disclosure::history::v1_0::Payload>,
+                validates::<specs::persona::disclosure::history::v1_0::Payload>,
+            ),
+            (
+                json!({ "disclosures": [{
+                    "disclosureId": DISCLOSURE, "contextId": CTX, "verifierDid": VERIFIER,
+                    "personaDid": PERSONA_DID, "claimTypes": ["address.postal"],
+                    "rungs": ["whole"], "disclosedAt": NOW
+                }]}),
+                parses::<specs::persona::disclosure::history::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_CORRELATION_ANALYZE_1_0,
+            (
+                // A candidate the holder is CONSIDERING — the difference
+                // between a guard and a report.
+                json!({ "candidate": {
+                    "type": "phone.mobile", "valueType": "string", "value": "+00 0000 0000"
+                }}),
+                parses::<specs::persona::correlation::analyze::v1_0::Payload>,
+                validates::<specs::persona::correlation::analyze::v1_0::Payload>,
+            ),
+            (
+                json!({ "findings": [{
+                    "attributeId": ATTR, "severity": "high",
+                    "why": "this value is already presented by another profile",
+                    "remedies": ["useDifferentValue", "reissueCredentialToThisDid",
+                                 "correlateDeliberately", "proceedAndRecord"]
+                }]}),
+                parses::<specs::persona::correlation::analyze::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_RENDERERS_LIST_1_0,
+            (
+                json!({}),
+                parses::<specs::persona::renderers::list::v1_0::Payload>,
+                validates::<specs::persona::renderers::list::v1_0::Payload>,
+            ),
+            (
+                json!({ "renderers": [
+                    { "id": "rcard", "drops": [], "canCarryPredicates": true, "canonical": true },
+                    // Declares what it discards, so a preview can say so before
+                    // the holder decides.
+                    { "id": "jcard", "drops": ["provenance"], "canCarryPredicates": false }
+                ]}),
+                parses::<specs::persona::renderers::list::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0,
+            (
+                // Inline only. A reference is unrepresentable here rather than
+                // rejected, which is what keeps the local surface pool-free.
+                json!({ "contextId": CTX, "name": "Throwaway", "entries": [
+                    { "inline": { "type": "x:handle", "valueType": "string", "value": "fixture" } }
+                ]}),
+                parses::<specs::persona::local::profile::put::v1_0::Payload>,
+                validates::<specs::persona::local::profile::put::v1_0::Payload>,
+            ),
+            (
+                json!({ "profileId": PROFILE, "version": 4, "created": true }),
+                parses::<specs::persona::local::profile::put::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_LOCAL_PROFILE_GET_1_0,
+            (
+                json!({ "contextId": CTX, "profileId": PROFILE }),
+                parses::<specs::persona::local::profile::get::v1_0::Payload>,
+                validates::<specs::persona::local::profile::get::v1_0::Payload>,
+            ),
+            (
+                json!({ "profile": {
+                    "profileId": PROFILE, "name": "Throwaway", "entries": [], "version": 4
+                }}),
+                parses::<specs::persona::local::profile::get::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_LOCAL_PROFILE_LIST_1_0,
+            (
+                json!({ "contextId": CTX }),
+                parses::<specs::persona::local::profile::list::v1_0::Payload>,
+                validates::<specs::persona::local::profile::list::v1_0::Payload>,
+            ),
+            (
+                json!({ "profiles": [{
+                    "profileId": PROFILE, "name": "Throwaway", "entryCount": 1, "bound": false
+                }]}),
+                parses::<specs::persona::local::profile::list::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_LOCAL_PROFILE_DELETE_1_0,
+            (
+                json!({ "contextId": CTX, "profileId": PROFILE }),
+                parses::<specs::persona::local::profile::delete::v1_0::Payload>,
+                validates::<specs::persona::local::profile::delete::v1_0::Payload>,
+            ),
+            (
+                json!({ "profileId": PROFILE, "existed": true }),
+                parses::<specs::persona::local::profile::delete::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_LOCAL_BINDING_SET_1_0,
+            (
+                json!({ "contextId": CTX, "personaDid": PERSONA_DID, "profileId": PROFILE }),
+                parses::<specs::persona::local::binding::set::v1_0::Payload>,
+                validates::<specs::persona::local::binding::set::v1_0::Payload>,
+            ),
+            (
+                json!({ "contextId": CTX, "personaDid": PERSONA_DID,
+                        "profileId": PROFILE, "version": 5 }),
+                parses::<specs::persona::local::binding::set::v1_0::Response>,
+            ),
+        ),
+    ]
+}
+
 fn backup_and_management_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
     const BUNDLE: &str = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
     const SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
