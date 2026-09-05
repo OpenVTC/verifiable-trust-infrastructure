@@ -157,140 +157,6 @@ pub fn authorize(claims: &AuthClaims, uri: &str, context_id: Option<&str>) -> Re
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use vti_common::acl::Role;
-
-    fn claims(role: Role, contexts: &[&str]) -> AuthClaims {
-        let mut c = AuthClaims::default();
-        c.role = role;
-        c.allowed_contexts = contexts.iter().map(|s| (*s).to_string()).collect();
-        c
-    }
-
-    /// The census. A task cannot join the family without someone deciding which
-    /// side of the boundary it is on.
-    #[test]
-    fn every_persona_task_declares_a_reach() {
-        let classified: std::collections::HashSet<&str> = REACH.iter().map(|(u, _)| *u).collect();
-        let missing: Vec<&&str> = uris::ALL_URIS
-            .iter()
-            .filter(|u| u.starts_with("https://trusttasks.org/spec/persona/"))
-            .filter(|u| !classified.contains(*u))
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "these persona tasks declare no reach — add them to REACH. When unsure, \
-             `Holder` is the conservative answer: it refuses too much rather than \
-             disclosing the pool to a context. {missing:#?}"
-        );
-    }
-
-    #[test]
-    fn no_reach_without_a_task() {
-        let catalog: std::collections::HashSet<&str> = uris::ALL_URIS.iter().copied().collect();
-        let orphans: Vec<&&str> = REACH
-            .iter()
-            .map(|(u, _)| u)
-            .filter(|u| !catalog.contains(*u))
-            .collect();
-        assert!(
-            orphans.is_empty(),
-            "reach entries for tasks that do not exist: {orphans:#?}"
-        );
-    }
-
-    /// The trap, asserted directly. This is the test that would have caught a
-    /// guard written as `role == Admin`.
-    #[test]
-    fn a_context_scoped_admin_is_refused_every_holder_task() {
-        let scoped_admin = claims(Role::Admin, &["ctx-work"]);
-        for (uri, reach) in REACH {
-            if *reach != Reach::Holder {
-                continue;
-            }
-            let err = authorize(&scoped_admin, uri, Some("ctx-work")).unwrap_err();
-            assert!(
-                matches!(err, AppError::Forbidden(_)),
-                "{uri} admitted an admin scoped to one context — an admin in ctx-work must be \
-                 as powerless over the pool as an application in ctx-work"
-            );
-        }
-    }
-
-    #[test]
-    fn an_unscoped_holder_reaches_the_pool() {
-        let holder = claims(Role::Admin, &[]);
-        for (uri, reach) in REACH {
-            if *reach == Reach::Holder {
-                authorize(&holder, uri, None).unwrap_or_else(|e| {
-                    panic!("{uri} refused an unscoped holder: {e:?}");
-                });
-            }
-        }
-    }
-
-    #[test]
-    fn every_non_admin_role_is_refused_the_pool() {
-        // An empty context list means *unrestricted* for Admin and *nothing at
-        // all* for every other role. A gate testing emptiness without the role
-        // gets one of those backwards, so both halves are asserted.
-        for role in [
-            Role::Application,
-            Role::Reader,
-            Role::Initiator,
-            Role::Monitor,
-        ] {
-            let label = format!("{role:?}");
-            let c = claims(role, &[]);
-            let err = authorize(&c, uris::TASK_PERSONA_ATTRIBUTE_LIST_1_0, None).unwrap_err();
-            assert!(
-                matches!(err, AppError::Forbidden(_)),
-                "{label} reached the pool"
-            );
-        }
-    }
-
-    #[test]
-    fn a_context_task_is_confined_to_its_own_context() {
-        let app = claims(Role::Application, &["ctx-a"]);
-        authorize(&app, uris::TASK_PERSONA_BINDING_GET_1_0, Some("ctx-a")).expect("own context");
-        assert!(
-            authorize(&app, uris::TASK_PERSONA_BINDING_GET_1_0, Some("ctx-b")).is_err(),
-            "a caller scoped to ctx-a must not learn about ctx-b"
-        );
-    }
-
-    #[test]
-    fn an_unknown_task_is_refused_rather_than_defaulted() {
-        let app = claims(Role::Application, &["ctx"]);
-        // Built rather than written as a literal, deliberately. `produced_census`
-        // scans this crate's source for spec-URI literals and asks who publishes
-        // each one — correctly, because a produced document with no schema has
-        // validation on neither side. This fixture never goes on a wire, so it
-        // takes the `format!` shape the census already documents as "not a URI
-        // that goes on a wire", rather than being allowlisted as produced.
-        let unknown = format!("https://trusttasks.org/spec/persona/{}/9.9", "made-up");
-        let err = authorize(&app, &unknown, Some("ctx")).unwrap_err();
-        assert!(matches!(err, AppError::Forbidden(_)));
-    }
-
-    #[test]
-    fn binding_set_is_holder_only_and_local_binding_set_is_not() {
-        // The pair that most invites being collapsed. One crosses the boundary
-        // and one does not.
-        assert_eq!(
-            reach_of(uris::TASK_PERSONA_BINDING_SET_1_0),
-            Some(Reach::Holder)
-        );
-        assert_eq!(
-            reach_of(uris::TASK_PERSONA_LOCAL_BINDING_SET_1_0),
-            Some(Reach::Context)
-        );
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────────────
 // Handlers
 // ─────────────────────────────────────────────────────────────────────────
@@ -423,10 +289,7 @@ pub(super) async fn handle_attribute_put(
     let value = attribute.value.clone();
     let s = store(state);
 
-    let written = match s
-        .put(attribute, req.expected_version.map(|v| *v as u64))
-        .await
-    {
+    let written = match s.put(attribute, req.expected_version.map(|v| *v)).await {
         Ok(w) => w,
         Err(e) => return reject(&doc, e),
     };
@@ -561,7 +424,7 @@ pub(super) async fn handle_profile_put(
     let profile_id = profile.profile_id.clone();
 
     let written = match store(state)
-        .put_profile(profile, req.expected_version.map(|v| *v as u64))
+        .put_profile(profile, req.expected_version.map(|v| *v))
         .await
     {
         Ok(w) => w,
@@ -687,10 +550,10 @@ pub(super) async fn handle_profile_delete(
             doc.reject_with(format!("urn:uuid:{}", uuid::Uuid::new_v4()), payload),
         );
     }
-    if req.unbind {
-        if let Err(e) = s.unbind_everywhere(&id).await {
-            return reject(&doc, e);
-        }
+    if req.unbind
+        && let Err(e) = s.unbind_everywhere(&id).await
+    {
+        return reject(&doc, e);
     }
 
     let existed = match s.delete_profile(&id).await {
@@ -733,7 +596,7 @@ pub(super) async fn handle_binding_set(
             &persona,
             profile_id.as_deref(),
             public,
-            req.expected_version.map(|v| *v as u64),
+            req.expected_version.map(|v| *v),
         )
         .await
     {
@@ -1211,7 +1074,7 @@ pub(super) async fn handle_local_profile_put(
     let s = store(state);
 
     let written = match s
-        .put_local_profile(&ctx, profile, req.expected_version.map(|v| *v as u64))
+        .put_local_profile(&ctx, profile, req.expected_version.map(|v| *v))
         .await
     {
         Ok(w) => w,
@@ -1526,4 +1389,143 @@ pub(super) async fn handle_disclosure_present(
             "disclosedAt": record.disclosed_at,
         }),
     )
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vti_common::acl::Role;
+
+    fn claims(role: Role, contexts: &[&str]) -> AuthClaims {
+        AuthClaims {
+            role,
+            allowed_contexts: contexts.iter().map(|s| (*s).to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// The census. A task cannot join the family without someone deciding which
+    /// side of the boundary it is on.
+    #[test]
+    fn every_persona_task_declares_a_reach() {
+        let classified: std::collections::HashSet<&str> = REACH.iter().map(|(u, _)| *u).collect();
+        let missing: Vec<&&str> = uris::ALL_URIS
+            .iter()
+            .filter(|u| u.starts_with("https://trusttasks.org/spec/persona/"))
+            .filter(|u| !classified.contains(*u))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these persona tasks declare no reach — add them to REACH. When unsure, \
+             `Holder` is the conservative answer: it refuses too much rather than \
+             disclosing the pool to a context. {missing:#?}"
+        );
+    }
+
+    #[test]
+    fn no_reach_without_a_task() {
+        let catalog: std::collections::HashSet<&str> = uris::ALL_URIS.iter().copied().collect();
+        let orphans: Vec<&&str> = REACH
+            .iter()
+            .map(|(u, _)| u)
+            .filter(|u| !catalog.contains(*u))
+            .collect();
+        assert!(
+            orphans.is_empty(),
+            "reach entries for tasks that do not exist: {orphans:#?}"
+        );
+    }
+
+    /// The trap, asserted directly. This is the test that would have caught a
+    /// guard written as `role == Admin`.
+    #[test]
+    fn a_context_scoped_admin_is_refused_every_holder_task() {
+        let scoped_admin = claims(Role::Admin, &["ctx-work"]);
+        for (uri, reach) in REACH {
+            if *reach != Reach::Holder {
+                continue;
+            }
+            let err = authorize(&scoped_admin, uri, Some("ctx-work")).unwrap_err();
+            assert!(
+                matches!(err, AppError::Forbidden(_)),
+                "{uri} admitted an admin scoped to one context — an admin in ctx-work must be \
+                 as powerless over the pool as an application in ctx-work"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unscoped_holder_reaches_the_pool() {
+        let holder = claims(Role::Admin, &[]);
+        for (uri, reach) in REACH {
+            if *reach == Reach::Holder {
+                authorize(&holder, uri, None).unwrap_or_else(|e| {
+                    panic!("{uri} refused an unscoped holder: {e:?}");
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn every_non_admin_role_is_refused_the_pool() {
+        // An empty context list means *unrestricted* for Admin and *nothing at
+        // all* for every other role. A gate testing emptiness without the role
+        // gets one of those backwards, so both halves are asserted.
+        for role in [
+            Role::Application,
+            Role::Reader,
+            Role::Initiator,
+            Role::Monitor,
+        ] {
+            let label = format!("{role:?}");
+            let c = claims(role, &[]);
+            let err = authorize(&c, uris::TASK_PERSONA_ATTRIBUTE_LIST_1_0, None).unwrap_err();
+            assert!(
+                matches!(err, AppError::Forbidden(_)),
+                "{label} reached the pool"
+            );
+        }
+    }
+
+    #[test]
+    fn a_context_task_is_confined_to_its_own_context() {
+        let app = claims(Role::Application, &["ctx-a"]);
+        authorize(&app, uris::TASK_PERSONA_BINDING_GET_1_0, Some("ctx-a")).expect("own context");
+        assert!(
+            authorize(&app, uris::TASK_PERSONA_BINDING_GET_1_0, Some("ctx-b")).is_err(),
+            "a caller scoped to ctx-a must not learn about ctx-b"
+        );
+    }
+
+    #[test]
+    fn an_unknown_task_is_refused_rather_than_defaulted() {
+        let app = claims(Role::Application, &["ctx"]);
+        // Built rather than written as a literal, deliberately. `produced_census`
+        // scans this crate's source for spec-URI literals and asks who publishes
+        // each one — correctly, because a produced document with no schema has
+        // validation on neither side. This fixture never goes on a wire, so it
+        // takes the `format!` shape the census already documents as "not a URI
+        // that goes on a wire", rather than being allowlisted as produced.
+        let unknown = format!("https://trusttasks.org/spec/persona/{}/9.9", "made-up");
+        let err = authorize(&app, &unknown, Some("ctx")).unwrap_err();
+        assert!(matches!(err, AppError::Forbidden(_)));
+    }
+
+    #[test]
+    fn binding_set_is_holder_only_and_local_binding_set_is_not() {
+        // The pair that most invites being collapsed. One crosses the boundary
+        // and one does not.
+        assert_eq!(
+            reach_of(uris::TASK_PERSONA_BINDING_SET_1_0),
+            Some(Reach::Holder)
+        );
+        assert_eq!(
+            reach_of(uris::TASK_PERSONA_LOCAL_BINDING_SET_1_0),
+            Some(Reach::Context)
+        );
+    }
 }
