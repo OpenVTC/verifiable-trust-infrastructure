@@ -433,6 +433,12 @@ jobs:
     # the release moves the compatibility field instead of shipping it as a
     # patch. release-plz enforces that automatically from the same signal.
     #
+    # A third instance of that same confusion is recorded in
+    # scripts/semver-report.sh: for several releases this job checked two crates
+    # and stopped, because an unpublished workspace member aborts the run and a
+    # truncated report is red in exactly the way a declared break is red. The
+    # script now asserts coverage rather than only explaining the red.
+    #
     # The name says "report" because the check list is the only place most
     # people meet this job, and there it is a bare name next to a red cross.
     # Called "semver checks" it is indistinguishable from a gate that broke —
@@ -492,87 +498,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-semver-checks
 
-      # Excludes the twelve subsystem crates. They are on crates.io only
-      # because a published crate's whole dependency closure must be published
-      # and `vta-service` is published (for OpenVTC's `MockVta` harness — see
-      # RELEASING.md). Nothing consumes their APIs directly, here or outside.
+      # Everything this job knows about its own failure modes now lives in
+      # scripts/semver-report.sh, including the exclusion list and the reasons
+      # for it. It moved out of the workflow for one reason: a guard that can
+      # only run in CI cannot be tried before it is pushed, and the defect it
+      # was missing was found by reading a CI log rather than by running
+      # anything.
       #
-      # The exclusions are not cosmetic: this job builds rustdoc JSON for every
-      # crate twice, current and baseline. Including them took it from ~17
-      # minutes to over 35 — on every pull request in the repo, for a signal no
-      # consumer can act on. `release-plz.toml` carries the matching
-      # `semver_check = false` so the release decides bumps the same way.
-      #
-      # `vta-service` is NOT excluded: it has a real consumer, so a silent
-      # break there reaches somebody.
-      # A baseline build failure is NOT a CI inconvenience — it is a
-      # production defect, and this step exists to stop the two looking alike.
-      #
-      # cargo-semver-checks builds the baseline the way a consumer gets it:
-      # `cargo add <crate>@<version>` into a fresh crate, resolving from the
-      # published ranges with no lockfile. That makes it the only thing in this
-      # repo that resolves like a consumer — and therefore the only thing that
-      # can notice when a *published* artifact stops building.
-      #
-      # It noticed. `vta-service` 0.17.1 does not build for an external
-      # consumer: `affinidi-tdk 0.8.5` requires `affinidi-messaging-sdk ^0.19`,
-      # which now resolves to 0.19.9 requiring `trust-tasks-rs ^0.11`, while
-      # 0.17.1 and `vta-sdk` 0.25.1 require `^0.9`. Two versions in one graph,
-      # and the types cross in `vta-sdk`'s `acl_setup`. Reproduce in 30s:
-      #
-      #     cargo new --lib x && cd x && echo '[workspace]' >> Cargo.toml
-      #     cargo add vta-service@0.17.1 && cargo build
-      #
-      # Our own builds are fine because `Cargo.lock` pins one of each. Consumers
-      # do not get our lockfile. That is the whole defect in one sentence.
-      #
-      # Crucially, none of those versions were broken when published — they
-      # broke later, together, when a range they each depend on resolved
-      # somewhere new. No amount of care at publish time catches that, which is
-      # why this check has to keep running rather than gate a release.
+      # The addition is a coverage assertion. Both previous guards asked *why
+      # did it stop*; neither asked *did it cover everything*, and an
+      # unpublished workspace member made `cargo semver-checks --workspace`
+      # abort mid-run with an exit status indistinguishable from a declared
+      # break. See the script header.
       - name: Check published crates for API breaks
-        run: |
-          set +e
-          cargo semver-checks --workspace \
-            --exclude vta-audit \
-            --exclude vta-backup \
-            --exclude vta-config \
-            --exclude vta-keys \
-            --exclude vta-keyspaces \
-            --exclude vta-policy \
-            --exclude vta-support \
-            --exclude vta-sweepers \
-            --exclude vta-tee \
-            --exclude vta-vault \
-            --exclude vta-webvh \
-            --exclude vti-webauthn \
-            2>&1 | tee semver.log
-          status=${PIPESTATUS[0]}
-          set -e
-
-          # The distinction that was missing, and the reason a dead check sat
-          # unnoticed: a failed baseline and a clean comparison produced the
-          # same silence, on a job that was already red for a declared break.
-          # One red looked like another.
-          if grep -qE 'failed to build rustdoc|running cargo-doc on crate' semver.log; then
-            broken="$(grep -oE 'failed to build rustdoc for crate [a-z0-9-]+' semver.log \
-              | sed 's/failed to build rustdoc for crate //' | sort -u | tr '\n' ' ')"
-            echo "::error::PUBLISHED CRATE DOES NOT BUILD: ${broken}-- the semver \
-          baseline is the published crate as a consumer receives it, so a \
-          baseline that fails to build means consumers cannot build it either. \
-          This is not 'the check could not run'; it is the check reporting a \
-          broken artifact on crates.io. Reproduce: cargo new --lib x && cd x && \
-          echo '[workspace]' >> Cargo.toml && cargo add ${broken%% *} && cargo build"
-            exit 1
-          fi
-
-          if [ "$status" -ne 0 ]; then
-            echo "::warning::API breaks reported — expected on a PR marked '!'; \
-          the release moves the compatibility field accordingly."
-          else
-            echo "all baselines built; no API breaks reported"
-          fi
-          exit "$status"
+        run: bash scripts/semver-report.sh
 
   lockfile-self-pins:
     # Sibling guard to release-guards: the version bump can be correct and the
