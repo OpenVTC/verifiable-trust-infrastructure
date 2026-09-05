@@ -196,19 +196,19 @@ pub struct Attribute {
 /// case the others handle badly. Omission is exclusion — there is no removal
 /// marker, because a profile is a whitelist and a blacklist over a growing pool
 /// leaks by default the first time an attribute is added.
+///
+/// # Variant order is load-bearing — do not reorder
+///
+/// `#[serde(untagged)]` tries variants in **declaration order** and serde
+/// ignores unknown fields, so the permissive `Ref` — which matches any document
+/// carrying a `ref` — must come **last**. Declared first, it would swallow
+/// `Override` and `Pinned`, silently degrading an override into a live
+/// reference and a pin into an unpinned one. That is a disclosure changing
+/// behind the holder's back, and `deny_unknown_fields` is not available on a
+/// variant to prevent it. The ordering is pinned by a test.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ProfileEntry {
-    /// Reference the pool attribute, live. Editing the pool updates every
-    /// profile referencing it, which is the point.
-    Ref { r#ref: Ulid },
-    /// Reference it as it was at a version. For a profile that must keep
-    /// presenting the value a counterparty already verified.
-    Pinned {
-        r#ref: Ulid,
-        #[serde(rename = "pinVersion")]
-        pin_version: Version,
-    },
     /// The same fact, a different value here.
     ///
     /// Replaces value and label **only**: type, valueType and provenance are
@@ -219,9 +219,19 @@ pub enum ProfileEntry {
         r#ref: Ulid,
         r#override: OverrideValue,
     },
+    /// Reference it as it was at a version. For a profile that must keep
+    /// presenting the value a counterparty already verified.
+    Pinned {
+        r#ref: Ulid,
+        #[serde(rename = "pinVersion")]
+        pin_version: Version,
+    },
     /// A value that never enters the pool, and so can never leak into another
     /// profile.
     Inline { inline: InlineValue },
+    /// Reference the pool attribute, live. Editing the pool updates every
+    /// profile referencing it, which is the point.
+    Ref { r#ref: Ulid },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

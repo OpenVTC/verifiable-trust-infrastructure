@@ -78,15 +78,18 @@ pub struct Deleted {
 /// hand, so there is one at-rest implementation in the workspace rather than
 /// two.
 pub struct PersonaStore {
-    ks: KeyspaceHandle,
+    pub(crate) ks: KeyspaceHandle,
     /// Per-agent key for the correlation index's keyed hash.
-    correlation_key: [u8; 32],
-    /// Serialises read-modify-write. One lock for the agent-scoped pool, which
-    /// is the only scope this module writes.
-    write_lock: Arc<Mutex<()>>,
+    pub(crate) correlation_key: [u8; 32],
+    /// Serialises read-modify-write across every scope this store writes. One
+    /// lock rather than one per scope: the scopes share a keyspace and the
+    /// reverse index spans them, so two locks would have to be taken in a fixed
+    /// order by every writer — a rule nothing enforces and a deadlock the first
+    /// time somebody forgets.
+    pub(crate) write_lock: Arc<Mutex<()>>,
     /// Cached counter, guarded by `write_lock` and re-read from the store on
     /// first use so a restart never reuses a number.
-    counter: Arc<Mutex<Option<Version>>>,
+    pub(crate) counter: Arc<Mutex<Option<Version>>>,
 }
 
 impl PersonaStore {
@@ -101,7 +104,7 @@ impl PersonaStore {
     }
 
     /// Reserve the next version. Caller must hold `write_lock`.
-    async fn next_version(&self) -> Result<Version, AppError> {
+    pub(crate) async fn next_version(&self) -> Result<Version, AppError> {
         let mut cached = self.counter.lock().await;
         let current = match *cached {
             Some(v) => v,
@@ -312,7 +315,11 @@ impl PersonaStore {
             .unwrap_or_default())
     }
 
-    async fn index_value(&self, blind: &str, attribute_id: &str) -> Result<(), AppError> {
+    pub(crate) async fn index_value(
+        &self,
+        blind: &str,
+        attribute_id: &str,
+    ) -> Result<(), AppError> {
         let mut ids = self.indexed_ids(blind).await?;
         if !ids.iter().any(|i| i == attribute_id) {
             ids.push(attribute_id.to_string());
@@ -323,7 +330,11 @@ impl PersonaStore {
         Ok(())
     }
 
-    async fn unindex_value(&self, blind: &str, attribute_id: &str) -> Result<(), AppError> {
+    pub(crate) async fn unindex_value(
+        &self,
+        blind: &str,
+        attribute_id: &str,
+    ) -> Result<(), AppError> {
         let mut ids = self.indexed_ids(blind).await?;
         ids.retain(|i| i != attribute_id);
         if ids.is_empty() {
@@ -338,7 +349,10 @@ impl PersonaStore {
 }
 
 /// Apply the optimistic-concurrency precondition.
-fn check_precondition(expected: Option<Version>, current: Option<Version>) -> Result<(), AppError> {
+pub(crate) fn check_precondition(
+    expected: Option<Version>,
+    current: Option<Version>,
+) -> Result<(), AppError> {
     match (expected, current) {
         (None, _) => Ok(()),
         // Create-only.
@@ -356,7 +370,7 @@ fn check_precondition(expected: Option<Version>, current: Option<Version>) -> Re
     }
 }
 
-fn now_rfc3339() -> String {
+pub(crate) fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
