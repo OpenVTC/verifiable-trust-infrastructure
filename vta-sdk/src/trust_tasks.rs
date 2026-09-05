@@ -2059,6 +2059,15 @@ mod tests {
             // for their agent. That is squarely an agent's job, and it is why
             // this prefix appears here for exactly one URI.
             "https://trusttasks.org/spec/rooms/",
+            // Canonical personas — `persona/*`, authored upstream in
+            // dtgwg-trust-tasks-tf#360. Top-level rather than VTA-private
+            // because the family describes a *holder's* self-presentation:
+            // which of their own attributes a profile projects, which persona
+            // DID a context sees, and what was disclosed to whom. None of that
+            // is specific to an agent's domain — a wallet with no VTA in it
+            // answers the same questions — so the family sits beside `vault/`
+            // and `keys/` rather than under a maintainer's namespace.
+            "https://trusttasks.org/spec/persona/",
         ];
         for uri in ALL_URIS {
             assert!(
