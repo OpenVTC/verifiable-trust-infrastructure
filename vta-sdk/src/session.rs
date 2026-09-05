@@ -2321,17 +2321,16 @@ impl TspPingSession {
         timeout: std::time::Duration,
     ) -> Result<u128, Box<dyn std::error::Error>> {
         use std::time::Instant;
-        use trust_tasks_rs::TrustTask;
-
-        let id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
-        let nonce = uuid::Uuid::new_v4().to_string();
-        let type_uri = crate::trust_tasks::TASK_MESSAGING_PING_0_1
-            .parse()
-            .map_err(|e| format!("messaging/ping type URI parse: {e}"))?;
-        let mut doc: TrustTask<serde_json::Value> =
-            TrustTask::new(id.clone(), type_uri, serde_json::json!({ "nonce": nonce }));
-        doc.issuer = Some(self.client_did.clone());
-        doc.recipient = Some(vta_did.to_string());
+        let doc = ping_document(&self.client_did, vta_did)?;
+        let id = doc.id.clone();
+        // Read back off the document rather than kept alongside it: the two
+        // must be the same value for `correlates` to mean anything.
+        let nonce = doc
+            .payload
+            .get("nonce")
+            .and_then(|v| v.as_str())
+            .ok_or("messaging/ping payload carries no nonce")?
+            .to_string();
         let body = serde_json::to_vec(&doc)?;
 
         let start = Instant::now();
@@ -2412,18 +2411,7 @@ impl TspPingSession {
     /// [`ping`](Self::ping) does) always times out and masks the send success.
     /// `Ok(())` means the relationship-free routed send worked (3c).
     pub async fn probe_send(&self, vta_did: &str) -> Result<(), Box<dyn std::error::Error>> {
-        use trust_tasks_rs::TrustTask;
-
-        let id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
-        let nonce = uuid::Uuid::new_v4().to_string();
-        let type_uri = crate::trust_tasks::TASK_MESSAGING_PING_0_1
-            .parse()
-            .map_err(|e| format!("messaging/ping type URI parse: {e}"))?;
-        let mut doc: TrustTask<serde_json::Value> =
-            TrustTask::new(id, type_uri, serde_json::json!({ "nonce": nonce }));
-        doc.issuer = Some(self.client_did.clone());
-        doc.recipient = Some(vta_did.to_string());
-        let body = serde_json::to_vec(&doc)?;
+        let body = serde_json::to_vec(&ping_document(&self.client_did, vta_did)?)?;
 
         self.identity
             .hub
@@ -2616,18 +2604,7 @@ impl TspSession {
         vta_did: &str,
         mediator_did: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        use trust_tasks_rs::TrustTask;
-
-        let id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
-        let nonce = uuid::Uuid::new_v4().to_string();
-        let type_uri = crate::trust_tasks::TASK_MESSAGING_PING_0_1
-            .parse()
-            .map_err(|e| format!("messaging/ping type URI parse: {e}"))?;
-        let mut doc: TrustTask<serde_json::Value> =
-            TrustTask::new(id, type_uri, serde_json::json!({ "nonce": nonce }));
-        doc.issuer = Some(self.client_did.clone());
-        doc.recipient = Some(vta_did.to_string());
-        let body = serde_json::to_vec(&doc)?;
+        let body = serde_json::to_vec(&ping_document(&self.client_did, vta_did)?)?;
 
         self.send_document(vta_did, mediator_did, &body).await
     }
@@ -2983,6 +2960,75 @@ fn now_epoch() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+/// Build a `messaging/ping/0.1` document addressed to `vta_did`.
+///
+/// One builder for all three senders — [`TspPingSession::ping`],
+/// [`TspPingSession::probe_send`] and [`TspSession::announce`] — because the
+/// thing they had in common was the member they all left out.
+///
+/// # Why `issuedAt` is stamped here
+///
+/// A consumer that keeps a duplicate-execution record (SPEC §7.2 item 11) has
+/// to bound acceptance by the same window it retains that record over, and a
+/// document carrying no timestamp at all cannot be placed in any window. All
+/// three senders omitted both `issuedAt` and `expiresAt`, so from the moment a
+/// VTA set an acceptance window the probe was refused before reaching the
+/// handler — and refused as `expired`, which reads as a transport delay rather
+/// than a malformed document, so the failure looked like the timeout it is
+/// not. A liveness probe that a live peer refuses is worse than no probe.
+///
+/// `issuedAt` alone is the right bound to carry: an `expiresAt` would put the
+/// consumer's retention obligation in this client's hands.
+fn ping_document(
+    client_did: &str,
+    vta_did: &str,
+) -> Result<trust_tasks_rs::TrustTask<serde_json::Value>, Box<dyn std::error::Error>> {
+    let type_uri = crate::trust_tasks::TASK_MESSAGING_PING_0_1
+        .parse()
+        .map_err(|e| format!("messaging/ping type URI parse: {e}"))?;
+    let mut doc: trust_tasks_rs::TrustTask<serde_json::Value> = trust_tasks_rs::TrustTask::new(
+        format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        type_uri,
+        serde_json::json!({ "nonce": uuid::Uuid::new_v4().to_string() }),
+    );
+    doc.issuer = Some(client_did.to_string());
+    doc.recipient = Some(vta_did.to_string());
+    doc.issued_at = Some(chrono::Utc::now());
+    Ok(doc)
+}
+
+#[cfg(test)]
+mod ping_document_tests {
+    use super::ping_document;
+
+    /// The probe has to survive the posture SPEC §7.2 prescribes for a
+    /// consumer keeping a duplicate-execution record — which is every VTA,
+    /// since the spine guards every document it dispatches. Asserting
+    /// `issued_at.is_some()` would pass on a document the consumer still
+    /// refuses; asserting against the policy is what actually pins the bug.
+    #[test]
+    fn a_ping_survives_a_consequential_consumers_freshness_policy() {
+        let doc = ping_document("did:key:zClient", "did:key:zVta").expect("a ping document");
+        doc.validate_freshness(
+            chrono::Utc::now(),
+            &trust_tasks_rs::FreshnessPolicy::consequential(),
+        )
+        .expect(
+            "a liveness probe a live peer refuses is worse than no probe: this \
+             document must be placeable in the consumer's acceptance window",
+        );
+    }
+
+    /// The two members that make it dispatchable at all, kept distinct from the
+    /// freshness assertion above so a regression names itself.
+    #[test]
+    fn a_ping_is_addressed_and_attributed() {
+        let doc = ping_document("did:key:zClient", "did:key:zVta").expect("a ping document");
+        assert_eq!(doc.issuer.as_deref(), Some("did:key:zClient"));
+        assert_eq!(doc.recipient.as_deref(), Some("did:key:zVta"));
+    }
 }
 
 #[cfg(test)]
