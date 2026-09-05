@@ -1128,7 +1128,10 @@ pub(super) async fn handle_correlation_analyze(
 }
 
 pub(super) async fn handle_renderers_list(
-    state: &AppState,
+    // Unused: this task describes the agent's declared capabilities, which are
+    // a compile-time constant, not stored state. Taking the parameter anyway
+    // keeps every handler one shape for the dispatch table.
+    _state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
@@ -1146,29 +1149,17 @@ pub(super) async fn handle_renderers_list(
 
     // Two renderers ship. Lossiness is DECLARED rather than discovered, so a
     // preview can tell the holder what a format will not carry before they
-    // decide.
+    // decide. Sourced from vta_persona::RENDERERS so this response and the
+    // negotiation that enforces it cannot disagree.
     success_response(
         &doc,
         json!({
-            "renderers": [
-                {
-                    "id": "rcard",
-                    "description": "The canonical verifiable data structure. Lossless.",
-                    "canonical": true,
-                    "drops": [],
-                    "canCarryPredicates": true
-                },
-                {
-                    "id": "jcard",
-                    "description": "RFC 7095 jCard, for vCard-native tooling.",
-                    "canonical": false,
-                    "drops": ["provenance"],
-                    // No field in a general contact format says "over the
-                    // threshold", so a disclosure carrying a predicate must fail
-                    // at negotiation rather than silently drop the claim.
-                    "canCarryPredicates": false
-                }
-            ]
+            "renderers": vta_persona::present::RENDERERS.iter().map(|r| json!({
+                "id": r.id,
+                "canonical": r.canonical,
+                "drops": if r.carries_provenance { vec![] } else { vec!["provenance"] },
+                "canCarryPredicates": r.carries_predicates,
+            })).collect::<Vec<_>>()
         }),
     )
 }
