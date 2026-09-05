@@ -37,12 +37,14 @@
 //! hash. Rung *selection* lives here; proof *derivation* stays in `vta-vault`,
 //! so there is one BBS implementation in the workspace rather than two.
 
+pub mod binding;
 pub mod correlation;
 pub mod model;
 pub mod profile;
 pub mod storage;
 pub mod store;
 
+pub use binding::{BindingSummary, Bound, MaterialisedClaim};
 pub use model::{
     Attribute, Binding, InlineValue, OverrideValue, Profile, ProfileEntry, ProofRung, Provenance,
     StaleReason, Ulid, ValueType, Version,
