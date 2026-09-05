@@ -207,6 +207,14 @@ keyspace and causes the VTA to refuse to start. Only an explicit
 minting a fresh identity. Resetting a live identity is therefore always a
 deliberate, logged action.
 
+The flag is the sole *authorization* but is not on its own *sufficient*: a
+transient class (`KMS_INTERNAL`, `NETWORK`) means KMS never answered, so the
+ciphertexts have not been shown to be undecryptable and the reset is refused
+even with the flag set. And because the discarded seed is what every other
+keyspace is encrypted under, an in-place reinit is a complete reset only on a
+store holding nothing but the bootstrap rows — otherwise the reset is a wipe of
+the data volume.
+
 ## Authentication Flow
 
 ```
