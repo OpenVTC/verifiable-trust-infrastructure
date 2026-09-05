@@ -193,3 +193,119 @@ mod tests {
         assert_eq!(severity(false, false, ProofRung::Whole), Severity::None);
     }
 }
+
+// ─── Findings ────────────────────────────────────────────────────────────
+
+use serde::Serialize;
+
+/// One place the holder's identities link, and what can be done about it.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Finding {
+    pub attribute_id: Option<String>,
+    pub severity: &'static str,
+    /// Plain-language cause. A severity with no explanation is a warning a
+    /// holder learns to dismiss.
+    pub why: String,
+    pub shared_with_profile_count: usize,
+    /// What the holder can actually do.
+    ///
+    /// `reissueCredentialToThisDid` matters more than it looks: without it, a
+    /// holder told "this links your personas" has no action available but to
+    /// abandon the attribute, and the honest fix — a credential re-issued
+    /// against the persona actually using it — stays invisible unless the
+    /// analysis names it.
+    pub remedies: Vec<&'static str>,
+}
+
+impl crate::PersonaStore {
+    /// Report where the holder's identities link.
+    ///
+    /// Accepts a **candidate** the holder is considering but has not written,
+    /// which is the difference between a guard and a report: it can warn before
+    /// the mistake rather than after. A candidate is analysed and never stored.
+    pub async fn analyze_correlation(
+        &self,
+        attribute_id: Option<&str>,
+        candidate: Option<&serde_json::Value>,
+    ) -> Result<Vec<Finding>, vti_common::error::AppError> {
+        let mut findings = Vec::new();
+
+        if let Some(value) = candidate {
+            let count = self.correlation_count(value, "").await?;
+            if count > 0 {
+                findings.push(Finding {
+                    attribute_id: None,
+                    severity: "high",
+                    why: format!(
+                        "this value is already held by {count} other attribute(s); presenting \
+                         both links the personas that carry them, permanently, to anyone who \
+                         sees both"
+                    ),
+                    shared_with_profile_count: count,
+                    remedies: vec![
+                        "useDifferentValue",
+                        "reissueCredentialToThisDid",
+                        "correlateDeliberately",
+                        "proceedAndRecord",
+                    ],
+                });
+            }
+        }
+
+        let subjects: Vec<crate::Attribute> = match attribute_id {
+            Some(id) => self.get(id).await?.into_iter().collect(),
+            None => self.list_attributes(None, true).await?,
+        };
+
+        for a in subjects {
+            let Some(value) = &a.value else { continue };
+            let count = self.correlation_count(value, &a.attribute_id).await?;
+            if count == 0 {
+                continue;
+            }
+            let credential_backed =
+                matches!(a.provenance, crate::Provenance::CredentialBacked { .. });
+            let rung = match &a.provenance {
+                crate::Provenance::CredentialBacked { proof, .. } => {
+                    proof.unwrap_or(crate::ProofRung::Whole)
+                }
+                _ => crate::ProofRung::Whole,
+            };
+            let sev = severity(true, credential_backed, rung);
+            findings.push(Finding {
+                attribute_id: Some(a.attribute_id.clone()),
+                severity: match sev {
+                    Severity::High => "high",
+                    Severity::Low => "low",
+                    Severity::None => "none",
+                },
+                why: if credential_backed {
+                    format!(
+                        "credential-backed and presented at the {rung:?} rung. A credential \
+                         presented whole carries the same issuer signature to every verifier, \
+                         so it links them however few claims each received"
+                    )
+                } else {
+                    format!("the same value is held by {count} other attribute(s)")
+                },
+                shared_with_profile_count: count,
+                remedies: if credential_backed {
+                    vec![
+                        "reissueCredentialToThisDid",
+                        "correlateDeliberately",
+                        "proceedAndRecord",
+                    ]
+                } else {
+                    vec![
+                        "useDifferentValue",
+                        "correlateDeliberately",
+                        "proceedAndRecord",
+                    ]
+                },
+            });
+        }
+
+        Ok(findings)
+    }
+}

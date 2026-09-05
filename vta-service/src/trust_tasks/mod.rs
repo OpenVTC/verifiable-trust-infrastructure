@@ -1684,6 +1684,24 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_BINDING_LIST_1_0 => persona::handle_binding_list
         [ None Metadata false ],
+    // Contacts are a third party's disclosed data held for the holder.
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_PUT_1_0 => persona::handle_contact_put
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_GET_1_0 => persona::handle_contact_get
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_LIST_1_0 => persona::handle_contact_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CONTACT_DELETE_1_0 => persona::handle_contact_delete
+        [ Destructive None false ],
+    // Holder-only: both span every context, which is the view a context-scoped
+    // caller must not have.
+    vta_sdk::trust_tasks::TASK_PERSONA_DISCLOSURE_HISTORY_1_0 => persona::handle_disclosure_history
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_0 => persona::handle_correlation_analyze
+        [ None Metadata false ],
+    // Describes the agent's capabilities, not the holder. Discloses nothing.
+    vta_sdk::trust_tasks::TASK_PERSONA_RENDERERS_LIST_1_0 => persona::handle_renderers_list
+        [ None None false ],
     // ─── Config slice ────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONFIG_SHOW_0_1 => config::handle_get
         [ None Metadata false ],

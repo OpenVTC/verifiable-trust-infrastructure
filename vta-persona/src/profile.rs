@@ -490,3 +490,234 @@ mod tests {
         assert!(!s.delete_profile(&p.profile_id).await.unwrap());
     }
 }
+
+// ─── Context-local profiles ──────────────────────────────────────────────
+//
+// A separate address space, not a flag on the pool's. A context-scoped
+// enumeration therefore scans somewhere a pool profile structurally cannot be,
+// rather than scanning everything and filtering — a filter is a line of code
+// that can be got wrong, an address space cannot.
+
+impl PersonaStore {
+    /// Create or replace a context-local profile.
+    ///
+    /// Refuses any entry that references the pool. A local profile that could
+    /// reference it would be a context-authored object acquiring pool reach,
+    /// which is the escalation the boundary exists to prevent.
+    pub async fn put_local_profile(
+        &self,
+        context_id: &str,
+        mut profile: Profile,
+        expected_version: Option<Version>,
+    ) -> Result<Written, AppError> {
+        if !is_pool_free(&profile.entries) {
+            return Err(AppError::Validation(
+                "a context-local profile may carry inline entries only; a reference to the \
+                 holder's pool is refused"
+                    .into(),
+            ));
+        }
+
+        let _guard = self.write_lock.lock().await;
+        let key = storage::local_profile_key(context_id, &profile.profile_id);
+        let existing = self.ks.get::<ProfileSlot>(key.clone()).await?;
+        let current = match &existing {
+            Some(ProfileSlot::Live(p)) => Some(p.version),
+            _ => None,
+        };
+        check_precondition(expected_version, current)?;
+
+        let version = self.next_version().await?;
+        let created = current.is_none();
+        profile.version = version;
+        profile.updated_at = now_rfc3339();
+        self.ks.insert(key, &ProfileSlot::Live(profile)).await?;
+        Ok(Written { version, created })
+    }
+
+    pub async fn get_local_profile(
+        &self,
+        context_id: &str,
+        profile_id: &str,
+    ) -> Result<Option<Profile>, AppError> {
+        Ok(
+            match self
+                .ks
+                .get::<ProfileSlot>(storage::local_profile_key(context_id, profile_id))
+                .await?
+            {
+                Some(ProfileSlot::Live(p)) => Some(p),
+                _ => None,
+            },
+        )
+    }
+
+    pub async fn list_local_profiles(&self, context_id: &str) -> Result<Vec<Profile>, AppError> {
+        let rows = self
+            .ks
+            .prefix_iter_raw(storage::local_profile_prefix(context_id).into_bytes())
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(_k, v)| match serde_json::from_slice::<ProfileSlot>(&v) {
+                Ok(ProfileSlot::Live(p)) => Some(p),
+                _ => None,
+            })
+            .collect())
+    }
+
+    pub async fn delete_local_profile(
+        &self,
+        context_id: &str,
+        profile_id: &str,
+    ) -> Result<bool, AppError> {
+        let _guard = self.write_lock.lock().await;
+        let key = storage::local_profile_key(context_id, profile_id);
+        let existed = matches!(
+            self.ks.get::<ProfileSlot>(key.clone()).await?,
+            Some(ProfileSlot::Live(_))
+        );
+        if existed {
+            self.ks.remove(key).await?;
+        }
+        Ok(existed)
+    }
+
+    /// Bind a **context-local** profile to a persona in the same context.
+    ///
+    /// Refuses a `profile_id` naming a POOL profile. That refusal is the whole
+    /// distinction from `set_binding`: resolving the identifier against both
+    /// address spaces would let a context-scoped caller bind the holder's
+    /// composition and read it back through a disclosure it requests of itself
+    /// — precisely the escalation `binding/set` is holder-authorized to prevent,
+    /// reintroduced in the task that looks harmless.
+    pub async fn set_local_binding(
+        &self,
+        context_id: &str,
+        persona_did: &str,
+        profile_id: Option<&str>,
+    ) -> Result<Version, AppError> {
+        if let Some(id) = profile_id
+            && self.get_local_profile(context_id, id).await?.is_none()
+        {
+            return Err(AppError::Validation(format!(
+                "{id} does not name a context-local profile; a pool profile cannot be bound here"
+            )));
+        }
+
+        let _guard = self.write_lock.lock().await;
+        let version = self.next_version().await?;
+        self.ks
+            .insert(
+                storage::local_binding_key(context_id, persona_did),
+                &(profile_id.map(str::to_string), version),
+            )
+            .await?;
+        Ok(version)
+    }
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+    use crate::model::{InlineValue, Provenance, ValueType};
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    async fn fresh() -> (tempfile::TempDir, PersonaStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        (
+            dir,
+            PersonaStore::new(store.keyspace(vta_keyspaces::PERSONA).unwrap(), [21u8; 32]),
+        )
+    }
+
+    fn inline(v: &str) -> ProfileEntry {
+        ProfileEntry::Inline {
+            inline: InlineValue {
+                r#type: "x:handle".into(),
+                value_type: ValueType::String,
+                value: serde_json::json!(v),
+                label: None,
+                provenance: Provenance::SelfAsserted,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reference_to_the_pool_is_refused() {
+        let (_d, s) = fresh().await;
+        let p = new_profile(
+            "Throwaway",
+            vec![ProfileEntry::Ref {
+                r#ref: "01ABC".into(),
+            }],
+        );
+        let err = s.put_local_profile("ctx", p, None).await.unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn local_and_pool_profiles_do_not_see_each_other() {
+        // The isolation is the address space. A context-scoped enumeration must
+        // reach somewhere a pool profile cannot be.
+        let (_d, s) = fresh().await;
+        let pool = new_profile("Work", vec![]);
+        s.put_profile(pool.clone(), None).await.unwrap();
+        let local = new_profile("Throwaway", vec![inline("g")]);
+        s.put_local_profile("ctx", local.clone(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(s.list_local_profiles("ctx").await.unwrap().len(), 1);
+        assert_eq!(s.list_profiles().await.unwrap().len(), 1);
+        assert!(
+            s.get_local_profile("ctx", &pool.profile_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(s.get_profile(&local.profile_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_local_binding_refuses_a_pool_profile() {
+        // The one refusal that keeps the local surface from becoming an
+        // escalation path.
+        let (_d, s) = fresh().await;
+        let pool = new_profile("Work", vec![]);
+        s.put_profile(pool.clone(), None).await.unwrap();
+
+        let err = s
+            .set_local_binding("ctx", "did:p", Some(&pool.profile_id))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+
+        let local = new_profile("Throwaway", vec![inline("g")]);
+        s.put_local_profile("ctx", local.clone(), None)
+            .await
+            .unwrap();
+        s.set_local_binding("ctx", "did:p", Some(&local.profile_id))
+            .await
+            .expect("a local profile binds");
+    }
+
+    #[tokio::test]
+    async fn a_local_profile_is_confined_to_its_context() {
+        let (_d, s) = fresh().await;
+        let p = new_profile("Throwaway", vec![inline("g")]);
+        s.put_local_profile("ctx-a", p.clone(), None).await.unwrap();
+        assert!(
+            s.get_local_profile("ctx-b", &p.profile_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(s.list_local_profiles("ctx-b").await.unwrap().is_empty());
+    }
+}

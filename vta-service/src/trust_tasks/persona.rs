@@ -840,3 +840,335 @@ pub(super) async fn handle_binding_list(
         }),
     )
 }
+
+// ─── Contacts ────────────────────────────────────────────────────────────
+
+pub(super) async fn handle_contact_put(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::contact::put::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_CONTACT_PUT_1_0, Some(&ctx)) {
+        return reject(&doc, e);
+    }
+
+    let document = match serde_json::to_value(&req.document)
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+    {
+        Some(d) => d,
+        None => {
+            return reject(
+                &doc,
+                AppError::Validation("unrecognised contact document".into()),
+            );
+        }
+    };
+
+    let filed = match store(state)
+        .file_contact(
+            &ctx,
+            &req.subject_did.to_string(),
+            &req.known_by_persona.to_string(),
+            document,
+            req.credential_refs.iter().map(|c| c.to_string()).collect(),
+        )
+        .await
+    {
+        Ok(f) => f,
+        Err(e) => return reject(&doc, e),
+    };
+
+    audit_persona(
+        state,
+        "persona.contact.put",
+        auth,
+        Some(&filed.contact_id),
+        Some(&ctx),
+    )
+    .await;
+    success_response(
+        &doc,
+        json!({
+            "contactId": filed.contact_id,
+            "rev": filed.rev,
+            "created": filed.created,
+            // Types, not values. A producer needing the old value reads the
+            // prior revision, which is an explicit act.
+            "changedClaims": filed.changed_claims,
+        }),
+    )
+}
+
+pub(super) async fn handle_contact_get(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::contact::get::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_CONTACT_GET_1_0, Some(&ctx)) {
+        return reject(&doc, e);
+    }
+    let id = req.contact_id.to_string();
+    let s = store(state);
+
+    let Some(contact) = (match s.get_contact(&ctx, &id).await {
+        Ok(c) => c,
+        Err(e) => return reject(&doc, e),
+    }) else {
+        return reject(&doc, AppError::NotFound(format!("contact {id}")));
+    };
+
+    // A named revision resolves through the store, which distinguishes reaped
+    // (Gone) from never-existed (NotFound) — a caller comparing against history
+    // must be able to tell those apart.
+    let document = match req.rev {
+        None => serde_json::to_value(&contact.document).unwrap_or(Value::Null),
+        Some(rev) => match s.get_contact_revision(&ctx, &id, rev.get()).await {
+            Ok(r) => serde_json::to_value(&r.document).unwrap_or(Value::Null),
+            Err(e) => return reject(&doc, e),
+        },
+    };
+
+    let history = if req.include_history {
+        match s.contact_history(&ctx, &id).await {
+            // Metadata without documents: a timeline is cheap and the documents
+            // behind it are not.
+            Ok(h) => Some(
+                h.iter()
+                    .map(|(rev, at, cited)| json!({ "rev": rev, "receivedAt": at, "cited": cited }))
+                    .collect::<Vec<_>>(),
+            ),
+            Err(e) => return reject(&doc, e),
+        }
+    } else {
+        None
+    };
+
+    audit_persona(state, "persona.contact.get", auth, Some(&id), Some(&ctx)).await;
+    let mut body = json!({
+        "contactId": contact.contact_id,
+        "subjectDid": contact.subject_did,
+        "knownByPersona": contact.known_by_persona,
+        "rev": req.rev.map_or(contact.rev, std::num::NonZeroU64::get),
+        "document": document,
+        "credentialRefs": contact.credential_refs,
+        "notes": contact.notes,
+    });
+    if let Some(h) = history {
+        body["history"] = json!(h);
+    }
+    success_response(&doc, body)
+}
+
+pub(super) async fn handle_contact_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::contact::list::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_CONTACT_LIST_1_0, Some(&ctx)) {
+        return reject(&doc, e);
+    }
+
+    let persona = req.known_by_persona.as_ref().map(|p| p.to_string());
+    let sums = match store(state)
+        .list_contact_summaries(&ctx, persona.as_deref())
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => return reject(&doc, e),
+    };
+
+    audit_persona(state, "persona.contact.list", auth, None, Some(&ctx)).await;
+    success_response(
+        &doc,
+        json!({
+            // Summaries carry no claim values: finding one contact does not
+            // require disclosing the details of every contact.
+            "contacts": sums.iter().map(|s| json!({
+                "contactId": s.contact_id,
+                "subjectDid": s.subject_did,
+                "knownByPersona": s.known_by_persona,
+                "rev": s.rev,
+                "claimCount": s.claim_count,
+                "receivedAt": s.received_at,
+                "hasUnreviewedChange": s.has_unreviewed_change,
+            })).collect::<Vec<_>>()
+        }),
+    )
+}
+
+pub(super) async fn handle_contact_delete(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::contact::delete::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_CONTACT_DELETE_1_0, Some(&ctx)) {
+        return reject(&doc, e);
+    }
+    let id = req.contact_id.to_string();
+
+    let (existed, removed, retained) = match store(state).delete_contact(&ctx, &id).await {
+        Ok(o) => o,
+        Err(e) => return reject(&doc, e),
+    };
+
+    audit_persona(state, "persona.contact.delete", auth, Some(&id), Some(&ctx)).await;
+    success_response(
+        &doc,
+        json!({
+            "contactId": id,
+            "existed": existed,
+            "revisionsRemoved": removed,
+            // Reported rather than glossed: an incomplete erasure the holder
+            // believes is complete is worse than one they know about.
+            "retainedForDisclosure": retained,
+        }),
+    )
+}
+
+// ─── Disclosure history, correlation, renderers ──────────────────────────
+
+pub(super) async fn handle_disclosure_history(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::disclosure::history::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    // Holder-only: omitting contextId queries across every context, which only
+    // the holder may do and is the reason this sits above the boundary.
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_DISCLOSURE_HISTORY_1_0, None) {
+        return reject(&doc, e);
+    }
+
+    let ctx = req.context_id.as_ref().map(|c| c.to_string());
+    let verifier = req.verifier_did.as_ref().map(|v| v.to_string());
+    let claim = req.attribute_type.as_ref().map(|t| t.to_string());
+    let since = req.since.map(|s| s.to_rfc3339());
+
+    let records = match store(state)
+        .disclosure_history(&vta_persona::HistoryQuery {
+            context_id: ctx.as_deref(),
+            verifier_did: verifier.as_deref(),
+            claim_type: claim.as_deref(),
+            since: since.as_deref(),
+        })
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return reject(&doc, e),
+    };
+
+    audit_persona(
+        state,
+        "persona.disclosure.history",
+        auth,
+        None,
+        ctx.as_deref(),
+    )
+    .await;
+    success_response(&doc, json!({ "disclosures": records }))
+}
+
+pub(super) async fn handle_correlation_analyze(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::correlation::analyze::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    // Holder-only: the response is the linkage map between the holder's own
+    // identities — the artifact the family exists to keep from being assembled
+    // by anyone else.
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_CORRELATION_ANALYZE_1_0, None) {
+        return reject(&doc, e);
+    }
+
+    let s = store(state);
+    let findings = match s
+        .analyze_correlation(
+            req.attribute_id.as_ref().map(|a| a.to_string()).as_deref(),
+            req.candidate
+                .as_ref()
+                .and_then(|c| serde_json::to_value(&c.value).ok())
+                .as_ref(),
+        )
+        .await
+    {
+        Ok(f) => f,
+        Err(e) => return reject(&doc, e),
+    };
+
+    audit_persona(state, "persona.correlation.analyze", auth, None, None).await;
+    success_response(&doc, json!({ "findings": findings }))
+}
+
+pub(super) async fn handle_renderers_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let _req: spec::renderers::list::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    // Context-callable and carries nothing about the holder — it describes the
+    // agent's own capabilities. A caller must still name a context, so the
+    // request is attributable.
+    let ctx = auth.allowed_contexts.first().cloned();
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_RENDERERS_LIST_1_0, ctx.as_deref()) {
+        return reject(&doc, e);
+    }
+
+    // Two renderers ship. Lossiness is DECLARED rather than discovered, so a
+    // preview can tell the holder what a format will not carry before they
+    // decide.
+    success_response(
+        &doc,
+        json!({
+            "renderers": [
+                {
+                    "id": "rcard",
+                    "description": "The canonical verifiable data structure. Lossless.",
+                    "canonical": true,
+                    "drops": [],
+                    "canCarryPredicates": true
+                },
+                {
+                    "id": "jcard",
+                    "description": "RFC 7095 jCard, for vCard-native tooling.",
+                    "canonical": false,
+                    "drops": ["provenance"],
+                    // No field in a general contact format says "over the
+                    // threshold", so a disclosure carrying a predicate must fail
+                    // at negotiation rather than silently drop the claim.
+                    "canCarryPredicates": false
+                }
+            ]
+        }),
+    )
+}
