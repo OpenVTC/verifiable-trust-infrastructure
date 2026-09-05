@@ -278,6 +278,82 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: DidTemplateCommands,
     },
+
+    /// Manage the VTA's per-context agent memory — the key/value notes an
+    /// agent reads before it answers.
+    ///
+    /// Backed by the `spec/vta/memory/{put,list,delete}/0.1` Trust Tasks.
+    /// Two gates apply, both server-side: the capability (`MemoryRead` to
+    /// recall, `MemoryWrite` to plant / forget / wipe) and access to
+    /// `--context`, which is the isolation boundary — a caller scoped to one
+    /// context can never reach another's memory.
+    #[command(name = "memory")]
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommands,
+    },
+}
+
+/// CRUD over the agent's memory. `plant` creates/updates, `recall` reads,
+/// `forget` deletes one entry, and `wipe` deletes every entry in the context.
+///
+/// Each carries a hidden alias under the Trust Task's own verb (`put`,
+/// `list`, `delete`, `clear`) so an operator reading the task names finds the
+/// command they expect.
+#[derive(Subcommand)]
+pub(crate) enum MemoryCommands {
+    /// Plant a memory: store `value` under `key` so the agent recalls it.
+    ///
+    /// Upsert — re-planting the same key overwrites the old value.
+    #[command(alias = "put")]
+    Plant {
+        /// Memory key, unique within the context (e.g. `favorite-color`).
+        key: String,
+        /// The value to store (e.g. `green`). Not a secret store — tokens,
+        /// passwords and keys belong in `pnm vault`.
+        value: String,
+        /// TARGET SCOPE: the context whose memory to write.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
+
+    /// Recall what the agent knows: list every memory in the context, or
+    /// just the one at `key`.
+    #[command(alias = "list")]
+    Recall {
+        /// Show only this key. Omit to list the whole context.
+        key: Option<String>,
+        /// TARGET SCOPE: the context whose memory to read.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
+
+    /// Forget a single memory by key — the agent loses just that fact.
+    #[command(alias = "delete")]
+    Forget {
+        /// The memory key to delete.
+        key: String,
+        /// TARGET SCOPE: the context whose memory to write.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
+
+    /// Wipe every memory in the context. Prompts for confirmation unless
+    /// `--yes`; requires `--yes` in `--json` mode.
+    ///
+    /// There is no bulk-delete Trust Task, so this deletes entries one by one
+    /// (N round-trips, not atomic). Re-running is safe and resumes if a delete
+    /// fails partway. Needs both memory capabilities: it lists (`MemoryRead`)
+    /// before it deletes (`MemoryWrite`).
+    #[command(alias = "clear")]
+    Wipe {
+        /// TARGET SCOPE: the context whose memory to wipe.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// Skip the confirmation prompt (automation only).
+        #[arg(long = "yes", alias = "force")]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2689,5 +2765,88 @@ mod transport_flag_tests {
     #[test]
     fn transport_rejects_unknown_value() {
         assert!(Cli::try_parse_from(["pnm", "--transport", "bogus", "health"]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod memory_flag_tests {
+    use super::*;
+    use clap::Parser;
+
+    /// The scope flag is required, never defaulted. A super-admin's context
+    /// check passes for any id and the memory tasks don't require the context
+    /// to exist, so a defaulted id would read and write a context that isn't
+    /// there and look like an empty one. Clap refusing is the whole guard.
+    #[test]
+    fn every_memory_subcommand_requires_a_context() {
+        for args in [
+            vec!["pnm", "memory", "plant", "k", "v"],
+            vec!["pnm", "memory", "recall"],
+            vec!["pnm", "memory", "forget", "k"],
+            vec!["pnm", "memory", "wipe"],
+        ] {
+            assert!(
+                Cli::try_parse_from(&args).is_err(),
+                "{args:?} parsed without --context"
+            );
+        }
+    }
+
+    #[test]
+    fn context_id_stays_accepted_as_an_alias() {
+        let cli =
+            Cli::try_parse_from(["pnm", "memory", "recall", "--context-id", "agent"]).unwrap();
+        let Commands::Memory {
+            command: MemoryCommands::Recall { context, key },
+        } = cli.command
+        else {
+            panic!("expected memory recall");
+        };
+        assert_eq!(context, "agent");
+        assert_eq!(key, None);
+    }
+
+    /// `--yes` is the workspace's skip-the-prompt flag (`pnm keys create
+    /// --yes`); `--force` means "hard-delete" on the vault commands. Renamed
+    /// to match, with the old spelling kept working.
+    #[test]
+    fn wipe_takes_yes_and_still_honours_force() {
+        for flag in ["--yes", "--force"] {
+            let cli =
+                Cli::try_parse_from(["pnm", "memory", "wipe", "--context", "agent", flag]).unwrap();
+            let Commands::Memory {
+                command: MemoryCommands::Wipe { yes, .. },
+            } = cli.command
+            else {
+                panic!("expected memory wipe");
+            };
+            assert!(yes, "{flag} did not set yes");
+        }
+    }
+
+    #[test]
+    fn trust_task_verbs_alias_the_command_names() {
+        for (alias, expect_plant) in [("put", true), ("plant", true)] {
+            let cli = Cli::try_parse_from(["pnm", "memory", alias, "k", "v", "--context", "agent"])
+                .unwrap();
+            let Commands::Memory { command } = cli.command else {
+                panic!("expected memory");
+            };
+            assert_eq!(
+                matches!(command, MemoryCommands::Plant { .. }),
+                expect_plant
+            );
+        }
+        for alias in ["list", "recall"] {
+            assert!(Cli::try_parse_from(["pnm", "memory", alias, "--context", "agent"]).is_ok());
+        }
+        for alias in ["delete", "forget"] {
+            assert!(
+                Cli::try_parse_from(["pnm", "memory", alias, "k", "--context", "agent"]).is_ok()
+            );
+        }
+        for alias in ["clear", "wipe"] {
+            assert!(Cli::try_parse_from(["pnm", "memory", alias, "--context", "agent"]).is_ok());
+        }
     }
 }

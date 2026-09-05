@@ -23,6 +23,7 @@ pub(crate) mod device;
 pub(crate) mod did_templates;
 pub(crate) mod health;
 pub(crate) mod keys;
+pub(crate) mod memory;
 pub(crate) mod policy;
 pub(crate) mod services;
 pub(crate) mod setup;
