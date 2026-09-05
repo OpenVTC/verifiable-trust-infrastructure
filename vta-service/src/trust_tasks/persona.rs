@@ -265,12 +265,14 @@ mod tests {
     #[test]
     fn an_unknown_task_is_refused_rather_than_defaulted() {
         let app = claims(Role::Application, &["ctx"]);
-        let err = authorize(
-            &app,
-            "https://trusttasks.org/spec/persona/made/up/9.9",
-            Some("ctx"),
-        )
-        .unwrap_err();
+        // Built rather than written as a literal, deliberately. `produced_census`
+        // scans this crate's source for spec-URI literals and asks who publishes
+        // each one — correctly, because a produced document with no schema has
+        // validation on neither side. This fixture never goes on a wire, so it
+        // takes the `format!` shape the census already documents as "not a URI
+        // that goes on a wire", rather than being allowlisted as produced.
+        let unknown = format!("https://trusttasks.org/spec/persona/{}/9.9", "made-up");
+        let err = authorize(&app, &unknown, Some("ctx")).unwrap_err();
         assert!(matches!(err, AppError::Forbidden(_)));
     }
 
