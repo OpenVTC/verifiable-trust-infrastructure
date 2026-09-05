@@ -128,6 +128,61 @@ pub const ROOM_GROUPS: &str = "room_groups";
 /// use means single use.
 pub const ROOM_INVITATIONS: &str = "room_invitations";
 
+/// The holder's identity attributes, profiles, bindings and contacts
+/// (`persona/*`) — the fourth store, beside [`VAULT`] (secrets and
+/// credentials), [`MEMORY`] (agent memory) and [`APP_STATE`] (uninterpreted
+/// application JSON).
+///
+/// It is a distinct store because disclosure control is its point, and a
+/// maintainer that cannot read a record cannot decide which of its members may
+/// leave, cannot audit which ones did, and cannot answer "what have I shared
+/// with whom". [`APP_STATE`] promises never to interpret its records, so it
+/// cannot host this; and a namespace there is collision avoidance rather than a
+/// trust boundary, so a compromised application sharing a context could remove
+/// the holder's identity data.
+///
+/// **Two scopes share the keyspace, and the split is a security control rather
+/// than a filing decision.** The pool and profiles are *agent-scoped* — above
+/// every context — so that the correlation index can see the risk it most needs
+/// to report: the same value presented by two personas in two different
+/// contexts, which a per-context index cannot see by construction. Bindings,
+/// contacts and disclosure records are context-scoped, because a persona lives
+/// in a context and so do its counterparties.
+///
+/// Nothing inside a context may read the agent-scoped prefixes. The holder
+/// pushes a materialised projection down; a context never pulls. That is
+/// enforced at dispatch, not here, but the prefix split is what makes the
+/// enforcement expressible.
+///
+/// Agent-scoped:
+///
+/// - `pa:<attributeId>` — one attribute of the pool.
+/// - `pp:<profileId>` — one profile.
+/// - `pxi:<hmac>` — correlation index, keyed by a keyed hash of the value so
+///   exact-match lookup works with no plaintext index over personal data.
+/// - `pxr:<attributeId>:<profileId>` — attribute → profile reverse index, so a
+///   delete can name its referring profiles without scanning every profile.
+///
+/// Context-scoped:
+///
+/// - `pb:<contextId>:<personaDid>` — binding of a profile to a persona DID.
+/// - `pc:<contextId>:<contactId>` — a contact's current revision.
+/// - `pcr:<contextId>:<contactId>:<rev>` — superseded contact revisions,
+///   reference-counted rather than reaped on a flat TTL: a revision behind a
+///   disclosure record is evidence the holder can still be asked to account for.
+/// - `pd:<contextId>:<seq:020>` — append-only disclosure record.
+/// - `plp:<contextId>:<profileId>` — context-local profile (inline entries
+///   only). A *separate prefix*, not a flag on `pp:`, so a context-scoped list
+///   scans a space that structurally cannot contain a pool profile — a filter
+///   bug there would be the same one-line leak the authorization rule exists to
+///   remove.
+/// - `plb:<contextId>:<personaDid>` — binding of a local profile.
+///
+/// The holder's identity is the account → in [`BACKED_UP`]. A restored agent
+/// that came back without it would be an agent that no longer knows who its
+/// holder is.
+pub const PERSONA: &str = "persona";
+
 /// Versioned, namespaced application state (`vta/app-state/{get,put,list,
 /// delete,get-many,put-many}/1.0`) — the third store, beside [`VAULT`] (secrets
 /// and credentials) and [`MEMORY`] (agent memory), for JSON an application owns
@@ -218,6 +273,7 @@ pub const ALL: &[&str] = &[
     ROOM_GROUPS,
     ROOM_INVITATIONS,
     APP_STATE,
+    PERSONA,
     POLICY,
     TASK_CONSENT,
     OUTBOX,
@@ -244,6 +300,10 @@ pub const BACKED_UP: &[&str] = &[
     // without it would return a VTA whose applications no longer recognise
     // their own data, which is the failure the store exists to prevent.
     APP_STATE,
+    // The holder's own identity — attributes, profiles, bindings, contacts.
+    // A restore that came back without it would return an agent that no longer
+    // knows who its holder is, which is most of what the restore was for.
+    PERSONA,
     // Operator security policy — must survive a restore, else enforcement
     // silently reverts to whatever defaults boot-install provides.
     POLICY,
@@ -400,6 +460,18 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         // twice. Single use means single use, and the record is the only thing
         // that remembers.
         b"room_groups" | b"room_invitations" => Cascade,
+
+        // Persona is two scopes in one keyspace and only one half is DID-keyed,
+        // which the per-keyspace enum cannot say — so it is said here. The
+        // context-scoped rows DO belong to a DID: a binding is keyed by the
+        // persona DID, and a contact records the persona that knows it. Those
+        // cascade, because a binding for a DID that can no longer be resolved is
+        // the ACL orphan again in a different keyspace. The agent-scoped rows —
+        // the attribute pool, the profiles, and their indexes — are keyed to no
+        // DID and survive, which is correct: a profile may be bound to several
+        // personas, and deleting one persona must not destroy facts the holder
+        // still presents through another.
+        b"persona" => Cascade,
 
         // ---- Depends on the DID to function ------------------------------
         // A context whose `did` is this one, a DID named in an advertised
