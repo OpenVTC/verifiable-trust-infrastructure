@@ -31,3 +31,8 @@ ulid = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# The generated payload types are the contract this crate stores against.
+# A dev-dependency rather than a real one: storage does not need them, and
+# taking them here means a spec change that lands upstream without a matching
+# change to our models fails a test rather than a production dispatch.
+trust-tasks-rs = { workspace = true }

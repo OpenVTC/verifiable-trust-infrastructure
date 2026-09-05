@@ -45,3 +45,51 @@ pub use model::{
     Attribute, Binding, InlineValue, OverrideValue, Profile, ProfileEntry, ProofRung, Provenance,
     StaleReason, Ulid, ValueType, Version,
 };
+
+#[cfg(test)]
+mod published_types {
+    //! The generated payload types are the contract. This asserts the published
+    //! crate actually carries the persona family and that our model agrees with
+    //! it on the members that matter — so a spec change that lands upstream
+    //! without a corresponding change here fails a test rather than a
+    //! production dispatch.
+
+    /// Compile-time, not runtime: these are `const`, so a relaxation upstream
+    /// should fail the *build* rather than a test run. A `MUST` that became a
+    /// `SHOULD` in the spec would otherwise reach production as an accepted
+    /// unsigned write.
+    const _: () = {
+        use trust_tasks_rs::specs::persona::attribute::put::v1_0::Payload;
+        assert!(<Payload as trust_tasks_rs::Payload>::IS_PROOF_REQUIRED);
+        assert!(<Payload as trust_tasks_rs::Payload>::IS_ISSUED_AT_REQUIRED);
+    };
+
+    #[test]
+    fn persona_family_is_published_and_addressable() {
+        use trust_tasks_rs::specs::persona::attribute::put::v1_0 as put;
+        assert_eq!(
+            <put::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            "https://trusttasks.org/spec/persona/attribute/put/1.0"
+        );
+    }
+
+    #[test]
+    fn our_value_types_match_the_published_enum() {
+        // The store validates values against these; a variant added upstream
+        // without a matching arm here would silently reject a legal value.
+        use trust_tasks_rs::specs::persona::attribute::put::v1_0 as put;
+        for (ours, theirs) in [
+            (crate::ValueType::String, put::ValueType::String),
+            (crate::ValueType::Number, put::ValueType::Number),
+            (crate::ValueType::Boolean, put::ValueType::Boolean),
+            (crate::ValueType::Date, put::ValueType::Date),
+            (crate::ValueType::Object, put::ValueType::Object),
+        ] {
+            assert_eq!(
+                serde_json::to_value(ours).unwrap(),
+                serde_json::to_value(theirs).unwrap(),
+                "our ValueType and the published one disagree on the wire"
+            );
+        }
+    }
+}
