@@ -3105,7 +3105,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -8264,7 +8264,7 @@ checksum = "7bd22781911de0ca6debda95f073c8f18bec65d1a94f1fa9573f3102e514cea4"
 dependencies = [
  "ahash",
  "annotate-snippets",
- "base64 0.21.7",
+ "base64 0.22.1",
  "encoding_rs_io",
  "getrandom 0.3.4",
  "granit-parser",
@@ -9734,6 +9734,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2896d95c02a80c6d6a5d6e953d479f5ddf2dfdb6a244441010e373ac0fb88971"
 
 [[package]]
+name = "ulid"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
+dependencies = [
+ "rand 0.9.5",
+ "serde",
+ "web-time",
+]
+
+[[package]]
 name = "unicase"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10289,6 +10300,23 @@ dependencies = [
  "trust-tasks-rs",
  "uniffi",
  "vta-sdk",
+]
+
+[[package]]
+name = "vta-persona"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hmac 0.13.0",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "subtle",
+ "tempfile",
+ "tracing",
+ "ulid",
+ "vta-keyspaces",
+ "vti-common",
 ]
 
 [[package]]
