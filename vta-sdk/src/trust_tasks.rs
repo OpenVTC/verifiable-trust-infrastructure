@@ -812,6 +812,110 @@ pub const TASK_ROOMS_KEYS_COMMIT_0_1: &str = "https://trusttasks.org/spec/rooms/
 /// [`crate::protocols::memory::MemoryDeleteBody`].
 pub const TASK_VTA_MEMORY_DELETE_0_1: &str = "https://trusttasks.org/spec/vta/memory/delete/0.1";
 
+// ─── Persona slice (spec/persona/*) ──────────────────────────────────────
+//
+// The holder's own identity: the attribute pool, the profiles that project
+// over it, the bindings that assign a profile to a persona DID, and the
+// contacts peers disclose. Eleven of these are **holder-only** and unreachable
+// from inside a context — see `vta-service`'s `trust_tasks::persona` for the
+// classification and the census test that pins it.
+
+/// `spec/persona/attribute/put/1.0`
+pub const TASK_PERSONA_ATTRIBUTE_PUT_1_0: &str =
+    "https://trusttasks.org/spec/persona/attribute/put/1.0";
+
+/// `spec/persona/attribute/list/1.0`
+pub const TASK_PERSONA_ATTRIBUTE_LIST_1_0: &str =
+    "https://trusttasks.org/spec/persona/attribute/list/1.0";
+
+/// `spec/persona/attribute/delete/1.0`
+pub const TASK_PERSONA_ATTRIBUTE_DELETE_1_0: &str =
+    "https://trusttasks.org/spec/persona/attribute/delete/1.0";
+
+/// `spec/persona/profile/put/1.0`
+pub const TASK_PERSONA_PROFILE_PUT_1_0: &str =
+    "https://trusttasks.org/spec/persona/profile/put/1.0";
+
+/// `spec/persona/profile/get/1.0`
+pub const TASK_PERSONA_PROFILE_GET_1_0: &str =
+    "https://trusttasks.org/spec/persona/profile/get/1.0";
+
+/// `spec/persona/profile/list/1.0`
+pub const TASK_PERSONA_PROFILE_LIST_1_0: &str =
+    "https://trusttasks.org/spec/persona/profile/list/1.0";
+
+/// `spec/persona/profile/delete/1.0`
+pub const TASK_PERSONA_PROFILE_DELETE_1_0: &str =
+    "https://trusttasks.org/spec/persona/profile/delete/1.0";
+
+/// `spec/persona/binding/set/1.0`
+pub const TASK_PERSONA_BINDING_SET_1_0: &str =
+    "https://trusttasks.org/spec/persona/binding/set/1.0";
+
+/// `spec/persona/binding/get/1.0`
+pub const TASK_PERSONA_BINDING_GET_1_0: &str =
+    "https://trusttasks.org/spec/persona/binding/get/1.0";
+
+/// `spec/persona/binding/list/1.0`
+pub const TASK_PERSONA_BINDING_LIST_1_0: &str =
+    "https://trusttasks.org/spec/persona/binding/list/1.0";
+
+/// `spec/persona/contact/put/1.0`
+pub const TASK_PERSONA_CONTACT_PUT_1_0: &str =
+    "https://trusttasks.org/spec/persona/contact/put/1.0";
+
+/// `spec/persona/contact/get/1.0`
+pub const TASK_PERSONA_CONTACT_GET_1_0: &str =
+    "https://trusttasks.org/spec/persona/contact/get/1.0";
+
+/// `spec/persona/contact/list/1.0`
+pub const TASK_PERSONA_CONTACT_LIST_1_0: &str =
+    "https://trusttasks.org/spec/persona/contact/list/1.0";
+
+/// `spec/persona/contact/delete/1.0`
+pub const TASK_PERSONA_CONTACT_DELETE_1_0: &str =
+    "https://trusttasks.org/spec/persona/contact/delete/1.0";
+
+/// `spec/persona/disclosure/preview/1.0`
+pub const TASK_PERSONA_DISCLOSURE_PREVIEW_1_0: &str =
+    "https://trusttasks.org/spec/persona/disclosure/preview/1.0";
+
+/// `spec/persona/disclosure/present/1.0`
+pub const TASK_PERSONA_DISCLOSURE_PRESENT_1_0: &str =
+    "https://trusttasks.org/spec/persona/disclosure/present/1.0";
+
+/// `spec/persona/disclosure/history/1.0`
+pub const TASK_PERSONA_DISCLOSURE_HISTORY_1_0: &str =
+    "https://trusttasks.org/spec/persona/disclosure/history/1.0";
+
+/// `spec/persona/correlation/analyze/1.0`
+pub const TASK_PERSONA_CORRELATION_ANALYZE_1_0: &str =
+    "https://trusttasks.org/spec/persona/correlation/analyze/1.0";
+
+/// `spec/persona/renderers/list/1.0`
+pub const TASK_PERSONA_RENDERERS_LIST_1_0: &str =
+    "https://trusttasks.org/spec/persona/renderers/list/1.0";
+
+/// `spec/persona/local/profile/put/1.0`
+pub const TASK_PERSONA_LOCAL_PROFILE_PUT_1_0: &str =
+    "https://trusttasks.org/spec/persona/local/profile/put/1.0";
+
+/// `spec/persona/local/profile/get/1.0`
+pub const TASK_PERSONA_LOCAL_PROFILE_GET_1_0: &str =
+    "https://trusttasks.org/spec/persona/local/profile/get/1.0";
+
+/// `spec/persona/local/profile/list/1.0`
+pub const TASK_PERSONA_LOCAL_PROFILE_LIST_1_0: &str =
+    "https://trusttasks.org/spec/persona/local/profile/list/1.0";
+
+/// `spec/persona/local/profile/delete/1.0`
+pub const TASK_PERSONA_LOCAL_PROFILE_DELETE_1_0: &str =
+    "https://trusttasks.org/spec/persona/local/profile/delete/1.0";
+
+/// `spec/persona/local/binding/set/1.0`
+pub const TASK_PERSONA_LOCAL_BINDING_SET_1_0: &str =
+    "https://trusttasks.org/spec/persona/local/binding/set/1.0";
+
 // ─── Application-state slice (spec/vta/app-state/*) ──────────────────────
 //
 // The third store, beside the vault (secrets + credentials) and agent memory:
@@ -1767,6 +1871,31 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_APP_STATE_DELETE_1_0,
     TASK_VTA_APP_STATE_GET_MANY_1_0,
     TASK_VTA_APP_STATE_PUT_MANY_1_0,
+    // Persona slice — the holder's own identity.
+    TASK_PERSONA_ATTRIBUTE_PUT_1_0,
+    TASK_PERSONA_ATTRIBUTE_LIST_1_0,
+    TASK_PERSONA_ATTRIBUTE_DELETE_1_0,
+    TASK_PERSONA_PROFILE_PUT_1_0,
+    TASK_PERSONA_PROFILE_GET_1_0,
+    TASK_PERSONA_PROFILE_LIST_1_0,
+    TASK_PERSONA_PROFILE_DELETE_1_0,
+    TASK_PERSONA_BINDING_SET_1_0,
+    TASK_PERSONA_BINDING_GET_1_0,
+    TASK_PERSONA_BINDING_LIST_1_0,
+    TASK_PERSONA_CONTACT_PUT_1_0,
+    TASK_PERSONA_CONTACT_GET_1_0,
+    TASK_PERSONA_CONTACT_LIST_1_0,
+    TASK_PERSONA_CONTACT_DELETE_1_0,
+    TASK_PERSONA_DISCLOSURE_PREVIEW_1_0,
+    TASK_PERSONA_DISCLOSURE_PRESENT_1_0,
+    TASK_PERSONA_DISCLOSURE_HISTORY_1_0,
+    TASK_PERSONA_CORRELATION_ANALYZE_1_0,
+    TASK_PERSONA_RENDERERS_LIST_1_0,
+    TASK_PERSONA_LOCAL_PROFILE_PUT_1_0,
+    TASK_PERSONA_LOCAL_PROFILE_GET_1_0,
+    TASK_PERSONA_LOCAL_PROFILE_LIST_1_0,
+    TASK_PERSONA_LOCAL_PROFILE_DELETE_1_0,
+    TASK_PERSONA_LOCAL_BINDING_SET_1_0,
     // Policy slice (spec/policy/*)
     TASK_POLICY_LIST_0_2,
     TASK_POLICY_GET_0_1,
