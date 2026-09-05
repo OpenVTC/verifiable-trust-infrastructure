@@ -21,6 +21,7 @@
 //! duplicate would make two records indistinguishable to a watermark; a gap costs nothing.
 
 use vti_common::error::AppError;
+use vti_common::identifier::validate_did;
 use vti_common::store::KeyspaceHandle;
 
 use super::{Record, RecordStatus, Room};
@@ -48,6 +49,7 @@ fn record_prefix(room_id: &str) -> String {
 /// Refuses to replace an existing one: re-registering would silently reset the epoch and
 /// the version counter, which a client would read as the room having been rolled back.
 pub async fn create_room(rooms: &KeyspaceHandle, room: &Room) -> Result<(), AppError> {
+    validate_did("ownerDid", &room.owner_did)?;
     if rooms.get_raw(room_key(&room.room_id)).await?.is_some() {
         return Err(AppError::Conflict(format!(
             "room `{}` is already registered here",
@@ -106,6 +108,36 @@ pub async fn advance_epoch(
     }
     room.epoch = new_epoch;
     room.epoch_expires_at = Some(now + epoch_lifetime_seconds());
+    room.updated_at = now;
+    rooms.insert(room_key(room_id), &room).await?;
+    Ok(room)
+}
+
+/// Record a new owner.
+///
+/// Both `rooms/owner/transfer` and `rooms/owner/claim` end here — they differ entirely in
+/// what has to be true *before* this is reached, and not at all in what it does.
+///
+/// **Does not renew the room.** A claim takes a dormant room and leaves it dormant; only
+/// minting an epoch makes it live again. That is deliberate: the new owner's first act
+/// should be the one that proves they can perform it, and a claim that silently renewed
+/// would hand ownership to someone who might turn out to be unable to commit — with the
+/// room looking healthy until the next lapse a year later. If they do not renew, the next
+/// nominee can claim in turn, which is the succession chain working rather than failing.
+pub async fn set_owner(
+    rooms: &KeyspaceHandle,
+    room_id: &str,
+    new_owner_did: &str,
+    now: u64,
+) -> Result<Room, AppError> {
+    // The owner is what a host addresses about quota, abuse and lifecycle, so a value that
+    // is not an identifier at all is a room nobody can be reached about. Cheap to refuse
+    // here and impossible to fix later, since the party who could correct it is the one the
+    // bad value replaced.
+    validate_did("ownerDid", new_owner_did)?;
+
+    let mut room = get_room(rooms, room_id).await?;
+    room.owner_did = new_owner_did.to_string();
     room.updated_at = now;
     rooms.insert(room_key(room_id), &room).await?;
     Ok(room)
@@ -856,5 +888,34 @@ mod tests {
             purge_record(&rec, "r1", "a").await.is_err(),
             "purging an absent record reports not-found rather than succeeding quietly"
         );
+    }
+
+    /// The owner is who a host addresses about quota, abuse and lifecycle. A transfer to
+    /// something that is not an identifier produces a room nobody can be reached about —
+    /// and the party who could correct it is exactly the one the bad value replaced.
+    #[tokio::test]
+    async fn an_owner_must_be_a_did() {
+        let (_d, rooms, _records) = open().await;
+        create_room(&rooms, &room("did:key:zRoom", Visibility::Open))
+            .await
+            .expect("a real DID");
+
+        for bad in ["", "alice@example.com", "did:key:z Alice", "not-a-did"] {
+            set_owner(&rooms, "did:key:zRoom", bad, 1)
+                .await
+                .unwrap_err();
+        }
+
+        assert_eq!(
+            get_room(&rooms, "did:key:zRoom").await.unwrap().owner_did,
+            "did:key:zOwner",
+            "and a refused transfer left the room where it was"
+        );
+
+        let moved = set_owner(&rooms, "did:key:zRoom", "did:key:zBob", 99)
+            .await
+            .expect("a real DID");
+        assert_eq!(moved.owner_did, "did:key:zBob");
+        assert_eq!(moved.updated_at, 99);
     }
 }

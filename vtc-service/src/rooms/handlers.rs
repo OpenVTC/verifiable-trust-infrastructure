@@ -27,16 +27,16 @@ use crate::trust_tasks::helpers::{
     TrustTaskOutcome, app_error_to_reject, parse_payload, success_response, verify_trust_task_proof,
 };
 use vti_common::audit::{AuditEvent, RoomOperationData};
-use vti_rooms::audit as rooms_audit;
+use vti_rooms::audit::{self as rooms_audit, RoomOperation};
 use vti_rooms::authz::{self, Action};
 use vti_rooms::storage;
 use vti_rooms::wire::{
-    CreateRoomBody, CreateRoomResponse, CurateRecordBody, CurateRecordResponse, GetRecordBody,
-    ListRecordsBody, ListRecordsResponse, MintEpochBody, MintEpochResponse, PutRecordBody,
-    PutRecordResponse,
+    ClaimOwnerBody, CreateRoomBody, CreateRoomResponse, CurateRecordBody, CurateRecordResponse,
+    GetRecordBody, ListRecordsBody, ListRecordsResponse, MintEpochBody, MintEpochResponse,
+    OwnerResponse, PutRecordBody, PutRecordResponse, TransferOwnerBody,
 };
 use vti_rooms::{Record, RecordStatus, Room};
-use vti_rooms_dtg::{DataIntegrityKeys, DtgChainVerifier};
+use vti_rooms_dtg::{DataIntegrityKeys, DtgChainVerifier, nomination};
 
 /// The DID that actually signed this request, and the verifier to judge its chain with.
 ///
@@ -74,14 +74,14 @@ async fn audit_room(
     state: &AppState,
     room: &Room,
     authorized: &authz::AuthorizedAction,
+    operation: RoomOperation,
     record_key: Option<&str>,
-    listed: bool,
 ) {
     let Some(writer) = state.audit_writer.as_ref() else {
         return;
     };
     let entry = rooms_audit::for_operation(room.visibility, authorized, record_key);
-    let action = rooms_audit::action_name(authorized.action(), listed);
+    let action = operation.action_name();
 
     if let Err(e) = writer
         .write(
@@ -225,7 +225,14 @@ pub(crate) async fn handle_put_record(state: &AppState, doc: TrustTask<Value>) -
     .await
     {
         Ok(stored) => {
-            audit_room(state, &room, &authorized, Some(&stored.key), false).await;
+            audit_room(
+                state,
+                &room,
+                &authorized,
+                RoomOperation::PutRecord,
+                Some(&stored.key),
+            )
+            .await;
             success_response(
                 &doc,
                 PutRecordResponse {
@@ -274,7 +281,14 @@ pub(crate) async fn handle_get_record(state: &AppState, doc: TrustTask<Value>) -
 
     match storage::get_record(&state.room_records_ks, &req.room_id, &req.key).await {
         Ok(record) => {
-            audit_room(state, &room, &authorized, Some(&req.key), false).await;
+            audit_room(
+                state,
+                &room,
+                &authorized,
+                RoomOperation::GetRecord,
+                Some(&req.key),
+            )
+            .await;
             success_response(&doc, record)
         }
         Err(e) => app_error_to_reject(&doc, &e),
@@ -331,7 +345,7 @@ pub(crate) async fn handle_list_records(
     let limit = req.limit.unwrap_or(usize::MAX);
     // A listing names no single record, so the entry records the room and the fact of a
     // listing — which is the event: who has seen what this room holds.
-    audit_room(state, &room, &authorized, None, true).await;
+    audit_room(state, &room, &authorized, RoomOperation::ListRecords, None).await;
     success_response(
         &doc,
         ListRecordsResponse {
@@ -377,12 +391,176 @@ pub(crate) async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -
 
     match storage::advance_epoch(&state.rooms_ks, &req.room_id, req.epoch, now()).await {
         Ok(updated) => {
-            audit_room(state, &room, &authorized, None, false).await;
+            audit_room(state, &room, &authorized, RoomOperation::MintEpoch, None).await;
             success_response(
                 &doc,
                 MintEpochResponse {
                     room_id: updated.room_id,
                     epoch: updated.epoch,
+                },
+            )
+        }
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `rooms/owner/transfer/0.1`.
+///
+/// An owner hands the room to another member, deliberately and while still present.
+///
+/// Gated on `admin` — the same grant that mints epochs, because transferring is the more
+/// consequential of the two and it would be strange for the lesser act to ask for more.
+///
+/// # What this handler does not check, and why that is correct
+///
+/// That the incoming owner is a member. The spec requires them to be one, and **this host
+/// cannot see the MLS group**: it holds no roster and no group state. The temptation is to
+/// invent a check anyway — demand a credential, or refuse when unsure — and both are worse
+/// than doing nothing. A host that refuses what it cannot verify fails *every* transfer,
+/// including every correct one, and a host that treats its own ignorance as evidence has
+/// converted "I don't know" into "no".
+///
+/// The spec says as much in the error code itself: `notAMember` is raised only when a host
+/// "could independently establish" it, and this one cannot. What protects the incoming
+/// owner is that the outgoing one holds `admin` and knows the roster.
+pub(crate) async fn handle_transfer_owner(
+    state: &AppState,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: TransferOwnerBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
+        Ok(p) => p,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let operation = RoomOperation::TransferOwner;
+    let authorized = match authz::authorize(
+        &room,
+        &req.presentation,
+        operation.required_action(),
+        &presenter,
+        now(),
+        &verifier,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+
+    match storage::set_owner(&state.rooms_ks, &req.room_id, &req.new_owner_did, now()).await {
+        Ok(updated) => {
+            audit_room(state, &room, &authorized, operation, None).await;
+            success_response(
+                &doc,
+                OwnerResponse {
+                    room_id: updated.room_id,
+                    owner_did: updated.owner_did,
+                },
+            )
+        }
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `rooms/owner/claim/0.1`.
+///
+/// A nominated successor takes a room whose owner has stopped renewing it.
+///
+/// # Three conditions, checked in the order that gives the most useful answer
+///
+/// 1. **A nomination the room issued**, naming this claimant, in its window, rooted at the
+///    room. [`vti_rooms_dtg::nomination`].
+/// 2. **The room is dormant** — not merely lapsed. [`Lifecycle::admits_a_claim`].
+/// 3. **The claimant holds membership**, which is the presentation every other room task
+///    carries, gated at `read`.
+///
+/// The order is deliberate. A claimant whose nomination is bad should hear that first,
+/// because it is the one they can do nothing about by waiting; telling them "the room is
+/// still live" when their credential was never valid sends them back in thirty days to
+/// receive the real answer.
+///
+/// # Renewing is the defence, and it is the same act as ordinary use
+///
+/// Condition 2 is why a hostile nomination is survivable. An owner who was merely away
+/// defeats every pending claim by minting an epoch — which is what they would have done
+/// anyway. Nothing has to be revoked and no dispute has to be raised, so an owner who is
+/// present is structurally safe from succession without ever thinking about it.
+///
+/// # And a claim does not renew the room
+///
+/// [`storage::set_owner`] leaves a dormant room dormant. The new owner's first act should
+/// be the one that proves they can perform it; see that function for why.
+pub(crate) async fn handle_claim_owner(
+    state: &AppState,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: ClaimOwnerBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
+        Ok(p) => p,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+
+    // 1. The nomination, against the party who actually signed this request — never against
+    //    a DID named in the payload, which the claimant chooses.
+    let keys = DataIntegrityKeys(state.trust_task_vm_resolver());
+    if let Err(e) = nomination::verify(&req.nomination, &room.room_id, &presenter, &keys).await {
+        return app_error_to_reject(&doc, &e);
+    }
+
+    // 2. Dormant, not merely lapsed. An epoch expiring is frequently somebody on holiday.
+    let lifecycle = room.lifecycle(now());
+    if !lifecycle.admits_a_claim() {
+        return app_error_to_reject(
+            &doc,
+            &vti_common::error::AppError::Forbidden(format!(
+                "room `{}` is {} — a room becomes claimable only once its epoch has \
+                 lapsed and the grace window after it has also passed without a renewal",
+                room.room_id,
+                lifecycle.as_str()
+            )),
+        );
+    }
+
+    // 3. Membership, which is also the pooling defence and the chain-reaches-the-room check.
+    let operation = RoomOperation::ClaimOwner;
+    let authorized = match authz::authorize(
+        &room,
+        &req.presentation,
+        operation.required_action(),
+        &presenter,
+        now(),
+        &verifier,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+
+    match storage::set_owner(&state.rooms_ks, &req.room_id, &presenter, now()).await {
+        Ok(updated) => {
+            audit_room(state, &room, &authorized, operation, None).await;
+            success_response(
+                &doc,
+                OwnerResponse {
+                    room_id: updated.room_id,
+                    owner_did: updated.owner_did,
                 },
             )
         }
@@ -450,7 +628,14 @@ pub(crate) async fn handle_curate_record(
     .await
     {
         Ok(curated) => {
-            audit_room(state, &room, &authorized, Some(&curated.key), false).await;
+            audit_room(
+                state,
+                &room,
+                &authorized,
+                RoomOperation::CurateRecord,
+                Some(&curated.key),
+            )
+            .await;
             success_response(
                 &doc,
                 CurateRecordResponse {
@@ -810,7 +995,14 @@ mod tests {
         .await
         .expect("authorized");
 
-        audit_room(state, &room, &authorized, Some("opaque-key"), false).await;
+        audit_room(
+            state,
+            &room,
+            &authorized,
+            RoomOperation::GetRecord,
+            Some("opaque-key"),
+        )
+        .await;
 
         let rows = audit_rows(state).await;
         assert!(
@@ -1106,5 +1298,227 @@ mod tests {
         )
         .await;
         assert!(!out.status.is_success(), "an epoch may not skip");
+    }
+
+    /// Register the fixture's room with a chosen epoch expiry, bypassing the handler.
+    ///
+    /// Succession is entirely about the passage of time; writing the room in the state a
+    /// year would produce is the only way to test it without waiting one.
+    async fn create_expiring(state: &AppState, f: &RoomFixture, epoch_expires_at: Option<u64>) {
+        storage::create_room(
+            &state.rooms_ks,
+            &Room {
+                epoch_expires_at,
+                ..f.room.clone()
+            },
+        )
+        .await
+        .expect("register the room");
+    }
+
+    fn days_ago(n: u64) -> Option<u64> {
+        Some(now() - n * 24 * 60 * 60)
+    }
+
+    async fn claim(state: &AppState, f: &RoomFixture, payload: Value) -> TrustTaskOutcome {
+        handle_claim_owner(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_OWNER_CLAIM_TYPE,
+                payload,
+                &f.successor.did,
+                &f.successor.secret_multibase,
+            )
+            .await,
+        )
+        .await
+    }
+
+    /// `admin`, and the audit entry names the operation rather than the authority.
+    #[tokio::test]
+    async fn transferring_requires_admin_and_names_the_new_owner() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        create(state, &f).await;
+
+        // `read` is not enough; the agent's chain is the narrower one a member delegates.
+        let out = handle_transfer_owner(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_OWNER_TRANSFER_TYPE,
+                json!({
+                    "roomId": f.room.room_id,
+                    "newOwnerDid": f.agent.did,
+                    "presentation": f.as_agent(),
+                }),
+                &f.agent.did,
+                &f.agent.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            !out.status.is_success(),
+            "an agent may not hand away the room"
+        );
+
+        let out = handle_transfer_owner(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_OWNER_TRANSFER_TYPE,
+                json!({
+                    "roomId": f.room.room_id,
+                    "newOwnerDid": f.successor.did,
+                    "presentation": f.as_owner(),
+                    "reason": "stepping back",
+                }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+        assert!(out.status.is_success(), "{}", payload_of(&out));
+        assert_eq!(payload_of(&out)["ownerDid"], f.successor.did);
+
+        let stored = storage::get_room(&state.rooms_ks, &f.room.room_id)
+            .await
+            .unwrap();
+        assert_eq!(stored.owner_did, f.successor.did, "and it persisted");
+    }
+
+    /// The whole point of the pair: a room outlives one person's availability.
+    #[tokio::test]
+    async fn a_nominated_successor_claims_a_dormant_room() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        create_expiring(state, &f, days_ago(60)).await;
+
+        let out = claim(
+            state,
+            &f,
+            json!({
+                "roomId": f.room.room_id,
+                "nomination": f.nominate(&f.successor.did, Some(24)).await,
+                "presentation": f.as_successor(),
+                "reason": "unreachable since March",
+            }),
+        )
+        .await;
+        assert!(out.status.is_success(), "{}", payload_of(&out));
+        assert_eq!(payload_of(&out)["ownerDid"], f.successor.did);
+
+        // A claim hands over a dormant room; it does not revive one. The new owner's first
+        // act should be the one that proves they can perform it.
+        let stored = storage::get_room(&state.rooms_ks, &f.room.room_id)
+            .await
+            .unwrap();
+        assert!(!stored.lifecycle(now()).accepts_writes());
+    }
+
+    /// The defence, and it is the same act as ordinary use: an owner who was merely away
+    /// renews, and every pending claim stops working. Nothing has to be revoked.
+    #[tokio::test]
+    async fn renewing_defeats_a_pending_claim() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        create_expiring(state, &f, days_ago(60)).await;
+
+        let nomination = f.nominate(&f.successor.did, Some(24)).await;
+
+        // The owner returns and mints an epoch — ordinary use, nothing succession-specific.
+        let out = handle_mint_epoch(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_EPOCH_MINT_TYPE,
+                json!({ "roomId": f.room.room_id, "epoch": 2, "presentation": f.as_owner() }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+        assert!(out.status.is_success(), "{}", payload_of(&out));
+
+        let out = claim(
+            state,
+            &f,
+            json!({
+                "roomId": f.room.room_id,
+                "nomination": nomination,
+                "presentation": f.as_successor(),
+            }),
+        )
+        .await;
+        assert!(
+            !out.status.is_success(),
+            "the same nomination that would have worked a moment ago: {}",
+            payload_of(&out)
+        );
+
+        let stored = storage::get_room(&state.rooms_ks, &f.room.room_id)
+            .await
+            .unwrap();
+        assert_eq!(stored.owner_did, f.owner.did, "and the owner kept the room");
+    }
+
+    /// Dormancy alone confers nothing, or any member of any quiet room could take it.
+    #[tokio::test]
+    async fn a_member_of_a_dormant_room_cannot_claim_without_being_named() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        create_expiring(state, &f, days_ago(60)).await;
+
+        // A genuine nomination the room issued — naming somebody else.
+        let out = claim(
+            state,
+            &f,
+            json!({
+                "roomId": f.room.room_id,
+                "nomination": f.nominate(&f.agent.did, Some(24)).await,
+                "presentation": f.as_successor(),
+            }),
+        )
+        .await;
+        assert!(
+            !out.status.is_success(),
+            "a nomination is bound to the party it names: {}",
+            payload_of(&out)
+        );
+    }
+
+    /// The order the handler checks in, which is the difference between an answer a
+    /// claimant can act on and one that sends them back in a month for the real one.
+    #[tokio::test]
+    async fn a_bad_nomination_is_reported_before_the_room_is_still_live() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        create_expiring(state, &f, Some(now() + 30 * 24 * 60 * 60)).await;
+
+        let out = claim(
+            state,
+            &f,
+            json!({
+                "roomId": f.room.room_id,
+                "nomination": f.nominate(&f.agent.did, Some(24)).await,
+                "presentation": f.as_successor(),
+            }),
+        )
+        .await;
+        assert!(!out.status.is_success());
+        let body = payload_of(&out).to_string();
+        assert!(
+            !body.contains("dormant"),
+            "the nomination was never valid; saying `still live` hides that: {body}"
+        );
     }
 }

@@ -1,16 +1,25 @@
 //! Wire types for the `rooms/*` Trust Tasks.
 //!
-//! # Why these are hand-written
+//! # Why these are hand-written, now that the generated ones exist
 //!
-//! They mirror the payload schemas proposed in
-//! `trustoverip/dtgwg-trust-tasks-tf#346`, and are written here rather than taken from
-//! `trust_tasks_rs::specs` because that PR is still in review — the generated bindings do
-//! not exist yet. This is the same shape `vta_sdk::protocols::*` already uses for the VTA's
-//! families: hand-written wire types beside the generated ones.
+//! They began as a mirror of schemas still in review upstream. Those schemas have since
+//! published and `trust_tasks_rs::specs::rooms` carries generated bindings — so the earlier
+//! instruction here, to replace these with the generated types on publication, has come due
+//! and is **deliberately not being followed.**
 //!
-//! **When #346 merges and `trust-tasks-rs` publishes, replace these with the generated
-//! types rather than keeping both.** Two definitions of one wire format is how casing drift
-//! gets in, and this workspace has paid for that before.
+//! The reason is that the generated types are shaped for a different job. They use newtypes
+//! and `NonZeroU64` where a storage layer wants plain `String` and `u64`, they are
+//! `#[non_exhaustive]`, and they are built through builders — all correct for a client
+//! constructing a request, all friction for a crate whose types are also its storage
+//! records. Converting would push that friction into every handler and every host.
+//!
+//! What the original instruction was actually protecting against is two descriptions of one
+//! wire format drifting apart, and that danger is real: a `snake_case` field where the
+//! schema says `camelCase` is invisible to every Rust test, because both sides of a
+//! round-trip use the same struct. So the protection is kept and the conversion is not:
+//! `tests/schema_conformance.rs` validates what these types actually serialise to against
+//! the published schemas. **Every type here must appear in that file.** Agreeing on the
+//! wire is the requirement; agreeing on the Rust shape never was.
 //!
 //! Every struct is `camelCase` and `deny_unknown_fields`: these carry authorization
 //! decisions, and an unknown member on one of those is a request that means something the
@@ -30,6 +39,10 @@ pub const ROOMS_RECORDS_GET_TYPE: &str = "https://trusttasks.org/spec/rooms/reco
 pub const ROOMS_RECORDS_LIST_TYPE: &str = "https://trusttasks.org/spec/rooms/records/list/0.1";
 /// `rooms/epoch/mint/0.1`.
 pub const ROOMS_EPOCH_MINT_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/mint/0.1";
+/// `rooms/owner/transfer/0.1`.
+pub const ROOMS_OWNER_TRANSFER_TYPE: &str = "https://trusttasks.org/spec/rooms/owner/transfer/0.1";
+/// `rooms/owner/claim/0.1`.
+pub const ROOMS_OWNER_CLAIM_TYPE: &str = "https://trusttasks.org/spec/rooms/owner/claim/0.1";
 /// `rooms/records/curate/0.1`.
 pub const ROOMS_RECORDS_CURATE_TYPE: &str = "https://trusttasks.org/spec/rooms/records/curate/0.1";
 
@@ -41,6 +54,8 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_RECORDS_LIST_TYPE,
     ROOMS_EPOCH_MINT_TYPE,
     ROOMS_RECORDS_CURATE_TYPE,
+    ROOMS_OWNER_TRANSFER_TYPE,
+    ROOMS_OWNER_CLAIM_TYPE,
 ];
 
 /// What a party presents to act on a room.
@@ -213,6 +228,55 @@ pub struct CurateRecordResponse {
     pub version: u64,
     pub status: RecordStatus,
     pub pinned: bool,
+}
+
+/// `rooms/owner/transfer/0.1` request.
+///
+/// The deliberate handover, by an owner who is still present. Its counterpart
+/// [`ClaimOwnerBody`] is what happens when they are not — two shapes because they are two
+/// acts, differing in who initiates, what authorizes, and whether the room must have lapsed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TransferOwnerBody {
+    pub room_id: String,
+    /// The member taking ownership.
+    ///
+    /// **The host cannot check that they are one.** It holds no roster, and this party
+    /// presents nothing — the obligation sits with the transferring owner, who can see the
+    /// group. A host must not invent a check it has no basis for, nor treat its own
+    /// ignorance as evidence: doing so would fail every transfer on a correct host.
+    pub new_owner_did: String,
+    /// Must confer `admin` — the same grant that mints epochs.
+    pub presentation: AuthorityPresentation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// `rooms/owner/claim/0.1` request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClaimOwnerBody {
+    pub room_id: String,
+    /// The succession credential the room issued to this claimant, serialized per the
+    /// governing profile. The previous owner decided this in advance; a host checks a
+    /// decision rather than making one.
+    pub nomination: String,
+    /// The claimant's own membership and authority.
+    ///
+    /// A host cannot see the MLS group, so this — the room's own statement that the claimant
+    /// is a member — is the only membership signal available, and it is the same one every
+    /// other room task presents.
+    pub presentation: AuthorityPresentation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// `rooms/owner/{transfer,claim}/0.1#response`. One shape, because both end the same way.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnerResponse {
+    pub room_id: String,
+    pub owner_did: String,
 }
 
 /// `rooms/epoch/mint/0.1` request.

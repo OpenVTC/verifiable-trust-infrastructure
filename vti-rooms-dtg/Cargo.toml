@@ -49,6 +49,14 @@ vta-sdk = { path = "../vta-sdk", version = "0.32", features = ["didcomm"], optio
 affinidi-tdk = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The crate's own tests, on itself, with `test-support` on.
+#
+# Not a curiosity: the signed tests need the real keys that feature carries, and
+# without this line they compile only when some *other* workspace member happens
+# to enable the feature and cargo unifies it. `cargo test -p vti-rooms-dtg` alone
+# failed to build — the tests that matter most were reachable by luck.
+vti-rooms-dtg = { path = ".", features = ["test-support"] }
+
 tokio = { workspace = true }
 # Real keys and real signatures for the end-to-end test. A verifier tested only on
 # refusals would pass every test while refusing everything.

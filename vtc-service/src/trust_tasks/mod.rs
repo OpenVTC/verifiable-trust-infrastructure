@@ -162,6 +162,12 @@ pub(crate) async fn dispatch_trust_task_core(
         rooms_wire::ROOMS_EPOCH_MINT_TYPE => {
             crate::rooms::handlers::handle_mint_epoch(state, doc).await
         }
+        rooms_wire::ROOMS_OWNER_TRANSFER_TYPE => {
+            crate::rooms::handlers::handle_transfer_owner(state, doc).await
+        }
+        rooms_wire::ROOMS_OWNER_CLAIM_TYPE => {
+            crate::rooms::handlers::handle_claim_owner(state, doc).await
+        }
         PERSONHOOD_CHALLENGE_TYPE => handle_personhood_challenge(state, ctx, doc).await,
         PERSONHOOD_ASSERT_TYPE => handle_personhood_assert(state, ctx, doc).await,
         other => unsupported_type_or_version(&doc, other),
@@ -274,6 +280,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     rooms_wire::ROOMS_RECORDS_GET_TYPE,
     rooms_wire::ROOMS_RECORDS_LIST_TYPE,
     rooms_wire::ROOMS_EPOCH_MINT_TYPE,
+    rooms_wire::ROOMS_RECORDS_CURATE_TYPE,
+    rooms_wire::ROOMS_OWNER_TRANSFER_TYPE,
+    rooms_wire::ROOMS_OWNER_CLAIM_TYPE,
 ];
 
 /// `vtc/members/personhood/challenge/0.1` — mint the single-use nonce
@@ -824,26 +833,37 @@ mod tests {
             mem::MEMBER_VMC_TYPE,
             <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            // rooms/* names hand-written constants rather than a generated
-            // `TYPE_URI`, because its schemas are still in review upstream
-            // (trustoverip/dtgwg-trust-tasks-tf#346). The property this test
-            // exists for is weaker for them until those bindings publish: it
-            // pins the dispatcher against `wire`'s constants, not against the
-            // registry. **Swap these for the generated `TYPE_URI`s when the
-            // crate ships them** — that is what restores the guarantee.
-            rooms_wire::ROOMS_CREATE_TYPE,
-            rooms_wire::ROOMS_RECORDS_PUT_TYPE,
-            rooms_wire::ROOMS_RECORDS_GET_TYPE,
-            rooms_wire::ROOMS_RECORDS_LIST_TYPE,
-            rooms_wire::ROOMS_EPOCH_MINT_TYPE,
         ];
+        // rooms/* comes from `vti_rooms::wire`'s own list rather than a hand-copy.
+        //
+        // The copy was the defect: `rooms/records/curate` was dispatched by the `match`
+        // above and named in neither array, so the census passed while curate was missing
+        // from every version hint this VTC emits. A second list of the same thing agrees
+        // right up until someone adds to one of them.
+        //
+        // rooms/* still names hand-written constants rather than generated `TYPE_URI`s,
+        // and no longer needs to be swapped for them: the bindings have published, and
+        // `vti-rooms/tests/schema_conformance.rs::every_dispatched_uri_is_the_published_one`
+        // pins every one of those constants against its generated `TYPE_URI`. This test
+        // therefore does reach the registry — through that one — rather than only checking
+        // that two of our own lists agree, which is what it could do before.
         for u in DISPATCHED_URIS {
             assert!(
-                declared.contains(u),
+                declared.contains(u) || rooms_wire::ROOMS_DISPATCHED_URIS.contains(u),
                 "dispatched URI is not a declared request URI: {u}"
             );
         }
-        assert_eq!(DISPATCHED_URIS.len(), declared.len());
+        for u in rooms_wire::ROOMS_DISPATCHED_URIS {
+            assert!(
+                DISPATCHED_URIS.contains(u),
+                "`vti_rooms::wire` dispatches {u}, but this VTC does not declare it — a \
+                 client would be told it is unsupported at every version"
+            );
+        }
+        assert_eq!(
+            DISPATCHED_URIS.len(),
+            declared.len() + rooms_wire::ROOMS_DISPATCHED_URIS.len()
+        );
     }
 
     /// The request URIs must parse as framework `TypeUri`s (the `/spec/`

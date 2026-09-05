@@ -9599,9 +9599,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.17.8"
+version = "0.17.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9560f2e6bb5e0958674adc0625d4eb592e078554a9284d292e286e7fb49c338"
+checksum = "c858ac6e7f0c8b7600bf643312c90ed5ac3c5cb4637d2baacd9fa0ccf64ee688"
 dependencies = [
  "async-trait",
  "chrono",
@@ -10826,6 +10826,7 @@ dependencies = [
  "vta-sdk",
  "vti-common",
  "vti-rooms",
+ "vti-rooms-dtg",
 ]
 
 [[package]]

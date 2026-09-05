@@ -300,3 +300,198 @@ fn responses_conform() {
 
     check::<ListResponse>("ListRecordsResponse", &json!({ "records": records }));
 }
+
+/// Curate shipped without an entry here — the same omission as its missing dispatch-census
+/// entry, and from the same cause: a second list of the same thing agrees right up until
+/// someone adds to one of them.
+#[test]
+fn curate_conforms() {
+    use trust_tasks_rs::specs::rooms::records::curate::v0_1::Payload;
+
+    let body = CurateRecordBody {
+        room_id: "did:webvh:example.com:rooms:northwind".into(),
+        key: "decision/pricing-2026".into(),
+        presentation: presentation(),
+        status: Some(RecordStatus::Deprecated),
+        pinned: Some(false),
+        reason: Some("superseded by the Q3 renewal".into()),
+        expected_version: Some(4),
+    };
+    check::<Payload>(
+        "CurateRecordBody",
+        &serde_json::to_value(&body).expect("serialise"),
+    );
+
+    // Every member but the first three is optional, and a curation that changes only
+    // `pinned` is the ordinary case rather than the exotic one.
+    check::<Payload>(
+        "CurateRecordBody pinning only",
+        &serde_json::to_value(CurateRecordBody {
+            status: None,
+            pinned: Some(true),
+            reason: None,
+            expected_version: None,
+            ..body
+        })
+        .expect("serialise"),
+    );
+}
+
+#[test]
+fn curate_response_conforms() {
+    use trust_tasks_rs::specs::rooms::records::curate::v0_1::Response;
+
+    check::<Response>(
+        "CurateRecordResponse",
+        &serde_json::to_value(CurateRecordResponse {
+            key: "decision/pricing-2026".into(),
+            version: 5,
+            status: RecordStatus::Deprecated,
+            pinned: false,
+        })
+        .expect("serialise"),
+    );
+}
+
+// ─── Succession ──────────────────────────────────────────────────────────
+
+#[test]
+fn transfer_owner_conforms() {
+    use trust_tasks_rs::specs::rooms::owner::transfer::v0_1::Payload;
+
+    check::<Payload>(
+        "TransferOwnerBody",
+        &serde_json::to_value(TransferOwnerBody {
+            room_id: "did:webvh:example.com:rooms:northwind".into(),
+            new_owner_did: "did:key:z6MkBob".into(),
+            presentation: presentation(),
+            reason: Some("stepping back from this project".into()),
+        })
+        .expect("serialise"),
+    );
+}
+
+#[test]
+fn claim_owner_conforms() {
+    use trust_tasks_rs::specs::rooms::owner::claim::v0_1::Payload;
+
+    let body = ClaimOwnerBody {
+        room_id: "did:webvh:example.com:rooms:northwind".into(),
+        nomination: "urn:uuid:55555555-5555-5555-5555-555555555555".into(),
+        presentation: presentation(),
+        reason: Some("the owner has been unreachable since March".into()),
+    };
+    let value = serde_json::to_value(&body).expect("serialise");
+    check::<Payload>("ClaimOwnerBody", &value);
+
+    // The correction in #361: a claim carries the claimant's own presentation, because it
+    // is the only membership signal a host has. Its absence was an unimplementable
+    // condition, so its presence is worth pinning rather than assuming.
+    assert!(
+        value["presentation"].is_object(),
+        "a claim must carry a presentation: {value}"
+    );
+
+    // And `reason` really is optional — a schema that quietly required it would make every
+    // terse claim fail at the host rather than here.
+    let bare = ClaimOwnerBody {
+        reason: None,
+        ..body
+    };
+    check::<Payload>(
+        "ClaimOwnerBody without a reason",
+        &serde_json::to_value(&bare).expect("serialise"),
+    );
+}
+
+/// Both succession tasks answer with the same shape, and the schemas are separate
+/// documents — so "the same shape" is a claim to check, not one to assume.
+#[test]
+fn owner_responses_conform() {
+    use trust_tasks_rs::specs::rooms::owner::claim::v0_1::Response as ClaimResponse;
+    use trust_tasks_rs::specs::rooms::owner::transfer::v0_1::Response as TransferResponse;
+
+    let response = serde_json::to_value(OwnerResponse {
+        room_id: "did:webvh:example.com:rooms:northwind".into(),
+        owner_did: "did:key:z6MkBob".into(),
+    })
+    .expect("serialise");
+
+    check::<TransferResponse>("OwnerResponse (transfer)", &response);
+    check::<ClaimResponse>("OwnerResponse (claim)", &response);
+}
+
+// ─── The URIs themselves ─────────────────────────────────────────────────
+
+/// Every `rooms/*` URI constant must be the one the registry publishes.
+///
+/// This is the guarantee the hosts' dispatch censuses could not give on their own. They pin
+/// a dispatcher against `vti_rooms::wire`, which answers "do these two lists agree" — and
+/// two lists agreeing says nothing if both are wrong. Comparing against the generated
+/// `TYPE_URI` is what makes the answer "and they agree with the spec".
+///
+/// It matters because a URI is matched as a string. A version segment that drifted, or a
+/// path this crate spelled differently from the schema, produces a service that answers
+/// `unsupportedType` to a document the registry says it serves — with nothing in Rust
+/// noticing, because every test on both sides uses the same constant.
+#[test]
+fn every_dispatched_uri_is_the_published_one() {
+    use trust_tasks_rs::specs::rooms;
+
+    let published: Vec<(&str, &str)> = vec![
+        (
+            ROOMS_CREATE_TYPE,
+            <rooms::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_PUT_TYPE,
+            <rooms::records::put::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_GET_TYPE,
+            <rooms::records::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_LIST_TYPE,
+            <rooms::records::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_CURATE_TYPE,
+            <rooms::records::curate::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_EPOCH_MINT_TYPE,
+            <rooms::epoch::mint::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_OWNER_TRANSFER_TYPE,
+            <rooms::owner::transfer::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_OWNER_CLAIM_TYPE,
+            <rooms::owner::claim::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+    ];
+
+    for (ours, registry) in &published {
+        assert_eq!(ours, registry, "this crate's URI is not the published one");
+    }
+
+    // And the dispatch list is exactly those — so a URI cannot be added to `wire` without
+    // being checked against the registry here.
+    assert_eq!(
+        ROOMS_DISPATCHED_URIS.len(),
+        published.len(),
+        "a dispatched URI has no registry check: {:?}",
+        ROOMS_DISPATCHED_URIS
+            .iter()
+            .filter(|u| !published.iter().any(|(ours, _)| ours == *u))
+            .collect::<Vec<_>>()
+    );
+    for u in ROOMS_DISPATCHED_URIS {
+        assert!(
+            published.iter().any(|(ours, _)| ours == u),
+            "{u} is dispatched but not checked against the registry"
+        );
+    }
+}
