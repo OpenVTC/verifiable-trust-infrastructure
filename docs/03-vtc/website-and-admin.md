@@ -248,12 +248,12 @@ transport.
 ```mermaid
 graph LR
     src[vtc-service/admin-ui/<br/>React + TS + Vite source]
-    dist[admin-ui/dist/<br/>index.html · hashed JS · hashed CSS · Inter & JetBrains Mono fonts]
+    dist["$OUT_DIR/admin-ui-dist/<br/>index.html · hashed JS · hashed CSS · Inter & JetBrains Mono fonts"]
     binary[vtc binary]
     routes[/admin/* handler]
     info[/admin/build-info.json]
 
-    src -- "build.rs runs<br/>npm run build" --> dist
+    src -- "build.rs runs<br/>npm run build --outDir $OUT_DIR" --> dist
     dist -- "include_dir!<br/>at compile time" --> binary
     binary --> routes
     binary --> info
@@ -263,11 +263,24 @@ The admin SPA source is **in-tree** (Phase 5 D1, refined after the
 initial Phase-5 deviation note in `docs/05-design-notes/vtc-mvp.md`
 §12.2): React + TypeScript + Vite source under
 `vtc-service/admin-ui/`, with `build.rs` invoking
-`npm install && npm run build` to produce `dist/` which
+`npm install && npm run build` to produce a bundle which
 `include_dir!` bakes into the binary. The end-to-end source-to-
 binary path stays a single `cargo build`; operators on air-gapped
 hosts opt out of the npm step with `VTC_SKIP_ADMIN_UI_BUILD=1` and
-ship a pre-built `dist/` instead.
+ship a pre-built `admin-ui/dist/` instead, which `build.rs` reads
+and bakes.
+
+The bundle lands under `$OUT_DIR`, **not** `admin-ui/dist`, and the
+build script writes nothing into the source tree. That is load-
+bearing rather than tidiness: `include_dir!` expands to one
+`include_bytes!` per file, so all 312 baked files are compile
+inputs of the lib. While the script regenerated them in-tree — and
+`npm install` refreshed `package-lock.json`, one of the script's own
+`rerun-if-changed` inputs — `cargo build -p vtc-service` was never a
+no-op, and every local build, test, clippy run and rust-analyzer
+check-on-save recompiled the crate from scratch (#1243). CI guards
+it with a "vtc-service rebuild is a no-op" step, since a cold-cache
+CI run cannot notice the problem on its own.
 
 Why in-tree React rather than the original "plain HTML/CSS/JS
 placeholder":

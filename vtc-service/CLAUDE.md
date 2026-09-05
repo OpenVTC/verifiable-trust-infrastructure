@@ -111,6 +111,45 @@ cargo fmt
 cargo fmt --check   # check only
 ```
 
+### `build.rs` must only write under `OUT_DIR`
+
+This crate is the workspace's only npm-in-build crate, and it has
+already paid for breaking that rule once. Until #1243, `build.rs`
+wrote two things into the source tree, and together they made
+`cargo build -p vtc-service` **never** a no-op — every build, test,
+clippy run and rust-analyzer check-on-save recompiled the crate from
+scratch:
+
+- `npm install` rewrote `admin-ui/package-lock.json`. Same bytes, new
+  mtime — so `git status` stayed clean and nothing looked wrong — but
+  the lockfile is one of the script's own `cargo:rerun-if-changed`
+  inputs, so the script was dirty the instant it finished and re-ran
+  on every build.
+- `npm run build` regenerated `admin-ui/dist`, and `include_dir!`
+  expands to one `include_bytes!` per file, making all 78 of them
+  compile inputs of the lib. Each re-run refreshed their mtimes and
+  forced a full recompile.
+
+So: `npm install` goes through `run_npm_preserving_lockfile`, which
+restores the lockfile's mtime when npm left the content identical —
+that is the fix that closes the loop — and vite's `--outDir` points
+at `$OUT_DIR` so the bundle isn't in the source tree at all. The
+second is the Cargo rule rather than the bug fix, but it pays for
+itself: `admin-ui/README.md` tells developers to run `npm run build`
+by hand, which used to refresh 78 compile inputs and rebuild the
+crate.
+
+What does *not* work, in case it looks tempting: keeping the baked
+files' mtimes stable across a re-run so the lib survives it. Cargo
+rebuilds a build script's dependents whenever the script re-runs,
+regardless of whether its output changed (measured, not assumed).
+Not re-running the script is the only lever.
+
+Before adding anything to `build.rs`, ask what it writes and where.
+Guarded by `vtc-service/tests/no_rebuild.rs` and the "vtc-service
+rebuild is a no-op" CI step — a cold-cache CI run never builds the
+same tree twice, so nothing else would catch a regression here.
+
 ## Rust Configuration
 
 - **Edition**: 2024

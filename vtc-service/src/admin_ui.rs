@@ -22,13 +22,19 @@ use axum::response::Response;
 use include_dir::{Dir, include_dir};
 use sha2::{Digest, Sha256};
 
-/// In-binary copy of `vtc-service/admin-ui/dist/` — the Vite build
-/// output. Produced by `build.rs` running `npm run build` before
-/// this file compiles. Walked at request time to map paths → file
-/// bytes. The admin SPA is a React app; client-side routing
-/// (history mode) means most paths resolve to `index.html` and the
-/// shell takes over.
-pub static ADMIN_UI_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/admin-ui/dist");
+/// In-binary copy of the Vite build output. Produced by `build.rs`
+/// running `npm run build` before this file compiles. Walked at
+/// request time to map paths → file bytes. The admin SPA is a
+/// React app; client-side routing (history mode) means most paths
+/// resolve to `index.html` and the shell takes over.
+///
+/// The bundle lives under `$OUT_DIR`, not `admin-ui/dist`, because
+/// `include_dir!` makes every file here a compile input of this
+/// lib — so a build script that regenerated them in the source
+/// tree recompiled the whole crate on every `cargo build` (#1243).
+/// `build.rs` owns the directory name; keep it in step with the
+/// `BAKED_DIR` const there.
+pub static ADMIN_UI_DIR: Dir<'_> = include_dir!("$OUT_DIR/admin-ui-dist");
 
 /// Metadata derived once at startup. Used by the build-info
 /// endpoint and the `AdminUiServed` audit envelope.
