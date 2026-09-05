@@ -517,3 +517,326 @@ pub(super) async fn handle_attribute_delete(
         }),
     )
 }
+
+// ─── Profiles ────────────────────────────────────────────────────────────
+
+pub(super) async fn handle_profile_put(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::profile::put::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_PROFILE_PUT_1_0, None) {
+        return reject(&doc, e);
+    }
+
+    // Entries round-trip through JSON into our own model. The generated
+    // ProfileEntry and ours describe the same four shapes; going through the
+    // wire form means the untagged discrimination is exercised exactly as a
+    // peer's document would exercise it, rather than by a hand-written match
+    // that could disagree with the schema.
+    let entries = match serde_json::to_value(&req.entries)
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+    {
+        Some(e) => e,
+        None => {
+            return reject(
+                &doc,
+                AppError::Validation("unrecognised profile entry".into()),
+            );
+        }
+    };
+
+    let mut profile = vta_persona::new_profile(req.name.to_string(), entries);
+    if let Some(id) = &req.profile_id {
+        profile.profile_id = id.to_string();
+    }
+    profile.credential_refs = req.credential_refs.iter().map(|c| (**c).clone()).collect();
+    let profile_id = profile.profile_id.clone();
+
+    let written = match store(state)
+        .put_profile(profile, req.expected_version.map(|v| *v as u64))
+        .await
+    {
+        Ok(w) => w,
+        Err(e) => return reject(&doc, e),
+    };
+
+    audit_persona(state, "persona.profile.put", auth, Some(&profile_id), None).await;
+    success_response(
+        &doc,
+        json!({
+            "profileId": profile_id,
+            "version": written.version,
+            "created": written.created,
+            "updatedAt": chrono::Utc::now().to_rfc3339(),
+        }),
+    )
+}
+
+pub(super) async fn handle_profile_get(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::profile::get::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_PROFILE_GET_1_0, None) {
+        return reject(&doc, e);
+    }
+
+    let id = req.profile_id.to_string();
+    let s = store(state);
+    let Some(profile) = (match s.get_profile(&id).await {
+        Ok(p) => p,
+        Err(e) => return reject(&doc, e),
+    }) else {
+        // Not an empty success: a caller that cannot tell "absent" from "empty"
+        // treats a typo as a profile that discloses nothing.
+        return reject(&doc, AppError::NotFound(format!("profile {id}")));
+    };
+
+    // Resolution is opt-in because it is the expensive AND the disclosing
+    // answer — it decrypts values and re-derives credential-backed ones.
+    let resolved = if req.resolve {
+        match s.resolve_profile(&id).await {
+            Ok(r) => Some(r),
+            Err(e) => return reject(&doc, e),
+        }
+    } else {
+        None
+    };
+
+    audit_persona(state, "persona.profile.get", auth, Some(&id), None).await;
+    let mut body = json!({ "profile": profile });
+    if let Some(r) = resolved {
+        body["resolved"] = json!(
+            r.iter()
+                .map(|c| json!({
+                    "attributeId": c.attribute_id,
+                    "type": c.r#type,
+                    "value": c.value,
+                    "provenance": c.provenance,
+                    "stale": c.stale,
+                }))
+                .collect::<Vec<_>>()
+        );
+    }
+    success_response(&doc, body)
+}
+
+pub(super) async fn handle_profile_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let _req: spec::profile::list::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_PROFILE_LIST_1_0, None) {
+        return reject(&doc, e);
+    }
+    // No resolve option, deliberately: resolving every profile at once would
+    // decrypt the holder's entire pool to answer a question about names.
+    let profiles = match store(state).list_profiles().await {
+        Ok(p) => p,
+        Err(e) => return reject(&doc, e),
+    };
+    audit_persona(state, "persona.profile.list", auth, None, None).await;
+    success_response(&doc, json!({ "profiles": profiles }))
+}
+
+pub(super) async fn handle_profile_delete(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::profile::delete::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_PROFILE_DELETE_1_0, None) {
+        return reject(&doc, e);
+    }
+
+    let id = req.profile_id.to_string();
+    let s = store(state);
+
+    // Refuse while a persona is bound unless the holder said unbind. A persona
+    // that silently stopped presenting anything is a failure they discover from
+    // the other side of a disclosure that did not happen.
+    let bound = match s.personas_bound_to_anywhere(&id).await {
+        Ok(b) => b,
+        Err(e) => return reject(&doc, e),
+    };
+    if !bound.is_empty() && !req.unbind {
+        let mut payload = ErrorPayload::new(ext(&slug_from_doc(&doc), "bound")).with_message(
+            format!("{} persona(s) are bound to this profile", bound.len()),
+        );
+        payload = payload.with_details(json!({ "personaDids": bound }));
+        return error_response(
+            doc.reject_with(format!("urn:uuid:{}", uuid::Uuid::new_v4()), payload),
+        );
+    }
+    if req.unbind {
+        if let Err(e) = s.unbind_everywhere(&id).await {
+            return reject(&doc, e);
+        }
+    }
+
+    let existed = match s.delete_profile(&id).await {
+        Ok(e) => e,
+        Err(e) => return reject(&doc, e),
+    };
+    audit_persona(state, "persona.profile.delete", auth, Some(&id), None).await;
+    success_response(
+        &doc,
+        json!({ "profileId": id, "existed": existed, "unboundPersonas": bound }),
+    )
+}
+
+// ─── Bindings ────────────────────────────────────────────────────────────
+
+pub(super) async fn handle_binding_set(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::binding::set::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    // Holder-only, and the critical gate: an application able to call this
+    // could bind any profile to a persona it controls and read the result back
+    // through a disclosure it requests of itself.
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_BINDING_SET_1_0, None) {
+        return reject(&doc, e);
+    }
+
+    let ctx = req.context_id.to_string();
+    let persona = req.persona_did.to_string();
+    let profile_id = req.profile_id.as_ref().map(|p| p.to_string());
+    let public = req.public_entries.iter().map(|e| e.to_string()).collect();
+
+    let bound = match store(state)
+        .set_binding(
+            &ctx,
+            &persona,
+            profile_id.as_deref(),
+            public,
+            req.expected_version.map(|v| *v as u64),
+        )
+        .await
+    {
+        Ok(b) => b,
+        Err(e) => return reject(&doc, e),
+    };
+
+    audit_persona(
+        state,
+        "persona.binding.set",
+        auth,
+        Some(&persona),
+        Some(&ctx),
+    )
+    .await;
+    success_response(
+        &doc,
+        json!({
+            "contextId": ctx,
+            "personaDid": persona,
+            "profileId": profile_id,
+            "version": bound.version,
+            "materialisedClaimCount": bound.materialised_claim_count,
+            "correlation": {
+                // Binding one profile to a second persona makes them the same
+                // person by construction, and no later narrowing undoes it.
+                "severity": if bound.also_bound_persona_count > 0 { "high" } else { "none" },
+                "alsoBoundPersonaCount": bound.also_bound_persona_count,
+            },
+            "boundAt": chrono::Utc::now().to_rfc3339(),
+        }),
+    )
+}
+
+pub(super) async fn handle_binding_get(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::binding::get::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_BINDING_GET_1_0, Some(&ctx)) {
+        return reject(&doc, e);
+    }
+
+    let persona = req.persona_did.to_string();
+    let sum = match store(state).binding_summary(&ctx, &persona).await {
+        Ok(s) => s,
+        Err(e) => return reject(&doc, e),
+    };
+    audit_persona(
+        state,
+        "persona.binding.get",
+        auth,
+        Some(&persona),
+        Some(&ctx),
+    )
+    .await;
+    // Thin by construction: whether bound, the label, a claim count. Never
+    // contents — those reach an application only through the disclosure path.
+    success_response(
+        &doc,
+        json!({
+            "contextId": ctx,
+            "personaDid": sum.persona_did,
+            "bound": sum.bound,
+            "profileId": sum.profile_id,
+            "profileName": sum.profile_name,
+            "claimCount": sum.claim_count,
+            "boundAt": sum.bound_at,
+        }),
+    )
+}
+
+pub(super) async fn handle_binding_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::binding::list::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let ctx = req.context_id.to_string();
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_BINDING_LIST_1_0, Some(&ctx)) {
+        return reject(&doc, e);
+    }
+
+    let sums = match store(state).list_binding_summaries(&ctx).await {
+        Ok(s) => s,
+        Err(e) => return reject(&doc, e),
+    };
+    audit_persona(state, "persona.binding.list", auth, None, Some(&ctx)).await;
+    success_response(
+        &doc,
+        json!({
+            "personas": sums.iter().map(|s| json!({
+                "personaDid": s.persona_did,
+                "bound": s.bound,
+                "profileName": s.profile_name,
+                "claimCount": s.claim_count,
+            })).collect::<Vec<_>>()
+        }),
+    )
+}

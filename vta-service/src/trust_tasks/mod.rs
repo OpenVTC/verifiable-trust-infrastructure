@@ -1666,6 +1666,24 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_DELETE_1_0 => persona::handle_attribute_delete
         [ Destructive None false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_PUT_1_0 => persona::handle_profile_put
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_GET_1_0 => persona::handle_profile_get
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_LIST_1_0 => persona::handle_profile_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_DELETE_1_0 => persona::handle_profile_delete
+        [ Destructive None false ],
+    // The critical gate. Holder-only, and Mutating because it materialises a
+    // projection into a context — a push across the trust boundary.
+    vta_sdk::trust_tasks::TASK_PERSONA_BINDING_SET_1_0 => persona::handle_binding_set
+        [ Mutating Metadata false ],
+    // Context-callable and deliberately thin: whether bound, the label, a
+    // claim count. Never contents.
+    vta_sdk::trust_tasks::TASK_PERSONA_BINDING_GET_1_0 => persona::handle_binding_get
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_BINDING_LIST_1_0 => persona::handle_binding_list
+        [ None Metadata false ],
     // ─── Config slice ────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONFIG_SHOW_0_1 => config::handle_get
         [ None Metadata false ],

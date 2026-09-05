@@ -283,6 +283,49 @@ impl PersonaStore {
             .collect())
     }
 
+    /// Every persona bound to a profile, across **every** context.
+    ///
+    /// Holder-only by consequence: it spans contexts, which is exactly the view
+    /// a context-scoped caller must not have. Used by profile deletion to name
+    /// what a removal would leave presenting nothing.
+    pub async fn personas_bound_to_anywhere(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let rows = self.ks.prefix_iter_raw(b"pb:".to_vec()).await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(_k, v)| serde_json::from_slice::<BindingRecord>(&v).ok())
+            .filter(|r| r.binding.profile_id.as_deref() == Some(profile_id))
+            .map(|r| r.binding.persona_did)
+            .collect())
+    }
+
+    /// Clear every binding to a profile, across every context.
+    ///
+    /// The deliberate half of profile deletion: it leaves those personas
+    /// presenting nothing, which is a legal state and one the holder is told
+    /// about rather than discovering.
+    pub async fn unbind_everywhere(&self, profile_id: &str) -> Result<usize, AppError> {
+        let _guard = self.write_lock.lock().await;
+        let rows = self.ks.prefix_iter_raw(b"pb:".to_vec()).await?;
+        let mut cleared = 0usize;
+        for (k, v) in rows {
+            let Ok(mut record) = serde_json::from_slice::<BindingRecord>(&v) else {
+                continue;
+            };
+            if record.binding.profile_id.as_deref() != Some(profile_id) {
+                continue;
+            }
+            record.binding.profile_id = None;
+            record.profile_name = None;
+            record.claims.clear();
+            self.ks.insert(k, &record).await?;
+            cleared += 1;
+        }
+        Ok(cleared)
+    }
+
     /// Re-push every projection that draws on a profile.
     ///
     /// "Edit once, everywhere" survives the boundary because this is a **write
