@@ -40,11 +40,13 @@
 pub mod correlation;
 pub mod model;
 pub mod storage;
+pub mod store;
 
 pub use model::{
     Attribute, Binding, InlineValue, OverrideValue, Profile, ProfileEntry, ProofRung, Provenance,
     StaleReason, Ulid, ValueType, Version,
 };
+pub use store::{Deleted, PersonaStore, Written, new_attribute};
 
 #[cfg(test)]
 mod published_types {

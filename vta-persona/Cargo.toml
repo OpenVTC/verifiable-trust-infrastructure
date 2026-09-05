@@ -20,6 +20,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true }
 # Keyed hash for the correlation index. HMAC-SHA256 over a per-agent key, so
 # exact-match lookup works with no plaintext index over the holder's PII.
 hmac = { workspace = true }
@@ -31,6 +32,7 @@ ulid = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # The generated payload types are the contract this crate stores against.
 # A dev-dependency rather than a real one: storage does not need them, and
 # taking them here means a spec change that lands upstream without a matching

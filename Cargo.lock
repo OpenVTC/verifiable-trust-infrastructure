@@ -10313,6 +10313,7 @@ dependencies = [
  "sha2 0.11.0",
  "subtle",
  "tempfile",
+ "tokio",
  "tracing",
  "trust-tasks-rs",
  "ulid",
