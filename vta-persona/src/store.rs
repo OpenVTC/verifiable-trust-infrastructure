@@ -276,6 +276,41 @@ impl PersonaStore {
         })
     }
 
+    /// Every live attribute, optionally narrowed by vocabulary prefix.
+    ///
+    /// `include_values` is opt-in because the common case — rendering a picker
+    /// so a holder can choose what to compose with — needs type and label, not
+    /// plaintext. Making the sensitive path the one a caller has to ask for
+    /// means it is never the one they get by forgetting.
+    ///
+    /// Stale credential-backed attributes are returned carrying their reason
+    /// rather than omitted: a pool that looks smaller than it is would leave
+    /// the holder unaware that a claim has stopped being presentable.
+    pub async fn list_attributes(
+        &self,
+        type_prefix: Option<&str>,
+        include_values: bool,
+    ) -> Result<Vec<Attribute>, AppError> {
+        let rows = self
+            .ks
+            .prefix_iter_raw(storage::ATTRIBUTE_PREFIX.as_bytes().to_vec())
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(_k, v)| match serde_json::from_slice::<Slot>(&v) {
+                Ok(Slot::Live(a)) => Some(a),
+                _ => None,
+            })
+            .filter(|a| type_prefix.is_none_or(|p| a.r#type.starts_with(p)))
+            .map(|mut a| {
+                if !include_values {
+                    a.value = None;
+                }
+                a
+            })
+            .collect())
+    }
+
     /// Profiles whose entries refer to this attribute, from the reverse index —
     /// so a delete can name them without scanning every profile.
     pub async fn referring_profiles(&self, attribute_id: &str) -> Result<Vec<Ulid>, AppError> {
@@ -555,6 +590,91 @@ mod tests {
         assert!(
             !as_text.contains("+61 4xx xxx 001"),
             "the value must not be readable without the at-rest key"
+        );
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    #[tokio::test]
+    async fn listing_withholds_values_unless_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let s = PersonaStore::new(store.keyspace(vta_keyspaces::PERSONA).unwrap(), [1u8; 32]);
+
+        s.put(
+            new_attribute(
+                "phone.mobile",
+                ValueType::String,
+                serde_json::json!("+61"),
+                Provenance::SelfAsserted,
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let quiet = s.list_attributes(None, false).await.unwrap();
+        assert_eq!(quiet.len(), 1);
+        assert!(
+            quiet[0].value.is_none(),
+            "the default must not move plaintext"
+        );
+
+        let loud = s.list_attributes(None, true).await.unwrap();
+        assert!(loud[0].value.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_prefix_selects_a_vocabulary_family_and_a_tombstone_is_not_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let s = PersonaStore::new(store.keyspace(vta_keyspaces::PERSONA).unwrap(), [1u8; 32]);
+
+        let a = new_attribute(
+            "phone.work",
+            ValueType::String,
+            serde_json::json!("1"),
+            Provenance::SelfAsserted,
+        );
+        s.put(a.clone(), None).await.unwrap();
+        s.put(
+            new_attribute(
+                "name.legal",
+                ValueType::String,
+                serde_json::json!("n"),
+                Provenance::SelfAsserted,
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            s.list_attributes(Some("phone"), false).await.unwrap().len(),
+            1
+        );
+        assert_eq!(
+            s.list_attributes(Some("name"), false).await.unwrap().len(),
+            1
+        );
+        assert_eq!(s.list_attributes(None, false).await.unwrap().len(), 2);
+
+        s.delete(&a.attribute_id, false).await.unwrap();
+        assert_eq!(
+            s.list_attributes(Some("phone"), false).await.unwrap().len(),
+            0,
+            "a tombstone is not a live attribute"
         );
     }
 }

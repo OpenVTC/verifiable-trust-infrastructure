@@ -30,10 +30,34 @@
 //! for `Admin` and *nothing at all* for every other role, so a call site testing
 //! `is_empty()` without the role gets one of the two backwards.
 
+use serde_json::{Value, json};
+use trust_tasks_rs::{ErrorPayload, StandardCode, TrustTask, TrustTaskCode};
 use vta_sdk::trust_tasks as uris;
 use vti_common::error::AppError;
 
+use crate::audit;
 use crate::auth::AuthClaims;
+use crate::server::AppState;
+
+use super::helpers::{TrustTaskOutcome, error_response, parse_payload, success_response};
+
+/// The family namespace for codes shared across the slice. A proper path prefix
+/// of each task slug, which SPEC §8.5 permits so a family-wide meaning is
+/// defined once.
+const FAMILY_SLUG: &str = "persona";
+
+fn slug_from_doc(doc: &TrustTask<Value>) -> String {
+    doc.type_uri
+        .to_string()
+        .strip_prefix("https://trusttasks.org/spec/")
+        .and_then(|rest| rest.rsplit_once('/'))
+        .map(|(slug, _ver)| slug.to_string())
+        .unwrap_or_else(|| FAMILY_SLUG.to_string())
+}
+
+fn ext(slug: &str, local: &str) -> TrustTaskCode {
+    TrustTaskCode::new_extended(slug, local).expect("persona extended code is grammar-valid")
+}
 
 /// Which side of the boundary a task sits on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,8 +173,7 @@ mod tests {
     /// side of the boundary it is on.
     #[test]
     fn every_persona_task_declares_a_reach() {
-        let classified: std::collections::HashSet<&str> =
-            REACH.iter().map(|(u, _)| *u).collect();
+        let classified: std::collections::HashSet<&str> = REACH.iter().map(|(u, _)| *u).collect();
         let missing: Vec<&&str> = uris::ALL_URIS
             .iter()
             .filter(|u| u.starts_with("https://trusttasks.org/spec/persona/"))
@@ -172,7 +195,10 @@ mod tests {
             .map(|(u, _)| u)
             .filter(|u| !catalog.contains(*u))
             .collect();
-        assert!(orphans.is_empty(), "reach entries for tasks that do not exist: {orphans:#?}");
+        assert!(
+            orphans.is_empty(),
+            "reach entries for tasks that do not exist: {orphans:#?}"
+        );
     }
 
     /// The trap, asserted directly. This is the test that would have caught a
@@ -210,11 +236,19 @@ mod tests {
         // An empty context list means *unrestricted* for Admin and *nothing at
         // all* for every other role. A gate testing emptiness without the role
         // gets one of those backwards, so both halves are asserted.
-        for role in [Role::Application, Role::Reader, Role::Initiator, Role::Monitor] {
+        for role in [
+            Role::Application,
+            Role::Reader,
+            Role::Initiator,
+            Role::Monitor,
+        ] {
             let label = format!("{role:?}");
             let c = claims(role, &[]);
             let err = authorize(&c, uris::TASK_PERSONA_ATTRIBUTE_LIST_1_0, None).unwrap_err();
-            assert!(matches!(err, AppError::Forbidden(_)), "{label} reached the pool");
+            assert!(
+                matches!(err, AppError::Forbidden(_)),
+                "{label} reached the pool"
+            );
         }
     }
 
@@ -231,8 +265,12 @@ mod tests {
     #[test]
     fn an_unknown_task_is_refused_rather_than_defaulted() {
         let app = claims(Role::Application, &["ctx"]);
-        let err = authorize(&app, "https://trusttasks.org/spec/persona/made/up/9.9", Some("ctx"))
-            .unwrap_err();
+        let err = authorize(
+            &app,
+            "https://trusttasks.org/spec/persona/made/up/9.9",
+            Some("ctx"),
+        )
+        .unwrap_err();
         assert!(matches!(err, AppError::Forbidden(_)));
     }
 
@@ -240,10 +278,242 @@ mod tests {
     fn binding_set_is_holder_only_and_local_binding_set_is_not() {
         // The pair that most invites being collapsed. One crosses the boundary
         // and one does not.
-        assert_eq!(reach_of(uris::TASK_PERSONA_BINDING_SET_1_0), Some(Reach::Holder));
+        assert_eq!(
+            reach_of(uris::TASK_PERSONA_BINDING_SET_1_0),
+            Some(Reach::Holder)
+        );
         assert_eq!(
             reach_of(uris::TASK_PERSONA_LOCAL_BINDING_SET_1_0),
             Some(Reach::Context)
         );
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Handlers
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Request and response types come straight from `trust-tasks-rs` rather than
+// hand-written SDK mirrors. `parse_payload` is generic over serde, so the
+// generated types work as-is — and a mirror would be a second definition of the
+// same contract, free to drift from the published schema without anything
+// noticing. The generated types cannot.
+
+use trust_tasks_rs::specs::persona as spec;
+use vta_persona::{PersonaStore, ValueType, new_attribute};
+
+/// Open the store for this request.
+///
+/// The correlation key is derived per agent and lives beside the at-rest key;
+/// it never leaves the agent, which is what makes the blinded index blinded.
+fn store(state: &AppState) -> PersonaStore {
+    PersonaStore::new(state.persona_ks.clone(), state.persona_correlation_key)
+}
+
+/// Audit a persona task.
+///
+/// The attribute VALUE is deliberately never recorded. Copying identity data
+/// into the audit store would give it a second home under a different retention
+/// policy — the same reasoning app-state applies to its values, and it matters
+/// more here because this store exists to hold personal data.
+async fn audit_persona(
+    state: &AppState,
+    action: &str,
+    auth: &AuthClaims,
+    resource: Option<&str>,
+    context_id: Option<&str>,
+) {
+    if let Err(e) = audit::record(
+        &state.audit_sink,
+        action,
+        &auth.did,
+        resource,
+        "success",
+        Some(super::helpers::TRANSPORT_TRUST_TASK),
+        context_id,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, action = %action, "audit record failed for persona task");
+    }
+}
+
+/// Map a storage error onto the published error taxonomy.
+///
+/// Authorization failures use the framework's **standard** `permissionDenied`
+/// rather than a task-namespaced synonym: the framework already names this
+/// failure, and a duplicate would tell a client switching on the standard code
+/// that something else went wrong.
+fn reject(doc: &TrustTask<Value>, e: AppError) -> TrustTaskOutcome {
+    let slug = slug_from_doc(doc);
+    let message = e.to_string();
+    let (code, details): (TrustTaskCode, Option<Value>) = match &e {
+        AppError::Forbidden(_) | AppError::Unauthorized(_) => {
+            (StandardCode::PermissionDenied.into(), None)
+        }
+        AppError::NotFound(_) => (ext(&slug, "notFound"), None),
+        // The conflict carries the maintainer's view WITH the rejection. A bare
+        // rejection obliges the caller to re-read, and between the rejection and
+        // the re-read the record can change again — the pattern has no fixed
+        // point under contention.
+        AppError::Conflict(reason) => (
+            ext(&slug, "versionConflict"),
+            Some(json!({ "reason": reason })),
+        ),
+        AppError::Validation(reason) => (
+            StandardCode::MalformedRequest.into(),
+            Some(json!({ "reason": reason })),
+        ),
+        AppError::Gone(_) => (ext(&slug, "revisionReaped"), None),
+        _ => (StandardCode::InternalError.into(), None),
+    };
+
+    let mut payload = ErrorPayload::new(code).with_message(message);
+    if let Some(d) = details {
+        payload = payload.with_details(d);
+    }
+    error_response(doc.reject_with(format!("urn:uuid:{}", uuid::Uuid::new_v4()), payload))
+}
+
+pub(super) async fn handle_attribute_put(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::attribute::put::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_ATTRIBUTE_PUT_1_0, None) {
+        return reject(&doc, e);
+    }
+
+    let value_type = match serde_json::to_string(&req.value_type)
+        .ok()
+        .and_then(|s| serde_json::from_str::<ValueType>(&s).ok())
+    {
+        Some(v) => v,
+        None => {
+            return reject(&doc, AppError::Validation("unrecognised valueType".into()));
+        }
+    };
+
+    let provenance = match serde_json::to_value(&req.provenance)
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+    {
+        Some(p) => p,
+        None => return reject(&doc, AppError::Validation("unrecognised provenance".into())),
+    };
+
+    let mut attribute = new_attribute(
+        req.type_.to_string(),
+        value_type,
+        req.value.clone(),
+        provenance,
+    );
+    if let Some(id) = &req.attribute_id {
+        attribute.attribute_id = id.to_string();
+    }
+    attribute.label = req.label.as_ref().map(|l| (**l).clone());
+
+    let attribute_id = attribute.attribute_id.clone();
+    let value = attribute.value.clone();
+    let s = store(state);
+
+    let written = match s
+        .put(attribute, req.expected_version.map(|v| *v as u64))
+        .await
+    {
+        Ok(w) => w,
+        Err(e) => return reject(&doc, e),
+    };
+
+    // Advisory, and computed after the write because the write has already
+    // applied — a maintainer must not refuse on correlation grounds. The
+    // holder decides.
+    let shared = match &value {
+        Some(v) => s.correlation_count(v, &attribute_id).await.unwrap_or(0),
+        None => 0,
+    };
+
+    audit_persona(
+        state,
+        "persona.attribute.put",
+        auth,
+        Some(&attribute_id),
+        None,
+    )
+    .await;
+
+    success_response(
+        &doc,
+        serde_json::json!({
+            "attributeId": attribute_id,
+            "version": written.version,
+            "created": written.created,
+            "updatedAt": chrono::Utc::now().to_rfc3339(),
+            "correlation": {
+                "severity": if shared > 0 { "high" } else { "none" },
+                "sharedWithProfileCount": shared,
+            }
+        }),
+    )
+}
+
+pub(super) async fn handle_attribute_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::attribute::list::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_ATTRIBUTE_LIST_1_0, None) {
+        return reject(&doc, e);
+    }
+
+    // Values are withheld unless asked for: the common case — rendering a
+    // picker — needs type and label, not plaintext.
+    let include_values = req.include_values;
+    let s = store(state);
+    let prefix = req.type_prefix.as_ref().map(|p| p.as_str());
+    let attributes = match s.list_attributes(prefix, include_values).await {
+        Ok(a) => a,
+        Err(e) => return reject(&doc, e),
+    };
+
+    audit_persona(state, "persona.attribute.list", auth, None, None).await;
+    success_response(&doc, serde_json::json!({ "attributes": attributes }))
+}
+
+pub(super) async fn handle_attribute_delete(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::attribute::delete::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(auth, uris::TASK_PERSONA_ATTRIBUTE_DELETE_1_0, None) {
+        return reject(&doc, e);
+    }
+
+    let id = req.attribute_id.to_string();
+    let out = match store(state).delete(&id, req.cascade).await {
+        Ok(o) => o,
+        Err(e) => return reject(&doc, e),
+    };
+
+    audit_persona(state, "persona.attribute.delete", auth, Some(&id), None).await;
+    success_response(
+        &doc,
+        serde_json::json!({
+            "attributeId": id,
+            "existed": out.existed,
+            "removedFromProfiles": out.referring_profiles,
+        }),
+    )
 }

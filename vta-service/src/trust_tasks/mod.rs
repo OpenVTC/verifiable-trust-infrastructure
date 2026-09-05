@@ -46,7 +46,6 @@ use crate::server::AppState;
 
 mod acl;
 mod app_state;
-mod persona;
 mod audit;
 #[cfg(test)]
 mod audit_coverage;
@@ -77,6 +76,7 @@ mod memory;
 mod messaging;
 #[cfg(all(feature = "webvh", feature = "didcomm"))]
 mod passkey_vms;
+mod persona;
 pub(crate) mod planner;
 mod policy;
 mod policy_gate;
@@ -1653,6 +1653,19 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_VTA_APP_STATE_PUT_MANY_1_0 => app_state::handle_put_many
         [ Mutating None false ],
+    // ─── Persona slice (spec/persona/*) ──────────────────────────
+    // The holder's own identity. Eleven of the family's tasks are gated on an
+    // UNSCOPED HOLDER credential rather than context access — see
+    // `trust_tasks::persona::authorize`, where the classification lives and a
+    // census pins it. `attribute/put` is Mutating and `delete` Destructive;
+    // both reads disclose Metadata because they return the holder's own data
+    // to the holder.
+    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_PUT_1_0 => persona::handle_attribute_put
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_LIST_1_0 => persona::handle_attribute_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_DELETE_1_0 => persona::handle_attribute_delete
+        [ Destructive None false ],
     // ─── Config slice ────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONFIG_SHOW_0_1 => config::handle_get
         [ None Metadata false ],

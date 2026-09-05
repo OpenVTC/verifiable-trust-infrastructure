@@ -10491,6 +10491,7 @@ dependencies = [
  "vta-config",
  "vta-keys",
  "vta-keyspaces",
+ "vta-persona",
  "vta-policy",
  "vta-sdk",
  "vta-service",

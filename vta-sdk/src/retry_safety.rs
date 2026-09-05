@@ -456,7 +456,6 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_POLICY_GET_0_1, ReadOnly),
     (trust_tasks::TASK_POLICY_UPSERT_0_2, RetrySafe),
     (trust_tasks::TASK_POLICY_DELETE_0_1, RetrySafe),
-
     // ─── Persona slice ───────────────────────────────────────────────────
     //
     // Writes are `Keyed`, following the `app-state` precedent and for its
@@ -476,30 +475,102 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // SECOND RELEASE OF PERSONAL DATA to a third party and a second permanent
     // record of it — the one task in this family where a lost reply must never
     // be retried blind.
-    (trust_tasks::TASK_PERSONA_ATTRIBUTE_PUT_1_0, RetrySafety::Keyed),
-    (trust_tasks::TASK_PERSONA_ATTRIBUTE_LIST_1_0, RetrySafety::ReadOnly),
-    (trust_tasks::TASK_PERSONA_ATTRIBUTE_DELETE_1_0, RetrySafety::RetrySafe),
-    (trust_tasks::TASK_PERSONA_PROFILE_PUT_1_0, RetrySafety::Keyed),
-    (trust_tasks::TASK_PERSONA_PROFILE_GET_1_0, RetrySafety::ReadOnly),
-    (trust_tasks::TASK_PERSONA_PROFILE_LIST_1_0, RetrySafety::ReadOnly),
-    (trust_tasks::TASK_PERSONA_PROFILE_DELETE_1_0, RetrySafety::RetrySafe),
-    (trust_tasks::TASK_PERSONA_BINDING_SET_1_0, RetrySafety::Keyed),
-    (trust_tasks::TASK_PERSONA_BINDING_GET_1_0, RetrySafety::ReadOnly),
-    (trust_tasks::TASK_PERSONA_BINDING_LIST_1_0, RetrySafety::ReadOnly),
-    (trust_tasks::TASK_PERSONA_CONTACT_PUT_1_0, RetrySafety::Keyed),
-    (trust_tasks::TASK_PERSONA_CONTACT_GET_1_0, RetrySafety::ReadOnly),
-    (trust_tasks::TASK_PERSONA_CONTACT_LIST_1_0, RetrySafety::ReadOnly),
-    (trust_tasks::TASK_PERSONA_CONTACT_DELETE_1_0, RetrySafety::RetrySafe),
-    (trust_tasks::TASK_PERSONA_DISCLOSURE_PREVIEW_1_0, RetrySafety::Keyed),
-    (trust_tasks::TASK_PERSONA_DISCLOSURE_PRESENT_1_0, RetrySafety::Keyed),
-    (trust_tasks::TASK_PERSONA_DISCLOSURE_HISTORY_1_0, RetrySafety::ReadOnly),
-    (trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_0, RetrySafety::ReadOnly),
-    (trust_tasks::TASK_PERSONA_RENDERERS_LIST_1_0, RetrySafety::ReadOnly),
-    (trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0, RetrySafety::Keyed),
-    (trust_tasks::TASK_PERSONA_LOCAL_PROFILE_GET_1_0, RetrySafety::ReadOnly),
-    (trust_tasks::TASK_PERSONA_LOCAL_PROFILE_LIST_1_0, RetrySafety::ReadOnly),
-    (trust_tasks::TASK_PERSONA_LOCAL_PROFILE_DELETE_1_0, RetrySafety::RetrySafe),
-    (trust_tasks::TASK_PERSONA_LOCAL_BINDING_SET_1_0, RetrySafety::Keyed),
+    (
+        trust_tasks::TASK_PERSONA_ATTRIBUTE_PUT_1_0,
+        RetrySafety::Keyed,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_ATTRIBUTE_LIST_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_ATTRIBUTE_DELETE_1_0,
+        RetrySafety::RetrySafe,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_PROFILE_PUT_1_0,
+        RetrySafety::Keyed,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_PROFILE_GET_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_PROFILE_LIST_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_PROFILE_DELETE_1_0,
+        RetrySafety::RetrySafe,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_BINDING_SET_1_0,
+        RetrySafety::Keyed,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_BINDING_GET_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_BINDING_LIST_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CONTACT_PUT_1_0,
+        RetrySafety::Keyed,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CONTACT_GET_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CONTACT_LIST_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CONTACT_DELETE_1_0,
+        RetrySafety::RetrySafe,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_DISCLOSURE_PREVIEW_1_0,
+        RetrySafety::Keyed,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_DISCLOSURE_PRESENT_1_0,
+        RetrySafety::Keyed,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_DISCLOSURE_HISTORY_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_CORRELATION_ANALYZE_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_RENDERERS_LIST_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0,
+        RetrySafety::Keyed,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_LOCAL_PROFILE_GET_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_LOCAL_PROFILE_LIST_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_LOCAL_PROFILE_DELETE_1_0,
+        RetrySafety::RetrySafe,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_LOCAL_BINDING_SET_1_0,
+        RetrySafety::Keyed,
+    ),
 ];
 
 /// The retry-safety class of `uri`, or `None` if it is not a task this VTA
