@@ -2981,6 +2981,11 @@ fn now_epoch() -> u64 {
 ///
 /// `issuedAt` alone is the right bound to carry: an `expiresAt` would put the
 /// consumer's retention obligation in this client's hands.
+///
+/// Gated with its three callers: `TspPingSession` and `TspSession` are both
+/// `tsp`-only, so under `session` alone this is dead code and `-D warnings`
+/// fails the `vta-service rest only` feature combo.
+#[cfg(feature = "tsp")]
 fn ping_document(
     client_did: &str,
     vta_did: &str,
@@ -2999,7 +3004,7 @@ fn ping_document(
     Ok(doc)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tsp"))]
 mod ping_document_tests {
     use super::ping_document;
 
