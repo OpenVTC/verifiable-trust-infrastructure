@@ -769,6 +769,31 @@ not the host's.
 The specs were corrected upstream rather than worked around
 (`dtgwg-trust-tasks-tf#361`), which is what implementation is for.
 
+### 10.5 DID rotation — open
+
+Two places in this note point here for an answer (§5.4, §14.2) and there has
+never been a §10.5 to point at. It is written now as an explicitly open
+subsection rather than left as a dangling forward reference, because the two
+readers who followed it deserved to find the question rather than nothing.
+
+**The question.** An owner rotates the key controlling the room's DID. Every
+credential the room ever issued names a `verificationMethod` under the old key.
+Witnessed pre-rotation (§3.2) is what makes the rotation itself verifiable, and
+it settles the *chain of control* — it does not settle **identity assurance**:
+who confirms the party presenting the rotated key is the same person, and on
+what evidence.
+
+That is human judgement, and it is the same judgement §5.4's k-of-n re-admission
+quorum has to exercise about a returning member. Neither has an answer here, and
+inventing two separate ones would be worse than having none: they are the same
+problem, and a design that solved it twice would be solving it differently.
+
+**What succession does not need it for.** Worth stating so the dependency is not
+assumed. Transfer and claim both turn on credentials the room issued and on the
+room's own lifecycle clock — neither asks who a party *is*, only what the room
+said about them. Succession is therefore implementable, and implemented, while
+this stays open.
+
 ---
 
 ## 11. Prior art, taken and declined
