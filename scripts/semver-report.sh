@@ -165,12 +165,25 @@ if [ ${#unpublished[@]} -gt 0 ]; then
   echo "  expected once. If one of these is still here after a release has gone out,"
   echo "  the release did not publish it and that is the thing to look at."
 fi
+if [ ${#expected[@]} -eq 0 ]; then
+  echo "::error::nothing to check — every publishable library is either excluded or \
+unpublished. That is not a pass; it is the report covering nothing."
+  exit 1
+fi
+
 echo
 echo "checking: ${expected[*]}"
 echo
 
+# `${arr[@]+"${arr[@]}"}` rather than a plain `"${arr[@]}"`: expanding an EMPTY
+# array under `set -u` is an unbound-variable error in bash 3.2, and `unpublished`
+# is empty exactly when every crate has a baseline — the normal, healthy state
+# this script is meant to reach. It failed the first time it got there.
+#
+# Bash 4.4+ made the plain form safe, so CI (bash 5) would never have shown this.
+# The portability that let the script run on a laptop is also what found it.
 args=(--workspace)
-for c in "${EXCLUDED[@]}" "${unpublished[@]}"; do
+for c in "${EXCLUDED[@]}" ${unpublished[@]+"${unpublished[@]}"}; do
   args+=(--exclude "$c")
 done
 
@@ -213,7 +226,7 @@ fi
 # nobody has met yet — the missing names are printed instead of the shortfall
 # passing as an ordinary red.
 missing=()
-for crate in "${expected[@]}"; do
+for crate in ${expected[@]+"${expected[@]}"}; do
   grep -qE "Finished \[[^]]*\] ${crate}\$" semver.log || missing+=("$crate")
 done
 
