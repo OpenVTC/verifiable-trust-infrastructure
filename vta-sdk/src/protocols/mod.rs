@@ -30,6 +30,7 @@ pub mod memory;
 pub mod app_state;
 /// Passkey-based login flow (`vta/auth/passkey-login-{start,finish}/1.0`).
 pub mod passkey_login;
+pub mod persona;
 /// Runtime Policy Decision Point management (`policy/*`) — where the
 /// declarative approvals model is read and written.
 pub mod policy_management;
