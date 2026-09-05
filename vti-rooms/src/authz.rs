@@ -78,6 +78,21 @@ impl Action {
     }
 }
 
+/// The action a succession nomination grants, and the reason it is not an [`Action`].
+///
+/// A nomination is a VAC the room issues to a successor, and it has to grant *something*
+/// for a chain verifier to check it against. It must not grant `admin`: that would make the
+/// nominee an administrator today, which is precisely the power a nomination must withhold
+/// while the owner is present — the whole point is a right that lies dormant until the
+/// owner does.
+///
+/// So it grants `succeed`, which no room task accepts. It is redeemable through exactly one
+/// path, `rooms/owner/claim`, and only against a dormant room. Keeping it out of [`Action`]
+/// is what makes that true by construction rather than by discipline: [`authorize`] cannot
+/// be passed it, so no amount of future editing there can quietly turn a nomination into a
+/// working grant.
+pub const ACTION_SUCCEED: &str = "succeed";
+
 /// What a verifier concludes about a presentation.
 ///
 /// Deliberately narrow: the caller gets the subject and the actions the chain confers, and

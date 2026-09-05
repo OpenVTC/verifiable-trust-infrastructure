@@ -704,6 +704,96 @@ committer, accountable party, lifecycle addressee (I1's several jobs).
   reaching a room, not the room's possession of what was contributed.
 - **Deletion** in-room stays tombstone-then-purge, two verbs, per §6.
 
+### 10.1 The two verbs, and what each one has to prove
+
+`rooms/owner/transfer` and `rooms/owner/claim` are the same storage effect
+reached along two entirely different routes. Transfer is the owner acting while
+present, gated on `admin` — the same grant that mints epochs, since handing over
+the room is the more consequential of the two. Claim is what happens when they
+are not, and it needs three things at once:
+
+1. a **nomination** the room itself issued, naming this claimant, in its window;
+2. the room **dormant** — not merely lapsed;
+3. the claimant's own **membership**, presented as every other room task does.
+
+Each closes a different route to a takeover. A nomination alone does nothing
+while the owner renews; a dormant room alone does nothing without a nomination;
+and neither helps a claimant who could not commit once they had it.
+
+**A nomination is a VAC granting `succeed`** — deliberately a word no room task
+accepts. It confers nothing at all while the owner is present, and is redeemable
+through exactly one path. That is also why `succeed` is not a `vti_rooms::authz::Action`
+variant: `authorize` cannot be handed it, so no later edit there can quietly turn
+a nomination into a working grant.
+
+### 10.2 Renewing is the defence, and it is the same act as ordinary use
+
+The property worth noticing is in condition 2. An owner who was merely away
+defeats every pending claim by minting an epoch — which is what they would have
+done anyway. Nothing has to be revoked, no dispute has to be raised, and an owner
+who is present is structurally safe from succession **without ever thinking about
+it.** Security that requires no vigilance is the only kind that survives contact
+with people on holiday.
+
+Hence dormancy rather than lapse. An epoch expiring is frequently somebody away
+for a fortnight; a room still unrenewed after the grace window is a room whose
+owner has stopped, and has had a notice saying so. A takeover window that opened
+the moment an epoch expired would make every holiday one.
+
+### 10.3 A claim does not renew the room
+
+`set_owner` hands over a dormant room and leaves it dormant. The new owner's
+first act should be the one that proves they can perform it — a claim that
+silently renewed would hand the room to someone who might turn out to be unable
+to commit, with the room looking healthy until the next lapse a year later. If
+they do not renew, the next nominee can claim in turn, which is the succession
+chain working rather than failing.
+
+### 10.4 What a host cannot check, and must not pretend to
+
+Both specs required a host to confirm the incoming owner is a member of the MLS
+group. **A host cannot see the group** — it holds no roster and no group state,
+by construction (I5, §7.2). Two wrong responses were available and both are worse
+than doing nothing: refusing what it cannot verify fails *every* transfer,
+including every correct one; and treating its own ignorance as evidence converts
+"I don't know" into "no".
+
+So on transfer the check is simply absent, and what protects the incoming owner
+is that the outgoing one holds `admin` and knows the roster. On claim the host
+uses the one signal it does have — the VMC the room itself issued, which is the
+room's own statement that this party is a member. That is a proxy and a good one,
+but an exact one: a party removed from the group while still holding an unexpired
+VMC would pass. Closing that gap is the room's job, by revoking the credential,
+not the host's.
+
+The specs were corrected upstream rather than worked around
+(`dtgwg-trust-tasks-tf#361`), which is what implementation is for.
+
+### 10.5 DID rotation — open
+
+Two places in this note point here for an answer (§5.4, §14.2) and there has
+never been a §10.5 to point at. It is written now as an explicitly open
+subsection rather than left as a dangling forward reference, because the two
+readers who followed it deserved to find the question rather than nothing.
+
+**The question.** An owner rotates the key controlling the room's DID. Every
+credential the room ever issued names a `verificationMethod` under the old key.
+Witnessed pre-rotation (§3.2) is what makes the rotation itself verifiable, and
+it settles the *chain of control* — it does not settle **identity assurance**:
+who confirms the party presenting the rotated key is the same person, and on
+what evidence.
+
+That is human judgement, and it is the same judgement §5.4's k-of-n re-admission
+quorum has to exercise about a returning member. Neither has an answer here, and
+inventing two separate ones would be worse than having none: they are the same
+problem, and a design that solved it twice would be solving it differently.
+
+**What succession does not need it for.** Worth stating so the dependency is not
+assumed. Transfer and claim both turn on credentials the room issued and on the
+room's own lifecycle clock — neither asks who a party *is*, only what the room
+said about them. Succession is therefore implementable, and implemented, while
+this stays open.
+
 ---
 
 ## 11. Prior art, taken and declined

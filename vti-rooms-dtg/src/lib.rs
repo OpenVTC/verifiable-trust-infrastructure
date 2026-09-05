@@ -56,6 +56,10 @@ use vti_rooms::authz::{Action, ChainVerifier, VerifiedChain};
 use vti_rooms::wire::AuthorityPresentation;
 use vti_rooms::{Room, Visibility};
 
+pub mod nomination;
+
+pub use vti_rooms::authz::ACTION_SUCCEED;
+
 /// Resolve a credential's `verificationMethod` to the public key that signed it.
 ///
 /// One implementation per host, because a VTC resolves DIDs through its own resolver and a
@@ -170,58 +174,74 @@ impl DtgChainVerifier {
     }
 
     /// Decode one presented credential and verify its proof.
-    ///
-    /// Accepts base64url or bare JSON. Both are unambiguous — a JSON document starts with
-    /// `{` and base64url has no `{` in its alphabet — and accepting both means a caller
-    /// hand-building a request for a demo or a test does not have to encode by hand. The
-    /// serialization is a profile question the schema leaves open ("serialized per the
-    /// governing profile"); this is the profile this implementation reads.
     async fn open_credential(&self, encoded: &str, what: &str) -> Result<DTGCredential, AppError> {
-        let bytes = if encoded.trim_start().starts_with('{') {
-            encoded.as_bytes().to_vec()
-        } else {
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(encoded.trim())
-                .map_err(|_| {
-                    AppError::Forbidden(format!(
-                        "{what} is neither base64url nor JSON; a credential that cannot be \
-                         read cannot be verified"
-                    ))
-                })?
-        };
-
-        let credential: DTGCredential = serde_json::from_slice(&bytes)
-            .map_err(|e| AppError::Forbidden(format!("{what} is not a DTG credential: {e}")))?;
-
-        let proof = credential
-            .credential()
-            .proof
-            .as_ref()
-            .ok_or_else(|| AppError::Forbidden(format!("{what} carries no proof")))?;
-
-        let key = self
-            .keys
-            .public_key(&proof.verification_method)
+        open_credential(encoded, what, self.keys.as_ref())
             .await
-            .map_err(|e| {
-                // The resolver's own error is for the operator; the caller learns only that
-                // it did not verify, so an unresolvable method is not an oracle for which
-                // DIDs this host can reach.
-                tracing::warn!(
-                    verification_method = %proof.verification_method,
-                    error = %e,
-                    "could not resolve a room credential's verification method"
-                );
-                AppError::Forbidden(format!("{what} could not be verified"))
-            })?;
+            // Everything this verifier refuses is a `Forbidden`; the shared opener is also
+            // used by a path where a bad credential is a malformed request rather than a
+            // denied one, so it reports `Validation` and this maps it back.
+            .map_err(|e| AppError::Forbidden(e.to_string()))
+    }
+}
 
-        credential.verify_proof_with_public_key(&key).map_err(|e| {
-            tracing::warn!(error = %e, "room credential proof did not verify");
-            AppError::Forbidden(format!("{what} could not be verified"))
+/// Decode one credential and verify its proof against the key its own proof names.
+///
+/// Shared because the alternative is two decoders that agree today. They would not stay
+/// agreed: the serialization is a profile question the schema leaves open, and a second copy
+/// is a second place to accept a form the first does not — which is how one path ends up
+/// verifying something another would refuse.
+///
+/// Accepts base64url or bare JSON. Both are unambiguous — a JSON document starts with `{`
+/// and base64url has no `{` in its alphabet — and accepting both means a caller
+/// hand-building a request for a demo or a test does not have to encode by hand.
+pub async fn open_credential(
+    encoded: &str,
+    what: &str,
+    keys: &dyn VerificationKeys,
+) -> Result<DTGCredential, AppError> {
+    let bytes = if encoded.trim_start().starts_with('{') {
+        encoded.as_bytes().to_vec()
+    } else {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded.trim())
+            .map_err(|_| {
+                AppError::Validation(format!(
+                    "{what} is neither base64url nor JSON; a credential that cannot be \
+                     read cannot be verified"
+                ))
+            })?
+    };
+
+    let credential: DTGCredential = serde_json::from_slice(&bytes)
+        .map_err(|e| AppError::Validation(format!("{what} is not a DTG credential: {e}")))?;
+
+    let proof = credential
+        .credential()
+        .proof
+        .as_ref()
+        .ok_or_else(|| AppError::Validation(format!("{what} carries no proof")))?;
+
+    let key = keys
+        .public_key(&proof.verification_method)
+        .await
+        .map_err(|e| {
+            // The resolver's own error is for the operator; the caller learns only that it
+            // did not verify, so an unresolvable method is not an oracle for which DIDs this
+            // host can reach.
+            tracing::warn!(
+                verification_method = %proof.verification_method,
+                error = %e,
+                "could not resolve a room credential's verification method"
+            );
+            AppError::Validation(format!("{what} could not be verified"))
         })?;
 
-        Ok(credential)
-    }
+    credential.verify_proof_with_public_key(&key).map_err(|e| {
+        tracing::warn!(error = %e, "room credential proof did not verify");
+        AppError::Validation(format!("{what} could not be verified"))
+    })?;
+
+    Ok(credential)
 }
 
 /// An [`AuthorityError`] as a refusal.
@@ -229,7 +249,7 @@ impl DtgChainVerifier {
 /// Every variant becomes the same `Forbidden`, with the specifics in the message for an
 /// operator reading logs. A caller learns that the chain did not carry the authority — not
 /// which link to adjust, which would make the verifier a tool for assembling one.
-fn chain_refusal(room_id: &str, e: AuthorityError) -> AppError {
+pub(crate) fn chain_refusal(room_id: &str, e: AuthorityError) -> AppError {
     AppError::Forbidden(format!(
         "the authority chain does not confer this on room `{room_id}`: {e}"
     ))
@@ -544,7 +564,7 @@ mod signed {
 
     /// Resolves a `did:key`'s verification method to its own public key, which is what a
     /// `did:key` is. No network, and no opportunity to resolve to the wrong key.
-    struct DidKeyResolver;
+    pub(crate) struct DidKeyResolver;
 
     #[async_trait::async_trait]
     impl VerificationKeys for DidKeyResolver {
@@ -885,12 +905,21 @@ pub mod test_support {
         pub room_key: Party,
         pub owner: Party,
         pub agent: Party,
+        /// A second member — the one succession is for. Everything a claimant needs and
+        /// nothing more: their own membership and their own chain from the room, at
+        /// `read`. Deliberately *not* an admin, because a successor who already held
+        /// `admin` would prove nothing about whether a nomination is what admitted them.
+        pub successor: Party,
         /// The owner's chain: one link, from the room.
         pub owner_chain: Vec<String>,
         /// The agent's chain: the owner's, with a read-only leaf on top.
         pub agent_chain: Vec<String>,
         /// The owner's membership credential.
         pub membership: String,
+        /// The successor's chain: one link from the room, conferring `read`.
+        pub successor_chain: Vec<String>,
+        /// The successor's own membership credential.
+        pub successor_membership: String,
     }
 
     impl RoomFixture {
@@ -899,6 +928,7 @@ pub mod test_support {
             let room_key = Party::new();
             let owner = Party::new();
             let agent = Party::new();
+            let successor = Party::new();
             let now = Utc::now();
 
             let mut owner_vac = DTGCredential::new_vac(
@@ -949,6 +979,33 @@ pub mod test_support {
                 .await
                 .expect("sign the VMC");
 
+            let mut successor_vac = DTGCredential::new_vac(
+                room_key.did.clone(),
+                successor.did.clone(),
+                room_key.did.clone(),
+                vec!["read".into()],
+                now - Duration::minutes(1),
+                Some(now + Duration::days(30)),
+            )
+            .expect("successor VAC")
+            .with_id("urn:uuid:vac-successor");
+            successor_vac
+                .sign(&room_key.secret, None)
+                .await
+                .expect("sign the successor VAC");
+
+            let mut successor_vmc = DTGCredential::new_vmc(
+                room_key.did.clone(),
+                successor.did.clone(),
+                now - Duration::minutes(1),
+                Some(now + Duration::days(30)),
+                false,
+            );
+            successor_vmc
+                .sign(&room_key.secret, None)
+                .await
+                .expect("sign the successor VMC");
+
             let enc = |c: &DTGCredential| serde_json::to_string(c).expect("serialise");
 
             Self {
@@ -966,9 +1023,12 @@ pub mod test_support {
                 owner_chain: vec![enc(&owner_vac)],
                 agent_chain: vec![enc(&agent_vac), enc(&owner_vac)],
                 membership: enc(&vmc),
+                successor_chain: vec![enc(&successor_vac)],
+                successor_membership: enc(&successor_vmc),
                 room_key,
                 owner,
                 agent,
+                successor,
             }
         }
 
@@ -988,6 +1048,38 @@ pub mod test_support {
                 authority: self.agent_chain.clone(),
                 subject_binding: None,
             }
+        }
+
+        /// The successor's presentation — their own membership, their own chain.
+        pub fn as_successor(&self) -> AuthorityPresentation {
+            AuthorityPresentation {
+                membership: self.successor_membership.clone(),
+                authority: self.successor_chain.clone(),
+                subject_binding: None,
+            }
+        }
+
+        /// A succession nomination: the room grants `succeed` to `successor`.
+        ///
+        /// Signed by the **room**, because that is the only issuer a nomination can have —
+        /// an owner nominating in their own name would be a chain rooted at a person, and
+        /// the whole point is that it is rooted at the room they are stepping away from.
+        pub async fn nominate(&self, successor: &str, valid_until: Option<i64>) -> String {
+            let now = Utc::now();
+            let mut vac = DTGCredential::new_vac(
+                self.room_key.did.clone(),
+                successor.to_string(),
+                self.room_key.did.clone(),
+                vec![crate::ACTION_SUCCEED.into()],
+                now - Duration::minutes(1),
+                valid_until.map(|h| now + Duration::hours(h)),
+            )
+            .expect("nomination VAC")
+            .with_id("urn:uuid:vac-nomination");
+            vac.sign(&self.room_key.secret, None)
+                .await
+                .expect("sign the nomination");
+            serde_json::to_string(&vac).expect("serialise")
         }
     }
 }

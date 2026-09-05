@@ -45,9 +45,10 @@ use crate::{VtcClient, VtcError};
 pub use vti_rooms::Visibility;
 pub use vti_rooms::authz::MAX_CHAIN_DEPTH;
 pub use vti_rooms::wire::{
-    AuthorityPresentation, CleartextContent, ListRecordsResponse, MintEpochResponse,
-    PutRecordResponse, ROOMS_CREATE_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_RECORDS_GET_TYPE,
-    ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, SealedContent,
+    AuthorityPresentation, CleartextContent, ListRecordsResponse, MintEpochResponse, OwnerResponse,
+    PutRecordResponse, ROOMS_CREATE_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_OWNER_CLAIM_TYPE,
+    ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_GET_TYPE, ROOMS_RECORDS_LIST_TYPE,
+    ROOMS_RECORDS_PUT_TYPE, SealedContent,
 };
 
 /// A caller's standing in one room.
@@ -292,6 +293,91 @@ impl VtcClient {
         serde_json::from_value(value).map_err(|e| VtcError::Http {
             status: 200,
             body: format!("mint response is not a MintEpochResponse: {e}"),
+        })
+    }
+
+    /// Hand the room to another member, deliberately and while still present.
+    ///
+    /// Requires a chain conferring `admin` — the same grant that mints epochs, since
+    /// transferring is the more consequential of the two.
+    ///
+    /// **The host does not check that `new_owner_did` is a member**, and cannot: it holds no
+    /// roster and no MLS group state. That obligation is the outgoing owner's, who can see
+    /// the group. Give the room to someone who cannot commit and they inherit a room they
+    /// cannot renew.
+    pub async fn transfer_owner(
+        &self,
+        session: &RoomSession,
+        new_owner_did: &str,
+        reason: Option<&str>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<OwnerResponse, VtcError> {
+        let mut payload = serde_json::json!({
+            "roomId": session.room_id,
+            "newOwnerDid": new_owner_did,
+            "presentation": session.presentation,
+        });
+        if let Some(r) = reason {
+            payload["reason"] = serde_json::json!(r);
+        }
+        self.owner_task(
+            ROOMS_OWNER_TRANSFER_TYPE,
+            payload,
+            signer_did,
+            private_key_multibase,
+        )
+        .await
+    }
+
+    /// Claim a room whose owner has stopped renewing it.
+    ///
+    /// `nomination` is the succession credential the room issued to this claimant in
+    /// advance. All three of the host's conditions must hold together: a valid nomination,
+    /// a room that has been **dormant** past its grace window — not merely lapsed — and the
+    /// claimant's own membership, which is what `session` carries.
+    ///
+    /// A claim does not renew the room. It hands over a dormant room, and the new owner's
+    /// first act should be the epoch mint that proves they can perform it.
+    pub async fn claim_owner(
+        &self,
+        session: &RoomSession,
+        nomination: &str,
+        reason: Option<&str>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<OwnerResponse, VtcError> {
+        let mut payload = serde_json::json!({
+            "roomId": session.room_id,
+            "nomination": nomination,
+            "presentation": session.presentation,
+        });
+        if let Some(r) = reason {
+            payload["reason"] = serde_json::json!(r);
+        }
+        self.owner_task(
+            ROOMS_OWNER_CLAIM_TYPE,
+            payload,
+            signer_did,
+            private_key_multibase,
+        )
+        .await
+    }
+
+    /// The shared tail of the two succession verbs, which answer with one shape.
+    async fn owner_task(
+        &self,
+        type_uri: &str,
+        payload: serde_json::Value,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<OwnerResponse, VtcError> {
+        let value = self
+            .room_task(type_uri, payload, signer_did, private_key_multibase)
+            .await?;
+        serde_json::from_value(value).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("{type_uri} response is not an OwnerResponse: {e}"),
         })
     }
 

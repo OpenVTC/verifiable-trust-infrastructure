@@ -104,6 +104,20 @@ impl Lifecycle {
         true
     }
 
+    /// Whether a nominated successor may claim a room in this state.
+    ///
+    /// **Dormant, not merely lapsed.** An epoch expiring is frequently somebody on holiday;
+    /// a room still unrenewed after the grace window is a room whose owner has stopped, and
+    /// has had a notice saying so. Allowing a claim the instant an epoch lapsed would make
+    /// every holiday a takeover window.
+    ///
+    /// `Reclaimable` counts too: a room past its retention is more claimable, not less —
+    /// refusing there would mean the only party who could save it loses the right at exactly
+    /// the moment it matters.
+    pub fn admits_a_claim(&self) -> bool {
+        matches!(self, Lifecycle::Dormant | Lifecycle::Reclaimable)
+    }
+
     /// The wire form.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -259,6 +273,43 @@ mod tests {
         ] {
             assert!(s.serves_reads(), "{s:?} must still serve reads");
         }
+    }
+
+    /// The window a claim opens in, and the one it must not.
+    #[test]
+    fn a_claim_needs_dormancy_not_merely_a_lapse() {
+        let r = room(Some(NOW), 90);
+
+        assert!(
+            !r.lifecycle(NOW + DAY).admits_a_claim(),
+            "an epoch expiring is often somebody on holiday, not an abandoned room"
+        );
+        assert!(
+            !r.lifecycle(NOW + 29 * DAY).admits_a_claim(),
+            "still inside the grace window"
+        );
+        assert!(
+            r.lifecycle(NOW + 31 * DAY).admits_a_claim(),
+            "past the grace window, and the owner has had their notice"
+        );
+        assert!(
+            r.lifecycle(NOW + 91 * DAY).admits_a_claim(),
+            "a room past retention is more claimable, not less — the only party who could \
+             save it must not lose the right exactly when it matters"
+        );
+    }
+
+    /// Renewing is what cancels a pending claim, which is the property that makes an absent
+    /// owner safe without them ever thinking about it.
+    #[test]
+    fn a_live_room_is_never_claimable() {
+        assert!(!room(Some(NOW + DAY), 90).lifecycle(NOW).admits_a_claim());
+        assert!(
+            !room(None, 90)
+                .lifecycle(NOW + 10_000 * DAY)
+                .admits_a_claim(),
+            "a room that never lapses is never claimable"
+        );
     }
 
     #[test]

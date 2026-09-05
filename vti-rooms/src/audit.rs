@@ -111,18 +111,68 @@ pub fn for_operation(
     }
 }
 
-/// The `room.*` audit action name for an operation.
+/// A room operation, as an audit log names it.
 ///
-/// Named per the design's `room.*` vocabulary rather than reusing the authority action, so
-/// a log distinguishes "read a record" from "listed the room" — both are `read` on the
-/// authority axis and different events to anyone reading a log.
-pub fn action_name(action: Action, listed: bool) -> &'static str {
-    match (action, listed) {
-        (Action::Read, true) => "room.records.list",
-        (Action::Read, false) => "room.records.get",
-        (Action::Write, _) => "room.records.put",
-        (Action::Curate, _) => "room.records.curate",
-        (Action::Admin, _) => "room.epoch.mint",
+/// The authority action is not enough to name an operation, and the gap is not cosmetic.
+/// Three distinct operations gate on `admin` — minting an epoch, handing the room to
+/// someone, and a successor taking it — and an audit trail that recorded all three as
+/// `room.epoch.mint` would be at its least informative at exactly the moment someone reads
+/// it, which is after an ownership change they did not expect.
+///
+/// So the handler names the operation and the required action is *derived* from it
+/// ([`RoomOperation::required_action`]). That direction matters: it is the one that cannot
+/// drift. A handler cannot gate on `read` while logging a transfer, because it does not get
+/// to choose both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomOperation {
+    /// Read one record.
+    GetRecord,
+    /// Enumerate the room's records. Distinct from a read on the same authority: both are
+    /// `read`, and "read one document" and "took an inventory of the room" are different
+    /// events to anyone reading a log.
+    ListRecords,
+    /// Write a record.
+    PutRecord,
+    /// Change a record's standing.
+    CurateRecord,
+    /// Advance the epoch — which is also what renews the room.
+    MintEpoch,
+    /// The owner hands the room to another member.
+    TransferOwner,
+    /// A nominated successor takes a dormant room.
+    ClaimOwner,
+}
+
+impl RoomOperation {
+    /// The `room.*` audit action name, per the design's vocabulary.
+    pub fn action_name(self) -> &'static str {
+        match self {
+            RoomOperation::GetRecord => "room.records.get",
+            RoomOperation::ListRecords => "room.records.list",
+            RoomOperation::PutRecord => "room.records.put",
+            RoomOperation::CurateRecord => "room.records.curate",
+            RoomOperation::MintEpoch => "room.epoch.mint",
+            RoomOperation::TransferOwner => "room.owner.transfer",
+            RoomOperation::ClaimOwner => "room.owner.claim",
+        }
+    }
+
+    /// The authority action a party must hold to perform it.
+    ///
+    /// `ClaimOwner` is `Read`, and that is not a weaker gate by accident. A successor is
+    /// being checked for *membership* — the room's own statement that they are a member and
+    /// so could renew what they are claiming — not for authority they were never given. What
+    /// authorizes the claim is the nomination, which is verified separately and is the only
+    /// thing that makes the operation possible at all.
+    pub fn required_action(self) -> Action {
+        match self {
+            RoomOperation::GetRecord | RoomOperation::ListRecords | RoomOperation::ClaimOwner => {
+                Action::Read
+            }
+            RoomOperation::PutRecord => Action::Write,
+            RoomOperation::CurateRecord => Action::Curate,
+            RoomOperation::MintEpoch | RoomOperation::TransferOwner => Action::Admin,
+        }
     }
 }
 
@@ -227,12 +277,55 @@ mod tests {
     /// anyone reading a log.
     #[test]
     fn listing_and_fetching_are_distinct_actions_in_the_log() {
-        assert_eq!(action_name(Action::Read, true), "room.records.list");
-        assert_eq!(action_name(Action::Read, false), "room.records.get");
-        assert_ne!(
-            action_name(Action::Read, true),
-            action_name(Action::Read, false)
+        assert_eq!(
+            RoomOperation::ListRecords.action_name(),
+            "room.records.list"
         );
-        assert_eq!(action_name(Action::Admin, false), "room.epoch.mint");
+        assert_eq!(RoomOperation::GetRecord.action_name(), "room.records.get");
+        assert_eq!(
+            RoomOperation::ListRecords.required_action(),
+            RoomOperation::GetRecord.required_action(),
+            "the same authority, and that is exactly why the action name has to differ"
+        );
+    }
+
+    /// The defect this enum exists to prevent: three operations gate on `admin`, and a log
+    /// that called all three `room.epoch.mint` would be least useful precisely when someone
+    /// is trying to find out who took the room.
+    #[test]
+    fn every_operation_has_its_own_name() {
+        let all = [
+            RoomOperation::GetRecord,
+            RoomOperation::ListRecords,
+            RoomOperation::PutRecord,
+            RoomOperation::CurateRecord,
+            RoomOperation::MintEpoch,
+            RoomOperation::TransferOwner,
+            RoomOperation::ClaimOwner,
+        ];
+        let mut names: Vec<_> = all.iter().map(|o| o.action_name()).collect();
+        names.sort_unstable();
+        let count = names.len();
+        names.dedup();
+        assert_eq!(names.len(), count, "two operations share an audit name");
+
+        for op in all {
+            assert!(
+                op.action_name().starts_with("room."),
+                "{op:?} is outside the room.* vocabulary"
+            );
+        }
+    }
+
+    /// A claim is gated on membership, not on authority the successor was never given —
+    /// what authorizes it is the nomination, checked elsewhere.
+    #[test]
+    fn a_claim_asks_for_membership_not_admin() {
+        assert_eq!(RoomOperation::ClaimOwner.required_action(), Action::Read);
+        assert_eq!(
+            RoomOperation::TransferOwner.required_action(),
+            Action::Admin,
+            "an owner handing the room away is the most consequential thing they do"
+        );
     }
 }

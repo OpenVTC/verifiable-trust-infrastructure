@@ -24,6 +24,10 @@
 //!    refused, because the chain is bound to whoever signed the request.
 //! 4. **The host holds every byte and can neither read nor move one.** Act III seals
 //!    *through* the host, and then fails to open a relocated record three different ways.
+//! 5. **A room outlives one person.** Act IV transfers one deliberately and claims another
+//!    that was abandoned — then shows the same nomination stop working the instant its
+//!    owner renewed, which is the whole defence against a hostile claim and is also just
+//!    ordinary use.
 
 use std::net::SocketAddr;
 
@@ -60,14 +64,19 @@ fn why(e: &impl std::fmt::Display) -> String {
 async fn main() -> anyhow::Result<()> {
     println!("\n\x1b[1;4mA data room, end to end\x1b[0m");
 
-    let (addr, _dir) = start_host().await?;
+    let (addr, state, _dir) = start_host().await?;
     let client = VtcClient::anonymous(&format!("http://{addr}"), "did:key:zHost");
 
     act_one(&client).await?;
     act_two(&client).await?;
     act_three(&client).await?;
+    act_four(&client, &state).await?;
 
     println!("\n\x1b[1mWhat was and was not proved\x1b[0m");
+    note("A room outlives one person: Act IV hands one over deliberately and takes another");
+    note("that had been abandoned — and shows the same nomination stop working the moment");
+    note("its owner renewed. The defence against a hostile claim is ordinary use.");
+    note("");
     note("Every credential above was signed and every signature verified. The host stored");
     note("ciphertext it had no key for, and authorized every call from a chain the room");
     note("itself issued — never from anything the host holds.");
@@ -429,6 +438,186 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Act IV — the room outlives its owner
+// ---------------------------------------------------------------------------
+
+async fn act_four(
+    client: &VtcClient,
+    state: &std::sync::Arc<room_host::HostState>,
+) -> anyhow::Result<()> {
+    println!("\n\x1b[1;4mAct IV — succession\x1b[0m");
+
+    // ── The deliberate handover ───────────────────────────────────────────
+    let f = RoomFixture::new(vti_rooms::Visibility::Open).await;
+    client
+        .create_room(
+            &f.room.room_id,
+            &f.owner.did,
+            Visibility::Open,
+            None,
+            &f.owner.did,
+            &f.owner.secret_multibase,
+        )
+        .await?;
+
+    say(
+        "Alice hands the room to Bob",
+        "`rooms/owner/transfer`, gated on `admin` — the same grant that mints epochs,",
+    );
+    note("because handing over the room is the more consequential of the two.");
+
+    let handed = client
+        .transfer_owner(
+            &session(&f, false),
+            &f.successor.did,
+            Some("stepping back from this project"),
+            &f.owner.did,
+            &f.owner.secret_multibase,
+        )
+        .await?;
+    note(&format!("owner is now {}", short(&handed.owner_did)));
+
+    // The host took Alice's word for it, and had no choice: it holds no roster and no MLS
+    // group state, so "is Bob a member?" is a question it cannot ask. Saying so is better
+    // than inventing a check — one that refused what it could not verify would refuse every
+    // correct transfer too.
+    note("the host did not check that Bob is a member — it holds no roster and cannot;");
+    note("that obligation is Alice's, who can see the group");
+
+    // ── A room whose owner stopped ────────────────────────────────────────
+    let g = RoomFixture::new(vti_rooms::Visibility::Open).await;
+    say(
+        "A room nobody has renewed",
+        "Written straight to the store with an epoch that expired sixty days ago.",
+    );
+    note("Succession is entirely about the passage of time, and the honest way to show it");
+    note("in a demo is to write the room in the state a year would produce rather than");
+    note("pretend some wire call can age it.");
+
+    vti_rooms::storage::create_room(
+        state.rooms(),
+        &vti_rooms::Room {
+            epoch_expires_at: Some(now_secs() - 60 * 24 * 60 * 60),
+            ..g.room.clone()
+        },
+    )
+    .await?;
+
+    let nomination = g.nominate(&g.successor.did, Some(24 * 365)).await;
+    note("the room issued this nomination to its successor long ago, granting `succeed` —");
+    note("a word no room task accepts, so it confers nothing at all while Alice is present");
+
+    // ── Renewing is the defence ───────────────────────────────────────────
+    //
+    // The same room, the same nomination — the only thing that changes is that its owner
+    // came back. Anything less than that would be a demo refusing for some other reason and
+    // taking credit for this one.
+    say(
+        "Alice returns and mints an epoch",
+        "Ordinary use. Nothing about it is succession-specific.",
+    );
+    client
+        .mint_epoch(
+            &session(&g, false),
+            2,
+            Some("still here"),
+            &g.owner.did,
+            &g.owner.secret_multibase,
+        )
+        .await?;
+    note("the room is live again, and renewing is all it took");
+
+    say(
+        "The successor presents the same nomination a moment later",
+        "It would have worked before Alice minted. It does not work now.",
+    );
+    let live = client
+        .claim_owner(
+            &successor_session(&g),
+            &nomination,
+            None,
+            &g.successor.did,
+            &g.successor.secret_multibase,
+        )
+        .await;
+    match live {
+        Ok(_) => anyhow::bail!("a live room must not be claimable"),
+        Err(e) => {
+            let reason = why(&e);
+            // The refusal has to be about the room's lifecycle. A demo that accepted any
+            // refusal here would pass just as happily on a nomination that was never valid,
+            // and would be claiming to show something it had not shown.
+            anyhow::ensure!(
+                reason.contains("live") || reason.contains("claimable"),
+                "the refusal must be about the lifecycle, not something else: {reason}"
+            );
+            note(&format!("refused: {reason}"));
+        }
+    }
+    note("an owner who was merely away defeats every pending claim by minting an epoch —");
+    note("which is what they would have done anyway. Nothing has to be revoked and no");
+    note("dispute has to be raised: an owner who is present is safe without thinking about it.");
+
+    // ── And dormancy alone is not enough ──────────────────────────────────
+    //
+    // A second room, because the first is live again now.
+    let h = RoomFixture::new(vti_rooms::Visibility::Open).await;
+    vti_rooms::storage::create_room(
+        state.rooms(),
+        &vti_rooms::Room {
+            epoch_expires_at: Some(now_secs() - 60 * 24 * 60 * 60),
+            ..h.room.clone()
+        },
+    )
+    .await?;
+
+    say(
+        "A member of a dormant room, holding no nomination of their own",
+        "Dormancy alone confers nothing, or any member of any quiet room could take it.",
+    );
+    let unnamed = client
+        .claim_owner(
+            &successor_session(&h),
+            // A nomination the room really did issue — naming somebody else.
+            &h.nominate(&h.agent.did, Some(24)).await,
+            None,
+            &h.successor.did,
+            &h.successor.secret_multibase,
+        )
+        .await;
+    match unnamed {
+        Ok(_) => anyhow::bail!("a nomination must be bound to the party it names"),
+        Err(e) => note(&format!("refused: {}", why(&e))),
+    }
+
+    // ── The claim ─────────────────────────────────────────────────────────
+    say(
+        "The nominated successor claims",
+        "All three conditions at once: the nomination, the dormancy, and their membership.",
+    );
+    let claimed = client
+        .claim_owner(
+            &successor_session(&h),
+            &h.nominate(&h.successor.did, Some(24 * 365)).await,
+            Some("the owner has been unreachable since March"),
+            &h.successor.did,
+            &h.successor.secret_multibase,
+        )
+        .await?;
+    note(&format!("owner is now {}", short(&claimed.owner_did)));
+
+    let after = vti_rooms::storage::get_room(state.rooms(), &h.room.room_id).await?;
+    note("and the room is still dormant — a claim hands one over, it does not revive one.");
+    note("The new owner's first act should be the epoch mint that proves they can commit.");
+    anyhow::ensure!(
+        !after.lifecycle(now_secs()).accepts_writes(),
+        "a claim must not renew the room"
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
 
@@ -450,12 +639,19 @@ fn session(f: &RoomFixture, as_agent: bool) -> RoomSession {
 /// be demonstrating the network.
 ///
 /// The returned `TempDir` must outlive the run: dropping it deletes every room.
-async fn start_host() -> anyhow::Result<(SocketAddr, tempfile::TempDir)> {
+async fn start_host() -> anyhow::Result<(
+    SocketAddr,
+    std::sync::Arc<room_host::HostState>,
+    tempfile::TempDir,
+)> {
     let dir = tempfile::tempdir()?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
 
-    let app = room_host::router(room_host::open_state(dir.path())?);
+    // The state is handed back as well as served, because Act IV needs a room older than
+    // this process. Every other act goes over the wire like any client.
+    let state = room_host::open_state(dir.path())?;
+    let app = room_host::router(state.clone());
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
@@ -464,5 +660,31 @@ async fn start_host() -> anyhow::Result<(SocketAddr, tempfile::TempDir)> {
         "\n  host listening on {addr}, storing to {}",
         dir.path().display()
     );
-    Ok((addr, dir))
+    Ok((addr, state, dir))
+}
+
+/// A session over the fixture's *successor* — their own membership, their own chain.
+fn successor_session(f: &RoomFixture) -> RoomSession {
+    RoomSession::new(
+        &f.room.room_id,
+        f.successor_membership.clone(),
+        f.successor_chain.clone(),
+    )
+    .expect("the fixture's chains are within the depth bound")
+}
+
+/// Seconds since the Unix epoch.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// A DID, short enough to read in a terminal.
+fn short(did: &str) -> String {
+    match did.len() {
+        n if n > 22 => format!("{}…{}", &did[..14], &did[n - 6..]),
+        _ => did.to_string(),
+    }
 }
