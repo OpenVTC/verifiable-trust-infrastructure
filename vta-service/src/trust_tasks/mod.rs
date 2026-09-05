@@ -648,8 +648,94 @@ mod lifecycle_mapping {}
 /// A deployment whose transport buffers for longer must widen this **and** the
 /// guard's retention together; §7.2 makes them one bound, and widening either
 /// alone reintroduces exactly the gap above.
+///
+/// # Why `issuedAt` is required
+///
+/// A window alone does not make every accepted document boundable, and the two
+/// gaps it leaves both land on the producer as an answer it cannot act on.
+///
+/// **A document carrying neither timestamp is answered `expired`.** Under a
+/// bare `with_max_age`, `validate_freshness` refuses it as
+/// `Stale { detail: Unboundable }`, which the library maps to the wire code
+/// `expired` because §8.3 defines no narrower one. But that check runs here,
+/// at the top of [`dispatch_trust_task_validated`] — some 250 lines before
+/// `schema_index::spec_policy_for(..).enforce(..)`, which for the 105 of 209
+/// indexed specs that declare `IS_ISSUED_AT_REQUIRED` would have answered
+/// `malformedRequest` naming `ISSUED_AT_REQUIRED_BY_SPEC`. The spec's own rule
+/// — the one that names the missing member — was unreachable for every one of
+/// them. `expired` names a document that was once acceptable and tells the
+/// producer to wait; this one was never acceptable, and waiting then reissuing
+/// the same shape loops. The crate says the same on `IS_ISSUED_AT_REQUIRED`:
+/// `expired` "would misdescribe a document that was never acceptable". It is
+/// the principle `a_future_dated_document_is_malformed_not_expired` pins.
+///
+/// **A document carrying only `expiresAt` has no bounded acceptance window.**
+/// `validate_freshness` accepts it — an `expiresAt` does bound the record —
+/// but the bound is then whatever instant the *producer* chose. `expiresAt =
+/// now + 10 years` is accepted for ten years, and §7.2 makes the replay
+/// record's retention that same bound, so the producer would unilaterally
+/// decide how long this consumer must remember its `id`. Requiring `issuedAt`
+/// makes the last instant any accepted document can return provable —
+/// `issuedAt + max_age + skew` — which is what [`retain_until`] then caps on.
+///
+/// # What this refuses that a conforming producer may send
+///
+/// This is a **consumer posture, stricter than most specs**, and it is worth
+/// being exact about the cost. 104 of the 209 URIs `spec_policy_for` answers
+/// for — the read-shaped ones: `acl/list`, `auth/whoami`, `config/show`,
+/// `device/heartbeat` — leave `issuedAt` OPTIONAL, so a producer of one may
+/// legitimately omit it.
+///
+/// For all but one shape that costs nothing, because the refusal already
+/// happens: a document with neither timestamp is refused today as `expired`,
+/// and this only changes the code to one the producer can act on. The single
+/// shape that moves from accepted to refused is **`expiresAt` present,
+/// `issuedAt` absent** — refused now because its acceptance window, and
+/// therefore this VTA's retention obligation, would be the producer's to set.
+///
+/// That is the posture `FreshnessPolicy::consequential` describes, at this
+/// service's window. The crate scopes it to "any specification whose execution
+/// is consequential, which is exactly the set for which item 11 applies" — and
+/// this spine applies item 11 to **every** document it dispatches, `whoami`
+/// included, so the qualifying set here is all of them.
 fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
-    trust_tasks_rs::FreshnessPolicy::default().with_max_age(chrono::TimeDelta::minutes(10))
+    trust_tasks_rs::FreshnessPolicy::default()
+        .with_max_age(chrono::TimeDelta::minutes(10))
+        .requiring_issued_at()
+}
+
+/// How long the duplicate-execution record for `doc` must be kept — the end of
+/// this consumer's willingness to execute it, which SPEC §7.2 makes the same
+/// instant as the end of the record's required retention.
+///
+/// `FreshnessPolicy::record_expiry` takes a producer-supplied `expiresAt`
+/// **verbatim**, so a document stamped `expiresAt = now + 10 years` would pin
+/// its `id` in [`REPLAY_GUARD`] for ten years — an entry held long past the
+/// last moment it could be needed, crowding out the records that are, and
+/// re-introducing the load-dependent eviction horizon [`freshness_policy`]
+/// exists to close.
+///
+/// `require_issued_at` above makes the cap provable: `validate_freshness` has
+/// already refused any document without an `issuedAt`, and will refuse this
+/// one once `issuedAt + max_age + skew` has passed. Retention beyond that
+/// instant is retention the guard can never draw on.
+///
+/// The cap only ever moves the instant **earlier than a producer asked for**,
+/// never earlier than the acceptance window. Shortening retention below the
+/// window is the direction §7.2 forbids: a replay arriving while the document
+/// is still acceptable, with its record already dropped, executes twice.
+fn retain_until(
+    doc: &TrustTask<Value>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let policy = freshness_policy();
+    let expiry = policy.record_expiry(doc, now)?;
+    match (doc.issued_at, policy.max_age) {
+        (Some(issued_at), Some(max_age)) => Some(expiry.min(issued_at + max_age + policy.skew)),
+        // Unreachable while `require_issued_at` holds; if that ever changes,
+        // over-retaining is the safe direction to fail in.
+        _ => Some(expiry),
+    }
 }
 
 /// The duplicate-execution record of SPEC §7.2 item 11.
@@ -741,7 +827,7 @@ async fn dispatch_trust_task_validated(
             );
         }
     };
-    let retain_until = freshness_policy().record_expiry(&doc, now);
+    let retain_until = retain_until(&doc, now);
     match trust_tasks_rs::ReplayGuard::claim(&*REPLAY_GUARD, &doc.id, &digest, retain_until, now)
         .await
     {
@@ -2412,7 +2498,8 @@ mod freshness_bounds {
         });
         // Previously always seeded a fresh default `issuedAt` here regardless
         // of this arg, so `doc(None, None)` never actually built a document
-        // without one — see `a_document_without_issued_at_is_not_refused_here`.
+        // without one — see
+        // `a_document_with_no_timestamps_is_malformed_not_expired`.
         if let Some(i) = issued_at {
             v["issuedAt"] = json!(i);
         }
@@ -2464,49 +2551,167 @@ mod freshness_bounds {
         }
     }
 
-    /// A document carrying **no timestamp at all** is refused — and the rule
-    /// is the *window*, not `issuedAt`. SPEC §7.2, *Bounding the record*: a
-    /// policy that retains a bounded window can't place a document in it
-    /// with nothing to measure against. `doc(None, None)` previously always
-    /// seeded a fresh default `issuedAt` regardless of the `None` argument,
-    /// so this case went unexercised for as long as the helper existed.
+    /// A document carrying **no timestamp at all** is refused as
+    /// `malformedRequest`, not `expired`. `doc(None, None)` previously always
+    /// seeded a fresh default `issuedAt` regardless of the `None` argument, so
+    /// this case went unexercised for as long as the helper existed.
+    ///
+    /// The code is what matters. `expired` names a document that was once
+    /// acceptable and tells the producer to wait; this one was never
+    /// acceptable, so waiting and reissuing the same shape loops forever.
+    /// Under a bare `with_max_age` the answer here *is* `expired`
+    /// (`Stale { Unboundable }`), and it arrives ~250 lines before
+    /// `spec_policy_for(..).enforce(..)` could name the missing member — so
+    /// the spec's own `issuedAt` rule was unreachable for every spec that
+    /// declares it. Same principle as
+    /// `a_future_dated_document_is_malformed_not_expired` above.
     #[test]
-    fn a_document_with_no_timestamps_cannot_be_placed_in_the_window() {
+    fn a_document_with_no_timestamps_is_malformed_not_expired() {
         let err = doc(None, None)
             .validate_freshness(Utc::now(), &freshness_policy())
             .expect_err("an unbounded document cannot sit in a bounded window");
         assert!(
             matches!(
-                err,
-                RejectReason::Stale {
-                    detail: trust_tasks_rs::StaleReason::Unboundable
-                }
+                &err,
+                RejectReason::MalformedRequest { reason }
+                    if reason == trust_tasks_rs::freshness::ISSUED_AT_REQUIRED
             ),
+            "it must be malformed and must name the missing member, never \
+             `expired`: a producer told to wait reissues the same unboundable \
+             document and loops. Got {err:?}"
+        );
+    }
+
+    /// An `expiresAt` alone bounds the *record*, which is why the library's
+    /// default policy accepts it — but it does not bound this consumer's
+    /// **acceptance window**, which is then whatever instant the producer
+    /// chose. §7.2 makes the two one bound, so accepting it would let a
+    /// producer decide unilaterally how long this VTA must remember its `id`.
+    /// The difference between the two policies is the whole point of the test.
+    #[test]
+    fn an_expiry_alone_bounds_the_record_but_not_this_consumers_window() {
+        let expires =
+            (Utc::now() + TimeDelta::minutes(5)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+        assert!(
+            doc(None, Some(&expires))
+                .validate_freshness(Utc::now(), &trust_tasks_rs::FreshnessPolicy::default())
+                .is_ok(),
+            "an `expiresAt` is enough to bound the record, so the library's \
+             permissive default takes it"
+        );
+
+        let err = doc(None, Some(&expires))
+            .validate_freshness(Utc::now(), &freshness_policy())
+            .expect_err("this service runs a replay guard, so it needs the window too");
+        assert!(
+            matches!(err, RejectReason::MalformedRequest { .. }),
             "got {err:?}"
         );
     }
 
-    /// `issuedAt` is not required: `expiresAt` alone bounds the record.
+    /// The two properties every assertion above rests on, pinned against the
+    /// service's own policy rather than a library default it never uses.
+    /// Without this, deleting either from [`freshness_policy`] leaves the
+    /// module still passing.
     #[test]
-    fn an_expiry_alone_bounds_a_document_with_no_issued_at() {
-        let expires =
-            (Utc::now() + TimeDelta::minutes(5)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    fn the_services_policy_bounds_both_the_window_and_the_member() {
+        let policy = freshness_policy();
+        assert_eq!(
+            policy.max_age,
+            Some(TimeDelta::minutes(10)),
+            "the acceptance window is also the replay record's retention \
+             (SPEC §7.2); dropping it makes the guard's horizon load-dependent"
+        );
         assert!(
-            doc(None, Some(&expires))
-                .validate_freshness(Utc::now(), &freshness_policy())
-                .is_ok(),
-            "an `expiresAt` is enough to bound a document with no `issuedAt`"
+            policy.require_issued_at,
+            "without it a timestamp-less document is answered `expired`, and \
+             the spec's own `issuedAt` rule further down the spine never runs"
+        );
+    }
+}
+
+/// SPEC §7.2 (*Bounding the record*) — the retention derived from the window.
+#[cfg(test)]
+mod record_retention {
+    use super::*;
+    use chrono::{SubsecRound, TimeDelta, Utc};
+    use serde_json::json;
+
+    /// The document's timestamps round-trip at second precision, so the
+    /// instant compared against them has to sit on a second boundary too —
+    /// otherwise every assertion here fails by a few hundred microseconds.
+    fn now() -> chrono::DateTime<Utc> {
+        Utc::now().trunc_subsecs(0)
+    }
+
+    fn doc(issued_at: chrono::DateTime<Utc>, expires_at: Option<&str>) -> TrustTask<Value> {
+        let mut v = json!({
+            "id": "urn:uuid:22222222-2222-2222-2222-222222222222",
+            "type": vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1,
+            "issuedAt": issued_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "issuer": "did:key:zTestAdmin",
+            "payload": {},
+        });
+        if let Some(e) = expires_at {
+            v["expiresAt"] = json!(e);
+        }
+        serde_json::from_value(v).expect("a document")
+    }
+
+    /// A far-future `expiresAt` is the producer's to choose, and
+    /// `record_expiry` returns it verbatim. The guard must not hold the record
+    /// past the last instant the document could come back.
+    #[test]
+    fn a_far_future_expiry_does_not_pin_the_record_past_the_window() {
+        let now = now();
+        let far = (now + TimeDelta::days(3650)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let d = doc(now, Some(&far));
+
+        let uncapped = freshness_policy()
+            .record_expiry(&d, now)
+            .expect("a bounded policy always yields one");
+        assert!(
+            uncapped > now + TimeDelta::days(3000),
+            "precondition: the library takes the producer's `expiresAt` verbatim"
+        );
+
+        let capped = retain_until(&d, now).expect("a bounded policy always yields one");
+        let window = now + TimeDelta::minutes(10) + trust_tasks_rs::DEFAULT_SKEW;
+        assert_eq!(
+            capped, window,
+            "retention past the acceptance window is retention the guard can \
+             never draw on, and it evicts records that are still needed"
         );
     }
 
-    /// With no window to place it in, a timestamp-less document is fine —
-    /// the refusal belongs to the policy, not the document.
+    /// The cap must never move retention *earlier* than the window: a replay
+    /// arriving while the document is still acceptable, with its record already
+    /// dropped, executes a second time.
     #[test]
-    fn without_a_window_a_timestampless_document_is_accepted() {
-        assert!(
-            doc(None, None)
-                .validate_freshness(Utc::now(), &trust_tasks_rs::FreshnessPolicy::default())
-                .is_ok()
+    fn a_near_expiry_is_left_alone() {
+        let now = now();
+        let soon = now + TimeDelta::minutes(2);
+        let d = doc(
+            now,
+            Some(&soon.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        );
+        assert_eq!(
+            retain_until(&d, now).expect("a bounded policy always yields one"),
+            soon,
+            "an expiry inside the window is the tighter bound and stands"
+        );
+    }
+
+    /// With no `expiresAt` the retention is the window itself, unchanged by
+    /// the cap.
+    #[test]
+    fn without_an_expiry_the_window_is_the_retention() {
+        let now = now();
+        assert_eq!(
+            retain_until(&doc(now, None), now).expect("a bounded policy always yields one"),
+            now + TimeDelta::minutes(10),
+            "`issuedAt + max_age`, and the cap adds only the skew allowance"
         );
     }
 }
