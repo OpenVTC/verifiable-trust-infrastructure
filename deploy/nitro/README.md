@@ -1262,10 +1262,13 @@ The template format follows the did:webvh spec. Examples:
 | `did:webvh:{SCID}:example.com%3A8080:vta` | `https://example.com:8080/vta` |
 
 > **Note on ciphertext deletion:** If an attacker deletes the ciphertext files,
-> the next boot will generate a new identity. This is a denial-of-service (the old
-> identity and data are lost), not a privilege escalation — the attacker still
-> can't authenticate to the new VTA without admin credentials. Back up the
-> ciphertext files and monitor for unexpected identity changes.
+> the next boot takes the first-boot path and mints a new seed — but the TEE
+> integrity manifest is MAC'd with a key derived from the *old* seed, so it no
+> longer verifies and the boot fails closed rather than silently coming up under
+> a new identity. Either way this is a denial-of-service (the old identity and
+> data are unreachable), not a privilege escalation — the attacker still can't
+> authenticate to the VTA without admin credentials. Back up the ciphertext
+> files and monitor for unexpected boot failures.
 
 **The mnemonic is never displayed.** To export it for backup:
 
@@ -1502,18 +1505,36 @@ curl http://localhost:8443/attestation/status
 > using a custom image during this window. Step 6 removes the old PCR0
 > to close the window completely.
 
-### Auto-recovery (forgot to update KMS policy)
+### Forgot to update the KMS policy (fails closed)
 
 If you deploy a new image without updating the KMS policy, the VTA will:
 1. Find existing ciphertexts in the bootstrap keyspace
-2. Fail to decrypt them (PCR0 mismatch)
-3. Log a warning: *"KMS decrypt failed — clearing stale bootstrap data"*
-4. Clear the old bootstrap data
-5. Do a fresh first boot with a **new identity**
+2. Fail to decrypt them (PCR0 mismatch → `ACCESS_DENIED`)
+3. Log an error: *"KMS decrypt of existing ciphertexts failed. Refusing to
+   auto-clear the bootstrap keyspace…"*
+4. **Refuse to start**, leaving the sealed identity intact
 
-This is safe (denial of service, not privilege escalation) but results in
-a new DID identity. Use the rolling upgrade procedure above to preserve
-the existing identity across image updates.
+Earlier versions treated `ACCESS_DENIED` as the expected post-rebuild signal
+and silently cleared the bootstrap keyspace, minting a new identity. That made
+launching the wrong EIF a *permanent* identity wipe that the correct EIF could
+no longer undo, so it now fails closed: the recovery is to add the new PCR0 to
+the KMS policy and boot again, which restores the original DID. Use the rolling
+upgrade procedure above to avoid the outage entirely.
+
+**`tee.kms.allow_kms_reinit` is not the way back.** It authorizes clearing the
+bootstrap ciphertexts, but the seed it discards is what every other keyspace is
+encrypted under — those rows will not decrypt under the new seed, so a VTA that
+has written any state will still fail to boot. It is only a complete reset on a
+store that holds nothing but the bootstrap rows. For a real reset, wipe the data
+volume (see below). Two further notes:
+
+- The flag alone will not clear the bootstrap keyspace after a `KMS_INTERNAL` or
+  `NETWORK` failure. Those mean KMS never answered, so the ciphertexts have not
+  been shown to be undecryptable — destroying the identity on "no answer" would
+  be the same denial of service by another route.
+- If `tee.kms.anchor` is configured, the external counter still holds the old
+  version after a reinit, so that boot additionally needs
+  `tee.kms.allow_anchor_init` (and `allow_unanchored` to re-anchor the counter).
 
 ### Fresh deployment (new identity)
 
@@ -1529,8 +1550,10 @@ rm -rf /mnt/vta-data/store/*
 # 3. Start the enclave — it will do a fresh first boot
 ```
 
-Or simply deploy without updating the KMS policy — the auto-recovery
-will handle it (see above).
+Step 1 is what makes this work: with the store empty there are no ciphertexts to
+decrypt, so the enclave takes the first-boot path. Deploying against a populated
+store without updating the KMS policy does **not** produce a fresh identity — it
+fails closed (see above).
 
 ### CI/CD upgrade workflow
 

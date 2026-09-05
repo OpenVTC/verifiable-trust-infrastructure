@@ -74,6 +74,30 @@ const BOOTSTRAP_SEED_CT_KEY: &str = "bootstrap:seed_ciphertext";
 const BOOTSTRAP_JWT_CT_KEY: &str = "bootstrap:jwt_ciphertext";
 const BOOTSTRAP_JWT_FINGERPRINT_KEY: &str = "bootstrap:jwt_fingerprint";
 
+/// Drop every bootstrap row that is sealed against the seed an authorised
+/// reinit discards, so the next boot is a coherent first boot.
+///
+/// That is the four KMS-protected rows **and the TEE integrity manifest**.
+/// The manifest is MAC'd with a key derived from the storage key, which is
+/// derived from the seed being discarded, so a surviving manifest makes the
+/// next boot abort in `vti_common::integrity::boot_verify_and_install` with
+/// "manifest MAC verification failed — tampered with or the storage key
+/// changed" — reporting the reset the operator just authorised back to them
+/// as parent-host compromise. It lives in this same (unencrypted,
+/// KMS-protected) keyspace, so it is cleared here alongside the ciphertexts.
+///
+/// This does **not** make the reinit a complete reset: every other keyspace
+/// is encrypted under the old storage key and stays unreadable. See the
+/// caller's warning, and `deploy/nitro/README.md`.
+async fn clear_reinit_state(bs_ks: &vti_common::store::KeyspaceHandle) -> Result<(), AppError> {
+    bs_ks.remove(BOOTSTRAP_DK_CT_KEY).await?;
+    bs_ks.remove(BOOTSTRAP_SEED_CT_KEY).await?;
+    bs_ks.remove(BOOTSTRAP_JWT_CT_KEY).await?;
+    bs_ks.remove(BOOTSTRAP_JWT_FINGERPRINT_KEY).await?;
+    bs_ks.remove(vti_common::integrity::MANIFEST_KEY).await?;
+    Ok(())
+}
+
 /// Bootstrap secrets from KMS.
 ///
 /// - If ciphertext files exist: decrypt via KMS, verify JWT fingerprint (subsequent boot)
@@ -118,40 +142,54 @@ pub async fn bootstrap_secrets(
             }
             Err((class, e)) => {
                 // Auto-clearing the bootstrap keyspace silently re-issues the
-                // VTA's identity. Only ACCESS_DENIED is a legitimate signal
-                // for "expected after an image rebuild with a new PCR0" —
-                // every other class (KMS_INTERNAL, NETWORK, INVALID_CIPHERTEXT,
-                // UNKNOWN) could be a transient outage or active tampering,
-                // and silently nuking the identity would be the wrong move.
-                // Operators who deliberately want to reset must set
-                // `tee.kms.allow_kms_reinit = true` in config.
-                let auto_clear =
-                    matches!(class, KmsErrorClass::AccessDenied) || kms_config.allow_kms_reinit;
-                if !auto_clear {
-                    error!(
-                        error = %e,
-                        class = ?class,
-                        "KMS decrypt of existing ciphertexts failed with a non-ACCESS_DENIED \
-                         class. Refusing to auto-clear the bootstrap keyspace because doing \
-                         so would silently reset the VTA's identity. Diagnose the cause \
-                         (KMS health, vsock proxy reachability, ciphertext integrity) and, \
-                         if you are certain the existing identity is unrecoverable, set \
-                         tee.kms.allow_kms_reinit = true for a one-time reset."
-                    );
+                // VTA's identity. Every KMS error class, including
+                // ACCESS_DENIED (for example, a wrong or tampered image),
+                // preserves the identity unless an operator explicitly opts
+                // into a reset with `tee.kms.allow_kms_reinit = true` — and
+                // the transient classes preserve it even then. The whole
+                // truth table is `resolve_reinit`, below.
+                if resolve_reinit(class, kms_config.allow_kms_reinit) == ReinitDecision::FailClosed
+                {
+                    if kms_config.allow_kms_reinit {
+                        error!(
+                            error = %e,
+                            class = ?class,
+                            "KMS decrypt of existing ciphertexts failed with a transient class. \
+                             allow_kms_reinit is set, but KMS never answered — the ciphertexts \
+                             have NOT been shown to be undecryptable, so there is nothing here \
+                             to reset from and clearing them would destroy a recoverable \
+                             identity. Restore KMS reachability (vsock proxy, allowlist, \
+                             endpoint) and boot again."
+                        );
+                    } else {
+                        error!(
+                            error = %e,
+                            class = ?class,
+                            "KMS decrypt of existing ciphertexts failed. Refusing to auto-clear \
+                             the bootstrap keyspace because doing so would silently reset the \
+                             VTA's identity. Diagnose the cause (PCR policy, KMS health, vsock \
+                             proxy reachability, ciphertext integrity). To reset deliberately, \
+                             wipe the data volume and boot fresh — or, if the store holds \
+                             nothing but these bootstrap rows, set tee.kms.allow_kms_reinit = \
+                             true for a one-time in-place reset."
+                        );
+                    }
                     return Err(e);
                 }
                 warn!(
                     error = %e,
                     class = ?class,
-                    "KMS decrypt of existing ciphertexts failed — clearing stale \
-                     bootstrap data and starting fresh. ACCESS_DENIED is expected after \
-                     an image rebuild with a new PCR0; other classes were authorized \
-                     by allow_kms_reinit. The VTA will generate a new identity."
+                    "KMS decrypt of existing ciphertexts failed — clearing bootstrap data and \
+                     starting fresh because allow_kms_reinit is explicitly enabled. The VTA \
+                     will generate a new identity. NOTE: every other keyspace is still \
+                     encrypted under the storage key derived from the seed being discarded and \
+                     will not decrypt under the new one, so unless this store held nothing but \
+                     the bootstrap rows the next boot will still fail — wipe the data volume \
+                     instead. If an external anchor counter is configured it also still holds \
+                     the old version, and that boot additionally needs \
+                     tee.kms.allow_anchor_init (plus allow_unanchored to re-anchor the counter)."
                 );
-                bs_ks.remove(BOOTSTRAP_DK_CT_KEY).await?;
-                bs_ks.remove(BOOTSTRAP_SEED_CT_KEY).await?;
-                bs_ks.remove(BOOTSTRAP_JWT_CT_KEY).await?;
-                bs_ks.remove(BOOTSTRAP_JWT_FINGERPRINT_KEY).await?;
+                clear_reinit_state(&bs_ks).await?;
                 store.persist().await?;
                 // Fall through to first boot path below
             }
@@ -471,9 +509,9 @@ pub async fn attested_decrypt(
 ///
 /// Without `/dev/nsm` (simulated mode), uses direct KMS Decrypt.
 ///
-/// Returns `(class, AppError)` on failure so the bootstrap path can
-/// branch on `KmsErrorClass::AccessDenied` (legitimate post-rebuild
-/// PCR mismatch) without auto-clearing on every other class.
+/// Returns `(class, AppError)` on failure so the bootstrap path can report the
+/// KMS failure class. No class implicitly permits clearing existing identity
+/// ciphertexts; that requires `allow_kms_reinit`.
 async fn kms_decrypt_data_key(
     config: &TeeKmsConfig,
     ciphertext: &[u8],
@@ -1340,10 +1378,51 @@ mod cms_der {
     }
 }
 
-/// Typed classification of a KMS error. The bootstrap path branches
-/// on this to decide whether to auto-clear stale ciphertexts: only
-/// `AccessDenied` (the post-rebuild PCR-mismatch signal) is treated
-/// as legitimate; anything else preserves the VTA's identity.
+/// What the bootstrap path does when the existing ciphertexts fail to
+/// decrypt on a subsequent boot. Resolved by [`resolve_reinit`] so the
+/// truth table is a unit-testable pure function rather than a condition
+/// buried in a match arm (plan P3.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReinitDecision {
+    /// Preserve the sealed identity and refuse to start.
+    FailClosed,
+    /// Clear the bootstrap keyspace and mint a fresh identity.
+    Reinit,
+}
+
+/// Resolve "reset the identity, or fail closed?" from the KMS failure class
+/// and the operator's explicit reset flag.
+///
+/// `allow_kms_reinit` is the **sole authorization**: no error class grants a
+/// reset implicitly. That coupling is what made launching the wrong EIF a
+/// destructive denial of service — an `AccessDenied` from a rebuilt image and
+/// an `AccessDenied` from an attacker's image are the same signal.
+///
+/// The flag is necessary but not sufficient. `KMS_INTERNAL` and `NETWORK`
+/// mean KMS never answered, so the ciphertexts have not been *shown* to be
+/// undecryptable and there is nothing to reset from; destroying the identity
+/// on "no answer" would reopen the same DoS by another route, via a config
+/// that still carries the flag from an earlier deliberate reset. Those two
+/// classes fail closed even with the flag set. The remaining classes are
+/// positive evidence that this enclave cannot unwrap this data key.
+pub(crate) fn resolve_reinit(class: KmsErrorClass, allow_kms_reinit: bool) -> ReinitDecision {
+    if !allow_kms_reinit {
+        return ReinitDecision::FailClosed;
+    }
+    match class {
+        // "retry may help" / "cannot reach KMS endpoint" — see `label()`.
+        KmsErrorClass::KmsInternal | KmsErrorClass::Network => ReinitDecision::FailClosed,
+        KmsErrorClass::AccessDenied
+        | KmsErrorClass::KeyNotFound
+        | KmsErrorClass::InvalidCiphertext
+        | KmsErrorClass::Unknown => ReinitDecision::Reinit,
+    }
+}
+
+/// Typed classification of a KMS error. The bootstrap path feeds this to
+/// [`resolve_reinit`]: no error class implicitly permits clearing stale
+/// ciphertexts, and every class preserves the VTA's identity unless the
+/// explicit `allow_kms_reinit` flag is enabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KmsErrorClass {
     AccessDenied,
@@ -1434,6 +1513,94 @@ mod tests {
             vti_common::integrity::CARVEOUT_KEY,
             "carve-out sentinel key drifted from vti_common::integrity"
         );
+    }
+
+    // ── reinit truth table (plan P3.6) ──────────────────────────────────
+    //
+    // The highest-consequence decision in the TCB: whether a failed decrypt
+    // of the existing ciphertexts clears them and re-mints the VTA's
+    // identity. Every cell is asserted so the next edit to this arm has
+    // something holding it.
+
+    const ALL_CLASSES: [KmsErrorClass; 6] = [
+        KmsErrorClass::AccessDenied,
+        KmsErrorClass::KeyNotFound,
+        KmsErrorClass::InvalidCiphertext,
+        KmsErrorClass::KmsInternal,
+        KmsErrorClass::Network,
+        KmsErrorClass::Unknown,
+    ];
+
+    /// Without the flag, no class may reset the identity — `AccessDenied`
+    /// included. Granting it implicitly is what turned launching the wrong
+    /// EIF into a permanent, unrecoverable identity wipe.
+    #[test]
+    fn no_kms_error_class_authorizes_reinit_without_the_flag() {
+        for class in ALL_CLASSES {
+            assert_eq!(
+                resolve_reinit(class, false),
+                ReinitDecision::FailClosed,
+                "{class:?} must preserve the identity when allow_kms_reinit is false"
+            );
+        }
+    }
+
+    /// With the flag, the classes that positively establish "this enclave
+    /// cannot unwrap this data key" reset; the two transient classes still
+    /// fail closed, because KMS never answered and the identity may well be
+    /// recoverable on the next boot.
+    #[test]
+    fn the_flag_authorizes_reinit_only_for_non_transient_classes() {
+        for class in ALL_CLASSES {
+            let expected = match class {
+                KmsErrorClass::KmsInternal | KmsErrorClass::Network => ReinitDecision::FailClosed,
+                _ => ReinitDecision::Reinit,
+            };
+            assert_eq!(
+                resolve_reinit(class, true),
+                expected,
+                "{class:?} resolved the wrong way with allow_kms_reinit = true"
+            );
+        }
+    }
+
+    /// The reset clears the integrity manifest along with the ciphertexts.
+    /// The manifest's MAC key is derived from the storage key, which is
+    /// derived from the seed the reset discards, so a surviving manifest
+    /// would abort the *next* boot as "tampered with or the storage key
+    /// changed" — reporting an authorised reset as parent-host compromise.
+    #[tokio::test]
+    async fn authorized_reinit_leaves_no_state_sealed_against_the_old_seed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = vti_common::store::Store::open(&vti_common::config::StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let bs_ks = store.keyspace(vta_keyspaces::BOOTSTRAP).unwrap();
+
+        // A bootstrap keyspace shaped like a VTA that has booted once:
+        // sealed ciphertexts, a JWT fingerprint, and a sealed manifest.
+        let sealed = [
+            BOOTSTRAP_DK_CT_KEY,
+            BOOTSTRAP_SEED_CT_KEY,
+            BOOTSTRAP_JWT_CT_KEY,
+            BOOTSTRAP_JWT_FINGERPRINT_KEY,
+            vti_common::integrity::MANIFEST_KEY,
+        ];
+        for key in sealed {
+            bs_ks.insert_raw(key, b"stale".to_vec()).await.unwrap();
+        }
+
+        clear_reinit_state(&bs_ks).await.unwrap();
+
+        for key in sealed {
+            assert_eq!(
+                bs_ks.get_raw(key).await.unwrap(),
+                None,
+                "{key} survived an authorised reinit — anything sealed against \
+                 the discarded seed aborts the next boot"
+            );
+        }
     }
 
     /// Build a synthetic CMS EnvelopedData that mimics what KMS returns

@@ -470,14 +470,17 @@ never built in CI (only 3 of 15 vta-service feature combos are checked). Add
 `--no-default-features --features rest,keyring,cli-synthesis` test job
 (~15 lines of YAML).
 
-### P3.6 — Extract the TEE boot decision as a pure function (M)
+### P3.6 — Extract the TEE boot decision as a pure function (M) — partly done
 The "reset identity vs first boot vs subsequent boot" policy — the
-highest-consequence decision in the TCB — is buried in a decrypt-error match arm
-(`kms_bootstrap.rs:119-157`). Extract `enum BootDecision` + a pure resolver
-`(ciphertexts_present, kms_error_class, config_flags) -> BootDecision`,
-unit-test every cell of the truth table (identity auto-clear ONLY on
-`AccessDenied` or explicit `allow_kms_reinit` — that coupling IS the
-PCR-rotation flow and must be preserved).
+highest-consequence decision in the TCB — was buried in a decrypt-error match
+arm. The **reset half** is now extracted: `enum ReinitDecision` + the pure
+resolver `resolve_reinit(kms_error_class, allow_kms_reinit)` in
+`kms_bootstrap.rs`, with both halves of the truth table unit-tested (identity
+auto-clear ONLY when the explicit `allow_kms_reinit` flag is enabled — no KMS
+error class, `AccessDenied` included, may grant reset permission implicitly —
+and, with the flag, still refused for the transient classes, which mean KMS
+never answered). Remaining: fold `ciphertexts_present` in as well so the whole
+`BootDecision` (first boot vs subsequent boot vs reset) is one resolver.
 
 ### P3.7 — Naming + decomposition hygiene (M, several small PRs)
 - Split `operations/credential_exchange.rs` (2,349 LOC) by flow into
@@ -538,8 +541,9 @@ Security/crypto:
   archive-old-seed-before-write-new in `rotate_seed`.
 - `take_raw` atomicity (Local) — refresh-token single-use.
 - Attested-KMS failure terminal on real hardware unless
-  `allow_unattested_fallback`; identity auto-clear only on `AccessDenied`/
-  explicit reinit; env-override lockout when `kms.is_some()`.
+  `allow_unattested_fallback`; identity auto-clear requires explicit
+  `allow_kms_reinit` for every KMS error class; env-override lockout when
+  `kms.is_some()`.
 - Step-up challenges single-use, consumed-on-read even when expired.
 - Signed payloads never byte-transformed in 0.2 dual-accept (typed handlers
   only).

@@ -788,8 +788,22 @@ writer_credential_ciphertext = "AQIDAH…"
 The manifest pins four singletons (see design note §5.1): the **carve-out
 sentinel**, the **ACL keyspace root** (canonical hash over all `acl:{did}`
 rows), the **JWT fingerprint**, and the **path/context counters**. The
-KMS-protected bootstrap ciphertexts are *not* covered — their delete-and-reinit
-is already gated by `allow_kms_reinit` plus the JWT-fingerprint check.
+KMS-protected bootstrap ciphertexts are *not* covered directly, because the two
+ways they can go away are each already caught:
+
+- A **failed decrypt** clears them only under the explicit `allow_kms_reinit`
+  reset flag — no KMS error class, `ACCESS_DENIED` included, authorizes a reset
+  implicitly.
+- A **parent-host deletion** of them consults no flag at all: the rows are simply
+  absent, so boot takes the first-boot path. What stops that from silently
+  re-issuing an identity is the manifest itself — a new seed means a new storage
+  key, hence a new MAC key, so the surviving manifest fails verification and the
+  boot fails closed. (An *authorized* reinit therefore clears the manifest along
+  with the ciphertexts, so the reset the operator asked for isn't reported back
+  to them as tampering.)
+
+The JWT-fingerprint check is a separate control, against substituting the JWT
+signing key.
 
 ## Implementation Phases
 

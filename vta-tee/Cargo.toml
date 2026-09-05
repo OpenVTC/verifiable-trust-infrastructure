@@ -66,3 +66,8 @@ tokio = { workspace = true, features = ["io-util"] }
 # Only pulled in by the `tenant-overlay` feature (fleet builds) for the vsock
 # config-envelope fetch.
 tokio-vsock = { workspace = true, optional = true }
+
+[dev-dependencies]
+# `authorized_reinit_leaves_no_state_sealed_against_the_old_seed` opens a real
+# fjall store to assert what the reinit clear leaves behind.
+tempfile = "3"

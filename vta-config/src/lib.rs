@@ -572,18 +572,26 @@ pub struct TeeKmsConfig {
     /// once to store the fingerprint, then set back to `false`.
     #[serde(default)]
     pub allow_fingerprint_init: bool,
-    /// Allow auto-clearing existing bootstrap ciphertexts when a KMS
-    /// decrypt **other than ACCESS_DENIED** fails on a subsequent boot.
+    /// Allow auto-clearing existing bootstrap ciphertexts after a KMS decrypt
+    /// failure on a subsequent boot.
     ///
-    /// **Default: false.** ACCESS_DENIED is the legitimate post-rebuild
-    /// signal (PCR mismatch — the enclave's measurements changed and KMS
-    /// won't decrypt the old data key); the bootstrap keyspace is
-    /// auto-cleared without this flag in that case. Any other class
-    /// of decrypt failure (transient KMS error, network glitch,
-    /// ciphertext corruption, attacker-induced byte flip) is *not*
-    /// auto-cleared, because doing so would silently delete the VTA's
-    /// identity. Set to `true` only when you have diagnosed the cause
-    /// and intend to reset the VTA to a fresh first-boot state.
+    /// **Default: false.** Every KMS failure class, including ACCESS_DENIED
+    /// from a wrong or tampered image whose PCRs do not match, preserves the
+    /// VTA's identity and refuses to start. Set to `true` only when you have
+    /// diagnosed the cause and explicitly intend to reset the VTA to a fresh
+    /// first-boot state.
+    ///
+    /// Necessary but not sufficient. A transient class (KMS_INTERNAL,
+    /// NETWORK) means KMS never answered, so the ciphertexts have not been
+    /// *shown* to be undecryptable — the reset is refused even with this
+    /// flag, because destroying a recoverable identity on "no answer" would
+    /// be the same denial of service by another route.
+    ///
+    /// This is also **not a full reset**: the seed it discards is what every
+    /// other keyspace is encrypted under, and those rows will not decrypt
+    /// under the new one. It only produces a bootable VTA on a store holding
+    /// nothing but the bootstrap rows; otherwise wipe the data volume
+    /// instead. See `deploy/nitro/README.md`.
     #[serde(default)]
     pub allow_kms_reinit: bool,
     /// Allow establishing the TEE integrity-manifest baseline when none is
