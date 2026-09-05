@@ -9,15 +9,24 @@
 //!
 //! ## Two scopes, and callers should know which they are in
 //!
-//! Eleven of these tasks are **holder-scoped**: the attribute pool, the
-//! profiles built over it, correlation analysis, the renderer registry. The
-//! VTA gates them on *unrestricted* authority — an administrator scoped to a
-//! single trust context is refused, because the pool is not any context's to
-//! read. A client holding a context-scoped credential will get
-//! `e.p.msg.forbidden` from every one of them, and that is the boundary
-//! working rather than a misconfiguration.
+//! Ten of these tasks are **holder-scoped**: the attribute pool, the profiles
+//! built over it, correlation analysis, and disclosure history read across
+//! every context. The VTA gates them on *unrestricted* authority — an
+//! administrator scoped to a single trust context is refused, because the pool
+//! is not any context's to read. A client holding a context-scoped credential
+//! will get `e.p.msg.forbidden` from every one of them, and that is the
+//! boundary working rather than a misconfiguration.
 //!
-//! The rest are context-scoped and take a `context_id`.
+//! Thirteen are **context-scoped** and take a `context_id`.
+//!
+//! [`persona_renderers_list`](VtaClient::persona_renderers_list) is neither,
+//! and deliberately so: it returns the renderer ids this VTA ships and what
+//! each one discards, which names nothing about the holder or any context. Any
+//! authenticated caller may ask. Gating it as holder-scoped would refuse the
+//! callers who most need it — `persona_disclosure_preview` is context-scoped
+//! and takes a renderer name, so an application that cannot list renderers
+//! cannot choose one, and choosing blind is how a holder discloses through a
+//! format that silently drops provenance.
 //!
 //! ## Disclosure is two calls, on purpose
 //!

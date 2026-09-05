@@ -8,12 +8,17 @@
 //!
 //! ## Scope, and the error an operator will actually hit
 //!
-//! Eleven of these are holder-scoped — the attribute pool, profiles,
-//! correlation, renderers — and the VTA requires *unrestricted* authority for
-//! them. An operator whose credential is scoped to one trust context gets
-//! `e.p.msg.forbidden`, and that is the boundary working: the pool sits above
-//! every context and is not any one context's to read. The context-scoped
-//! commands all take `--context`.
+//! Ten of these are holder-scoped — the attribute pool, profiles, correlation,
+//! and cross-context disclosure history — and the VTA requires *unrestricted*
+//! authority for them. An operator whose credential is scoped to one trust
+//! context gets `e.p.msg.forbidden`, and that is the boundary working: the pool
+//! sits above every context and is not any one context's to read. The
+//! context-scoped commands all take `--context`.
+//!
+//! `persona renderers` is on neither side. It lists the output formats this
+//! VTA ships and what each discards, which names nothing about the holder —
+//! and a context-scoped operator about to request a disclosure needs it, since
+//! `persona disclosure preview` takes a renderer by name.
 
 use serde_json::Value;
 use vta_sdk::client::VtaClient;

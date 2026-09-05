@@ -2961,7 +2961,10 @@ pub(crate) enum PersonaCommands {
     },
     /// List the output formats this VTA can produce, and what each DISCARDS.
     /// Worth running before a preview: a renderer that drops provenance turns
-    /// "my employer attested this" into an unattributed value. Holder-scoped.
+    /// "my employer attested this" into an unattributed value.
+    ///
+    /// Open to any authenticated caller — it names nothing about you, and a
+    /// context-scoped operator about to request a disclosure needs it.
     Renderers,
 }
 
