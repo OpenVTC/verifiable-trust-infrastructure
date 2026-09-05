@@ -40,6 +40,7 @@
 pub mod binding;
 pub mod contact;
 pub mod correlation;
+pub mod disclosure;
 pub mod model;
 pub mod profile;
 pub mod storage;
@@ -47,6 +48,7 @@ pub mod store;
 
 pub use binding::{BindingSummary, Bound, MaterialisedClaim};
 pub use contact::{Contact, ContactClaim, ContactDocument, ContactRevision, ContactSummary, Filed};
+pub use disclosure::{DisclosedClaim, DisclosureRecord, HistoryQuery, new_disclosure};
 pub use model::{
     Attribute, Binding, InlineValue, OverrideValue, Profile, ProfileEntry, ProofRung, Provenance,
     StaleReason, Ulid, ValueType, Version,
