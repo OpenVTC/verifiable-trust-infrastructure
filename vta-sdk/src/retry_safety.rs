@@ -405,6 +405,24 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Keying it would buy a dedup record against a duplicate that costs
     // nothing, at the price of failing a retry the caller legitimately needs.
     (trust_tasks::TASK_ROOMS_KEYS_PRESENT_0_1, RetrySafe),
+    // Reads group state and returns plaintext. Nothing is written, and a second
+    // execution is indistinguishable from one.
+    (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1, ReadOnly),
+    // Minting retains a private key. A retry after a lost reply mints a SECOND
+    // one and leaves a second private half behind for a Welcome that will
+    // consume at most one — a duplicate that costs real key material, which is
+    // exactly the case a key exists for.
+    (trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1, Keyed),
+    // Joining is once. A retry after a lost reply finds the group already
+    // present and fails `alreadyJoined` — so without a key the caller cannot
+    // tell "my join was lost" from "my join worked and the reply was", and the
+    // conservative reading strands a member who is actually in.
+    (trust_tasks::TASK_ROOMS_KEYS_WELCOME_0_1, Keyed),
+    // Idempotent by specification: a replayed commit is success with the epoch
+    // unchanged. That property exists precisely so delivery can retry, and
+    // keying it would add a dedup record to something already deduplicated by
+    // the epoch it names.
+    (trust_tasks::TASK_ROOMS_KEYS_COMMIT_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_MEMORY_DELETE_0_1, RetrySafe),
     // ── Application state ───────────────────────────────────────────────
     //

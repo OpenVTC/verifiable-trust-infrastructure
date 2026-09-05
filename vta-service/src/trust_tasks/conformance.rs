@@ -1977,6 +1977,72 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ),
         // ─── rooms/keys ──────────────────────────────────────────
         //
+        // `open` is the decryption oracle: ciphertext in, plaintext out, and
+        // the key crosses in neither direction. The witness pins both halves
+        // base64url, because a plaintext returned as anything else would be a
+        // wire change nobody declared.
+        // The three delivery tasks. Each witness pins the member the *other* side
+        // depends on: the invitation (without which a Welcome is refused), the
+        // epoch a commit claims (which is how a replay is told from a gap), and
+        // the expiry on a minted package (which is what bounds retained key
+        // material).
+        (
+            uris::TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
+            checked!(
+                specs::rooms::keys::key_package::v0_1::Payload,
+                specs::rooms::keys::key_package::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "invitation": "eyJpZCI6InVybjp1dWlkOnZpYy0xIn0"
+                }),
+                json!({ "keyPackage": "AAECAwQFBgcICQ", "expiresAt": TS })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_WELCOME_0_1,
+            checked!(
+                specs::rooms::keys::welcome::v0_1::Payload,
+                specs::rooms::keys::welcome::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "welcome": "AAECAwQFBgcICQ",
+                    "invitation": "eyJpZCI6InVybjp1dWlkOnZpYy0xIn0"
+                }),
+                json!({ "epoch": 7 })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_COMMIT_0_1,
+            checked!(
+                specs::rooms::keys::commit::v0_1::Payload,
+                specs::rooms::keys::commit::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "commit": "AAECAwQFBgcICQ",
+                    "epoch": 8
+                }),
+                json!({ "epoch": 8 })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_OPEN_0_1,
+            checked!(
+                specs::rooms::keys::open::v0_1::Payload,
+                specs::rooms::keys::open::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "key": "giXFLTGBdnnQJRoIsktuIg",
+                    "version": 1,
+                    "sealed": {
+                        "ciphertext": "1ep1PJuf8-yNmTndwcuMxA",
+                        "nonce": "AAAAAAAAAAAAAAAA",
+                        "epoch": 1
+                    }
+                }),
+                json!({ "plaintext": "YSBkZWNpc2lvbg" })
+            ),
+        ),
+        //
         // The only `rooms/*` task this agent serves: the oracle side, where a
         // member's own VTA mints a scoped presentation for their agent. The
         // room tasks proper are a host's surface, not an agent's.

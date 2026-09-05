@@ -790,6 +790,23 @@ pub const TASK_VTA_MEMORY_LIST_0_1: &str = "https://trusttasks.org/spec/vta/memo
 /// Auth: `roomPresent` capability, plus context access for the principal's key.
 pub const TASK_ROOMS_KEYS_PRESENT_0_1: &str = "https://trusttasks.org/spec/rooms/keys/present/0.1";
 
+/// `spec/rooms/keys/open/0.1` — an agent sends a sealed record and gets its
+/// plaintext. The key never crosses. Auth: `roomOpen` capability.
+pub const TASK_ROOMS_KEYS_OPEN_0_1: &str = "https://trusttasks.org/spec/rooms/keys/open/0.1";
+
+/// `spec/rooms/keys/key-package/0.1` — mint an MLS KeyPackage so a room's
+/// owner has something to add. Auth: a valid invitation for that room.
+pub const TASK_ROOMS_KEYS_KEY_PACKAGE_0_1: &str =
+    "https://trusttasks.org/spec/rooms/keys/key-package/0.1";
+
+/// `spec/rooms/keys/welcome/0.1` — a room's owner delivers an MLS Welcome and
+/// this VTA joins the group. Auth: the invitation, consumed.
+pub const TASK_ROOMS_KEYS_WELCOME_0_1: &str = "https://trusttasks.org/spec/rooms/keys/welcome/0.1";
+
+/// `spec/rooms/keys/commit/0.1` — a room's owner delivers an MLS Commit and
+/// this VTA advances one epoch. Auth: the group itself.
+pub const TASK_ROOMS_KEYS_COMMIT_0_1: &str = "https://trusttasks.org/spec/rooms/keys/commit/0.1";
+
 /// `spec/vta/memory/delete/0.1` — remove one entry by key (`not_found` if
 /// absent). Auth: context access. Payload:
 /// [`crate::protocols::memory::MemoryDeleteBody`].
@@ -1738,6 +1755,10 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_MEMORY_PUT_0_1,
     TASK_VTA_MEMORY_LIST_0_1,
     TASK_ROOMS_KEYS_PRESENT_0_1,
+    TASK_ROOMS_KEYS_OPEN_0_1,
+    TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
+    TASK_ROOMS_KEYS_WELCOME_0_1,
+    TASK_ROOMS_KEYS_COMMIT_0_1,
     TASK_VTA_MEMORY_DELETE_0_1,
     // Application-state slice (spec/vta/app-state/*)
     TASK_VTA_APP_STATE_GET_1_0,

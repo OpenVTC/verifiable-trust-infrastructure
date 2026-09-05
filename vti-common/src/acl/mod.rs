@@ -168,6 +168,14 @@ pub enum Capability {
     /// Withheld from [`Role::Reader`]: minting a credential on a principal's
     /// behalf is not a read.
     RoomPresent,
+    /// Asking this VTA to open a sealed room record — `rooms/keys/open/0.1`.
+    ///
+    /// Registered upstream as `roomOpen` alongside `roomPresent`
+    /// (`trustoverip/dtgwg-trust-tasks-tf` #351), and separate from it on
+    /// purpose: producing a presentation and decrypting a record are different
+    /// powers. An agent that indexes a room — walking the listing and building
+    /// a searchable view — should not thereby be able to read it.
+    RoomOpen,
 }
 
 /// Returns true if `role` is granted `cap` by the default capability
@@ -191,6 +199,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::MemoryRead,
             Capability::MemoryWrite,
             Capability::RoomPresent,
+            Capability::RoomOpen,
             Capability::ProxyLogin,
             Capability::FillRelease,
             Capability::PolicyAdmin,
@@ -206,6 +215,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::MemoryRead,
             Capability::MemoryWrite,
             Capability::RoomPresent,
+            Capability::RoomOpen,
             Capability::ProxyLogin,
             Capability::FillRelease,
             Capability::DeviceAdmin,

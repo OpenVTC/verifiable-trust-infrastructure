@@ -445,9 +445,29 @@ is not thereby an agent that may sign *anything at all* with its principal's
 key — gating an oracle on the generic signing oracle grants strictly more than
 the task needs, which is the opposite of what an oracle is for.
 
-The opening half (`rooms/keys/open/0.1`) is specified and not yet built: it
-needs the VTA to hold the room's MLS group, which needs a welcome-delivery flow
-no specification covers yet.
+**The opening half is built too**, and with it the three tasks that put a group
+into a VTA in the first place — `rooms/keys/{key-package,welcome,commit}`,
+specified in `dtgwg-trust-tasks-tf#355`. Three things about that arrangement are
+worth carrying:
+
+- **The invitation is what makes a Welcome acceptable.** A Welcome carries a
+  group's secrets, so anyone able to reach a VTA could otherwise push group
+  state into it. §4.1 already said joining is consent and the VIC is the
+  artefact; this is where that stops being ceremonial. No matching, unconsumed
+  invitation, no join — and the invitation is consumed only *after* the join
+  succeeds, or a Welcome that failed to process would leave a member with a
+  spent invitation and no membership.
+- **Commits are not optional, and their absence is silent.** A member who misses
+  one is stuck at their last epoch and can open nothing sealed after it. The
+  symptom is "this record does not open", which reads like corruption — so
+  `open` reports *which epoch the VTA holds* when a record is sealed under a
+  later one, turning it into "a commit has not been delivered".
+- **Four tasks, four different gates**, and only one is a capability. The
+  delivery three are *inbound* — a room's owner reaching this VTA — and an ACL
+  of ours has no opinion about who a room's owner is; `commit` in particular is
+  authorized *inside the group*, by MLS, never from a list we keep. Only `open`
+  is our own principal's agent asking us to decrypt, which is what a capability
+  is for.
 
 ### 5.4 Recovery: a quorum re-admits; total loss is total
 

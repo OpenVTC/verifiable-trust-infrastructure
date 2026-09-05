@@ -103,6 +103,31 @@ pub const ISSUED_CREDENTIALS: &str = "issued_credentials";
 /// user data → in [`BACKED_UP`].
 pub const MEMORY: &str = "memory";
 
+/// A member's MLS group state for each data room they belong to
+/// (`rooms/keys/{welcome,commit,open}`), keyed `room-group:<roomId>`.
+///
+/// **This holds group secrets.** Whoever reads a row can decrypt every record
+/// the group could, up to its epoch — the same class of material as [`KEYS`],
+/// and it inherits the same protection: the KMS storage key in a TEE
+/// deployment, and a trusted data directory outside one.
+///
+/// In [`BACKED_UP`], and that is a decision rather than a default. A member who
+/// restores a VTA without their room groups has lost the ability to read every
+/// sealed room they belong to, with no way to recover it — the group cannot be
+/// re-derived, and rejoining means a fresh invitation from every owner. The
+/// backup already carries the credential vault and the master seed; group state
+/// belongs with them.
+pub const ROOM_GROUPS: &str = "room_groups";
+
+/// Invitation credentials this VTA has consumed by joining a room
+/// (`rooms/keys/welcome`), keyed `room-vic:<credentialId>`.
+///
+/// Separate from [`ROOM_GROUPS`] because it outlives them: a member who leaves a
+/// room discards the group, and the consumed-invitation record must survive that
+/// or the same invitation would let them be re-added without a fresh one. Single
+/// use means single use.
+pub const ROOM_INVITATIONS: &str = "room_invitations";
+
 /// Versioned, namespaced application state (`vta/app-state/{get,put,list,
 /// delete,get-many,put-many}/1.0`) — the third store, beside [`VAULT`] (secrets
 /// and credentials) and [`MEMORY`] (agent memory), for JSON an application owns
@@ -190,6 +215,8 @@ pub const ALL: &[&str] = &[
     CONSENT_APPROVERS,
     ISSUED_CREDENTIALS,
     MEMORY,
+    ROOM_GROUPS,
+    ROOM_INVITATIONS,
     APP_STATE,
     POLICY,
     TASK_CONSENT,
@@ -210,6 +237,8 @@ pub const BACKED_UP: &[&str] = &[
     CONSENT_APPROVERS,
     // Durable agent memory is user data and must survive a restore.
     MEMORY,
+    ROOM_GROUPS,
+    ROOM_INVITATIONS,
     // Application state IS the user's account for a consumer built on it —
     // labels, relationships, contacts, join history. A restore that came back
     // without it would return a VTA whose applications no longer recognise
@@ -359,6 +388,18 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         b"consent" | b"task_consent" | b"vault" => Cascade,
         // Per-DID application state the VTA stores on a holder's behalf.
         b"app_state" | b"memory" => Cascade,
+        // A member's room groups, and the invitations they were joined under.
+        // Held for the holder in the same sense the vault is: the group state
+        // decrypts a room *that member* belongs to, and with the member gone
+        // nobody can use it or ever will again. Keeping it would leave group
+        // secrets on disk outliving the only party they were for.
+        //
+        // The consumed-invitation records go with them and not before: while
+        // the member exists, a consumed invitation MUST outlive the group it
+        // let them join, or leaving a room would make the same invitation work
+        // twice. Single use means single use, and the record is the only thing
+        // that remembers.
+        b"room_groups" | b"room_invitations" => Cascade,
 
         // ---- Depends on the DID to function ------------------------------
         // A context whose `did` is this one, a DID named in an advertised
