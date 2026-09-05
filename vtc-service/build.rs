@@ -70,6 +70,47 @@ use std::process::Command;
 /// `include_dir!("$OUT_DIR/admin-ui-dist")`. Keep the two in sync.
 const BAKED_DIR: &str = "admin-ui-dist";
 
+/// File under `OUT_DIR` where this script records what it did to
+/// the lockfile, for `tests/no_rebuild.rs` to check. See
+/// [`LockfileVerdict`].
+const LOCKFILE_VERDICT: &str = "lockfile-verdict";
+
+/// What happened to `package-lock.json` on this run.
+///
+/// The test needs to distinguish "npm moved the mtime and we failed
+/// to put it back" — the #1243 bug — from "npm genuinely re-resolved
+/// the lockfile", which is a legitimate one-off rebuild and happens
+/// on a fresh checkout whenever the runner's npm normalises a
+/// lockfile written by a different version. Comparing mtimes from
+/// the test can't tell those apart; this script can, so it says so
+/// rather than leaving the test to guess.
+enum LockfileVerdict {
+    /// npm never ran (skip flag, or no `admin-ui` feature).
+    NotRun,
+    /// npm left the content byte-identical and the mtime is back
+    /// where it was. The steady state.
+    Restored,
+    /// npm re-resolved the lockfile for real. The mtime is
+    /// deliberately left alone so the change is picked up; the next
+    /// build settles.
+    ContentChanged,
+    /// The mtime restore itself failed. This is the one that means
+    /// the crate will rebuild on every `cargo build`.
+    RestoreFailed(String),
+}
+
+impl LockfileVerdict {
+    fn record(&self) {
+        let line = match self {
+            Self::NotRun => "not-run".to_string(),
+            Self::Restored => "restored".to_string(),
+            Self::ContentChanged => "content-changed".to_string(),
+            Self::RestoreFailed(e) => format!("restore-failed: {e}"),
+        };
+        let _ = std::fs::write(out_dir().join(LOCKFILE_VERDICT), line);
+    }
+}
+
 fn main() {
     // Re-run when admin-ui source changes; leave the rest of the
     // crate alone.
@@ -86,6 +127,7 @@ fn main() {
             "build.rs: VTC_SKIP_ADMIN_UI_BUILD set, skipping admin-ui build (expecting a \
              pre-built admin-ui/dist/)"
         );
+        LockfileVerdict::NotRun.record();
         adopt_prebuilt_dist();
         return;
     }
@@ -96,6 +138,7 @@ fn main() {
         // Still make sure the directory exists as an empty stub so
         // the `include_dir!` macro doesn't error if it ever gets
         // evaluated.
+        LockfileVerdict::NotRun.record();
         ensure_baked_dir_exists();
         return;
     }
@@ -217,24 +260,34 @@ fn run_npm_preserving_lockfile(admin_ui: &Path) {
     run_npm(admin_ui, &["install", "--no-audit", "--no-fund"]);
 
     let (Some(before), Some(mtime)) = (before, mtime) else {
+        LockfileVerdict::NotRun.record();
         return;
     };
     if std::fs::read(&lockfile).ok().as_deref() != Some(&before[..]) {
-        // npm genuinely changed the lockfile. Leave the new mtime
-        // alone so the next build picks the change up.
+        // npm genuinely re-resolved the lockfile. Leave the new
+        // mtime alone so the next build picks the change up — one
+        // rebuild, then it settles. Common on a fresh checkout when
+        // the local npm normalises a lockfile written by another
+        // version; if it happens on every clean checkout, regenerate
+        // and commit the lockfile.
+        LockfileVerdict::ContentChanged.record();
         return;
     }
-    let restored = std::fs::File::options()
+    match std::fs::File::options()
         .write(true)
         .open(&lockfile)
-        .and_then(|f| f.set_times(std::fs::FileTimes::new().set_modified(mtime)));
-    if let Err(e) = restored {
-        // Not fatal: the build is still correct, it just loses the
-        // no-op-rebuild property. Say so rather than failing.
-        println!(
-            "cargo:warning=could not restore package-lock.json mtime ({e}); vtc-service will \
-             rebuild on every cargo invocation (see #1243)"
-        );
+        .and_then(|f| f.set_times(std::fs::FileTimes::new().set_modified(mtime)))
+    {
+        Ok(()) => LockfileVerdict::Restored.record(),
+        Err(e) => {
+            // Not fatal: the build is still correct, it just loses
+            // the no-op-rebuild property. Say so rather than failing.
+            println!(
+                "cargo:warning=could not restore package-lock.json mtime ({e}); vtc-service will \
+                 rebuild on every cargo invocation (see #1243)"
+            );
+            LockfileVerdict::RestoreFailed(e.to_string()).record();
+        }
     }
 }
 

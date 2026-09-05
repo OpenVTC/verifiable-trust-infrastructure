@@ -18,16 +18,15 @@
 //! `Fresh`", which needs a nested cargo invocation and minutes of
 //! wall clock. CI does that (`.github/workflows/ci.yml`, the
 //! "vtc-service rebuild is a no-op" step). These tests instead pin
-//! the two *structural* properties that made it possible, which is
-//! cheap enough to run on every `cargo test` and fails with a much
-//! more specific message than a slow timing test would.
+//! the two *structural* properties that made it possible, cheaply
+//! enough to run on every `cargo test` and with a far more specific
+//! failure message than a timing test could give.
 //!
 //! Both read state left behind by the build script that produced
-//! this test binary, so they describe the build that is actually
-//! running them.
+//! this test binary, so they describe the build actually running
+//! them.
 
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::path::PathBuf;
 
 /// `OUT_DIR` is `<target>/<profile>/build/vtc-service-<hash>/out`.
 fn out_dir() -> PathBuf {
@@ -36,10 +35,6 @@ fn out_dir() -> PathBuf {
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn mtime(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// Cause 2: the baked admin-UI bundle must live under `OUT_DIR`,
@@ -69,66 +64,47 @@ fn baked_admin_ui_lives_outside_the_source_tree() {
     );
 }
 
-/// Cause 1: the build script must not leave a `rerun-if-changed`
-/// input newer than its own output stamp.
+/// Cause 1: a content-preserving `npm install` must not leave
+/// `package-lock.json`'s mtime moved.
 ///
-/// That comparison — every watched path against
-/// `build/<pkg>-<hash>/output` — is literally how cargo decides to
-/// re-run a build script, so asserting it here asserts the real
-/// condition rather than a proxy for it. `npm install` rewriting
-/// the lockfile with identical bytes was enough to fail it, and it
-/// failed silently: the content never changed, so `git status`
-/// stayed clean and nothing looked wrong.
+/// The lockfile is one of the build script's own
+/// `rerun-if-changed` inputs, so moving its mtime makes the script
+/// dirty the moment it finishes — and it failed silently, because
+/// the content never changed and `git status` stayed clean.
 ///
-/// Vacuous under `VTC_SKIP_ADMIN_UI_BUILD=1`, which is correct —
-/// that path never runs npm, so there is nothing to have moved.
+/// This reads the verdict `build.rs` recorded rather than comparing
+/// mtimes here, because an mtime comparison cannot tell the bug
+/// apart from the legitimate case beside it: npm *re-resolving* the
+/// lockfile for real, which moves the mtime, is supposed to rebuild,
+/// and happens on a fresh checkout whenever the local npm
+/// normalises a lockfile written by a different version. Asserting
+/// on mtimes failed in CI for exactly that reason. `build.rs` knows
+/// which case it was in; the test just asks.
 #[test]
-fn build_script_left_no_watched_input_newer_than_its_stamp() {
-    // OUT_DIR is `<...>/vtc-service-<hash>/out`; the stamp cargo
-    // compares against is its sibling.
-    let Some(stamp) = out_dir().parent().map(|p| p.join("output")) else {
-        panic!("OUT_DIR has no parent: {}", out_dir().display());
+fn content_preserving_npm_install_does_not_move_the_lockfile() {
+    let verdict_path = out_dir().join("lockfile-verdict");
+    let Ok(verdict) = std::fs::read_to_string(&verdict_path) else {
+        // Written unconditionally on every path through build.rs,
+        // so its absence means the script predates this guard.
+        panic!(
+            "build.rs recorded no lockfile verdict at {}; it must write one on every path",
+            verdict_path.display()
+        );
     };
-    let Some(stamp_mtime) = mtime(&stamp) else {
-        // No stamp means the script never ran for this build (a
-        // fully cached artifact reused from elsewhere). Nothing to
-        // assert.
-        return;
-    };
+    let verdict = verdict.trim();
 
-    // The six paths build.rs declares, in the same order.
-    let watched = [
-        "admin-ui/src",
-        "admin-ui/index.html",
-        "admin-ui/package.json",
-        "admin-ui/package-lock.json",
-        "admin-ui/vite.config.ts",
-        "admin-ui/tsconfig.json",
-    ];
-
-    let mut offenders = Vec::new();
-    for rel in watched {
-        let path = manifest_dir().join(rel);
-        let Some(path_mtime) = mtime(&path) else {
-            continue;
-        };
-        if path_mtime > stamp_mtime {
-            let by = path_mtime
-                .duration_since(stamp_mtime)
-                .map(|d| format!("{:.3}s", d.as_secs_f64()))
-                .unwrap_or_else(|_| "?".to_string());
-            offenders.push(format!("{rel} (newer by {by})"));
-        }
+    if let Some(err) = verdict.strip_prefix("restore-failed: ") {
+        panic!(
+            "build.rs could not restore package-lock.json's mtime after a content-preserving \
+             `npm install`: {err}\nThe lockfile is a `cargo:rerun-if-changed` input of the \
+             build script itself, so the script is now dirty and will re-run on every `cargo \
+             build` — regenerating the baked admin UI and recompiling the crate (#1243)."
+        );
     }
 
     assert!(
-        offenders.is_empty(),
-        "build.rs left these watched inputs newer than its own output stamp: {}.\ncargo \
-         compares exactly these mtimes against {}, so the build script is now dirty and will \
-         re-run on every `cargo build` — which regenerates the baked admin UI and recompiles \
-         the crate (#1243). A build script must not write into the source tree; if npm has to \
-         touch a watched file, restore its mtime when the content is unchanged.",
-        offenders.join(", "),
-        stamp.display()
+        matches!(verdict, "restored" | "content-changed" | "not-run"),
+        "unrecognised lockfile verdict {verdict:?} from build.rs; teach this test the new \
+         variant rather than widening the match"
     );
 }
