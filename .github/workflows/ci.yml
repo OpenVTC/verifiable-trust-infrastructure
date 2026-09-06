@@ -497,43 +497,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install system dependencies
-        run: |
-          # `apt-get update` is the operation that hangs here — three runs
-          # stalled on it, and once each attempt was bounded the timings showed
-          # every failure landing on the 90s `update` ceiling, never on the
-          # install. The mirror is unresponsive; retrying it harder does not
-          # help.
-          #
-          # So don't run it unless it is actually needed. The runner image ships
-          # a usable package index, and pkg-config is already present on
-          # ubuntu-24.04, so the fast path is to check what is missing and
-          # install straight from the shipped index. Refreshing the index is the
-          # fallback, still bounded and retried, for the case where the package
-          # genuinely is not in it.
-          pkgs=""
-          for p in libdbus-1-dev pkg-config; do
-            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
-          done
-          if [ -z "$pkgs" ]; then
-            echo "libdbus-1-dev and pkg-config already present; nothing to do"
-            exit 0
-          fi
-          echo "missing:$pkgs"
-          if sudo timeout 120 apt-get install -y $pkgs; then
-            exit 0
-          fi
-          echo "::warning::install from the shipped index failed; refreshing"
-          for attempt in 1 2 3; do
-            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
-              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
-              exit 0
-            fi
-            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
-            sleep 10
-          done
-          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
-          exit 1
-
+        run: bash scripts/install-semver-deps.sh
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-semver-checks
 
@@ -576,6 +540,13 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+      # Same system packages as the report job, from the same script. Omitting
+      # this is what broke the guard's first real run: rustdoc could not build
+      # `vta-cli-common` (libdbus-sys -> pkg_config), and a failed baseline build
+      # is reported as a broken PUBLISHED crate — which looked like a finding
+      # rather than a missing build dependency on the runner.
+      - name: Install system dependencies
+        run: bash scripts/install-semver-deps.sh
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-semver-checks
       - name: Check the proposed versions cover their API changes
