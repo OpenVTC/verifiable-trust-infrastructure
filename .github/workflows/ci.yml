@@ -129,7 +129,9 @@ jobs:
       - run: cargo check --workspace
 
   test:
-    name: Test
+    name: Test (workspace)
+    needs: affects
+    if: needs.affects.outputs.vta_tests != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -153,42 +155,7 @@ jobs:
           df -h /
 
       - name: Install system dependencies
-        run: |
-          # `apt-get update` is the operation that hangs here — three runs
-          # stalled on it, and once each attempt was bounded the timings showed
-          # every failure landing on the 90s `update` ceiling, never on the
-          # install. The mirror is unresponsive; retrying it harder does not
-          # help.
-          #
-          # So don't run it unless it is actually needed. The runner image ships
-          # a usable package index, and pkg-config is already present on
-          # ubuntu-24.04, so the fast path is to check what is missing and
-          # install straight from the shipped index. Refreshing the index is the
-          # fallback, still bounded and retried, for the case where the package
-          # genuinely is not in it.
-          pkgs=""
-          for p in libdbus-1-dev pkg-config; do
-            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
-          done
-          if [ -z "$pkgs" ]; then
-            echo "libdbus-1-dev and pkg-config already present; nothing to do"
-            exit 0
-          fi
-          echo "missing:$pkgs"
-          if sudo timeout 120 apt-get install -y $pkgs; then
-            exit 0
-          fi
-          echo "::warning::install from the shipped index failed; refreshing"
-          for attempt in 1 2 3; do
-            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
-              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
-              exit 0
-            fi
-            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
-            sleep 10
-          done
-          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
-          exit 1
+        run: bash scripts/install-build-deps.sh
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -218,7 +185,67 @@ jobs:
       - name: Disk after cache restore
         run: df -h /
 
-      - run: cargo test --workspace
+      - run: cargo test --workspace --exclude vtc-service --exclude vtc-client
+
+  test-vtc:
+    name: Test (VTC)
+    needs: affects
+    if: needs.affects.outputs.vtc_tests != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # `cargo test --workspace` builds a test binary for every crate with
+      # full debuginfo, and the total (target/ plus the linker's scratch)
+      # runs the ubuntu-latest runner's ~14 GB of free root disk right to the
+      # edge. It began failing intermittently with "No space left on device"
+      # while linking the largest binary (libvta_service). The preinstalled
+      # Android SDK, .NET and GHC toolchains are ~20 GB we never use, so
+      # reclaiming them buys comfortable headroom. Test-only: no other job
+      # links the whole workspace at once, so none needs this.
+      # NB: do NOT remove $AGENT_TOOLSDIRECTORY (/opt/hostedtoolcache) — it
+      # holds the runner's node, and vtc-service's build.rs shells out to
+      # `npm run build` for the admin UI. Android + .NET + GHC are ~13 GB we
+      # never touch and are safe to reclaim.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+
+      - name: Install system dependencies
+        run: bash scripts/install-build-deps.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v6
+        with:
+          # `target/` is deliberately NOT cached. Every crate in this
+          # workspace is a **path** dependency, so a source-only change does not
+          # move `Cargo.lock` and therefore does not move this key: the job
+          # restores a `target/` built from *other* source and reuses stale
+          # artifacts. The failure names a field that is plainly there in the
+          # diff, so it reads as the author's bug — see #1133, where a
+          # clean-room checkout of the same commit compiled fine.
+          #
+          # The registry and git caches stay: content-addressed by package
+          # version, so a stale entry is impossible by construction.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+
+      # The failure this guards against reports as `No space left on device`
+      # from the runner's own log writer — no failing step, no job log, just a
+      # red job that reads like a code failure. Printing the free space after
+      # the cache restore means the next occurrence says so in one line.
+      - name: Disk after cache restore
+        run: df -h /
+
+      - run: cargo test -p vtc-service -p vtc-client
+
 
       # #1243: `vtc-service`'s build.rs used to write into the source tree —
       # `npm install` refreshed `admin-ui/package-lock.json` (a
@@ -258,7 +285,6 @@ jobs:
             git status --porcelain
             git diff --stat
           fi
-
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -497,7 +523,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install system dependencies
-        run: bash scripts/install-semver-deps.sh
+        run: bash scripts/install-build-deps.sh
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-semver-checks
 
@@ -546,7 +572,7 @@ jobs:
       # is reported as a broken PUBLISHED crate — which looked like a finding
       # rather than a missing build dependency on the runner.
       - name: Install system dependencies
-        run: bash scripts/install-semver-deps.sh
+        run: bash scripts/install-build-deps.sh
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-semver-checks
       - name: Check the proposed versions cover their API changes
@@ -790,6 +816,8 @@ jobs:
     outputs:
       mobile: ${{ steps.mobile.outputs.run }}
       enclave: ${{ steps.enclave.outputs.run }}
+      vta_tests: ${{ steps.vta_tests.outputs.run }}
+      vtc_tests: ${{ steps.vtc_tests.outputs.run }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -800,6 +828,13 @@ jobs:
         run: bash scripts/ci-affects.sh vta-mobile-core
       - id: enclave
         run: bash scripts/ci-affects.sh vta-enclave
+      # "everything except vtc-service" is not the complement of the VTC closure:
+      # room-host depends on vtc-client, so vtc-client belongs to BOTH sides and a
+      # change to it must run both jobs. Derived, so that stays true on its own.
+      - id: vta_tests
+        run: bash scripts/ci-affects.sh --except vtc-service
+      - id: vtc_tests
+        run: bash scripts/ci-affects.sh vtc-service,vtc-client
 
   enclave:
     # The Nitro enclave binary uses a TEE-only feature combo that the
