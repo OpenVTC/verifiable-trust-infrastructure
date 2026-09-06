@@ -808,6 +808,7 @@ pub(super) async fn handle_contact_put(
             &req.known_by_persona.to_string(),
             document,
             req.credential_refs.iter().map(|c| c.to_string()).collect(),
+            req.notes.as_ref().map(|n| n.to_string()),
         )
         .await
     {
@@ -893,8 +894,11 @@ pub(super) async fn handle_contact_get(
         "rev": req.rev.map_or(contact.rev, std::num::NonZeroU64::get),
         "document": document,
         "credentialRefs": contact.credential_refs,
-        "notes": contact.notes,
     });
+    // The holder's private annotation is optional, and an unset optional must be
+    // absent rather than null — see `put_opt`. Naming it inside `json!` emitted
+    // `"notes": null` and failed the response schema.
+    put_opt(&mut body, "notes", contact.notes.clone());
     if let Some(h) = history {
         body["history"] = json!(h);
     }
@@ -1125,17 +1129,51 @@ pub(super) async fn handle_local_profile_put(
     // rather than rejected. The store re-checks anyway: two independent guards
     // on the property that keeps a context-authored object from acquiring pool
     // reach.
-    let entries = match serde_json::to_value(&req.entries)
-        .ok()
-        .and_then(|v| serde_json::from_value(v).ok())
-    {
-        Some(e) => e,
-        None => {
-            return reject(
-                &doc,
-                AppError::Validation("unrecognised local entry".into()),
-            );
-        }
+    //
+    // **A context-local entry carries no `provenance`, and the store's does.**
+    // The published local shape is `{type, valueType, value, label?}` — narrower
+    // than a pool profile's inline entry, which requires `provenance` — so the
+    // two types are mapped member by member here rather than round-tripped
+    // through JSON. The round-trip is what this used to do, and because
+    // `InlineValue::provenance` has no default it failed for *every* valid
+    // request, rejecting them all as "unrecognised local entry". Nothing caught
+    // it: the only test of this task asserted that an invalid entry is refused,
+    // which a handler that refuses everything also passes.
+    //
+    // `SelfAsserted` is the only honest answer, not a placeholder. A
+    // credential-backed provenance names a `credentialId` and a `claimPath`,
+    // and the local shape has nowhere to put either — so a value authored
+    // inside a context cannot be attested, and presenting one as though it were
+    // would let a context assert an issuer's authority over a value that issuer
+    // never saw. That is the same boundary the missing `ref` forms enforce,
+    // one field along.
+    let entries: Option<Vec<vta_persona::ProfileEntry>> = req
+        .entries
+        .iter()
+        .map(|e| {
+            // Same JSON round-trip the pool handler uses for `valueType`: the
+            // two enums serialise to identical strings, and going through serde
+            // keeps the mapping honest if either side ever gains a variant the
+            // other lacks.
+            let value_type = serde_json::to_string(&e.inline.value_type)
+                .ok()
+                .and_then(|s| serde_json::from_str::<ValueType>(&s).ok())?;
+            Some(vta_persona::ProfileEntry::Inline {
+                inline: vta_persona::InlineValue {
+                    // Generated newtypes `Deref` to `String` but do not impl
+                    // `Display`, so a method call auto-derefs where a function
+                    // path does not.
+                    r#type: e.inline.type_.to_string(),
+                    value_type,
+                    value: e.inline.value.clone(),
+                    label: e.inline.label.as_ref().map(|l| l.to_string()),
+                    provenance: vta_persona::Provenance::SelfAsserted,
+                },
+            })
+        })
+        .collect();
+    let Some(entries) = entries else {
+        return reject(&doc, AppError::Validation("unrecognised valueType".into()));
     };
 
     let mut profile = vta_persona::new_profile(req.name.to_string(), entries);
@@ -1221,7 +1259,25 @@ pub(super) async fn handle_local_profile_get(
                 Some(&ctx),
             )
             .await;
-            success_response(&doc, json!({ "profile": p }))
+            // Built member by member rather than serialising the stored
+            // `Profile`. The local response schema closes the object to
+            // `{profileId, name, entries, version}`, and the stored shape also
+            // carries `createdAt`/`updatedAt` — serialising it whole failed
+            // response conformance with "Additional properties are not allowed".
+            //
+            // The narrower shape is right: those timestamps are pool-record
+            // metadata, and a context-local profile is not a pool record.
+            success_response(
+                &doc,
+                json!({
+                    "profile": {
+                        "profileId": p.profile_id,
+                        "name": p.name,
+                        "entries": p.entries,
+                        "version": p.version,
+                    }
+                }),
+            )
         }
         Ok(None) => reject(&doc, AppError::NotFound(format!("local profile {id}"))),
         Err(e) => reject(&doc, e),
@@ -1279,10 +1335,25 @@ pub(super) async fn handle_local_profile_delete(
     let s = store(state);
 
     if req.unbind {
-        // Leaves those personas presenting nothing, which is legal and which the
-        // holder is told about rather than discovering from the other side.
-        if let Err(e) = s.set_local_binding(&ctx, "", None).await {
-            tracing::debug!(error = %e, "no local binding to clear");
+        // Clear every persona bound to this profile in this context.
+        //
+        // This used to call `set_local_binding(&ctx, "", None)` — with an
+        // *empty* persona DID, which clears the binding of nobody. `--unbind`
+        // therefore unbound nothing, and the delete either failed on the
+        // still-bound personas or left them pointing at a profile that no
+        // longer exists. It went unnoticed because nothing exercised the local
+        // family beyond asserting that an invalid entry is refused.
+        //
+        // Leaves those personas presenting nothing, which is legal and which
+        // the holder is told about rather than discovering from the other side.
+        let bound = match s.personas_bound_to(&ctx, &id).await {
+            Ok(p) => p,
+            Err(e) => return reject(&doc, e),
+        };
+        for persona_did in bound {
+            if let Err(e) = s.set_local_binding(&ctx, &persona_did, None).await {
+                return reject(&doc, e);
+            }
         }
     }
 

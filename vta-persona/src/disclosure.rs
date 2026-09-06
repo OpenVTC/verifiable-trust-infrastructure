@@ -341,16 +341,17 @@ mod tests {
             publisher: None,
             card_version: None,
             claims: vec![ContactClaim {
+                value_type: crate::ValueType::String,
                 r#type: "email".into(),
                 value: serde_json::json!(v),
                 provenance: None,
             }],
         };
         let f = s
-            .file_contact("ctx", "did:bob", "did:me", doc("a"), vec![])
+            .file_contact("ctx", "did:bob", "did:me", doc("a"), vec![], None)
             .await
             .unwrap();
-        s.file_contact("ctx", "did:bob", "did:me", doc("b"), vec![])
+        s.file_contact("ctx", "did:bob", "did:me", doc("b"), vec![], None)
             .await
             .unwrap();
 

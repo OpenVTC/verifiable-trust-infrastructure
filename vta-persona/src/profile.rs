@@ -624,13 +624,74 @@ impl PersonaStore {
             )));
         }
 
+        // Written as an ordinary binding record, in the ordinary binding
+        // keyspace.
+        //
+        // It used to go to its own `plb:` prefix as a bare
+        // `(profile_id, version)` tuple, and the consequences were worse than a
+        // second address: `binding_summary` and `materialised_claims` both read
+        // through `binding_record`, so a persona bound to a context-local
+        // profile reported `bound: false` AND disclosed nothing. The whole
+        // local family was unreachable end to end.
+        //
+        // Separate address spaces are the right guard for *profiles* — a
+        // context-scoped scan must not reach a pool composition — but a binding
+        // is context-scoped whichever kind it is, so a second space bought
+        // nothing and cost both read paths. One space also makes "one binding
+        // per (context, persona)" structural rather than something two rows
+        // could disagree about.
+        //
+        // The claims are the profile's inline values themselves. A local entry
+        // IS its value, so there is no pool to resolve against — which is also
+        // why this cannot leak upward.
+        let claims: Vec<crate::MaterialisedClaim> = match profile_id {
+            None => Vec::new(),
+            Some(id) => self
+                .get_local_profile(context_id, id)
+                .await?
+                .map(|p| {
+                    p.entries
+                        .iter()
+                        .filter_map(|e| match e {
+                            ProfileEntry::Inline { inline } => Some(crate::MaterialisedClaim {
+                                r#type: inline.r#type.clone(),
+                                value: Some(inline.value.clone()),
+                                provenance: inline.provenance.clone(),
+                                stale: false,
+                            }),
+                            // Unreachable: `put_local_profile` refuses anything
+                            // else, and the schema cannot express it. Skipped
+                            // rather than panicked, because a stored row that
+                            // somehow held one must not take the process down.
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        let profile_name = match profile_id {
+            None => None,
+            Some(id) => self
+                .get_local_profile(context_id, id)
+                .await?
+                .map(|p| p.name.clone()),
+        };
+
         let _guard = self.write_lock.lock().await;
         let version = self.next_version().await?;
+        let record = crate::binding::BindingRecord {
+            binding: crate::model::Binding {
+                persona_did: persona_did.to_string(),
+                profile_id: profile_id.map(str::to_string),
+                public_entries: Vec::new(),
+                version,
+                bound_at: crate::store::now_rfc3339(),
+            },
+            profile_name,
+            claims,
+        };
         self.ks
-            .insert(
-                storage::local_binding_key(context_id, persona_did),
-                &(profile_id.map(str::to_string), version),
-            )
+            .insert(storage::binding_key(context_id, persona_did), &record)
             .await?;
         Ok(version)
     }
