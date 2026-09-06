@@ -772,11 +772,42 @@ jobs:
         env:
           VTC_SKIP_ADMIN_UI_BUILD: "1"
 
+  affects:
+    # Which package-scoped builds this change can possibly alter.
+    #
+    # `Mobile build` cross-compiles vta-mobile-core for iOS and Android and takes
+    # ~22 minutes; its workspace dependency closure is TWO crates. `Enclave build`
+    # checks vta-enclave, whose closure contains no vtc-* and no room-host. Most
+    # pull requests here touch neither, and wait for both.
+    #
+    # Deliberately NOT gated on `pull_request`. A job whose `needs` were skipped is
+    # itself skipped, so gating this would stop the builds running on pushes to
+    # main — the opposite of what a filter should do. It runs everywhere and simply
+    # answers `true` when there is no diff to reason about.
+    name: which builds this change can affect
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      mobile: ${{ steps.mobile.outputs.run }}
+      enclave: ${{ steps.enclave.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The diff is the whole input; a shallow clone has no base to diff from.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - id: mobile
+        run: bash scripts/ci-affects.sh vta-mobile-core
+      - id: enclave
+        run: bash scripts/ci-affects.sh vta-enclave
+
   enclave:
     # The Nitro enclave binary uses a TEE-only feature combo that the
     # default `check` job never touches. Linux-only because vsock-store
     # depends on `tokio-vsock` which doesn't build on macOS/Windows.
     name: Enclave build
+    needs: affects
+    if: needs.affects.outputs.enclave != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -857,6 +888,8 @@ jobs:
     # generates bindings — would land green. macOS runner because iOS needs
     # Xcode; the macOS image also ships the Android NDK.
     name: Mobile build
+    needs: affects
+    if: needs.affects.outputs.mobile != 'false'
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
