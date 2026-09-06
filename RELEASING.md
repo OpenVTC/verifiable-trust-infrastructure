@@ -29,6 +29,36 @@ feat(sdk)!: rename the transport selector      <- ! marks a breaking change
 Types: `feat` `fix` `docs` `test` `ci` `build` `perf` `refactor` `chore`
 `security`.
 
+**What actually counts as breaking**, because the `!` is easy to leave off a
+change that does not feel like one. release-plz derives the bump from the type
+and the `!`, so an unmarked break ships as a patch — and a caret requirement
+picks that up on a routine `cargo update`. In a published crate, all of these
+are breaking even though none of them removes or renames anything:
+
+- **A new variant on a public enum** that is not `#[non_exhaustive]`. Any
+  downstream exhaustive `match` stops compiling.
+- **A new field on a public struct** a consumer can build with a literal. Their
+  literal is now missing a field.
+- **A new required argument, or a new trait method with no default.**
+- **A stricter bound, or a narrowed return type.**
+
+This is not a hypothetical list. Every entry on it happened here between
+2026-08-29 and 2026-09-06, and none was marked: `Capability` gained four
+variants across #1234, #1247 and #1250, `AuditEvent` gained one in #1244, and
+sixteen `vta-sdk` wire structs gained an `ext` field in #1231 — under `fix:`,
+which derives the smallest bump there is. `vti-common` 0.16.2 and `vta-sdk`
+0.32.4 went out as patches carrying all of it.
+
+**The better fix is usually not the `!`.** If a type is *designed* to grow —
+a capability list, an event vocabulary — mark it `#[non_exhaustive]` once and
+the additions stop being breaking at all. That is what #1262 did for
+`Capability` and `AuditEvent`. Reach for the marker when the break is real and
+intended; reach for `#[non_exhaustive]` when the type will keep growing.
+
+Neither replaces the mechanical check: `release bump is large enough` runs
+cargo-semver-checks against the versions a Release PR actually proposes and
+blocks when the bump is too small. It does not depend on anyone noticing.
+
 **Write a real commit body.** It is included in the changelog verbatim, so the
 explanation you write for reviewers is the same text an external consumer reads
 on crates.io. This is the whole changelog process now — there are no fragment

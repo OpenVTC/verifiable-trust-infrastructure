@@ -941,6 +941,12 @@ subject, so the title is the entry — CI lints it.
 
 - **Title**: `<type>(<scope>): <subject>`, `!` for a breaking change. Types:
   `feat` `fix` `docs` `test` `ci` `build` `perf` `refactor` `chore` `security`.
+- **A new enum variant or struct field in a published crate IS breaking** unless
+  the type is `#[non_exhaustive]`, and it is the case people forget — release-plz
+  reads the bump off the `!`, so an unmarked one ships as a patch that consumers
+  take automatically. It has happened five times here (#1231, #1234, #1244,
+  #1247, #1250). For a type designed to grow, `#[non_exhaustive]` beats
+  remembering the marker. RELEASING.md has the full list.
 - **Body**: included in the changelog verbatim. Write the explanation there.
 - **Never** edit `version = ` in a `Cargo.toml`.
 
