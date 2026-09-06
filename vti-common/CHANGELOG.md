@@ -2,6 +2,229 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.16.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.16.1...vti-common-v0.16.2) — 2026-09-06
+
+
+### Added
+
+- **rooms**: A VTA joins a room, keeps up, and opens what it holds ([#1250](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1250))
+
+Implements rooms/keys/{key-package,welcome,commit,open} - the delivery
+  flow specified in dtgwg-trust-tasks-tf#355 and the decryption oracle from
+  #349, on the custody layer from #1248. This is the piece that makes a
+  data room readable by an agent that never holds a key.
+
+  Four tasks, four different gates, and only one is a capability. The
+  delivery three are inbound - a room's owner reaching this VTA - and an
+  ACL of ours has no opinion about who a room's owner is. commit in
+  particular is authorized INSIDE the group: MLS authenticates the
+  committer as a member of the group we already hold, and a list we kept
+  would be this service deciding who may commit to a room it is not part
+  of. Only open is our own principal's agent asking us to decrypt, which is
+  what a capability is for - RoomOpen, registered upstream in #351.
+
+  The invitation is what makes a Welcome acceptable. A Welcome carries a
+  group's secrets, so anyone able to reach a VTA could otherwise push group
+  state into it. Joining a room is already a two-party act and the VIC is
+  already the consent artefact; this is where that stops being ceremonial.
+  Five checks, none optional - it parses as an invitation, its proof
+  verifies, the issuer is the room, the subject is us, and it is live and
+  unspent - and dropping any one leaves a way in. VerifiedInvitation is
+  constructible only by the verifier, so a caller cannot reach consumption
+  with something nobody checked.
+
+  The invitation is consumed only AFTER the join succeeds. Burning it on a
+  Welcome that then failed to process would strand the member: invitation
+  spent, not in the room.
+
+  Joining twice is refused rather than merged. Two group states for one
+  room is a condition nothing downstream can resolve - open has no way to
+  choose, and choosing wrong returns 'did not open' for a record the member
+  can plainly see.
+
+  open reports which epoch the VTA holds when a record is sealed under a
+  later one. A member who missed a commit is stuck at their last epoch, and
+  the raw symptom is 'this record does not open', which reads like
+  corruption; naming the epoch turns it into 'a commit has not been
+  delivered', which an operator can act on.
+
+  Two keyspaces, both Cascade on DID deletion: room_groups holds group
+  secrets and belongs at the same protection level as the key store, and
+  room_invitations outlives the groups it admitted - while the member
+  exists, a consumed invitation MUST survive leaving a room, or the same
+  invitation would work twice.
+
+  Four censuses had something to say. The MCP guard, where open and welcome
+  are Sensitive (plaintext out, key material in) while key-package and
+  commit are ordinary mutations. Retry safety, which produced four
+  different answers and is the better for it: open is ReadOnly, commit is
+  RetrySafe because the spec made replay a no-op precisely so delivery
+  could retry, and key-package and welcome are Keyed - one leaves a second
+  private half behind, the other cannot tell a lost reply from a completed
+  join. Then the conformance witnesses and the namespace list.
+
+  trust-tasks-rs 0.17.8 landed mid-build carrying #351, #354 and #355, so
+  all four request types are generated rather than hand-written.
+
+- **rooms**: The presentation oracle, so an agent never holds its human's credentials ([#1247](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1247))
+
+Implements rooms/keys/present/0.1. The data-rooms design turns on a member
+  equipping their agent with strictly less than they hold - a chain one link
+  longer, conferring read for four hours, bound to one host - and nothing
+  minted one. A member wanting to give an agent access had two options: hand
+  over their own credentials, which is the outcome attenuation exists to
+  prevent, or mint an attenuation by hand, which nobody does.
+
+  So the agent asks, and the VTA mints. The VTA already holds the member's
+  keys and is already in their trusted computing base; a host is not, which
+  is why the host only ever sees the result.
+
+  Four things a caller cannot obtain by asking, and each closes a way this
+  could have quietly become the credential hand-off it replaces:
+
+    More than the principal holds fails in attenuate, which refuses to
+    widen - not at a policy check somebody could forget to write.
+
+    A presentation covering everything is unreachable: action is required
+    and exactly one action is conferred.
+
+    A presentation made out to somebody else is unreachable: the leaf grants
+    to the DID the transport authenticated, never one named in the payload.
+    One minted for A is worthless to B even if B obtains it, because the
+    presenter binding refuses it on the far side.
+
+    A long-lived leaf is unreachable: the lifetime is a constant, not a
+    request parameter. A caller that could ask for a year would be asking
+    for the standing credential the oracle exists not to hand over.
+
+  Gated on Capability::RoomPresent - registered upstream as roomPresent in
+  dtgwg-trust-tasks-tf#351 - and deliberately not on Sign. An agent that may
+  ask for a scoped, audience-bound presentation is not thereby an agent that
+  may sign anything at all with its principal's key, and gating an oracle on
+  the generic signing oracle grants strictly more than the task needs.
+
+  The credentials are found by issuer, because a room issues its own - the
+  same property the host verifies against, so a credential that would not
+  verify there is not one this will present. Two authority credentials from
+  one room is refused rather than resolved: picking the broader one hands
+  out more than necessary, picking the narrower produces a presentation that
+  fails at the host for reasons the caller cannot see.
+
+  Five censuses had something to say, and all five were right. The
+  conformance witness. The retry-safety classification - RetrySafe, because
+  the oracle stores nothing and a retry mints a second leaf conferring
+  exactly what the first did, on the same expiry; keying it would buy a
+  dedup record against a harmless duplicate at the price of failing a retry
+  the caller needs. The MCP guard, where it joins 'authority, moved' beside
+  vta/credentials/issue: an MCP host approves a tool, so a blanket vta_call
+  approval must not silently cover minting a presentation over its
+  principal's standing. And the canonical-namespace list, which gains
+  spec/rooms/ for exactly one URI - most of that family is a host's surface,
+  and this is the one member a VTA serves.
+
+- **rooms**: Audit every room operation, without learning who ([#1244](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1244))
+
+Room operations wrote no audit entry at all. Every other consequential
+  VTC surface does - join, members, credentials, backup - and the VTA has
+  a census whose stated position is that a task which did its work and
+  left no trace is a gap with no defensible reading. The rooms family was
+  that gap.
+
+  Reads are audited alongside writes, and on shared material they are the
+  more interesting half: a write log says what a room contains, a read log
+  says who has seen it, which is the question an incident review actually
+  asks. Listing and fetching are distinct actions in the log - both are
+   on the authority axis and different events to anyone reading it.
+
+  The part worth the review time is which actor may be recorded.
+
+  Every host has audit machinery and every one of them wants to write the
+  acting party's DID into it. On a private room that single line hands the
+  host the membership it was built never to learn - assembled one entry at
+  a time by the component least able to notice it is doing so. It is a
+  silent failure: nothing breaks, no test goes red, and the log looks
+  exactly like an attributed room's.
+
+  So the decision is a function in vti_rooms::audit rather than a judgement
+  at each host's call sites, and AuditActor has no constructor that takes a
+  DID unconditionally. On the disclosing tiers it carries the verified
+  subject; on private it carries Member, which is true - the host verified
+  a chain, so it knows a member acted - and is the most it may say. A test
+  asserts the presenter appears nowhere in a private room's audit trail,
+  including in the Debug rendering.
+
+  for_operation takes the AuthorizedAction rather than a presenter string,
+  so a host cannot record an actor for an operation it did not authorize,
+  and cannot record a different actor from the one it did.
+
+  The record key is recorded on every tier. An opaque key identifies a
+  record without describing it, which is exactly why the schema requires
+  opacity on the sealed tiers - and why a host logging a descriptive key
+  would be logging content.
+
+  Both hosts reach the same decision and differ only in where the trail
+  goes. A VTC writes to its hash-chained audit keyspace; room-host has no
+  chain and no business growing one - it is a delivery service, and an
+  HMAC key store plus a hash chain is most of a community service again -
+  so it emits tracing, where an operator's own pipeline collects it. A
+  host that logged the DID because its own logging happened to be simpler
+  would have handed itself the membership by the back door.
+
+  A failed audit write is logged and swallowed. Refusing an operation that
+  already succeeded turns an audit outage into a room outage and tells the
+  caller their write failed when it did not; the chain's own hash makes a
+  gap visible to a verifier, which is the right place to notice it.
+
+- **acl**: Add MemoryRead/MemoryWrite and gate the memory tasks on them ([#1234](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1234))
+
+There was no read-only grant on agent memory. The gate in
+  trust_tasks/memory.rs was auth.require_context and nothing else, and a
+  context is binary: any DID that could reach one could also write and
+  delete every memory in it. So an operator could not give an agent
+  read-only access to their own memory, and the --read-only flag in
+  vta-mcp's guard is a client-side glob filter that a caller talking to the
+  VTA directly never encounters.
+
+  The published specification already assumes the split exists.
+  specs/vta/memory/delete/0.1/spec.md reasons about "a VTA whose write
+  capability is granted more freely than its read capability", and about
+  callers holding write without read. There was no read capability and no
+  write capability; there was a context. The ACL supplied nothing finer
+  either - the act axis is (role, allowed_contexts) decoded to a
+  three-valued ActScope, a where with no what.
+
+  Adds Capability::{MemoryRead, MemoryWrite}, wires them through
+  derived_capabilities_for_role, and gates the three handlers. Legacy rows
+  carry no explicit capability set and fall back to the derived mapping, so
+  the roles that write memory today keep writing it.
+
+  Deliberate behaviour changes, both tightenings:
+
+  - reader loses memory write. A read-only consumer of a context should not
+    be able to rewrite the memories in it.
+  - monitor loses memory access entirely. It is the least-privileged role
+    and the Default for AuthClaims, precisely so a fixture that leaks past
+    its expected reach lands somewhere harmless - which it did not, while
+    memory was context-gated alone.
+
+  application keeps both, deliberately and with a test saying why:
+  vta-agent-memory grants exactly that role so the memory service is not
+  the user, and every existing install would otherwise stop saving.
+
+  The capability is checked before the context, so a caller missing it
+  cannot use the reason text to probe which contexts exist.
+
+  Note the canonical Capability enum in the trust-tasks registry
+  (device/_shared/0.1) is already behind this crate - it carries neither
+  sign-trust-task nor credential-write. A spec PR reconciling all four
+  follows separately; this change does not widen that gap unilaterally so
+  much as make it worth closing.
+
+  Implements the orthogonal fix called out in
+  docs/05-design-notes/data-rooms.md 11.1.
+
+
+
 ## [0.16.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.16.0...vti-common-v0.16.1) — 2026-09-01
 
 

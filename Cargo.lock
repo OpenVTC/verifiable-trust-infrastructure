@@ -2527,7 +2527,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.13.3"
+version = "0.13.4"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "clap",
@@ -7010,7 +7010,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pnm-cli"
-version = "0.14.3"
+version = "0.14.4"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -10120,7 +10120,7 @@ dependencies = [
 
 [[package]]
 name = "vta-audit"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "async-trait",
  "tokio",
@@ -10162,7 +10162,7 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.12.3"
+version = "0.12.4"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-crypto",
@@ -10187,7 +10187,7 @@ dependencies = [
 
 [[package]]
 name = "vta-config"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "serde",
  "serde_ignored",
@@ -10253,7 +10253,7 @@ dependencies = [
 
 [[package]]
 name = "vta-keyspaces"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "vti-common",
 ]
@@ -10343,7 +10343,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.32.3"
+version = "0.32.4"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -10407,7 +10407,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.23.4"
+version = "0.23.5"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-bbs",
@@ -10550,7 +10550,7 @@ dependencies = [
 
 [[package]]
 name = "vta-tee"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "aes 0.9.3",
  "aes-gcm 0.11.1",
@@ -10640,7 +10640,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-client"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "chrono",
  "reqwest",
@@ -10742,7 +10742,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.16.1"
+version = "0.16.2"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-data-integrity",
