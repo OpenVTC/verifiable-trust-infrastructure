@@ -458,6 +458,7 @@ pub enum PutManyMode {
 /// supplies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[non_exhaustive]
 pub struct AppStateWrite {
     /// The record key.
     pub key: String,
@@ -490,6 +491,25 @@ pub struct AppStateWrite {
     /// The VTA does not interpret the contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ext: Option<Value>,
+}
+
+impl AppStateWrite {
+    /// Build a write against `key`.
+    ///
+    /// `#[non_exhaustive]`: set the rest on the returned value. `value` and
+    /// `merge_patch` are mutually exclusive and both start absent, so the
+    /// constructor cannot pick between them — a write that sets neither is a
+    /// caller error the service reports, not something a default should paper
+    /// over by guessing which was meant.
+    pub fn new(key: String) -> Self {
+        Self {
+            key,
+            value: None,
+            merge_patch: None,
+            expected_version: None,
+            ext: None,
+        }
+    }
 }
 
 /// `spec/vta/app-state/put-many/1.0` request body.

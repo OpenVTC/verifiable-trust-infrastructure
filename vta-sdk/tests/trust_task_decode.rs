@@ -97,21 +97,24 @@ fn ts() -> chrono::DateTime<Utc> {
 /// `None` and `Some(∅)` are opposite grants on this type, and the empty vec is
 /// the one that must survive as `"allowedKeys": []`.
 fn agent_acl_entry() -> AclEntry {
-    AclEntry {
-        subject: "did:key:z6MkSubject".into(),
-        role: "admin".into(),
-        scopes: vec!["personal".into()],
-        allowed_keys: Some(vec![]),
-        label: Some("laptop".into()),
-        created_at: Some(ts()),
-        created_by: Some("did:key:z6MkAdmin".into()),
-        updated_at: Some(ts()),
-        updated_by: Some("did:key:z6MkAdmin".into()),
-        expires_at: Some(ts()),
-        step_up: None,
-        approve: None,
-        ext: None,
-    }
+    let mut entry = AclEntry::new(
+        "did:key:z6MkSubject".into(),
+        "admin".into(),
+        vec!["personal".into()],
+    );
+    // `Some(vec![])` rather than the constructor's `None`, and the distinction is
+    // the whole point of this fixture: they are opposite grants, and the empty vec
+    // is the one that must survive the wire as `"allowedKeys": []`.
+    entry.allowed_keys = Some(vec![]);
+    entry.label = Some("laptop".into());
+    entry.created_at = Some(ts());
+    entry.created_by = Some("did:key:z6MkAdmin".into());
+    entry.updated_at = Some(ts());
+    entry.updated_by = Some("did:key:z6MkAdmin".into());
+    entry.expires_at = Some(ts());
+    // `step_up`, `approve` and `ext` stay at the constructor's `None`, as they
+    // were here before.
+    entry
 }
 
 /// `pnm acl show` / `grant` / `update` / `change-role`.
