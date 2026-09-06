@@ -2,6 +2,51 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.13.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.12.4...vta-cli-common-v0.13.0) — 2026-09-06
+
+
+### Added
+
+- **vta-sdk**: Make the growth-prone wire bodies non-exhaustive ([#1270](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1270))
+
+Sixteen public request bodies gained an `ext` member in #1231 — under a `fix:`
+  type, which derives the smallest bump there is — and every consumer building one
+  with a struct literal stopped compiling. `vta-sdk` 0.32.4 shipped that as a patch
+  release, which a caret requirement takes on a routine `cargo update`.
+
+  `ext` is the framework's extension member (SPEC §4.5.1); these bodies gain
+  members whenever the schema revises. So the fix is not to remember the `!` next
+  time, it is for the addition to stop being breaking: fourteen of them are now
+  `#[non_exhaustive]` with a `new()` taking the members the schema requires. The
+  optional members stay public — set them on the returned value.
+
+  Deliberately NOT applied to `AclEntry` or `AppStateWrite`, which the same report
+  flagged. `AclEntry` has 68 construction sites, and its own doc comments record
+  that `None` and `Some([])` on `allowed_keys` are OPPOSITE grants: absent means
+  every key the entry's scopes reach, present-but-empty means no keys at all. A
+  generated constructor defaulting that to `None`, migrated mechanically across 68
+  sites, is precisely how the narrowest grant becomes the widest — the same class
+  of mistake CLAUDE.md already attributes to #746, #769 and #770 on the adjacent
+  `allowed_contexts` axis. That one wants per-site review, not a script, and it is
+  better done on its own.
+
+  The compiler was a better census than grep: I estimated 19 external construction
+  sites and it found 21, across five files including integration tests, which count
+  as outside the defining crate for this purpose.
+
+  Two of my own automation passes needed correcting on the way, both worth naming
+  because the second was nearly silent: the first brace matcher mis-parsed `//`
+  comments sitting inside the literals, and the second dropped the comment attached
+  to `authorization_context: None` while filtering out `None`-valued fields. That
+  comment records that `authorizationContext` is a member the published schema does
+  not define, so a producer cannot send it through the validated transport at all.
+  It is restored against the constructor default.
+
+  Breaking, so this wants the minor slot on vta-sdk. #1256's guard will say so if
+  the release proposes otherwise.
+
+
+
 ## [0.12.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.12.3...vta-cli-common-v0.12.4) — 2026-09-06
 
 
