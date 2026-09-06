@@ -43,8 +43,17 @@ pub const REDACTED_MARKER: &str = "<redacted>";
 /// Audit-event payload. Tagged on `type` with the variant name and
 /// the variant's data under `data`. Phase-0 vocabulary only;
 /// Phase-1+ adds variants alongside the features that emit them.
+/// **Non-exhaustive on purpose**, and for the reason the doc comment above already
+/// states: variants arrive alongside the features that emit them, so the set is
+/// designed to grow. `RoomOperation` shipped in `vti-common` 0.16.2 — a patch — and
+/// broke every downstream exhaustive `match`.
+///
+/// A consumer that cannot name an event still has to record it; a `_ =>` arm is the
+/// honest shape for that, and dropping an unrecognised event on the floor is the
+/// failure this prevents being silent.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", content = "data")]
+#[non_exhaustive]
 pub enum AuditEvent {
     /// Bootstrap completed — the first admin DID was written into the
     /// ACL and the install carve-out was permanently closed.

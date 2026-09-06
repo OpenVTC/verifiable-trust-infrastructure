@@ -118,8 +118,19 @@ pub enum ServiceKind {
 /// produces a sensible default from the existing role (Admin gets
 /// everything, Reader gets only `vault-read`, etc.) so existing ACL
 /// behaviour is preserved bit-for-bit.
+/// **Non-exhaustive on purpose.** This list grows every time the agent gains a
+/// power worth gating separately, and each addition used to be a breaking change
+/// for anyone matching on it — which is exactly what happened: `MemoryRead`,
+/// `MemoryWrite`, `RoomPresent` and `RoomOpen` went out in `vti-common` 0.16.2, a
+/// patch release, and any downstream exhaustive `match` stopped compiling on a
+/// routine `cargo update`.
+///
+/// Downstream code must carry a `_ =>` arm. That is the point: a capability this
+/// consumer has never heard of is precisely the one it must not silently treat as
+/// granted, and a wildcard arm forces that decision to be written down.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum Capability {
     VaultRead,
     VaultWrite,
