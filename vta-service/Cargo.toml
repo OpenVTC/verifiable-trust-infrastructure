@@ -139,7 +139,7 @@ path = "src/main.rs"
 required-features = ["cli-synthesis"]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.16", features = ["encryption", "passkey", "openapi"] }
+vti-common = { path = "../vti-common", version = "0.17", features = ["encryption", "passkey", "openapi"] }
 # Seed-store backends + `create_seed_store` factory + `SecretsConfig` (lifted
 # from this crate into a shared crate so external integrations can reuse them).
 # Per-backend features are activated by this crate's matching features below.
@@ -188,7 +188,7 @@ vta-policy = { path = "../vta-policy", version = "0.3" }
 # extracted to its own crate and re-exported as crate::{webvh_store,
 # webvh_client, webvh_auth} behind this crate's `webvh` feature.
 vta-webvh = { path = "../vta-webvh", version = "0.2", optional = true }
-vta-sdk = { path = "../vta-sdk", version = "0.32", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup"] }
+vta-sdk = { path = "../vta-sdk", version = "0.33", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
 # Distinct from `webauthn-rs` (which drives the passkey *enrolment*
@@ -209,7 +209,7 @@ trust-tasks-proof = { workspace = true }
 # generation, bundle opening). Used by `vta bootstrap request` /
 # `vta bootstrap open` so cold-start clients can run the offline flow
 # without depending on `pnm`.
-vta-cli-common = { path = "../vta-cli-common", version = "0.12" }
+vta-cli-common = { path = "../vta-cli-common", version = "0.13" }
 affinidi-crypto = { workspace = true }
 # Low-level `Secret` type for loading the VTA's signing key at
 # provision time. Already transitively present via affinidi-tdk; made
@@ -384,7 +384,7 @@ vta-service = { path = ".", features = ["test-support", "config-seed"] }
 # here rather than from `vta-sdk`'s own tests — the workspace patches `vta-sdk`
 # onto itself, so `-p vta-sdk --features test-loopback` leaves the built unit
 # Fresh and the feature never reaches the compiler.
-vta-sdk = { path = "../vta-sdk", version = "0.32", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.33", features = [
   "provision-client",
   "test-loopback",
 ] }

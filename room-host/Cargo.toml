@@ -17,7 +17,7 @@ path = "src/main.rs"
 # no member lifecycle, no policy engine, no credential issuance, no admin UI.
 vti-rooms = { path = "../vti-rooms", version = "0.1" }
 # The store and AppError. Nothing else internal.
-vti-common = { path = "../vti-common", version = "0.16" }
+vti-common = { path = "../vti-common", version = "0.17" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
 
 axum = { workspace = true }

@@ -2,6 +2,50 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.16.2...vti-common-v0.17.0) — 2026-09-06
+
+
+### Added
+
+- **vti-common**: Make Capability and AuditEvent non-exhaustive ([#1262](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1262))
+
+Both enums are designed to grow — `Capability` gains an entry whenever the agent
+  gains a power worth gating separately, and `AuditEvent`'s own doc comment says
+  variants arrive alongside the features that emit them. Neither was
+  `#[non_exhaustive]`, so every one of those additions was a breaking change for
+  anyone matching on them.
+
+  That is not hypothetical. `MemoryRead`, `MemoryWrite`, `RoomPresent`, `RoomOpen`
+  and `AuditEvent::RoomOperation` went out in vti-common 0.16.2 — a PATCH release —
+  so a downstream exhaustive `match` stopped compiling on a routine `cargo update`,
+  with the caret requirement picking it up automatically.
+
+  The cost inside this workspace is zero: nothing here matches exhaustively on
+  either type. Every reference constructs a variant as a value, and the only
+  `match self` sits in `vti-common` itself, where the attribute has no effect.
+  Checked before writing it, not after.
+
+  Downstream code now needs a `_ =>` arm, and that is the point rather than the
+  price. A capability a consumer has never heard of is precisely the one it must
+  not silently treat as granted, and an audit event it cannot name still has to be
+  recorded; a wildcard arm forces both decisions to be written down instead of
+  being decided by a compile error at the wrong moment.
+
+  Deliberately NOT applied to the sixteen `vta-sdk` wire structs that broke the
+  same way when they gained `ext`. `#[non_exhaustive]` on a struct removes literal
+  construction from outside the crate entirely — functional update with
+  `..Default::default()` included, which is the part people assume still works — so
+  all sixteen would need constructors or builders. That is a redesign of the public
+  SDK surface, not cleanup, and the safety half is now covered anyway: a new field
+  forces a breaking bump and #1256's guard makes that stick. Worth doing
+  deliberately, in its own change.
+
+  Breaking for external consumers, so this needs the minor slot (0.17.0) rather
+  than a patch. The guard added in #1256 will now say so if the release proposes
+  otherwise — which makes this its first live exercise of the failure path.
+
+
+
 ## [0.16.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.16.1...vti-common-v0.16.2) — 2026-09-06
 
 
