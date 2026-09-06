@@ -60,10 +60,7 @@ pub async fn cmd_config_update(
 
     let resp = client
         .update_config(UpdateConfigRequest {
-            patch: UpdateConfigBody {
-                overrides,
-                ext: None,
-            },
+            patch: UpdateConfigBody::new(overrides),
         })
         .await?;
 

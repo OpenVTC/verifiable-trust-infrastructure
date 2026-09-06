@@ -355,10 +355,9 @@ async fn update_config_sends_the_overrides_map() {
     overrides.insert("vta_name".to_string(), json!("new"));
     let res = c
         .update_config(UpdateConfigRequest {
-            patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody {
+            patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody::new(
                 overrides,
-                ext: None,
-            },
+            ),
         })
         .await
         .unwrap();
@@ -389,10 +388,9 @@ async fn update_config_reports_identity_as_rejected() {
     overrides.insert("vta_did".to_string(), json!("did:web:attacker"));
     let res = c
         .update_config(UpdateConfigRequest {
-            patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody {
+            patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody::new(
                 overrides,
-                ext: None,
-            },
+            ),
         })
         .await
         .unwrap();

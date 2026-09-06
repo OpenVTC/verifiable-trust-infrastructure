@@ -21,6 +21,7 @@ use serde_json::Value;
 /// `(contextId, key)` replaces the stored value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[non_exhaustive]
 pub struct MemoryPutBody {
     /// The context the entry belongs to. The caller must have ACL access to it.
     pub context_id: String,
@@ -43,6 +44,24 @@ pub struct MemoryPutBody {
     pub ext: Option<Value>,
 }
 
+impl MemoryPutBody {
+    /// Build a [`MemoryPutBody`] from the members the schema requires.
+    ///
+    /// This type is `#[non_exhaustive]`, so it cannot be built with a struct
+    /// literal from outside this crate — a new member added by a later revision
+    /// of the schema would break every such literal, which is exactly what
+    /// happened when `ext` arrived. The optional members stay public: set them
+    /// on the value this returns.
+    pub fn new(context_id: String, key: String, value: String) -> Self {
+        Self {
+            context_id,
+            key,
+            value,
+            ext: None,
+        }
+    }
+}
+
 /// `spec/vta/memory/put/0.1` response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +73,7 @@ pub struct MemoryPutResponse {
 /// `spec/vta/memory/list/0.1` request body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[non_exhaustive]
 pub struct MemoryListBody {
     /// The context whose entries to list. The caller must have ACL access to it.
     pub context_id: String,
@@ -70,6 +90,22 @@ pub struct MemoryListBody {
     /// The VTA does not interpret the contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ext: Option<Value>,
+}
+
+impl MemoryListBody {
+    /// Build a [`MemoryListBody`] from the members the schema requires.
+    ///
+    /// This type is `#[non_exhaustive]`, so it cannot be built with a struct
+    /// literal from outside this crate — a new member added by a later revision
+    /// of the schema would break every such literal, which is exactly what
+    /// happened when `ext` arrived. The optional members stay public: set them
+    /// on the value this returns.
+    pub fn new(context_id: String) -> Self {
+        Self {
+            context_id,
+            ext: None,
+        }
+    }
 }
 
 /// A single stored memory entry returned by `spec/vta/memory/list/0.1`.
@@ -93,6 +129,7 @@ pub struct MemoryListResponse {
 /// `spec/vta/memory/delete/0.1` request body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[non_exhaustive]
 pub struct MemoryDeleteBody {
     /// The context the entry belongs to. The caller must have ACL access to it.
     pub context_id: String,
@@ -111,6 +148,23 @@ pub struct MemoryDeleteBody {
     /// The VTA does not interpret the contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ext: Option<Value>,
+}
+
+impl MemoryDeleteBody {
+    /// Build a [`MemoryDeleteBody`] from the members the schema requires.
+    ///
+    /// This type is `#[non_exhaustive]`, so it cannot be built with a struct
+    /// literal from outside this crate — a new member added by a later revision
+    /// of the schema would break every such literal, which is exactly what
+    /// happened when `ext` arrived. The optional members stay public: set them
+    /// on the value this returns.
+    pub fn new(context_id: String, key: String) -> Self {
+        Self {
+            context_id,
+            key,
+            ext: None,
+        }
+    }
 }
 
 /// `spec/vta/memory/delete/0.1` response body.

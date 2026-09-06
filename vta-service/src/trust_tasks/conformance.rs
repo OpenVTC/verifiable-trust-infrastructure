@@ -743,15 +743,16 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::acl::list::v0_1::Payload,
                 specs::acl::list::v0_1::Response,
-                to_v(ListAclBody {
-                    role: Some("reader".into()),
-                    scope: Some("ctx-a".into()),
-                    direction: Some(ContextDirection::Subtree),
-                    subject_prefix: Some("did:key:z6Mk".into()),
-                    page_size: Some(50),
-                    cursor: Some("cur-1".into()),
-                    ext: None,
-                }),
+                to_v({
+            let mut b = ListAclBody::new();
+            b.role = Some("reader".into());
+            b.scope = Some("ctx-a".into());
+            b.direction = Some(ContextDirection::Subtree);
+            b.subject_prefix = Some("did:key:z6Mk".into());
+            b.page_size = Some(50);
+            b.cursor = Some("cur-1".into());
+            b
+        }),
                 to_v(ListAclResultBody {
                     entries: vec![acl_entry()],
                     truncated: false,
@@ -765,11 +766,11 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::acl::grant::v0_1::Payload,
                 specs::acl::grant::v0_1::Response,
-                to_v(CreateAclBody {
-                    entry: acl_entry(),
-                    reason: Some("onboarding".into()),
-                    ext: None,
-                }),
+                to_v({
+            let mut b = CreateAclBody::new(acl_entry());
+            b.reason = Some("onboarding".into());
+            b
+        }),
                 to_v(CreateAclResponseBody { entry: acl_entry() })
             ),
         ),
@@ -778,10 +779,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::acl::show::v0_1::Payload,
                 specs::acl::show::v0_1::Response,
-                to_v(GetAclBody {
-                    subject: SUBJECT.into(),
-                    ext: None,
-                }),
+                to_v(GetAclBody::new(SUBJECT.into())),
                 to_v(GetAclResultBody {
                     entry: acl_entry(),
                     redacted_fields: Vec::new(),
@@ -837,12 +835,12 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::acl::revoke::v0_1::Payload,
                 specs::acl::revoke::v0_1::Response,
-                to_v(DeleteAclBody {
-                    subject: SUBJECT.into(),
-                    scopes: Some(vec!["ctx-a".into()]),
-                    reason: Some("offboarding".into()),
-                    ext: None,
-                }),
+                to_v({
+            let mut b = DeleteAclBody::new(SUBJECT.into());
+            b.scopes = Some(vec!["ctx-a".into()]);
+            b.reason = Some("offboarding".into());
+            b
+        }),
                 to_v(DeleteAclResultBody { entry: acl_entry() })
             ),
         ),
@@ -1401,18 +1399,15 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::vta::credentials::issue::v0_2::Payload,
                 specs::vta::credentials::issue::v0_2::Response,
-                to_v(IssueCredentialBody {
-                    holder: SUBJECT.into(),
-                    claims: json!({ "role": "agent" }),
-                    credential_type: Some("AgentAuthorization".into()),
-                    validity_seconds: 3600,
-                    purpose: Some("agent onboarding".into()),
-                    // Deliberately absent: `authorizationContext` is a member the
-                    // published schema does not define, so a producer cannot
-                    // send it through the validated transport at all.
-                    authorization_context: None,
-                    ext: None,
-                }),
+                to_v({
+            let mut b = IssueCredentialBody::new(SUBJECT.into(), json!({ "role": "agent" }), 3600);
+            b.credential_type = Some("AgentAuthorization".into());
+            b.purpose = Some("agent onboarding".into());
+            // `authorization_context` is deliberately left at its constructor
+            // default: it is a member the published schema does not define, so a
+            // producer cannot send it through the validated transport at all.
+            b
+        }),
                 to_v(IssueCredentialResponse {
                     credential_id: "cred-1".into(),
                     credential: json!({ "@context": [], "type": ["VerifiableCredential"] }),
@@ -1426,11 +1421,11 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::vta::credentials::revoke::v0_1::Payload,
                 specs::vta::credentials::revoke::v0_1::Response,
-                to_v(RevokeCredentialBody {
-                    credential_id: "cred-1".into(),
-                    reason: Some("holder offboarded".into()),
-                    ext: None,
-                }),
+                to_v({
+            let mut b = RevokeCredentialBody::new("cred-1".into());
+            b.reason = Some("holder offboarded".into());
+            b
+        }),
                 to_v(RevokeCredentialResponse {
                     credential_id: "cred-1".into(),
                     revoked_at: TS.into(),
@@ -1650,12 +1645,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::vta::memory::put::v0_1::Payload,
                 specs::vta::memory::put::v0_1::Response,
-                to_v(MemoryPutBody {
-                    context_id: "ctx-a".into(),
-                    key: "greeting".into(),
-                    value: "hello".into(),
-                    ext: None,
-                }),
+                to_v(MemoryPutBody::new("ctx-a".into(), "greeting".into(), "hello".into())),
                 to_v(MemoryPutResponse {
                     key: "greeting".into(),
                 })
@@ -1666,10 +1656,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::vta::memory::list::v0_1::Payload,
                 specs::vta::memory::list::v0_1::Response,
-                to_v(MemoryListBody {
-                    context_id: "ctx-a".into(),
-                    ext: None,
-                }),
+                to_v(MemoryListBody::new("ctx-a".into())),
                 to_v(MemoryListResponse {
                     items: vec![MemoryItem {
                         key: "greeting".into(),
@@ -1683,11 +1670,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::vta::memory::delete::v0_1::Payload,
                 specs::vta::memory::delete::v0_1::Response,
-                to_v(MemoryDeleteBody {
-                    context_id: "ctx-a".into(),
-                    key: "greeting".into(),
-                    ext: None,
-                }),
+                to_v(MemoryDeleteBody::new("ctx-a".into(), "greeting".into())),
                 to_v(MemoryDeleteResponse {
                     key: "greeting".into(),
                 })
@@ -1880,13 +1863,12 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::policy::list::v0_2::Payload,
                 specs::policy::list::v0_2::Response,
-                to_v(ListPoliciesBody {
-                    context_id: Some("ctx-a".into()),
-                    enabled_only: true,
-                    cursor: None,
-                    page_size: Some(50),
-                    ext: None,
-                }),
+                to_v({
+            let mut b = ListPoliciesBody::new(true);
+            b.context_id = Some("ctx-a".into());
+            b.page_size = Some(50);
+            b
+        }),
                 to_v(ListPoliciesResultBody {
                     policies: vec![policy_module_view()],
                     truncated: false,
@@ -1899,10 +1881,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::policy::get::v0_1::Payload,
                 specs::policy::get::v0_1::Response,
-                to_v(GetPolicyBody {
-                    id: "approvals".into(),
-                    ext: None,
-                }),
+                to_v(GetPolicyBody::new("approvals".into())),
                 to_v(GetPolicyResultBody {
                     policy: policy_module_view(),
                 })
@@ -1935,12 +1914,12 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::policy::delete::v0_1::Payload,
                 specs::policy::delete::v0_1::Response,
-                to_v(DeletePolicyBody {
-                    id: "legacy-rego".into(),
-                    expected_version: Some(2),
-                    reason: Some("superseded by the declarative rules".into()),
-                    ext: None,
-                }),
+                to_v({
+            let mut b = DeletePolicyBody::new("legacy-rego".into());
+            b.expected_version = Some(2);
+            b.reason = Some("superseded by the declarative rules".into());
+            b
+        }),
                 to_v(DeletePolicyResultBody {
                     id: "legacy-rego".into(),
                     deleted_at: TS.into(),
@@ -1953,10 +1932,11 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::config::show::v0_1::Payload,
                 specs::config::show::v0_1::Response,
-                to_v(GetConfigBody {
-                    keys: Some(vec!["public_url".into()]),
-                    ext: None,
-                }),
+                to_v({
+            let mut b = GetConfigBody::new();
+            b.keys = Some(vec!["public_url".into()]);
+            b
+        }),
                 to_v(GetConfigResultBody {
                     fields: vec![ConfigField {
                         key: "public_url".into(),
@@ -1972,12 +1952,9 @@ fn table() -> Vec<(&'static str, Conformance)> {
             checked!(
                 specs::config::patch::v0_1::Payload,
                 specs::config::patch::v0_1::Response,
-                to_v(UpdateConfigBody {
-                    overrides: [("public_url".to_string(), json!("https://vta.example"))]
+                to_v(UpdateConfigBody::new([("public_url".to_string(), json!("https://vta.example"))]
                         .into_iter()
-                        .collect(),
-                    ext: None,
-                }),
+                        .collect())),
                 to_v(UpdateConfigResultBody {
                     applied: vec!["public_url".into()],
                     pending_restart: vec![],
