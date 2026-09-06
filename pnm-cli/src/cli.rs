@@ -214,6 +214,18 @@ pub(crate) enum Commands {
         command: CredVaultCommands,
     },
 
+    /// The holder's own identity — the attributes they hold about themselves,
+    /// the profiles that project over them, which persona a context sees, and
+    /// what other people have disclosed.
+    ///
+    /// The pool and profiles sit ABOVE every trust context and need
+    /// unrestricted authority; bindings, contacts and disclosure are
+    /// context-scoped and take `--context`.
+    Persona {
+        #[command(subcommand)]
+        command: PersonaCommands,
+    },
+
     /// Generate auth credentials for applications and services
     AuthCredential {
         #[command(subcommand)]
@@ -2849,4 +2861,555 @@ mod memory_flag_tests {
             assert!(Cli::try_parse_from(["pnm", "memory", alias, "--context", "agent"]).is_ok());
         }
     }
+}
+
+/// How a value should be typed on the wire.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ValueTypeOpt {
+    /// Taken literally. `--value` is used as-is, not parsed as JSON.
+    String,
+    Number,
+    Boolean,
+    /// An ISO-8601 date, carried as a string.
+    Date,
+    /// A JSON object. `--value` is parsed.
+    Object,
+}
+
+/// Where a value came from — which decides how it may be presented.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ProvenanceOpt {
+    /// The holder typed it. True of most of an address book.
+    #[default]
+    SelfAsserted,
+    /// Backed by a held credential. Requires `--credential-id` and
+    /// `--claim-path`.
+    CredentialBacked,
+    /// Minted by the agent — a relay address, a per-verifier alias. Requires
+    /// `--generator`.
+    Generated,
+}
+
+/// How strongly a credential-backed claim is hidden when presented, most
+/// private first.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ProofRungOpt {
+    /// Proves a statement over the claim without disclosing it.
+    Predicate,
+    /// Discloses only what is needed, unlinkably — two presentations cannot be
+    /// joined.
+    Derived,
+    /// Discloses only what is needed, but carries the issuer's signature
+    /// unchanged, so two presentations ARE linkable.
+    SelectiveDisclosure,
+    /// Discloses the whole credential.
+    Whole,
+}
+
+/// `pnm persona …` — the holder's own identity.
+#[derive(Subcommand)]
+pub(crate) enum PersonaCommands {
+    /// The attribute pool: the facts the holder holds about themselves.
+    /// Holder-scoped — needs unrestricted authority, not a context admin.
+    Attribute {
+        #[command(subcommand)]
+        command: PersonaAttributeCommands,
+    },
+    /// Profiles: named projections over the pool. Holder-scoped.
+    Profile {
+        #[command(subcommand)]
+        command: PersonaProfileCommands,
+    },
+    /// Bindings: which profile a persona DID presents in a given context.
+    Binding {
+        #[command(subcommand)]
+        command: PersonaBindingCommands,
+    },
+    /// Contacts: what other people have disclosed to the holder.
+    Contact {
+        #[command(subcommand)]
+        command: PersonaContactCommands,
+    },
+    /// Disclosure: preview what would be revealed, then present it.
+    Disclosure {
+        #[command(subcommand)]
+        command: PersonaDisclosureCommands,
+    },
+    /// Profiles and bindings that live INSIDE one context, built only from
+    /// inline values — they cannot reference the holder's pool.
+    Local {
+        #[command(subcommand)]
+        command: PersonaLocalCommands,
+    },
+    /// Report how linkable a value, attribute or profile would make the
+    /// holder. Reads the pool; writes nothing. Holder-scoped.
+    ///
+    /// Note the inversion: a credential presented WHOLE correlates more than a
+    /// self-asserted value, because the issuer's signature is identical at
+    /// every verifier — while a derived proof correlates less.
+    Correlate {
+        /// Analyse one stored attribute.
+        #[arg(long = "attribute-id")]
+        attribute_id: Option<String>,
+        /// Analyse an entire profile.
+        #[arg(long = "profile-id")]
+        profile_id: Option<String>,
+        /// Analyse a value that is NOT stored — "what would happen if I gave
+        /// them this". Path to a JSON document, or `-` for stdin.
+        #[arg(long = "candidate-file")]
+        candidate_file: Option<String>,
+    },
+    /// List the output formats this VTA can produce, and what each DISCARDS.
+    /// Worth running before a preview: a renderer that drops provenance turns
+    /// "my employer attested this" into an unattributed value.
+    ///
+    /// Open to any authenticated caller — it names nothing about you, and a
+    /// context-scoped operator about to request a disclosure needs it.
+    Renderers,
+}
+
+/// `pnm persona attribute …`
+#[derive(Subcommand)]
+pub(crate) enum PersonaAttributeCommands {
+    /// Store one fact about the holder. Omit `--attribute-id` to create.
+    Put {
+        /// Vocabulary token naming what this is — `name.legal`,
+        /// `phone.mobile`, `address.postal`. Dotted, most-general first;
+        /// `x:` opens an extension namespace.
+        #[arg(long = "type")]
+        claim_type: String,
+        /// The value. Taken literally for `--value-type string` and `date`;
+        /// parsed as JSON otherwise.
+        #[arg(long)]
+        value: String,
+        /// What the value is.
+        #[arg(long = "value-type", value_enum, default_value = "string")]
+        value_type: ValueTypeOpt,
+        /// The holder's own name for it — "work mobile", "the flat".
+        #[arg(long)]
+        label: Option<String>,
+        /// Where the value came from.
+        #[arg(long, value_enum, default_value = "self-asserted")]
+        provenance: ProvenanceOpt,
+        /// Vault id of the backing credential. Required for
+        /// `--provenance credential-backed`.
+        #[arg(long = "credential-id")]
+        credential_id: Option<String>,
+        /// RFC 6901 JSON Pointer to the claim inside that credential, e.g.
+        /// `/credentialSubject/familyName`. Required for
+        /// `--provenance credential-backed`.
+        #[arg(long = "claim-path")]
+        claim_path: Option<String>,
+        /// Issuer of the backing credential. Advisory — a consumer verifies
+        /// the credential rather than trusting this.
+        #[arg(long = "issuer-did")]
+        issuer_did: Option<String>,
+        /// The rung this claim should be presented at.
+        #[arg(long, value_enum)]
+        proof: Option<ProofRungOpt>,
+        /// Names the minting scheme, e.g. `relayEmail`. Required for
+        /// `--provenance generated`.
+        #[arg(long)]
+        generator: Option<String>,
+        /// Mint a distinct value per verifier. Defaults to true server-side,
+        /// and there is rarely a reason to turn it off.
+        #[arg(long = "per-verifier")]
+        per_verifier: Option<bool>,
+        /// Update an existing attribute, or make a create idempotent.
+        #[arg(long = "attribute-id")]
+        attribute_id: Option<String>,
+        /// Require the attribute to be at exactly this version.
+        #[arg(long = "expected-version")]
+        expected_version: Option<u64>,
+    },
+    /// Enumerate the pool. Metadata only unless `--values` is given.
+    List {
+        /// Match a dotted prefix — `phone` returns `phone.mobile` and
+        /// `phone.work`.
+        #[arg(long = "type-prefix")]
+        type_prefix: Option<String>,
+        /// Include the values themselves. This turns a listing into a read of
+        /// the holder's identity, so it is opt-in.
+        #[arg(long)]
+        values: bool,
+        /// Include attributes whose backing credential can no longer be
+        /// re-derived. On by default — a holder deciding what to present needs
+        /// to see what went stale, not have it quietly omitted.
+        #[arg(long = "include-stale")]
+        include_stale: Option<bool>,
+        /// Page size.
+        #[arg(long)]
+        limit: Option<std::num::NonZeroU64>,
+        /// Continuation token from a previous page.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Remove an attribute. Refused while a profile still references it
+    /// unless `--cascade` is given.
+    Delete {
+        /// The attribute id.
+        #[arg(long = "attribute-id")]
+        attribute_id: String,
+        /// Also drop every profile entry referencing it.
+        #[arg(long)]
+        cascade: bool,
+        /// Require the attribute to be at exactly this version.
+        #[arg(long = "expected-version")]
+        expected_version: Option<u64>,
+    },
+}
+
+/// `pnm persona profile …`
+#[derive(Subcommand)]
+pub(crate) enum PersonaProfileCommands {
+    /// Create or update a profile. Supply entries with `--ref` (repeatable,
+    /// for the simple "just show these attributes" case) or `--entries-file`
+    /// for the full shape.
+    Put {
+        /// The holder's name for this projection — "work", "gaming".
+        #[arg(long)]
+        name: String,
+        /// Reference a pool attribute, live. Repeatable.
+        #[arg(long = "ref")]
+        refs: Vec<String>,
+        /// Path to a JSON array of profile entries (or `-` for stdin). Each
+        /// is one of `{"ref":…}`, `{"ref":…,"pinVersion":n}`,
+        /// `{"ref":…,"override":{…}}` or `{"inline":{…}}`.
+        #[arg(long = "entries-file", conflicts_with = "refs")]
+        entries_file: Option<String>,
+        /// Tag a credential as belonging with this profile. Repeatable.
+        #[arg(long = "credential-ref")]
+        credential_refs: Vec<String>,
+        /// Update an existing profile, or make a create idempotent.
+        #[arg(long = "profile-id")]
+        profile_id: Option<String>,
+        /// Require the profile to be at exactly this version.
+        #[arg(long = "expected-version")]
+        expected_version: Option<u64>,
+    },
+    /// Read one profile.
+    Get {
+        /// The profile id.
+        #[arg(long = "profile-id")]
+        profile_id: String,
+        /// Resolve entries against the pool and show what the profile would
+        /// actually present, rather than how it is built.
+        #[arg(long)]
+        resolve: bool,
+    },
+    /// Enumerate profiles.
+    List {
+        /// Page size.
+        #[arg(long)]
+        limit: Option<std::num::NonZeroU64>,
+        /// Continuation token.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Remove a profile. Refused while a persona still presents under it
+    /// unless `--unbind` is given.
+    Delete {
+        /// The profile id.
+        #[arg(long = "profile-id")]
+        profile_id: String,
+        /// Also clear every binding pointing at it. Those personas will
+        /// present nothing until rebound.
+        #[arg(long)]
+        unbind: bool,
+        /// Require the profile to be at exactly this version.
+        #[arg(long = "expected-version")]
+        expected_version: Option<u64>,
+    },
+}
+
+/// `pnm persona binding …`
+#[derive(Subcommand)]
+pub(crate) enum PersonaBindingCommands {
+    /// Decide what a context sees. The profile is resolved above the context
+    /// and a COPY of its values is written in — the context never reads back
+    /// into the pool. Omit `--profile-id` to clear the binding.
+    Set {
+        /// The trust context.
+        #[arg(long)]
+        context: String,
+        /// The persona DID presenting in it.
+        #[arg(long = "persona-did")]
+        persona_did: String,
+        /// The profile to project. Omit to clear.
+        #[arg(long = "profile-id")]
+        profile_id: Option<String>,
+        /// Attribute ids disclosed in this context without asking.
+        /// Repeatable.
+        #[arg(long = "public")]
+        public_entries: Vec<String>,
+        /// Require the binding to be at exactly this version.
+        #[arg(long = "expected-version")]
+        expected_version: Option<u64>,
+    },
+    /// What one persona presents in one context.
+    Get {
+        /// The trust context.
+        #[arg(long)]
+        context: String,
+        /// The persona DID.
+        #[arg(long = "persona-did")]
+        persona_did: String,
+    },
+    /// Every persona bound in one context.
+    List {
+        /// The trust context.
+        #[arg(long)]
+        context: String,
+        /// Page size.
+        #[arg(long)]
+        limit: Option<std::num::NonZeroU64>,
+        /// Continuation token.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+}
+
+/// `pnm persona contact …`
+#[derive(Subcommand)]
+pub(crate) enum PersonaContactCommands {
+    /// Record what a peer disclosed. Writes a new revision rather than
+    /// overwriting, so what they told you in March survives them changing it
+    /// in April.
+    Put {
+        /// The trust context.
+        #[arg(long)]
+        context: String,
+        /// The DID the disclosure came from.
+        #[arg(long = "subject-did")]
+        subject_did: String,
+        /// Which of the holder's own personas knows this contact. Required —
+        /// a contact filed against no persona is one you cannot later reason
+        /// about disclosing to.
+        #[arg(long = "known-by")]
+        known_by_persona: String,
+        /// Path to the disclosed document JSON (or `-` for stdin):
+        /// `{"claims":[…]}`.
+        #[arg(long = "document-file")]
+        document_file: String,
+        /// A credential received alongside it. Repeatable.
+        #[arg(long = "credential-ref")]
+        credential_refs: Vec<String>,
+        /// The holder's private annotation. Never disclosed.
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Read one contact.
+    Get {
+        /// The trust context.
+        #[arg(long)]
+        context: String,
+        /// The contact id.
+        #[arg(long = "contact-id")]
+        contact_id: String,
+        /// Read one specific revision instead of the current one.
+        #[arg(long)]
+        rev: Option<std::num::NonZeroU64>,
+        /// Return every retained revision.
+        #[arg(long = "history")]
+        include_history: bool,
+    },
+    /// Enumerate contacts in one context.
+    List {
+        /// The trust context.
+        #[arg(long)]
+        context: String,
+        /// Only contacts filed against this persona.
+        #[arg(long = "known-by")]
+        known_by_persona: Option<String>,
+        /// Only contacts whose current revision is newer than this
+        /// (RFC 3339).
+        #[arg(long = "changed-since")]
+        changed_since: Option<String>,
+        /// Page size.
+        #[arg(long)]
+        limit: Option<std::num::NonZeroU64>,
+        /// Continuation token.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Forget a contact.
+    Delete {
+        /// The trust context.
+        #[arg(long)]
+        context: String,
+        /// The contact id.
+        #[arg(long = "contact-id")]
+        contact_id: String,
+    },
+}
+
+/// `pnm persona disclosure …`
+#[derive(Subcommand)]
+pub(crate) enum PersonaDisclosureCommands {
+    /// Show exactly what would be revealed, and to whom. Signs nothing and
+    /// sends nothing.
+    ///
+    /// This is the only screen between a request and the holder's identity
+    /// leaving the machine, and the `previewId` it returns is the ONLY way to
+    /// reach `present` — there is no single-call form.
+    Preview {
+        /// The trust context.
+        #[arg(long)]
+        context: String,
+        /// The persona that would present. Its binding supplies the profile.
+        #[arg(long = "persona-did")]
+        persona_did: String,
+        /// Who would receive it.
+        #[arg(long = "verifier-did")]
+        verifier_did: String,
+        /// A claim type the verifier asked for. Repeatable. Omit to preview
+        /// everything the bound profile would present.
+        #[arg(long = "claim")]
+        requested_claims: Vec<String>,
+        /// The verifier's stated reason, carried into the preview and the
+        /// disclosure record.
+        #[arg(long)]
+        purpose: Option<String>,
+        /// Which output format to prepare for. Omit for the canonical one.
+        /// See `persona renderers` for what each one discards.
+        #[arg(long)]
+        renderer: Option<String>,
+    },
+    /// Hand over what the preview showed. Consumes the preview — a replay is
+    /// refused rather than riding the earlier decision.
+    Present {
+        /// The trust context.
+        #[arg(long)]
+        context: String,
+        /// The preview being acted on.
+        #[arg(long = "preview-id")]
+        preview_id: String,
+        /// Verifier-supplied nonce binding the disclosure to this exchange.
+        #[arg(long)]
+        challenge: Option<String>,
+        /// Path to a JSON object (or `-` for stdin) asking for the disclosure
+        /// as a self-issued credential rather than a bare document.
+        #[arg(long = "mint-file")]
+        mint_file: Option<String>,
+    },
+    /// What was disclosed, to whom, when. Omit `--context` to read across
+    /// every context — which is a holder-scoped read and gated as one.
+    History {
+        /// Narrow to one trust context.
+        #[arg(long)]
+        context: Option<String>,
+        /// Narrow to one verifier.
+        #[arg(long = "verifier-did")]
+        verifier_did: Option<String>,
+        /// Narrow to one claim type.
+        #[arg(long = "type")]
+        attribute_type: Option<String>,
+        /// Only disclosures after this instant (RFC 3339).
+        #[arg(long)]
+        since: Option<String>,
+        /// Page size.
+        #[arg(long)]
+        limit: Option<std::num::NonZeroU64>,
+        /// Continuation token.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+}
+
+/// `pnm persona local …`
+#[derive(Subcommand)]
+pub(crate) enum PersonaLocalCommands {
+    /// Profiles that live inside one context.
+    Profile {
+        #[command(subcommand)]
+        command: PersonaLocalProfileCommands,
+    },
+    /// Bind a persona DID to a context-local profile.
+    Binding {
+        #[command(subcommand)]
+        command: PersonaLocalBindingCommands,
+    },
+}
+
+/// `pnm persona local profile …`
+#[derive(Subcommand)]
+pub(crate) enum PersonaLocalProfileCommands {
+    /// Create or update a context-local profile.
+    ///
+    /// Entries are inline values only. A profile built inside a context
+    /// cannot reference, pin or override an attribute in the holder's pool —
+    /// that is the boundary, and it is enforced by the schema rather than by
+    /// this command.
+    Put {
+        /// The trust context.
+        #[arg(long)]
+        context: String,
+        /// The holder's name for it.
+        #[arg(long)]
+        name: String,
+        /// Path to a JSON array of entries (or `-` for stdin). Each is
+        /// `{"inline":{"type":…,"value":…,"valueType":…,"provenance":{…}}}`.
+        #[arg(long = "entries-file")]
+        entries_file: String,
+        /// Update an existing local profile, or make a create idempotent.
+        #[arg(long = "profile-id")]
+        profile_id: Option<String>,
+        /// Require the profile to be at exactly this version.
+        #[arg(long = "expected-version")]
+        expected_version: Option<u64>,
+    },
+    /// Read one context-local profile.
+    Get {
+        /// The trust context.
+        #[arg(long)]
+        context: String,
+        /// The profile id.
+        #[arg(long = "profile-id")]
+        profile_id: String,
+    },
+    /// Enumerate a context's own profiles.
+    List {
+        /// The trust context.
+        #[arg(long)]
+        context: String,
+        /// Page size.
+        #[arg(long)]
+        limit: Option<std::num::NonZeroU64>,
+        /// Continuation token.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Remove a context-local profile.
+    Delete {
+        /// The trust context.
+        #[arg(long)]
+        context: String,
+        /// The profile id.
+        #[arg(long = "profile-id")]
+        profile_id: String,
+        /// Also clear any local binding pointing at it.
+        #[arg(long)]
+        unbind: bool,
+    },
+}
+
+/// `pnm persona local binding …`
+#[derive(Subcommand)]
+pub(crate) enum PersonaLocalBindingCommands {
+    /// Bind a persona DID to a context-local profile. Omit `--profile-id` to
+    /// clear.
+    Set {
+        /// The trust context.
+        #[arg(long)]
+        context: String,
+        /// The persona DID.
+        #[arg(long = "persona-did")]
+        persona_did: String,
+        /// The context-local profile. Omit to clear.
+        #[arg(long = "profile-id")]
+        profile_id: Option<String>,
+        /// Require the binding to be at exactly this version.
+        #[arg(long = "expected-version")]
+        expected_version: Option<u64>,
+    },
 }

@@ -13,6 +13,7 @@ pub mod did_templates;
 pub mod keys;
 pub mod memory;
 /// Raw Rego policy management over the canonical `policy/*` family.
+pub mod persona;
 pub mod policy;
 pub mod services;
 pub mod vault;

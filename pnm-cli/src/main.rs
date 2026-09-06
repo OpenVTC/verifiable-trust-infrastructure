@@ -288,6 +288,7 @@ async fn main() {
         Commands::Device { command } => commands::device::run(&client, command).await,
         Commands::Vault { command } => commands::vault::run(&client, command).await,
         Commands::CredVault { command } => commands::cred_vault::run(&client, command).await,
+        Commands::Persona { command } => commands::persona::run(&client, command).await,
         Commands::AuthCredential { command } => {
             commands::auth_credential::run(&client, command).await
         }

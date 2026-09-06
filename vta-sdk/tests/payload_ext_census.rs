@@ -59,9 +59,10 @@ use syn::{Fields, Item, ItemStruct, Meta};
 /// for this type — not that adding the field is inconvenient. A type whose
 /// schema has one, listed here, re-opens the defect this file exists to
 /// prevent.
-const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[(
-    "IssuedCredentialSummary",
-    "`vault`-style list row, not a payload root. \
+const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[
+    (
+        "IssuedCredentialSummary",
+        "`vault`-style list row, not a payload root. \
      `vta/credentials/list/0.1`'s published schema closes \
      `IssuedCredentialSummary` with `additionalProperties: false` and declares \
      no `ext` slot on it — SPEC §4.5.1 gives the slot to the payload, which \
@@ -69,7 +70,35 @@ const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[(
      send one here, and adding the field would let this crate emit a document \
      the schema rejects: the opposite of the defect this census exists to \
      prevent. Revisit only if that schema gains the slot.",
-)];
+    ),
+    (
+        "OverrideValue",
+        "The `override` member of a `persona/profile/put/1.0` profile entry, \
+         not a payload root. The published schema closes the object with \
+         `additionalProperties: false` and declares only `value` and `label`; \
+         the generated `ProfileEntryVariant2Override` in `trust-tasks-rs` \
+         carries `deny_unknown_fields` and no `ext` for the same reason. \
+         Adding one here would make this crate emit a document the VTA's own \
+         `validate_payload` rejects.",
+    ),
+    (
+        "InlineValue",
+        "The `inline` member of a profile entry — `persona/profile/put/1.0` \
+         and `persona/local/profile/put/1.0` both nest it, and both close it \
+         with `additionalProperties: false` and no `ext` slot. A member of a \
+         payload rather than a payload, exactly as \
+         `IssuedCredentialSummary` above.",
+    ),
+    (
+        "LocalProfileEntry",
+        "One item of `persona/local/profile/put/1.0`'s `entries` array. The \
+         schema closes it to the single `inline` member — that closure is \
+         load-bearing rather than incidental, because it is what makes a \
+         context-local profile structurally unable to name a pool attribute. \
+         An `ext` slot the schema does not declare would be the first crack \
+         in it.",
+    ),
+];
 
 /// One `deny_unknown_fields` type that would reject a conforming `ext`.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]

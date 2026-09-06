@@ -315,6 +315,7 @@ mod app_state;
 #[cfg(feature = "test-loopback")]
 pub mod loopback;
 mod memory;
+mod persona;
 mod policy;
 mod secrets;
 mod vault;
