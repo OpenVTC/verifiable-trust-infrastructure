@@ -467,32 +467,29 @@ async fn an_unbound_persona_reads_back_cleanly() {
     }
 }
 
-/// A profile carrying an inline entry cannot be resolved, and says so.
+/// A profile carrying an inline entry resolves like any other, with the three
+/// pool members absent rather than the whole response refused.
 ///
-/// `persona/profile/get/1.0`'s response schema types each resolved entry as
-/// the pool `Attribute` shape, which requires `attributeId`, `updatedAt` and
-/// `version`. An inline entry has none of them — it has no pool record behind
-/// it, which is the reason inline exists. So the schema is wrong: `resolved`
-/// is a projection that may contain non-pool values, and reusing the pool
-/// record's shape for it cannot describe them.
+/// `persona/profile/get/1.0` used to type each resolved entry as the pool
+/// `Attribute`, which requires `attributeId`, `updatedAt` and `version`. An
+/// inline entry has none of them — it has no pool record behind it, which is
+/// the reason inline exists — so the response could not describe such a profile
+/// at all, and the handler refused rather than answer non-conformantly.
 ///
-/// Until that is fixed upstream the handler refuses, rather than synthesising
-/// an `attributeId` (a lie about where the value lives) or omitting the entry
-/// (a profile that appears to present less than it does).
+/// Fixed upstream in dtgwg-trust-tasks-tf#370 and released in trust-tasks-rs
+/// 0.18: `resolved` is now its own `ResolvedClaim` shape with those three
+/// optional. **Their absence is the information** — it is what distinguishes a
+/// value that lives only in this profile from one that tracks the pool — so
+/// this asserts absence rather than merely a success.
 ///
-/// **This test exists to expire**, and the fix already exists: the schema
-/// takes those three as optional from `trust-tasks-rs` 0.18.0
-/// (dtgwg-trust-tasks-tf#370).
-///
-/// What it waits on is not this repository. `affinidi-messaging-sdk` 0.21.1
-/// still requires `trust-tasks-rs ^0.17`, and `vta-sdk::acl_setup` passes it a
-/// generated `MediatorAcl`; with two versions in one graph that is a type
-/// mismatch, not a warning. When a messaging SDK built against 0.18 ships,
-/// bump, and this test fails — at which point delete it and the refusal in
-/// `handle_profile_get` together, and assert instead that an inline entry
-/// resolves like any other.
+/// The test this replaces was written to "exist to expire", and could not:
+/// it asserted the refusal, which is behaviour this repository controls, not
+/// the schema constraint it was waiting on. It passed unchanged across the
+/// bump. A test that genuinely self-expires has to key on the thing that
+/// moves — the generated type's own shape — rather than on the behaviour built
+/// around it.
 #[tokio::test]
-async fn an_inline_entry_is_refused_until_the_schema_allows_one() {
+async fn an_inline_entry_resolves_without_pool_identity() {
     let (router, ctx) = build_test_app().await;
     let holder = authed(&ctx, "inline", "admin", &[]).await;
 
@@ -520,20 +517,6 @@ async fn an_inline_entry_is_refused_until_the_schema_allows_one() {
         .expect("profileId")
         .to_string();
 
-    // Without `resolve` it reads fine: how the profile is BUILT is
-    // describable, only what it resolves TO is not.
-    let (status, body) = post(
-        &router,
-        &holder,
-        PROFILE_GET,
-        json!({ "profileId": profile }),
-    )
-    .await;
-    assert!(
-        !refused(status, &body),
-        "an unresolved read of an inline profile must work: {status} {body}"
-    );
-
     let (status, body) = post(
         &router,
         &holder,
@@ -542,15 +525,78 @@ async fn an_inline_entry_is_refused_until_the_schema_allows_one() {
     )
     .await;
     assert!(
-        refused(status, &body),
-        "resolving an inline entry produced a response the schema cannot \
-         describe: {status} {body}"
+        !refused(status, &body),
+        "resolving an inline entry was refused: {status} {body}"
     );
-    let rendered = serde_json::to_string(&body).expect("serialises");
-    assert!(
-        rendered.contains("inline"),
-        "the refusal should name the reason, not just fail: {rendered}"
-    );
+
+    let resolved = payload_of(&body)
+        .get("resolved")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("no resolved array in {body}"));
+    assert_eq!(resolved.len(), 1, "the inline entry must be listed: {body}");
+
+    let entry = &resolved[0];
+    assert_eq!(entry.get("type"), Some(&json!("x:handle")), "{body}");
+    assert_eq!(entry.get("value"), Some(&json!("ada")), "{body}");
+    assert_eq!(entry.get("valueType"), Some(&json!("string")), "{body}");
+
+    // The three that say "this value has no pool record". Absent, and not null
+    // — a null would fail the response schema, which is how the sibling
+    // defects in this family were found.
+    for absent in ["attributeId", "version", "updatedAt"] {
+        assert!(
+            entry.get(absent).is_none(),
+            "{absent} should be absent for an inline entry, not present or null: {body}"
+        );
+    }
+}
+
+/// A pool-backed entry still carries all three, so the test above is asserting
+/// a distinction rather than a uniformly empty response.
+///
+/// Without this, `an_inline_entry_resolves_without_pool_identity` would pass
+/// just as well against a handler that had stopped emitting those members
+/// altogether — which is the shape a security test takes when it quietly stops
+/// testing anything.
+#[tokio::test]
+async fn a_pool_backed_entry_still_carries_its_identity() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "pool-backed", "admin", &[]).await;
+
+    let attr = put_attribute(&router, &holder, "name.display", "Ada").await;
+    let (_, body) = post(
+        &router,
+        &holder,
+        PROFILE_PUT,
+        json!({ "name": "tracks-pool", "entries": [{ "ref": attr }] }),
+    )
+    .await;
+    let profile = payload_of(&body)
+        .get("profileId")
+        .and_then(Value::as_str)
+        .expect("profileId")
+        .to_string();
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_GET,
+        json!({ "profileId": profile, "resolve": true }),
+    )
+    .await;
+    assert!(!refused(status, &body), "profile/get: {status} {body}");
+
+    let entry = &payload_of(&body)
+        .get("resolved")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("no resolved array in {body}"))[0];
+    assert_eq!(entry.get("attributeId"), Some(&json!(attr)), "{body}");
+    for present in ["version", "updatedAt"] {
+        assert!(
+            entry.get(present).is_some(),
+            "{present} should be present for a pool-backed entry: {body}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
