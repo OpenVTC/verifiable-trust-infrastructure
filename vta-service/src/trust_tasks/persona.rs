@@ -521,40 +521,17 @@ pub(super) async fn handle_profile_get(
     audit_persona(state, "persona.profile.get", auth, Some(&id), None).await;
     let mut body = json!({ "profile": profile });
     if let Some(r) = resolved {
-        // The published schema types a resolved entry as the pool `Attribute`
-        // shape, which requires `attributeId`, `updatedAt` and `version`. An
-        // INLINE entry has none of the three — it has no pool record behind
-        // it, which is the whole reason inline exists — so a profile carrying
-        // one cannot be described by this response at all.
+        // A resolved entry is a `ResolvedClaim`, not the pool `Attribute`, so an
+        // INLINE entry is describable: `attributeId`, `version` and `updatedAt`
+        // are optional there, and their absence is what says "this value lives
+        // only in this profile".
         //
-        // That is a defect in the schema I wrote, not in the store: `resolved`
-        // is a projection that may contain non-pool values, and reusing the
-        // pool record's shape for it was wrong. It is refused here rather than
-        // answered non-conformantly, because the two dishonest alternatives
-        // are worse — a synthesised `attributeId` is a lie about where a value
-        // lives, and omitting inline entries returns a profile that appears to
-        // present less than it does, which is the failure mode this whole
-        // store is built to prevent.
-        //
-        // Fixed upstream in dtgwg-trust-tasks-tf#370 and released in
-        // trust-tasks-rs **0.18.0**, which this workspace cannot yet reach.
-        // `affinidi-messaging-sdk` 0.21.1 — the newest there is — still
-        // requires `trust-tasks-rs ^0.17`, and `vta-sdk` hands it a
-        // `messaging::account::update::MediatorAcl` in `acl_setup.rs`. Two
-        // versions in one graph make that "expected `MediatorAcl`, found a
-        // different `MediatorAcl`", so the bump waits on a messaging SDK built
-        // against 0.18 rather than on anything in this repository.
-        //
-        // Pinned by `an_inline_entry_is_refused_until_the_schema_allows_one`,
-        // so this stops being interim behaviour the moment that lands.
-        if r.iter().any(|c| c.attribute_id.is_none()) {
-            return reject(
-                &doc,
-                AppError::Validation(format!(
-                    "profile {id} contains an inline entry, which this version of                      persona/profile/get/1.0 cannot describe: its response schema requires                      attributeId, updatedAt and version on every resolved entry, and an inline                      value has none of them. Read the profile without `resolve` to see how it is                      built, or use persona/disclosure/preview to see what it would present."
-                )),
-            );
-        }
+        // Until trust-tasks-rs 0.18 the array was typed as `Attribute`, which
+        // required all three, and this handler refused rather than answer
+        // non-conformantly — a synthesised `attributeId` would have been a lie
+        // about where a value lives, and omitting the entry would have returned
+        // a profile that appears to present less than it does. The schema is
+        // fixed upstream (dtgwg-trust-tasks-tf#370) and the refusal is gone.
         body["resolved"] = json!(
             r.iter()
                 .map(|c| {
