@@ -15,6 +15,7 @@ use serde_json::Value;
 /// Unchanged from 0.1 — the version moved for the response only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[non_exhaustive]
 pub struct IssueCredentialBody {
     /// The holder DID the credential is issued to (`credentialSubject.id`).
     pub holder: String,
@@ -53,6 +54,27 @@ pub struct IssueCredentialBody {
     pub ext: Option<Value>,
 }
 
+impl IssueCredentialBody {
+    /// Build a [`IssueCredentialBody`] from the members the schema requires.
+    ///
+    /// This type is `#[non_exhaustive]`, so it cannot be built with a struct
+    /// literal from outside this crate — a new member added by a later revision
+    /// of the schema would break every such literal, which is exactly what
+    /// happened when `ext` arrived. The optional members stay public: set them
+    /// on the value this returns.
+    pub fn new(holder: String, claims: Value, validity_seconds: u64) -> Self {
+        Self {
+            holder,
+            claims,
+            validity_seconds,
+            credential_type: None,
+            purpose: None,
+            authorization_context: None,
+            ext: None,
+        }
+    }
+}
+
 /// `spec/vta/credentials/issue/0.2` response body.
 ///
 /// 0.2 composes this from `credentials/_shared/0.2`'s `IssuedCredentialBase`
@@ -81,6 +103,7 @@ pub struct IssueCredentialResponse {
 /// `spec/vta/credentials/revoke/0.1` request body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RevokeCredentialBody {
     /// The id of the credential to revoke (from the issue response).
     pub credential_id: String,
@@ -100,6 +123,23 @@ pub struct RevokeCredentialBody {
     /// The VTA does not interpret the contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ext: Option<Value>,
+}
+
+impl RevokeCredentialBody {
+    /// Build a [`RevokeCredentialBody`] from the members the schema requires.
+    ///
+    /// This type is `#[non_exhaustive]`, so it cannot be built with a struct
+    /// literal from outside this crate — a new member added by a later revision
+    /// of the schema would break every such literal, which is exactly what
+    /// happened when `ext` arrived. The optional members stay public: set them
+    /// on the value this returns.
+    pub fn new(credential_id: String) -> Self {
+        Self {
+            credential_id,
+            reason: None,
+            ext: None,
+        }
+    }
 }
 
 /// `spec/vta/credentials/revoke/0.1` response body.

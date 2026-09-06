@@ -20,6 +20,7 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub struct CreateAclBody {
     /// The entry the caller wants the maintainer to hold.
     pub entry: AclEntry,
@@ -39,6 +40,23 @@ pub struct CreateAclBody {
     /// The VTA does not interpret the contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ext: Option<Value>,
+}
+
+impl CreateAclBody {
+    /// Build a [`CreateAclBody`] from the members the schema requires.
+    ///
+    /// This type is `#[non_exhaustive]`, so it cannot be built with a struct
+    /// literal from outside this crate — a new member added by a later revision
+    /// of the schema would break every such literal, which is exactly what
+    /// happened when `ext` arrived. The optional members stay public: set them
+    /// on the value this returns.
+    pub fn new(entry: AclEntry) -> Self {
+        Self {
+            entry,
+            reason: None,
+            ext: None,
+        }
+    }
 }
 
 /// `acl/grant/0.1` response — the realized entry the maintainer now holds.

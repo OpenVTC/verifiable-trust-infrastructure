@@ -10,6 +10,7 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub struct ListAclBody {
     /// Only entries with this role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -47,6 +48,30 @@ pub struct ListAclBody {
     /// The VTA does not interpret the contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ext: Option<Value>,
+}
+
+impl ListAclBody {
+    /// Build a [`ListAclBody`] from the members the schema requires.
+    ///
+    /// This type is `#[non_exhaustive]`, so it cannot be built with a struct
+    /// literal from outside this crate — a new member added by a later revision
+    /// of the schema would break every such literal, which is exactly what
+    /// happened when `ext` arrived. The optional members stay public: set them
+    /// on the value this returns.
+    ///
+    /// Every member is optional, so this takes no arguments; set the ones
+    /// you want on the returned value.
+    pub fn new() -> Self {
+        Self {
+            role: None,
+            scope: None,
+            direction: None,
+            subject_prefix: None,
+            page_size: None,
+            cursor: None,
+            ext: None,
+        }
+    }
 }
 
 /// `acl/list/0.1` response.

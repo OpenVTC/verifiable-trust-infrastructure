@@ -59,6 +59,7 @@ pub struct PolicyModuleView {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub struct ListPoliciesBody {
     /// Restrict to policies applying in this context (an unscoped policy
     /// applies everywhere, so it matches every filter).
@@ -85,6 +86,25 @@ pub struct ListPoliciesBody {
     pub ext: Option<Value>,
 }
 
+impl ListPoliciesBody {
+    /// Build a [`ListPoliciesBody`] from the members the schema requires.
+    ///
+    /// This type is `#[non_exhaustive]`, so it cannot be built with a struct
+    /// literal from outside this crate — a new member added by a later revision
+    /// of the schema would break every such literal, which is exactly what
+    /// happened when `ext` arrived. The optional members stay public: set them
+    /// on the value this returns.
+    pub fn new(enabled_only: bool) -> Self {
+        Self {
+            enabled_only,
+            context_id: None,
+            cursor: None,
+            page_size: None,
+            ext: None,
+        }
+    }
+}
+
 /// `policy/list/0.2` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -101,6 +121,7 @@ pub struct ListPoliciesResultBody {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub struct GetPolicyBody {
     pub id: String,
     /// Ecosystem-defined extension members (SPEC §4.5.1).
@@ -116,6 +137,19 @@ pub struct GetPolicyBody {
     /// The VTA does not interpret the contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ext: Option<Value>,
+}
+
+impl GetPolicyBody {
+    /// Build a [`GetPolicyBody`] from the members the schema requires.
+    ///
+    /// This type is `#[non_exhaustive]`, so it cannot be built with a struct
+    /// literal from outside this crate — a new member added by a later revision
+    /// of the schema would break every such literal, which is exactly what
+    /// happened when `ext` arrived. The optional members stay public: set them
+    /// on the value this returns.
+    pub fn new(id: String) -> Self {
+        Self { id, ext: None }
+    }
 }
 
 /// `policy/get/0.1` response.
@@ -181,6 +215,7 @@ pub struct UpsertPolicyResultBody {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub struct DeletePolicyBody {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -201,6 +236,24 @@ pub struct DeletePolicyBody {
     /// The VTA does not interpret the contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ext: Option<Value>,
+}
+
+impl DeletePolicyBody {
+    /// Build a [`DeletePolicyBody`] from the members the schema requires.
+    ///
+    /// This type is `#[non_exhaustive]`, so it cannot be built with a struct
+    /// literal from outside this crate — a new member added by a later revision
+    /// of the schema would break every such literal, which is exactly what
+    /// happened when `ext` arrived. The optional members stay public: set them
+    /// on the value this returns.
+    pub fn new(id: String) -> Self {
+        Self {
+            id,
+            expected_version: None,
+            reason: None,
+            ext: None,
+        }
+    }
 }
 
 /// `policy/delete/0.1` response.

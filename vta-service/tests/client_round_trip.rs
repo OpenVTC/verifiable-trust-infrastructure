@@ -259,10 +259,9 @@ async fn config_registry_round_trips_and_identity_stays_read_only() {
     overrides.insert("vta_name".to_string(), serde_json::json!("round tripped"));
     let patched = client
         .update_config(vta_sdk::client::UpdateConfigRequest {
-            patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody {
+            patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody::new(
                 overrides,
-                ext: None,
-            },
+            ),
         })
         .await
         .expect("config/patch round-trips");
@@ -281,10 +280,9 @@ async fn config_registry_round_trips_and_identity_stays_read_only() {
     );
     let patched = client
         .update_config(vta_sdk::client::UpdateConfigRequest {
-            patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody {
+            patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody::new(
                 overrides,
-                ext: None,
-            },
+            ),
         })
         .await
         .expect("a rejected key is a reported rejection, not a transport error");

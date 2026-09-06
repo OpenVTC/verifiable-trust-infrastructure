@@ -23,12 +23,10 @@ pub async fn cmd_list(
     enabled_only: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let result = client
-        .list_policies(ListPoliciesBody {
-            context_id: context,
-            enabled_only,
-            cursor: None,
-            page_size: None,
-            ext: None,
+        .list_policies({
+            let mut body = ListPoliciesBody::new(enabled_only);
+            body.context_id = context;
+            body
         })
         .await?;
 
@@ -126,11 +124,11 @@ pub async fn cmd_delete(
     reason: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let result = client
-        .delete_policy(DeletePolicyBody {
-            id: id.to_string(),
-            expected_version,
-            reason,
-            ext: None,
+        .delete_policy({
+            let mut body = DeletePolicyBody::new(id.to_string());
+            body.expected_version = expected_version;
+            body.reason = reason;
+            body
         })
         .await?;
     println!("Deleted policy {} at {}", result.id, result.deleted_at);
