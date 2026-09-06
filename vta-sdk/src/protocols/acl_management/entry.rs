@@ -108,6 +108,7 @@ impl Approve {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[non_exhaustive]
 pub struct AclEntry {
     /// VID of the party in the ACL.
     pub subject: String,
@@ -162,6 +163,42 @@ pub struct AclEntry {
     /// The VTA does not interpret the contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ext: Option<Value>,
+}
+
+impl AclEntry {
+    /// Build an entry from the three members that carry its authorization.
+    ///
+    /// `#[non_exhaustive]`, so it cannot be built with a struct literal from
+    /// outside this crate — the `ext` member added in #1231 broke every such
+    /// literal, and the next schema revision would do it again.
+    ///
+    /// **`scopes` is an argument rather than a default, and `allowed_keys` is
+    /// not one at all.** Both encode a grant whose empty case is not its
+    /// neutral case: empty `scopes` means *unrestricted* for an admin role and
+    /// *authorized nowhere* for every other, and on `allowed_keys` `None` and
+    /// `Some(vec![])` are opposite grants — absent reaches every key the scopes
+    /// reach, present-but-empty reaches none. A constructor that defaulted
+    /// either would be picking a grant on the caller's behalf, and picking the
+    /// wrong one silently. So the caller states `scopes`, and `allowed_keys`
+    /// starts absent — the same thing an entry predating the member means — and
+    /// must be set deliberately to narrow it.
+    pub fn new(subject: String, role: String, scopes: Vec<String>) -> Self {
+        Self {
+            subject,
+            role,
+            scopes,
+            allowed_keys: None,
+            label: None,
+            created_at: None,
+            created_by: None,
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+            step_up: None,
+            approve: None,
+            ext: None,
+        }
+    }
 }
 
 /// Unix epoch seconds → RFC 3339, for the wire.
