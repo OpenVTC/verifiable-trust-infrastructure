@@ -536,8 +536,17 @@ pub(super) async fn handle_profile_get(
         // present less than it does, which is the failure mode this whole
         // store is built to prevent.
         //
+        // Fixed upstream in dtgwg-trust-tasks-tf#370 and released in
+        // trust-tasks-rs **0.18.0**, which this workspace cannot yet reach.
+        // `affinidi-messaging-sdk` 0.21.1 — the newest there is — still
+        // requires `trust-tasks-rs ^0.17`, and `vta-sdk` hands it a
+        // `messaging::account::update::MediatorAcl` in `acl_setup.rs`. Two
+        // versions in one graph make that "expected `MediatorAcl`, found a
+        // different `MediatorAcl`", so the bump waits on a messaging SDK built
+        // against 0.18 rather than on anything in this repository.
+        //
         // Pinned by `an_inline_entry_is_refused_until_the_schema_allows_one`,
-        // so this stops being interim behaviour the moment the spec lands.
+        // so this stops being interim behaviour the moment that lands.
         if r.iter().any(|c| c.attribute_id.is_none()) {
             return reject(
                 &doc,
