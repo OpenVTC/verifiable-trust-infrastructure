@@ -2,6 +2,100 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.12.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.12.3...vta-cli-common-v0.12.4) — 2026-09-06
+
+
+### Added
+
+- **persona**: The operator surface, and a preview built to be read ([#1257](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1257))
+
+* feat(persona): SDK wire types and client methods for the persona family
+
+  Twenty-four request bodies under `protocols::persona` and the client
+  methods that dispatch them, against the specs merged in
+  trustoverip/dtgwg-trust-tasks-tf#360.
+
+  Responses come back as `Value`, as they do for `app-state`: these are the
+  shapes a caller must get right to be understood, and a response is read
+  by whatever renders it.
+
+  **Hand-written here, generated in the service.** `vta-service` builds
+  these payloads from `trust-tasks-rs` directly, because a mirror is a
+  second definition of one contract and free to drift. This crate cannot do
+  the same: `trust-tasks-rs` is an optional dependency here and the `client`
+  feature does not enable it, so a types-only consumer must not be made to
+  pull the generated tree in. Two source-level censuses cover the gap —
+  `payload_ext_census` and `payload_null_census`.
+
+  **The boundary is in the types.** `LocalProfileEntry` is a separate type
+  from `ProfileEntry` rather than the same type with variants unused,
+  because the published schema for `persona/local/profile/put/1.0` closes
+  its entries to a single `inline` member. A profile built inside a trust
+  context has nowhere to name an attribute in the agent-scoped pool. That
+  closure is load-bearing rather than incidental, which is why it is
+  mirrored as a distinct type instead of a shared one used carefully.
+
+  **Three census exemptions, and why they are not the easy way out.**
+  `OverrideValue`, `InlineValue` and `LocalProfileEntry` deny unknown fields
+  and carry no `ext`, which `payload_ext_census` flags. Adding one would be
+  wrong: the published schemas close all three with
+  `additionalProperties: false` and declare no `ext` slot, and
+  `trust-tasks-rs` generates them with `deny_unknown_fields` and no `ext`
+  for the same reason — so the field would make this crate emit documents
+  the VTA's own `validate_payload` rejects. They join
+  `IssuedCredentialSummary` in `NO_EXT_BY_DESIGN`, which exists for exactly
+  this case: a member of a payload rather than a payload.
+
+  `ProfileEntry` carries `untagged` **and** `deny_unknown_fields`, with the
+  variants in reading order, for the reason recorded on the store-side type:
+  the clause is the only thing keeping the four forms apart, so a test can
+  prove it is working.
+
+- **pnm-cli**: Add memory command group ([#1222](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1222))
+
+* feat(pnm-cli): add memory command group
+
+  Add `pnm memory` for CRUD over the VTA's per-context agent memory
+  (`spec/vta/memory/{put,list,delete}/0.1`): plant, recall, forget, wipe.
+  Context-scoped via `--context` (default `default`); `--json` supported.
+
+
+
+### Fixed
+
+- **sdk**: Accept the `ext` member every payload schema declares ([#1231](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1231))
+
+SPEC §4.5.1 gives every Trust Task payload an `ext` slot, and the published
+  schemas declare it — `acl/list/0.1` lists `ext` among its properties, as do
+  `policy/list/0.2`, every `vta/memory/*` body, `app-state` writes, config show
+  and patch, and both credential-issuance bodies.
+
+  Sixteen `deny_unknown_fields` structs had no field for it, so a producer doing
+  exactly what the schema permits had its whole document rejected:
+
+      malformed request: payload parse: unknown field `ext`, expected one of
+      `role`, `scope`, `direction`, `subjectPrefix`, `pageSize`, `cursor`
+
+  Seven sibling structs already carry `ext`, with the reasoning written out on
+  each; this completes that work rather than starting it. `deny_unknown_fields`
+  stays: carrying `ext` explicitly is what keeps a *typo* refused, which is the
+  guard that clause was there for, while letting through the one member the spec
+  says is always allowed.
+
+  Found from a browser-based VTA management console: its Access and Policy panes
+  died outright, and the operator was shown a parse error naming a field the
+  spec had told the client it could send. Nothing caught it earlier because
+  whether a caller trips this is decided entirely by whether it populates `ext`
+  — the conformance table exercises the members its fixtures set, and this
+  defect lives in the member they leave unset.
+
+  So the guard is a census over the source rather than another fixture:
+  `payload_ext_census.rs` fails on any `deny_unknown_fields` type under
+  `protocols/` that carries no `ext`, with an exceptions list that has to state
+  a reason. Verified to fail by reverting one struct.
+
+
+
 ## [0.12.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.12.2...vta-cli-common-v0.12.3) — 2026-09-01
 
 

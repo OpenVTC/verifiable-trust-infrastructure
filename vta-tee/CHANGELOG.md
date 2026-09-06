@@ -2,6 +2,17 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.2.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.2.2...vta-tee-v0.2.3) — 2026-09-06
+
+
+### Fixed
+
+- **tee**: Make allow_kms_reinit explicit authorization for reinit regardless of KMS failure type ([#1249](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1249))
+
+* fix(tee): make allow_kms_reinit explicit authorization for reinit regardless of KMS failure type
+
+
+
 ## [0.2.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.2.1...vta-tee-v0.2.2) — 2026-09-01
 
 

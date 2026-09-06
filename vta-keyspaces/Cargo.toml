@@ -2,7 +2,7 @@
 name = "vta-keyspaces"
 description = "VTA keyspace-name registry — the shared storage vocabulary for the VTA subsystem crates"
 readme = "README.md"
-version = "0.2.4"
+version = "0.2.5"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own

@@ -2,6 +2,65 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.14.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.14.3...pnm-cli-v0.14.4) — 2026-09-06
+
+
+### Added
+
+- **persona**: The operator surface, and a preview built to be read ([#1257](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1257))
+
+* feat(persona): SDK wire types and client methods for the persona family
+
+  Twenty-four request bodies under `protocols::persona` and the client
+  methods that dispatch them, against the specs merged in
+  trustoverip/dtgwg-trust-tasks-tf#360.
+
+  Responses come back as `Value`, as they do for `app-state`: these are the
+  shapes a caller must get right to be understood, and a response is read
+  by whatever renders it.
+
+  **Hand-written here, generated in the service.** `vta-service` builds
+  these payloads from `trust-tasks-rs` directly, because a mirror is a
+  second definition of one contract and free to drift. This crate cannot do
+  the same: `trust-tasks-rs` is an optional dependency here and the `client`
+  feature does not enable it, so a types-only consumer must not be made to
+  pull the generated tree in. Two source-level censuses cover the gap —
+  `payload_ext_census` and `payload_null_census`.
+
+  **The boundary is in the types.** `LocalProfileEntry` is a separate type
+  from `ProfileEntry` rather than the same type with variants unused,
+  because the published schema for `persona/local/profile/put/1.0` closes
+  its entries to a single `inline` member. A profile built inside a trust
+  context has nowhere to name an attribute in the agent-scoped pool. That
+  closure is load-bearing rather than incidental, which is why it is
+  mirrored as a distinct type instead of a shared one used carefully.
+
+  **Three census exemptions, and why they are not the easy way out.**
+  `OverrideValue`, `InlineValue` and `LocalProfileEntry` deny unknown fields
+  and carry no `ext`, which `payload_ext_census` flags. Adding one would be
+  wrong: the published schemas close all three with
+  `additionalProperties: false` and declare no `ext` slot, and
+  `trust-tasks-rs` generates them with `deny_unknown_fields` and no `ext`
+  for the same reason — so the field would make this crate emit documents
+  the VTA's own `validate_payload` rejects. They join
+  `IssuedCredentialSummary` in `NO_EXT_BY_DESIGN`, which exists for exactly
+  this case: a member of a payload rather than a payload.
+
+  `ProfileEntry` carries `untagged` **and** `deny_unknown_fields`, with the
+  variants in reading order, for the reason recorded on the store-side type:
+  the clause is the only thing keeping the four forms apart, so a test can
+  prove it is working.
+
+- **pnm-cli**: Add memory command group ([#1222](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1222))
+
+* feat(pnm-cli): add memory command group
+
+  Add `pnm memory` for CRUD over the VTA's per-context agent memory
+  (`spec/vta/memory/{put,list,delete}/0.1`): plant, recall, forget, wipe.
+  Context-scoped via `--context` (default `default`); `--json` supported.
+
+
+
 ## [0.14.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.14.2...pnm-cli-v0.14.3) — 2026-09-01
 
 

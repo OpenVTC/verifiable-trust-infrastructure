@@ -2,6 +2,591 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.32.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.32.3...vta-sdk-v0.32.4) — 2026-09-06
+
+
+### Added
+
+- **persona**: The operator surface, and a preview built to be read ([#1257](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1257))
+
+* feat(persona): SDK wire types and client methods for the persona family
+
+  Twenty-four request bodies under `protocols::persona` and the client
+  methods that dispatch them, against the specs merged in
+  trustoverip/dtgwg-trust-tasks-tf#360.
+
+  Responses come back as `Value`, as they do for `app-state`: these are the
+  shapes a caller must get right to be understood, and a response is read
+  by whatever renders it.
+
+  **Hand-written here, generated in the service.** `vta-service` builds
+  these payloads from `trust-tasks-rs` directly, because a mirror is a
+  second definition of one contract and free to drift. This crate cannot do
+  the same: `trust-tasks-rs` is an optional dependency here and the `client`
+  feature does not enable it, so a types-only consumer must not be made to
+  pull the generated tree in. Two source-level censuses cover the gap —
+  `payload_ext_census` and `payload_null_census`.
+
+  **The boundary is in the types.** `LocalProfileEntry` is a separate type
+  from `ProfileEntry` rather than the same type with variants unused,
+  because the published schema for `persona/local/profile/put/1.0` closes
+  its entries to a single `inline` member. A profile built inside a trust
+  context has nowhere to name an attribute in the agent-scoped pool. That
+  closure is load-bearing rather than incidental, which is why it is
+  mirrored as a distinct type instead of a shared one used carefully.
+
+  **Three census exemptions, and why they are not the easy way out.**
+  `OverrideValue`, `InlineValue` and `LocalProfileEntry` deny unknown fields
+  and carry no `ext`, which `payload_ext_census` flags. Adding one would be
+  wrong: the published schemas close all three with
+  `additionalProperties: false` and declare no `ext` slot, and
+  `trust-tasks-rs` generates them with `deny_unknown_fields` and no `ext`
+  for the same reason — so the field would make this crate emit documents
+  the VTA's own `validate_payload` rejects. They join
+  `IssuedCredentialSummary` in `NO_EXT_BY_DESIGN`, which exists for exactly
+  this case: a member of a payload rather than a payload.
+
+  `ProfileEntry` carries `untagged` **and** `deny_unknown_fields`, with the
+  variants in reading order, for the reason recorded on the store-side type:
+  the clause is the only thing keeping the four forms apart, so a test can
+  prove it is working.
+
+- **persona**: The holder's own identity, and a boundary a context cannot read across ([#1255](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1255))
+
+* feat(persona): register the persona keyspace
+
+  Fourth holder store, beside the vault, agent memory and application state.
+  It is distinct because disclosure control is its point, and app-state
+  promises never to interpret its records — so it cannot host something whose
+  whole job is deciding which members may leave.
+
+  Two scopes share the keyspace and the split is a control, not filing: the
+  pool and profiles are agent-scoped so the correlation index can see the same
+  value presented by two personas in two contexts, which a per-context index
+  cannot see by construction.
+
+  BACKED_UP, because a restore without the holder's identity returns an agent
+  that no longer knows who its holder is.
+
+  Cascade on DID deletion, with the nuance the per-keyspace enum cannot
+  express: only the context-scoped half is DID-keyed. Bindings and contacts
+  cascade; the pool survives, because a profile may be bound to several
+  personas and deleting one must not destroy facts presented through another.
+
+  * feat(persona): vta-persona crate — models, key layout, correlation index
+
+  The fourth holder store. Distinct from app-state because disclosure control
+  is its point, and a store that promises never to interpret its records cannot
+  gate what leaves them.
+
+  model.rs carries the shapes the specs made normative. Two choices are
+  load-bearing. ProofRung derives Ord so that 'the highest rung this format
+  supports' is a max() rather than a hand-written table that can disagree with
+  itself. And ProfileEntry::referenced() returns None only for inline entries,
+  which is what makes a context-local profile checkable: one is valid exactly
+  when no entry references the pool.
+
+  storage.rs builds every key in one place, because the agent-scoped and
+  context-scoped prefixes are a security boundary and a call site that formats
+  its own key can put a record on the wrong side of it. scope_of() returns
+  Option rather than defaulting — a key nobody recognises must not be assumed
+  safe to serve a context-scoped caller. Local profiles get their own prefix
+  rather than a flag, so a context-scoped scan reaches a space that
+  structurally cannot hold a pool profile; a filter is a line of code that can
+  be got wrong, an address space cannot.
+
+  correlation.rs is keyed by HMAC over a canonicalised value, so exact-match
+  lookup works with no plaintext index over the holder's PII — and prefix and
+  substring search are out of scope by construction, which is the trade.
+  Canonicalisation sorts object members, or two serialisations of one fact
+  would hash differently and the guard would miss the reuse it exists to catch.
+  Comparison is constant-time, or an attacker submitting candidates could use
+  timing to learn what the holder holds.
+
+  severity() encodes the inversion that is easy to get backwards: a credential
+  presented WHOLE correlates more than a self-asserted value, because the
+  issuer signature is identical at every verifier, while a derived proof
+  correlates less because it differs every presentation. Scoring on provenance
+  alone would rank an attested claim safer than a typed one and push holders
+  toward the riskier option.
+
+  * feat(persona): pin trust-tasks-rs 0.17.9 and assert the contract in tests
+
+  The persona family is published, so the generated payload types are now the
+  contract this crate stores against. Taken as a dev-dependency rather than a
+  real one: storage needs none of it, and depending on it only in tests means a
+  spec change that lands upstream without a matching change here fails a test
+  instead of a production dispatch.
+
+  Two assertions earn their place. The proof and issuedAt constants are how a
+  dispatcher learns those were declared REQUIRED, so a relaxation upstream
+  surfaces as a failing test rather than as an accepted unsigned write. And our
+  ValueType is compared to the published enum on the wire, because a variant
+  added upstream without a matching arm here would silently reject a value the
+  spec calls legal.
+
+  * feat(persona): attribute store — versions, preconditions, tombstones, indexes
+
+  Read-modify-write is serialised by a process-local lock rather than a CAS,
+  following the conclusion app-state reached: there is no reachable multi-writer
+  topology, and a CAS would be atomic exactly where the lock already suffices
+  while staying non-atomic on the vsock proxy that would need it.
+
+  The version counter is reserved BEFORE the write it belongs to. A crash
+  between reserving and writing leaks a number, which is harmless because
+  versions are opaque and monotonic and never an edit count. The opposite order
+  would reuse one, which is not.
+
+  Index maintenance runs before the record write, deliberately. A crash then
+  leaves an index entry with no record — a false positive in the correlation
+  guard — rather than a record with no index entry, which would read as a false
+  ALL-CLEAR. Over-warning is recoverable; under-warning is the failure the
+  guard exists to prevent.
+
+  A tombstone is not a live record, so expectedVersion 0 succeeds over one and
+  the new record takes a later counter value. A repeat delete returns
+  existed: false and takes NO version: had it taken one, every consumer
+  watching the store would see a change that did not happen and delete could
+  not be safely retried — asserted by a test that measures the counter either
+  side.
+
+  correlation_count returns a count and never identifiers, because returning
+  them on a write would disclose the holder's other compositions to whatever
+  tool made it.
+
+  * feat(persona): profiles, resolution, and the reverse index
+
+  put_profile validates every reference before taking a version, so a refused
+  write consumes nothing, and refuses the whole composition on a dangling
+  reference — a partially-resolved profile would disclose less than the holder
+  composed and tell them nothing about it.
+
+  The reverse index drops its old edges before adding new ones. Without that an
+  attribute removed from a profile keeps a stale referrer, and its delete is
+  refused for a reference that no longer exists.
+
+  An override replaces value and label only; provenance is inherited. A pin
+  naming a version the store no longer holds resolves stale with no value
+  rather than silently serving the current one, which would defeat the entire
+  point of pinning.
+
+  Deleting a profile leaves the pool untouched. A profile references rather
+  than owns, so removing a composition destroys no facts — the asymmetry with
+  attribute deletion, where removal does change what compositions present.
+
+  **Fixes a real serde defect the tests caught.** ProfileEntry is untagged, and
+  untagged tries variants in declaration order while serde ignores unknown
+  fields — so the permissive Ref variant was matching {ref, override} and
+  {ref, pinVersion}, silently degrading an override into a live reference and a
+  pin into an unpinned one. A disclosure changing behind the holder's back.
+  deny_unknown_fields is not available on a variant, so the fix is declaration
+  order with Ref last, documented at the enum and pinned by a test.
+
+  * feat(persona): bindings — the push across the context boundary
+
+  Setting a binding is the moment a composition crosses from agent scope into a
+  context, and the crossing has a direction: the holder pushes a materialised
+  projection down, and a context never pulls.
+
+  MaterialisedClaim is a distinct type from ResolvedClaim rather than the same
+  one with a field left empty. The difference IS the security property — a
+  function handed a MaterialisedClaim cannot obtain a pool identifier, so no
+  future edit leaks one across the boundary by forgetting to clear it. The
+  compiler enforces what a reviewer would otherwise have to notice. Asserted on
+  the serialised bytes, because what crosses the boundary is what was written.
+
+  rematerialise() keeps 'edit once, everywhere' working without opening a read
+  path: it is a write initiated ABOVE the boundary, never a pull from below.
+
+  Binding to a missing profile is refused rather than written — a binding that
+  appears configured and presents nothing is a failure the holder discovers
+  from the other side. Clearing is a first-class state, not an absence: a
+  persona with no profile is legitimate and common.
+
+  A second persona on one profile is counted and returned, because that act
+  makes them the same person by construction and no later narrowing undoes it.
+  A count, not identifiers — the association between the holder's personas is
+  exactly what an attacker wants.
+
+  BindingSummary is what a context-scoped caller may learn: whether bound, the
+  label, a claim count. It has nowhere to put a value, which is the point.
+
+  * feat(persona): contacts — revisions, diffs, and reference-counted retention
+
+  A contact is what a peer disclosed, appended as a revision and never
+  overwritten. An address book that silently replaces a payment address is a
+  phishing surface; one that reports what changed and when is a defence — which
+  is what changed_claims and has_unreviewed_change exist for. A revision
+  history nobody is shown is an archive, not a defence.
+
+  Keyed on (context, subject, knownByPersona): the same peer met through two
+  personas is two contacts. Collapsing them would correlate the holder's own
+  personas inside their own address book, which is the one place nobody would
+  think to look for that linkage.
+
+  The diff counts a claim that VANISHED as changed. A diff reporting only
+  mutations stays quiet when a peer stops disclosing their payment address,
+  which is exactly when it should speak up.
+
+  A reaped revision returns Gone, never NotFound. A caller comparing a current
+  value against history must tell 'never existed' from 'no longer kept' —
+  only the second means their comparison is unsound rather than mistaken, and
+  collapsing them lets a producer conclude 'nothing changed' from an absence
+  that means the opposite.
+
+  Retention counts references rather than days. A revision cited by a
+  disclosure record is evidence of what the holder was shown before they
+  presented; a flat TTL would delete it precisely when it mattered. Deletion
+  reports what it retained, because an incomplete erasure the holder believes
+  is complete is worse than one they know about.
+
+  The outgoing revision is archived BEFORE the new one lands, so a crash leaves
+  a duplicate rather than a gap — and a gap in a history that exists to prove
+  what changed is worse than a repeat.
+
+  * feat(persona): the disclosure record, and the caller retention was built for
+
+  Append-only, and written BEFORE the artifact is returned. A crash between
+  signing and recording would release data the holder could never afterwards
+  discover they had released; recording first can only produce a record of a
+  disclosure that did not happen, which is a false positive they can
+  investigate. One of those is recoverable.
+
+  Records name claim TYPES and rungs, never values. Re-storing the values would
+  double the exposure the record exists to describe, and put a second plaintext
+  copy of the holder's data in a structure whose whole purpose is to be read
+  later. The rung is recorded because the same claim type at two rungs is two
+  very different disclosures.
+
+  contexts_reached_by() pays the debt the scope split incurred. Putting the
+  pool above the context boundary bought a correlation check that sees across
+  contexts; the cost is that a holder can no longer tell from one context where
+  a fact has gone. This answers it directly.
+
+  record_disclosure cites the contact revisions a disclosure relied on — the
+  caller reference-counted retention was built for, and until now had none.
+  Citation happens after the record lands: a citation with no record retains a
+  revision nobody needs, while a record with no citation would let the evidence
+  behind it be reaped. Only one of those loses something.
+
+  * feat(persona): task URIs and retry-safety classification
+
+  Adding the 24 URIs to ALL_URIS made every_uri_is_classified fail until each
+  was classified, which is the census working: a task cannot join the catalogue
+  without someone deciding what a lost reply costs it.
+
+  Writes are Keyed following the app-state precedent — without a precondition a
+  replay writes twice and bumps the counter twice, so a watcher sees a change
+  that never happened. Deletes are RetrySafe because they converge: a repeat
+  finds a tombstone, returns existed: false, and takes no counter value.
+
+  Two entries are worth reading twice. disclosure/preview looks like a read and
+  is Keyed, because it mints the single-use token present consumes — a replayed
+  preview hands out a second authorisation to disclose. And disclosure/present
+  is Keyed because a replay is a second release of personal data to a third
+  party and a second permanent record of it: the one task in this family where
+  a lost reply must never be retried blind.
+
+  * feat(persona): the authorization boundary, enforced and pinned by census
+
+  The pool and profiles are agent-scoped; bindings, contacts and disclosure
+  records are context-scoped. Nothing inside a context may read the pool. That
+  is a rule about direction rather than a permission — an access-control failure
+  over a readable pool discloses everything, while a pool no context can address
+  has nothing to disclose.
+
+  The gate is require_super_admin (Admin AND unrestricted scope), not a role
+  check. A guard written as 'is this caller an administrator' PASSES for an
+  administrator scoped to a single context, who would then read and write
+  identity data belonging to every other one. vti-common's own act_scope docs
+  warn about the same edge from the other side: an empty context list means
+  unrestricted for Admin and nothing at all for every other role, so a call site
+  testing is_empty() without the role gets one of the two backwards. Both halves
+  are asserted.
+
+  REACH classifies all 24 tasks and is exhaustive by test, so a task cannot join
+  the family without someone deciding which side it is on — and an unknown URI
+  is refused rather than defaulted, because defaulting to Context is exactly how
+  a pool read becomes reachable from inside one.
+
+  The test that matters is a_context_scoped_admin_is_refused_every_holder_task:
+  it iterates every holder-only task and asserts an admin scoped to ctx-work is
+  turned away. That is the conformance witness the design asked for, and the
+  test that would have caught the trap.
+
+- **rooms**: A VTA joins a room, keeps up, and opens what it holds ([#1250](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1250))
+
+Implements rooms/keys/{key-package,welcome,commit,open} - the delivery
+  flow specified in dtgwg-trust-tasks-tf#355 and the decryption oracle from
+  #349, on the custody layer from #1248. This is the piece that makes a
+  data room readable by an agent that never holds a key.
+
+  Four tasks, four different gates, and only one is a capability. The
+  delivery three are inbound - a room's owner reaching this VTA - and an
+  ACL of ours has no opinion about who a room's owner is. commit in
+  particular is authorized INSIDE the group: MLS authenticates the
+  committer as a member of the group we already hold, and a list we kept
+  would be this service deciding who may commit to a room it is not part
+  of. Only open is our own principal's agent asking us to decrypt, which is
+  what a capability is for - RoomOpen, registered upstream in #351.
+
+  The invitation is what makes a Welcome acceptable. A Welcome carries a
+  group's secrets, so anyone able to reach a VTA could otherwise push group
+  state into it. Joining a room is already a two-party act and the VIC is
+  already the consent artefact; this is where that stops being ceremonial.
+  Five checks, none optional - it parses as an invitation, its proof
+  verifies, the issuer is the room, the subject is us, and it is live and
+  unspent - and dropping any one leaves a way in. VerifiedInvitation is
+  constructible only by the verifier, so a caller cannot reach consumption
+  with something nobody checked.
+
+  The invitation is consumed only AFTER the join succeeds. Burning it on a
+  Welcome that then failed to process would strand the member: invitation
+  spent, not in the room.
+
+  Joining twice is refused rather than merged. Two group states for one
+  room is a condition nothing downstream can resolve - open has no way to
+  choose, and choosing wrong returns 'did not open' for a record the member
+  can plainly see.
+
+  open reports which epoch the VTA holds when a record is sealed under a
+  later one. A member who missed a commit is stuck at their last epoch, and
+  the raw symptom is 'this record does not open', which reads like
+  corruption; naming the epoch turns it into 'a commit has not been
+  delivered', which an operator can act on.
+
+  Two keyspaces, both Cascade on DID deletion: room_groups holds group
+  secrets and belongs at the same protection level as the key store, and
+  room_invitations outlives the groups it admitted - while the member
+  exists, a consumed invitation MUST survive leaving a room, or the same
+  invitation would work twice.
+
+  Four censuses had something to say. The MCP guard, where open and welcome
+  are Sensitive (plaintext out, key material in) while key-package and
+  commit are ordinary mutations. Retry safety, which produced four
+  different answers and is the better for it: open is ReadOnly, commit is
+  RetrySafe because the spec made replay a no-op precisely so delivery
+  could retry, and key-package and welcome are Keyed - one leaves a second
+  private half behind, the other cannot tell a lost reply from a completed
+  join. Then the conformance witnesses and the namespace list.
+
+  trust-tasks-rs 0.17.8 landed mid-build carrying #351, #354 and #355, so
+  all four request types are generated rather than hand-written.
+
+- **rooms**: The presentation oracle, so an agent never holds its human's credentials ([#1247](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1247))
+
+Implements rooms/keys/present/0.1. The data-rooms design turns on a member
+  equipping their agent with strictly less than they hold - a chain one link
+  longer, conferring read for four hours, bound to one host - and nothing
+  minted one. A member wanting to give an agent access had two options: hand
+  over their own credentials, which is the outcome attenuation exists to
+  prevent, or mint an attenuation by hand, which nobody does.
+
+  So the agent asks, and the VTA mints. The VTA already holds the member's
+  keys and is already in their trusted computing base; a host is not, which
+  is why the host only ever sees the result.
+
+  Four things a caller cannot obtain by asking, and each closes a way this
+  could have quietly become the credential hand-off it replaces:
+
+    More than the principal holds fails in attenuate, which refuses to
+    widen - not at a policy check somebody could forget to write.
+
+    A presentation covering everything is unreachable: action is required
+    and exactly one action is conferred.
+
+    A presentation made out to somebody else is unreachable: the leaf grants
+    to the DID the transport authenticated, never one named in the payload.
+    One minted for A is worthless to B even if B obtains it, because the
+    presenter binding refuses it on the far side.
+
+    A long-lived leaf is unreachable: the lifetime is a constant, not a
+    request parameter. A caller that could ask for a year would be asking
+    for the standing credential the oracle exists not to hand over.
+
+  Gated on Capability::RoomPresent - registered upstream as roomPresent in
+  dtgwg-trust-tasks-tf#351 - and deliberately not on Sign. An agent that may
+  ask for a scoped, audience-bound presentation is not thereby an agent that
+  may sign anything at all with its principal's key, and gating an oracle on
+  the generic signing oracle grants strictly more than the task needs.
+
+  The credentials are found by issuer, because a room issues its own - the
+  same property the host verifies against, so a credential that would not
+  verify there is not one this will present. Two authority credentials from
+  one room is refused rather than resolved: picking the broader one hands
+  out more than necessary, picking the narrower produces a presentation that
+  fails at the host for reasons the caller cannot see.
+
+  Five censuses had something to say, and all five were right. The
+  conformance witness. The retry-safety classification - RetrySafe, because
+  the oracle stores nothing and a retry mints a second leaf conferring
+  exactly what the first did, on the same expiry; keying it would buy a
+  dedup record against a harmless duplicate at the price of failing a retry
+  the caller needs. The MCP guard, where it joins 'authority, moved' beside
+  vta/credentials/issue: an MCP host approves a tool, so a blanket vta_call
+  approval must not silently cover minting a presentation over its
+  principal's standing. And the canonical-namespace list, which gains
+  spec/rooms/ for exactly one URI - most of that family is a host's surface,
+  and this is the one member a VTA serves.
+
+- **rooms**: Data rooms end to end — storage, dispatch, verification, MLS, and a host ([#1237](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1237))
+
+* feat(rooms): the data-room storage layer
+
+  A data room is a shared space whose access is governed by credentials the
+  room itself issues. This lands the storage and its invariants; the
+  Trust-Task dispatch that authorizes operations follows once rooms/* is
+  published in the registry (trustoverip/dtgwg-trust-tasks-tf#346) - the
+  dispatcher refuses a URI the published registry has no schema for, and
+  growing the unspecced allowlist is the wrong fix.
+
+  Written first so that the dispatch layer is a thin wrapper over settled
+  behaviour rather than a place where storage decisions get made under time
+  pressure.
+
+  The row deliberately carries an owner, a visibility, an epoch and a
+  retention period, and NO member list. Not omitted for now - there must not
+  be one. The moment this service keeps a roster and consults it, three
+  things stop being true at once: the room can no longer move to another
+  host without reissuing credentials, this service becomes part of the
+  room's membership definition, and a room whose contents we cannot read
+  acquires a member list we can.
+
+  Invariants enforced in the store rather than trusted to callers, each with
+  a test:
+
+  - An open room refuses ciphertext and a sealed room refuses cleartext, so
+    a tier promise cannot be broken by a caller passing the wrong shape.
+  - A private room refuses a recorded author: on that tier authorship
+    belongs inside the sealed body where only members can read it.
+  - A record sealed under a stale epoch is refused, because a reader holding
+    the current key could not open it.
+  - An epoch advances by exactly one. A gap would leave records sealed under
+    an epoch nobody holds a key for; a repeat would let a removed member's
+    key open material written after their removal, which is the whole point
+    of advancing.
+  - Versions are monotonic per room, not per record - one comparable number
+    is what a sinceVersion watermark needs. A conflict carries the current
+    version so a caller need not re-read, because between a bare rejection
+    and the re-read the record can change again.
+  - A listing returns tombstones to a watermark caller. Without that a
+    puller learns of every create and update and never of a delete, so
+    retracted records resurrect on its next full rebuild.
+  - Retract and purge are separate verbs: a tombstone keeps the key, version
+    and epoch so sync converges and the audit chain holds, and erasure is a
+    distinct, higher-trust act.
+
+  Keyspaces registered in ALL and BACKED_UP - the two must partition ALL
+  exactly - with the census count moved to 27 and the matching AppState
+  fields opened, so the documented ALL-matches-AppState invariant stays
+  true rather than merely passing a length check.
+
+- **vta**: Implement vta/credentials/list, and check the vault/credentials family ([#1235](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1235))
+
+* feat(vta): implement vta/credentials/list, and check the vault/credentials family
+
+  `vta/credentials` served `issue` and `revoke` and nothing else, so an issuer
+  could not ask its own agent what it had issued. The `credentialId` that
+  `revoke` is keyed on is returned exactly once, in the `issue` response; a
+  caller that did not record it at that moment could not recover it at all.
+
+  Specified upstream as `vta/credentials/list/0.1`
+  (trustoverip/dtgwg-trust-tasks-tf#342). This implements it — a read over
+  records that already exist. `IssuedCredentialRecord` carries the id, holder,
+  both instants and the revocation instant and reason, and revocation is a
+  tombstone rather than a delete, so a revoked credential is still there to list.
+  No new storage.
+
+  Bodies are never returned. `vault/list/0.1` states the rule this follows —
+  list enumerates, release uses — and `summarise` is the one place the projection
+  happens, so "a summary never carries the credential" is enforced rather than
+  remembered. `status` is derived at read time with `revoked` beating `expired`:
+  reporting a revoked credential as merely expired would hide that somebody
+  acted, and a stored status is wrong one second after it is written.
+
+  Gated on `require_manage`, not the Admin-plus-step-up its mutating siblings
+  use. An operator who may read the ACL and the policy set may read what their
+  own agent issued — same category of question — and a step-up that fires on
+  every page of a list is one people learn to clear without reading. The read is
+  audited anyway: "who enumerated the issuance log" is what an incident review
+  asks, and nothing else would record it.
+
+  ## Bumping trust-tasks-rs to 0.17.4 surfaced the vault/credentials family
+
+  Those eight URIs have been dispatched since before they had a specification.
+  Specifying them (#338, shipped in 0.17.4) made them *published*, which is what
+  finally let the conformance sweep see them — and it found two real defects in
+  shapes that had never been checked against anything:
+
+  - **`ReceiveBody` serialized `credentialBase64: null`.** `#[serde(default)]`
+    without `skip_serializing_if` leaves an unset member as `null`, and the
+    schema's `oneOf` counts a null member as *present* — so the body matched
+    neither branch. Same defect class as the sibling registry's
+    `payload_null_census`.
+  - **`force` was accepted by four verbs that ignore it.** `CredLifecycleBody`
+    was shared across archive, unarchive, delete, restore and purge, but only
+    `delete` reads `force`. A caller asking for something stronger than the verb
+    it named got the weaker thing and a success. `delete` now has its own body;
+    the other four refuse the member, as their schemas always said they should.
+
+  Three debt ratchets moved in the right direction as a consequence, each
+  discharged by specification rather than deletion: eight entries out of
+  `UNSPECCED_DISPATCHED_URIS`, one out of the producer-payload census's
+  `UNPUBLISHED` list (so that payload is now validated rather than skipped), and
+  vtc-service's bound-URI count from 12 to 4 — what remains is the four
+  *secrets*-store lifecycle verbs, which still have no spec.
+
+  ## Tests
+
+  `page_rows` is split out of `list_issued` and unit-tested because the cursor is
+  where a bug hides: it is the last storage key of the previous page and
+  resumption is strictly after it, so a credential issued mid-walk cannot shift a
+  window and skip a row nobody has seen. That case is a test. So are the status
+  precedence, an unreadable expiry reading as active rather than expired, and
+  that a serialized summary contains no credential.
+
+  `IssuedCredentialSummary` is the census's first `NO_EXT_BY_DESIGN` entry: it is
+  a list row rather than a payload root, and its published schema declares no
+  `ext` slot, so adding the field would make this crate emit documents the schema
+  rejects — the inverse of the defect that census exists to catch.
+
+
+
+### Fixed
+
+- **sdk**: Accept the `ext` member every payload schema declares ([#1231](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1231))
+
+SPEC §4.5.1 gives every Trust Task payload an `ext` slot, and the published
+  schemas declare it — `acl/list/0.1` lists `ext` among its properties, as do
+  `policy/list/0.2`, every `vta/memory/*` body, `app-state` writes, config show
+  and patch, and both credential-issuance bodies.
+
+  Sixteen `deny_unknown_fields` structs had no field for it, so a producer doing
+  exactly what the schema permits had its whole document rejected:
+
+      malformed request: payload parse: unknown field `ext`, expected one of
+      `role`, `scope`, `direction`, `subjectPrefix`, `pageSize`, `cursor`
+
+  Seven sibling structs already carry `ext`, with the reasoning written out on
+  each; this completes that work rather than starting it. `deny_unknown_fields`
+  stays: carrying `ext` explicitly is what keeps a *typo* refused, which is the
+  guard that clause was there for, while letting through the one member the spec
+  says is always allowed.
+
+  Found from a browser-based VTA management console: its Access and Policy panes
+  died outright, and the operator was shown a parse error naming a field the
+  spec had told the client it could send. Nothing caught it earlier because
+  whether a caller trips this is decided entirely by whether it populates `ext`
+  — the conformance table exercises the members its fixtures set, and this
+  defect lives in the member they leave unset.
+
+  So the guard is a census over the source rather than another fixture:
+  `payload_ext_census.rs` fails on any `deny_unknown_fields` type under
+  `protocols/` that carries no `ext`, with an exceptions list that has to state
+  a reason. Verified to fail by reverting one struct.
+
+
+
 ## [0.32.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.32.2...vta-sdk-v0.32.3) — 2026-09-01
 
 

@@ -2,7 +2,7 @@
 name = "vta-sdk"
 description = "SDK for Verifiable Trust Agents operating in Verifiable Trust Communities"
 readme = "README.md"
-version = "0.32.3"
+version = "0.32.4"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true

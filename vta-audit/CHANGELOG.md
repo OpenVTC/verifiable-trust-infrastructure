@@ -2,6 +2,36 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.3.1...vta-audit-v0.3.2) — 2026-09-06
+
+
+### Documentation
+
+- **audit**: Say at the macro that `audit!` never reaches the sink ([#1240](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1240))
+
+The module docs already explain the split — the macro emits a tracing
+  event, `record`/`record_with_detail` persist, call both. The macro's own
+  doc comment said only "Emit a structured audit event to the tracing
+  subsystem", and that is what a reader sees on hover or jump-to-definition
+  at a call site.
+
+  The gap matters because the call site carries no other signal. A handler
+  with `audit!("session.revoke", …)` three lines above its response reads,
+  on every measure a reviewer applies, as a handler that audits: it
+  compiles, it is named `audit`, it emits an event — and the row an operator
+  goes looking for is not there.
+
+  Not hypothetical. `vta/management/reload-services` shipped with this macro
+  and no sink write, so restarting an agent left nothing in the queryable
+  trail. It took a runtime census to notice, and the census could not see
+  the task at all until it was specified upstream ([#1239](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1239)). Two layers of
+  checking passed over a handler that looked audited and was not.
+
+  Docs only; no behaviour change. `cargo test -p vta-audit`, `cargo doc` and
+  `cargo fmt --check` clean.
+
+
+
 ## [0.3.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.3.0...vta-audit-v0.3.1) — 2026-08-29
 
 
