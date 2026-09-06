@@ -40,6 +40,7 @@ const PROFILE_LIST: &str = "https://trusttasks.org/spec/persona/profile/list/1.0
 const PROFILE_DELETE: &str = "https://trusttasks.org/spec/persona/profile/delete/1.0";
 const BINDING_SET: &str = "https://trusttasks.org/spec/persona/binding/set/1.0";
 const BINDING_GET: &str = "https://trusttasks.org/spec/persona/binding/get/1.0";
+const BINDING_LIST: &str = "https://trusttasks.org/spec/persona/binding/list/1.0";
 const CORRELATION: &str = "https://trusttasks.org/spec/persona/correlation/analyze/1.0";
 const RENDERERS: &str = "https://trusttasks.org/spec/persona/renderers/list/1.0";
 const DISCLOSURE_HISTORY: &str = "https://trusttasks.org/spec/persona/disclosure/history/1.0";
@@ -753,6 +754,28 @@ async fn the_context_local_family_round_trips() {
     .await;
     assert!(!refused(status, &body), "binding/get: {status} {body}");
     assert_eq!(payload_of(&body).get("bound"), Some(&json!(true)), "{body}");
+
+    // `binding/list` is the context's own enumeration — the only task in the
+    // family with no coverage at all, positive or negative, and so the only one
+    // whose response shape nothing had ever looked at. It reports the same thin
+    // summary as `binding/get`, so the same rule applies: whether bound and how
+    // many claims, never contents.
+    let (status, body) = post(&router, &scoped, BINDING_LIST, json!({ "contextId": CTX })).await;
+    assert!(!refused(status, &body), "binding/list: {status} {body}");
+    let personas = payload_of(&body)
+        .get("personas")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("no personas array in {body}"));
+    let row = personas
+        .iter()
+        .find(|p| p.get("personaDid") == Some(&json!(persona)))
+        .unwrap_or_else(|| panic!("the bound persona is missing from the listing: {body}"));
+    assert_eq!(row.get("bound"), Some(&json!(true)), "{body}");
+    let rendered = serde_json::to_string(row).expect("serialises");
+    assert!(
+        !rendered.contains("ada99"),
+        "a binding listing returned claim contents: {rendered}"
+    );
 
     let (status, body) = post(
         &router,
