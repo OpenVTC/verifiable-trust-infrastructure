@@ -39,7 +39,18 @@
 # runs unnecessarily; the cost of being wrong the other way is a break that ships.
 set -euo pipefail
 
-PKG="${1:?usage: ci-affects.sh <package> [base-ref]}"
+# ci-affects.sh [--except] <package>[,<package>...] [base-ref]
+#
+# `--except` asks the opposite question: the union closure of every workspace
+# member EXCEPT the named ones. That is how a job phrased as "test everything but
+# VTC" states its scope, and it is NOT the complement of the VTC closure —
+# `room-host` depends on `vtc-client`, so `vtc-client` is inside "everything
+# except vtc-service" despite being a VTC crate. Complementing by hand gets that
+# backwards; deriving it does not.
+EXCEPT=""
+if [ "${1:-}" = "--except" ]; then EXCEPT="--except"; shift; fi
+PKG="${1:?usage: ci-affects.sh [--except] <package>[,<package>...] [base-ref]}"
+if [ -n "$EXCEPT" ]; then SCOPE="everything except $PKG"; else SCOPE="$PKG"; fi
 
 # Resolving the base is where a filter like this quietly stops working. On a
 # pull_request event Actions checks out the MERGE commit, and `origin/main` is
@@ -65,7 +76,7 @@ emit() {
   echo "$2"
   [ -n "${GITHUB_OUTPUT:-}" ] && echo "run=$1" >> "$GITHUB_OUTPUT"
   # Visible in the job list without opening the log.
-  [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "**$PKG**: run=\`$1\` — $2" >> "$GITHUB_STEP_SUMMARY"
+  [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "**$SCOPE**: run=\`$1\` — $2" >> "$GITHUB_STEP_SUMMARY"
   exit 0
 }
 
@@ -108,11 +119,12 @@ fi
 
 # crate directory -> crate name, tagged IN/OUT of $PKG's closure. The graph walk
 # lives in scripts/ci-closure.py; see its docstring for why it is not inline.
-if ! CLOSURE=$(cargo metadata --format-version 1 2>/dev/null | python3 scripts/ci-closure.py "$PKG"); then
-  emit true "could not resolve the closure of $PKG — running rather than guessing"
+# shellcheck disable=SC2086  # $EXCEPT is an intentional bare flag or empty
+if ! CLOSURE=$(cargo metadata --format-version 1 2>/dev/null | python3 scripts/ci-closure.py $EXCEPT "$PKG"); then
+  emit true "could not resolve the closure of $SCOPE — running rather than guessing"
 fi
 if [ -z "$CLOSURE" ]; then
-  emit true "empty closure for $PKG — running rather than guessing"
+  emit true "empty closure for $SCOPE — running rather than guessing"
 fi
 
 reasons=""
@@ -141,8 +153,8 @@ while IFS= read -r f; do
 done <<< "$CHANGED"
 
 if [ -n "$reasons" ]; then
-  emit true "$reasons is in $PKG's dependency closure"
+  emit true "$reasons is in the dependency closure of $SCOPE"
 fi
 
 n=$(echo "$CHANGED" | grep -c . || true)
-emit false "none of the $n changed files touch $PKG's dependency closure"
+emit false "none of the $n changed files touch the dependency closure of $SCOPE"
