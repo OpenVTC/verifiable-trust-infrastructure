@@ -480,9 +480,17 @@ async fn an_unbound_persona_reads_back_cleanly() {
 /// an `attributeId` (a lie about where the value lives) or omitting the entry
 /// (a profile that appears to present less than it does).
 ///
-/// **This test exists to expire.** When the schema takes optional
-/// `attributeId`/`updatedAt`/`version`, this fails, and the refusal in
-/// `handle_profile_get` goes with it.
+/// **This test exists to expire**, and the fix already exists: the schema
+/// takes those three as optional from `trust-tasks-rs` 0.18.0
+/// (dtgwg-trust-tasks-tf#370).
+///
+/// What it waits on is not this repository. `affinidi-messaging-sdk` 0.21.1
+/// still requires `trust-tasks-rs ^0.17`, and `vta-sdk::acl_setup` passes it a
+/// generated `MediatorAcl`; with two versions in one graph that is a type
+/// mismatch, not a warning. When a messaging SDK built against 0.18 ships,
+/// bump, and this test fails — at which point delete it and the refusal in
+/// `handle_profile_get` together, and assert instead that an inline entry
+/// resolves like any other.
 #[tokio::test]
 async fn an_inline_entry_is_refused_until_the_schema_allows_one() {
     let (router, ctx) = build_test_app().await;

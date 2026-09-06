@@ -255,6 +255,20 @@ enum Conformance {
     /// Known non-conformance, kept visible and counted instead of silently
     /// tolerated. Every entry is a follow-up issue; the reason must name the
     /// drift precisely enough that the fix needs no re-diagnosis.
+    ///
+    /// **There are currently none, and that is the goal state rather than
+    /// evidence the variant is surplus.** It is constructed only while a defect
+    /// is outstanding — the last entry was `persona/attribute/list`, whose
+    /// schema contradiction is fixed in trust-tasks-rs 0.17.10 — and the point
+    /// of keeping it is that recording drift stays as easy as papering over it.
+    /// A table with nowhere to say "this one does not round-trip, here is why"
+    /// invites a fixture edited until it passes, which reports a
+    /// non-conformant route as conformant and is the exact failure this whole
+    /// module exists to catch.
+    #[expect(
+        dead_code,
+        reason = "no drift outstanding; kept so the next one can be recorded rather than hidden"
+    )]
     KnownDrift(&'static str),
 }
 
@@ -2537,34 +2551,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ));
     }
 
-    // `persona/attribute/list` is deliberately NOT witnessed against 0.17.9.
-    //
-    // Its default response — the one `includeValues: false` produces, which is
-    // the common case and the non-disclosing one — cannot round-trip, because
-    // the published `Attribute` schema requires `value` while its own
-    // description says the member is absent for a metadata-only view. The
-    // witness found the contradiction; the fix is
-    // trustoverip/dtgwg-trust-tasks-tf#367, merged and awaiting a release.
-    //
-    // Recorded as drift rather than papered over: adding `value` to the fixture
-    // would encode the defect and pass, and the next reader would have no way
-    // to know the default listing had never been exercised. When
-    // trust-tasks-rs 0.18 lands, delete this entry and the witness in
-    // `persona_witnesses()` becomes checkable as written.
-    t.push((
-        vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_LIST_1_0,
-        Conformance::KnownDrift(
-            "Attribute.value is REQUIRED in trust-tasks-rs 0.17.9 while its description says the \
-             member is absent for a metadata-only view, so the default (non-disclosing) listing \
-             response is unrepresentable. Fixed upstream in dtgwg-trust-tasks-tf#367 (merged, \
-             awaiting release); un-drift on the 0.18 bump.",
-        ),
-    ));
-
     for (uri, req, resp) in persona_witnesses() {
-        if uri == vta_sdk::trust_tasks::TASK_PERSONA_ATTRIBUTE_LIST_1_0 {
-            continue;
-        }
         t.push((
             uri,
             Conformance::Checked(Witness {
