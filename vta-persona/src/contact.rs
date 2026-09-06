@@ -39,6 +39,14 @@ use crate::store::{PersonaStore, now_rfc3339};
 pub struct ContactClaim {
     pub r#type: String,
     pub value: serde_json::Value,
+    /// What the value is.
+    ///
+    /// Required by the published document schema on both the way in and the way
+    /// out. It was missing from this struct entirely, so `contact/put` silently
+    /// dropped whatever the peer sent and `contact/get` could not emit it —
+    /// the response failed schema validation with `"valueType" is a required
+    /// property`. Nothing noticed, because the contact family had no test.
+    pub value_type: crate::ValueType,
     /// As **asserted by the publisher**. A recipient must not treat a claimed
     /// credential-backed provenance as verified: it states what the publisher
     /// says backs the claim, and verification is a separate act against the
@@ -141,6 +149,7 @@ impl PersonaStore {
         known_by_persona: &str,
         document: ContactDocument,
         credential_refs: Vec<String>,
+        notes: Option<String>,
     ) -> Result<Filed, AppError> {
         let _guard = self.write_lock.lock().await;
 
@@ -148,7 +157,16 @@ impl PersonaStore {
             .find_contact(context_id, subject_did, known_by_persona)
             .await?;
 
-        let (contact_id, rev, created, changed, notes) = match existing {
+        // A supplied note replaces; an omitted one PRESERVES what is there.
+        //
+        // The wire member is optional, and a peer re-disclosing their card must
+        // not wipe the holder's private annotation about them — the note is the
+        // holder's, and nothing the subject sends should be able to clear it.
+        // Before this parameter existed the note could not be set at all:
+        // `contact/put` accepted `notes` on the wire and dropped it on the
+        // floor, so a member documented as "the holder's private annotation"
+        // was never stored.
+        let (contact_id, rev, created, changed, prior_notes) = match existing {
             None => (ulid::Ulid::new().to_string(), 1u64, true, Vec::new(), None),
             Some(prev) => {
                 let changed = diff_claims(&prev.document, &document);
@@ -178,7 +196,7 @@ impl PersonaStore {
             rev,
             document,
             credential_refs,
-            notes,
+            notes: notes.or(prior_notes),
             // A change nobody has looked at yet is the whole reason to keep
             // revisions; a producer clears it when the holder has seen the diff.
             has_unreviewed_change: !created && !changed.is_empty(),
@@ -458,6 +476,7 @@ mod tests {
             claims: pairs
                 .iter()
                 .map(|(t, v)| ContactClaim {
+                    value_type: crate::ValueType::String,
                     r#type: (*t).into(),
                     value: serde_json::json!(v),
                     provenance: None,
@@ -478,6 +497,7 @@ mod tests {
                 "did:me",
                 doc(&[("payment.address", "acct-1")]),
                 vec![],
+                None,
             )
             .await
             .unwrap();
@@ -490,6 +510,7 @@ mod tests {
                 "did:me",
                 doc(&[("payment.address", "acct-2")]),
                 vec![],
+                None,
             )
             .await
             .unwrap();
@@ -529,11 +550,19 @@ mod tests {
             "did:me",
             doc(&[("email", "a"), ("phone", "b")]),
             vec![],
+            None,
         )
         .await
         .unwrap();
         let f = s
-            .file_contact("ctx", "did:bob", "did:me", doc(&[("email", "a")]), vec![])
+            .file_contact(
+                "ctx",
+                "did:bob",
+                "did:me",
+                doc(&[("email", "a")]),
+                vec![],
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(f.changed_claims, vec!["phone"]);
@@ -545,11 +574,25 @@ mod tests {
         // their own address book — the one place nobody would look.
         let (_d, s) = fresh().await;
         let a = s
-            .file_contact("ctx", "did:bob", "did:work", doc(&[("email", "x")]), vec![])
+            .file_contact(
+                "ctx",
+                "did:bob",
+                "did:work",
+                doc(&[("email", "x")]),
+                vec![],
+                None,
+            )
             .await
             .unwrap();
         let b = s
-            .file_contact("ctx", "did:bob", "did:play", doc(&[("email", "x")]), vec![])
+            .file_contact(
+                "ctx",
+                "did:bob",
+                "did:play",
+                doc(&[("email", "x")]),
+                vec![],
+                None,
+            )
             .await
             .unwrap();
         assert_ne!(a.contact_id, b.contact_id);
@@ -571,12 +614,26 @@ mod tests {
         // "no longer kept": only the second means their comparison is unsound.
         let (_d, s) = fresh().await;
         let f = s
-            .file_contact("ctx", "did:bob", "did:me", doc(&[("email", "a")]), vec![])
+            .file_contact(
+                "ctx",
+                "did:bob",
+                "did:me",
+                doc(&[("email", "a")]),
+                vec![],
+                None,
+            )
             .await
             .unwrap();
-        s.file_contact("ctx", "did:bob", "did:me", doc(&[("email", "b")]), vec![])
-            .await
-            .unwrap();
+        s.file_contact(
+            "ctx",
+            "did:bob",
+            "did:me",
+            doc(&[("email", "b")]),
+            vec![],
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             s.reap_contact_revisions("ctx", &f.contact_id, 0)
@@ -607,12 +664,26 @@ mod tests {
         // record is evidence the holder can still be asked to account for.
         let (_d, s) = fresh().await;
         let f = s
-            .file_contact("ctx", "did:bob", "did:me", doc(&[("email", "a")]), vec![])
+            .file_contact(
+                "ctx",
+                "did:bob",
+                "did:me",
+                doc(&[("email", "a")]),
+                vec![],
+                None,
+            )
             .await
             .unwrap();
-        s.file_contact("ctx", "did:bob", "did:me", doc(&[("email", "b")]), vec![])
-            .await
-            .unwrap();
+        s.file_contact(
+            "ctx",
+            "did:bob",
+            "did:me",
+            doc(&[("email", "b")]),
+            vec![],
+            None,
+        )
+        .await
+        .unwrap();
         s.cite_contact_revision("ctx", &f.contact_id, 1)
             .await
             .unwrap();
@@ -640,6 +711,7 @@ mod tests {
             "did:me",
             doc(&[("email", "secret-address")]),
             vec![],
+            None,
         )
         .await
         .unwrap();

@@ -46,6 +46,14 @@ const DISCLOSURE_HISTORY: &str = "https://trusttasks.org/spec/persona/disclosure
 const PREVIEW: &str = "https://trusttasks.org/spec/persona/disclosure/preview/1.0";
 const PRESENT: &str = "https://trusttasks.org/spec/persona/disclosure/present/1.0";
 const LOCAL_PROFILE_PUT: &str = "https://trusttasks.org/spec/persona/local/profile/put/1.0";
+const LOCAL_PROFILE_GET: &str = "https://trusttasks.org/spec/persona/local/profile/get/1.0";
+const LOCAL_PROFILE_LIST: &str = "https://trusttasks.org/spec/persona/local/profile/list/1.0";
+const LOCAL_PROFILE_DELETE: &str = "https://trusttasks.org/spec/persona/local/profile/delete/1.0";
+const LOCAL_BINDING_SET: &str = "https://trusttasks.org/spec/persona/local/binding/set/1.0";
+const CONTACT_PUT: &str = "https://trusttasks.org/spec/persona/contact/put/1.0";
+const CONTACT_GET: &str = "https://trusttasks.org/spec/persona/contact/get/1.0";
+const CONTACT_LIST: &str = "https://trusttasks.org/spec/persona/contact/list/1.0";
+const CONTACT_DELETE: &str = "https://trusttasks.org/spec/persona/contact/delete/1.0";
 
 const CTX: &str = "ctx-persona-e2e";
 
@@ -599,6 +607,258 @@ async fn a_pool_backed_entry_still_carries_its_identity() {
     }
 }
 
+/// Contacts round-trip: record what a peer disclosed, read it back, list it,
+/// forget it.
+///
+/// `contact/put` maps the wire document into the store's shape through the same
+/// JSON round-trip that silently broke `local/profile/put` — where the two
+/// shapes differed by one required member and every valid request was rejected.
+/// This family had no test at all, so the same defect would have been just as
+/// invisible.
+#[tokio::test]
+async fn a_contact_round_trips() {
+    let (router, ctx) = build_test_app().await;
+    let scoped = authed(&ctx, "contacts", "admin", &[CTX]).await;
+    let persona = "did:key:z6MkPersonaKnows";
+
+    let (status, body) = post(
+        &router,
+        &scoped,
+        CONTACT_PUT,
+        json!({
+            "contextId": CTX,
+            "subjectDid": "did:key:z6MkPeer",
+            "knownByPersona": persona,
+            "document": {
+                "claims": [
+                    { "type": "name.display", "value": "Grace", "valueType": "string" }
+                ]
+            },
+            "notes": "met at the working group",
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "contact/put: {status} {body}");
+    let contact_id = payload_of(&body)
+        .get("contactId")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("no contactId in {body}"))
+        .to_string();
+
+    let (status, body) = post(
+        &router,
+        &scoped,
+        CONTACT_GET,
+        json!({ "contextId": CTX, "contactId": contact_id }),
+    )
+    .await;
+    assert!(!refused(status, &body), "contact/get: {status} {body}");
+    let got = payload_of(&body);
+    let rendered = serde_json::to_string(got).expect("serialises");
+    assert!(
+        rendered.contains("Grace"),
+        "the stored claim came back changed: {rendered}"
+    );
+
+    // Assert the members that were silently dropped, not just that something
+    // came back. `valueType` had no field in the stored shape at all, and
+    // `notes` — documented as the holder's private annotation — was accepted on
+    // the wire and never stored. Both round-trip now, and a test that only
+    // checked the response parsed would have missed both.
+    assert!(
+        rendered.contains("\"valueType\":\"string\""),
+        "valueType did not survive the round trip: {rendered}"
+    );
+    assert_eq!(
+        got.get("notes"),
+        Some(&json!("met at the working group")),
+        "the holder's private note was not stored: {rendered}"
+    );
+
+    let (status, body) = post(
+        &router,
+        &scoped,
+        CONTACT_LIST,
+        json!({ "contextId": CTX, "knownByPersona": persona }),
+    )
+    .await;
+    assert!(!refused(status, &body), "contact/list: {status} {body}");
+
+    let (status, body) = post(
+        &router,
+        &scoped,
+        CONTACT_DELETE,
+        json!({ "contextId": CTX, "contactId": contact_id }),
+    )
+    .await;
+    assert!(!refused(status, &body), "contact/delete: {status} {body}");
+}
+
+/// The context-local family, end to end: author a profile, bind a persona to
+/// it, read the binding back, list, then delete.
+///
+/// Four of these five tasks had no test at all. `local/profile/put` was the one
+/// that happened to be exercised — by a test asserting it *refuses* — and it
+/// was broken for every valid request. The rest were untested in both
+/// directions.
+#[tokio::test]
+async fn the_context_local_family_round_trips() {
+    let (router, ctx) = build_test_app().await;
+    let scoped = authed(&ctx, "local-walk", "admin", &[CTX]).await;
+    let persona = "did:key:z6MkPersonaLocal";
+
+    let (status, body) = post(
+        &router,
+        &scoped,
+        LOCAL_PROFILE_PUT,
+        json!({
+            "contextId": CTX,
+            "name": "game handle",
+            "entries": [{
+                "inline": { "type": "x:handle", "value": "ada99", "valueType": "string" }
+            }],
+        }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "local/profile/put: {status} {body}"
+    );
+    let profile = payload_of(&body)
+        .get("profileId")
+        .and_then(Value::as_str)
+        .expect("profileId")
+        .to_string();
+
+    let (status, body) = post(
+        &router,
+        &scoped,
+        LOCAL_BINDING_SET,
+        json!({ "contextId": CTX, "personaDid": persona, "profileId": profile }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "local/binding/set: {status} {body}"
+    );
+
+    // Read back through the ordinary binding view — a local binding is a
+    // binding, and a context should not need to know which kind it got.
+    let (status, body) = post(
+        &router,
+        &scoped,
+        BINDING_GET,
+        json!({ "contextId": CTX, "personaDid": persona }),
+    )
+    .await;
+    assert!(!refused(status, &body), "binding/get: {status} {body}");
+    assert_eq!(payload_of(&body).get("bound"), Some(&json!(true)), "{body}");
+
+    let (status, body) = post(
+        &router,
+        &scoped,
+        LOCAL_PROFILE_GET,
+        json!({ "contextId": CTX, "profileId": profile }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "local/profile/get: {status} {body}"
+    );
+
+    let (status, body) = post(
+        &router,
+        &scoped,
+        LOCAL_PROFILE_LIST,
+        json!({ "contextId": CTX }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "local/profile/list: {status} {body}"
+    );
+
+    // `unbind` because a persona is presenting under it — the same refusal the
+    // pool profiles carry, and the reason it is not a delete-by-omission.
+    let (status, body) = post(
+        &router,
+        &scoped,
+        LOCAL_PROFILE_DELETE,
+        json!({ "contextId": CTX, "profileId": profile, "unbind": true }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "local/profile/delete: {status} {body}"
+    );
+}
+
+/// The holder-scoped tasks that were only ever exercised as refusals.
+///
+/// `attribute/delete`, `profile/delete`, `correlation/analyze` and
+/// `disclosure/history` appear in `a_context_admin_cannot_reach_the_pool_over_
+/// the_wire` and nowhere else, so every one of them was asserted to fail and
+/// none was asserted to work. That is the same shape as the
+/// `local/profile/put` defect, on four more tasks.
+#[tokio::test]
+async fn the_holder_only_tasks_also_succeed_for_a_holder() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "holder-happy", "admin", &[]).await;
+
+    let attr = put_attribute(&router, &holder, "name.legal", "Ada Lovelace").await;
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        CORRELATION,
+        json!({ "attributeId": attr }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "correlation/analyze: {status} {body}"
+    );
+
+    let (status, body) = post(&router, &holder, DISCLOSURE_HISTORY, json!({})).await;
+    assert!(
+        !refused(status, &body),
+        "disclosure/history: {status} {body}"
+    );
+
+    let (_, body) = post(
+        &router,
+        &holder,
+        PROFILE_PUT,
+        json!({ "name": "doomed", "entries": [{ "ref": attr }] }),
+    )
+    .await;
+    let profile = payload_of(&body)
+        .get("profileId")
+        .and_then(Value::as_str)
+        .expect("profileId")
+        .to_string();
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_DELETE,
+        json!({ "profileId": profile, "unbind": true }),
+    )
+    .await;
+    assert!(!refused(status, &body), "profile/delete: {status} {body}");
+
+    // Cascade because the profile above referenced it; without the profile now
+    // gone this would be refused, which is itself worth exercising.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_DELETE,
+        json!({ "attributeId": attr, "cascade": true }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/delete: {status} {body}");
+}
+
 // ---------------------------------------------------------------------------
 // 3. The disclosure gate
 // ---------------------------------------------------------------------------
@@ -695,6 +955,44 @@ async fn a_disclosure_needs_a_preview_and_cannot_replay_one() {
         refused(status, &body),
         "a preview was spent twice — the second disclosure rode the first \
          decision: {status} {body}"
+    );
+}
+
+/// A context-local profile can actually be created.
+///
+/// The sibling test below asserts that an invalid entry is refused. On its own
+/// that proves nothing: a handler that refuses *everything* passes it. This is
+/// the other half — and it is the half that was missing, which is why
+/// `local/profile/put` shipped rejecting every valid request.
+#[tokio::test]
+async fn a_context_local_profile_can_be_created() {
+    let (router, ctx) = build_test_app().await;
+    let scoped = authed(&ctx, "local-ok", "admin", &[CTX]).await;
+
+    let (status, body) = post(
+        &router,
+        &scoped,
+        LOCAL_PROFILE_PUT,
+        json!({
+            "contextId": CTX,
+            "name": "throwaway",
+            "entries": [{
+                "inline": {
+                    "type": "x:handle",
+                    "value": "ada",
+                    "valueType": "string",
+                }
+            }],
+        }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "a valid context-local profile was refused: {status} {body}"
+    );
+    assert!(
+        payload_of(&body).get("profileId").is_some(),
+        "no profileId returned: {body}"
     );
 }
 
