@@ -95,6 +95,63 @@ are otherwise wire-compatible.
 
 ---
 
+## Read caching (`cache_ttl_secs`)
+
+The master seed is read on **every** key-touching request. `load_seed_bytes`
+has ~25 call sites — the signing oracle, key mint/rotate/list, the holder-key
+paths, every `did:webvh` lifecycle operation — and each one calls the backend.
+
+On the local backends (keyring, plaintext, config-seed, KMS-TEE) that costs
+nothing. On the remote backends it is a network round trip per request, and on
+AWS it is also a **billed** one: each `GetSecretValue` is one KMS `Decrypt`
+against the key protecting the secret. Uncached, KMS request volume scales with
+request volume — a VTA sustaining ~22 requests/second bills roughly 58M KMS
+requests a month purely re-reading a value that never changed.
+
+`cache_ttl_secs` bounds how long a successfully-read seed is reused from memory:
+
+```toml
+[secrets]
+cache_ttl_secs = 60   # default. 0 disables caching entirely.
+```
+
+At the 60-second default, that same VTA makes ~43k backend reads a month
+instead of 58M — the read now scales with wall-clock time, not traffic.
+
+The setup wizard's `[secrets]` table is a *backend selector*, not the runtime
+config, so `cache_ttl_secs` is not settable from `vta setup --from`. Setup writes
+the default into the generated `config.toml`; change it there if you need to.
+
+**Why this is safe.** The seed for a generation is immutable; it changes only on
+rotation. The cache is not gambling on a moving value, it is skipping a re-read
+of a constant. On top of that:
+
+- **Writes invalidate the cache.** `set` and `delete` drop the entry. This is
+  load-bearing: seed rotation writes the new seed and then *immediately* re-reads
+  it to re-encrypt every imported secret, so a cache that survived the write
+  would re-encrypt them under the wrong key.
+- **A read that raced a write is discarded**, never installed for a full TTL.
+  Signing requests run concurrently with rotation, so this case is real.
+- **A missing secret and every error are passed straight through.** Caching
+  "absent" would make a transient backend outage indistinguishable from an
+  unprovisioned VTA for the whole TTL.
+- **The cached copy is zeroized** on eviction and on drop (P0.7).
+
+**The one trade-off.** With caching on, the master seed is resident in process
+memory for up to the TTL, where previously it was resident only for the duration
+of each operation. On a busy VTA that is a distinction without a difference — it
+is effectively always resident anyway. On a quiet one it is a real (if small)
+widening of the window a memory-scraping attacker has to hit. The TTL is what
+bounds it; `cache_ttl_secs = 0` restores the old behaviour at the cost of a
+backend read per request.
+
+Nothing here defends against an **out-of-process** writer changing the seed,
+because there is no supported topology with one: runtime rotation happens
+in-process under a rotation lock, and the offline `vta` CLI surfaces require the
+daemon to be stopped.
+
+---
+
 ## Backends
 
 ### AWS Secrets Manager
@@ -140,6 +197,11 @@ IAM policy on the secret:
 `CreateSecret` is needed only on the very first `vta setup`. Drop it
 from the policy after first-boot if you'd like the principle of
 least privilege.
+
+> **Cost note.** Every `GetSecretValue` is also one billed KMS `Decrypt` against
+> the key protecting the secret. This is the backend where
+> [`cache_ttl_secs`](#read-caching-cache_ttl_secs) matters most — leave it at the
+> default rather than setting it to `0`, unless you have a specific reason.
 
 ### GCP Secret Manager
 

@@ -7,6 +7,7 @@ use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{Api, PostParams};
 use kube::{Client, ResourceExt};
+use tokio::sync::OnceCell;
 use tracing::debug;
 
 use crate::config::SecretsConfig;
@@ -40,6 +41,10 @@ pub struct K8sSeedStore {
     secret_name: String,
     namespace: Option<String>,
     secret_key: String,
+    /// Built once on first use and reused. `Client::try_default` re-reads the
+    /// ServiceAccount token / kubeconfig and stands up a fresh HTTP client
+    /// every time it is called (R1.2).
+    client: OnceCell<Client>,
 }
 
 impl K8sSeedStore {
@@ -48,20 +53,28 @@ impl K8sSeedStore {
             secret_name,
             namespace,
             secret_key,
+            client: OnceCell::new(),
         }
     }
 
     /// Build a namespaced `Secret` API handle, resolving the namespace and
     /// loading credentials from the in-cluster SA or local kubeconfig.
+    ///
+    /// The `Client` is cached; the `Api` handle is a cheap view over it.
     async fn api(&self) -> Result<Api<Secret>, AppError> {
-        let client = Client::try_default()
-            .await
-            .map_err(|e| format_kube_error("failed to initialise Kubernetes client", e))?;
+        let client = self
+            .client
+            .get_or_try_init(|| async {
+                Client::try_default()
+                    .await
+                    .map_err(|e| format_kube_error("failed to initialise Kubernetes client", e))
+            })
+            .await?;
         let namespace = self
             .namespace
             .clone()
             .unwrap_or_else(|| client.default_namespace().to_string());
-        Ok(Api::namespaced(client, &namespace))
+        Ok(Api::namespaced(client.clone(), &namespace))
     }
 }
 

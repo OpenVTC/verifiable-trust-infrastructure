@@ -11073,6 +11073,7 @@ dependencies = [
  "vaultrs",
  "vta-sdk",
  "vti-common",
+ "zeroize",
 ]
 
 [[package]]

@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use tokio::sync::OnceCell;
 use tracing::debug;
 use vti_common::error::AppError;
 
@@ -23,6 +24,10 @@ fn format_aws_error<E: std::error::Error>(context: &str, err: E) -> AppError {
 pub struct AwsSeedStore {
     secret_name: String,
     region: Option<String>,
+    /// Built once on first use and reused. Constructing a client per call also
+    /// re-resolves the credential chain per call — an IMDS/STS round trip on
+    /// top of the API call itself (R1.2).
+    client: OnceCell<aws_sdk_secretsmanager::Client>,
 }
 
 impl AwsSeedStore {
@@ -30,16 +35,21 @@ impl AwsSeedStore {
         Self {
             secret_name,
             region,
+            client: OnceCell::new(),
         }
     }
 
-    async fn client(&self) -> Result<aws_sdk_secretsmanager::Client, AppError> {
-        let mut config_loader = aws_config::from_env();
-        if let Some(ref region) = self.region {
-            config_loader = config_loader.region(aws_config::Region::new(region.clone()));
-        }
-        let sdk_config = config_loader.load().await;
-        Ok(aws_sdk_secretsmanager::Client::new(&sdk_config))
+    async fn client(&self) -> Result<&aws_sdk_secretsmanager::Client, AppError> {
+        self.client
+            .get_or_try_init(|| async {
+                let mut config_loader = aws_config::from_env();
+                if let Some(ref region) = self.region {
+                    config_loader = config_loader.region(aws_config::Region::new(region.clone()));
+                }
+                let sdk_config = config_loader.load().await;
+                Ok(aws_sdk_secretsmanager::Client::new(&sdk_config))
+            })
+            .await
     }
 }
 

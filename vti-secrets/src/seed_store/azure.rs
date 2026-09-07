@@ -3,6 +3,7 @@ use std::pin::Pin;
 
 use azure_identity::DeveloperToolsCredential;
 use azure_security_keyvault_secrets::SecretClient;
+use tokio::sync::OnceCell;
 use tracing::debug;
 
 use vti_common::error::AppError;
@@ -15,6 +16,9 @@ use vti_common::error::AppError;
 pub struct AzureSeedStore {
     vault_url: String,
     secret_name: String,
+    /// Built once on first use and reused. Rebuilding per call also rebuilds
+    /// the credential, which re-runs token acquisition (R1.2).
+    client: OnceCell<SecretClient>,
 }
 
 impl AzureSeedStore {
@@ -22,21 +26,27 @@ impl AzureSeedStore {
         Self {
             vault_url,
             secret_name,
+            client: OnceCell::new(),
         }
     }
 
-    fn client(&self) -> Result<SecretClient, AppError> {
-        let credential = DeveloperToolsCredential::new(None)
-            .map_err(|e| AppError::SecretStore(format!("Azure credential error: {e}")))?;
-        SecretClient::new(&self.vault_url, credential, None)
-            .map_err(|e| AppError::SecretStore(format!("Azure Key Vault client error: {e}")))
+    async fn client(&self) -> Result<&SecretClient, AppError> {
+        self.client
+            .get_or_try_init(|| async {
+                let credential = DeveloperToolsCredential::new(None)
+                    .map_err(|e| AppError::SecretStore(format!("Azure credential error: {e}")))?;
+                SecretClient::new(&self.vault_url, credential, None).map_err(|e| {
+                    AppError::SecretStore(format!("Azure Key Vault client error: {e}"))
+                })
+            })
+            .await
     }
 }
 
 impl super::SeedStore for AzureSeedStore {
     fn get(&self) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, AppError>> + Send + '_>> {
         Box::pin(async {
-            let client = self.client()?;
+            let client = self.client().await?;
             let result = client.get_secret(&self.secret_name, None).await;
 
             match result {
@@ -69,7 +79,7 @@ impl super::SeedStore for AzureSeedStore {
     fn set(&self, seed: &[u8]) -> Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>> {
         let hex_seed = hex::encode(seed);
         Box::pin(async move {
-            let client = self.client()?;
+            let client = self.client().await?;
 
             // Azure Key Vault set_secret creates-or-updates automatically
             let params = azure_security_keyvault_secrets::models::SetSecretParameters {
