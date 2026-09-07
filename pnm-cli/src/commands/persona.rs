@@ -92,10 +92,22 @@ async fn attribute(client: &VtaClient, command: PersonaAttributeCommands) -> Cmd
         PersonaAttributeCommands::List {
             type_prefix,
             values,
+            sensitive,
             include_stale,
             limit,
             cursor,
-        } => p::cmd_attribute_list(client, type_prefix, values, include_stale, limit, cursor).await,
+        } => {
+            p::cmd_attribute_list(
+                client,
+                type_prefix,
+                values,
+                sensitive,
+                include_stale,
+                limit,
+                cursor,
+            )
+            .await
+        }
         PersonaAttributeCommands::Delete {
             attribute_id,
             cascade,

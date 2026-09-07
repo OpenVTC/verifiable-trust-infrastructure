@@ -1274,6 +1274,269 @@ async fn a_persona_write_is_audited_with_what_changed_and_not_the_value() {
 }
 
 // ---------------------------------------------------------------------------
+// 5b. A listing withholds sensitive values, and the trail says which listing
+//     it was
+// ---------------------------------------------------------------------------
+
+/// One attribute out of a listing response, by claim type.
+fn listed<'a>(body: &'a Value, claim_type: &str) -> &'a Value {
+    payload_of(body)
+        .get("attributes")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("no attributes array in {body}"))
+        .iter()
+        .find(|a| a.get("type").and_then(Value::as_str) == Some(claim_type))
+        .unwrap_or_else(|| panic!("{claim_type} is missing from the listing: {body}"))
+}
+
+/// Every `detail` the trail holds for `action`.
+///
+/// A set rather than "the most recent one": the storage key is
+/// `log:{timestamp:020}:{uuid}`, so rows written inside the same second are
+/// ordered by a random uuid and "latest" is not a thing a test can ask for.
+/// What the trail has to support is telling one listing from another, and that
+/// is a claim about the whole set.
+async fn details_for(ctx: &TestAppContext, action: &str) -> Vec<String> {
+    audit_rows(ctx)
+        .await
+        .iter()
+        .filter(|r| r.action == action)
+        .map(|r| {
+            r.detail
+                .clone()
+                .unwrap_or_else(|| panic!("a {action} audit row carries no detail: {r:#?}"))
+        })
+        .collect()
+}
+
+/// `includeValues` moves the ordinary facts and leaves the card behind;
+/// `includeSensitive` is what moves the card.
+///
+/// Asserted at the wire, because that is the only place the claim is about the
+/// system. The store's own tests say `list_attributes` withholds; they cannot
+/// say that the handler passes `includeSensitive` through, and a handler that
+/// dropped it would pass every one of them while shipping card numbers to any
+/// caller that asked for values.
+///
+/// The three listings are asserted together and so are their audit rows. A
+/// trail in which "showed me my names" and "handed a process every card
+/// number" are the same row cannot answer the question a holder reviewing it
+/// has, and each half of that pair passes on its own against an implementation
+/// that is wrong in the other direction.
+#[tokio::test]
+async fn a_listing_withholds_sensitive_values_and_says_so_in_the_audit_trail() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "sensitive", "admin", &[]).await;
+
+    // Distinctive enough that finding it anywhere in a response or a row is
+    // unambiguous.
+    const CARD: &str = "4242424242424242";
+    const GIVEN: &str = "Ada";
+    put_attribute(&router, &holder, "payment.card", CARD).await;
+    put_attribute(&router, &holder, "name.given", GIVEN).await;
+
+    // 1. Values, but not the sensitive ones. `payment.card` resolves to `high`
+    //    from the registry — no holder set anything here.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_LIST,
+        json!({ "includeValues": true }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/list: {status} {body}");
+    assert!(
+        listed(&body, "payment.card").get("value").is_none(),
+        "a card number left the agent on a listing that asked only for values. \
+         Masking it in the consumer defends a screen and not a log, a crash \
+         dump, or the memory of the process holding it: {body}"
+    );
+    assert_eq!(
+        listed(&body, "name.given")
+            .get("value")
+            .and_then(Value::as_str),
+        Some(GIVEN),
+        "an ordinary value was withheld too, which is a picker that shows the \
+         holder nothing: {body}"
+    );
+    assert!(
+        !serde_json::to_string(&body).unwrap().contains(CARD),
+        "the card number is somewhere else in the response: {body}"
+    );
+    // The row is still there. This is withholding a value, not hiding a fact:
+    // a holder must not conclude their agent has lost the card.
+    assert_eq!(
+        listed(&body, "payment.card")
+            .get("type")
+            .and_then(Value::as_str),
+        Some("payment.card")
+    );
+
+    // 2. And the escalation that moves it. The holder can always read their own
+    //    pool back; what they cannot do is get there by forgetting.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_LIST,
+        json!({ "includeValues": true, "includeSensitive": true }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/list: {status} {body}");
+    assert_eq!(
+        listed(&body, "payment.card")
+            .get("value")
+            .and_then(Value::as_str),
+        Some(CARD),
+        "the holder could not read their own card back by asking for it: {body}"
+    );
+    // 3. `includeSensitive` alone introduces no plaintext. It widens
+    //    `includeValues` and is never a request of its own.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_LIST,
+        json!({ "includeSensitive": true }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/list: {status} {body}");
+    for claim_type in ["payment.card", "name.given"] {
+        assert!(
+            listed(&body, claim_type).get("value").is_none(),
+            "`includeSensitive` without `includeValues` produced plaintext for \
+             {claim_type}: {body}"
+        );
+    }
+
+    // Three listings, three rows, and no two of them alike. The three ways this
+    // task can behave are the three the holder most needs told apart, and the
+    // response carries nothing that would let a reviewer reconstruct which was
+    // which — a withheld value and a fact that never had one look identical on
+    // the wire.
+    let details = details_for(&ctx, "persona.attribute.list").await;
+    assert_eq!(details.len(), 3, "one row per listing: {details:#?}");
+    assert_eq!(
+        details
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3,
+        "two listings are indistinguishable in the audit trail: {details:#?}"
+    );
+    for expected in [
+        "values included, 1 sensitive value(s) withheld",
+        "values included, sensitive values included",
+        "metadata only",
+    ] {
+        assert!(
+            details.iter().any(|d| d.contains(expected)),
+            "no audit row says `{expected}`: {details:#?}"
+        );
+    }
+}
+
+/// The holder's own decision survives the write and decides the read — in the
+/// direction the registry would not have chosen.
+///
+/// Both directions, because an implementation that honours only the tightening
+/// one is not honouring an override at all: it is applying `max()` to the
+/// holder's opinion and the registry's, which overrules the person the control
+/// exists to serve.
+#[tokio::test]
+async fn a_holders_sensitivity_override_survives_the_write_and_decides_the_read() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "sensitivity-override", "admin", &[]).await;
+
+    // `account.handle` is `normal` in the registry; this holder disagrees.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PUT,
+        json!({
+            "type": "account.handle",
+            "value": "ada",
+            "valueType": "string",
+            "provenance": { "kind": "selfAsserted" },
+            "sensitivity": "high",
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/put: {status} {body}");
+
+    // `payment.card` is `high` in the registry; this holder disagrees.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PUT,
+        json!({
+            "type": "payment.card",
+            "value": "4111111111111111",
+            "valueType": "string",
+            "provenance": { "kind": "selfAsserted" },
+            "sensitivity": "normal",
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/put: {status} {body}");
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_LIST,
+        json!({ "includeValues": true }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/list: {status} {body}");
+    assert!(
+        listed(&body, "account.handle").get("value").is_none(),
+        "the holder marked this sensitive and the listing carried it anyway: {body}"
+    );
+    assert_eq!(
+        listed(&body, "payment.card")
+            .get("value")
+            .and_then(Value::as_str),
+        Some("4111111111111111"),
+        "the holder's own decision about their own pool was overruled by the \
+         registry: {body}"
+    );
+
+    // The override is stored, not merely obeyed once — and it comes back on the
+    // wire, which is what a client needs to render the decision the holder
+    // made rather than the default it would otherwise infer.
+    assert_eq!(
+        listed(&body, "account.handle")
+            .get("sensitivity")
+            .and_then(Value::as_str),
+        Some("high")
+    );
+    // An attribute nobody decided anything about carries no member at all.
+    // Absent is not `normal`: it is what lets a later tightening of the
+    // registry protect this attribute too.
+    let handle = put_attribute(&router, &holder, "org.role", "Engineer").await;
+    let (_status, body) = post(
+        &router,
+        &holder,
+        ATTR_LIST,
+        json!({ "typePrefix": "org", "includeValues": true }),
+    )
+    .await;
+    assert!(
+        listed(&body, "org.role").get("sensitivity").is_none(),
+        "an attribute with no holder decision reported one: {body}"
+    );
+    assert!(!handle.is_empty());
+
+    // A write that records the decision leaves a trail that says so.
+    let rows = audit_rows(&ctx).await;
+    assert!(
+        rows.iter().any(|r| r.action == "persona.attribute.put"
+            && r.detail
+                .as_deref()
+                .is_some_and(|d| d.contains("sensitivity normal set by the holder"))),
+        "no audit row records the holder loosening a card: {rows:#?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 6. `correlation/analyze` names where a value went
 // ---------------------------------------------------------------------------
 

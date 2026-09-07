@@ -32,6 +32,7 @@ use tokio::sync::Mutex;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
+use crate::claim_types::{self, Sensitivity};
 use crate::correlation;
 use crate::model::{Attribute, Provenance, Ulid, ValueType, Version};
 use crate::storage;
@@ -61,6 +62,55 @@ pub(crate) enum Slot {
 pub struct Written {
     pub version: Version,
     pub created: bool,
+}
+
+/// How much of a listing's plaintext the caller asked for.
+///
+/// Three states rather than two booleans, because the fourth combination —
+/// sensitive values without values — is not a request. `persona/attribute/list`
+/// says `includeSensitive` "widens `includeValues`, and can never be the
+/// thing that introduces plaintext on its own"; a pair of booleans lets a call
+/// site express the combination anyway and obliges every reader to remember
+/// that it means nothing. [`ValueVisibility::from_flags`] performs that
+/// collapse once, where the wire members arrive.
+///
+/// Ordered least revealing first, so a variant added in the wrong place reads
+/// wrong rather than merely being wrong.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueVisibility {
+    /// Metadata only. The default, and what a picker needs.
+    Metadata,
+    /// Values, except those resolving to [`Sensitivity::High`].
+    Ordinary,
+    /// Every value, sensitive ones included.
+    All,
+}
+
+impl ValueVisibility {
+    /// Collapse the two wire members into the three states they can express.
+    #[must_use]
+    pub fn from_flags(include_values: bool, include_sensitive: bool) -> Self {
+        match (include_values, include_sensitive) {
+            (false, _) => Self::Metadata,
+            (true, false) => Self::Ordinary,
+            (true, true) => Self::All,
+        }
+    }
+}
+
+/// The attributes a listing returned, and what it withheld to return them.
+///
+/// The count travels with the rows because the alternative is deriving it at
+/// the call site from an absent `value` — which cannot tell a value withheld
+/// for sensitivity from one that was never asked for or one whose credential
+/// went stale. Three causes, one symptom; only the store knows which applied.
+#[derive(Clone, Debug)]
+pub struct Listing {
+    pub attributes: Vec<Attribute>,
+    /// How many values [`ValueVisibility::Ordinary`] held back. Zero for every
+    /// other visibility, including [`ValueVisibility::Metadata`], which
+    /// withholds everything for a different reason.
+    pub withheld_sensitive: usize,
 }
 
 /// Outcome of a delete. `existed` distinguishes a removal from a no-op.
@@ -302,10 +352,16 @@ impl PersonaStore {
 
     /// Every live attribute, optionally narrowed by vocabulary prefix.
     ///
-    /// `include_values` is opt-in because the common case — rendering a picker
-    /// so a holder can choose what to compose with — needs type and label, not
-    /// plaintext. Making the sensitive path the one a caller has to ask for
-    /// means it is never the one they get by forgetting.
+    /// [`ValueVisibility`] is opt-in because the common case — rendering a
+    /// picker so a holder can choose what to compose with — needs type and
+    /// label, not plaintext. Making the sensitive path the one a caller has to
+    /// ask for means it is never the one they get by forgetting.
+    ///
+    /// A value withheld for sensitivity leaves its **row** in place: type,
+    /// label, provenance, version and staleness all come back. This is
+    /// withholding a value, not hiding a fact — a holder listing their pool
+    /// must still see that the card is there, or the control teaches them their
+    /// own store has lost something.
     ///
     /// Stale credential-backed attributes are returned carrying their reason
     /// rather than omitted: a pool that looks smaller than it is would leave
@@ -313,13 +369,15 @@ impl PersonaStore {
     pub async fn list_attributes(
         &self,
         type_prefix: Option<&str>,
-        include_values: bool,
-    ) -> Result<Vec<Attribute>, AppError> {
+        values: ValueVisibility,
+    ) -> Result<Listing, AppError> {
         let rows = self
             .ks
             .prefix_iter_raw(storage::ATTRIBUTE_PREFIX.as_bytes().to_vec())
             .await?;
-        Ok(rows
+
+        let mut withheld_sensitive = 0usize;
+        let attributes = rows
             .into_iter()
             .filter_map(|(_k, v)| match serde_json::from_slice::<Slot>(&v) {
                 Ok(Slot::Live(a)) => Some(a),
@@ -327,12 +385,29 @@ impl PersonaStore {
             })
             .filter(|a| type_prefix.is_none_or(|p| a.r#type.starts_with(p)))
             .map(|mut a| {
-                if !include_values {
-                    a.value = None;
+                match values {
+                    ValueVisibility::Metadata => a.value = None,
+                    ValueVisibility::Ordinary
+                        if a.value.is_some()
+                            && claim_types::sensitivity_of(&a) == Sensitivity::High =>
+                    {
+                        // Counted only here, so the count means "the
+                        // sensitivity control did this" rather than "no value
+                        // came back". A metadata-only listing withholds every
+                        // value and none of them for this reason.
+                        withheld_sensitive += 1;
+                        a.value = None;
+                    }
+                    ValueVisibility::Ordinary | ValueVisibility::All => {}
                 }
                 a
             })
-            .collect())
+            .collect();
+
+        Ok(Listing {
+            attributes,
+            withheld_sensitive,
+        })
     }
 
     /// Profiles whose entries refer to this attribute, from the reverse index —
@@ -459,6 +534,9 @@ pub fn new_attribute(
         provenance,
         stale: None,
         stale_reason: None,
+        // Unset, not `normal`: a new attribute records no holder decision, so
+        // its sensitivity resolves from the registry every time it is read.
+        sensitivity: None,
         version: 0,
         created_at: now.clone(),
         updated_at: now,
@@ -632,81 +710,262 @@ mod list_tests {
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 
-    #[tokio::test]
-    async fn listing_withholds_values_unless_asked() {
+    async fn fresh_store() -> (tempfile::TempDir, PersonaStore) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&StoreConfig {
             data_dir: dir.path().to_path_buf(),
         })
         .unwrap();
-        let s = PersonaStore::new(store.keyspace(vta_keyspaces::PERSONA).unwrap(), [1u8; 32]);
+        let ks = store.keyspace(vta_keyspaces::PERSONA).unwrap();
+        (dir, PersonaStore::new(ks, [1u8; 32]))
+    }
 
-        s.put(
-            new_attribute(
-                "phone.mobile",
-                ValueType::String,
-                serde_json::json!("+61"),
-                Provenance::SelfAsserted,
-            ),
-            None,
-        )
-        .await
-        .unwrap();
+    async fn store_one(s: &PersonaStore, claim_type: &str, value: &str) -> Attribute {
+        let a = new_attribute(
+            claim_type,
+            ValueType::String,
+            serde_json::json!(value),
+            Provenance::SelfAsserted,
+        );
+        s.put(a.clone(), None).await.unwrap();
+        a
+    }
 
-        let quiet = s.list_attributes(None, false).await.unwrap();
-        assert_eq!(quiet.len(), 1);
+    /// Find one attribute in a listing by claim type.
+    fn of_type<'a>(listing: &'a Listing, claim_type: &str) -> &'a Attribute {
+        listing
+            .attributes
+            .iter()
+            .find(|a| a.r#type == claim_type)
+            .unwrap_or_else(|| panic!("{claim_type} is missing from the listing"))
+    }
+
+    #[tokio::test]
+    async fn listing_withholds_values_unless_asked() {
+        let (_d, s) = fresh_store().await;
+        // `account.handle` resolves to `normal`, so this test is about
+        // `includeValues` alone and cannot pass by accident on sensitivity.
+        store_one(&s, "account.handle", "ada").await;
+
+        let quiet = s
+            .list_attributes(None, ValueVisibility::Metadata)
+            .await
+            .unwrap();
+        assert_eq!(quiet.attributes.len(), 1);
         assert!(
-            quiet[0].value.is_none(),
+            quiet.attributes[0].value.is_none(),
             "the default must not move plaintext"
         );
+        assert_eq!(
+            quiet.withheld_sensitive, 0,
+            "a metadata listing withholds everything, but not for sensitivity"
+        );
 
-        let loud = s.list_attributes(None, true).await.unwrap();
-        assert!(loud[0].value.is_some());
+        let loud = s
+            .list_attributes(None, ValueVisibility::Ordinary)
+            .await
+            .unwrap();
+        assert!(loud.attributes[0].value.is_some());
     }
 
     #[tokio::test]
     async fn a_prefix_selects_a_vocabulary_family_and_a_tombstone_is_not_listed() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(&StoreConfig {
-            data_dir: dir.path().to_path_buf(),
-        })
-        .unwrap();
-        let s = PersonaStore::new(store.keyspace(vta_keyspaces::PERSONA).unwrap(), [1u8; 32]);
+        let (_d, s) = fresh_store().await;
 
-        let a = new_attribute(
-            "phone.work",
-            ValueType::String,
-            serde_json::json!("1"),
-            Provenance::SelfAsserted,
-        );
-        s.put(a.clone(), None).await.unwrap();
-        s.put(
-            new_attribute(
-                "name.legal",
-                ValueType::String,
-                serde_json::json!("n"),
-                Provenance::SelfAsserted,
-            ),
-            None,
-        )
-        .await
-        .unwrap();
+        let a = store_one(&s, "phone.work", "1").await;
+        store_one(&s, "name.legal", "n").await;
 
-        assert_eq!(
-            s.list_attributes(Some("phone"), false).await.unwrap().len(),
-            1
-        );
-        assert_eq!(
-            s.list_attributes(Some("name"), false).await.unwrap().len(),
-            1
-        );
-        assert_eq!(s.list_attributes(None, false).await.unwrap().len(), 2);
+        for (prefix, expected) in [(Some("phone"), 1), (Some("name"), 1), (None, 2)] {
+            assert_eq!(
+                s.list_attributes(prefix, ValueVisibility::Metadata)
+                    .await
+                    .unwrap()
+                    .attributes
+                    .len(),
+                expected
+            );
+        }
 
         s.delete(&a.attribute_id, false).await.unwrap();
         assert_eq!(
-            s.list_attributes(Some("phone"), false).await.unwrap().len(),
+            s.list_attributes(Some("phone"), ValueVisibility::Metadata)
+                .await
+                .unwrap()
+                .attributes
+                .len(),
             0,
             "a tombstone is not a live attribute"
         );
+    }
+
+    /// The control this whole path exists for: a listing that asked for values
+    /// still does not carry a sensitive one.
+    ///
+    /// Paired with its success case below, deliberately. A refusal test alone
+    /// passes against an implementation that withholds everything, which is a
+    /// picker that shows the holder nothing.
+    #[tokio::test]
+    async fn a_sensitive_value_is_withheld_from_a_listing_that_asked_only_for_values() {
+        let (_d, s) = fresh_store().await;
+        store_one(&s, "payment.card", "4242424242424242").await;
+        store_one(&s, "name.given", "Ada").await;
+
+        let listing = s
+            .list_attributes(None, ValueVisibility::Ordinary)
+            .await
+            .unwrap();
+
+        assert!(
+            of_type(&listing, "payment.card").value.is_none(),
+            "a card number left the store on a listing that never asked for \
+             sensitive values — masking it afterwards defends a screen and not \
+             a log, a crash dump, or this process's memory"
+        );
+        assert_eq!(
+            of_type(&listing, "name.given").value,
+            Some(serde_json::json!("Ada")),
+            "an ordinary value was withheld too, which is a picker that shows \
+             the holder nothing"
+        );
+        assert_eq!(listing.withheld_sensitive, 1);
+    }
+
+    #[tokio::test]
+    async fn a_sensitive_value_is_returned_when_the_listing_asked_for_sensitive_values() {
+        let (_d, s) = fresh_store().await;
+        store_one(&s, "payment.card", "4242424242424242").await;
+
+        let listing = s.list_attributes(None, ValueVisibility::All).await.unwrap();
+        assert_eq!(
+            of_type(&listing, "payment.card").value,
+            Some(serde_json::json!("4242424242424242")),
+            "the holder could not read their own card back by asking for it"
+        );
+        assert_eq!(
+            listing.withheld_sensitive, 0,
+            "nothing was withheld, so nothing should be counted"
+        );
+    }
+
+    /// Withholding a value is not hiding a fact. The row and everything about
+    /// it still come back, or a holder listing their own pool would conclude
+    /// the store had lost the card.
+    #[tokio::test]
+    async fn a_withheld_attribute_keeps_its_metadata() {
+        let (_d, s) = fresh_store().await;
+        let mut card = new_attribute(
+            "payment.card",
+            ValueType::String,
+            serde_json::json!("4242424242424242"),
+            Provenance::SelfAsserted,
+        );
+        card.label = Some("the blue one".into());
+        s.put(card.clone(), None).await.unwrap();
+
+        let listing = s
+            .list_attributes(None, ValueVisibility::Ordinary)
+            .await
+            .unwrap();
+        let row = of_type(&listing, "payment.card");
+        assert_eq!(row.attribute_id, card.attribute_id);
+        assert_eq!(row.label.as_deref(), Some("the blue one"));
+        assert_eq!(row.value_type, ValueType::String);
+        assert!(row.version > 0);
+        assert!(row.value.is_none());
+    }
+
+    /// `includeSensitive` widens `includeValues`; it is never the member that
+    /// introduces plaintext.
+    #[tokio::test]
+    async fn asking_for_sensitive_values_without_values_asks_for_no_plaintext() {
+        assert_eq!(
+            ValueVisibility::from_flags(false, true),
+            ValueVisibility::Metadata
+        );
+        assert_eq!(
+            ValueVisibility::from_flags(false, false),
+            ValueVisibility::Metadata
+        );
+        assert_eq!(
+            ValueVisibility::from_flags(true, false),
+            ValueVisibility::Ordinary
+        );
+        assert_eq!(
+            ValueVisibility::from_flags(true, true),
+            ValueVisibility::All
+        );
+
+        let (_d, s) = fresh_store().await;
+        store_one(&s, "payment.card", "4242424242424242").await;
+        let listing = s
+            .list_attributes(None, ValueVisibility::from_flags(false, true))
+            .await
+            .unwrap();
+        assert!(
+            listing.attributes[0].value.is_none(),
+            "`includeSensitive` alone introduced plaintext"
+        );
+    }
+
+    /// The registry decides, and the holder overrules it — both directions, on
+    /// the read path rather than only in the classifier's own tests.
+    #[tokio::test]
+    async fn the_holders_own_sensitivity_decides_what_a_listing_carries() {
+        let (_d, s) = fresh_store().await;
+
+        // A type the registry calls ordinary, which the holder does not.
+        let mut handle = new_attribute(
+            "account.handle",
+            ValueType::String,
+            serde_json::json!("ada"),
+            Provenance::SelfAsserted,
+        );
+        handle.sensitivity = Some(Sensitivity::High);
+        s.put(handle, None).await.unwrap();
+
+        // A type the registry calls sensitive, which the holder does not.
+        let mut card = new_attribute(
+            "payment.card",
+            ValueType::String,
+            serde_json::json!("4242424242424242"),
+            Provenance::SelfAsserted,
+        );
+        card.sensitivity = Some(Sensitivity::Normal);
+        s.put(card, None).await.unwrap();
+
+        let listing = s
+            .list_attributes(None, ValueVisibility::Ordinary)
+            .await
+            .unwrap();
+        assert!(
+            of_type(&listing, "account.handle").value.is_none(),
+            "the holder marked this sensitive and the listing carried it anyway"
+        );
+        assert!(
+            of_type(&listing, "payment.card").value.is_some(),
+            "the holder's own decision about their own pool was overruled"
+        );
+        assert_eq!(listing.withheld_sensitive, 1);
+    }
+
+    /// An unregistered token is withheld, and that is the conservative answer
+    /// working rather than a bug. `x:` borrows nothing from the registry.
+    #[tokio::test]
+    async fn an_unregistered_token_is_withheld_by_default() {
+        let (_d, s) = fresh_store().await;
+        store_one(&s, "x:loyaltyNumber", "9911").await;
+        store_one(&s, "name.somethingNew", "Ada").await;
+
+        let listing = s
+            .list_attributes(None, ValueVisibility::Ordinary)
+            .await
+            .unwrap();
+        assert!(of_type(&listing, "x:loyaltyNumber").value.is_none());
+        assert!(
+            of_type(&listing, "name.somethingNew").value.is_none(),
+            "an invented token inherited `name`'s permissiveness — a family \
+             entry can only ever tighten"
+        );
+        assert_eq!(listing.withheld_sensitive, 2);
     }
 }

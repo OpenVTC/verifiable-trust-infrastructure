@@ -260,7 +260,7 @@ fn decide(
 // noticing. The generated types cannot.
 
 use trust_tasks_rs::specs::persona as spec;
-use vta_persona::{PersonaStore, ValueType, new_attribute};
+use vta_persona::{Listing, PersonaStore, Sensitivity, ValueType, ValueVisibility, new_attribute};
 
 /// Open the store for this request.
 ///
@@ -370,11 +370,12 @@ fn provenance_kind(p: &vta_persona::Provenance) -> &'static str {
     }
 }
 
-/// The wire spelling of a value type — `string`, `number`, `date`, …
+/// The wire spelling of a string-valued enum — `string`, `date`, `high`, …
 ///
-/// Via serde rather than a second `match`, so a variant added to `ValueType`
-/// cannot end up spelled one way in a response and another in the audit row.
-fn value_type_name(v: ValueType) -> String {
+/// Via serde rather than a second `match` per enum, so a variant added to
+/// `ValueType` or `Sensitivity` cannot end up spelled one way in a response and
+/// another in the audit row.
+fn wire_name<T: serde::Serialize>(v: T) -> String {
     serde_json::to_value(v)
         .ok()
         .and_then(|j| j.as_str().map(str::to_string))
@@ -454,6 +455,31 @@ pub(super) async fn handle_attribute_put(
     // `CredentialBacked` provenance must not.
     let provenance_kind = provenance_kind(&provenance);
 
+    // The holder's own decision, and only where they made one. Absent is not
+    // `normal`: it records that nothing was decided, so the default resolves
+    // from the claim-type registry at every read and a later tightening of that
+    // registry protects the attributes already in the pool.
+    //
+    // Through the wire spelling rather than a match, for the reason `valueType`
+    // above takes the same route: the generated enum is `#[non_exhaustive]`, so
+    // a match needs a wildcard arm, and a wildcard arm is where a variant added
+    // upstream would land silently.
+    let sensitivity: Option<Sensitivity> = match req.sensitivity.as_ref() {
+        None => None,
+        Some(s) => match serde_json::to_value(s)
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+        {
+            Some(parsed) => Some(parsed),
+            None => {
+                return reject(
+                    &doc,
+                    AppError::Validation("unrecognised sensitivity".into()),
+                );
+            }
+        },
+    };
+
     let mut attribute = new_attribute(
         req.type_.to_string(),
         value_type,
@@ -464,6 +490,7 @@ pub(super) async fn handle_attribute_put(
         attribute.attribute_id = id.to_string();
     }
     attribute.label = req.label.as_ref().map(|l| (**l).clone());
+    attribute.sensitivity = sensitivity;
 
     let attribute_id = attribute.attribute_id.clone();
     let value = attribute.value.clone();
@@ -482,11 +509,20 @@ pub(super) async fn handle_attribute_put(
         None => 0,
     };
 
+    // A sensitivity override points either way — `normal` on a card is a
+    // holder deciding their own tooling may show it — so the row records the
+    // decision and not merely that a write happened. Without it a holder
+    // reviewing the trail cannot see when the withholding stopped.
+    let sensitivity_note = match sensitivity {
+        Some(s) => format!(", sensitivity {} set by the holder", wire_name(s)),
+        None => String::new(),
+    };
+
     // Type, value TYPE, provenance kind and version — never `value`. See
     // `audit_persona` for why that line is drawn on lifetime rather than on
     // who may read the row.
     let detail = format!(
-        "{} attribute {attribute_id}: claim type {}, valueType {}, provenance {}, now at \
+        "{} attribute {attribute_id}: claim type {}, valueType {}, provenance {}{}, now at \
          version {}",
         if written.created {
             "created"
@@ -494,8 +530,9 @@ pub(super) async fn handle_attribute_put(
             "updated"
         },
         req.type_.as_str(),
-        value_type_name(value_type),
+        wire_name(value_type),
         provenance_kind,
+        sensitivity_note,
         written.version,
     );
     audit_persona(
@@ -537,17 +574,64 @@ pub(super) async fn handle_attribute_list(
     }
 
     // Values are withheld unless asked for: the common case — rendering a
-    // picker — needs type and label, not plaintext.
-    let include_values = req.include_values;
+    // picker — needs type and label, not plaintext. `includeSensitive` widens
+    // that request and can never be the member that introduces plaintext on its
+    // own, so the two collapse into one visibility here rather than travelling
+    // as a pair every reader has to remember the fourth state of.
+    let visibility = ValueVisibility::from_flags(req.include_values, req.include_sensitive);
     let s = store(state);
     let prefix = req.type_prefix.as_ref().map(|p| p.as_str());
-    let attributes = match s.list_attributes(prefix, include_values).await {
-        Ok(a) => a,
+    let listing = match s.list_attributes(prefix, visibility).await {
+        Ok(l) => l,
         Err(e) => return reject(&doc, e),
     };
 
-    audit_persona(state, "persona.attribute.list", auth, None, None, None).await;
-    success_response(&doc, serde_json::json!({ "attributes": attributes }))
+    let detail = list_detail(&listing, visibility, prefix);
+    audit_persona(
+        state,
+        "persona.attribute.list",
+        auth,
+        None,
+        None,
+        Some(&detail),
+    )
+    .await;
+    success_response(
+        &doc,
+        serde_json::json!({ "attributes": listing.attributes }),
+    )
+}
+
+/// What a listing did, for the audit trail.
+///
+/// A read is audited at all because this one enumerates the holder's identity;
+/// what makes the row worth keeping is which of the three listings it was. A
+/// trail in which "showed me the names" and "handed a process every card
+/// number" are the same row cannot answer the question a holder reviewing it
+/// actually has.
+///
+/// Counts, a claim-type prefix and the visibility — never a value. See
+/// [`audit_persona`] for why that line is drawn on lifetime rather than on who
+/// may read the row: `attribute/list` hands the values themselves to exactly
+/// the caller who can read the audit log, so a value here would disclose
+/// nothing new and would outlive the record it came from.
+fn list_detail(listing: &Listing, visibility: ValueVisibility, prefix: Option<&str>) -> String {
+    let scope = match prefix {
+        Some(p) => format!(" under {p}"),
+        None => String::new(),
+    };
+    let plaintext = match visibility {
+        ValueVisibility::Metadata => "metadata only, no values".to_string(),
+        ValueVisibility::Ordinary => format!(
+            "values included, {} sensitive value(s) withheld",
+            listing.withheld_sensitive
+        ),
+        ValueVisibility::All => "values included, sensitive values included".to_string(),
+    };
+    format!(
+        "listed {} attribute(s){scope}: {plaintext}",
+        listing.attributes.len()
+    )
 }
 
 pub(super) async fn handle_attribute_delete(

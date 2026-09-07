@@ -16,6 +16,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::claim_types::Sensitivity;
+
 /// A ULID in Crockford base32. Record identity for attributes and profiles.
 ///
 /// Chosen over a UUID because the leading 48 bits are a timestamp, so a
@@ -185,6 +187,20 @@ pub struct Attribute {
     pub stale: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stale_reason: Option<StaleReason>,
+    /// Set **only** where the holder decided it explicitly.
+    ///
+    /// Absent is not `normal`: it records that no decision was made, and the
+    /// default is derived from the claim-type registry at read
+    /// ([`crate::claim_types::sensitivity_of`]). Storing the resolved value
+    /// instead would freeze it — a later tightening of the registry would then
+    /// protect new attributes and leave this one exposed.
+    ///
+    /// There is deliberately no `release` counterpart. The published schema
+    /// defines one, and nothing in this workspace enforces a `stepUp` at
+    /// disclosure yet; a stored override for a gate that does not exist is a
+    /// promise the holder would be entitled to rely on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sensitivity: Option<Sensitivity>,
     pub version: Version,
     pub created_at: String,
     pub updated_at: String,

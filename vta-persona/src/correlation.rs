@@ -431,7 +431,16 @@ impl crate::PersonaStore {
 
         let subjects: Vec<crate::Attribute> = match attribute_id {
             Some(id) => self.get(id).await?.into_iter().collect(),
-            None => self.list_attributes(None, true).await?,
+            // Every value, sensitive ones included. The sensitivity control is
+            // about what a listing *carries out*; here the values are hashed
+            // against the correlation index and never leave — a `payment.card`
+            // skipped for sensitivity would be a card whose reuse the holder is
+            // never warned about.
+            None => {
+                self.list_attributes(None, crate::ValueVisibility::All)
+                    .await?
+                    .attributes
+            }
         };
 
         for a in subjects {

@@ -38,6 +38,7 @@
 //! so there is one BBS implementation in the workspace rather than two.
 
 pub mod binding;
+pub mod claim_types;
 pub mod contact;
 pub mod correlation;
 pub mod disclosure;
@@ -48,6 +49,10 @@ pub mod storage;
 pub mod store;
 
 pub use binding::{BindingSummary, Bound, MaterialisedClaim};
+// Types only. `defaults_for` and `sensitivity_of` keep their module in the
+// path: at the crate root their names say nothing about which registry, and
+// there will be more than one thing with defaults.
+pub use claim_types::{Axes, MaskStyle, ReleaseRequirement, Sensitivity};
 pub use contact::{Contact, ContactClaim, ContactDocument, ContactRevision, ContactSummary, Filed};
 pub use disclosure::{DisclosedClaim, DisclosureRecord, HistoryQuery, new_disclosure};
 pub use model::{
@@ -56,7 +61,7 @@ pub use model::{
 };
 pub use present::{PREVIEW_TTL_SECONDS, Preview, PreviewClaim, Renderer, renderer};
 pub use profile::{ResolvedClaim, is_pool_free, new_profile};
-pub use store::{Deleted, PersonaStore, Written, new_attribute};
+pub use store::{Deleted, Listing, PersonaStore, ValueVisibility, Written, new_attribute};
 
 #[cfg(test)]
 mod published_types {
@@ -83,6 +88,25 @@ mod published_types {
             <put::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             "https://trusttasks.org/spec/persona/attribute/put/1.0"
         );
+    }
+
+    /// The axis the read path acts on, so a variant renamed upstream cannot
+    /// reach the wire spelled one way here and another there. `high` is the
+    /// value that withholds a plaintext; a spelling drift would silently stop
+    /// withholding it.
+    #[test]
+    fn our_sensitivity_matches_the_published_enum() {
+        use trust_tasks_rs::specs::persona::attribute::list::v1_0 as list;
+        for (ours, theirs) in [
+            (crate::Sensitivity::Normal, list::Sensitivity::Normal),
+            (crate::Sensitivity::High, list::Sensitivity::High),
+        ] {
+            assert_eq!(
+                serde_json::to_value(ours).unwrap(),
+                serde_json::to_value(theirs).unwrap(),
+                "our Sensitivity and the published one disagree on the wire"
+            );
+        }
     }
 
     #[test]
