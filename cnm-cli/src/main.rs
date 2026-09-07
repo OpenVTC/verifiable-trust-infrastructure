@@ -1138,6 +1138,10 @@ async fn main() {
                     label: admin_label,
                     expires_at,
                     expires_duration: admin_expires.clone(),
+                    // A community admin is not the holder of the agent's own
+                    // identity; `pnm contexts create --admin-holder` is where
+                    // that grant is made, deliberately.
+                    holder: false,
                 };
                 contexts::cmd_context_create(&client, &id, &name, description, parent, admin).await
             }
