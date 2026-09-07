@@ -230,6 +230,15 @@ pub struct AdminAclOptions {
     /// resolved `expires_at` so conflict hints can re-emit the operator's
     /// original duration verbatim instead of a drift-skewed seconds value.
     pub expires_duration: Option<String>,
+    /// Also grant the `persona-holder` capability — authority over the holder's
+    /// own identity, which sits above every trust context.
+    ///
+    /// Kept separate from the context grant beside it because they are
+    /// different powers, and the whole point of the capability is that one does
+    /// not imply the other: this entry administers exactly one context, and
+    /// with this flag it also manages the identity of the person who owns the
+    /// agent. Super-admin only, refused server-side otherwise.
+    pub holder: bool,
 }
 
 impl AdminAclOptions {
@@ -321,6 +330,12 @@ pub async fn cmd_context_create(
         if let Some(expires_at) = admin.expires_at {
             acl_req = acl_req.expires_at(expires_at);
         }
+        if admin.holder {
+            // Additive: it does not narrow what the admin role carries, so the
+            // entry keeps everything an admin of this context has and gains
+            // the holder-scoped persona tasks on top.
+            acl_req = acl_req.capabilities(vec!["persona-holder".to_string()]);
+        }
         let acl = client.create_acl(acl_req).await?;
 
         println!();
@@ -330,6 +345,9 @@ pub async fn cmd_context_create(
         println!("  Contexts:   {}", acl.allowed_contexts.join(", "));
         if let Some(ref label) = acl.label {
             println!("  Label:      {label}");
+        }
+        if admin.holder {
+            println!("  Identity:   holder (persona-holder capability granted)");
         }
         match acl.expires_at {
             Some(secs) => {

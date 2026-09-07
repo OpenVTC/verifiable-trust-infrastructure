@@ -14,7 +14,8 @@ use crate::acl::{
     AclEntry, ApproveScope, Capability, ContextDirection, Role, acl_entry_matches_context,
     capabilities_beyond_role, delete_acl_entry, get_acl_entry, is_acl_entry_auditable,
     is_acl_entry_visible, list_acl_entries, store_acl_entry, update_acl_entry_versioned,
-    validate_acl_modification, validate_approve_scope_grant, validate_role_assignment,
+    validate_acl_modification, validate_additive_capability_grant, validate_approve_scope_grant,
+    validate_role_assignment,
 };
 use crate::auth::AuthClaims;
 use crate::auth::session::now_epoch;
@@ -375,6 +376,9 @@ pub async fn create_acl(
              narrow what its role allows, never widen it"
         )));
     }
+    // Additive capabilities pass the check above by construction — no role
+    // carries them — so their gate is a privilege check on the granter.
+    validate_additive_capability_grant(auth, &capabilities)?;
     // Granting approve-authority is its own privilege check: `all` is
     // super-admin-only, a scoped grant requires the caller to hold each context.
     validate_approve_scope_grant(auth, &approve_scope)?;
@@ -556,6 +560,9 @@ async fn update_acl(
                 entry.role
             )));
         }
+        // Same gate as the create path, and needed independently: an update is
+        // the other way an entry could acquire holder authority.
+        validate_additive_capability_grant(auth, &capabilities)?;
         entry.capabilities = capabilities;
     }
     if let Some(approver) = params.step_up_approver {
@@ -2277,6 +2284,120 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
+    }
+
+    // ── Additive capability grants ──────────────────────────────────
+
+    /// The escalation the granter check exists to stop, in one command.
+    ///
+    /// A context-scoped admin may create ACL entries within their context. If
+    /// naming `persona-holder` were merely a capability like the rest, they
+    /// could mint an entry — for a DID they control, or their own — that reads
+    /// the holder's entire cross-context identity. `capabilities_beyond_role`
+    /// cannot catch it: additive capabilities are excluded there by
+    /// construction, because no role carries them.
+    #[tokio::test]
+    async fn a_scoped_admin_cannot_grant_holder_authority() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-work"]).await;
+
+        let err = create_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &ctx_admin("did:key:zScoped", &["ctx-work"]),
+            CreateAclParams {
+                did: "did:key:zPuppet".into(),
+                role: Role::Admin,
+                allowed_contexts: vec!["ctx-work".into()],
+                capabilities: vec![Capability::PersonaHolder],
+                ..Default::default()
+            },
+            "test",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "a scoped admin must not confer holder authority, got {err:?}"
+        );
+    }
+
+    /// And the grant an unscoped holder makes goes through, additively: the
+    /// entry keeps every capability its role carries and gains this one.
+    #[tokio::test]
+    async fn a_super_admin_grants_holder_authority_without_narrowing() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-work"]).await;
+
+        create_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &super_admin("did:key:zSuper"),
+            CreateAclParams {
+                did: "did:key:zClient".into(),
+                role: Role::Admin,
+                allowed_contexts: vec!["ctx-work".into()],
+                capabilities: vec![Capability::PersonaHolder],
+                ..Default::default()
+            },
+            "test",
+        )
+        .await
+        .unwrap();
+
+        let stored = get_acl_entry(&acl_ks, "did:key:zClient")
+            .await
+            .unwrap()
+            .expect("entry stored");
+        assert!(entry_has_capability(&stored, Capability::PersonaHolder));
+        assert!(
+            entry_has_capability(&stored, Capability::VaultRead),
+            "an additive grant must not narrow the role it rides on"
+        );
+        assert_eq!(
+            stored.allowed_contexts,
+            vec!["ctx-work".to_string()],
+            "and it must not widen the entry's context scope either"
+        );
+    }
+
+    /// The same gate on the other path an entry could acquire it through.
+    #[tokio::test]
+    async fn a_scoped_admin_cannot_grant_holder_authority_by_update() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-work"]).await;
+        seed_target(&acl_ks, "did:key:zPuppet", &["ctx-work"]).await;
+
+        let err = update_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &ctx_admin("did:key:zScoped", &["ctx-work"]),
+            "did:key:zPuppet",
+            UpdateAclParams {
+                capabilities: Some(vec![Capability::PersonaHolder]),
+                allowed_keys: None,
+                role: None,
+                label: None,
+                allowed_contexts: None,
+                step_up_approver: None,
+                step_up_require: None,
+                approve_scope: None,
+                expires_at: None,
+                reason: None,
+            },
+            "test",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "the update path is the other way in, got {err:?}"
+        );
     }
 
     /// Existing contexts in the contexts keyspace are accepted.

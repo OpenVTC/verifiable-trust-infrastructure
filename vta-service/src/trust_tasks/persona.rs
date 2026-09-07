@@ -150,23 +150,92 @@ pub fn reach_of(uri: &str) -> Option<Reach> {
     REACH.iter().find(|(u, _)| *u == uri).map(|(_, r)| *r)
 }
 
+/// Whether this caller has been granted holder authority by name.
+///
+/// Read from the ACL entry per call rather than from the access token, and the
+/// direction matters: a *grant* carried in a JWT outlives its revocation for the
+/// life of the token, so revoking holder authority would leave a window in which
+/// the pool is still readable. (The capability *narrowing* gate reads per call
+/// for the mirror-image reason — see `helpers::require_capability`.)
+///
+/// A store error is not a grant. It is logged with the real reason and answered
+/// as "no", because the alternative — treating an unreadable ACL as permission —
+/// turns a database blip into a boundary crossing.
+async fn holder_capability_granted(state: &AppState, claims: &AuthClaims) -> bool {
+    match vti_common::acl::get_acl_entry(&state.acl_ks, &claims.did).await {
+        Ok(Some(entry)) => vti_common::acl::entry_has_capability(
+            &entry,
+            vti_common::acl::Capability::PersonaHolder,
+        ),
+        // No entry, no grant. Unlike the narrowing gate, there is no role to
+        // fall back to: no role derives this capability.
+        Ok(None) => false,
+        Err(e) => {
+            tracing::error!(
+                error = %e, did = %claims.did,
+                "could not read the ACL entry for a persona holder check; refusing"
+            );
+            false
+        }
+    }
+}
+
 /// Gate a persona task on the reach its URI declares.
 ///
-/// `Holder` requires **unscoped holder** — `Admin` with unrestricted scope.
-/// A context-scoped admin is refused, which is the whole point.
-pub fn authorize(claims: &AuthClaims, uri: &str, context_id: Option<&str>) -> Result<(), AppError> {
+/// `Holder` is satisfied two ways, and only two: an **unscoped holder
+/// credential** (`Admin` with unrestricted scope), or an entry granted
+/// [`Capability::PersonaHolder`](vti_common::acl::Capability::PersonaHolder) by
+/// name. A context-scoped admin holding neither is refused, which is the whole
+/// point.
+///
+/// The capability exists because the first form was, until now, the *only*
+/// form: managing your own identity from a client meant giving that client
+/// authority over every context on the agent. It grants the pool without
+/// granting that.
+///
+/// The ACL read happens only where it can change the answer — a `Holder` task,
+/// for a caller who is not already unscoped — so the context-scoped tasks and
+/// the super-admin path cost exactly what they did.
+pub async fn authorize(
+    state: &AppState,
+    claims: &AuthClaims,
+    uri: &str,
+    context_id: Option<&str>,
+) -> Result<(), AppError> {
+    let granted = matches!(reach_of(uri), Some(Reach::Holder))
+        && !claims.is_super_admin()
+        && holder_capability_granted(state, claims).await;
+    decide(claims, uri, context_id, granted)
+}
+
+/// The decision itself, given whether the caller holds the capability.
+///
+/// Split from [`authorize`] so the whole matrix — every URI against every role
+/// and scope — is testable without standing up a store. The reach table is the
+/// thing most likely to be got wrong, and a test that needs an `AppState` to
+/// ask about it is a test nobody extends when they add a task.
+fn decide(
+    claims: &AuthClaims,
+    uri: &str,
+    context_id: Option<&str>,
+    holder_granted: bool,
+) -> Result<(), AppError> {
     match reach_of(uri) {
         None => Err(AppError::Forbidden(format!(
             "unknown persona task {uri}: refusing rather than defaulting a reach"
         ))),
-        Some(Reach::Holder) => claims.require_super_admin().map_err(|_| {
-            AppError::Forbidden(
+        Some(Reach::Holder) => {
+            if claims.is_super_admin() || holder_granted {
+                return Ok(());
+            }
+            Err(AppError::Forbidden(
                 "this task reads or writes the holder's attribute pool, which sits above every \
-                 trust context. It requires an unscoped holder credential; an administrator \
-                 scoped to a context is refused here exactly as an application would be."
+                 trust context. It requires an unscoped holder credential, or an ACL entry \
+                 granted the `persona-holder` capability; an administrator scoped to a context \
+                 and holding neither is refused here exactly as an application would be."
                     .into(),
-            )
-        }),
+            ))
+        }
         Some(Reach::Context) => match context_id {
             Some(ctx) => claims.require_context(ctx),
             None => Err(AppError::Validation(
@@ -358,7 +427,7 @@ pub(super) async fn handle_attribute_put(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_ATTRIBUTE_PUT_1_0, None) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_ATTRIBUTE_PUT_1_0, None).await {
         return reject(&doc, e);
     }
 
@@ -463,7 +532,7 @@ pub(super) async fn handle_attribute_list(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_ATTRIBUTE_LIST_1_0, None) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_ATTRIBUTE_LIST_1_0, None).await {
         return reject(&doc, e);
     }
 
@@ -490,7 +559,7 @@ pub(super) async fn handle_attribute_delete(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_ATTRIBUTE_DELETE_1_0, None) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_ATTRIBUTE_DELETE_1_0, None).await {
         return reject(&doc, e);
     }
 
@@ -543,7 +612,7 @@ pub(super) async fn handle_profile_put(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_PROFILE_PUT_1_0, None) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_PROFILE_PUT_1_0, None).await {
         return reject(&doc, e);
     }
 
@@ -624,7 +693,7 @@ pub(super) async fn handle_profile_get(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_PROFILE_GET_1_0, None) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_PROFILE_GET_1_0, None).await {
         return reject(&doc, e);
     }
 
@@ -695,7 +764,7 @@ pub(super) async fn handle_profile_list(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_PROFILE_LIST_1_0, None) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_PROFILE_LIST_1_0, None).await {
         return reject(&doc, e);
     }
     // No resolve option, deliberately: resolving every profile at once would
@@ -717,7 +786,7 @@ pub(super) async fn handle_profile_delete(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_PROFILE_DELETE_1_0, None) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_PROFILE_DELETE_1_0, None).await {
         return reject(&doc, e);
     }
 
@@ -792,7 +861,7 @@ pub(super) async fn handle_binding_set(
     // Holder-only, and the critical gate: an application able to call this
     // could bind any profile to a persona it controls and read the result back
     // through a disclosure it requests of itself.
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_BINDING_SET_1_0, None) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_BINDING_SET_1_0, None).await {
         return reject(&doc, e);
     }
 
@@ -867,7 +936,7 @@ pub(super) async fn handle_binding_get(
         Err(resp) => return resp,
     };
     let ctx = req.context_id.to_string();
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_BINDING_GET_1_0, Some(&ctx)) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_BINDING_GET_1_0, Some(&ctx)).await {
         return reject(&doc, e);
     }
 
@@ -917,7 +986,7 @@ pub(super) async fn handle_binding_list(
         Err(resp) => return resp,
     };
     let ctx = req.context_id.to_string();
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_BINDING_LIST_1_0, Some(&ctx)) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_BINDING_LIST_1_0, Some(&ctx)).await {
         return reject(&doc, e);
     }
 
@@ -953,7 +1022,7 @@ pub(super) async fn handle_contact_put(
         Err(resp) => return resp,
     };
     let ctx = req.context_id.to_string();
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_CONTACT_PUT_1_0, Some(&ctx)) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_CONTACT_PUT_1_0, Some(&ctx)).await {
         return reject(&doc, e);
     }
 
@@ -1017,7 +1086,7 @@ pub(super) async fn handle_contact_get(
         Err(resp) => return resp,
     };
     let ctx = req.context_id.to_string();
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_CONTACT_GET_1_0, Some(&ctx)) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_CONTACT_GET_1_0, Some(&ctx)).await {
         return reject(&doc, e);
     }
     let id = req.contact_id.to_string();
@@ -1093,7 +1162,7 @@ pub(super) async fn handle_contact_list(
         Err(resp) => return resp,
     };
     let ctx = req.context_id.to_string();
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_CONTACT_LIST_1_0, Some(&ctx)) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_CONTACT_LIST_1_0, Some(&ctx)).await {
         return reject(&doc, e);
     }
 
@@ -1135,7 +1204,14 @@ pub(super) async fn handle_contact_delete(
         Err(resp) => return resp,
     };
     let ctx = req.context_id.to_string();
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_CONTACT_DELETE_1_0, Some(&ctx)) {
+    if let Err(e) = authorize(
+        state,
+        auth,
+        uris::TASK_PERSONA_CONTACT_DELETE_1_0,
+        Some(&ctx),
+    )
+    .await
+    {
         return reject(&doc, e);
     }
     let id = req.contact_id.to_string();
@@ -1180,7 +1256,7 @@ pub(super) async fn handle_disclosure_history(
     };
     // Holder-only: omitting contextId queries across every context, which only
     // the holder may do and is the reason this sits above the boundary.
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_DISCLOSURE_HISTORY_1_0, None) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_DISCLOSURE_HISTORY_1_0, None).await {
         return reject(&doc, e);
     }
 
@@ -1226,7 +1302,14 @@ pub(super) async fn handle_correlation_analyze(
     // Holder-only: the response is the linkage map between the holder's own
     // identities — the artifact the family exists to keep from being assembled
     // by anyone else.
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_CORRELATION_ANALYZE_1_0, None) {
+    if let Err(e) = authorize(
+        state,
+        auth,
+        uris::TASK_PERSONA_CORRELATION_ANALYZE_1_0,
+        None,
+    )
+    .await
+    {
         return reject(&doc, e);
     }
 
@@ -1253,7 +1336,7 @@ pub(super) async fn handle_renderers_list(
     // Unused: this task describes the agent's declared capabilities, which are
     // a compile-time constant, not stored state. Taking the parameter anyway
     // keeps every handler one shape for the dispatch table.
-    _state: &AppState,
+    state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
@@ -1271,7 +1354,7 @@ pub(super) async fn handle_renderers_list(
     // request, so it attributed nothing; and reading the caller's own list
     // inverted the gate — an `Admin` with an unrestricted (empty) list is the
     // most privileged caller there is, and was the only one refused.
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_RENDERERS_LIST_1_0, None) {
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_RENDERERS_LIST_1_0, None).await {
         return reject(&doc, e);
     }
 
@@ -1308,7 +1391,14 @@ pub(super) async fn handle_local_profile_put(
         Err(resp) => return resp,
     };
     let ctx = req.context_id.to_string();
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0, Some(&ctx)) {
+    if let Err(e) = authorize(
+        state,
+        auth,
+        uris::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0,
+        Some(&ctx),
+    )
+    .await
+    {
         return reject(&doc, e);
     }
 
@@ -1449,7 +1539,14 @@ pub(super) async fn handle_local_profile_get(
         Err(resp) => return resp,
     };
     let ctx = req.context_id.to_string();
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_LOCAL_PROFILE_GET_1_0, Some(&ctx)) {
+    if let Err(e) = authorize(
+        state,
+        auth,
+        uris::TASK_PERSONA_LOCAL_PROFILE_GET_1_0,
+        Some(&ctx),
+    )
+    .await
+    {
         return reject(&doc, e);
     }
     let id = req.profile_id.to_string();
@@ -1501,7 +1598,14 @@ pub(super) async fn handle_local_profile_list(
         Err(resp) => return resp,
     };
     let ctx = req.context_id.to_string();
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_LOCAL_PROFILE_LIST_1_0, Some(&ctx)) {
+    if let Err(e) = authorize(
+        state,
+        auth,
+        uris::TASK_PERSONA_LOCAL_PROFILE_LIST_1_0,
+        Some(&ctx),
+    )
+    .await
+    {
         return reject(&doc, e);
     }
     let profiles = match store(state).list_local_profiles(&ctx).await {
@@ -1540,10 +1644,13 @@ pub(super) async fn handle_local_profile_delete(
     };
     let ctx = req.context_id.to_string();
     if let Err(e) = authorize(
+        state,
         auth,
         uris::TASK_PERSONA_LOCAL_PROFILE_DELETE_1_0,
         Some(&ctx),
-    ) {
+    )
+    .await
+    {
         return reject(&doc, e);
     }
     let id = req.profile_id.to_string();
@@ -1610,7 +1717,14 @@ pub(super) async fn handle_local_binding_set(
     let ctx = req.context_id.to_string();
     // Safely context-callable — unlike binding/set — because both objects it
     // names live below the boundary.
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_LOCAL_BINDING_SET_1_0, Some(&ctx)) {
+    if let Err(e) = authorize(
+        state,
+        auth,
+        uris::TASK_PERSONA_LOCAL_BINDING_SET_1_0,
+        Some(&ctx),
+    )
+    .await
+    {
         return reject(&doc, e);
     }
 
@@ -1672,7 +1786,14 @@ pub(super) async fn handle_disclosure_preview(
         Err(resp) => return resp,
     };
     let ctx = req.context_id.to_string();
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_DISCLOSURE_PREVIEW_1_0, Some(&ctx)) {
+    if let Err(e) = authorize(
+        state,
+        auth,
+        uris::TASK_PERSONA_DISCLOSURE_PREVIEW_1_0,
+        Some(&ctx),
+    )
+    .await
+    {
         return reject(&doc, e);
     }
 
@@ -1731,7 +1852,14 @@ pub(super) async fn handle_disclosure_present(
         Err(resp) => return resp,
     };
     let ctx = req.context_id.to_string();
-    if let Err(e) = authorize(auth, uris::TASK_PERSONA_DISCLOSURE_PRESENT_1_0, Some(&ctx)) {
+    if let Err(e) = authorize(
+        state,
+        auth,
+        uris::TASK_PERSONA_DISCLOSURE_PRESENT_1_0,
+        Some(&ctx),
+    )
+    .await
+    {
         return reject(&doc, e);
     }
 
@@ -1843,7 +1971,7 @@ mod tests {
             if *reach != Reach::Holder {
                 continue;
             }
-            let err = authorize(&scoped_admin, uri, Some("ctx-work")).unwrap_err();
+            let err = decide(&scoped_admin, uri, Some("ctx-work"), false).unwrap_err();
             assert!(
                 matches!(err, AppError::Forbidden(_)),
                 "{uri} admitted an admin scoped to one context — an admin in ctx-work must be \
@@ -1857,13 +1985,73 @@ mod tests {
         let holder = claims(Role::Admin, &[]);
         for (uri, reach) in REACH {
             if *reach == Reach::Holder {
-                authorize(&holder, uri, None).unwrap_or_else(|e| {
+                decide(&holder, uri, None, false).unwrap_or_else(|e| {
                     panic!("{uri} refused an unscoped holder: {e:?}");
                 });
             }
         }
     }
 
+    /// The capability's whole reason to exist: a context-scoped admin reaches
+    /// the pool **only** where holder authority was granted by name.
+    ///
+    /// Before it there was one way in — an admin with unrestricted scope — so
+    /// managing your own identity from a client meant handing that client every
+    /// context on the agent.
+    #[test]
+    fn a_granted_scoped_admin_reaches_the_pool() {
+        let scoped_admin = claims(Role::Admin, &["ctx-work"]);
+        for (uri, reach) in REACH {
+            if *reach != Reach::Holder {
+                continue;
+            }
+            assert!(
+                decide(&scoped_admin, uri, Some("ctx-work"), false).is_err(),
+                "{uri} admitted a scoped admin who was granted nothing"
+            );
+            decide(&scoped_admin, uri, Some("ctx-work"), true)
+                .unwrap_or_else(|e| panic!("{uri} refused a granted holder: {e:?}"));
+        }
+    }
+
+    /// The grant is not a role promotion. It opens the holder-scoped tasks and
+    /// changes nothing else — a reader granted it is still a reader everywhere
+    /// a role is what decides.
+    #[test]
+    fn the_grant_does_not_widen_a_context_task() {
+        let app = claims(Role::Application, &["ctx-a"]);
+        assert!(
+            decide(
+                &app,
+                uris::TASK_PERSONA_BINDING_GET_1_0,
+                Some("ctx-b"),
+                true
+            )
+            .is_err(),
+            "holder authority must not carry a caller into a context it has no claim to"
+        );
+    }
+
+    /// An unknown task is refused whatever the caller holds. A grant is not a
+    /// reason to guess at a reach.
+    #[test]
+    fn a_granted_holder_is_still_refused_an_unclassified_task() {
+        let holder = claims(Role::Admin, &["ctx-work"]);
+        // Built rather than written: the produced-URI census sweeps this file's
+        // source text, and a literal that looks like a spec URI is reported as
+        // a task shipped without a schema. The neighbouring unknown-task test
+        // does the same.
+        let unknown = format!("https://trusttasks.org/spec/persona/{}/9.9", "not-a-task");
+        assert!(decide(&holder, &unknown, None, true).is_err());
+    }
+
+    /// No role reaches the pool by being itself — not even one whose empty
+    /// context list looks like an unrestricted admin's.
+    ///
+    /// "Refused" here means *ungranted*. Holder authority is granted by name
+    /// and is deliberately not tied to a role: a personal agent running as
+    /// `application` can be given it, by a super admin, on purpose. What this
+    /// pins is that none of them arrive holding it.
     #[test]
     fn every_non_admin_role_is_refused_the_pool() {
         // An empty context list means *unrestricted* for Admin and *nothing at
@@ -1877,7 +2065,7 @@ mod tests {
         ] {
             let label = format!("{role:?}");
             let c = claims(role, &[]);
-            let err = authorize(&c, uris::TASK_PERSONA_ATTRIBUTE_LIST_1_0, None).unwrap_err();
+            let err = decide(&c, uris::TASK_PERSONA_ATTRIBUTE_LIST_1_0, None, false).unwrap_err();
             assert!(
                 matches!(err, AppError::Forbidden(_)),
                 "{label} reached the pool"
@@ -1888,9 +2076,21 @@ mod tests {
     #[test]
     fn a_context_task_is_confined_to_its_own_context() {
         let app = claims(Role::Application, &["ctx-a"]);
-        authorize(&app, uris::TASK_PERSONA_BINDING_GET_1_0, Some("ctx-a")).expect("own context");
+        decide(
+            &app,
+            uris::TASK_PERSONA_BINDING_GET_1_0,
+            Some("ctx-a"),
+            false,
+        )
+        .expect("own context");
         assert!(
-            authorize(&app, uris::TASK_PERSONA_BINDING_GET_1_0, Some("ctx-b")).is_err(),
+            decide(
+                &app,
+                uris::TASK_PERSONA_BINDING_GET_1_0,
+                Some("ctx-b"),
+                false
+            )
+            .is_err(),
             "a caller scoped to ctx-a must not learn about ctx-b"
         );
     }
@@ -1905,7 +2105,7 @@ mod tests {
         // takes the `format!` shape the census already documents as "not a URI
         // that goes on a wire", rather than being allowlisted as produced.
         let unknown = format!("https://trusttasks.org/spec/persona/{}/9.9", "made-up");
-        let err = authorize(&app, &unknown, Some("ctx")).unwrap_err();
+        let err = decide(&app, &unknown, Some("ctx"), false).unwrap_err();
         assert!(matches!(err, AppError::Forbidden(_)));
     }
 

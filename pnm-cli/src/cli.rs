@@ -1725,6 +1725,20 @@ pub(crate) enum ContextCommands {
         /// entry is permanent. Requires `--admin-did`.
         #[arg(long, requires = "admin_did")]
         admin_expires: Option<String>,
+        /// Also grant the admin DID authority over the **holder's own
+        /// identity** — the attribute pool, the profiles built over it, and the
+        /// disclosure history — by adding the `persona-holder` capability.
+        ///
+        /// That identity sits above every trust context, so a context-scoped
+        /// admin cannot reach it. Without this flag a client provisioned here
+        /// can administer its own context and nothing of the holder's; with it,
+        /// it can manage the holder's identity **without** gaining any authority
+        /// over other contexts. Grant it to a client that is the holder's own —
+        /// OpenVTC, a personal agent — and not to an integration.
+        ///
+        /// Super-admin only, like every grant of holder authority.
+        #[arg(long, requires = "admin_did")]
+        admin_holder: bool,
     },
     /// Update an existing context
     Update {
@@ -1957,6 +1971,11 @@ pub(crate) enum AclCommands {
         /// the window a grant-then-narrow pair leaves open. Every name must be
         /// one the role already carries; one that is not is refused. Omit for
         /// everything the role implies.
+        ///
+        /// `persona-holder` is the exception: no role carries it, so it is a
+        /// *grant* rather than a narrowing — it adds authority over the holder's
+        /// own identity without removing anything the role has, and only an
+        /// unscoped holder credential may confer it.
         #[arg(long, value_delimiter = ',')]
         capabilities: Option<Vec<String>>,
     },
@@ -2041,6 +2060,12 @@ pub(crate) enum AclCommands {
         /// It can only narrow: every name must be one the entry's role already
         /// carries, and one that is not is refused rather than dropped. Omit to
         /// leave the narrowing unchanged.
+        ///
+        /// `persona-holder` is the exception — a *grant*, not a narrowing. No
+        /// role carries it, it adds authority over the holder's own identity
+        /// without removing anything the role has, and only an unscoped holder
+        /// credential may confer it. Naming it alone therefore leaves the rest
+        /// of the entry's authority intact rather than narrowing it to nothing.
         #[arg(long, value_delimiter = ',', conflicts_with = "capabilities_all")]
         capabilities: Option<Vec<String>>,
         /// Remove the narrowing — the entry holds everything its role implies.

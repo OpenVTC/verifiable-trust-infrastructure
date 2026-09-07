@@ -187,6 +187,45 @@ pub enum Capability {
     /// powers. An agent that indexes a room — walking the listing and building
     /// a searchable view — should not thereby be able to read it.
     RoomOpen,
+    /// Acting for the **holder** over their own identity: the ten holder-scoped
+    /// `persona/*` tasks — the attribute pool, the profiles built over it,
+    /// correlation analysis, and cross-context disclosure history.
+    ///
+    /// # The one capability no role implies
+    ///
+    /// Every other member of this enum is a subset of what some role already
+    /// carries, and an entry's list can only narrow that. This one is additive
+    /// (see [`ADDITIVE_CAPABILITIES`]): no role derives it, so it is held only
+    /// where an operator granted it by name.
+    ///
+    /// It has to work that way, because what it gates is not *within* what a
+    /// role allows. The pool sits above every trust context, and until now the
+    /// only credential that could reach it was an admin with unrestricted scope
+    /// — which is to say, to manage your own identity from a client you had to
+    /// give that client authority over every context on the agent. Deriving it
+    /// from [`Role::Admin`] instead would have handed the pool to every
+    /// context-scoped administrator that already exists, silently, on upgrade:
+    /// the exact boundary breach the persona gate was written to prevent.
+    ///
+    /// Granting it is super-admin-only — see `validate_persona_holder_grant` on
+    /// the ACL create/update paths. An administrator scoped to one context
+    /// cannot mint holder authority, for themselves or for anyone else.
+    PersonaHolder,
+}
+
+/// Capabilities that no role derives, and that an entry therefore holds only
+/// where one was granted by name.
+///
+/// Deliberately tiny and deliberately a `const`: every member is an exception to
+/// "a role is an upper bound on its entries", so each has to be argued for
+/// individually and be visible in one place to a reviewer asking what can exceed
+/// a role.
+pub const ADDITIVE_CAPABILITIES: &[Capability] = &[Capability::PersonaHolder];
+
+/// Whether `cap` is granted on its own rather than derived from a role.
+#[must_use]
+pub fn is_additive(cap: Capability) -> bool {
+    ADDITIVE_CAPABILITIES.contains(&cap)
 }
 
 /// Returns true if `role` is granted `cap` by the default capability mapping.
@@ -198,13 +237,14 @@ pub fn role_has_capability(role: &Role, cap: Capability) -> bool {
     derived_capabilities_for_role(role).contains(&cap)
 }
 
-/// What an entry may actually do: its own set, bounded by its role's.
+/// What an entry may actually do: its own set, bounded by its role's, plus any
+/// additive capability granted to it by name.
 ///
-/// **An explicit set only ever narrows.** Empty means "whatever the role
-/// implies" — the shape every entry written before this had — and a non-empty
-/// one is intersected with the role's, never unioned. So `role` stays a true
-/// upper bound: an operator reading `role: reader` knows the entry holds no more
-/// than a reader, whatever else its capability list says, and a capability
+/// **A role-derived capability only ever narrows.** Empty means "whatever the
+/// role implies" — the shape every entry written before this had — and a
+/// non-empty one is intersected with the role's, never unioned. So `role` stays
+/// a true upper bound *for everything a role carries*: an operator reading
+/// `role: reader` knows the entry holds no more than a reader, and a capability
 /// removed from a role's derived set is removed from every entry at once rather
 /// than surviving in the rows that happened to name it.
 ///
@@ -213,15 +253,42 @@ pub fn role_has_capability(role: &Role, cap: Capability) -> bool {
 /// else") at the price of making the role no longer describe the entry, which is
 /// the property the ACL's own display, audit trail and role-assignment checks
 /// all lean on.
+///
+/// # The additive members, and why they do not break that
+///
+/// [`ADDITIVE_CAPABILITIES`] are held only where they were granted by name, and
+/// **no role derives any of them**. So they cannot be narrowed into existence,
+/// and no upgrade can quietly confer one on an entry that never named it: an
+/// entry with an empty list still resolves to exactly its role's set, which is
+/// what every row written before this field existed means.
+///
+/// The narrowing is computed from the **non-additive** members alone. Without
+/// that, granting an entry holder authority and nothing else — a list of one
+/// additive name — would intersect its role's set with a list containing none
+/// of them and silently strip every capability it had. A grant that removes
+/// unrelated authority is not a grant anybody asked for.
 pub fn effective_capabilities(role: &Role, explicit: &[Capability]) -> Vec<Capability> {
     let derived = derived_capabilities_for_role(role);
-    if explicit.is_empty() {
-        return derived;
-    }
-    derived
-        .into_iter()
-        .filter(|c| explicit.contains(c))
-        .collect()
+
+    // Only the role-derived names narrow. An empty narrowing keeps the whole
+    // role, exactly as before.
+    let narrowing: Vec<Capability> = explicit
+        .iter()
+        .copied()
+        .filter(|c| !is_additive(*c))
+        .collect();
+    let mut effective: Vec<Capability> = if narrowing.is_empty() {
+        derived
+    } else {
+        derived
+            .into_iter()
+            .filter(|c| narrowing.contains(c))
+            .collect()
+    };
+
+    // Then the additive grants, which no role could have contributed.
+    effective.extend(explicit.iter().copied().filter(|c| is_additive(*c)));
+    effective
 }
 
 /// Whether `entry` may exercise `cap`, honouring both its role and its own
@@ -230,17 +297,24 @@ pub fn entry_has_capability(entry: &AclEntry, cap: Capability) -> bool {
     effective_capabilities(&entry.role, &entry.capabilities).contains(&cap)
 }
 
-/// Capabilities named in `requested` that `role` does not carry.
+/// Capabilities named in `requested` that `role` does not carry **and** that no
+/// role could carry on its own behalf.
 ///
 /// A grant path calls this to refuse loudly rather than silently dropping what
 /// it cannot honour. Silently intersecting at write time would store a set the
 /// operator did not ask for and report success; the operator would then read the
 /// entry back and find a capability they granted simply absent.
+///
+/// [`ADDITIVE_CAPABILITIES`] are excluded: they are *never* in a role's derived
+/// set, so measuring them against one would refuse every grant of them. What
+/// stands in for the role check there is a privilege check on the granter —
+/// `validate_persona_holder_grant` — because the question for an additive
+/// capability is not "does this role carry it" but "may this caller confer it".
 pub fn capabilities_beyond_role(role: &Role, requested: &[Capability]) -> Vec<Capability> {
     let derived = derived_capabilities_for_role(role);
     requested
         .iter()
-        .filter(|c| !derived.contains(c))
+        .filter(|c| !is_additive(**c) && !derived.contains(c))
         .copied()
         .collect()
 }
@@ -488,6 +562,38 @@ pub fn key_scope_for(allowed_keys: Option<&BTreeSet<String>>) -> KeyScope {
 /// cross-context authorizer, so only a super-admin may confer it; a scoped
 /// `Contexts` grant requires the caller to administer every listed context.
 /// `None` is always allowed.
+/// Refuse an attempt to confer an additive capability by a caller who may not.
+///
+/// [`Capability::PersonaHolder`] is super-admin-only to grant, and that check is
+/// the whole of what stands between the boundary and a context-scoped
+/// administrator. Without it the escalation is one command long: an admin of one
+/// context creates an ACL entry — for a DID they control, or for their own —
+/// naming `persona-holder`, and reads the holder's entire cross-context identity
+/// through a credential that was never supposed to reach above its context.
+///
+/// [`capabilities_beyond_role`] cannot catch this. Additive capabilities are
+/// excluded there by construction, because no role carries them; the question
+/// for one is not "does this role have it" but "may this caller confer it", and
+/// this is where that is answered.
+pub fn validate_additive_capability_grant(
+    caller: &AuthClaims,
+    requested: &[Capability],
+) -> Result<(), AppError> {
+    let additive: Vec<Capability> = requested
+        .iter()
+        .copied()
+        .filter(|c| is_additive(*c))
+        .collect();
+    if additive.is_empty() || caller.is_super_admin() {
+        return Ok(());
+    }
+    Err(AppError::Forbidden(format!(
+        "only an unscoped holder credential can grant {additive:?}: it confers authority over \
+         the holder's own identity, which sits above every trust context, and an administrator \
+         scoped to one context cannot confer what it does not itself hold"
+    )))
+}
+
 pub fn validate_approve_scope_grant(
     caller: &AuthClaims,
     scope: &ApproveScope,
@@ -1465,6 +1571,100 @@ mod tests {
         assert!(
             !entry_has_capability(&entry, Capability::MemoryWrite),
             "narrowed, what the entry did not name is gone even though the role has it"
+        );
+    }
+
+    // ── Additive capabilities ───────────────────────────────────────
+
+    /// The invariant that keeps additive capabilities from being an upgrade
+    /// hazard: **no role derives one**.
+    ///
+    /// If one ever appeared in a role's set, every existing entry with that
+    /// role and an empty capability list would gain it silently — for
+    /// `PersonaHolder`, that is every context-scoped administrator on the agent
+    /// waking up with access to the holder's attribute pool.
+    #[test]
+    fn no_role_derives_an_additive_capability() {
+        for role in [
+            Role::Admin,
+            Role::Initiator,
+            Role::Application,
+            Role::Reader,
+        ] {
+            for cap in ADDITIVE_CAPABILITIES {
+                assert!(
+                    !derived_capabilities_for_role(&role).contains(cap),
+                    "{role:?} must not derive {cap:?} — see ADDITIVE_CAPABILITIES"
+                );
+            }
+        }
+    }
+
+    /// An entry that names nothing still holds exactly its role, additive
+    /// capabilities included-by-nobody. The pre-existing rows keep meaning what
+    /// they meant.
+    #[test]
+    fn an_un_narrowed_entry_gains_no_additive_capability() {
+        let held = effective_capabilities(&Role::Admin, &[]);
+        assert!(!held.contains(&Capability::PersonaHolder));
+    }
+
+    /// Granted by name, it is held — even though the role does not carry it.
+    /// This is the whole point: holder authority is not a subset of what an
+    /// administrator of a context may do.
+    #[test]
+    fn an_additive_capability_is_held_where_it_was_granted() {
+        let held = effective_capabilities(&Role::Admin, &[Capability::PersonaHolder]);
+        assert!(held.contains(&Capability::PersonaHolder));
+    }
+
+    /// Granting *only* an additive capability must not strip the role.
+    ///
+    /// The trap this closes: the narrowing is an intersection, so a list of one
+    /// additive name — which no role contains — would intersect the role's set
+    /// down to nothing. An operator granting an agent holder authority would
+    /// have silently revoked its vault access in the same command.
+    #[test]
+    fn granting_only_an_additive_capability_narrows_nothing() {
+        let held = effective_capabilities(&Role::Admin, &[Capability::PersonaHolder]);
+        for derived in derived_capabilities_for_role(&Role::Admin) {
+            assert!(
+                held.contains(&derived),
+                "{derived:?} was stripped by a grant that named only an additive capability"
+            );
+        }
+    }
+
+    /// The two kinds compose: role-derived names still narrow, and the additive
+    /// one rides alongside whatever survived.
+    #[test]
+    fn an_additive_grant_and_a_narrowing_compose() {
+        let held = effective_capabilities(
+            &Role::Admin,
+            &[Capability::VaultRead, Capability::PersonaHolder],
+        );
+        assert!(held.contains(&Capability::VaultRead));
+        assert!(held.contains(&Capability::PersonaHolder));
+        assert!(
+            !held.contains(&Capability::Sign),
+            "the narrowing still applies to what the role carries: {held:?}"
+        );
+    }
+
+    /// The grant path must not refuse an additive capability for not being in
+    /// the role — it never will be. What guards it instead is a privilege check
+    /// on the *granter*, on the ACL create/update paths.
+    #[test]
+    fn an_additive_capability_is_not_beyond_the_role() {
+        assert!(
+            capabilities_beyond_role(&Role::Admin, &[Capability::PersonaHolder]).is_empty(),
+            "measuring an additive capability against a role would refuse every grant of it"
+        );
+        // And it stays refused where it should be: a name no role carries and
+        // that is not additive is still beyond.
+        assert_eq!(
+            capabilities_beyond_role(&Role::Reader, &[Capability::Sign]),
+            vec![Capability::Sign]
         );
     }
 
