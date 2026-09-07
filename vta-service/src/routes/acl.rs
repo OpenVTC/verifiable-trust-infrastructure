@@ -169,6 +169,15 @@ pub struct UpdateAclRequest {
     /// `allowedKeys` (the SDK's `UpdateAclRequest` serializes the same).
     #[serde(rename = "allowedKeys", default, deserialize_with = "double_option")]
     pub allowed_keys: Option<Option<Vec<String>>>,
+    /// Narrow what this entry may do, within what its role allows. Omitted
+    /// leaves the narrowing unchanged; an **empty array clears it**, so the
+    /// entry holds everything its role implies (a privilege increase).
+    ///
+    /// Kebab-case capability names. A name this VTA does not recognise is
+    /// refused rather than dropped — a narrowing that silently kept a
+    /// capability is worse than one that failed loudly.
+    #[serde(default)]
+    pub capabilities: Option<Vec<String>>,
 }
 
 /// Absent vs explicit-null, distinguishably: absent → `None` (leave alone),
@@ -240,6 +249,10 @@ pub async fn update_acl(
         &did,
         operations::acl::UpdateAclParams {
             role: None,
+            capabilities: match req.capabilities.as_deref() {
+                Some(names) => Some(operations::acl::parse_capability_names(names)?),
+                None => None,
+            },
             label: req.label,
             allowed_contexts: req.allowed_contexts,
             step_up_approver: req.step_up_approver,

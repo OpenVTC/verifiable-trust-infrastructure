@@ -2026,6 +2026,21 @@ pub(crate) enum AclCommands {
         /// "no keys at all" and "no filter".
         #[arg(long)]
         allowed_keys_unrestricted: bool,
+        /// Narrow this entry to exactly these capabilities (comma-separated,
+        /// kebab-case: `vault-read`, `memory-read`, `room-present`, …).
+        ///
+        /// It can only narrow: every name must be one the entry's role already
+        /// carries, and one that is not is refused rather than dropped. Omit to
+        /// leave the narrowing unchanged.
+        #[arg(long, value_delimiter = ',', conflicts_with = "capabilities_all")]
+        capabilities: Option<Vec<String>>,
+        /// Remove the narrowing — the entry holds everything its role implies.
+        ///
+        /// A privilege increase, and its own flag for the same reason
+        /// `--allowed-keys-unrestricted` is: an empty `--capabilities` cannot
+        /// mean both "narrowed to nothing" and "not narrowed at all".
+        #[arg(long)]
+        capabilities_all: bool,
     },
     /// Delete an ACL entry
     Delete {

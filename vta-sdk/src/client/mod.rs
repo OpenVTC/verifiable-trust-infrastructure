@@ -2784,6 +2784,7 @@ mod tests {
             step_up_require: None,
             approve_scope: None,
             allowed_keys: None,
+            capabilities: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         let obj = json.as_object().unwrap();
@@ -2802,6 +2803,7 @@ mod tests {
             step_up_require: None,
             approve_scope: None,
             allowed_keys: None,
+            capabilities: None,
         };
 
         let set = UpdateAclRequest {

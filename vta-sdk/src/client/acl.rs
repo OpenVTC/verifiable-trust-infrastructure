@@ -121,6 +121,13 @@ impl VtaClient {
                 .as_ref()
                 .map(acl_management::entry::Approve::from_scope),
             allowed_keys: req.allowed_keys.clone(),
+            // The capability narrowing is ecosystem-local, so it rides `ext`
+            // rather than a member the published schema does not declare.
+            ext: req.capabilities.as_ref().map(|caps| {
+                serde_json::json!({
+                    acl_management::entry::CAPABILITIES_EXT_MEMBER: caps,
+                })
+            }),
         };
         let wrapped: AclEntryEnvelope = self
             .rpc_tt(

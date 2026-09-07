@@ -11,10 +11,10 @@ use vta_sdk::protocols::acl_management::{
 };
 
 use crate::acl::{
-    AclEntry, ApproveScope, ContextDirection, Role, acl_entry_matches_context, delete_acl_entry,
-    get_acl_entry, is_acl_entry_auditable, is_acl_entry_visible, list_acl_entries, store_acl_entry,
-    update_acl_entry_versioned, validate_acl_modification, validate_approve_scope_grant,
-    validate_role_assignment,
+    AclEntry, ApproveScope, Capability, ContextDirection, Role, acl_entry_matches_context,
+    capabilities_beyond_role, delete_acl_entry, get_acl_entry, is_acl_entry_auditable,
+    is_acl_entry_visible, list_acl_entries, store_acl_entry, update_acl_entry_versioned,
+    validate_acl_modification, validate_approve_scope_grant, validate_role_assignment,
 };
 use crate::auth::AuthClaims;
 use crate::auth::session::now_epoch;
@@ -48,6 +48,21 @@ pub struct UpdateAclParams {
     pub expires_at: Option<u64>,
     /// Optional human-readable rationale, recorded with the audit entry.
     pub reason: Option<String>,
+    /// Replace this entry's capability narrowing.
+    ///
+    /// Three intentions, and the middle one is the reason this is a nested
+    /// option rather than a `Vec`:
+    ///
+    /// - `None` — leave the narrowing unchanged;
+    /// - `Some(vec![])` — **clear** it, so the entry holds everything its role
+    ///   implies. A privilege *increase*, and the only way to undo a narrowing;
+    /// - `Some(caps)` — narrow to exactly these, which must be a subset of what
+    ///   the role carries.
+    ///
+    /// A `Vec` alone would make "clear it" and "leave it alone" the same wire
+    /// value, and the one an operator reaches for in a hurry is the one they
+    /// would silently not get.
+    pub capabilities: Option<Vec<Capability>>,
     /// Replace the signing-oracle key filter (#818). `None` leaves it
     /// unchanged; `Some(None)` clears it (back to every key in the entry's
     /// contexts — a privilege *increase*); `Some(Some(keys))` sets it to
@@ -205,6 +220,29 @@ fn not_manageable(auth: &AuthClaims, entry: &AclEntry, did: &str, verb: &str) ->
     }
 }
 
+/// Parse wire capability names into the enum, refusing any it does not know.
+///
+/// Every transport goes through this, so a name is spelled one way and refused
+/// the same way everywhere. An unknown name is an error rather than a skip: the
+/// caller is narrowing an entry, and dropping a name they meant to include
+/// would leave the entry holding an authority they had just tried to remove —
+/// while telling them it worked.
+pub fn parse_capability_names(names: &[String]) -> Result<Vec<Capability>, AppError> {
+    names
+        .iter()
+        .map(|n| {
+            serde_json::from_value::<Capability>(serde_json::Value::String(n.clone())).map_err(
+                |_| {
+                    AppError::Validation(format!(
+                        "unknown capability `{n}`; this VTA does not recognise it, and narrowing \
+                     an entry to a capability nobody enforces would grant more than intended"
+                    ))
+                },
+            )
+        })
+        .collect()
+}
+
 fn to_result_body(e: &AclEntry) -> CreateAclResultBody {
     let (approve_all_contexts, approve_contexts) = match &e.approve_scope {
         ApproveScope::All => (true, Vec::new()),
@@ -229,6 +267,15 @@ fn to_result_body(e: &AclEntry) -> CreateAclResultBody {
             .allowed_keys
             .as_ref()
             .map(|keys| keys.iter().cloned().collect()),
+        // Serialized through serde so the names on the wire are the canonical
+        // kebab-case ones a caller sends back, rather than a second spelling
+        // invented here.
+        capabilities: e
+            .capabilities
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
     }
 }
 
@@ -440,6 +487,24 @@ async fn update_acl(
     }
     if let Some(label) = params.label {
         entry.label = Some(label);
+    }
+    if let Some(capabilities) = params.capabilities {
+        // Checked against the *post-patch* role, so narrowing and a role change
+        // in one request are judged against the role the entry ends up with —
+        // not the one it happened to start from.
+        let beyond = capabilities_beyond_role(&entry.role, &capabilities);
+        if !beyond.is_empty() {
+            // Refused rather than intersected. Silently dropping what the role
+            // cannot carry would store a narrower grant than the operator asked
+            // for and report success, and they would only find out by reading
+            // the entry back.
+            return Err(AppError::Validation(format!(
+                "role {} does not carry {beyond:?}; an entry's capabilities can only \
+                 narrow what its role allows, never widen it",
+                entry.role
+            )));
+        }
+        entry.capabilities = capabilities;
     }
     if let Some(approver) = params.step_up_approver {
         entry.step_up_approver = Some(approver);
@@ -847,6 +912,23 @@ pub async fn grant_from_entry(
 ) -> Result<CreateAclResponseBody, AppError> {
     let role = Role::parse(&entry.role)
         .map_err(|_| AppError::Validation(format!("invalid role: {}", entry.role)))?;
+
+    // Grant does not carry a capability narrowing yet, and **refuses** one
+    // rather than ignoring it. Accepting the member and dropping it would hand
+    // the operator an entry they believe is narrowed and is not — the precise
+    // failure the narrowing exists to prevent, arriving through the surface
+    // that introduced it. The refusal names the command that does work, per the
+    // workspace rule that an operator error should carry its own fix.
+    if let Ok(Some(_)) =
+        vta_sdk::protocols::acl_management::entry::capabilities_from_ext(entry.ext.as_ref())
+    {
+        return Err(AppError::Validation(format!(
+            "`acl/grant` does not set a capability narrowing. Grant the entry, then narrow it:\n\
+             \n  pnm acl update {} --capabilities <name,name>\n",
+            entry.subject
+        )));
+    }
+
     let stored = create_acl(
         acl_ks,
         audit,
@@ -989,7 +1071,7 @@ pub async fn revoke_by_subject(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acl::{AclEntry, store_acl_entry};
+    use crate::acl::{AclEntry, entry_has_capability, store_acl_entry};
     use crate::store::Store;
     use vti_common::config::StoreConfig;
 
@@ -1419,6 +1501,170 @@ mod tests {
     /// #744: before this, `approve_scope` was settable only at create time,
     /// so narrowing or revoking an approver meant delete-and-recreate — and a
     /// failed recreate leaves the DID with no ACL entry at all.
+    /// Grant does not carry a narrowing, and says so instead of dropping it.
+    /// An ignored capability member would hand back an entry the operator
+    /// believes is narrowed and is not — through the very surface the narrowing
+    /// was added for.
+    #[tokio::test]
+    async fn grant_refuses_a_capability_narrowing_rather_than_ignoring_it() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+
+        let mut wire = WireAclEntry::new(
+            "did:key:zNew".into(),
+            "application".into(),
+            vec!["ctx-a".into()],
+        );
+        wire.ext = Some(serde_json::json!({
+            "org.openvtc.capabilities": ["memory-read"],
+        }));
+
+        let err = grant_from_entry(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &super_admin("did:key:zRoot"),
+            wire,
+            "test",
+        )
+        .await
+        .expect_err("a narrowing on grant must be refused, not dropped");
+        assert!(
+            matches!(err, AppError::Validation(ref m) if m.contains("acl update")),
+            "the refusal must name the command that works: {err:?}"
+        );
+        assert!(
+            get_acl_entry(&acl_ks, "did:key:zNew")
+                .await
+                .unwrap()
+                .is_none(),
+            "and must not have created the entry it refused to narrow"
+        );
+    }
+
+    /// Narrow, read back, clear. The read-back is half the point: a
+    /// restriction an operator cannot see stored is one they cannot verify.
+    #[tokio::test]
+    async fn update_acl_narrows_and_clears_capabilities() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+        let target = "did:key:zAgent";
+        seed_target(&acl_ks, target, &["ctx-a"]).await;
+        let admin = super_admin("did:key:zRoot");
+
+        let set = |caps: Option<Vec<Capability>>| UpdateAclParams {
+            allowed_keys: None,
+            role: None,
+            label: None,
+            allowed_contexts: None,
+            step_up_approver: None,
+            step_up_require: None,
+            approve_scope: None,
+            expires_at: None,
+            reason: None,
+            capabilities: caps,
+        };
+
+        let narrowed = update_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &admin,
+            target,
+            set(Some(vec![Capability::MemoryRead])),
+            "test",
+        )
+        .await
+        .expect("narrowing within the role is allowed");
+        assert_eq!(narrowed.capabilities, vec!["memory-read".to_string()]);
+
+        let stored = get_acl_entry(&acl_ks, target).await.unwrap().unwrap();
+        assert!(entry_has_capability(&stored, Capability::MemoryRead));
+        assert!(
+            !entry_has_capability(&stored, Capability::MemoryWrite),
+            "an admin narrowed to memory-read must lose memory-write"
+        );
+
+        // Absent leaves it alone — the intention a `Vec` alone could not carry.
+        let untouched = update_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &admin,
+            target,
+            set(None),
+            "test",
+        )
+        .await
+        .expect("an update that says nothing about capabilities");
+        assert_eq!(untouched.capabilities, vec!["memory-read".to_string()]);
+
+        // Empty clears, and the entry is back to what its role implies.
+        let cleared = update_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &admin,
+            target,
+            set(Some(Vec::new())),
+            "test",
+        )
+        .await
+        .expect("clearing is allowed");
+        assert!(cleared.capabilities.is_empty());
+        let stored = get_acl_entry(&acl_ks, target).await.unwrap().unwrap();
+        assert!(entry_has_capability(&stored, Capability::MemoryWrite));
+    }
+
+    /// Refused, not silently intersected: storing less than the operator asked
+    /// for and reporting success is how an entry ends up holding something
+    /// nobody believes it holds.
+    #[tokio::test]
+    async fn update_acl_refuses_a_capability_the_role_lacks() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+        let target = "did:key:zReader";
+        store_acl_entry(
+            &acl_ks,
+            &AclEntry::new(target, Role::Reader, "seed").with_contexts(vec!["ctx-a".into()]),
+        )
+        .await
+        .unwrap();
+
+        let err = update_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &super_admin("did:key:zRoot"),
+            target,
+            UpdateAclParams {
+                allowed_keys: None,
+                role: None,
+                label: None,
+                allowed_contexts: None,
+                step_up_approver: None,
+                step_up_require: None,
+                approve_scope: None,
+                expires_at: None,
+                reason: None,
+                capabilities: Some(vec![Capability::RoomPresent]),
+            },
+            "test",
+        )
+        .await
+        .expect_err("a reader cannot be narrowed to a capability it never had");
+        assert!(
+            matches!(err, AppError::Validation(ref m) if m.contains("RoomPresent")),
+            "the refusal must name what it refused: {err:?}"
+        );
+
+        let stored = get_acl_entry(&acl_ks, target).await.unwrap().unwrap();
+        assert!(
+            stored.capabilities.is_empty(),
+            "a refused update must store nothing"
+        );
+    }
+
     #[tokio::test]
     async fn update_acl_sets_and_revokes_approve_scope() {
         let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
@@ -1437,6 +1683,7 @@ mod tests {
             approve_scope: Some(scope),
             expires_at: None,
             reason: None,
+            capabilities: None,
         };
 
         // Narrow: All -> a single context, without touching the entry.
@@ -1526,6 +1773,7 @@ mod tests {
             expires_at: None,
             reason: None,
             allowed_keys: replacement,
+            capabilities: None,
         };
         let stored_filter = |acl_ks: &KeyspaceHandle| {
             let acl_ks = acl_ks.clone();
@@ -1645,6 +1893,7 @@ mod tests {
                 approve_scope: Some(ApproveScope::All),
                 expires_at: None,
                 reason: None,
+                capabilities: None,
             },
             "test",
         )
@@ -1668,6 +1917,7 @@ mod tests {
                 approve_scope: None,
                 expires_at: None,
                 reason: None,
+                capabilities: None,
             },
             "test",
         )
@@ -1709,6 +1959,7 @@ mod tests {
                 approve_scope: Some(ApproveScope::All),
                 expires_at: None,
                 reason: None,
+                capabilities: None,
             },
             "test",
         )
@@ -1735,6 +1986,7 @@ mod tests {
                 approve_scope: Some(ApproveScope::Contexts(vec!["ctx-b".into()])),
                 expires_at: None,
                 reason: None,
+                capabilities: None,
             },
             "test",
         )
@@ -1770,6 +2022,7 @@ mod tests {
                 approve_scope: None,
                 expires_at: None,
                 reason: None,
+                capabilities: None,
             },
             "test",
         )
@@ -1809,6 +2062,7 @@ mod tests {
                 approve_scope: None,
                 expires_at: None,
                 reason: None,
+                capabilities: None,
             },
             "test",
         )
@@ -1845,6 +2099,7 @@ mod tests {
                 approve_scope: None,
                 expires_at: None,
                 reason: None,
+                capabilities: None,
             },
             "test",
         )
@@ -2125,6 +2380,7 @@ mod tests {
                 approve_scope: None,
                 expires_at: None,
                 reason: None,
+                capabilities: None,
             },
             "test",
         )

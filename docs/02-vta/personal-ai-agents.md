@@ -110,9 +110,9 @@ above adds it. Set its role/context scope:
 pnm acl create --did <agent-did> --role member --contexts <ctx-id> --expires 30d
 ```
 
-**Capabilities are not a `pnm acl` flag.** For a Service consumer they live on
-the `DeviceBinding` and are set when the agent runtime calls `device/register`
-(`operations/device.rs`). Grant the minimum:
+**Capabilities narrow what a role allows**, and `pnm acl update` sets them. They
+can only narrow: every name must be one the role already carries, and one that
+is not is refused rather than dropped. Grant the minimum:
 
 | Capability        | Why an agent needs it                                              |
 |-------------------|-------------------------------------------------------------------|
@@ -122,12 +122,22 @@ the `DeviceBinding` and are set when the agent runtime calls `device/register`
 | `ProxyLogin`      | *Only if* the agent must act **as the user** (mints a session).   |
 | `Sign` / `KeyMint`| *Only if* the agent needs the generic signing oracle / to mint keys. |
 
-Avoid `PolicyAdmin` / `DeviceAdmin` for an agent. The capability set an agent
-derives from its **role** at provision time is usually sufficient — an
-`application`-role consumer derives `VaultRead` + `ProxyLogin` + `FillRelease` +
-`Sign` + `SignTrustTask`. Explicit *per-entry* capability overrides are a
-deferred Phase-3 item (`CreateAclRequest` carries no `capabilities` field yet),
-so pick the role whose derived set matches the least privilege you want.
+Avoid `PolicyAdmin` / `DeviceAdmin` for an agent. An `application`-role consumer
+derives `VaultRead` + `ProxyLogin` + `FillRelease` + `Sign` + `SignTrustTask`,
+both memory capabilities and both room capabilities — usually wider than one
+agent needs. Narrow it to exactly what this agent does:
+
+```bash
+# This agent reads memory and presents in rooms. Nothing else.
+pnm acl update <agent-did> --capabilities memory-read,room-present
+
+# Undo the narrowing — the entry holds everything its role implies again.
+pnm acl update <agent-did> --capabilities-all
+```
+
+The gate reads the stored entry on every call, so a narrowing binds the agent's
+**next request** rather than waiting for its token to expire. Pick the role
+whose derived set is the ceiling you want, then narrow within it.
 
 ### Driving device + vault from the CLI
 
@@ -304,7 +314,7 @@ Lower priority unless your agents do credential work.
 | Capability vocabulary                  | Exists (`vti_common::acl::Capability`) |
 | `pnm device …` / `pnm vault …` CLI     | **Added** (this change) — `VtaClient::{device_*,vault_*}` + `pnm` commands, both transports |
 | Sealed vault upsert/release            | **Added** — `seal_vault_secret` / `open_sealed_secret` on the DIDComm session |
-| `pnm acl --capabilities` flag          | **Gap** (deferred Phase 3) — capabilities derive from role / are set at `device/register` |
+| `pnm acl update --capabilities` flag   | **Added** — an entry narrows within its role, enforced on every gated call |
 | Agent memory Trust Tasks               | Exists (`trust_tasks/memory.rs`, `VtaClient::memory_*`) — capability- and context-gated, audited |
 | `pnm memory …` CLI                     | **Added** — `plant` / `recall` / `forget` / `wipe` over the same three tasks |
 | Agent-side connect ladder              | Exists (`vta_sdk::agent_connect::AgentConnect`) — one way in for every agent bridge |

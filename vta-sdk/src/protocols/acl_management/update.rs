@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use crate::acl::ApproveScope;
 
 use super::create::CreateAclResultBody;
-use super::entry::{Approve, StepUp};
+use super::entry::{Approve, StepUp, capabilities_from_ext};
+use serde_json::Value;
 
 /// Request payload for canonical `acl/update/0.1`.
 ///
@@ -92,6 +93,18 @@ pub struct UpdateAclBody {
         skip_serializing_if = "Option::is_none"
     )]
     pub allowed_keys: Option<Option<Vec<String>>>,
+    /// Ecosystem-defined extension members (SPEC §4.5.1), which the published
+    /// `acl/update/0.1` schema declares.
+    ///
+    /// One member is interpreted: `org.openvtc.capabilities`, the entry's
+    /// capability narrowing (see
+    /// [`super::entry::CAPABILITIES_EXT_MEMBER`]). It travels here rather than
+    /// as a member of its own because the schema is
+    /// `additionalProperties: false` and a capability set is an
+    /// ecosystem-local concept — the same slot the vault session and the
+    /// device binding's local capabilities use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
 }
 
 /// Deserialize a member where **absent** and **explicit `null`** mean
@@ -124,6 +137,16 @@ impl UpdateAclBody {
     pub fn approve_scope(&self) -> Option<ApproveScope> {
         self.approve.as_ref().map(Approve::to_scope)
     }
+
+    /// The capability narrowing this request asks for, as raw wire names.
+    ///
+    /// `None` leaves the stored narrowing alone; `Some(vec![])` clears it, so
+    /// the entry holds everything its role implies. Names are not parsed here —
+    /// the consumer maps them, and rejects one it does not recognise rather
+    /// than dropping it.
+    pub fn capabilities(&self) -> Result<Option<Vec<String>>, String> {
+        capabilities_from_ext(self.ext.as_ref())
+    }
 }
 
 pub type UpdateAclResultBody = CreateAclResultBody;
@@ -151,6 +174,7 @@ mod tests {
             step_up: None,
             approve: None,
             allowed_keys: Some(Some(vec!["key-1".into(), "key-2".into()])),
+            ext: None,
         };
         let v = serde_json::to_value(&b).unwrap();
         assert!(v.get("allowedKeys").is_some(), "{v}");
@@ -170,6 +194,49 @@ mod tests {
             "subject": "did:key:zA", "allowed_keys": ["key-1"]
         }));
         assert_eq!(b.allowed_keys, None);
+    }
+
+    /// The capability narrowing's three intentions, which a `Vec` alone could
+    /// not carry: absent leaves the stored set alone, an empty array clears it,
+    /// and a populated one narrows. Confusing the first two is a silent
+    /// privilege increase, so each is pinned.
+    #[test]
+    fn a_capability_narrowing_carries_three_intentions() {
+        let unchanged = body(serde_json::json!({ "subject": "did:key:zA" }));
+        assert_eq!(unchanged.capabilities().unwrap(), None);
+
+        let cleared = body(serde_json::json!({
+            "subject": "did:key:zA",
+            "ext": { "org.openvtc.capabilities": [] },
+        }));
+        assert_eq!(cleared.capabilities().unwrap(), Some(Vec::new()));
+
+        let narrowed = body(serde_json::json!({
+            "subject": "did:key:zA",
+            "ext": { "org.openvtc.capabilities": ["memory-read", "room-present"] },
+        }));
+        assert_eq!(
+            narrowed.capabilities().unwrap(),
+            Some(vec!["memory-read".to_string(), "room-present".to_string()])
+        );
+    }
+
+    /// A malformed narrowing is an error, not an empty read. Treating
+    /// `"capabilities": "memory-read"` as "nothing named" would silently leave
+    /// an entry holding everything.
+    #[test]
+    fn a_malformed_narrowing_is_refused() {
+        let bad = body(serde_json::json!({
+            "subject": "did:key:zA",
+            "ext": { "org.openvtc.capabilities": "memory-read" },
+        }));
+        assert!(bad.capabilities().is_err());
+
+        let worse = body(serde_json::json!({
+            "subject": "did:key:zA",
+            "ext": { "org.openvtc.capabilities": [7] },
+        }));
+        assert!(worse.capabilities().is_err());
     }
 
     /// The three intentions decode to three different values: omitted =
@@ -203,6 +270,7 @@ mod tests {
             step_up: None,
             approve: None,
             allowed_keys: Some(None),
+            ext: None,
         };
         let v = serde_json::to_value(&b).unwrap();
         assert!(v.get("allowedKeys").is_some_and(|k| k.is_null()), "{v}");
