@@ -1,7 +1,15 @@
 # Data rooms
 
-Status: **design, revision 3.** Nothing is implemented. The upstream spec work
-has not started.
+Status: **revision 3, largely implemented.** The `rooms/*` family is served by
+`vtc-service` and by the standalone `room-host` binary, with member-side key
+custody and the presentation oracle in `vta-service` (#1237–#1251). Still open:
+the `private` tier's zero-knowledge profile, `rooms.rego` governance, read
+mirrors, and witnessed renewal anchoring — §2 of the operator guide is the
+current line between built and designed.
+
+Operator guide: [`../02-vta/data-rooms.md`](../02-vta/data-rooms.md) — how to
+create a room, run each topology, add members, equip an agent, renew, and hand
+ownership on.
 
 A **data room** is a shared, credential-governed, end-to-end-encryptable space —
 a set of records held somewhere, readable and writable by exactly the parties

@@ -569,14 +569,18 @@
   <section class="col">
     <p class="eyebrow">Status</p>
     <h2>Where this stands</h2>
-    <p>Design revision 3, on the <code>design/community-data-rooms</code> branch of
+    <p>Design revision 3 in
     <a href="https://github.com/OpenVTC/verifiable-trust-infrastructure">verifiable-trust-infrastructure</a>
     (<code>docs/05-design-notes/data-rooms.md</code>), with two adversarial security reviews —
-    the first reshaped the design; the second examined what emerged. Nothing is implemented.
-    The path runs: one question to the DTG working group (do VMC/VIC bind to node
-    <em>kinds</em> or to deployed services?), the VAC specification, a host-neutral
-    <code>rooms/*</code> task family, then the tiers in order — <span class="tiername">open</span>
-    first, cryptography on top of a settled model.</p>
+    the first reshaped the design; the second examined what emerged. <strong>Most of it is now
+    built:</strong> the host-neutral <code>rooms/*</code> family serves from both a community
+    service and a standalone room host, member-side key custody and the presentation oracle run in
+    the agent, and succession works end to end. Still open: the
+    <span class="tiername">private</span> tier's zero-knowledge profile — which turns on the one
+    question still with the DTG working group (do VMC/VIC bind to node <em>kinds</em> or to
+    deployed services?) — plus community governance of room creation, read mirrors, and anchoring
+    renewals in the room's witnessed log. The operator guide is
+    <code>docs/02-vta/data-rooms.md</code>.</p>
     <p>Feedback most wanted on: the VAC (§ above), the witness-selection policy for room logs,
     and whether the four topologies match how your community would actually use this.</p>
   </section>

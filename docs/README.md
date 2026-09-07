@@ -53,6 +53,7 @@ VTA via the `vtc-host` DID template.
 | Provision a mediator / webvh-host / custom integration | [Provision-integration](02-vta/provision-integration.md) |
 | Require a second person to approve an operation | [Approvals](02-vta/approvals.md) |
 | Understand the consent ceremony (DTTE) end to end | [Task consent](02-vta/task-consent.md) |
+| Create or run a data room | [Data rooms](02-vta/data-rooms.md) |
 | Configure community membership policy | [VTC community lifecycle](03-vtc/community-lifecycle.md) |
 | Host a public community website | [VTC website + admin UX](03-vtc/website-and-admin.md) |
 | Deploy a trust registry and wire a VTC to it | [Trust-registry deployment](03-vtc/trust-registry-deployment.md) |
@@ -118,6 +119,10 @@ How to operate, deploy, and integrate against a VTA.
   format, rotation, hosting.
 - **[Personal AI agents](02-vta/personal-ai-agents.md)** — provisioning
   an agent its own identity, context, capabilities and kill switch.
+- **[Data rooms](02-vta/data-rooms.md)** — creating a room and
+  keeping it: the four topologies, the visibility tiers, inviting
+  members, equipping an agent through the oracle, renewal and
+  succession, and running a host.
 - **[vta-mcp](02-vta/vta-mcp.md)** — using a VTA from an MCP host
   (Claude Code, Claude Desktop, an agent framework): what it exposes,
   the security model, hardening flags, and how to see what it is doing.
@@ -186,7 +191,8 @@ are implementer-facing rather than operator-facing.
   topologies (personal VTA, in a VTC, cross-community, VRC peers), a
   three-tier visibility ladder (`open`/`attributed`/`private` with
   unlinkable BBS+ presentations), MLS (RFC 9420) as the group-key layer,
-  witnessed room DID logs, and renew-not-reap lifecycle. Design only.
+  witnessed room DID logs, and renew-not-reap lifecycle. The operator
+  path through it is [Data rooms](02-vta/data-rooms.md).
 - **[Data rooms — concept document](05-design-notes/data-rooms-concept.html)** —
   shareable, non-technical-audience write-up of the idea, benefits, design
   and the case for the VAC, with diagrams of the four topologies, the
