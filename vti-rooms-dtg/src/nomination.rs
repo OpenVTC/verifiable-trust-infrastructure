@@ -286,6 +286,7 @@ mod tests {
             room_id: f.room_did.clone(),
             owner_did: "did:key:z6MkSomeoneElse".into(),
             visibility: vti_rooms::Visibility::Open,
+            retention_policy: vti_rooms::RetentionPolicy::Chained,
             epoch: 1,
             next_version: 1,
             retention_days: 90,

@@ -87,6 +87,8 @@ knowing which half you are standing on saves an afternoon.
 | **Credential issuance** | **Library only.** Nothing serves "issue this member a VMC and a VAC"; the room's owner mints them with `dtg-credentials` and delivers them out of band |
 | **Governance (`rooms.rego`)** | **On a VTC.** A community decides who may create a room on it, in Rego, with the shipped default hosting `open`/`attributed` for its own members. A standalone `room-host` has no policy engine — T1's governance is its owner (§8.4) |
 | **Read mirrors** (T3) | **`room-host --mirror-config`** — a host serves a read-only copy fed by `sinceVersion` pulls and refuses every write, naming the primary. A mirror pulls **as a member**, presenting a room-issued `read` chain |
+| **Reading across a membership change** | **Works, for members who keep up.** Records are sealed per epoch, and a member's VTA retains the *epoch key chain* — each commit it applies wraps the outgoing epoch's key under the incoming one, so everything already in the room stays readable. **A newly joined member is the gap**: their Welcome carries the current epoch and nothing below it, so they read from their joining epoch forward until the chain reaches them, which needs a task that does not exist yet (design note §12.2) |
+| **Cryptographic deletion** | **Primitive only.** `prune_epoch_links_before` severs the chain below an epoch, which makes everything older unopenable by anyone — genuinely, not as a promise to erase bytes. No verb reaches it; it needs a spec first |
 | **Witnessed renewal anchoring** | **Blocked on a decision**, not on effort: §9 says a renewal anchors the epoch authenticator and version watermark in the room's witnessed log, but not *where in the log entry*. See [`epoch anchoring`](../05-design-notes/data-rooms-epoch-anchoring.md) |
 
 ---
@@ -349,6 +351,21 @@ under a later one. If you see that, deliver the missing commit.
 Commits are authorized **inside the group** by MLS, not by any ACL of the
 receiving VTA. A VTA has no opinion about who a room's owner is, and should not
 acquire one.
+
+**Applying a commit is also what keeps the room's past readable.** Each one
+carries an *epoch link* — the outgoing epoch's storage key, wrapped under the
+incoming one — which the VTA retains alongside the group. That chain is what
+lets a member open a record written three memberships ago. A member who skips
+commits therefore loses twice: they cannot read forward (they are behind) and
+they will not be able to read back across the gap either, because the link that
+bridges it only ever arrives once.
+
+Two error messages distinguish the cases, and they mean different things:
+
+| Message | What happened | What to do |
+|---|---|---|
+| *"a commit has not been delivered"* | the record is **newer** than this VTA's epoch | deliver the missing commit |
+| *"cannot reach … the epoch key chain reaches back only to N"* | the record is **older** than any key this VTA can derive | the links for that stretch never arrived, or the history was deliberately severed. Nothing recovers it locally |
 
 ---
 

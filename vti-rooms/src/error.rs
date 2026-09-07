@@ -32,4 +32,27 @@ pub enum RoomKeyError {
          relocated record fails here rather than decrypting wrongly"
     )]
     DidNotOpen,
+
+    /// A record is sealed under an epoch this holder has not reached yet.
+    ///
+    /// Distinct from [`Self::DidNotOpen`] because the remedy is distinct and an operator
+    /// cannot guess it: the record is intact, the holder is behind, and what is missing is a
+    /// commit somebody has not delivered. Reported as "does not open" it reads like
+    /// corruption.
+    #[error(
+        "record is sealed under epoch {sealed} but this holder is at epoch {held}: a commit \
+         has not been delivered"
+    )]
+    EpochAhead { sealed: u32, held: u32 },
+
+    /// A record is sealed under an earlier epoch whose key the chain cannot reach.
+    ///
+    /// Either the links have not been delivered, or the chain was deliberately severed —
+    /// which is what cryptographic deletion is. Also distinct from [`Self::DidNotOpen`]:
+    /// the ciphertext is fine and no key will ever open it again.
+    #[error(
+        "record is sealed under epoch {sealed}, which this holder cannot reach — the epoch \
+         key chain reaches back only to {earliest}"
+    )]
+    EpochUnreachable { sealed: u32, earliest: u32 },
 }

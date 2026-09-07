@@ -39,9 +39,12 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 
+use openmls::prelude::LeafNodeIndex;
+
 use crate::error::RoomKeyError;
-use crate::mls::RoomGroup;
-use crate::wire::SealedContent;
+use crate::mls::{MembershipChange, RoomGroup};
+use crate::retention::EpochKeyChain;
+use crate::wire::{EpochLink, SealedContent};
 
 /// A room whose records are sealed, and the group state that seals them.
 ///
@@ -56,15 +59,61 @@ use crate::wire::SealedContent;
 pub struct SealedRoom {
     room_id: String,
     group: RoomGroup,
+    chain: EpochKeyChain,
 }
 
 impl SealedRoom {
     /// Pair a room identifier with its group.
+    ///
+    /// The chain is anchored at the group's current epoch and holds no links, so this room
+    /// opens records from the current epoch only. Feed it [`SealedRoom::add_links`] to reach
+    /// the room's history — see [`crate::retention`] for why history needs feeding.
     pub fn new(room_id: impl Into<String>, group: RoomGroup) -> Self {
         Self {
             room_id: room_id.into(),
             group,
+            chain: EpochKeyChain::new(),
         }
+    }
+
+    /// Point the chain at the group's current epoch and key.
+    ///
+    /// Called before every resolution rather than once at construction. The group is the
+    /// authority on which epoch this member is at, so asking it each time is what makes the
+    /// two impossible to disagree — and it lets a failed exporter surface as the group error
+    /// it is, rather than as a record that mysteriously did not open.
+    fn reanchor(&mut self) -> Result<(), RoomKeyError> {
+        let epoch = self.room_epoch();
+        let key = self.group.storage_key()?;
+        self.chain.reanchor(epoch, key);
+        Ok(())
+    }
+
+    /// Add the epoch links a host or an owner served, extending how far back this room
+    /// can read.
+    ///
+    /// Idempotent and order-independent.
+    pub fn add_links(&mut self, links: impl IntoIterator<Item = EpochLink>) {
+        self.chain.add_links(links);
+    }
+
+    /// Every epoch link this room holds, ascending.
+    ///
+    /// What an owner hands a joining member so they can read what was already there, and
+    /// what a host stores on their behalf. Ciphertext: a party holding no epoch key learns
+    /// nothing from them.
+    pub fn links(&self) -> Vec<EpochLink> {
+        self.chain.links()
+    }
+
+    /// The earliest epoch this room can currently open.
+    ///
+    /// Worth surfacing to a member: on a chained room it should be 1, and anything else
+    /// means either links that have not been delivered or history that was deliberately
+    /// severed.
+    pub fn earliest_readable_epoch(&mut self) -> Result<u32, RoomKeyError> {
+        self.reanchor()?;
+        Ok(self.chain.earliest_reachable())
     }
 
     /// The room these keys are for.
@@ -77,9 +126,42 @@ impl SealedRoom {
         &self.group
     }
 
-    /// Mutable access, for committing a membership change.
-    pub fn group_mut(&mut self) -> &mut RoomGroup {
-        &mut self.group
+    /// Add a member from the KeyPackage bytes they sent, keeping the chain intact.
+    ///
+    /// # Why this exists instead of a `group_mut()`
+    ///
+    /// Handing out `&mut RoomGroup` let a caller advance the epoch behind the chain's back.
+    /// Nothing failed at the time: the group moved on, the chain stayed anchored at the old
+    /// epoch with the old key, and the room silently lost the ability to read everything
+    /// written before the change — the exact defect the chain exists to fix, reintroduced
+    /// one call site at a time. There is no accessor because there is no safe one.
+    pub fn add_member(&mut self, key_package: &[u8]) -> Result<MembershipChange, RoomKeyError> {
+        let change = self.group.add_member_from_bytes(key_package)?;
+        self.chain.add_links(change.link.clone());
+        Ok(change)
+    }
+
+    /// Remove a member and commit, keeping the chain intact.
+    ///
+    /// Forward-only: the removed member reads nothing sealed after this, and every member
+    /// who remains still reads everything sealed before it.
+    pub fn remove_member(
+        &mut self,
+        index: LeafNodeIndex,
+    ) -> Result<MembershipChange, RoomKeyError> {
+        let change = self.group.remove_member(index)?;
+        self.chain.add_links(change.link.clone());
+        Ok(change)
+    }
+
+    /// Apply a commit another member produced, keeping the chain intact.
+    ///
+    /// Returns the room epoch after the commit.
+    pub fn apply_commit(&mut self, commit: &[u8]) -> Result<u32, RoomKeyError> {
+        let (mls_epoch, link) = self.group.apply_commit(commit)?;
+        self.chain.add_links(link);
+        u32::try_from(mls_epoch + 1)
+            .map_err(|_| RoomKeyError::Group(format!("epoch {mls_epoch} exceeds u32")))
     }
 
     /// The room's current epoch, as the host records it.
@@ -140,14 +222,26 @@ impl SealedRoom {
     /// Open a record the host returned.
     ///
     /// Fails rather than returning wrong bytes if the record was relocated, if the epoch was
-    /// relabelled, or if the key for that epoch is not the one this member holds.
+    /// relabelled, or if the key for that epoch is not one this member can reach.
+    ///
+    /// # The epoch is resolved, not assumed
+    ///
+    /// The key is the one for **the record's own epoch**, walked out of the chain — not the
+    /// group's current key. Assuming the current one is what made a room unreadable to
+    /// everybody the moment any member was added or removed: a record sealed at epoch 3 was
+    /// being opened with epoch 4's key, which is a wrong key rather than a missing one, so
+    /// it failed as `DidNotOpen` and read like corruption.
+    ///
+    /// `&mut self` because resolving walks the chain and memoises what it derives. Opening a
+    /// room's history is one walk, not one per record.
     pub fn open_record(
-        &self,
+        &mut self,
         key: &str,
         version: u64,
         sealed: &SealedContent,
     ) -> Result<Vec<u8>, RoomKeyError> {
-        let storage_key = self.group.storage_key()?;
+        self.reanchor()?;
+        let storage_key = self.chain.key_for(sealed.epoch)?;
         let aad = associated_data(&self.room_id, key, version, sealed.epoch);
 
         let ciphertext = B64
@@ -205,7 +299,7 @@ mod tests {
 
     #[test]
     fn a_record_round_trips_under_the_group_key() {
-        let r = room("did:webvh:zRoom");
+        let mut r = room("did:webvh:zRoom");
         let sealed = r.seal_record("k1", 1, b"a decision").expect("seal");
         let opened = r.open_record("k1", 1, &sealed).expect("open");
         assert_eq!(opened, b"a decision");
@@ -215,7 +309,7 @@ mod tests {
     /// cannot move one.
     #[test]
     fn a_relocated_record_does_not_open() {
-        let r = room("did:webvh:zRoom");
+        let mut r = room("did:webvh:zRoom");
         let sealed = r.seal_record("k1", 1, b"a decision").expect("seal");
 
         assert!(
@@ -234,7 +328,7 @@ mod tests {
             "relabelling the epoch must fail authentication, not decrypt wrongly"
         );
 
-        let moved = SealedRoom::new(
+        let mut moved = SealedRoom::new(
             "did:webvh:zOther",
             RoomGroup::create("did:key:zAlice").unwrap(),
         );
@@ -250,7 +344,7 @@ mod tests {
         let sealed = r.seal_record("k1", 1, b"members only").expect("seal");
 
         // A different group is a different key, however identical everything else looks.
-        let outsider = SealedRoom::new(
+        let mut outsider = SealedRoom::new(
             "did:webvh:zRoom",
             RoomGroup::create("did:key:zMallory").unwrap(),
         );
@@ -278,7 +372,7 @@ mod tests {
     /// Sealing twice must not reuse a nonce, or the AEAD's guarantee is gone.
     #[test]
     fn sealing_the_same_plaintext_twice_uses_a_fresh_nonce() {
-        let r = room("did:webvh:zRoom");
+        let mut r = room("did:webvh:zRoom");
         let a = r.seal_record("k1", 1, b"same").expect("seal");
         let b = r.seal_record("k1", 1, b"same").expect("seal again");
         assert_ne!(a.nonce, b.nonce, "a reused nonce breaks ChaCha20-Poly1305");

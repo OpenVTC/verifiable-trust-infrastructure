@@ -33,7 +33,7 @@ use std::net::SocketAddr;
 
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use vtc_client::VtcClient;
-use vtc_client::rooms::mls::{RoomGroup, RoomIdentity};
+use vtc_client::rooms::mls::{IdentitySnapshot, RoomGroup, RoomIdentity};
 use vtc_client::rooms::sealed::SealedRoom;
 use vtc_client::rooms::{CleartextContent, RoomSession, SealedContent, Visibility};
 use vti_rooms_dtg::test_support::RoomFixture;
@@ -334,8 +334,8 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
     // The credentials and the keys are separate objects now, and that is the honest
     // shape: the session travels to the host on every call, the keys never travel at all.
     let alice = session(&f, false);
-    let alice_room = SealedRoom::new(&f.room.room_id, alice_group);
-    let bob_room = SealedRoom::new(&f.room.room_id, bob_group);
+    let mut alice_room = SealedRoom::new(&f.room.room_id, alice_group);
+    let mut bob_room = SealedRoom::new(&f.room.room_id, bob_group);
 
     say(
         "9. Alice mints the epoch the membership change produced",
@@ -405,7 +405,7 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
     let opened = bob_room.open_record(&key, put.version, &from_host)?;
     note(&format!("Bob reads: {}", String::from_utf8_lossy(&opened)));
 
-    let outsider = SealedRoom::new(&f.room.room_id, RoomGroup::create("did:key:zMallory")?);
+    let mut outsider = SealedRoom::new(&f.room.room_id, RoomGroup::create("did:key:zMallory")?);
     note(match outsider.open_record(&key, put.version, &from_host) {
         Err(_) => "Mallory, holding a perfectly valid group of her own: cannot open it",
         Ok(_) => unreachable!("an outsider must not open a sealed record"),
@@ -426,13 +426,80 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
             alice_room.open_record(&key, put.version + 1, &from_host),
         ),
         ("to another room", {
-            let elsewhere = SealedRoom::new(&other.room.room_id, RoomGroup::create(&f.owner.did)?);
+            let mut elsewhere =
+                SealedRoom::new(&other.room.room_id, RoomGroup::create(&f.owner.did)?);
             elsewhere.open_record(&key, put.version, &from_host)
         }),
     ] {
         assert!(result.is_err(), "moving a record {what} must fail");
         note(&format!("moved {what}: does not open"));
     }
+
+    say(
+        "13. Carol joins, and the room does not forget what it already held",
+        "Every membership change advances the epoch. Without the epoch key chain this is \
+         where a room erases itself — for everyone, including whoever wrote the record.",
+    );
+    let (carol_snapshot, carol_package) = IdentitySnapshot::mint("did:key:zCarol")?;
+    let change = alice_room.add_member(&carol_package)?;
+    let carol_welcome = change.welcome.clone().expect("an add produces a welcome");
+    let commit = change.commit.clone();
+
+    // Bob is an existing member: he applies the commit, and *that* is what carries his
+    // chain across the change. A member who skips it loses both directions at once.
+    bob_room.apply_commit(&commit)?;
+
+    let minted = client
+        .mint_epoch(
+            &alice,
+            alice_room.room_epoch(),
+            Some("added carol"),
+            &f.owner.did,
+            &f.owner.secret_multibase,
+        )
+        .await?;
+    note(&format!("room is at epoch {}", minted.epoch));
+
+    // The record was sealed under the previous epoch. Both existing members must still
+    // open it — this is the regression the chain exists to prevent.
+    for (who, room) in [
+        ("Alice (wrote it)", &mut alice_room),
+        ("Bob (was already here)", &mut bob_room),
+    ] {
+        let reread = room
+            .open_record(&key, put.version, &from_host)
+            .unwrap_or_else(|e| panic!("{who} must still read the record after a commit: {e}"));
+        assert_eq!(reread, plaintext);
+        note(&format!("{who}: still reads it"));
+    }
+
+    // Carol holds the current epoch and nothing below it. That is not a bug — it is what a
+    // Welcome carries — and the error says so precisely rather than looking like corruption.
+    let mut carol_room = SealedRoom::new(
+        &f.room.room_id,
+        RoomGroup::join_from_identity(&carol_snapshot, &carol_welcome)?,
+    );
+    match carol_room.open_record(&key, put.version, &from_host) {
+        Err(e) => note(&format!("Carol, before the chain reaches her: {e}")),
+        Ok(_) => unreachable!("a welcome carries the current epoch, not the room's history"),
+    }
+
+    // The links are ciphertext, so they can travel through anyone — the owner here, a host
+    // once `rooms/keys/chain` exists. Handing them over is what backfills her.
+    carol_room.add_links(alice_room.links());
+    let backfilled = carol_room.open_record(&key, put.version, &from_host)?;
+    assert_eq!(backfilled, plaintext);
+    note(&format!(
+        "Carol, after: {}",
+        String::from_utf8_lossy(&backfilled)
+    ));
+
+    // And the asymmetry that makes removal mean something is still intact.
+    let mallory = SealedRoom::new(&f.room.room_id, RoomGroup::create("did:key:zMallory")?)
+        .links()
+        .len();
+    assert_eq!(mallory, 0, "a group formed elsewhere holds no chain");
+    note("the chain runs backwards only — it hands nobody a key they did not already earn");
 
     Ok(())
 }

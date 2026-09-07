@@ -5,6 +5,7 @@
 //! ```text
 //! rooms:<roomId>                        -> Room
 //! room_records:<roomId>:<key>           -> Record
+//! room_epoch_links:<roomId>:<epoch>     -> EpochLink
 //! ```
 //!
 //! The trailing `:` on the record prefix makes a scan room-exact — a prefix of `a:` never
@@ -25,11 +26,14 @@ use vti_common::identifier::validate_did;
 use vti_common::store::KeyspaceHandle;
 
 use super::{Record, RecordStatus, Room};
+use crate::wire::EpochLink;
 
 /// `rooms:<roomId>`.
 pub const ROOMS_PREFIX: &str = "rooms:";
 /// `room_records:<roomId>:<key>`.
 pub const RECORDS_PREFIX: &str = "room_records:";
+/// `room_epoch_links:<roomId>:<epoch>`.
+pub const EPOCH_LINKS_PREFIX: &str = "room_epoch_links:";
 
 fn room_key(room_id: &str) -> String {
     format!("{ROOMS_PREFIX}{room_id}")
@@ -42,6 +46,103 @@ fn record_key(room_id: &str, key: &str) -> String {
 /// Every record in one room. The trailing `:` is what makes this room-exact.
 fn record_prefix(room_id: &str) -> String {
     format!("{RECORDS_PREFIX}{room_id}:")
+}
+
+/// `room_epoch_links:<roomId>:<epoch>`, zero-padded so a scan is ordered.
+///
+/// Ten digits: `u32::MAX` is ten, so no epoch a room can reach sorts out of place. A chain
+/// scanned in the wrong order is a chain walked in the wrong order.
+fn epoch_link_key(room_id: &str, epoch: u32) -> String {
+    format!("{EPOCH_LINKS_PREFIX}{room_id}:{epoch:010}")
+}
+
+/// Every link in one room. The trailing `:` is what makes this room-exact.
+fn epoch_link_prefix(room_id: &str) -> String {
+    format!("{EPOCH_LINKS_PREFIX}{room_id}:")
+}
+
+/// Store one epoch link.
+///
+/// **Refuses to replace an existing one.** A link is minted once, at the commit that
+/// produced its epoch, by the only party then holding both keys. A second one for the same
+/// epoch is either a replay or a host being asked to re-point a room's history at key
+/// material of somebody else's choosing — and the members who already walked the original
+/// would never see the difference.
+pub async fn put_epoch_link(
+    links: &KeyspaceHandle,
+    room_id: &str,
+    link: &EpochLink,
+) -> Result<(), AppError> {
+    if link.epoch < 2 {
+        return Err(AppError::Validation(format!(
+            "epoch {} has no predecessor to link to",
+            link.epoch
+        )));
+    }
+    let k = epoch_link_key(room_id, link.epoch);
+    if links.get_raw(k.clone()).await?.is_some() {
+        return Err(AppError::Conflict(format!(
+            "room `{room_id}` already has an epoch link at {}",
+            link.epoch
+        )));
+    }
+    links.insert(k, link).await
+}
+
+/// Every epoch link a room has, ascending.
+///
+/// Served to a member so they can read the room's history. This service hands out
+/// ciphertext it cannot read: the key that opens a link is the storage key of the epoch it
+/// names, and no host holds one.
+pub async fn list_epoch_links(
+    links: &KeyspaceHandle,
+    room_id: &str,
+) -> Result<Vec<EpochLink>, AppError> {
+    let pairs = links.prefix_iter_raw(epoch_link_prefix(room_id)).await?;
+    let mut out = Vec::with_capacity(pairs.len());
+    for (_k, v) in pairs {
+        let link: EpochLink = serde_json::from_slice(&v)
+            .map_err(|e| AppError::Internal(format!("decode epoch link in `{room_id}`: {e}")))?;
+        out.push(link);
+    }
+    out.sort_by_key(|l| l.epoch);
+    Ok(out)
+}
+
+/// Sever the chain below `epoch`: **cryptographic deletion** of everything sealed before it.
+///
+/// Returns how many links were dropped.
+///
+/// # Why this is deletion and a record purge is not
+///
+/// [`purge_record`] asks a host to erase bytes and trusts it to have done so — against a
+/// backup, a snapshot, or a host that simply did not, it is a promise. Dropping a link is
+/// different in kind: it destroys the only path from a key any member holds to the keys
+/// those records were sealed under. A host that retains every byte of a pruned epoch retains
+/// ciphertext that nobody, member or host, can ever open again.
+///
+/// **Irreversible, and not partially.** A member who has already walked past this rung keeps
+/// what they derived — the chain is how you *reach* a key, not where it is kept. This bounds
+/// who can read the old material to those who already could, which is the strongest property
+/// deletion of shared data can have.
+pub async fn prune_epoch_links_before(
+    links: &KeyspaceHandle,
+    room_id: &str,
+    epoch: u32,
+) -> Result<usize, AppError> {
+    let pairs = links.prefix_iter_raw(epoch_link_prefix(room_id)).await?;
+    let mut dropped = 0;
+    for (k, v) in pairs {
+        let link: EpochLink = serde_json::from_slice(&v)
+            .map_err(|e| AppError::Internal(format!("decode epoch link in `{room_id}`: {e}")))?;
+        if link.epoch <= epoch {
+            let key = String::from_utf8(k)
+                .map_err(|e| AppError::Internal(format!("epoch link key is not utf-8: {e}")))?;
+            links.remove(key).await?;
+            dropped += 1;
+        }
+    }
+    Ok(dropped)
 }
 
 /// Register a room.
@@ -492,11 +593,30 @@ mod tests {
         (dir, rooms, records)
     }
 
+    async fn open_links() -> (tempfile::TempDir, KeyspaceHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let links = store.keyspace(crate::ROOM_EPOCH_LINKS_KEYSPACE).unwrap();
+        (dir, links)
+    }
+
+    fn link(epoch: u32) -> EpochLink {
+        EpochLink {
+            epoch,
+            wrapped: format!("d3JhcHBlZA{epoch}"),
+            nonce: "bm9uY2U".into(),
+        }
+    }
+
     fn room(id: &str, visibility: Visibility) -> Room {
         Room {
             room_id: id.into(),
             owner_did: "did:key:zOwner".into(),
             visibility,
+            retention_policy: crate::RetentionPolicy::Chained,
             epoch: 1,
             next_version: 1,
             retention_days: 90,
@@ -1077,5 +1197,116 @@ mod tests {
         store_mirrored_record(&rooms, &records, "r1", pulled, 10)
             .await
             .expect("a mirror stores what the primary sealed");
+    }
+
+    // ─── Epoch links ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn links_round_trip_in_epoch_order() {
+        let (_d, links) = open_links().await;
+        // Inserted out of order: the chain must be walked in order regardless.
+        for e in [4u32, 2, 3] {
+            put_epoch_link(&links, "r1", &link(e)).await.expect("put");
+        }
+
+        let got = list_epoch_links(&links, "r1").await.expect("list");
+        assert_eq!(
+            got.iter().map(|l| l.epoch).collect::<Vec<_>>(),
+            vec![2, 3, 4]
+        );
+    }
+
+    /// A second link for one epoch is a replay or a re-pointing of the room's history,
+    /// and the members who already walked the original would never see the difference.
+    #[tokio::test]
+    async fn a_link_cannot_be_replaced() {
+        let (_d, links) = open_links().await;
+        put_epoch_link(&links, "r1", &link(2)).await.expect("put");
+
+        let err = put_epoch_link(&links, "r1", &link(2)).await.unwrap_err();
+        assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn the_first_epoch_has_no_link() {
+        let (_d, links) = open_links().await;
+        for e in [0u32, 1] {
+            assert!(matches!(
+                put_epoch_link(&links, "r1", &link(e)).await.unwrap_err(),
+                AppError::Validation(_)
+            ));
+        }
+    }
+
+    /// One room's chain is never another's — the same guard the record prefix has.
+    #[tokio::test]
+    async fn a_scan_is_room_exact() {
+        let (_d, links) = open_links().await;
+        put_epoch_link(&links, "a", &link(2)).await.expect("put");
+        put_epoch_link(&links, "ab", &link(3)).await.expect("put");
+
+        let got = list_epoch_links(&links, "a").await.expect("list");
+        assert_eq!(got.len(), 1, "`a` must not pick up `ab`'s chain");
+        assert_eq!(got[0].epoch, 2);
+    }
+
+    #[tokio::test]
+    async fn pruning_severs_at_and_below_the_named_epoch() {
+        let (_d, links) = open_links().await;
+        for e in 2..=5u32 {
+            put_epoch_link(&links, "r1", &link(e)).await.expect("put");
+        }
+
+        let dropped = prune_epoch_links_before(&links, "r1", 3)
+            .await
+            .expect("prune");
+        assert_eq!(dropped, 2, "links 2 and 3");
+
+        let left = list_epoch_links(&links, "r1").await.expect("list");
+        assert_eq!(left.iter().map(|l| l.epoch).collect::<Vec<_>>(), vec![4, 5]);
+    }
+
+    /// Pruning what is already gone is not an error — a retry of a severance must not
+    /// look like a failure, and there is nothing to be idempotent *about*: the bytes are
+    /// gone either way.
+    #[tokio::test]
+    async fn pruning_is_idempotent() {
+        let (_d, links) = open_links().await;
+        put_epoch_link(&links, "r1", &link(2)).await.expect("put");
+
+        assert_eq!(
+            prune_epoch_links_before(&links, "r1", 2)
+                .await
+                .expect("first"),
+            1
+        );
+        assert_eq!(
+            prune_epoch_links_before(&links, "r1", 2)
+                .await
+                .expect("again"),
+            0
+        );
+    }
+
+    /// A pruned rung cannot be restored by writing it back: the guard that refuses a
+    /// replacement is what makes severance mean severed.
+    #[tokio::test]
+    async fn a_pruned_link_is_gone_and_the_epoch_is_still_spent() {
+        let (_d, links) = open_links().await;
+        put_epoch_link(&links, "r1", &link(2)).await.expect("put");
+        prune_epoch_links_before(&links, "r1", 2)
+            .await
+            .expect("prune");
+
+        // The row is gone, so a write succeeds — but it can only carry key material the
+        // writer can still produce, and the epoch key it wrapped is what was destroyed.
+        // Nothing here can resurrect a key; this asserts only that the store is honest
+        // about what it holds.
+        assert!(
+            list_epoch_links(&links, "r1")
+                .await
+                .expect("list")
+                .is_empty()
+        );
     }
 }

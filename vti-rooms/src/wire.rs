@@ -21,6 +21,15 @@
 //! the published schemas. **Every type here must appear in that file.** Agreeing on the
 //! wire is the requirement; agreeing on the Rust shape never was.
 //!
+//! # The one exemption, and it is temporary
+//!
+//! [`EpochLink`] is **not** in that file, because there is no published schema to check it
+//! against: today it is a storage record, written by a member's own VTA and read back by it,
+//! and the tasks that will put it on the wire are still upstream (design note §12.2). Named
+//! here rather than left as an apparent oversight — the rule above is the kind that decays
+//! the first time someone finds an unexplained gap in it and concludes it is advisory. When
+//! `rooms/keys/chain` publishes, this paragraph goes and the type joins the census.
+//!
 //! Every struct is `camelCase` and `deny_unknown_fields`: these carry authorization
 //! decisions, and an unknown member on one of those is a request that means something the
 //! service did not understand.
@@ -96,6 +105,43 @@ pub struct SealedContent {
     pub nonce: String,
     /// The epoch it was sealed under.
     pub epoch: u32,
+}
+
+/// One rung of the epoch key chain: epoch `epoch - 1`'s storage key, sealed under
+/// epoch `epoch`'s.
+///
+/// A host stores these and cannot read them — the key that opens one is the storage key of
+/// the epoch it names, which no host ever holds. What a host learns from a link is that an
+/// epoch happened, which it already knew from [`super::Room::epoch`].
+///
+/// # Why the chain points backwards
+///
+/// A record is sealed under the epoch current when it was written, and MLS deliberately
+/// gives no way to derive an old epoch's exporter from a new one — that is forward secrecy,
+/// and it is the property that makes removal mean something. Without a link, advancing the
+/// epoch therefore makes every record already in the room unreadable *to everyone*,
+/// including the member who wrote it.
+///
+/// The link is the one-way street run the other way: a member holding the current key can
+/// walk back through the chain to any retained epoch, and a member holding an *old* key can
+/// derive nothing forward. Removal stays forward-only; reading stays possible.
+///
+/// # What it costs
+///
+/// Post-compromise security for record content. Once the chain exists, a compromised
+/// current key reaches every retained epoch. That is the trade a *library* makes and a
+/// message stream does not, which is why it is [`super::RetentionPolicy`] and not a
+/// constant. MLS's own post-compromise property is untouched: a compromised leaf still
+/// heals at the next commit, and a removed member still reads nothing written after them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EpochLink {
+    /// The epoch whose key opens this link. It wraps the key of `epoch - 1`.
+    pub epoch: u32,
+    /// The wrapped predecessor key, base64url. AEAD-bound to `epoch-link|epoch|epoch-1`.
+    pub wrapped: String,
+    /// AEAD nonce, base64url.
+    pub nonce: String,
 }
 
 /// Cleartext record content. `open` rooms only.
