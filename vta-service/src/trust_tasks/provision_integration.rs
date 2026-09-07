@@ -39,7 +39,9 @@ use super::helpers::{
 
 /// Handler for canonical `provision/integration/0.2`. Admin
 /// role on the target context required; super-admin required if the
-/// request asks to create the context inline.
+/// request asks to create the context inline, or if it asks for an
+/// `unrestricted` admin scope — an admin may not confer authority it does
+/// not itself hold.
 pub(super) async fn handle_request(
     state: &AppState,
     auth: &AuthClaims,
@@ -142,6 +144,7 @@ pub(super) async fn handle_request(
         ProvisionIntegrationParams {
             request: verified,
             context,
+            admin_scope: req.admin_scope,
             assertion_mode: AssertionModeOpAdapter(assertion_mode).into(),
             vc_validity,
         },
@@ -168,6 +171,13 @@ pub(super) async fn handle_request(
             output_count: output.summary.output_count,
             webvh_server_id: output.summary.webvh_server_id,
             context_created,
+            // From the op's own record of what it did, not from the request.
+            // A caller that omitted `context` learns where it landed, and one
+            // that asked for `unrestricted` learns whether it got it — which
+            // is the only way to tell an honoured ask from a maintainer that
+            // ignored an unknown member.
+            context: Some(output.summary.context),
+            admin_scope: Some(output.summary.admin_scope),
         },
     };
     success_response(&doc, body)

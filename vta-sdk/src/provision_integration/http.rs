@@ -81,10 +81,63 @@ pub struct ProvisionIntegrationRequest {
         alias = "create_context"
     )]
     pub create_context: bool,
+    /// How wide the ACL entry written for the minted admin should be.
+    ///
+    /// [`AdminScope::Context`] (the default) binds the admin to `context`
+    /// alone — right for every integration-class consumer, which acts where
+    /// it was provisioned and nowhere else. [`AdminScope::Unrestricted`]
+    /// binds it to no context at all, the shape [`vti_common::acl`] reads as
+    /// a **super-admin**.
+    ///
+    /// This does **not** make `context` optional, and that is the point of
+    /// having two fields rather than one. `context` is where the admin DID is
+    /// minted and where its owner keeps its own configuration; an operator
+    /// console needs authority over every context *and* one ordinary context
+    /// to store its state in. Collapsing the two would leave it nowhere to
+    /// put it.
+    ///
+    /// Requires the relayer to be a super-admin: an admin may not confer
+    /// authority it does not itself hold, and routing the grant through a
+    /// provisioning maintainer does not launder it. Non-super-admin callers
+    /// get `Forbidden`, never a quiet narrowing — a caller that asked for
+    /// authority and received a success has no other way to learn it did not
+    /// get it.
+    #[serde(
+        default,
+        skip_serializing_if = "AdminScope::is_default",
+        rename = "adminScope"
+    )]
+    pub admin_scope: AdminScope,
 }
 
 fn is_false(b: &bool) -> bool {
     !b
+}
+
+/// Scope of the ACL entry `provision/integration` writes for the minted
+/// admin — the wire enum of `payload.adminScope`.
+///
+/// The vocabulary is the *shape of the entry*, not the informal name of the
+/// role it produces: `unrestricted` says "no context list", which is what an
+/// ACL evaluates. "super-admin" is what an operator calls the result.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum AdminScope {
+    /// Bind the admin to the resolved target context.
+    #[default]
+    Context,
+    /// Bind the admin to no context — authority over every context the VTA
+    /// holds now and every one created later.
+    Unrestricted,
+}
+
+impl AdminScope {
+    /// Whether this is the default, so the common request stays the minimal
+    /// document rather than carrying a member that says nothing.
+    fn is_default(&self) -> bool {
+        matches!(self, AdminScope::Context)
+    }
 }
 
 /// Producer assertion mode on the returned sealed bundle. Mirrors the
@@ -223,6 +276,31 @@ pub struct ProvisionSummary {
     /// Defaults to `false` on the wire for backward compatibility.
     #[serde(default, alias = "context_created")]
     pub context_created: bool,
+    /// The context the integration was provisioned into — the request's
+    /// `context` verbatim when it carried one, otherwise whatever the
+    /// inference rules resolved.
+    ///
+    /// Echoed because a caller that omitted `context` otherwise has no way to
+    /// learn where it landed except by re-deriving it from its own view of
+    /// this VTA's layout — which is exactly what the inference rules exist
+    /// because it cannot do. `None` from VTAs that pre-date the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// The scope of the ACL entry actually written for `admin_did`.
+    ///
+    /// Echoed rather than assumed from the ask: a maintainer that does not
+    /// implement `admin_scope` ignores an `Unrestricted` request and writes a
+    /// context-scoped entry, and its success response is otherwise
+    /// indistinguishable from one that honoured it. `None` from VTAs that
+    /// pre-date the field, which a caller MUST read as
+    /// [`AdminScope::Context`].
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "adminScope",
+        alias = "admin_scope"
+    )]
+    pub admin_scope: Option<AdminScope>,
 }
 
 #[cfg(test)]

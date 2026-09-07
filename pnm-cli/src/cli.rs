@@ -711,6 +711,23 @@ pub(crate) enum BootstrapCommands {
         /// --create-context`.
         #[arg(long)]
         create_context: bool,
+        /// How wide the minted admin's ACL entry should be: `context`
+        /// (default) binds it to `--context` alone; `unrestricted` binds it
+        /// to no context at all, which is what an ACL reads as a super-admin
+        /// — authority over every context this VTA holds now and every one
+        /// created later.
+        ///
+        /// This does not replace `--context`, which is still required and
+        /// still says where the admin DID is minted and where its owner keeps
+        /// its own configuration. The two are different questions: an
+        /// operator console needs authority everywhere *and* one ordinary
+        /// context to store its state in.
+        ///
+        /// `unrestricted` requires the calling DID to be a super-admin
+        /// itself; a context-scoped admin gets `Forbidden` rather than a
+        /// quietly narrowed entry.
+        #[arg(long, default_value = "context", value_parser = ["context", "unrestricted"])]
+        admin_scope: String,
     },
 }
 

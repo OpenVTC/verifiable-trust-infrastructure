@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use serde_json::json;
 
-use crate::provision_integration::http::ProvisionSummary;
+use crate::provision_integration::http::{AdminScope, ProvisionSummary};
 use crate::provision_integration::payload::{
     DidKeyMaterial, KeyPair, TemplateBootstrapConfig, TemplateBootstrapPayload, TemplateOutput,
     VtaTrustBundle,
@@ -103,6 +103,8 @@ pub fn sample_provision_result(rolled_over: bool) -> ProvisionResult {
             output_count: 1,
             webvh_server_id: None,
             context_created: false,
+            context: Some("ctx-1".into()),
+            admin_scope: Some(AdminScope::Context),
         },
         payload,
     }

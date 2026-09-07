@@ -75,6 +75,7 @@ use crate::store::KeyspaceHandle;
 use vta_sdk::provision_integration::{
     AdminOfClaim, OperatorOfClaim, VerifiedBootstrapRequest, VtaAuthorizationClaim,
     credential::{VtaAuthorizationParams, issue_vta_authorization_credential},
+    http::AdminScope,
 };
 use vta_sdk::sealed_transfer::{
     SealedPayloadV1,
@@ -160,6 +161,14 @@ pub struct ProvisionIntegrationParams {
     /// request. If both are present and disagree, the caller should
     /// reject before calling us — we don't silently normalize.
     pub context: String,
+    /// How wide the ACL entry written for the minted admin should be.
+    ///
+    /// Orthogonal to `context`, not an alternative spelling of it: `context`
+    /// is where the admin DID is minted and where its owner keeps its own
+    /// configuration, this is whether the resulting ACL entry names that
+    /// context or nothing at all. An operator console needs both — authority
+    /// everywhere, and one ordinary context to store its state in.
+    pub admin_scope: AdminScope,
     /// See [`AssertionMode`].
     pub assertion_mode: AssertionMode,
     /// Override for the VC's `validUntil` window. Defaults to 1 hour
@@ -220,6 +229,26 @@ pub struct ProvisionSummary {
     /// it was explicitly null), or when the request was
     /// `AdminRotation` (no integration mint at all).
     pub webvh_server_id: Option<String>,
+    /// The context the integration was provisioned into. Echoed so a caller
+    /// that omitted `context` and let inference run learns where it landed
+    /// rather than re-deriving it from its own view of this VTA's layout.
+    pub context: String,
+    /// The scope of the ACL entry actually written for `admin_did` — what was
+    /// done, not what was asked for.
+    pub admin_scope: AdminScope,
+}
+
+/// The `allowed_contexts` an [`AdminScope`] means, as an ACL entry reads it.
+///
+/// An empty list is not "no contexts" for an admin — [`vti_common::acl`]'s
+/// `act_scope` reads it as `ActScope::All`, which is the whole mechanism
+/// behind a super-admin and the reason the empty case has to be written
+/// deliberately rather than reached by a `context` that happened to be blank.
+fn allowed_contexts_for(scope: AdminScope, context: &str) -> Vec<String> {
+    match scope {
+        AdminScope::Context => vec![context.to_string()],
+        AdminScope::Unrestricted => Vec::new(),
+    }
 }
 
 /// Main entry point. See module docs for the flow.
@@ -231,6 +260,7 @@ pub async fn provision_integration(
     let ProvisionIntegrationParams {
         request,
         context,
+        admin_scope,
         assertion_mode,
         vc_validity,
     } = params;
@@ -244,7 +274,7 @@ pub async fn provision_integration(
         .map_err(|e| AppError::Validation(format!("bootstrap request X25519 derivation: {e}")))?;
 
     // ── 1. Preconditions ────────────────────────────────────────────
-    preconditions::preconditions(state, auth, &context, &request).await?;
+    preconditions::preconditions(state, auth, &context, admin_scope, &request).await?;
 
     // ── 2. Dispatch on the bootstrap intent ─────────────────────────
     //
@@ -264,6 +294,7 @@ pub async fn provision_integration(
             auth,
             &request,
             &context,
+            admin_scope,
             assertion_mode,
             vc_validity,
             bundle_id,
@@ -638,7 +669,7 @@ pub async fn provision_integration(
             did: admin_did.clone(),
             role: Role::Admin,
             label: request.label().map(str::to_string),
-            allowed_contexts: vec![context.clone()],
+            allowed_contexts: allowed_contexts_for(admin_scope, &context),
             ..Default::default()
         },
         "provision-integration",
@@ -802,6 +833,8 @@ pub async fn provision_integration(
             secret_count,
             output_count,
             webvh_server_id,
+            context,
+            admin_scope,
         },
     })
 }
@@ -879,6 +912,7 @@ async fn provision_admin_rotation(
     auth: &AuthClaims,
     request: &VerifiedBootstrapRequest,
     context: &str,
+    admin_scope: AdminScope,
     assertion_mode: AssertionMode,
     vc_validity: Option<Duration>,
     bundle_id: [u8; 16],
@@ -913,7 +947,7 @@ async fn provision_admin_rotation(
             did: admin_did.clone(),
             role: Role::Admin,
             label: request.label().map(str::to_string),
-            allowed_contexts: vec![context.to_string()],
+            allowed_contexts: allowed_contexts_for(admin_scope, context),
             ..Default::default()
         },
         "provision-integration",
@@ -1024,6 +1058,8 @@ async fn provision_admin_rotation(
             secret_count: 1,
             output_count: 0,
             webvh_server_id: None,
+            context: context.to_string(),
+            admin_scope,
         },
     })
 }
@@ -1467,6 +1503,22 @@ mod tests {
         vars
     }
 
+    /// The empty list is not "no contexts" — `act_scope` reads it as
+    /// `ActScope::All`. Pinned because the difference between the two arms is
+    /// the entire feature, and both are one `vec![]` away from each other.
+    #[test]
+    fn allowed_contexts_follows_the_scope() {
+        assert_eq!(
+            allowed_contexts_for(AdminScope::Context, "ctx-a"),
+            vec!["ctx-a".to_string()]
+        );
+        assert!(
+            allowed_contexts_for(AdminScope::Unrestricted, "ctx-a").is_empty(),
+            "an unrestricted admin names no context — including not the one it was \
+             provisioned into, which would silently scope it"
+        );
+    }
+
     #[tokio::test]
     async fn preconditions_accepts_builtin_integration_template() {
         let ts = open_test_store().await;
@@ -1478,7 +1530,7 @@ mod tests {
         let auth = super_admin_claims();
         let request = signed_request("didcomm-mediator", "prod-mediator").await;
 
-        preconditions(&deps, &auth, "prod-mediator", &request)
+        preconditions(&deps, &auth, "prod-mediator", AdminScope::Context, &request)
             .await
             .expect("built-in didcomm-mediator should satisfy preconditions");
     }
@@ -1494,7 +1546,7 @@ mod tests {
         let auth = super_admin_claims();
         let request = signed_request("never-registered", "prod-mediator").await;
 
-        let err = preconditions(&deps, &auth, "prod-mediator", &request)
+        let err = preconditions(&deps, &auth, "prod-mediator", AdminScope::Context, &request)
             .await
             .expect_err("unknown template must be rejected");
         assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
@@ -1590,6 +1642,7 @@ mod tests {
             ProvisionIntegrationParams {
                 request,
                 context: "prod-mediator".into(),
+                admin_scope: AdminScope::Context,
                 assertion_mode: AssertionMode::PinnedOnly,
                 vc_validity: None,
             },
@@ -1643,6 +1696,7 @@ mod tests {
             ProvisionIntegrationParams {
                 request,
                 context: "prod-mediator".into(),
+                admin_scope: AdminScope::Context,
                 assertion_mode: AssertionMode::PinnedOnly,
                 vc_validity: None,
             },
@@ -1687,6 +1741,7 @@ mod tests {
             ProvisionIntegrationParams {
                 request,
                 context: "prod-mediator".into(),
+                admin_scope: AdminScope::Context,
                 assertion_mode: AssertionMode::PinnedOnly,
                 vc_validity: None,
             },
@@ -1785,6 +1840,7 @@ mod tests {
             ProvisionIntegrationParams {
                 request,
                 context: "signer-ctx".into(),
+                admin_scope: AdminScope::Context,
                 assertion_mode: AssertionMode::PinnedOnly,
                 vc_validity: None,
             },
@@ -1857,6 +1913,7 @@ mod tests {
             ProvisionIntegrationParams {
                 request,
                 context: "agents".into(),
+                admin_scope: AdminScope::Context,
                 assertion_mode: AssertionMode::PinnedOnly,
                 vc_validity: None,
             },
@@ -1975,6 +2032,7 @@ mod tests {
             ProvisionIntegrationParams {
                 request,
                 context: "agents".into(),
+                admin_scope: AdminScope::Context,
                 assertion_mode: AssertionMode::PinnedOnly,
                 vc_validity: None,
             },
@@ -2028,6 +2086,7 @@ mod tests {
             ProvisionIntegrationParams {
                 request,
                 context: "prod-mediator".into(),
+                admin_scope: AdminScope::Context,
                 assertion_mode: AssertionMode::PinnedOnly,
                 vc_validity: None,
             },
@@ -2118,6 +2177,7 @@ mod tests {
             ProvisionIntegrationParams {
                 request,
                 context: "ctx-1".into(),
+                admin_scope: AdminScope::Context,
                 assertion_mode: AssertionMode::PinnedOnly,
                 vc_validity: None,
             },
@@ -2225,6 +2285,7 @@ mod tests {
             ProvisionIntegrationParams {
                 request,
                 context: "ctx-swap".into(),
+                admin_scope: AdminScope::Context,
                 assertion_mode: AssertionMode::PinnedOnly,
                 vc_validity: None,
             },
@@ -2307,6 +2368,7 @@ mod tests {
             ProvisionIntegrationParams {
                 request,
                 context: "ctx-relayer".into(),
+                admin_scope: AdminScope::Context,
                 assertion_mode: AssertionMode::PinnedOnly,
                 vc_validity: None,
             },
@@ -2362,6 +2424,7 @@ mod tests {
             ProvisionIntegrationParams {
                 request,
                 context: "ctx-2".into(),
+                admin_scope: AdminScope::Context,
                 assertion_mode: AssertionMode::PinnedOnly,
                 vc_validity: None,
             },

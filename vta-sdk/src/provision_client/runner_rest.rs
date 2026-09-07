@@ -9,7 +9,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::client::VtaClient;
 use crate::did_key::decode_private_key_multibase;
-use crate::provision_integration::http::ProvisionIntegrationRequest;
+use crate::provision_integration::http::{AdminScope, ProvisionIntegrationRequest};
 
 use super::ask::ProvisionAsk;
 use super::diagnostics::{DiagCheck, DiagStatus};
@@ -267,6 +267,7 @@ pub(crate) async fn run_rest_attempt_full_setup(
         assertion: None,
         vc_validity_seconds: None,
         create_context: false,
+        admin_scope: AdminScope::default(),
     };
     let response = match client.provision_integration(req).await {
         Ok(r) => r,
@@ -476,6 +477,7 @@ pub(crate) async fn run_rest_attempt_admin_rotated(
         assertion: None,
         vc_validity_seconds: None,
         create_context: false,
+        admin_scope: AdminScope::default(),
     };
     let response = match client.provision_integration(req).await {
         Ok(r) => r,

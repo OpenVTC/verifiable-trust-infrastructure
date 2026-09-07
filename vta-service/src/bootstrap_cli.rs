@@ -12,6 +12,7 @@
 
 use std::path::PathBuf;
 
+use vta_sdk::provision_integration::http::AdminScope;
 use vta_sdk::sealed_transfer::{
     AssertionProof, BootstrapRequest, ProducerAssertion, SealedPayloadV1, armor, bundle_digest,
     generate_ed25519_keypair, seal_payload,
@@ -580,6 +581,12 @@ pub async fn run_provision_integration(
         ProvisionIntegrationParams {
             request: verified,
             context: target_context,
+            // The offline path provisions an integration into a context the
+            // operator named on the command line, which is the context-scoped
+            // shape. An unrestricted admin is an online ask — it has to be
+            // conferred by a super-admin, and this path runs with the
+            // synthesized local authority instead of one.
+            admin_scope: AdminScope::Context,
             assertion_mode,
             vc_validity,
         },

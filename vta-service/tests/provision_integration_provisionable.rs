@@ -11,6 +11,7 @@
 //! arbitrary template variables (mutating [`provisionable_mediator_vars`])
 //! through the real renderer/sealer/issuer.
 
+use vta_sdk::provision_integration::http::AdminScope;
 use vta_service::operations::provision_integration::{
     AssertionMode, ProvisionIntegrationParams, provision_integration,
 };
@@ -41,6 +42,7 @@ async fn provisionable_vta_reaches_render_seal_issue_for_both_assertion_modes() 
             ProvisionIntegrationParams {
                 request,
                 context: PROVISIONABLE_CONTEXT.into(),
+                admin_scope: AdminScope::Context,
                 assertion_mode: mode,
                 vc_validity: None,
             },
@@ -79,6 +81,7 @@ async fn plain_bootstrap_test_vta_errors_before_render_without_a_context() {
         ProvisionIntegrationParams {
             request,
             context: PROVISIONABLE_CONTEXT.into(),
+            admin_scope: AdminScope::Context,
             assertion_mode: AssertionMode::PinnedOnly,
             vc_validity: None,
         },

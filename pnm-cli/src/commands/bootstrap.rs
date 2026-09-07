@@ -96,6 +96,7 @@ pub(crate) async fn run_authed(
             vc_validity_seconds,
             out,
             create_context,
+            admin_scope,
         } => {
             bootstrap::run_provision_integration(
                 client,
@@ -105,6 +106,7 @@ pub(crate) async fn run_authed(
                 vc_validity_seconds,
                 out,
                 create_context,
+                admin_scope,
             )
             .await
         }

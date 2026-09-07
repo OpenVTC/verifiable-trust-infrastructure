@@ -107,7 +107,9 @@ pub mod request {
     //!
     //! Equivalent to [`crate::provision_integration::http::ProvisionIntegrationRequest`]
     //! — same field semantics, same JSON layout.
-    pub use crate::provision_integration::http::{AssertionMode, ProvisionIntegrationRequest};
+    pub use crate::provision_integration::http::{
+        AdminScope, AssertionMode, ProvisionIntegrationRequest,
+    };
 }
 
 pub mod result {
@@ -293,6 +295,7 @@ pub fn response_body_for_version(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provision_integration::http::AdminScope;
 
     #[test]
     fn result_uri_for_v0_1_request_emits_v0_1_response() {
@@ -443,6 +446,7 @@ mod tests {
             assertion,
             vc_validity_seconds,
             create_context,
+            admin_scope: AdminScope::default(),
         };
         (req, vp_value)
     }
@@ -564,6 +568,7 @@ mod tests {
                 assertion: None,
                 vc_validity_seconds: None,
                 create_context: false,
+                admin_scope: AdminScope::default(),
             };
             let body = request_body_for_version(&req, uri).expect("build body");
             assert_eq!(
@@ -595,6 +600,8 @@ mod tests {
                 output_count: 1,
                 webvh_server_id: None,
                 context_created: true,
+                context: Some("ctx".into()),
+                admin_scope: Some(AdminScope::Unrestricted),
             },
         };
         // 0.1 — snake_case preserved.
@@ -609,6 +616,13 @@ mod tests {
         assert_eq!(v02["summary"]["secretCount"], 2);
         assert_eq!(v02["summary"]["adminRolledOver"], true);
         assert_eq!(v02["summary"]["contextCreated"], true);
+        assert_eq!(v02["summary"]["context"], "ctx");
+        assert_eq!(
+            v02["summary"]["adminScope"], "unrestricted",
+            "adminScope is what the caller reads to learn whether the ask was honoured; \
+             a snake_case or absent member reads as `context` and silently understates \
+             the authority that was granted"
+        );
         assert!(v02["summary"].get("client_did").is_none());
         assert_eq!(v02["bundle"], "armored");
         assert_eq!(

@@ -631,6 +631,7 @@ mod provision {
     };
     use crate::server::AppState;
     use vta_sdk::provision_integration::BootstrapRequest;
+    use vta_sdk::provision_integration::http::AdminScope as SdkAdminScope;
 
     /// Request body for `POST /bootstrap/provision-integration`.
     #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -669,8 +670,45 @@ mod provision {
         /// doesn't already exist. **Requires super-admin** — the
         /// op-layer `create_context` enforces this. Idempotent when
         /// the context already exists. Defaults to `false`.
-        #[serde(default)]
+        ///
+        /// The `createContext` alias is what the SDK's request struct
+        /// actually emits (`rename = "createContext"`, canonical 0.2+ casing).
+        /// Without it this route read only the snake_case spelling and
+        /// nothing sends that, so `#[serde(default)]` quietly answered
+        /// `false` and `pnm bootstrap provision-integration --create-context`
+        /// failed with "context is not registered" against the very context
+        /// it had asked to create.
+        #[serde(default, alias = "createContext")]
         pub create_context: bool,
+        /// How wide the ACL entry for the minted admin should be.
+        ///
+        /// `Context` (the default) binds it to the resolved target context.
+        /// `Unrestricted` binds it to no context — a super-admin — and
+        /// requires the caller to be a super-admin itself; the op layer's
+        /// preconditions refuse otherwise, before anything is minted.
+        ///
+        /// This does not make `context` optional. `context` is where the
+        /// admin DID is minted and where its owner keeps its configuration;
+        /// this is only how far the resulting entry reaches.
+        #[serde(default, alias = "adminScope")]
+        pub admin_scope: AdminScopeWire,
+    }
+
+    /// Wire-form enum for `adminScope`.
+    ///
+    /// Local to this route for the same reason `AssertionModeWire` is: the
+    /// HTTP surface owns its own wire vocabulary, and the op layer's enum is
+    /// free to move without changing what this endpoint accepts.
+    #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    #[derive(utoipa::ToSchema)]
+    pub enum AdminScopeWire {
+        /// Bind the admin to the resolved target context.
+        #[default]
+        Context,
+        /// Bind the admin to no context at all — authority over every context
+        /// this VTA holds now and every one created later.
+        Unrestricted,
     }
 
     /// Wire-form enum for `assertion` (camelCase-serialised via
@@ -740,6 +778,15 @@ mod provision {
         /// `--create-context` actually did something.
         #[serde(default)]
         pub context_created: bool,
+        /// The context the integration was provisioned into — sent or
+        /// inferred. Echoed so a caller that omitted `context` learns where
+        /// it landed instead of guessing at this VTA's layout.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub context: Option<String>,
+        /// The scope of the ACL entry actually written — what was done, not
+        /// what was asked for.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub admin_scope: Option<AdminScopeWire>,
     }
 
     /// Handler. Gated by `AdminAuth` — the caller must have admin role
@@ -807,6 +854,10 @@ mod provision {
             ProvisionIntegrationParams {
                 request: verified,
                 context,
+                admin_scope: match req.admin_scope {
+                    AdminScopeWire::Context => SdkAdminScope::Context,
+                    AdminScopeWire::Unrestricted => SdkAdminScope::Unrestricted,
+                },
                 assertion_mode,
                 vc_validity,
             },
@@ -828,6 +879,11 @@ mod provision {
                 secret_count: output.summary.secret_count,
                 output_count: output.summary.output_count,
                 webvh_server_id: output.summary.webvh_server_id,
+                context: Some(output.summary.context),
+                admin_scope: Some(match output.summary.admin_scope {
+                    SdkAdminScope::Context => AdminScopeWire::Context,
+                    SdkAdminScope::Unrestricted => AdminScopeWire::Unrestricted,
+                }),
                 context_created,
             },
         }))
