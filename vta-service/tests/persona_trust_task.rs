@@ -1830,11 +1830,24 @@ async fn a_step_up_claim_needs_an_approval_bound_to_that_preview() {
     // second device, and the approver authorises a release rather than reading
     // one.
     let context = &approve_request["payload"]["ext"]["org.openvtc.authorization-context"];
-    assert_eq!(context["operation"], "persona/disclosure/present", "{body}");
-    assert_eq!(context["previewId"], preview_id, "{body}");
-    assert_eq!(context["verifierDid"], "did:key:z6MkVerifier", "{body}");
-    assert_eq!(context["claimTypes"][0], "payment.card", "{body}");
-    assert_eq!(context["purpose"], "checkout", "{body}");
+    // The `{type, summary, risk, action}` shape an approver's card renders. The
+    // `type` is the half a native layer discriminates on, so a context without
+    // one is a context that shows the approver nothing.
+    assert_eq!(
+        context["type"], "https://openvtc.org/persona/authorization-context/0.1",
+        "the context carries no type, so no approval card can be chosen for it: {body}"
+    );
+    assert_eq!(context["risk"], "high", "{body}");
+    assert_eq!(
+        context["summary"], approve_request["payload"]["reason"],
+        "the summary and the reason are two accounts of one act and must not differ: {body}"
+    );
+    let action = &context["action"];
+    assert_eq!(action["kind"], "disclose", "{body}");
+    assert_eq!(action["previewId"], preview_id, "{body}");
+    assert_eq!(action["verifierDid"], "did:key:z6MkVerifier", "{body}");
+    assert_eq!(action["claimTypes"][0], "payment.card", "{body}");
+    assert_eq!(action["purpose"], "checkout", "{body}");
     assert!(
         !serde_json::to_string(&approve_request)
             .unwrap()
