@@ -1140,3 +1140,135 @@ async fn a_pool_edit_reaches_the_copy_a_verifier_is_shown() {
          everywhere\" did not reach the materialised copy: {rendered}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 5. The audit trail says what changed
+// ---------------------------------------------------------------------------
+
+/// Every row the audit keyspace holds, oldest first.
+///
+/// Read straight from the keyspace rather than through `audit/list`, because
+/// that task's own authorization is a separate subject and a test that had to
+/// satisfy it would be asserting two things at once. The storage key is
+/// `log:{timestamp:020}:{uuid}`, so a lexicographic scan is chronological.
+async fn audit_rows(
+    ctx: &TestAppContext,
+) -> Vec<vta_sdk::protocols::audit_management::list::AuditLogEntry> {
+    let mut pairs = ctx
+        .state
+        .audit_ks
+        .prefix_iter_raw("log:")
+        .await
+        .expect("audit prefix scan");
+    pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    pairs
+        .into_iter()
+        .filter_map(|(_k, v)| serde_json::from_slice(&v).ok())
+        .collect()
+}
+
+/// A persona write leaves an audit row that says **what changed** — and that
+/// row does not contain the value.
+///
+/// Both halves are needed and neither is sufficient. The positive half is the
+/// defect this exists for: `audit_persona` recorded action, actor, resource
+/// and outcome and nothing else, so a console audit pane showed
+/// `persona.attribute.put` against an opaque ULID with no way to tell a create
+/// from an update or a cascade delete from a no-op. The console renders
+/// `detail` in full; there was simply nothing to render.
+///
+/// The negative half is the rule `audit_persona` documents at length: the
+/// attribute VALUE is never recorded, because the audit log outlives the
+/// record it describes and a value copied into it would survive the holder's
+/// delete under a retention policy that delete does not reach.
+///
+/// **Asserted together, deliberately.** A test that only checks the value is
+/// absent passes against a handler that records no detail at all — which is
+/// exactly the state this pair of assertions replaces, and exactly the way a
+/// regression would look if `detail` were quietly dropped again.
+#[tokio::test]
+async fn a_persona_write_is_audited_with_what_changed_and_not_the_value() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "audit-detail", "admin", &[]).await;
+
+    // A value distinctive enough that finding it anywhere in the log is
+    // unambiguous — a substring like "Ada" could appear by coincidence in a
+    // claim type or an identifier, and the assertion would then be about the
+    // wrong thing.
+    const SECRET_VALUE: &str = "+61 400 999 777 zzq";
+
+    let attr = put_attribute(&router, &holder, "phone.mobile", SECRET_VALUE).await;
+
+    let rows = audit_rows(&ctx).await;
+    let put_row = rows
+        .iter()
+        .rev()
+        .find(|r| r.action == "persona.attribute.put")
+        .unwrap_or_else(|| panic!("no persona.attribute.put audit row in {rows:#?}"));
+
+    let detail = put_row
+        .detail
+        .as_deref()
+        .unwrap_or_else(|| panic!("the audit row carries no detail: {put_row:#?}"));
+
+    // What CHANGED, not merely that something did.
+    assert!(
+        detail.contains("created"),
+        "the detail does not say the attribute was created: {detail}"
+    );
+    assert!(
+        detail.contains("phone.mobile"),
+        "the detail does not name the claim type — the one fact that makes the row \
+         legible without resolving the id: {detail}"
+    );
+    assert!(
+        detail.contains("selfAsserted"),
+        "the detail does not name the provenance kind: {detail}"
+    );
+    assert!(
+        detail.contains(&attr),
+        "the detail does not name the attribute it describes: {detail}"
+    );
+
+    // And not the value — anywhere in the row, not merely in `detail`.
+    let whole_row = serde_json::to_string(put_row).expect("audit row serialises");
+    assert!(
+        !whole_row.contains(SECRET_VALUE),
+        "the attribute's VALUE reached the audit log. The log outlives the record, \
+         so this value would survive the holder deleting the attribute it came \
+         from: {whole_row}"
+    );
+
+    // The same pair on a delete, because that is the operation the lifetime
+    // argument is actually about: after it, the pool no longer holds the value
+    // and the audit row is the only place a copy could persist.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_DELETE,
+        json!({ "attributeId": attr, "cascade": false }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/delete: {status} {body}");
+
+    let rows = audit_rows(&ctx).await;
+    let delete_row = rows
+        .iter()
+        .rev()
+        .find(|r| r.action == "persona.attribute.delete")
+        .unwrap_or_else(|| panic!("no persona.attribute.delete audit row in {rows:#?}"));
+    let detail = delete_row
+        .detail
+        .as_deref()
+        .unwrap_or_else(|| panic!("the delete audit row carries no detail: {delete_row:#?}"));
+    assert!(
+        detail.contains("deleted"),
+        "the delete detail does not distinguish a removal from a no-op: {detail}"
+    );
+
+    let whole_log = serde_json::to_string(&rows).expect("audit log serialises");
+    assert!(
+        !whole_log.contains(SECRET_VALUE),
+        "the deleted attribute's value is still in the audit log: {whole_log}"
+    );
+}
