@@ -2,6 +2,110 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.23.5...vta-service-v0.24.0) — 2026-09-07
+
+
+### Added
+
+- **acl**: Create an entry already narrowed, rather than narrowing it after ([#1280](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1280))
+
+#1279 left `acl/grant` refusing a capability narrowing and pointing at
+  `acl update`, because taking one meant a fifteenth positional parameter on
+  `create_acl`. Refusing was honest but it leaves a real window: between the
+  grant and the narrowing the entry holds everything its role implies, and a
+  subject that authenticates inside that window is authorized by what it found
+  there.
+
+  `create_acl` now takes a `CreateAclParams` struct - the shape `update_acl`
+  already had - so the narrowing is one more named field rather than a
+  fourteenth argument nobody can read at the call site. Test call sites state
+  the two or three members they care about and default the rest instead of
+  spelling every one to reach the last.
+
+  The rule is the update path's, applied where the entry is born: a name the
+  role does not carry is refused rather than dropped, an unknown name is
+  refused, and neither leaves a row behind. `pnm acl create --capabilities
+  memory-read,room-present` is now the form to prefer, and the agent runbook
+  says so.
+
+  Also echoes the stored narrowing from `acl create` and `acl show`, so the
+  restriction can be read back from wherever it was set.
+
+- **acl**: Enforce an entry's capabilities, and give an operator a way to set them ([#1279](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1279))
+
+
+### Fixed
+
+- **persona**: The audit trail says what changed, and correlation/analyze conforms ([#1283](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1283))
+
+* fix(persona): the audit trail says what changed
+
+  Every persona write recorded action, actor, resource and outcome and
+  nothing else. `audit_persona` called `audit::record(...)`, which has no
+  `detail` parameter, so a console audit pane showed twenty rows of
+  `persona.attribute.put` against opaque ULIDs with no way to tell a
+  create from an update, a cascade delete from a no-op against a typo'd
+  id, or a binding that materialised forty claims from one that cleared
+  them.
+
+  The console side was never the problem: `AuditEnvelope` already renders
+  `detail` in full as `detail.reason`. There was simply nothing to render.
+
+  So the write handlers now go through `audit::record_with_detail` and
+  supply one: attribute put/delete, profile put/delete, binding/set, and
+  the three context-local writes each say what changed — created or
+  updated, the claim type, the value type, the provenance kind, entry and
+  claim counts, whether the record existed, how many profiles or personas
+  were affected, and the resulting version. Reads still pass `None`; a
+  read changes nothing, and a sentence restating the request would be
+  noise in an append-only store.
+
+  The attribute VALUE stays out, and `audit_persona` now explains why at
+  length, because the reason is not the one people assume. It is NOT an
+  access-control reason. Persona rows are recorded with `context_id:
+  None`, and `operations::audit::authorize` already refuses every entry
+  not confined to a named context to anyone but an unrestricted admin —
+  exactly the caller `Reach::Holder` admits to `attribute/list`, which
+  returns the plaintext outright. Nobody gains a read by us writing one.
+
+  The reason is lifetime. The audit keyspace is append-only and pruned on
+  its own retention schedule; the pool is deleted when the holder deletes
+  an attribute. Copy a value across and `attribute/delete` quietly stops
+  being a delete — the value outlives the record it came from, in a store
+  the holder's delete does not reach. Stating that distinction matters,
+  because "don't log values" as a bare prohibition is the rule somebody
+  relaxes the first time an operator asks for a better trail, and the
+  access-control argument does not survive that conversation.
+
+  The new test asserts both halves together. A test that only checks the
+  value is absent passes against a handler that records no detail at all,
+  which is precisely the state being fixed.
+
+- **persona**: "edit once, everywhere" reached nothing ([#1281](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1281))
+
+A holder edited their name and the verifier was still shown the old
+  one. `rematerialise` — the function whose docstring explains that a
+  context holds a materialised copy and can only be updated by a write
+  from above the boundary — was **called from no handler in the
+  codebase**. The only reference outside its own file was a comment in a
+  test.
+
+  A context may never read the pool, so its copy changes only if
+  something pushes. Nothing did. `attribute/put`, `attribute/delete
+  --cascade` and `profile/put` all changed what a profile projects and
+  left every bound context presenting the state from before the edit,
+  which `disclosure/preview` and `disclosure/present` then handed to a
+  verifier.
+
+  **The push now belongs to the write, not to the call site.** `put`,
+  `delete` and `put_profile` push before returning, from inside the lock
+  they already hold. Leaving it to handlers is the same decision taken
+  once per call site and forgetting it is silent — the pool shows the new
+  value, the console shows the pool, and only the verifier sees the old
+  one.
+
+
+
 ## [0.23.5](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.23.4...vta-service-v0.23.5) — 2026-09-06
 
 

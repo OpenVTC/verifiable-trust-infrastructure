@@ -2,6 +2,64 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.5.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.5.3...vtc-client-v0.5.4) — 2026-09-07
+
+
+### Added
+
+- **rooms**: A member's CLI surface, driven through the oracle ([#1285](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1285))
+
+Rooms had no CLI. Using one meant writing Rust against `vtc-client` or hand-
+  building signed Trust Task documents, which is not a surface an operator has.
+  `pnm rooms {create,list,get,put,curate,renew}` is that surface for a member.
+
+  ## Two parties, never confused
+
+  Every command talks to both and keeps them apart: the operator's **VTA** mints
+  a presentation (`rooms/keys/present`) and opens sealed records
+  (`rooms/keys/open`), and the room's **host** stores the bytes. The credentials
+  the presentation is derived from and the group key that opens a record stay
+  inside the VTA - this CLI holds neither at any point.
+
+  That makes the CLI the oracle's first real consumer, and it works: a member
+  who holds less than an action needs is refused by their own VTA, before
+  anything reaches the host, which is the earlier and clearer of the two
+  refusals.
+
+  Each command mints its own presentation for exactly the action it performs -
+  `read` for list/get, `write` for put, `curate` for curate, `admin` for renew.
+  Caching one across commands would mean re-binding it (impossible without the
+  VTA) or sending it unbound, which is a bearer token.
+
+  ## Where the pieces had to live
+
+  `vta-sdk` gains `room_present` / `room_open`, because those are calls to your
+  own VTA. It cannot gain the room *wire types*: `vti-common` re-exports
+  `vta_sdk::acl`, so `vta-sdk -> vti-rooms -> vti-common -> vta-sdk` is a cycle.
+  So `vta-cli-common` takes `vtc-client`, which despite its name is the
+  host-neutral room client - `room-host`'s own example drives itself with it. A
+  second copy of the `rooms/*` wire types in the CLI is exactly the duplication
+  that crate deleted.
+
+  `vtc-client` gains `curate_record`, which nothing had implemented.
+
+  ## What it deliberately cannot do
+
+  **Write to a sealed room**: sealing needs the room's group key, and no task
+  seals on a caller's behalf. **Issue credentials**: minting a VIC, VMC or VAC
+  needs the room's own signing key, which is the owner's - a different party with
+  different custody. Both are refused with the reason rather than half-served,
+  and `get` translates the epoch-mismatch failure into "a commit has not been
+  delivered", which is what it means and not what it reads like.
+
+  Five tests on the two pure decisions: rebuilding a session from what the VTA
+  minted (each missing member refused rather than defaulted, a subject binding
+  surviving, a non-string chain link refused rather than silently shortening the
+  chain), and the pin/unpin tri-state where absence must stay distinct from
+  false.
+
+
+
 ## [0.5.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.5.2...vtc-client-v0.5.3) — 2026-09-07
 
 

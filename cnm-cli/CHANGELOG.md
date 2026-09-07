@@ -2,6 +2,38 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.14.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.13.6...cnm-cli-v0.14.0) — 2026-09-07
+
+
+### Added
+
+- **acl**: Create an entry already narrowed, rather than narrowing it after ([#1280](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1280))
+
+#1279 left `acl/grant` refusing a capability narrowing and pointing at
+  `acl update`, because taking one meant a fifteenth positional parameter on
+  `create_acl`. Refusing was honest but it leaves a real window: between the
+  grant and the narrowing the entry holds everything its role implies, and a
+  subject that authenticates inside that window is authorized by what it found
+  there.
+
+  `create_acl` now takes a `CreateAclParams` struct - the shape `update_acl`
+  already had - so the narrowing is one more named field rather than a
+  fourteenth argument nobody can read at the call site. Test call sites state
+  the two or three members they care about and default the rest instead of
+  spelling every one to reach the last.
+
+  The rule is the update path's, applied where the entry is born: a name the
+  role does not carry is refused rather than dropped, an unknown name is
+  refused, and neither leaves a row behind. `pnm acl create --capabilities
+  memory-read,room-present` is now the form to prefer, and the agent runbook
+  says so.
+
+  Also echoes the stored narrowing from `acl create` and `acl show`, so the
+  restriction can be read back from wherever it was set.
+
+- **acl**: Enforce an entry's capabilities, and give an operator a way to set them ([#1279](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1279))
+
+
 ## [0.13.6](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.13.5...cnm-cli-v0.13.6) — 2026-09-07
 
 
