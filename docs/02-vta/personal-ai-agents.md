@@ -110,9 +110,10 @@ above adds it. Set its role/context scope:
 pnm acl create --did <agent-did> --role member --contexts <ctx-id> --expires 30d
 ```
 
-**Capabilities narrow what a role allows**, and `pnm acl update` sets them. They
-can only narrow: every name must be one the role already carries, and one that
-is not is refused rather than dropped. Grant the minimum:
+**Capabilities narrow what a role allows**, and both `pnm acl create` and
+`pnm acl update` set them. They can only narrow: every name must be one the role
+already carries, and one that is not is refused rather than dropped. Grant the
+minimum:
 
 | Capability        | Why an agent needs it                                              |
 |-------------------|-------------------------------------------------------------------|
@@ -128,12 +129,20 @@ both memory capabilities and both room capabilities — usually wider than one
 agent needs. Narrow it to exactly what this agent does:
 
 ```bash
-# This agent reads memory and presents in rooms. Nothing else.
+# Narrow at creation — the entry is never briefly wider than intended.
+pnm acl create --did <agent-did> --role application --contexts <ctx-id> \
+  --capabilities memory-read,room-present
+
+# Or narrow one that already exists.
 pnm acl update <agent-did> --capabilities memory-read,room-present
 
 # Undo the narrowing — the entry holds everything its role implies again.
 pnm acl update <agent-did> --capabilities-all
 ```
+
+**Prefer the first form.** Granting and then narrowing leaves a window in which
+the entry holds everything its role implies, and an agent that authenticates
+inside that window is authorized by what it found there.
 
 The gate reads the stored entry on every call, so a narrowing binds the agent's
 **next request** rather than waiting for its token to expire. Pick the role
@@ -314,7 +323,7 @@ Lower priority unless your agents do credential work.
 | Capability vocabulary                  | Exists (`vti_common::acl::Capability`) |
 | `pnm device …` / `pnm vault …` CLI     | **Added** (this change) — `VtaClient::{device_*,vault_*}` + `pnm` commands, both transports |
 | Sealed vault upsert/release            | **Added** — `seal_vault_secret` / `open_sealed_secret` on the DIDComm session |
-| `pnm acl update --capabilities` flag   | **Added** — an entry narrows within its role, enforced on every gated call |
+| `pnm acl \{create,update\} --capabilities` | **Added** — an entry narrows within its role, at creation or after, enforced on every gated call |
 | Agent memory Trust Tasks               | Exists (`trust_tasks/memory.rs`, `VtaClient::memory_*`) — capability- and context-gated, audited |
 | `pnm memory …` CLI                     | **Added** — `plant` / `recall` / `forget` / `wipe` over the same three tasks |
 | Agent-side connect ladder              | Exists (`vta_sdk::agent_connect::AgentConnect`) — one way in for every agent bridge |

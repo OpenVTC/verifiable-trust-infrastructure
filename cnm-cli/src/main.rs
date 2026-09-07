@@ -1211,6 +1211,9 @@ async fn main() {
                         false,
                         Vec::new(),
                         allowed_keys,
+                        // cnm exposes no capability flags; `None` leaves the
+                        // entry holding everything its role implies.
+                        None,
                     )
                     .await
                 }

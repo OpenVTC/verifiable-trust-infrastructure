@@ -300,23 +300,64 @@ fn validate_allowed_keys(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Everything a new ACL entry can carry, beside the four arguments every ACL
+/// operation takes (store, audit, contexts, caller).
+///
+/// A struct rather than a positional list because this grew to fourteen
+/// arguments, and the fifteenth — the capability narrowing — was the one that
+/// tipped it: a caller reading `create_acl(.., None, None, None, scope, None,
+/// caps, "rest")` cannot tell which `None` is the label. Named fields also mean
+/// a test states the two or three members it cares about and defaults the rest,
+/// instead of spelling every one to reach the last.
+///
+/// Mirrors [`UpdateAclParams`] on the other side of the pair.
+#[derive(Debug, Default, Clone)]
+pub struct CreateAclParams {
+    /// VID the entry is for.
+    pub did: String,
+    pub role: Role,
+    pub label: Option<String>,
+    /// **Empty is not neutral.** It means *unrestricted* for `Role::Admin` and
+    /// *authorized nowhere* for every other role, which is why this is a stated
+    /// field rather than something a builder defaults quietly.
+    pub allowed_contexts: Vec<String>,
+    /// Unix epoch seconds; `None` is permanent.
+    pub expires_at: Option<u64>,
+    pub step_up_approver: Option<String>,
+    /// `"self"` | `"delegated"`; `None` leaves the system floor.
+    pub step_up_require: Option<String>,
+    pub approve_scope: ApproveScope,
+    /// Signing-oracle key filter. `None` = no filter; `Some(∅)` = **no keys** —
+    /// opposite grants, so this stays an `Option` rather than a plain set.
+    pub allowed_keys: Option<std::collections::BTreeSet<String>>,
+    /// Capability narrowing, applied at creation so the entry is never briefly
+    /// wider than intended. Empty = whatever the role implies; a name the role
+    /// does not carry is refused, never dropped ([`capabilities_beyond_role`]).
+    pub capabilities: Vec<Capability>,
+}
+
 pub async fn create_acl(
     acl_ks: &KeyspaceHandle,
     audit: &vta_audit::SharedAuditSink,
     contexts_ks: &KeyspaceHandle,
     auth: &AuthClaims,
-    did: &str,
-    role: Role,
-    label: Option<String>,
-    allowed_contexts: Vec<String>,
-    expires_at: Option<u64>,
-    step_up_approver: Option<String>,
-    step_up_require: Option<String>,
-    approve_scope: ApproveScope,
-    allowed_keys: Option<std::collections::BTreeSet<String>>,
+    params: CreateAclParams,
     channel: &str,
 ) -> Result<CreateAclResultBody, AppError> {
+    let CreateAclParams {
+        did,
+        role,
+        label,
+        allowed_contexts,
+        expires_at,
+        step_up_approver,
+        step_up_require,
+        approve_scope,
+        allowed_keys,
+        capabilities,
+    } = params;
+    let did = did.as_str();
+
     auth.require_manage()?;
     validate_role_assignment(auth, &role)?;
     validate_acl_modification(auth, &role, &allowed_contexts)?;
@@ -324,6 +365,16 @@ pub async fn create_acl(
     // `sign_payload` gate 4), so granting it needs no privilege check beyond
     // the ones above — only a shape check.
     validate_allowed_keys(allowed_keys.as_ref())?;
+    // Same rule the update path applies, for the same reason: a narrowing that
+    // named something the role never had would be silently dropped, and the
+    // operator would believe the entry held less than it does.
+    let beyond = capabilities_beyond_role(&role, &capabilities);
+    if !beyond.is_empty() {
+        return Err(AppError::Validation(format!(
+            "role {role} does not carry {beyond:?}; an entry's capabilities can only \
+             narrow what its role allows, never widen it"
+        )));
+    }
     // Granting approve-authority is its own privilege check: `all` is
     // super-admin-only, a scoped grant requires the caller to hold each context.
     validate_approve_scope_grant(auth, &approve_scope)?;
@@ -346,7 +397,8 @@ pub async fn create_acl(
         .with_step_up_approver(step_up_approver)
         .with_step_up_require(step_up_require)
         .with_approve_scope(approve_scope)
-        .with_allowed_keys(allowed_keys);
+        .with_allowed_keys(allowed_keys)
+        .with_capabilities(capabilities);
 
     store_acl_entry(acl_ks, &entry).await?;
 
@@ -913,39 +965,39 @@ pub async fn grant_from_entry(
     let role = Role::parse(&entry.role)
         .map_err(|_| AppError::Validation(format!("invalid role: {}", entry.role)))?;
 
-    // Grant does not carry a capability narrowing yet, and **refuses** one
-    // rather than ignoring it. Accepting the member and dropping it would hand
-    // the operator an entry they believe is narrowed and is not — the precise
-    // failure the narrowing exists to prevent, arriving through the surface
-    // that introduced it. The refusal names the command that does work, per the
-    // workspace rule that an operator error should carry its own fix.
-    if let Ok(Some(_)) =
-        vta_sdk::protocols::acl_management::entry::capabilities_from_ext(entry.ext.as_ref())
-    {
-        return Err(AppError::Validation(format!(
-            "`acl/grant` does not set a capability narrowing. Grant the entry, then narrow it:\n\
-             \n  pnm acl update {} --capabilities <name,name>\n",
-            entry.subject
-        )));
-    }
+    // A narrowing may arrive with the grant, so an entry is never briefly wider
+    // than the operator intended — the window a grant-then-narrow pair leaves
+    // open, during which the subject holds everything its role implies and may
+    // already be authenticating. An unrecognised name is refused here, exactly
+    // as on the update path.
+    let capabilities = match vta_sdk::protocols::acl_management::entry::capabilities_from_ext(
+        entry.ext.as_ref(),
+    ) {
+        Ok(Some(names)) => parse_capability_names(&names)?,
+        Ok(None) => Vec::new(),
+        Err(reason) => return Err(AppError::Validation(reason)),
+    };
 
     let stored = create_acl(
         acl_ks,
         audit,
         contexts_ks,
         auth,
-        &entry.subject,
-        role,
-        entry.label.clone(),
-        entry.scopes.clone(),
-        entry.expires_at.map(to_epoch),
-        entry.step_up_approver(),
-        entry.step_up_require(),
-        entry.approve_scope(),
-        entry
-            .allowed_keys
-            .clone()
-            .map(|keys| keys.into_iter().collect()),
+        CreateAclParams {
+            did: entry.subject.clone(),
+            role,
+            label: entry.label.clone(),
+            allowed_contexts: entry.scopes.clone(),
+            expires_at: entry.expires_at.map(to_epoch),
+            step_up_approver: entry.step_up_approver(),
+            step_up_require: entry.step_up_require(),
+            approve_scope: entry.approve_scope(),
+            allowed_keys: entry
+                .allowed_keys
+                .clone()
+                .map(|keys| keys.into_iter().collect()),
+            capabilities,
+        },
         channel,
     )
     .await?;
@@ -1501,12 +1553,11 @@ mod tests {
     /// #744: before this, `approve_scope` was settable only at create time,
     /// so narrowing or revoking an approver meant delete-and-recreate — and a
     /// failed recreate leaves the DID with no ACL entry at all.
-    /// Grant does not carry a narrowing, and says so instead of dropping it.
-    /// An ignored capability member would hand back an entry the operator
-    /// believes is narrowed and is not — through the very surface the narrowing
-    /// was added for.
+    /// A grant carries the narrowing, so the entry is never briefly wider than
+    /// intended. Doing it in two steps leaves a window in which the subject
+    /// holds everything its role implies and may already be authenticating.
     #[tokio::test]
-    async fn grant_refuses_a_capability_narrowing_rather_than_ignoring_it() {
+    async fn a_grant_creates_the_entry_already_narrowed() {
         let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
 
@@ -1516,7 +1567,54 @@ mod tests {
             vec!["ctx-a".into()],
         );
         wire.ext = Some(serde_json::json!({
-            "org.openvtc.capabilities": ["memory-read"],
+            "org.openvtc.capabilities": ["memory-read", "room-present"],
+        }));
+
+        let body = grant_from_entry(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &super_admin("did:key:zRoot"),
+            wire,
+            "test",
+        )
+        .await
+        .expect("an application entry may be created narrowed");
+        // The response echoes the narrowing through the entry's `ext`, which is
+        // where every other surface reads it from.
+        let echoed = vta_sdk::protocols::acl_management::entry::capabilities_from_ext(
+            body.entry.ext.as_ref(),
+        )
+        .expect("the echoed ext parses");
+        assert_eq!(
+            echoed,
+            Some(vec!["memory-read".to_string(), "room-present".to_string()])
+        );
+
+        // Narrowed from the first request, not from a follow-up.
+        let stored = get_acl_entry(&acl_ks, "did:key:zNew")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(entry_has_capability(&stored, Capability::MemoryRead));
+        assert!(
+            !entry_has_capability(&stored, Capability::MemoryWrite),
+            "the capability it did not name must be gone from the moment it existed"
+        );
+    }
+
+    /// The same ceiling rule as update, applied where the entry is born: a name
+    /// the role never had is refused rather than dropped, and no row is left
+    /// behind holding more than the operator asked for.
+    #[tokio::test]
+    async fn a_grant_refuses_a_capability_the_role_lacks() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+
+        let mut wire =
+            WireAclEntry::new("did:key:zNew".into(), "reader".into(), vec!["ctx-a".into()]);
+        wire.ext = Some(serde_json::json!({
+            "org.openvtc.capabilities": ["room-present"],
         }));
 
         let err = grant_from_entry(
@@ -1528,17 +1626,50 @@ mod tests {
             "test",
         )
         .await
-        .expect_err("a narrowing on grant must be refused, not dropped");
+        .expect_err("a reader cannot be created holding room-present");
         assert!(
-            matches!(err, AppError::Validation(ref m) if m.contains("acl update")),
-            "the refusal must name the command that works: {err:?}"
+            matches!(err, AppError::Validation(ref m) if m.contains("RoomPresent")),
+            "the refusal must name what it refused: {err:?}"
         );
         assert!(
             get_acl_entry(&acl_ks, "did:key:zNew")
                 .await
                 .unwrap()
                 .is_none(),
-            "and must not have created the entry it refused to narrow"
+            "a refused grant must not leave an entry behind"
+        );
+    }
+
+    /// An unknown name is refused too — the operator asked for a narrowing this
+    /// build cannot enforce, and creating the entry anyway would hand them one
+    /// that holds more than they believe.
+    #[tokio::test]
+    async fn a_grant_refuses_an_unknown_capability_name() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+
+        let mut wire = WireAclEntry::new(
+            "did:key:zNew".into(),
+            "application".into(),
+            vec!["ctx-a".into()],
+        );
+        wire.ext = Some(serde_json::json!({
+            "org.openvtc.capabilities": ["memory-read", "teleport"],
+        }));
+
+        let err = grant_from_entry(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &super_admin("did:key:zRoot"),
+            wire,
+            "test",
+        )
+        .await
+        .expect_err("an unknown capability name must be refused");
+        assert!(
+            matches!(err, AppError::Validation(ref m) if m.contains("teleport")),
+            "the refusal must name the word it did not recognise: {err:?}"
         );
     }
 
@@ -2135,15 +2266,12 @@ mod tests {
             &audit,
             &contexts_ks,
             &caller,
-            "did:key:zNewAdmin",
-            Role::Admin,
-            None,
-            vec!["ctx-typo".into()],
-            None,
-            None,
-            None,
-            ApproveScope::None,
-            None,
+            CreateAclParams {
+                did: "did:key:zNewAdmin".into(),
+                role: Role::Admin,
+                allowed_contexts: vec!["ctx-typo".into()],
+                ..Default::default()
+            },
             "test",
         )
         .await
@@ -2172,15 +2300,12 @@ mod tests {
             &audit,
             &contexts_ks,
             &caller,
-            "did:key:zNewAdmin",
-            Role::Admin,
-            None,
-            vec!["ctx-real".into()],
-            None,
-            None,
-            None,
-            ApproveScope::None,
-            None,
+            CreateAclParams {
+                did: "did:key:zNewAdmin".into(),
+                role: Role::Admin,
+                allowed_contexts: vec!["ctx-real".into()],
+                ..Default::default()
+            },
             "test",
         )
         .await
@@ -2204,15 +2329,13 @@ mod tests {
             &audit,
             &contexts_ks,
             &caller,
-            "did:key:zApprover",
-            Role::Reader,
-            None,
-            Vec::new(), // acts nowhere
-            None,
-            None,
-            None,
-            ApproveScope::Contexts(vec!["ctx-a".into()]),
-            None,
+            CreateAclParams {
+                did: "did:key:zApprover".into(),
+                role: Role::Reader,
+                allowed_contexts: Vec::new(), // acts nowhere
+                approve_scope: ApproveScope::Contexts(vec!["ctx-a".into()]),
+                ..Default::default()
+            },
             "test",
         )
         .await
@@ -2237,15 +2360,13 @@ mod tests {
             &audit,
             &contexts_ks,
             &caller,
-            "did:key:zApprover",
-            Role::Reader,
-            None,
-            Vec::new(),
-            None,
-            None,
-            None,
-            ApproveScope::Contexts(vec!["ctx-b".into()]),
-            None,
+            CreateAclParams {
+                did: "did:key:zApprover".into(),
+                role: Role::Reader,
+                allowed_contexts: Vec::new(),
+                approve_scope: ApproveScope::Contexts(vec!["ctx-b".into()]),
+                ..Default::default()
+            },
             "test",
         )
         .await
@@ -2266,15 +2387,12 @@ mod tests {
             &audit,
             &contexts_ks,
             &caller,
-            "did:key:zWouldBeSuper",
-            Role::Admin,
-            None,
-            Vec::new(), // admin + empty = super-admin
-            None,
-            None,
-            None,
-            ApproveScope::None,
-            None,
+            CreateAclParams {
+                did: "did:key:zWouldBeSuper".into(),
+                role: Role::Admin,
+                allowed_contexts: Vec::new(), // admin + empty = super-admin
+                ..Default::default()
+            },
             "test",
         )
         .await

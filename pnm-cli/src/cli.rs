@@ -1950,6 +1950,15 @@ pub(crate) enum AclCommands {
         /// string is not an id and is rejected.
         #[arg(long, value_delimiter = ',')]
         allowed_keys: Option<Vec<String>>,
+        /// Narrow the new entry to exactly these capabilities (comma-separated,
+        /// kebab-case: `vault-read`, `memory-read`, `room-present`, …).
+        ///
+        /// Set at creation so the entry is never briefly wider than intended —
+        /// the window a grant-then-narrow pair leaves open. Every name must be
+        /// one the role already carries; one that is not is refused. Omit for
+        /// everything the role implies.
+        #[arg(long, value_delimiter = ',')]
+        capabilities: Option<Vec<String>>,
     },
     /// Update an ACL entry
     /// Change a subject's role, guarded by a compare-and-swap.

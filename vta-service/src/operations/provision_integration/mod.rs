@@ -634,15 +634,13 @@ pub async fn provision_integration(
         &state.audit,
         &state.contexts_ks,
         auth,
-        &admin_did,
-        Role::Admin,
-        request.label().map(str::to_string),
-        vec![context.clone()],
-        None,
-        None,
-        None,
-        crate::acl::ApproveScope::None,
-        None,
+        super::acl::CreateAclParams {
+            did: admin_did.clone(),
+            role: Role::Admin,
+            label: request.label().map(str::to_string),
+            allowed_contexts: vec![context.clone()],
+            ..Default::default()
+        },
         "provision-integration",
     )
     .await
@@ -911,15 +909,13 @@ async fn provision_admin_rotation(
         &state.audit,
         &state.contexts_ks,
         auth,
-        &admin_did,
-        Role::Admin,
-        request.label().map(str::to_string),
-        vec![context.to_string()],
-        None,
-        None,
-        None,
-        crate::acl::ApproveScope::None,
-        None,
+        super::acl::CreateAclParams {
+            did: admin_did.clone(),
+            role: Role::Admin,
+            label: request.label().map(str::to_string),
+            allowed_contexts: vec![context.to_string()],
+            ..Default::default()
+        },
         "provision-integration",
     )
     .await

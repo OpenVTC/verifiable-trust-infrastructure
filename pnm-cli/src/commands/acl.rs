@@ -25,6 +25,7 @@ pub(crate) async fn run(
             approve_all,
             approve_contexts,
             allowed_keys,
+            capabilities,
         } => match resolve_expires_at(expires.as_deref()) {
             Ok(expires_at) => {
                 acl::cmd_acl_create(
@@ -39,6 +40,7 @@ pub(crate) async fn run(
                     approve_all,
                     approve_contexts,
                     allowed_keys,
+                    capabilities,
                 )
                 .await
             }

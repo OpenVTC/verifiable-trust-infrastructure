@@ -514,8 +514,10 @@
       <code>application</code> — what an agent integration is normally granted — along with
       <code>initiator</code> and <code>admin</code> carries both room capabilities, and
       <code>reader</code> and <code>monitor</code> carry neither. To give one agent less than its
-      role allows, narrow its entry:
-      <code>pnm acl update &lt;did&gt; --capabilities room-present</code>, undone with
+      role allows, narrow its entry at creation —
+      <code>pnm acl create … --capabilities room-present</code>, the form to prefer, since it
+      leaves no window where the entry is wider — or afterwards with
+      <code>pnm acl update &lt;did&gt; --capabilities room-present</code>, undone by
       <code>--capabilities-all</code>. A name the role does not carry is refused rather than
       dropped, so the role always describes the entry — and the gate reads the stored entry, so a
       narrowing binds the agent's next call rather than its next token.</p>
