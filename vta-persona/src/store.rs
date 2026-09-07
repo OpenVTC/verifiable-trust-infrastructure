@@ -366,7 +366,15 @@ impl PersonaStore {
         Ok(ids.iter().filter(|id| *id != excluding).count())
     }
 
-    async fn indexed_ids(&self, blind: &str) -> Result<Vec<Ulid>, AppError> {
+    /// The attribute ids occupying one blinded index slot — every attribute
+    /// holding this exact value.
+    ///
+    /// `pub(crate)` rather than private because `correlation::analyze` needs
+    /// the identifiers themselves, not the count [`Self::correlation_count`]
+    /// derives from them. Deliberately not `pub`: outside this crate the only
+    /// supported way to ask about a value's reach is the holder-authorized
+    /// analyze task, which decides what it is safe to say.
+    pub(crate) async fn indexed_ids(&self, blind: &str) -> Result<Vec<Ulid>, AppError> {
         Ok(self
             .ks
             .get::<Vec<Ulid>>(storage::correlation_key(blind))
