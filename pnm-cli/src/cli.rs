@@ -304,6 +304,155 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: MemoryCommands,
     },
+
+    /// Act in a data room — a shared space governed by credentials the room
+    /// itself issued, not by this VTA's ACL.
+    ///
+    /// Every command talks to two services and never confuses them: your VTA
+    /// mints a presentation (and opens sealed records), and the room's **host**
+    /// stores the bytes. The credentials and the group key stay in the VTA;
+    /// this CLI never holds either.
+    ///
+    /// Needs the `roomPresent` capability, and `roomOpen` to read a sealed
+    /// room. Issuing a room's credentials is the *owner's* job and is not here:
+    /// it needs the room's own signing key.
+    #[command(name = "rooms")]
+    Rooms {
+        #[command(subcommand)]
+        command: RoomCommands,
+    },
+}
+
+/// Member-side room verbs. Each mints its own presentation for exactly the
+/// action it performs — `read` for list/get, `write` for put, `curate` for
+/// curate, `admin` for renew — so a member who holds less is refused by their
+/// own VTA rather than by the host.
+#[derive(Subcommand)]
+pub(crate) enum RoomCommands {
+    /// List the room's records. Metadata only — never bodies.
+    List {
+        /// The room's DID.
+        #[arg(long = "room")]
+        room_id: String,
+        /// Base URL of the host storing the room.
+        #[arg(long)]
+        host: String,
+        /// The host's DID. Omit and the minted presentation is not bound to a
+        /// host — usable by anyone who observes it until it expires.
+        #[arg(long)]
+        host_did: Option<String>,
+        /// Only records whose key starts with this.
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Only records at or after this version — the incremental-sync
+        /// watermark.
+        #[arg(long)]
+        since_version: Option<u64>,
+        /// Show at most this many.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+
+    /// Read one record, decrypting through your VTA when it is sealed.
+    Get {
+        /// Record key.
+        key: String,
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+    },
+
+    /// Write a record. `open` rooms only — sealing needs the room's group key,
+    /// which lives in your VTA and has no task that seals for a caller.
+    Put {
+        /// Record key. On a sealed tier keys must be opaque; on `open` they may
+        /// be descriptive.
+        key: String,
+        /// The record body (markdown — written for a human, recalled by an
+        /// agent).
+        body: String,
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+        /// One-line title.
+        #[arg(long)]
+        title: Option<String>,
+        /// Precondition: `0` means create-only, `n` requires the stored record
+        /// to be at version `n`. A mismatch reports the version you lost to.
+        #[arg(long)]
+        expected_version: Option<u64>,
+    },
+
+    /// Change a record's standing. Needs `curate`, which `write` does not imply.
+    Curate {
+        /// Record key.
+        key: String,
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+        /// New status: `active`, `deprecated` or `retracted`. `retracted` is a
+        /// tombstone — the body goes, the key and version stay.
+        #[arg(long)]
+        status: Option<String>,
+        /// Pin the record.
+        #[arg(long, conflicts_with = "unpin")]
+        pin: bool,
+        /// Unpin it.
+        #[arg(long)]
+        unpin: bool,
+        /// Why, for the room's trail. Member-authored free text.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
+    /// Renew the room by minting its next epoch. Needs `admin`.
+    ///
+    /// This is what keeps a room live, and it is the whole defence against a
+    /// hostile succession claim: an owner who renews is safe without thinking
+    /// about it.
+    Renew {
+        /// The epoch to mint — your group's epoch plus one.
+        epoch: u32,
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+        /// Why, recorded with the renewal.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
+    /// Register a room with a host.
+    ///
+    /// The only verb needing no presentation — the room has issued nothing yet,
+    /// so the host checks this request's own proof instead. Sign it as the
+    /// owner it names, which this does.
+    Create {
+        /// The room's DID, which you minted before this call.
+        #[arg(long = "room")]
+        room_id: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        host_did: Option<String>,
+        /// `open`, `attributed` or `private`. Fixed for the life of the room.
+        #[arg(long, default_value = "open")]
+        visibility: String,
+        /// How long the host holds the room after it lapses. Default 90 days.
+        #[arg(long)]
+        retention_days: Option<u32>,
+    },
 }
 
 /// CRUD over the agent's memory. `plant` creates/updates, `recall` reads,

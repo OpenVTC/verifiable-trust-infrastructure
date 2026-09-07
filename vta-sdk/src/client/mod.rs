@@ -317,6 +317,7 @@ pub mod loopback;
 mod memory;
 mod persona;
 mod policy;
+mod rooms;
 mod secrets;
 mod vault;
 mod vta_management;

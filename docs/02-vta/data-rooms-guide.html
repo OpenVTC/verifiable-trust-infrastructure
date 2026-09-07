@@ -198,8 +198,11 @@
         <tr><td class="hd">Succession — nomination, transfer, claim</td>
             <td>Work, including the property that renewing defeats a pending claim</td></tr>
         <tr><td class="hd">A CLI</td>
-            <td><span class="no">None.</span> No <code>pnm rooms …</code>; drive it from
-            <code>vtc-client</code> or by posting signed Trust Task documents</td></tr>
+            <td><span class="yes">The member's half.</span>
+            <code>pnm rooms {create,list,get,put,curate,renew}</code>, driven through the oracle
+            so the CLI never holds a room credential or a group key. Issuing a room's
+            credentials is the owner's job and needs the room's own signing key — not there
+            yet</td></tr>
         <tr><td class="hd">Credential issuance</td>
             <td><span class="no">Library only.</span> Nothing serves “issue this member a VMC and a
             VAC” — the owner mints them with <code>dtg-credentials</code> and delivers them out of band</td></tr>
