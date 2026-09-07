@@ -139,6 +139,64 @@ pub struct DiagnosticsResponse {
     /// disagree. Empty when the VTC's DID could not be resolved, which is
     /// "unknown", not "none advertised".
     pub transports: Vec<crate::transport_capability::TransportStatus>,
+    /// Vendor-namespaced additions to the published response.
+    pub ext: DiagnosticsExt,
+}
+
+/// The `ext` envelope on the diagnostics response.
+///
+/// `spec/vtc/registry/diagnostics/0.1#response` is `additionalProperties:
+/// false` and `response_conformance` enforces it against every response an
+/// integration test provokes, so a new top-level field here is a spec change
+/// upstream in `trust-tasks-rs` before it is a change in this repo. `ext` is
+/// the mechanism the spec provides instead (SPEC.md §4.5.1) — an open object
+/// whose immediate keys must each be a reverse-DNS namespace, with the
+/// structure beneath one opaque to the framework.
+///
+/// Typed rather than a bare `serde_json::Value` so the shape reaches
+/// `openapi.json`, and from there the console's generated `wire.ts`. An
+/// untyped `ext` would publish the field and un-type exactly the consumer it
+/// exists for.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct DiagnosticsExt {
+    /// `org.openvtc`, not `vtc`: §4.5.1 requires at least two segments
+    /// (`^[a-z][a-z0-9-]*(\.[a-z0-9-]+)+$`), and a bare `vtc` claims a name
+    /// nobody owns — the collision the rule exists to prevent. Same namespace
+    /// the audit surface already extends under.
+    #[serde(rename = "org.openvtc")]
+    pub openvtc: OpenVtcDiagnostics,
+}
+
+/// What OpenVTC adds to the standard diagnostics payload.
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenVtcDiagnostics {
+    /// What the document-versus-binary comparison actually *means*, from
+    /// [`transport_capability::findings_for_build`](crate::transport_capability::findings_for_build)
+    /// — the same list `vtc status` prints and the daemon logs at messaging
+    /// start.
+    ///
+    /// Served rather than re-derived in the console because two of the four
+    /// findings cannot be reconstructed from
+    /// [`DiagnosticsResponse::transports`] at all. "advertises TSP with no
+    /// DIDComm fallback" and "advertises no messaging at all" are statements
+    /// about the *shape* of the advertised set, not about any one protocol's
+    /// two booleans, so a console deriving its own view necessarily dropped
+    /// them — and the first of those is the finding that explains why an
+    /// operator should care about the informational line it *could* render.
+    /// Re-deriving also conflated "this build cannot serve it" with "the
+    /// mediator socket is down", because `serviceable` is the conjunction,
+    /// which turned a transient disconnect into a document-is-broken banner.
+    ///
+    /// Admin-gated, which is what lets it carry the full remediation prose:
+    /// that text names build feature flags, and the unauthenticated community
+    /// profile deliberately excludes it (see
+    /// [`TransportStatus`](crate::transport_capability::TransportStatus)).
+    ///
+    /// Empty means either "document and binary agree" or "the DID did not
+    /// resolve" — [`DiagnosticsResponse::transports`] being empty
+    /// distinguishes them.
+    pub transport_findings: Vec<crate::transport_capability::Finding>,
 }
 
 #[utoipa::path(
@@ -231,18 +289,25 @@ pub async fn diagnostics(
     // Our own advertised-versus-servable view, resolved from the document
     // rather than config: the deployment that motivated this had `#tsp` added
     // to its DID log long after the VTC last wrote its own mirror.
-    let transports = match crate::transport_capability::resolved_capabilities(
+    let caps = crate::transport_capability::resolved_capabilities(
         state.did_resolver.as_ref(),
         config_vtc_did.as_deref().unwrap_or_default(),
     )
-    .await
-    {
+    .await;
+    let transports = match &caps {
         Some(caps) => crate::transport_capability::public_transport_view_for_build(
-            &caps,
+            caps,
             messaging_status == "connected",
         ),
         None => Vec::new(),
     };
+    // The interpretation of that table, off the same function every other
+    // surface reads — so the console cannot tell an operator a different story
+    // than `vtc status` did about the same document.
+    let transport_findings = caps
+        .as_ref()
+        .map(crate::transport_capability::findings_for_build)
+        .unwrap_or_default();
 
     Ok(Json(DiagnosticsResponse {
         registry_status,
@@ -262,5 +327,8 @@ pub async fn diagnostics(
         messaging_status,
         registry_transport,
         transports,
+        ext: DiagnosticsExt {
+            openvtc: OpenVtcDiagnostics { transport_findings },
+        },
     }))
 }

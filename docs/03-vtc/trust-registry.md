@@ -257,8 +257,56 @@ talking to it?":
 "transports": [                        // this VTC's own document
   { "protocol": "tsp",     "advertised": true,  "serviceable": true  },
   { "protocol": "didcomm", "advertised": false, "serviceable": true  }
-]
+],
+"ext": {
+  "org.openvtc": {
+    "transportFindings": [             // what that table *means*
+      {
+        "code": "noDidcommFallback",
+        "severity": "warn",
+        "summary": "the DID document advertises TSP with no DIDComm fallback — …",
+        "message": "this VTC advertises TSP but no DIDComm mediator, so …"
+      },
+      {
+        "code": "servedNotAdvertised",
+        "severity": "info",
+        "protocol": "didcomm",
+        "summary": "this build serves didcomm, but the DID document does not …",
+        "message": "this build serves didcomm but the DID document does not …"
+      }
+    ]
+  }
+}
 ```
+
+`transportFindings` is the same list `vtc status` prints and the daemon
+logs at messaging start, from one function
+(`transport_capability::findings_for_build`) — so no two surfaces can
+tell you a different story about the same document. Four codes, and
+`code` is the stable identity: `message` is prose written for a human
+and will be reworded, so match on the code and never on a substring.
+
+It lives under `ext` rather than at the top level because
+`spec/vtc/registry/diagnostics/0.1#response` is `additionalProperties:
+false`, and the daemon's own response-conformance layer enforces that.
+`ext` is the extension point the spec provides for exactly this (SPEC.md
+§4.5.1, reverse-DNS namespaces); promoting the field to the top level is
+a `trust-tasks-rs` spec release, not a change in this repo.
+
+| `code` | `severity` | What it means |
+|---|---|---|
+| `advertisedNotServable` | `error` | The document promises a transport this build cannot answer. Every conforming client picks it and fails — the more correct the client, the harder. |
+| `noMessagingAdvertised` | `warn` | No `TSPTransport` and no `DIDCommMessaging`: REST-only. Legal (it is what the `vtc-host` template mints by default) but nothing reaches this VTC over a mediator. |
+| `noDidcommFallback` | `warn` | TSP advertised with nothing behind it. A peer that does not speak TSP has no messaging route in. |
+| `servedNotAdvertised` | `info` | The binary serves more than it promises. Normal mid-rollout — ship the capable binary, then add the service entry. Never a fault. |
+
+The first two are statements about the *shape* of the advertised set,
+not about any one protocol, so they cannot be reconstructed from the
+`transports` table above. Read the findings; do not re-derive them.
+
+An empty `transportFindings` with a **non-empty** `transports` means the
+document and the binary agree. Empty *both* means this VTC's DID did not
+resolve — that is "unknown", not "nothing advertised".
 
 `advertised` and `active` are separate on purpose. A registry that
 advertises only TSP while this VTC can answer only DIDComm is
@@ -271,8 +319,16 @@ the half that tells you which side to fix.
 In the admin UI: the **Dashboard** names the live mediator
 protocols on its tile, adds a trust-registry tile (active
 protocol + status), lists the registry DID under Identity, and
-raises a "Transport advertisement" card when the document and the
-build disagree in either direction. The **Recognition** page
+always carries a "Transport advertisement" card — the `transports`
+table, then the findings above, rendered at their own severity.
+
+Read that card against the tiles rather than alongside them. The
+mediator and trust-registry tiles describe **other parties'**
+documents: the mediator this VTC dials, the registry it syncs with.
+The card describes **this community's own**. A registry tile reading
+`advertises TSP, DIDComm` next to a card reading `not advertised:
+DIDComm` is not a contradiction — it is two different DID documents,
+and the card says so on its face. The **Recognition** page
 shows the registry DID, what it advertises, what we are
 connecting over, and the last transport error. The **Audit** page
 carries `RegistryStatusChanged` / `RegistrySyncSucceeded` /

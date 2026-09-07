@@ -200,6 +200,48 @@ async fn diagnostics_surfaces_mediator_detail_to_admin() {
     assert_eq!(v["mediatorDid"], "did:key:z6MkMediator");
 }
 
+/// The transport findings ride in `ext["org.openvtc"]`, and that placement is
+/// the contract — not an implementation detail of the handler.
+///
+/// `spec/vtc/registry/diagnostics/0.1#response` is `additionalProperties:
+/// false`, which the response-conformance layer enforces on every test in this
+/// file, so a well-meant promotion of `transportFindings` to the top level
+/// fails every other test here with a schema violation rather than this one.
+/// This test is the other half: it pins that the field is *present* and where
+/// the console looks for it, so the placement cannot quietly move to some
+/// other namespace and leave the console reading `undefined`.
+#[tokio::test]
+async fn transport_findings_ride_in_the_openvtc_ext_namespace() {
+    let fix = build().await;
+    let token = token_for(&fix, "admin").await;
+
+    let resp = fix
+        .router
+        .clone()
+        .oneshot(get("/v1/health/diagnostics", DIAGNOSTICS_TASK, &token))
+        .await
+        .unwrap();
+    let (status, v) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+
+    // Reverse-DNS, per SPEC.md §4.5.1 — a bare `vtc` key claims a name nobody
+    // owns and would fail the `ext` propertyNames pattern.
+    let findings = v
+        .pointer("/ext/org.openvtc/transportFindings")
+        .unwrap_or_else(|| panic!("transportFindings must live under ext[org.openvtc]: {v}"));
+    assert!(
+        findings.is_array(),
+        "transportFindings is a list even when empty, so a consumer never has \
+         to distinguish absent from none: {v}"
+    );
+
+    assert!(
+        v.get("transportFindings").is_none(),
+        "the field must not also appear at the top level — the published \
+         response schema forbids it: {v}"
+    );
+}
+
 #[tokio::test]
 async fn diagnostics_requires_trust_task_header() {
     let fix = build().await;

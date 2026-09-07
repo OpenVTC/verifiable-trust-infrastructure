@@ -2193,6 +2193,31 @@ export interface components {
             pop?: null | components["schemas"]["Value"];
         };
         /**
+         * @description The `ext` envelope on the diagnostics response.
+         *
+         *     `spec/vtc/registry/diagnostics/0.1#response` is `additionalProperties:
+         *     false` and `response_conformance` enforces it against every response an
+         *     integration test provokes, so a new top-level field here is a spec change
+         *     upstream in `trust-tasks-rs` before it is a change in this repo. `ext` is
+         *     the mechanism the spec provides instead (SPEC.md §4.5.1) — an open object
+         *     whose immediate keys must each be a reverse-DNS namespace, with the
+         *     structure beneath one opaque to the framework.
+         *
+         *     Typed rather than a bare `serde_json::Value` so the shape reaches
+         *     `openapi.json`, and from there the console's generated `wire.ts`. An
+         *     untyped `ext` would publish the field and un-type exactly the consumer it
+         *     exists for.
+         */
+        DiagnosticsExt: {
+            /**
+             * @description `org.openvtc`, not `vtc`: §4.5.1 requires at least two segments
+             *     (`^[a-z][a-z0-9-]*(\.[a-z0-9-]+)+$`), and a bare `vtc` claims a name
+             *     nobody owns — the collision the rule exists to prevent. Same namespace
+             *     the audit surface already extends under.
+             */
+            "org.openvtc": components["schemas"]["OpenVtcDiagnostics"];
+        };
+        /**
          * @description Phase 3 M3.8 — admin-gated diagnostics view.
          *
          *     Surfaces enough of the trust-registry reconciler's internal
@@ -2224,6 +2249,8 @@ export interface components {
          *     holding the super-admin role.
          */
         DiagnosticsResponse: {
+            /** @description Vendor-namespaced additions to the published response. */
+            ext: components["schemas"]["DiagnosticsExt"];
             /** Format: int64 */
             failedCount: number;
             lastError?: string | null;
@@ -2428,6 +2455,45 @@ export interface components {
             label: string;
             value: string;
         };
+        /**
+         * @description One observation about the document-versus-binary relationship.
+         *
+         *     Carries both a one-line [`summary`](Finding::summary) and the full
+         *     [`message`](Finding::message) because the two consumers need different
+         *     lengths and must not be allowed to drift into different claims: `vtc
+         *     status` and the daemon log print the message, the admin console renders the
+         *     summary as a headline with the message beneath it. Both are written in
+         *     [`findings_against`], once.
+         */
+        Finding: {
+            /** @description Stable identity — match on this, never on the prose. */
+            code: components["schemas"]["FindingCode"];
+            /**
+             * @description The full operator-facing explanation: what is wrong, what it causes,
+             *     and every way to fix it (R6.4).
+             */
+            message: string;
+            /**
+             * @description The transport this is about (`"tsp"` / `"didcomm"` / `"rest"`), when it
+             *     is about one. [`FindingCode::NoMessagingAdvertised`] and
+             *     [`FindingCode::NoDidcommFallback`] are statements about the document as
+             *     a whole, so they carry `None`.
+             */
+            protocol?: string | null;
+            severity: components["schemas"]["Severity"];
+            /** @description One line, no remediation — what state the document and binary are in. */
+            summary: string;
+        };
+        /**
+         * @description Which observation a [`Finding`] is, independent of how it is worded.
+         *
+         *     The prose in [`Finding::message`] is written for an operator and will be
+         *     reworded; a console that keys its rendering off substrings of it breaks
+         *     silently the first time it is. This enum is the stable identity, so a
+         *     consumer can style, order and link a finding without parsing English.
+         * @enum {string}
+         */
+        FindingCode: "advertisedNotServable" | "noMessagingAdvertised" | "noDidcommFallback" | "servedNotAdvertised";
         FinishBody: {
             newDid: string;
             /** @description Hex-encoded Ed25519 signature by the new DID's key. */
@@ -2977,6 +3043,37 @@ export interface components {
             role: components["schemas"]["VtcRole"];
             /** Format: int32 */
             statusListIndex?: number | null;
+        };
+        /** @description What OpenVTC adds to the standard diagnostics payload. */
+        OpenVtcDiagnostics: {
+            /**
+             * @description What the document-versus-binary comparison actually *means*, from
+             *     [`transport_capability::findings_for_build`](crate::transport_capability::findings_for_build)
+             *     — the same list `vtc status` prints and the daemon logs at messaging
+             *     start.
+             *
+             *     Served rather than re-derived in the console because two of the four
+             *     findings cannot be reconstructed from
+             *     [`DiagnosticsResponse::transports`] at all. "advertises TSP with no
+             *     DIDComm fallback" and "advertises no messaging at all" are statements
+             *     about the *shape* of the advertised set, not about any one protocol's
+             *     two booleans, so a console deriving its own view necessarily dropped
+             *     them — and the first of those is the finding that explains why an
+             *     operator should care about the informational line it *could* render.
+             *     Re-deriving also conflated "this build cannot serve it" with "the
+             *     mediator socket is down", because `serviceable` is the conjunction,
+             *     which turned a transient disconnect into a document-is-broken banner.
+             *
+             *     Admin-gated, which is what lets it carry the full remediation prose:
+             *     that text names build feature flags, and the unauthenticated community
+             *     profile deliberately excludes it (see
+             *     [`TransportStatus`](crate::transport_capability::TransportStatus)).
+             *
+             *     Empty means either "document and binary agree" or "the DID did not
+             *     resolve" — [`DiagnosticsResponse::transports`] being empty
+             *     distinguishes them.
+             */
+            transportFindings: components["schemas"]["Finding"][];
         };
         /**
          * @description Standard response wrapper for list endpoints. Carries the
@@ -4211,6 +4308,11 @@ export interface components {
             /** @description The DID this session authenticates. */
             subject: string;
         };
+        /**
+         * @description How loudly a [`Finding`] should be reported.
+         * @enum {string}
+         */
+        Severity: "error" | "warn" | "info";
         /**
          * @description A `showWhen` predicate, declarative so it crosses the wire: render
          *     the field only when `field`'s value equals `eq` (or its truthiness

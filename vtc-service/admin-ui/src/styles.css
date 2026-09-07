@@ -1203,6 +1203,90 @@ select {
   color: var(--warning);
 }
 
+/* ── Findings ────────────────────────────────────────────────── */
+
+/* One diagnosis: a headline the operator can scan, the remediation beneath
+ * it, and a severity rail so "this is fine" and "this is broken" are told
+ * apart before either is read. Severity is the daemon's own `Severity`, never
+ * inferred from the wording. */
+
+.finding-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.finding {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border-left: 3px solid var(--border);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: color-mix(in srgb, var(--border) 22%, transparent);
+}
+
+.finding > strong {
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.finding > .muted {
+  line-height: 1.5;
+}
+
+.finding.error {
+  border-left-color: var(--danger);
+  background: var(--danger-tint);
+}
+
+.finding.error > strong {
+  color: var(--danger);
+}
+
+.finding.warn {
+  border-left-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+
+.finding.warn > strong {
+  color: var(--warning);
+}
+
+.finding.ok {
+  border-left-color: var(--success);
+  background: color-mix(in srgb, var(--success) 9%, transparent);
+}
+
+.finding.ok > strong {
+  color: var(--success);
+}
+
+/* `info` keeps the neutral rail from `.finding` — it is stated so a rollout
+ * is legible, not because anything is wrong, and colouring it would say
+ * otherwise. */
+
+.transport-table td.yes {
+  color: var(--success);
+}
+
+.transport-table td.no {
+  color: var(--text-faint);
+}
+
+/* The endpoint column holds a mediator `did:webvh:…`, which is long enough to
+ * push the table off the card if it is allowed to stay on one line. */
+.transport-table td:last-child {
+  width: 45%;
+}
+
+.transport-table td:last-child code {
+  overflow-wrap: anywhere;
+}
+
 /* ── Chips ───────────────────────────────────────────────────── */
 
 .chip {

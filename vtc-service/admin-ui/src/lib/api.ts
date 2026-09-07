@@ -16,57 +16,29 @@ export interface HealthResponse {
   vtc_did?: string;
 }
 
-// `GET /v1/health/diagnostics` — admin-gated. Surfaces the
-// trust-registry reconciler state plus the identity/mediator detail
-// that used to live on `/health`. The dashboard only needs the
-// identity fields; the rest are typed for future diagnostics views.
-/** One protocol's state on this VTC's own DID document. */
-export interface TransportStatus {
-  /** "tsp" | "didcomm" | "rest" */
-  protocol: string;
-  /** The DID document advertises it, so a resolving client will find it. */
-  advertised: boolean;
-  /** This build can answer on it right now (compiled in + live mediator). */
-  serviceable: boolean;
-  /** Mediator DID for TSP/DIDComm, base URL for REST. */
-  endpoint?: string;
-}
+// `GET /v1/health/diagnostics` — admin-gated. Surfaces the trust-registry
+// reconciler state plus the identity/mediator detail that used to live on
+// `/health` (P3.7).
+//
+// These three shapes used to be declared here by hand, beside the fetch, in
+// exactly the way #1186 taught us not to: `wire-types.ts` had already aliased
+// the generated schemas, nothing imported them, and the hand-written copies
+// won at the call site. They had drifted before anyone read them — the daemon
+// serialises `messagingStatus` and `transports` unconditionally, the local
+// copy called both optional — and `tsc` could not notice, because the local
+// interface *is* what it checks the console against. Re-export the generated
+// aliases instead, so a response change fails to compile rather than arriving
+// as `undefined`.
+import type { DiagnosticsResponse } from "./wire-types";
 
-/**
- * How the VTC reaches its trust registry.
- *
- * `advertised` is the registry's own claim (read from its DID document);
- * `active` is what the last call actually chose. They are separate because a
- * registry can be configured and unreachable at once — advertising a transport
- * this VTC cannot answer — and one merged field would have to drop half of it.
- */
-export interface RegistryTransport {
-  did?: string;
-  url?: string;
-  advertised: string[];
-  active?: string;
-  error?: string;
-}
-
-export interface DiagnosticsResponse {
-  registryStatus: string;
-  queueDepth: number;
-  rtbfBatchedCount: number;
-  failedCount: number;
-  oldestPendingAgeSeconds?: number;
-  lastSuccessAt?: string;
-  lastFailureAt?: string;
-  lastError?: string;
-  vtaDid?: string;
-  mediatorUrl?: string;
-  mediatorDid?: string;
-  syncerEnabled: boolean;
-  syncerRunning: boolean;
-  syncerRestarts: number;
-  messagingStatus?: string;
-  registryTransport?: RegistryTransport;
-  transports?: TransportStatus[];
-}
+export type {
+  DiagnosticsExt,
+  DiagnosticsResponse,
+  RegistryTransport,
+  TransportFinding,
+  TransportFindingCode,
+  TransportStatus,
+} from "./wire-types";
 
 export interface BuildInfo {
   version: string;

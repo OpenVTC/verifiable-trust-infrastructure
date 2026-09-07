@@ -30,11 +30,17 @@ export function Dashboard() {
   // a queue an hour behind is the spec's degraded SLI. Plain depth is not
   // trouble: a burst of joins drains.
   const failed = diagnostics.data?.failedCount ?? 0;
+  // `null` and `undefined` both mean "no dispatchable job is waiting": the
+  // daemon sends `null` when the queue is empty, and the field is absent
+  // before the first diagnostics response lands. `!= null` covers both, which
+  // a `!== undefined` test did not — it read an empty queue as a number and
+  // only got away with it because the hand-written response type here claimed
+  // the field was never null.
   const oldestPending = diagnostics.data?.oldestPendingAgeSeconds;
   const queueTrouble =
     failed > 0
       ? `${failed} sync job${failed === 1 ? "" : "s"} failed`
-      : oldestPending !== undefined && oldestPending >= 3600
+      : oldestPending != null && oldestPending >= 3600
         ? `sync ${formatDuration(oldestPending)} behind`
         : undefined;
 
@@ -42,12 +48,29 @@ export function Dashboard() {
   // transport ready" was true of every deployment and told an operator
   // nothing: a VTC on TSP, or one advertising a transport its build cannot
   // answer, read identically. Name the protocols instead.
-  const messaging = (diagnostics.data?.transports ?? []).filter(
-    (t) => t.protocol !== "rest",
-  );
+  const transports = diagnostics.data?.transports ?? [];
+  const messaging = transports.filter((t) => t.protocol !== "rest");
   const live = messaging.filter((t) => t.advertised && t.serviceable);
-  const advertisedOnly = messaging.filter((t) => t.advertised && !t.serviceable);
-  const servedOnly = messaging.filter((t) => !t.advertised && t.serviceable);
+
+  // Every *interpretation* of the document-versus-binary comparison comes from
+  // the daemon, off `transport_capability::findings_for_build` — the same
+  // function `vtc status` and the boot gate read. The console used to re-derive
+  // its own from the `transports` booleans, which was wrong twice over: two of
+  // the four findings are statements about the shape of the advertised set
+  // ("TSP with no DIDComm fallback", "no messaging advertised at all") and are
+  // not reconstructable from any one protocol's pair of flags, so the console
+  // silently dropped them — including the one that explains why the
+  // informational line it *did* show matters. And `serviceable` is
+  // build-capability AND live-connection, so a transient mediator disconnect
+  // rendered as "a client will choose this and fail", which is a document
+  // defect the operator did not have.
+  //
+  // Under `ext["org.openvtc"]` rather than at the top level because the
+  // published response schema is `additionalProperties: false`: the extension
+  // point is what ships this without waiting on a spec release.
+  const findings =
+    diagnostics.data?.ext?.["org.openvtc"]?.transportFindings ?? [];
+  const hasBrokenAdvertisement = findings.some((f) => f.severity === "error");
 
   const mediatorFoot = !mediatorDid
     ? "REST-only deployment"
@@ -62,7 +85,7 @@ export function Dashboard() {
   // more correct the client, the more certainly it fails.
   const mediatorTone = !mediatorDid
     ? "neutral"
-    : advertisedOnly.length || !live.length
+    : hasBrokenAdvertisement || !live.length
       ? "warn"
       : "ok";
 
@@ -151,30 +174,101 @@ export function Dashboard() {
         )}
       </div>
 
-      {/* Advertised-but-unservable is worth its own line rather than a tone:
-          it is the one state where a *more* conforming client fails harder,
-          and the fix is a document change, not a restart. */}
-      {mediatorDid && (advertisedOnly.length > 0 || servedOnly.length > 0) && (
+      {/* The document-versus-binary comparison, always shown rather than only
+          when something is wrong.
+
+          Two reasons it is a card and not a tile tone. It is about a *document*
+          — the fix is a DID-document change, not a restart — and it is about
+          *this* community's document, where every tile above it describes some
+          other party: the mediator this VTC dials, the registry it syncs with.
+          An operator reading "advertises TSP, DIDComm" on the registry tile and
+          "not advertised" here is looking at two different documents and,
+          before this said so, had no way to tell.
+
+          Always shown because its absence was ambiguous: a silent dashboard
+          meant either "everything agrees" or "we never resolved the DID", and
+          those want opposite reactions. */}
+      {diagnostics.data && (
         <section className="card">
           <h3>Transport advertisement</h3>
-          {advertisedOnly.length > 0 && (
-            <p>
-              Advertised but not servable:{" "}
+          <p className="muted">
+            What <strong>this community&rsquo;s own</strong> DID document
+            advertises, against what this binary serves. The mediator and trust
+            registry tiles above describe other parties&rsquo; documents.
+          </p>
+
+          {transports.length === 0 ? (
+            <p className="finding warn">
               <strong>
-                {advertisedOnly.map((t) => protocolName(t.protocol)).join(", ")}
+                This VTC&rsquo;s DID did not resolve, so there is nothing to
+                compare.
               </strong>
-              . A client resolving this community's DID will choose it and fail.
+              <span className="muted">
+                That is <em>unknown</em>, not <em>nothing advertised</em>.
+                Confirm the DID is published and resolvable before reading
+                anything into the transport tiles above.
+              </span>
             </p>
-          )}
-          {servedOnly.length > 0 && (
-            <p className="muted">
-              Served but not advertised:{" "}
-              <strong>
-                {servedOnly.map((t) => protocolName(t.protocol)).join(", ")}
-              </strong>
-              . No client will choose it — add the service entry to the DID
-              document to start receiving that traffic.
-            </p>
+          ) : (
+            <>
+              <table className="data-table transport-table">
+                <thead>
+                  <tr>
+                    <th>Transport</th>
+                    <th>In the DID document</th>
+                    <th>Serviceable now</th>
+                    <th>Advertised endpoint</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {transports.map((t) => (
+                    <tr key={t.protocol}>
+                      <td>{protocolName(t.protocol)}</td>
+                      <td className={t.advertised ? "yes" : "no"}>
+                        {t.advertised ? "advertised" : "not advertised"}
+                      </td>
+                      <td className={t.serviceable ? "yes" : "no"}>
+                        {t.serviceable ? "yes" : "no"}
+                      </td>
+                      <td>
+                        {t.endpoint ? (
+                          <code>{t.endpoint}</code>
+                        ) : (
+                          <span className="muted">&mdash;</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="muted">
+                A client resolving this DID commits to the highest-preference
+                transport it finds &mdash; TSP, then DIDComm, then REST &mdash;
+                so the topmost advertised row is the one that gets used. For a
+                messaging transport, &ldquo;serviceable&rdquo; means both that
+                this build supports it and that the mediator connection is live
+                right now, so a <em>no</em> there can be a disconnect rather
+                than a document problem; the findings below say which.
+              </p>
+
+              {findings.length === 0 ? (
+                <p className="finding ok">
+                  <strong>Document and binary agree.</strong>
+                </p>
+              ) : (
+                <ul className="finding-list">
+                  {findings.map((f, i) => (
+                    <li
+                      key={`${f.code}:${f.protocol ?? ""}:${i}`}
+                      className={`finding ${f.severity}`}
+                    >
+                      <strong>{f.summary}</strong>
+                      <span className="muted">{f.message}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
           )}
         </section>
       )}
