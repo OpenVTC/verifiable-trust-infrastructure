@@ -184,7 +184,7 @@ impl PersonaStore {
         }
 
         let preview = Preview {
-            preview_id: ulid::Ulid::new().to_string(),
+            preview_id: ulid::Ulid::generate().to_string(),
             context_id: context_id.to_string(),
             persona_did: persona_did.to_string(),
             verifier_did: verifier_did.to_string(),
@@ -276,7 +276,7 @@ impl PersonaStore {
         record.purpose = preview.purpose.clone();
         record.renderer = Some(preview.renderer_id.clone());
         if durable {
-            record.durable_credential_id = Some(ulid::Ulid::new().to_string());
+            record.durable_credential_id = Some(ulid::Ulid::generate().to_string());
         }
 
         self.record_disclosure(record.clone()).await?;

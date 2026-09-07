@@ -94,7 +94,7 @@ impl PersonaStore {
 
         let seq = self.next_version().await?;
         if record.disclosure_id.is_empty() {
-            record.disclosure_id = ulid::Ulid::new().to_string();
+            record.disclosure_id = ulid::Ulid::generate().to_string();
         }
         record.disclosed_at = now_rfc3339();
 
@@ -181,7 +181,7 @@ pub fn new_disclosure(
     claims: Vec<DisclosedClaim>,
 ) -> DisclosureRecord {
     DisclosureRecord {
-        disclosure_id: ulid::Ulid::new().to_string(),
+        disclosure_id: ulid::Ulid::generate().to_string(),
         context_id: context_id.into(),
         verifier_did: verifier_did.into(),
         persona_did: persona_did.into(),

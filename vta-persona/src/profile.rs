@@ -288,7 +288,7 @@ impl PersonaStore {
 pub fn new_profile(name: impl Into<String>, entries: Vec<ProfileEntry>) -> Profile {
     let now = now_rfc3339();
     Profile {
-        profile_id: ulid::Ulid::new().to_string(),
+        profile_id: ulid::Ulid::generate().to_string(),
         name: name.into(),
         entries,
         credential_refs: Vec::new(),

@@ -221,7 +221,7 @@ sha2 = "0.11"
 subtle = "2.6"
 # ULIDs for persona-store record identifiers: the leading 48 bits are a
 # timestamp, so a key-ordered scan is also creation-ordered.
-ulid = { version = "1", features = ["serde"] }
+ulid = { version = "3", features = ["serde"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 multibase = "0.9"
 
