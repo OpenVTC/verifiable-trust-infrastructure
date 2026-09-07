@@ -204,8 +204,9 @@
             <td><span class="no">Library only.</span> Nothing serves “issue this member a VMC and a
             VAC” — the owner mints them with <code>dtg-credentials</code> and delivers them out of band</td></tr>
         <tr><td class="hd">Governance (<code>rooms.rego</code>)</td>
-            <td><span class="no">Not implemented</span> — and <code>rooms/create</code> is ungated
-            on both hosts as a result</td></tr>
+            <td><span class="no">Not implemented.</span> Creation checks that the signer is the
+            owner they name; <em>which</em> members a community lets create rooms on it is still
+            designed rather than built</td></tr>
         <tr><td class="hd">Read mirrors, witnessed renewal anchoring</td>
             <td><span class="no">Not implemented.</span> One write-primary; anchoring is the owner's
             job and nothing does it yet</td></tr>
@@ -386,10 +387,12 @@
       </li>
       <li>
         <h3>Register it with a host</h3>
-        <p>One <code>rooms/create/0.1</code> document. <strong>You bring the roomId</strong> — a
-        room identified by something its host chose could not move. The host sets epoch 1, an
-        expiry one epoch lifetime out, and the retention you asked for; it records the owner DID
-        you gave it.</p>
+        <p>One <code>rooms/create/0.1</code> document, <strong>signed as the owner</strong>: this
+        is the single verb no chain can authorize — the room has issued nothing yet — so the
+        request's own proof is the check, and a signer who is not the owner they name is refused.
+        <strong>You bring the roomId</strong>; a room identified by something its host chose could
+        not move. The host sets epoch 1, an expiry one epoch lifetime out, and the retention you
+        asked for.</p>
       </li>
       <li>
         <h3>Issue yourself membership and authority</h3>
@@ -507,11 +510,12 @@
       this reason: that turns it into “a commit has not been delivered”.</p>
     </div>
     <div class="warn">
-      <p><b>The agent role does not carry the agent capabilities.</b> The oracle gates read the
-      caller's role, and <code>Application</code> — the role agent integrations are normally granted
-      — carries neither <code>roomPresent</code> nor <code>roomOpen</code>. An agent that needs the
-      oracle today must hold a broader role than the design intends. Worth knowing before you scope
-      its entry.</p>
+      <p><b>The grant is the role, not the entry's capability list.</b> The oracle gates read the
+      caller's role: <code>application</code> — what an agent integration is normally granted —
+      along with <code>initiator</code> and <code>admin</code> carries both room capabilities, and
+      <code>reader</code> and <code>monitor</code> carry neither. The per-entry
+      <code>capabilities</code> field is descriptive today, so narrowing it narrows nothing; scope
+      an agent by the role you give it and the context it may act in.</p>
     </div>
   </section>
 
@@ -607,8 +611,9 @@
       <code>did:key</code> only by default; serving <code>did:webvh</code> rooms means turning on
       resolution, and that lets an unauthenticated request make your host fetch.</li>
       <li><strong>Put it behind a proxy.</strong> The room-host binary carries no TLS and no rate
-      limiter, and <code>rooms/create</code> is not authorized on either host yet — anyone who can
-      reach the endpoint can register a room row. Every other verb verifies the document's proof
+      limiter, and while creation now requires the signer to be the owner they name, nothing yet
+      governs <em>which</em> parties may create rooms on your host — so anyone who can reach the
+      endpoint can register one in their own name. Every other verb verifies the document's proof
       and the authority chain.</li>
       <li><strong>Never log the actor on a private room.</strong> That decision is made once, in
       the crate both hosts share, precisely because every host's logging wants to write the acting

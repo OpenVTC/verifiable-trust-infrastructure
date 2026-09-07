@@ -85,7 +85,7 @@ knowing which half you are standing on saves an afternoon.
 | Succession: nomination, transfer, claim | **Work**, including the "renewing defeats a pending claim" property |
 | **A CLI** | **None.** No `pnm rooms …`. Rooms are driven from `vtc-client` (Rust) or by posting signed Trust Task documents |
 | **Credential issuance** | **Library only.** Nothing serves "issue this member a VMC and a VAC"; the room's owner mints them with `dtg-credentials` and delivers them out of band |
-| **Governance (`rooms.rego`)** | **Not implemented.** `rooms/create/0.1` is ungated on both hosts — see §8.4 |
+| **Governance (`rooms.rego`)** | **Not implemented.** Creation checks that the signer is the owner they name (§8.4); *which* members a community lets create rooms on it is still designed rather than built |
 | **Read mirrors** (T3) | **Not implemented.** One write-primary, and everyone reads from it |
 | **Witnessed renewal anchoring** | **Not implemented.** §9 of the design note makes this the owner's job, not the host's; nothing does it yet |
 
@@ -221,8 +221,9 @@ a single record there; the `room-host` binary imposes neither.
 
 The host sets what it is entitled to set and nothing else: `epoch = 1`,
 `epochExpiresAt = now + 365 days`, `retentionDays` (default **90**), and the
-version counter. It records the owner DID you gave it. It does not check that
-you are that owner — see §8.4.
+version counter. **Sign this one as the owner**: creation is the single verb no
+chain can authorize, so the request's own proof is the check, and a signer who
+is not the `ownerDid` they name is refused (§8.4).
 
 ### 5.3 Issue the owner's own credentials
 
@@ -388,11 +389,12 @@ have become the credential hand-off it exists to replace:
 - **A long-lived leaf** — the lifetime is a constant (4 hours), not a request
   parameter.
 
-> **Operational catch.** These gates read the caller's **role**, and
-> `Role::Application` — the role `vta-agent-memory` grants its agents — does
-> **not** carry `roomPresent` or `roomOpen`. Today an agent that needs the
-> oracle must hold `initiator` (or `admin`), which is broader than the design
-> intends. Worth knowing before you scope an agent's ACL entry.
+> **How to grant it.** These gates read the caller's **role**, not the
+> capability list on its ACL entry — that field is descriptive today, and
+> narrowing it narrows nothing. `application` (what an agent integration is
+> normally granted), `initiator` and `admin` carry both room capabilities;
+> `reader` and `monitor` carry neither, deliberately, because minting a
+> credential on a principal's behalf is not a read.
 
 Withdrawing an agent's access is withdrawing it *at the VTA* — remove the ACL
 entry and no further presentations are minted. That is the whole value of an
@@ -471,20 +473,26 @@ write-primary that everyone also reads from. Multi-primary replication is a
 non-goal, not a gap: replicated multi-writer room state needs state-resolution
 machinery whose failure modes took Matrix years to shake out.
 
-### 8.4 T4 — peers, and the caveat that applies to every topology
+### 8.4 T4 — peers, and what still governs creation
 
 T4 runs the same binary as T1; what differs is the door — a VRC-linked peer
 rather than an invitation you originated — and that nobody governs creation but
 the owner.
 
-**The caveat, stated once for all four:** `rooms/create/0.1` is **not
-authorized** on either host today. The document's proof is not checked on that
-verb, the signer is not compared to `ownerDid`, and no policy consults anything.
-Anyone who can reach the endpoint can register a room row — squatting a `roomId`
-or filling storage. Every *other* verb verifies the document proof and the
-authority chain. Until governance lands, treat a room host's endpoint as
-something to put behind a proxy you control, and do not expose a personal room
-host to the open internet.
+**What creation checks, stated once for all four.** `rooms/create/0.1` is the
+one verb no chain can authorize: at the moment it runs the room has issued
+nothing. So the check is the request's own proof — **the signer must be the
+party they name as owner** — and the room is written from that, not from the
+payload. Without it `ownerDid` is a field anyone can fill with anyone.
+
+What that does *not* establish is control of the identifier. Someone can still
+register a `roomId` they do not control while naming themselves owner, and so
+deny that id to its real owner on that host. The row confers nothing — every
+later verb needs credentials the real room issued — so it is a nuisance rather
+than a takeover, and bounding it is quota and access control. Community
+governance of *who may create a room here* (`rooms.rego`) is still designed
+rather than built, so on a public host, creation is open to anyone who can
+authenticate as themselves: put a room host behind a proxy you control.
 
 ---
 
@@ -681,6 +689,7 @@ recover but a fresh invitation from every owner.
 | `invitation … has already been used` | Single use. Issue a fresh one |
 | a room "is live" / "not claimable" | The owner renewed. The claim is correctly dead |
 | `unsupportedType` | The host does not implement that task — check you are talking to a room host and not something else on the same port |
+| `this registration was signed by …, which is not the owner it names` | `rooms/create` signed by anyone but the `ownerDid` in the payload. Sign as the owner (§5.2) |
 | Every call fails on `missing field 'id'` | You are posting a bare JSON body. Room calls are Trust Task **documents** — build them with `vta_sdk::trust_task_sign::build_signed` |
 
 ---
@@ -692,7 +701,7 @@ and `vtc-service`:
 
 | URI | Action required |
 |---|---|
-| `rooms/create/0.1` | *(ungated — §8.4)* |
+| `rooms/create/0.1` | no chain — the signer must be the `ownerDid` (§8.4) |
 | `rooms/records/put/0.1` | `write` |
 | `rooms/records/get/0.1` | `read` |
 | `rooms/records/list/0.1` | `read` |
