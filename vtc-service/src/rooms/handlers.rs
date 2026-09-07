@@ -131,9 +131,25 @@ pub(crate) async fn handle_create(state: &AppState, doc: TrustTask<Value>) -> Tr
         Err(resp) => return resp,
     };
 
+    // The one room operation no chain can authorize: the room has issued nothing yet, so all
+    // this service has is the proof on the request. That proof is what makes `ownerDid` a
+    // fact rather than a field — and the decision itself lives in `vti-rooms`, so a room host
+    // and this service cannot disagree about who may register a room.
+    let presenter = match verify_trust_task_proof(state, &doc).await {
+        Ok(p) => p,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let authorized = match authz::authorize_create(&req.room_id, &req.owner_did, &presenter) {
+        Ok(a) => a,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+
     let room = Room {
-        room_id: req.room_id.clone(),
-        owner_did: req.owner_did,
+        room_id: authorized.room_id().to_string(),
+        // Read from the authorization rather than the payload. The two are equal — that is
+        // what was just established — and taking it from here is what keeps them equal if
+        // this ever grows a second way to be authorized.
+        owner_did: authorized.owner_did().to_string(),
         visibility: req.visibility,
         epoch: 1,
         next_version: 1,
@@ -707,6 +723,48 @@ mod tests {
             .await,
         )
         .await
+    }
+
+    /// The community half of the same gate. Registration is the one verb no chain can
+    /// authorize — the room has issued nothing yet — so the request's own proof is what
+    /// makes `ownerDid` a fact rather than a field anyone can fill with anyone.
+    #[tokio::test]
+    async fn a_room_cannot_be_registered_in_somebody_elses_name() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        let mallory = vti_rooms_dtg::test_support::Party::new();
+
+        let out = handle_create(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_CREATE_TYPE,
+                json!({
+                    "roomId": f.room.room_id,
+                    "visibility": f.room.visibility,
+                    "ownerDid": f.room.owner_did,
+                }),
+                &mallory.did,
+                &mallory.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            !out.status.is_success(),
+            "a signer who is not the named owner must be refused: {}",
+            payload_of(&out)
+        );
+        assert!(
+            vti_rooms::storage::get_room(&state.rooms_ks, &f.room.room_id)
+                .await
+                .is_err(),
+            "a refused registration must not leave the identifier taken"
+        );
+
+        // The owner's own registration still succeeds — a gate, not a wall.
+        assert!(create(state, &f).await.status.is_success());
     }
 
     #[tokio::test]

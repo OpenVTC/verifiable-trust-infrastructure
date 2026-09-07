@@ -209,6 +209,99 @@ impl AuthorizedAction {
     }
 }
 
+/// Proof that [`authorize_create`] ran and allowed a room to be registered.
+///
+/// Separate from [`AuthorizedAction`] because creating a room is the one operation no chain
+/// can authorize: at the moment it runs the room has issued nothing, so there is no
+/// credential in the world that speaks for it. The typestate is the same, though — a handler
+/// takes this rather than a payload, so a create that skipped the check does not compile.
+#[derive(Debug)]
+pub struct AuthorizedCreate {
+    room_id: String,
+    owner_did: String,
+}
+
+impl AuthorizedCreate {
+    /// The room being registered.
+    pub fn room_id(&self) -> &str {
+        &self.room_id
+    }
+    /// Its owner — necessarily also the party that signed the request.
+    pub fn owner_did(&self) -> &str {
+        &self.owner_did
+    }
+}
+
+/// Authorize registering a room: the presenter must be the party they name as owner.
+///
+/// # Why this is the check, and what it deliberately is not
+///
+/// Every other room operation is authorized by a chain the room issued. Create cannot be.
+/// The only signal a host has is the proof on the request document, so the only thing it can
+/// check is that the party signing is the party being recorded as accountable — and it must
+/// check that, because `ownerDid` is otherwise a field anyone can fill with anyone, and a
+/// host that took it on trust would record an owner nobody proved.
+///
+/// What this does **not** establish is control of the identifier. A party can still register
+/// a `roomId` they do not control while naming themselves owner, and so deny that id to its
+/// real owner on this host. That squat is a nuisance rather than a takeover — the row it
+/// creates confers nothing, because every subsequent verb needs credentials the real room
+/// issued and a squatter cannot mint them — and bounding it is quota and access control,
+/// which is the availability row of the trust model and belongs to whoever hosts. Proving
+/// control would mean the *room itself* signing its own registration; that is a stronger
+/// check, deliberately not required here, because it would exclude every owner whose room
+/// key is held somewhere that cannot sign a request document.
+///
+/// Failures are [`AppError::Forbidden`], as everywhere else in this file.
+pub fn authorize_create(
+    room_id: &str,
+    owner_did: &str,
+    presenter: &str,
+) -> Result<AuthorizedCreate, AppError> {
+    if room_id.trim().is_empty() {
+        return Err(AppError::Forbidden(
+            "a room must be registered under an identifier its owner minted".into(),
+        ));
+    }
+    if owner_did.trim().is_empty() {
+        return Err(AppError::Forbidden(
+            "a room must name an owner: it is the accountable party, and a room without one \
+             is a room nobody can be addressed about"
+                .into(),
+        ));
+    }
+    if presenter.trim().is_empty() {
+        return Err(AppError::Forbidden(
+            "no authenticated presenter; a registration nobody signed records an owner \
+             nobody proved"
+                .into(),
+        ));
+    }
+
+    // Compared with any fragment removed from either side. A proof's `verificationMethod`
+    // names a key *within* a DID document (`did:key:z6Mk…#z6Mk…`) while an owner is a DID,
+    // so a literal comparison would refuse correct requests depending on how the signer was
+    // spelled.
+    if did_of(presenter) != did_of(owner_did) {
+        return Err(AppError::Forbidden(format!(
+            "this registration was signed by `{}`, which is not the owner it names; a room \
+             is registered by the party accountable for it",
+            did_of(presenter)
+        )));
+    }
+
+    Ok(AuthorizedCreate {
+        room_id: room_id.trim().to_string(),
+        owner_did: did_of(owner_did).to_string(),
+    })
+}
+
+/// A DID with any verification-method fragment removed.
+fn did_of(did: &str) -> &str {
+    let did = did.trim();
+    did.split('#').next().unwrap_or(did)
+}
+
 /// Authorize `action` on `room` from `presentation`.
 ///
 /// Returns [`AuthorizedAction`] on success. Every failure is [`AppError::Forbidden`], which
@@ -352,6 +445,67 @@ mod tests {
             authority: (0..depth).map(|i| format!("vac-{i}")).collect(),
             subject_binding: binding.then(|| "binding".to_string()),
         }
+    }
+
+    #[test]
+    fn an_owner_registers_their_own_room() {
+        let ok = authorize_create("did:key:zRoom", "did:key:zOwner", "did:key:zOwner")
+            .expect("an owner may register the room they are accountable for");
+        assert_eq!(ok.room_id(), "did:key:zRoom");
+        assert_eq!(ok.owner_did(), "did:key:zOwner");
+    }
+
+    /// The whole of the defect this check exists for: `ownerDid` is a payload field, so a
+    /// host that took it on trust would record an owner who never agreed to be one — and
+    /// would let anyone reachable fill its store with rooms attributed to other people.
+    #[test]
+    fn nobody_registers_a_room_owned_by_somebody_else() {
+        let err = authorize_create("did:key:zRoom", "did:key:zOwner", "did:key:zMallory")
+            .expect_err("a signer who is not the named owner must be refused");
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "must be Forbidden, was {err:?}"
+        );
+    }
+
+    /// An unsigned request has no presenter, and the empty string must not match an empty
+    /// owner — which is the shape a caller gets by omitting both.
+    #[test]
+    fn an_unsigned_registration_is_refused() {
+        assert!(authorize_create("did:key:zRoom", "did:key:zOwner", "").is_err());
+        assert!(authorize_create("did:key:zRoom", "", "").is_err());
+        assert!(authorize_create("", "did:key:zOwner", "did:key:zOwner").is_err());
+    }
+
+    /// A proof names a verification method, not a DID, so the fragment must not decide the
+    /// answer — in either direction.
+    #[test]
+    fn a_verification_method_fragment_is_not_a_different_party() {
+        assert!(
+            authorize_create(
+                "did:key:zRoom",
+                "did:key:zOwner",
+                "did:key:zOwner#z6MkKeyOne"
+            )
+            .is_ok()
+        );
+        assert!(
+            authorize_create(
+                "did:key:zRoom",
+                "did:key:zOwner#z6MkKeyOne",
+                "did:key:zOwner"
+            )
+            .is_ok()
+        );
+        assert!(
+            authorize_create(
+                "did:key:zRoom",
+                "did:key:zOwner",
+                "did:key:zOther#z6MkKeyOne"
+            )
+            .is_err(),
+            "a fragment must not make two different DIDs equal"
+        );
     }
 
     /// A verifier that vouches for whatever it is handed.

@@ -112,15 +112,23 @@ impl HostState {
         &self.rooms
     }
 
+    /// The presenter — proven by the document's own proof, never claimed in its payload.
+    ///
+    /// Split out from [`Self::presenter_and_verifier`] because `rooms/create` needs this half
+    /// and only this half: a room that does not exist yet has issued no credentials, so there
+    /// is no chain to judge and nothing for a verifier to do.
+    async fn presenter(&self, doc: &TrustTask<Value>) -> Result<String, AppError> {
+        vti_common::auth::di_proof::verify_trust_task_proof_with(doc, &self.resolver)
+            .await
+            .map_err(|e| AppError::Forbidden(format!("request proof: {e}")))
+    }
+
     /// The presenter — proven, not claimed — and the verifier to judge their chain with.
     async fn presenter_and_verifier(
         &self,
         doc: &TrustTask<Value>,
     ) -> Result<(String, DtgChainVerifier), AppError> {
-        let presenter =
-            vti_common::auth::di_proof::verify_trust_task_proof_with(doc, &self.resolver)
-                .await
-                .map_err(|e| AppError::Forbidden(format!("request proof: {e}")))?;
+        let presenter = self.presenter(doc).await?;
 
         Ok((
             presenter,
@@ -274,9 +282,25 @@ async fn create(
             );
         }
     };
+    // The one operation no chain can authorize, and therefore the one that needs its own
+    // check: the room has issued nothing yet, so all this host has is who signed the
+    // request. `authorize_create` lives in `vti-rooms` so this host and a VTC cannot come to
+    // different conclusions about who may register a room.
+    let presenter = match state.presenter(doc).await {
+        Ok(p) => p,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    let authorized = match authz::authorize_create(&req.room_id, &req.owner_did, &presenter) {
+        Ok(a) => a,
+        Err(e) => return from_app_error(doc, &e),
+    };
+
     let room = Room {
-        room_id: req.room_id.clone(),
-        owner_did: req.owner_did,
+        room_id: authorized.room_id().to_string(),
+        // From the authorization, not the payload. They are equal — that is what was just
+        // checked — and reading it from here is what keeps them equal if this ever grows a
+        // second way to be authorized.
+        owner_did: authorized.owner_did().to_string(),
         visibility: req.visibility,
         epoch: 1,
         next_version: 1,
@@ -896,6 +920,78 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// Registration is the one verb no chain can authorize, so the proof on the request
+    /// is the whole of its defence — and `ownerDid` is a payload field until something
+    /// checks it against the signer.
+    #[tokio::test]
+    async fn a_room_cannot_be_registered_in_somebody_elses_name() {
+        let (_d, st) = state();
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Open).await;
+        let mallory = Party::new();
+
+        let (status, body) = call(
+            &app,
+            ROOMS_CREATE_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "ownerDid": f.room.owner_did,
+                "visibility": f.room.visibility,
+            }),
+            &mallory,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+        // And nothing was stored: a refused registration must not leave the id taken,
+        // or refusing it would still deny the room to its owner.
+        assert!(
+            vti_rooms::storage::get_room(st.rooms(), &f.room.room_id)
+                .await
+                .is_err(),
+            "a refused registration must not create the room"
+        );
+
+        // The owner's own registration still works, which is what makes the check a gate
+        // rather than a wall.
+        register(&app, &f).await;
+    }
+
+    /// A document with no proof has no presenter, and a registration nobody signed
+    /// records an owner nobody proved.
+    #[tokio::test]
+    async fn an_unsigned_registration_is_refused() {
+        let (_d, st) = state();
+        let app = router(st);
+        let f = RoomFixture::new(Visibility::Open).await;
+
+        let doc = serde_json::json!({
+            "id": "urn:uuid:unsigned",
+            "type": ROOMS_CREATE_TYPE,
+            "issuer": f.room.owner_did,
+            "recipient": "did:key:zHost",
+            "payload": {
+                "roomId": f.room.room_id,
+                "ownerDid": f.room.owner_did,
+                "visibility": f.room.visibility,
+            },
+        });
+        let resp = app
+            .oneshot(
+                Request::post("/trust-tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(doc.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::OK,
+            "an unsigned registration must not be accepted"
+        );
     }
 
     #[tokio::test]
