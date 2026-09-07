@@ -167,7 +167,13 @@ impl PersonaStore {
         // floor, so a member documented as "the holder's private annotation"
         // was never stored.
         let (contact_id, rev, created, changed, prior_notes) = match existing {
-            None => (ulid::Ulid::new().to_string(), 1u64, true, Vec::new(), None),
+            None => (
+                ulid::Ulid::generate().to_string(),
+                1u64,
+                true,
+                Vec::new(),
+                None,
+            ),
             Some(prev) => {
                 let changed = diff_claims(&prev.document, &document);
                 // Archive the outgoing revision before the new one lands, so a

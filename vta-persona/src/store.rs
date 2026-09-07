@@ -526,7 +526,7 @@ pub fn new_attribute(
 ) -> Attribute {
     let now = now_rfc3339();
     Attribute {
-        attribute_id: ulid::Ulid::new().to_string(),
+        attribute_id: ulid::Ulid::generate().to_string(),
         r#type: r#type.into(),
         value_type,
         value: Some(value),
