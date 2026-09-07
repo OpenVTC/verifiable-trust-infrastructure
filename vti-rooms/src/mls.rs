@@ -60,8 +60,6 @@ use openmls_traits::OpenMlsProvider;
 use tls_codec::{Deserialize as _, Serialize as _};
 
 use crate::error::RoomKeyError;
-use crate::retention::{self, StorageKey};
-use crate::wire::EpochLink;
 
 /// The MLS ciphersuite every room uses.
 ///
@@ -153,16 +151,6 @@ pub struct MembershipChange {
     pub welcome: Option<Vec<u8>>,
     /// The epoch the group is in after merging.
     pub epoch: u64,
-    /// The outgoing epoch's storage key, sealed under the incoming one.
-    ///
-    /// **Returned rather than applied**, because the caller is the only party that knows the
-    /// room's [`RetentionPolicy`](crate::RetentionPolicy) and where the link should be
-    /// stored. It is in the return type rather than reachable through a separate call so
-    /// that advancing an epoch and being handed the means to keep the room readable are one
-    /// act: a caller can still drop it, but not without seeing it.
-    ///
-    /// `None` only for a group at epoch 1, which has no predecessor.
-    pub link: Option<EpochLink>,
 }
 
 impl RoomGroup {
@@ -245,8 +233,6 @@ impl RoomGroup {
         &mut self,
         key_package: KeyPackage,
     ) -> Result<MembershipChange, RoomKeyError> {
-        let outgoing = self.storage_key()?;
-
         let (commit, welcome, _) = self
             .group
             .add_members(&self.provider, &self.identity.signer, &[key_package])
@@ -266,7 +252,6 @@ impl RoomGroup {
                     .map_err(|e| RoomKeyError::Group(format!("serialise welcome: {e:?}")))?,
             ),
             epoch: self.group.epoch().as_u64(),
-            link: self.link_from(outgoing)?,
         })
     }
 
@@ -280,8 +265,6 @@ impl RoomGroup {
         &mut self,
         index: LeafNodeIndex,
     ) -> Result<MembershipChange, RoomKeyError> {
-        let outgoing = self.storage_key()?;
-
         let (commit, _, _) = self
             .group
             .remove_members(&self.provider, &self.identity.signer, &[index])
@@ -297,39 +280,15 @@ impl RoomGroup {
                 .map_err(|e| RoomKeyError::Group(format!("serialise commit: {e:?}")))?,
             welcome: None,
             epoch: self.group.epoch().as_u64(),
-            link: self.link_from(outgoing)?,
         })
-    }
-
-    /// Seal the outgoing epoch's storage key under the incoming one.
-    ///
-    /// Called immediately after a merge, while this group is at the new epoch and `outgoing`
-    /// still holds the old key — the only moment either party knows both.
-    fn link_from(&self, outgoing: StorageKey) -> Result<Option<EpochLink>, RoomKeyError> {
-        let room_epoch = self.group.epoch().as_u64() + 1;
-        if room_epoch < 2 {
-            return Ok(None);
-        }
-        let epoch = u32::try_from(room_epoch)
-            .map_err(|_| RoomKeyError::Group(format!("epoch {room_epoch} exceeds u32")))?;
-        Ok(Some(retention::seal_link(
-            epoch,
-            &self.storage_key()?,
-            &outgoing,
-        )?))
     }
 
     /// Apply a commit produced by another member.
     ///
-    /// Returns the new epoch and the link that keeps everything below it readable — see
-    /// [`MembershipChange::link`] for why the link is in the return type rather than behind
-    /// a second call.
-    pub fn apply_commit(
-        &mut self,
-        commit: &[u8],
-    ) -> Result<(u64, Option<EpochLink>), RoomKeyError> {
-        let outgoing = self.storage_key()?;
-
+    /// Returns the new epoch. The epoch **link** that keeps everything below it readable is
+    /// minted by [`crate::sealed::SealedRoom`], not here: a rung is bound to the room, and
+    /// this type deliberately does not know which room it is for.
+    pub fn apply_commit(&mut self, commit: &[u8]) -> Result<u64, RoomKeyError> {
         let msg = MlsMessageIn::tls_deserialize_exact(commit)
             .map_err(|e| RoomKeyError::Group(format!("parse commit: {e:?}")))?;
         let protocol_message: ProtocolMessage = msg
@@ -346,8 +305,7 @@ impl RoomGroup {
                 self.group
                     .merge_staged_commit(&self.provider, *staged)
                     .map_err(|e| RoomKeyError::Group(format!("merge staged commit: {e:?}")))?;
-                let link = self.link_from(outgoing)?;
-                Ok((self.group.epoch().as_u64(), link))
+                Ok(self.group.epoch().as_u64())
             }
             _ => Err(RoomKeyError::Group(
                 "expected a commit, got another message type".into(),

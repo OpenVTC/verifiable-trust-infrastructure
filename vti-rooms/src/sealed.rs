@@ -43,7 +43,7 @@ use openmls::prelude::LeafNodeIndex;
 
 use crate::error::RoomKeyError;
 use crate::mls::{MembershipChange, RoomGroup};
-use crate::retention::EpochKeyChain;
+use crate::retention::{self, EpochKeyChain};
 use crate::wire::{EpochLink, SealedContent};
 
 /// A room whose records are sealed, and the group state that seals them.
@@ -69,10 +69,11 @@ impl SealedRoom {
     /// opens records from the current epoch only. Feed it [`SealedRoom::add_links`] to reach
     /// the room's history — see [`crate::retention`] for why history needs feeding.
     pub fn new(room_id: impl Into<String>, group: RoomGroup) -> Self {
+        let room_id = room_id.into();
         Self {
-            room_id: room_id.into(),
+            chain: EpochKeyChain::new(&room_id),
+            room_id,
             group,
-            chain: EpochKeyChain::new(),
         }
     }
 
@@ -135,10 +136,15 @@ impl SealedRoom {
     /// epoch with the old key, and the room silently lost the ability to read everything
     /// written before the change — the exact defect the chain exists to fix, reintroduced
     /// one call site at a time. There is no accessor because there is no safe one.
-    pub fn add_member(&mut self, key_package: &[u8]) -> Result<MembershipChange, RoomKeyError> {
+    pub fn add_member(
+        &mut self,
+        key_package: &[u8],
+    ) -> Result<(MembershipChange, Option<EpochLink>), RoomKeyError> {
+        let outgoing = self.group.storage_key()?;
         let change = self.group.add_member_from_bytes(key_package)?;
-        self.chain.add_links(change.link.clone());
-        Ok(change)
+        let link = self.mint_link(outgoing)?;
+        self.chain.add_links(link.clone());
+        Ok((change, link))
     }
 
     /// Remove a member and commit, keeping the chain intact.
@@ -148,20 +154,54 @@ impl SealedRoom {
     pub fn remove_member(
         &mut self,
         index: LeafNodeIndex,
-    ) -> Result<MembershipChange, RoomKeyError> {
+    ) -> Result<(MembershipChange, Option<EpochLink>), RoomKeyError> {
+        let outgoing = self.group.storage_key()?;
         let change = self.group.remove_member(index)?;
-        self.chain.add_links(change.link.clone());
-        Ok(change)
+        let link = self.mint_link(outgoing)?;
+        self.chain.add_links(link.clone());
+        Ok((change, link))
     }
 
     /// Apply a commit another member produced, keeping the chain intact.
     ///
     /// Returns the room epoch after the commit.
-    pub fn apply_commit(&mut self, commit: &[u8]) -> Result<u32, RoomKeyError> {
-        let (mls_epoch, link) = self.group.apply_commit(commit)?;
-        self.chain.add_links(link);
-        u32::try_from(mls_epoch + 1)
-            .map_err(|_| RoomKeyError::Group(format!("epoch {mls_epoch} exceeds u32")))
+    pub fn apply_commit(
+        &mut self,
+        commit: &[u8],
+    ) -> Result<(u32, Option<EpochLink>), RoomKeyError> {
+        let outgoing = self.group.storage_key()?;
+        let mls_epoch = self.group.apply_commit(commit)?;
+        let link = self.mint_link(outgoing)?;
+        self.chain.add_links(link.clone());
+        let epoch = u32::try_from(mls_epoch + 1)
+            .map_err(|_| RoomKeyError::Group(format!("epoch {mls_epoch} exceeds u32")))?;
+        Ok((epoch, link))
+    }
+
+    /// Seal the outgoing epoch's storage key under the incoming one, bound to this room.
+    ///
+    /// Called immediately after a merge, while the group is at the new epoch and `outgoing`
+    /// still holds the old key — the only moment any party knows both.
+    ///
+    /// **This lives here rather than on [`RoomGroup`] because a rung is bound to its room.**
+    /// `roomId` is in the associated data for the same reason it is in a record's
+    /// (`rooms/epoch/chain/0.1`, and `SealedRecord` before it): a rung served under the
+    /// wrong room must fail to open rather than rely on two rooms happening to derive
+    /// different keys. The group does not know which room it is for, and should not.
+    fn mint_link(
+        &self,
+        outgoing: retention::StorageKey,
+    ) -> Result<Option<EpochLink>, RoomKeyError> {
+        let epoch = self.room_epoch();
+        if epoch < 2 {
+            return Ok(None);
+        }
+        Ok(Some(retention::seal_link(
+            &self.room_id,
+            epoch,
+            &self.group.storage_key()?,
+            &outgoing,
+        )?))
     }
 
     /// The room's current epoch, as the host records it.
