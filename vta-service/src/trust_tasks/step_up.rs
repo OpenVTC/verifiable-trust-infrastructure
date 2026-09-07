@@ -430,6 +430,55 @@ pub(super) async fn handle_approve_response(
         );
     }
 
+    // 7a. A *bound* approval marks the operation it was taken for.
+    //
+    // This is what authorises the disclosure — not the elevation below. The
+    // gate in `persona::handle_disclosure_present` reads the preview's own
+    // `approved_at` and never the session's `acr`, so the next `release:
+    // stepUp` disclosure is refused however freshly the session authenticated:
+    // its preview carries no approval. That is the whole of what "each time"
+    // asks for, and it is why the binding is to the `previewId`.
+    //
+    // The session is then elevated as it always is, because that is what this
+    // ceremony *is*: the subject proved, freshly, that they are still
+    // themselves, and `aal2` is the name for having done so. Recording that
+    // fact and refusing to record it are not made different by which operation
+    // prompted it — every other `initiate_self_step_up` caller shows its own
+    // authorization context and yields the same session-wide `aal2`.
+    //
+    // What that costs, stated plainly: an approval taken to disclose a card
+    // number leaves a session that satisfies an unrelated `requireStepUp` rule
+    // for the elevation window. The narrower answer — record the approval and
+    // elevate nothing — needs a third `status` on the ack, and the ack's
+    // version is the one the approver's request named, so a maintainer cannot
+    // reach for a newer minor on its own. See the PR for the follow-up.
+    //
+    // Marking a preview that is no longer there is not an error. An approval
+    // can arrive after its preview expired or was consumed; the disclosure it
+    // would have authorised is gone, the holder previews again, and the honest
+    // response is to have changed nothing.
+    if let Some(preview_id) = pending.bound_to.as_deref() {
+        let store = super::persona::store(state);
+        match store.approve_preview(preview_id).await {
+            Ok(marked) => {
+                audit!(
+                    "persona.disclosure.step_up_approved",
+                    actor = &pending.subject,
+                    resource = preview_id,
+                    outcome = if marked { "success" } else { "expired" }
+                );
+            }
+            Err(e) => {
+                return reject_with(
+                    &doc,
+                    RejectReason::InternalError {
+                        reason: format!("record disclosure approval: {e}"),
+                    },
+                );
+            }
+        }
+    }
+
     // 7. Load + elevate the session.
     let mut session = match get_session(&state.sessions_ks, &session_id).await {
         Ok(Some(s)) => s,
@@ -587,6 +636,10 @@ async fn mint_pending_step_up(
     // break every typed consumer). `None` leaves the payload byte-identical to
     // the reason-only form.
     authorization_context: Option<&Value>,
+    // The single operation this approval authorises, when it authorises one
+    // rather than elevating the session. `None` is the ordinary session
+    // step-up. See `PendingStepUp::bound_to`.
+    bound_to: Option<&str>,
 ) -> Result<Value, ()> {
     // The *stored* pending record keeps the kebab canonical form
     // (`did-signed`) that `vti_common::auth::step_up` documents — it's internal
@@ -601,7 +654,7 @@ async fn mint_pending_step_up(
     raw.extend_from_slice(Uuid::new_v4().as_bytes());
     let challenge = general_purpose::URL_SAFE_NO_PAD.encode(&raw);
 
-    let pending = new_pending_step_up(
+    let mut pending = new_pending_step_up(
         challenge.clone(),
         session_id,
         subject,
@@ -615,6 +668,7 @@ async fn mint_pending_step_up(
         acceptable.clone(),
         STEP_UP_TTL_SECS,
     );
+    pending.bound_to = bound_to.map(str::to_string);
     if let Err(e) = store_pending_step_up(sessions_ks, &pending).await {
         tracing::error!(error = %e, "failed to persist pending step-up");
         return Err(());
@@ -988,6 +1042,91 @@ fn wake_reply_status(envelope_body: &Value) -> Option<push_wake::ResponseStatus>
 /// threshold, re-checks at consume time that the approvers are still
 /// authorized, and shows the human a signed statement of the effects —
 /// none of which a delegated step-up floor ever did.
+/// Ask the holder to approve **one disclosure**, and return the refusal that
+/// says so.
+///
+/// Distinct from [`initiate_self_step_up`] in the one way that matters: the
+/// pending record is bound to the `previewId`, so the approval it yields marks
+/// that preview. The gate reads the mark, never the session's `acr` — which is
+/// what keeps "each time" from meaning "once per login". See
+/// `PendingStepUp::bound_to`.
+///
+/// The approver's device is shown *what would leave* — the verifier, the claim
+/// types, the purpose the verifier gave — because an approval prompt that says
+/// only "approve a disclosure?" is one a person learns to answer yes to. Values
+/// are deliberately absent: this document travels to a second device, and the
+/// approver is being asked to authorise a release, not shown its contents.
+pub(super) async fn initiate_disclosure_step_up(
+    state: &AppState,
+    auth: &AuthClaims,
+    preview_id: &str,
+    verifier_did: &str,
+    purpose: Option<&str>,
+    claim_types: &[String],
+) -> Result<Value, RejectReason> {
+    let vta_did = state
+        .config
+        .read()
+        .await
+        .vta_did
+        .clone()
+        .unwrap_or_default();
+    let secret = match load_step_up_signing_secret(state, &vta_did).await {
+        Ok(s) => s,
+        Err(()) => {
+            return Err(RejectReason::InternalError {
+                reason: "failed to initiate step-up".to_string(),
+            });
+        }
+    };
+
+    let reason = format!(
+        "Approve disclosing {} to {verifier_did}",
+        match claim_types.len() {
+            1 => "1 fact".to_string(),
+            n => format!("{n} facts"),
+        }
+    );
+    let mut context = json!({
+        "operation": "persona/disclosure/present",
+        "previewId": preview_id,
+        "verifierDid": verifier_did,
+        "claimTypes": claim_types,
+    });
+    if let Some(p) = purpose {
+        context["purpose"] = json!(p);
+    }
+
+    match mint_pending_step_up(
+        &state.sessions_ks,
+        &vta_did,
+        &secret,
+        &auth.did,
+        &auth.did, // the holder approves their own disclosure
+        false,
+        &auth.session_id,
+        &reason,
+        Some(&context),
+        Some(preview_id),
+    )
+    .await
+    {
+        Ok(approve_request) => {
+            maybe_push_step_up(state, &auth.did, &auth.did, &approve_request).await;
+            Ok(json!({
+                "previewId": preview_id,
+                // The preview is still there. This refusal is retryable in the
+                // strong sense: the same preview, once approved.
+                "previewRetained": true,
+                "approveRequest": approve_request,
+            }))
+        }
+        Err(()) => Err(RejectReason::InternalError {
+            reason: "failed to initiate step-up for disclosure".to_string(),
+        }),
+    }
+}
+
 pub(super) async fn initiate_self_step_up(
     state: &AppState,
     auth: &AuthClaims,
@@ -1019,6 +1158,7 @@ pub(super) async fn initiate_self_step_up(
         &auth.session_id,
         reason,
         authorization_context,
+        None,
     )
     .await
     {
@@ -1143,6 +1283,7 @@ mod tests {
                 "sess-9",
                 "rotate keys",
                 None,
+                None,
             )
             .await
             .expect("mint succeeds"),
@@ -1261,6 +1402,7 @@ mod tests {
                 "sess-ctx",
                 "finance wants to share salaryBand with travel",
                 Some(&ctx),
+                None,
             )
             .await
             .expect("mint succeeds"),

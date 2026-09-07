@@ -27,7 +27,7 @@ use multibase::Base;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use vta_service::test_support::{TestAppContext, build_test_app};
+use vta_service::test_support::{TestAppContext, build_provisionable_test_app, build_test_app};
 use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
 
 // URIs as literals, so a constant rename in the SDK surfaces here too.
@@ -102,10 +102,27 @@ async fn authed(ctx: &TestAppContext, tag: &str, role: &str, allowed_contexts: &
     ctx.jwt_keys.encode(&claims).unwrap()
 }
 
-/// POST a persona Trust Task and return `(status, parsed body)`.
+/// POST a persona Trust Task to the cheap sentinel-DID app and return
+/// `(status, parsed body)`.
 async fn post(
     router: &axum::Router,
     token: &str,
+    uri: &str,
+    payload: Value,
+) -> (StatusCode, Value) {
+    post_to(router, token, "did:key:z6MkTestVTA", uri, payload).await
+}
+
+/// As [`post`], addressed to `recipient`.
+///
+/// SPEC §7.2 item 5 enforces the recipient in band, so a test running against
+/// [`build_provisionable_test_app`] — whose VTA has a real, self-resolving
+/// signing identity rather than the sentinel DID — has to say so, or every
+/// request is refused for the wrong reason.
+async fn post_to(
+    router: &axum::Router,
+    token: &str,
+    recipient: &str,
     uri: &str,
     payload: Value,
 ) -> (StatusCode, Value) {
@@ -114,7 +131,7 @@ async fn post(
         "type": uri,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": holder_did(),
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": recipient,
         "payload": payload,
     }))
     .expect("envelope deserialises");
@@ -160,9 +177,21 @@ async fn put_attribute(
     claim_type: &str,
     value: &str,
 ) -> String {
-    let (status, body) = post(
+    put_attribute_at(router, token, "did:key:z6MkTestVTA", claim_type, value).await
+}
+
+/// As [`put_attribute`], against the VTA named by `recipient`.
+async fn put_attribute_at(
+    router: &axum::Router,
+    token: &str,
+    recipient: &str,
+    claim_type: &str,
+    value: &str,
+) -> String {
+    let (status, body) = post_to(
         router,
         token,
+        recipient,
         ATTR_PUT,
         json!({
             "type": claim_type,
@@ -1660,5 +1689,341 @@ async fn a_correlation_finding_names_where_the_shared_value_went() {
         reached.persona_did.as_deref(),
         Some(persona),
         "the binding is named without the persona presenting it: {payload:#}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 5. `release: stepUp` — a fresh approval per disclosure
+// ---------------------------------------------------------------------------
+
+const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.2";
+
+/// Build the face, bind it, preview it, and return `(scoped token, previewId)`.
+///
+/// Parameterised on the claim type because the whole subject here is that one
+/// type is gated and another is not, over the same path. A helper that only
+/// ever built the gated case would let a gate that refuses *everything* pass.
+async fn preview_a_face_holding(
+    router: &axum::Router,
+    ctx: &TestAppContext,
+    tag: &str,
+    claim_type: &str,
+    value: &str,
+) -> (String, String) {
+    let holder = authed(ctx, &format!("{tag}-holder"), "admin", &[]).await;
+    let scoped = authed(ctx, &format!("{tag}-scoped"), "admin", &[CTX]).await;
+
+    let vta = &ctx.vta_did;
+    let attr = put_attribute_at(router, &holder, vta, claim_type, value).await;
+    let (status, body) = post_to(
+        router,
+        &holder,
+        vta,
+        PROFILE_PUT,
+        json!({ "name": tag, "entries": [{ "ref": attr }] }),
+    )
+    .await;
+    assert!(!refused(status, &body), "profile/put: {status} {body}");
+    let profile = payload_of(&body)
+        .get("profileId")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("no profileId in {body}"))
+        .to_string();
+
+    let persona = format!("did:key:z6MkPersona{tag}");
+    let (status, body) = post_to(
+        router,
+        &holder,
+        vta,
+        BINDING_SET,
+        json!({ "contextId": CTX, "personaDid": persona, "profileId": profile }),
+    )
+    .await;
+    assert!(!refused(status, &body), "binding/set: {status} {body}");
+
+    let (status, body) = post_to(
+        router,
+        &scoped,
+        vta,
+        PREVIEW,
+        json!({
+            "contextId": CTX,
+            "personaDid": persona,
+            "verifierDid": "did:key:z6MkVerifier",
+            "purpose": "checkout",
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "preview: {status} {body}");
+    let preview_id = payload_of(&body)
+        .get("previewId")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("no previewId in {body}"))
+        .to_string();
+
+    (scoped, preview_id)
+}
+
+/// A `release: stepUp` claim is refused without an approval, approved once, and
+/// disclosed — and the refusal costs the holder nothing.
+///
+/// Four properties, and each of them is a way this could be built wrong:
+///
+/// 1. **It refuses.** `payment.card` resolves to `release: stepUp` through the
+///    registry, and the gate reads the resolution rather than a list of types
+///    it happens to know.
+/// 2. **It refuses with the code the specification declares**, not
+///    `taskFailed`. A client can only offer the retry if it can recognise the
+///    refusal, and `taskFailed` means "attempted and could not complete" —
+///    which is the opposite of what happened.
+/// 3. **The preview survives.** A refusal that consumed it would make the
+///    holder preview again to obtain an approval for a preview that no longer
+///    exists, and the retry the code promises would be unreachable. Asserted
+///    by refusing *twice* on the same id: the second refusal must still be
+///    `stepUpRequired`, not "unknown preview".
+/// 4. **The approval authorises that disclosure**, and it is the mark on the
+///    preview that does so — not the session elevation the ceremony also
+///    performs. `an_approval_does_not_carry_to_the_next_disclosure` is the
+///    other side of the same claim.
+#[tokio::test]
+async fn a_step_up_claim_needs_an_approval_bound_to_that_preview() {
+    let (router, ctx) = build_provisionable_test_app().await;
+    let (scoped, preview_id) =
+        preview_a_face_holding(&router, &ctx, "gated", "payment.card", "4242424242424242").await;
+
+    // 1 + 2. Refused, with the declared code.
+    let (status, body) = post_to(
+        &router,
+        &scoped,
+        &ctx.vta_did,
+        PRESENT,
+        json!({ "contextId": CTX, "previewId": preview_id }),
+    )
+    .await;
+    assert!(
+        refused(status, &body),
+        "a payment.card disclosure was released with no approval: {status} {body}"
+    );
+    let payload = payload_of(&body);
+    assert_eq!(
+        payload["code"], "persona/disclosure/present:stepUpRequired",
+        "the refusal does not carry the code the specification declares, so a client \
+         cannot tell it apart from a failure and cannot offer the retry: {body}"
+    );
+    assert_eq!(
+        payload["details"]["previewRetained"], true,
+        "the refusal does not say the preview survived it: {body}"
+    );
+    let approve_request = payload["details"]["approveRequest"].clone();
+    let challenge = approve_request["payload"]["challenge"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no challenge in the approve request: {body}"))
+        .to_string();
+    let session_id = approve_request["payload"]["sessionId"]
+        .as_str()
+        .expect("the approve request names the session")
+        .to_string();
+
+    // The approver is shown what would leave — the verifier, the types and the
+    // purpose — because "approve a disclosure?" is a prompt people learn to
+    // answer yes to. Values are deliberately absent: this document travels to a
+    // second device, and the approver authorises a release rather than reading
+    // one.
+    let context = &approve_request["payload"]["ext"]["org.openvtc.authorization-context"];
+    assert_eq!(context["operation"], "persona/disclosure/present", "{body}");
+    assert_eq!(context["previewId"], preview_id, "{body}");
+    assert_eq!(context["verifierDid"], "did:key:z6MkVerifier", "{body}");
+    assert_eq!(context["claimTypes"][0], "payment.card", "{body}");
+    assert_eq!(context["purpose"], "checkout", "{body}");
+    assert!(
+        !serde_json::to_string(&approve_request)
+            .unwrap()
+            .contains("4242424242424242"),
+        "the approve request carries the card number to a second device: {approve_request:#}"
+    );
+
+    // 3. The same preview, refused again the same way — it was not consumed.
+    let (status, body) = post_to(
+        &router,
+        &scoped,
+        &ctx.vta_did,
+        PRESENT,
+        json!({ "contextId": CTX, "previewId": preview_id }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/disclosure/present:stepUpRequired",
+        "the refusal consumed the preview, so the retry it promises is unreachable: {body}"
+    );
+
+    // 4. Approve it, over the wire.
+    let (status, body) = post_to(
+        &router,
+        &scoped,
+        &ctx.vta_did,
+        APPROVE_RESPONSE,
+        json!({
+            "subject": holder_did(),
+            "sessionId": session_id,
+            "challenge": challenge,
+            "decision": "approved",
+            "grantedAcr": "aal2",
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "approve-response: {status} {body}");
+
+    // And now the disclosure goes through.
+    let (status, body) = post_to(
+        &router,
+        &scoped,
+        &ctx.vta_did,
+        PRESENT,
+        json!({ "contextId": CTX, "previewId": preview_id }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "the approval did not authorise the disclosure it was taken for: {status} {body}"
+    );
+}
+
+/// An approval authorises **one** disclosure, not the next one.
+///
+/// The preview is single-use, so the approval recorded on it dies with it. That
+/// is the mechanism; this asserts the property it exists for — a second
+/// preview of the same face is gated exactly as the first was, with no memory
+/// of the approval the holder just gave.
+///
+/// And it asserts it **against an elevated session**, which is the sharp part.
+/// The step-up ceremony raises the session to `aal2` as it does for every
+/// other caller, so a gate that read `acr` — the obvious way to write one, and
+/// the way every other step-up-gated operation in this service works — would
+/// wave this second disclosure straight through. "Each time" survives only
+/// because the gate reads the preview.
+#[tokio::test]
+async fn an_approval_does_not_carry_to_the_next_disclosure() {
+    let (router, ctx) = build_provisionable_test_app().await;
+    let (scoped, first) =
+        preview_a_face_holding(&router, &ctx, "again", "payment.card", "4242424242424242").await;
+
+    let (_, body) = post_to(
+        &router,
+        &scoped,
+        &ctx.vta_did,
+        PRESENT,
+        json!({ "contextId": CTX, "previewId": first }),
+    )
+    .await;
+    let ar = payload_of(&body)["details"]["approveRequest"].clone();
+    let session_id = ar["payload"]["sessionId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the approve request names the session: {body}"))
+        .to_string();
+    let (status, body) = post_to(
+        &router,
+        &scoped,
+        &ctx.vta_did,
+        APPROVE_RESPONSE,
+        json!({
+            "subject": holder_did(),
+            "sessionId": session_id,
+            "challenge": ar["payload"]["challenge"],
+            "decision": "approved",
+            "grantedAcr": "aal2",
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "approve-response: {status} {body}");
+    assert_eq!(
+        payload_of(&body)["status"],
+        "elevated",
+        "the ceremony did not complete, so nothing below tests what it means to: {body}"
+    );
+
+    let (status, body) = post_to(
+        &router,
+        &scoped,
+        &ctx.vta_did,
+        PRESENT,
+        json!({ "contextId": CTX, "previewId": first }),
+    )
+    .await;
+    assert!(!refused(status, &body), "present: {status} {body}");
+
+    // A second preview of the same face, from the same session, moments later.
+    let (status, body) = post_to(
+        &router,
+        &scoped,
+        &ctx.vta_did,
+        PREVIEW,
+        json!({
+            "contextId": CTX,
+            "personaDid": "did:key:z6MkPersonaagain",
+            "verifierDid": "did:key:z6MkVerifier",
+            "purpose": "checkout",
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "second preview: {status} {body}");
+    let second = payload_of(&body)["previewId"]
+        .as_str()
+        .expect("previewId")
+        .to_string();
+
+    let stored = vti_common::auth::session::get_session(&ctx.sessions_ks, &session_id)
+        .await
+        .unwrap()
+        .expect("the session is still there");
+    assert_eq!(
+        stored.acr, "aal2",
+        "the session is not elevated, so the refusal below would prove nothing: {stored:?}"
+    );
+
+    let (status, body) = post_to(
+        &router,
+        &scoped,
+        &ctx.vta_did,
+        PRESENT,
+        json!({ "contextId": CTX, "previewId": second }),
+    )
+    .await;
+    assert!(
+        refused(status, &body),
+        "the second disclosure rode the first one's approval — 'each time' means each \
+         time: {status} {body}"
+    );
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/disclosure/present:stepUpRequired",
+        "{body}"
+    );
+}
+
+/// An ungated claim reaches `present` with no approval at all.
+///
+/// The other half of the gate, and the half that is easy to lose: a gate that
+/// refuses everything satisfies every test above. `name.display` resolves to
+/// `release: consent`, which the two-call preview already is, and adding a
+/// second human decision to every disclosure is how a step-up becomes noise.
+#[tokio::test]
+async fn an_ungated_claim_is_not_gated() {
+    let (router, ctx) = build_provisionable_test_app().await;
+    let (scoped, preview_id) =
+        preview_a_face_holding(&router, &ctx, "plain", "name.display", "Ada").await;
+
+    let (status, body) = post_to(
+        &router,
+        &scoped,
+        &ctx.vta_did,
+        PRESENT,
+        json!({ "contextId": CTX, "previewId": preview_id }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "a name.display disclosure was gated behind a step-up: {status} {body}"
     );
 }

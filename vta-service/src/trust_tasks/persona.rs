@@ -266,7 +266,7 @@ use vta_persona::{Listing, PersonaStore, Sensitivity, ValueType, ValueVisibility
 ///
 /// The correlation key is derived per agent and lives beside the at-rest key;
 /// it never leaves the agent, which is what makes the blinded index blinded.
-fn store(state: &AppState) -> PersonaStore {
+pub(super) fn store(state: &AppState) -> PersonaStore {
     PersonaStore::new(state.persona_ks.clone(), state.persona_correlation_key)
 }
 
@@ -416,6 +416,25 @@ fn reject(doc: &TrustTask<Value>, e: AppError) -> TrustTaskOutcome {
     if let Some(d) = details {
         payload = payload.with_details(d);
     }
+    error_response(doc.reject_with(format!("urn:uuid:{}", uuid::Uuid::new_v4()), payload))
+}
+
+/// Refuse a disclosure for want of a fresh approval, with the code
+/// `persona/disclosure/present/1.0` rule 6 declares.
+///
+/// A **specification-extended** code rather than `taskFailed`, because the two
+/// say different things to a client. `taskFailed` means "attempted and could
+/// not complete", and the whole point of this refusal is that nothing was
+/// attempted: the preview is intact and the same request succeeds once the
+/// holder approves. A client that cannot tell those apart cannot offer the
+/// retry, which is the only useful thing it can do here.
+///
+/// The slug comes from the document, like every other extended code in this
+/// slice, so the code and the task it refuses cannot drift into two spellings.
+fn step_up_required(doc: &TrustTask<Value>, details: Value) -> TrustTaskOutcome {
+    let payload = ErrorPayload::new(ext(&slug_from_doc(doc), "stepUpRequired"))
+        .with_message("a claim in this preview requires a fresh approval")
+        .with_details(details);
     error_response(doc.reject_with(format!("urn:uuid:{}", uuid::Uuid::new_v4()), payload))
 }
 
@@ -1948,6 +1967,44 @@ pub(super) async fn handle_disclosure_present(
     }
 
     let durable = req.mint.as_ref().is_some_and(|m| m.durable);
+    let preview_id = req.preview_id.to_string();
+
+    // The step-up gate runs BEFORE the preview is taken.
+    //
+    // `present` consumes the preview as its first act, so a refusal after that
+    // point would cost the holder the decision they already made — and the one
+    // refusal that is *retryable* is this one. It is retryable precisely
+    // because the preview survives it: the holder obtains an approval and
+    // presents the same preview again.
+    //
+    // A peek rather than a read-modify-write: nothing here mutates, and the
+    // consume below re-reads under the store's own lock.
+    match store(state).peek_preview(&preview_id).await {
+        Ok(Some(preview)) => {
+            if PersonaStore::requires_step_up(&preview) && preview.approved_at.is_none() {
+                let claim_types: Vec<String> =
+                    preview.claims.iter().map(|c| c.r#type.clone()).collect();
+                return match super::step_up::initiate_disclosure_step_up(
+                    state,
+                    auth,
+                    &preview_id,
+                    &preview.verifier_did,
+                    preview.purpose.as_deref(),
+                    &claim_types,
+                )
+                .await
+                {
+                    Ok(details) => step_up_required(&doc, details),
+                    Err(reason) => super::helpers::reject_with(&doc, reason),
+                };
+            }
+        }
+        // Absent is not this gate's business. The consume below distinguishes
+        // unknown from consumed from expired and has the error vocabulary for
+        // it; guessing here would give two paths for one answer.
+        Ok(None) => {}
+        Err(e) => return reject(&doc, e),
+    }
 
     // The store consumes the preview, refuses an expired one, refuses whole on
     // a stale claim, and writes the disclosure record BEFORE returning the
@@ -1955,7 +2012,7 @@ pub(super) async fn handle_disclosure_present(
     // holder could never afterwards discover they had released.
     let (artifact, record) = match store(state)
         .present(
-            &req.preview_id.to_string(),
+            &preview_id,
             req.challenge.as_ref().map(|c| c.to_string()).as_deref(),
             durable,
         )

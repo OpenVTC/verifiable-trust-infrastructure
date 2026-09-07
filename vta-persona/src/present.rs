@@ -124,6 +124,20 @@ pub struct Preview {
     pub renderer_drops: Vec<String>,
     pub purpose: Option<String>,
     pub expires_at: String,
+    /// When a step-up approval bound to this preview was recorded, if one was.
+    ///
+    /// **On the preview, not beside it.** An approval authorises one disclosure
+    /// — this one — so it shares the preview's lifetime by living in the same
+    /// record: consumed when the preview is consumed, expired when it expires,
+    /// and incapable of outliving the decision it belongs to. A separate
+    /// approval record would need its own expiry, its own cleanup, and a reason
+    /// why the two could not disagree.
+    ///
+    /// It also means freshness needs no separate rule. "Each time" is bounded
+    /// by the preview's own TTL, because an approval cannot be older than the
+    /// preview it is written on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_at: Option<u64>,
 }
 
 impl PersonaStore {
@@ -199,6 +213,7 @@ impl PersonaStore {
             purpose: purpose.map(str::to_string),
             expires_at: (chrono::Utc::now() + chrono::Duration::seconds(PREVIEW_TTL_SECONDS))
                 .to_rfc3339(),
+            approved_at: None,
         };
 
         let _guard = self.write_lock.lock().await;
@@ -206,6 +221,58 @@ impl PersonaStore {
             .insert(preview_key(&preview.preview_id), &preview)
             .await?;
         Ok(preview)
+    }
+
+    /// Read a preview without consuming it.
+    ///
+    /// The gate that refuses a disclosure for want of a step-up approval has to
+    /// run *before* the preview is taken: refusing for want of an approval must
+    /// not cost the holder the decision they already made, and
+    /// [`consume_preview`](Self::consume_preview) removes the record before it
+    /// validates anything.
+    ///
+    /// Deliberately does not check expiry. A caller reading a preview to decide
+    /// whether to ask for an approval wants to know what is there; the expiry
+    /// refusal belongs to the consume, which is the operation that would
+    /// otherwise act on it.
+    pub async fn peek_preview(&self, preview_id: &str) -> Result<Option<Preview>, AppError> {
+        self.ks.get::<Preview>(preview_key(preview_id)).await
+    }
+
+    /// Record that a step-up approval bound to this preview was obtained.
+    ///
+    /// Returns whether a preview was there to mark. `false` is not an error:
+    /// an approval can arrive after its preview has expired or been consumed,
+    /// and the honest response is to have changed nothing. The disclosure it
+    /// would have authorised is gone, and the holder previews again.
+    pub async fn approve_preview(&self, preview_id: &str) -> Result<bool, AppError> {
+        let _guard = self.write_lock.lock().await;
+        let key = preview_key(preview_id);
+        let Some(mut preview) = self.ks.get::<Preview>(key.clone()).await? else {
+            return Ok(false);
+        };
+        preview.approved_at = Some(vti_common::auth::session::now_epoch());
+        self.ks.insert(key, &preview).await?;
+        Ok(true)
+    }
+
+    /// Whether this preview would disclose anything the holder has to approve
+    /// afresh — any claim whose type resolves to [`ReleaseRequirement::StepUp`].
+    ///
+    /// Resolved from the claim **type**, which is all this side of the boundary
+    /// has. A preview is built from the *materialised* copy in the context, and
+    /// a materialised claim deliberately carries no pool identifier — so a
+    /// holder's per-attribute `release` override cannot be read from here. It
+    /// would have to be carried down with the value when the binding is
+    /// written, which is the same direction everything else travels: copies go
+    /// down, nothing reads up. Until it is, no override is stored, so the
+    /// registry default is the whole answer rather than most of it.
+    #[must_use]
+    pub fn requires_step_up(preview: &Preview) -> bool {
+        preview.claims.iter().any(|c| {
+            crate::claim_types::defaults_for(&c.r#type).release
+                == crate::claim_types::ReleaseRequirement::StepUp
+        })
     }
 
     /// Take a preview, destroying it.
@@ -419,6 +486,139 @@ mod tests {
             dir,
             PersonaStore::new(store.keyspace(vta_keyspaces::PERSONA).unwrap(), [31u8; 32]),
         )
+    }
+
+    /// A persona bound to a profile carrying one claim of the given type — used
+    /// to put a `release: stepUp` type in front of the gate.
+    async fn bound_with_type(s: &PersonaStore, claim_type: &str) -> String {
+        let a = new_attribute(
+            claim_type,
+            ValueType::String,
+            serde_json::json!("4111111111111111"),
+            Provenance::SelfAsserted,
+        );
+        s.put(a.clone(), None).await.unwrap();
+        let p = new_profile(
+            "Work",
+            vec![ProfileEntry::Ref {
+                r#ref: a.attribute_id.clone(),
+            }],
+        );
+        s.put_profile(p.clone(), None).await.unwrap();
+        s.set_binding("ctx", "did:persona:a", Some(&p.profile_id), vec![], None)
+            .await
+            .unwrap();
+        p.profile_id
+    }
+
+    /// A card number needs a fresh approval; a display name does not. The pair
+    /// is the point — a gate that answered "yes" to everything would pass the
+    /// first assertion alone.
+    #[tokio::test]
+    async fn only_a_step_up_type_requires_an_approval() {
+        let (_d, s) = fresh().await;
+        bound_with_type(&s, "payment.card").await;
+        let gated = s
+            .create_preview("ctx", "did:persona:a", "did:verifier:v", None, None, None)
+            .await
+            .unwrap();
+        assert!(PersonaStore::requires_step_up(&gated));
+
+        let (_d2, s2) = fresh().await;
+        bound_with_type(&s2, "name.display").await;
+        let ungated = s2
+            .create_preview("ctx", "did:persona:a", "did:verifier:v", None, None, None)
+            .await
+            .unwrap();
+        assert!(!PersonaStore::requires_step_up(&ungated));
+    }
+
+    /// A token invented under a gated family is gated too — the registry's
+    /// prefix rule reaching the disclosure path, not just the listing one.
+    #[tokio::test]
+    async fn an_unregistered_member_of_a_gated_family_still_requires_approval() {
+        let (_d, s) = fresh().await;
+        bound_with_type(&s, "payment.giftCard").await;
+        let preview = s
+            .create_preview("ctx", "did:persona:a", "did:verifier:v", None, None, None)
+            .await
+            .unwrap();
+        assert!(
+            PersonaStore::requires_step_up(&preview),
+            "a gated family must not be leavable by inventing a token"
+        );
+    }
+
+    /// A preview is minted unapproved, and an approval is recorded on it.
+    #[tokio::test]
+    async fn an_approval_is_recorded_on_the_preview_it_authorises() {
+        let (_d, s) = fresh().await;
+        bound_with_type(&s, "payment.card").await;
+        let preview = s
+            .create_preview("ctx", "did:persona:a", "did:verifier:v", None, None, None)
+            .await
+            .unwrap();
+        assert!(preview.approved_at.is_none(), "minted unapproved");
+
+        assert!(s.approve_preview(&preview.preview_id).await.unwrap());
+        let seen = s
+            .peek_preview(&preview.preview_id)
+            .await
+            .unwrap()
+            .expect("still there");
+        assert!(seen.approved_at.is_some());
+    }
+
+    /// Peeking must not consume. The gate reads the preview before deciding
+    /// whether to refuse, and a refusal that ate the preview would cost the
+    /// holder the decision they already made — which is the whole reason
+    /// `stepUpRequired` is retryable.
+    #[tokio::test]
+    async fn peeking_leaves_the_preview_for_the_retry() {
+        let (_d, s) = fresh().await;
+        bound_with_type(&s, "payment.card").await;
+        let preview = s
+            .create_preview("ctx", "did:persona:a", "did:verifier:v", None, None, None)
+            .await
+            .unwrap();
+
+        assert!(s.peek_preview(&preview.preview_id).await.unwrap().is_some());
+        assert!(
+            s.peek_preview(&preview.preview_id).await.unwrap().is_some(),
+            "a peek is not a consume, however many times it is done"
+        );
+        // And the consume still works afterwards, once.
+        s.consume_preview(&preview.preview_id).await.unwrap();
+        assert!(s.consume_preview(&preview.preview_id).await.is_err());
+    }
+
+    /// An approval arriving for a preview that is gone changes nothing and is
+    /// not an error. The disclosure it would have authorised no longer exists;
+    /// the holder previews again.
+    #[tokio::test]
+    async fn approving_a_vanished_preview_is_not_an_error() {
+        let (_d, s) = fresh().await;
+        assert!(!s.approve_preview("01JUNKUNKNOWN").await.unwrap());
+    }
+
+    /// An approval cannot outlive the disclosure it authorised: consuming the
+    /// preview takes the approval with it, so a second disclosure needs a
+    /// second approval. This is what "each time" means.
+    #[tokio::test]
+    async fn an_approval_does_not_survive_the_disclosure_it_authorised() {
+        let (_d, s) = fresh().await;
+        bound_with_type(&s, "payment.card").await;
+        let preview = s
+            .create_preview("ctx", "did:persona:a", "did:verifier:v", None, None, None)
+            .await
+            .unwrap();
+        s.approve_preview(&preview.preview_id).await.unwrap();
+        s.consume_preview(&preview.preview_id).await.unwrap();
+
+        assert!(
+            s.peek_preview(&preview.preview_id).await.unwrap().is_none(),
+            "the approval goes with the preview it was written on"
+        );
     }
 
     /// A persona bound to a profile with one self-asserted claim.
