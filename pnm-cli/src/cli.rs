@@ -214,13 +214,14 @@ pub(crate) enum Commands {
         command: CredVaultCommands,
     },
 
-    /// The holder's own identity — the attributes they hold about themselves,
-    /// the profiles that project over them, which persona a context sees, and
-    /// what other people have disclosed.
+    /// Your own identity — the facts you hold about yourself, the faces that
+    /// show a set of them together, which face each persona wears where, and
+    /// what other people have told you.
     ///
-    /// The pool and profiles sit ABOVE every trust context and need
-    /// unrestricted authority; bindings, contacts and disclosure are
-    /// context-scoped and take `--context`.
+    /// Your facts and your faces sit ABOVE every trust context. Reaching them
+    /// needs an agent credential with no context restriction, or one granted
+    /// `persona-holder`. Wearing, contacts and what leaves are context-scoped
+    /// and take `--context`.
     Persona {
         #[command(subcommand)]
         command: PersonaCommands,
@@ -3107,49 +3108,53 @@ pub(crate) enum ProofRungOpt {
 /// `pnm persona …` — the holder's own identity.
 #[derive(Subcommand)]
 pub(crate) enum PersonaCommands {
-    /// The attribute pool: the facts the holder holds about themselves.
-    /// Holder-scoped — needs unrestricted authority, not a context admin.
+    /// Your facts — what you hold about yourself, each held once.
+    ///
+    /// Sits above every context, so it needs an agent credential with no
+    /// context restriction, or one granted `persona-holder`. A context admin
+    /// holding neither is refused.
     Attribute {
         #[command(subcommand)]
         command: PersonaAttributeCommands,
     },
-    /// Profiles: named projections over the pool. Holder-scoped.
+    /// Faces — the sets of facts you show together. Same authority as your
+    /// facts: above every context.
     Profile {
         #[command(subcommand)]
         command: PersonaProfileCommands,
     },
-    /// Bindings: which profile a persona DID presents in a given context.
+    /// Wearing — which face a persona wears in a given context.
     Binding {
         #[command(subcommand)]
         command: PersonaBindingCommands,
     },
-    /// Contacts: what other people have disclosed to the holder.
+    /// Contacts — what other people have told you about themselves.
     Contact {
         #[command(subcommand)]
         command: PersonaContactCommands,
     },
-    /// Disclosure: preview what would be revealed, then present it.
+    /// What leaves — see it before it goes, then let it go.
     Disclosure {
         #[command(subcommand)]
         command: PersonaDisclosureCommands,
     },
-    /// Profiles and bindings that live INSIDE one context, built only from
-    /// inline values — they cannot reference the holder's pool.
+    /// Faces and wearing that live INSIDE one context, built only from values
+    /// typed there — they cannot reach your facts.
     Local {
         #[command(subcommand)]
         command: PersonaLocalCommands,
     },
-    /// Report how linkable a value, attribute or profile would make the
-    /// holder. Reads the pool; writes nothing. Holder-scoped.
+    /// Report how linkable a value, a fact or a face would make you — "same
+    /// person to anyone who sees both". Reads only; writes nothing.
     ///
-    /// Note the inversion: a credential presented WHOLE correlates more than a
-    /// self-asserted value, because the issuer's signature is identical at
-    /// every verifier — while a derived proof correlates less.
+    /// Note the inversion: a credential shown WHOLE links you more than a value
+    /// you simply said, because the issuer's signature is identical everywhere
+    /// it goes — while a derived proof links you less.
     Correlate {
-        /// Analyse one stored attribute.
+        /// Analyse one fact you hold.
         #[arg(long = "attribute-id")]
         attribute_id: Option<String>,
-        /// Analyse an entire profile.
+        /// Analyse a whole face.
         #[arg(long = "profile-id")]
         profile_id: Option<String>,
         /// Analyse a value that is NOT stored — "what would happen if I gave
@@ -3158,8 +3163,8 @@ pub(crate) enum PersonaCommands {
         candidate_file: Option<String>,
     },
     /// List the output formats this VTA can produce, and what each DISCARDS.
-    /// Worth running before a preview: a renderer that drops provenance turns
-    /// "my employer attested this" into an unattributed value.
+    /// Worth running before a preview: one that drops where a fact came from
+    /// turns "my employer attested this" into something you merely said.
     ///
     /// Open to any authenticated caller — it names nothing about you, and a
     /// context-scoped operator about to request a disclosure needs it.
