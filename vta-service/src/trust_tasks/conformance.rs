@@ -808,6 +808,13 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     // an explicit `null` (clear) and `None` emits nothing,
                     // and `update.rs`'s own tests pin all three.
                     allowed_keys: Some(Some(vec!["tenant-key-a".into()])),
+                    // The capability narrowing rides the schema's `ext` slot,
+                    // so the sample carries one — this is what proves the
+                    // namespaced member validates against the published
+                    // schema rather than merely round-tripping through serde.
+                    ext: Some(serde_json::json!({
+                        "org.openvtc.capabilities": ["memory-read", "room-present"],
+                    })),
                 }),
                 to_v(CreateAclResponseBody { entry: acl_entry() })
             ),

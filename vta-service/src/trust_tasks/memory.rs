@@ -34,17 +34,14 @@ use vta_sdk::protocols::memory::{
     MemoryPutResponse,
 };
 
-use trust_tasks_rs::RejectReason;
-use vti_common::acl::{Capability, role_has_capability};
+use vti_common::acl::Capability;
 
 use crate::audit;
 use crate::auth::AuthClaims;
 use crate::operations::memory;
 use crate::server::AppState;
 
-use super::helpers::{
-    TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, reject_with, success_response,
-};
+use super::helpers::{TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, success_response};
 
 /// Capability gate for the memory surface, mirroring the vault slices'
 /// [`super::vault::require_capability`].
@@ -52,25 +49,14 @@ use super::helpers::{
 /// Checked **before** the context gate so a caller who holds neither learns
 /// only that the capability is missing — the narrower fact, and the one that
 /// does not reveal whether a given context exists.
-fn require_cap(
+async fn require_cap(
+    state: &AppState,
     auth: &AuthClaims,
     doc: &TrustTask<Value>,
     cap: Capability,
     action: &str,
 ) -> Result<(), super::helpers::TrustTaskOutcome> {
-    if role_has_capability(&auth.role, cap) {
-        Ok(())
-    } else {
-        Err(reject_with(
-            doc,
-            RejectReason::PermissionDenied {
-                reason: format!(
-                    "memory {action} denied: role {} does not carry {cap:?} capability",
-                    auth.role
-                ),
-            },
-        ))
-    }
+    super::helpers::require_capability(state, auth, doc, cap, &format!("memory {action}")).await
 }
 
 /// Handler for `spec/vta/memory/put/0.1`.
@@ -79,7 +65,7 @@ pub(super) async fn handle_put(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> super::helpers::TrustTaskOutcome {
-    if let Err(r) = require_cap(auth, &doc, Capability::MemoryWrite, "put") {
+    if let Err(r) = require_cap(state, auth, &doc, Capability::MemoryWrite, "put").await {
         return r;
     }
     let req: MemoryPutBody = match parse_payload(&doc) {
@@ -104,7 +90,7 @@ pub(super) async fn handle_list(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> super::helpers::TrustTaskOutcome {
-    if let Err(r) = require_cap(auth, &doc, Capability::MemoryRead, "list") {
+    if let Err(r) = require_cap(state, auth, &doc, Capability::MemoryRead, "list").await {
         return r;
     }
     let req: MemoryListBody = match parse_payload(&doc) {
@@ -128,7 +114,7 @@ pub(super) async fn handle_delete(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> super::helpers::TrustTaskOutcome {
-    if let Err(r) = require_cap(auth, &doc, Capability::MemoryWrite, "delete") {
+    if let Err(r) = require_cap(state, auth, &doc, Capability::MemoryWrite, "delete").await {
         return r;
     }
     let req: MemoryDeleteBody = match parse_payload(&doc) {
@@ -270,6 +256,79 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].get("key").and_then(Value::as_str), Some("name"));
         assert_eq!(items[0].get("value").and_then(Value::as_str), Some("Ada"));
+    }
+
+    /// The point of the whole capability field: an entry narrowed to read
+    /// cannot write, even though its role can — and the check reads the stored
+    /// entry, so the narrowing binds the caller's *next* request rather than
+    /// waiting for their token to expire.
+    #[tokio::test]
+    async fn a_narrowed_entry_loses_what_its_role_still_carries() {
+        use vti_common::acl::{AclEntry, Capability, store_acl_entry};
+
+        let (state, _dir) = build_signing_test_app_state().await;
+        let auth = admin_of("acme");
+
+        // Un-narrowed first: the write works, so the refusal below is the
+        // narrowing and not some other gate.
+        assert!(
+            handle_put(&state, &auth, put_doc("acme", "before", "ok"))
+                .await
+                .status
+                .is_success()
+        );
+
+        let narrowed = AclEntry::new(&auth.did, auth.role.clone(), "did:key:zAdmin")
+            .with_contexts(vec!["acme".to_string()])
+            .with_capabilities(vec![Capability::MemoryRead]);
+        store_acl_entry(&state.acl_ks, &narrowed)
+            .await
+            .expect("store the narrowed entry");
+
+        let refused = handle_put(&state, &auth, put_doc("acme", "after", "no")).await;
+        assert!(
+            !refused.status.is_success(),
+            "a memory-read-only entry must not write"
+        );
+        assert!(
+            handle_list(&state, &auth, list_doc("acme"))
+                .await
+                .status
+                .is_success(),
+            "…and must still read: narrowing removes one capability, not the entry"
+        );
+    }
+
+    /// A capability the role does not carry cannot be recovered by naming it,
+    /// which is what keeps the role an upper bound rather than a suggestion.
+    #[tokio::test]
+    async fn naming_a_capability_the_role_lacks_does_not_grant_it() {
+        use vti_common::acl::{AclEntry, Capability, store_acl_entry};
+
+        let (state, _dir) = build_signing_test_app_state().await;
+        let auth = claims_for(Role::Reader, "acme");
+
+        let entry = AclEntry::new(&auth.did, Role::Reader, "did:key:zAdmin")
+            .with_contexts(vec!["acme".to_string()])
+            .with_capabilities(vec![Capability::MemoryRead, Capability::MemoryWrite]);
+        store_acl_entry(&state.acl_ks, &entry)
+            .await
+            .expect("store the entry");
+
+        assert!(
+            !handle_put(&state, &auth, put_doc("acme", "k", "v"))
+                .await
+                .status
+                .is_success(),
+            "a reader naming memory-write must still not write"
+        );
+        assert!(
+            handle_list(&state, &auth, list_doc("acme"))
+                .await
+                .status
+                .is_success(),
+            "the capability the role does carry is unaffected"
+        );
     }
 
     #[tokio::test]

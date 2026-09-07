@@ -87,6 +87,25 @@ pub fn allowed_keys_from_flags(
     }
 }
 
+/// Resolve the two mutually-exclusive capability flags into the wire value.
+///
+/// `None` leaves the narrowing unchanged; `Some(vec![])` clears it
+/// (`--capabilities-all`, a privilege increase); `Some(names)` narrows to
+/// exactly those. Clearing needs its own flag because an empty
+/// `--capabilities` cannot mean both "narrowed to nothing" and "not narrowed" —
+/// and of those two readings, the one an operator would get by accident is the
+/// one that hands the entry back everything.
+pub fn capabilities_from_flags(
+    capabilities: Option<Vec<String>>,
+    capabilities_all: bool,
+) -> Option<Vec<String>> {
+    if capabilities_all {
+        Some(Vec::new())
+    } else {
+        capabilities
+    }
+}
+
 pub fn validate_role(role: &str) -> Result<(), Box<dyn std::error::Error>> {
     match role {
         "admin" | "initiator" | "application" | "reader" => Ok(()),
@@ -458,6 +477,7 @@ pub async fn cmd_acl_update(
     step_up_require: Option<String>,
     approve_scope: Option<ApproveScope>,
     allowed_keys: Option<Option<Vec<String>>>,
+    capabilities: Option<Vec<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Role transitions moved to `acl change-role`, which carries the
     // compare-and-swap that makes a concurrent edit an error instead of a
@@ -488,6 +508,7 @@ pub async fn cmd_acl_update(
         step_up_require: step_up_require.clone(),
         approve_scope,
         allowed_keys,
+        capabilities: capabilities.clone(),
     };
     let entry = client.update_acl(did, req).await?;
     println!("ACL entry updated:");
@@ -537,6 +558,18 @@ pub async fn cmd_acl_update(
             ApproveScope::Contexts(cs) => format!("contexts [{}]", cs.join(", ")),
         };
         println!("  Approve:  {rendered}");
+    }
+    // Echoed from the entry the VTA returned, not from the flags: a narrowing
+    // an operator cannot read back is one they cannot verify, and the whole
+    // point of the field is that somebody later trusts what it says.
+    if capabilities.is_some() {
+        let held = entry.capabilities();
+        let rendered = if held.is_empty() {
+            "(cleared — everything the role allows)".to_string()
+        } else {
+            held.join(", ")
+        };
+        println!("  Capabilities: {rendered}");
     }
     Ok(())
 }

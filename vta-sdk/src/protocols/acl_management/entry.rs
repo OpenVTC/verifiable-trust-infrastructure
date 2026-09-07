@@ -25,6 +25,73 @@ use crate::acl::ApproveScope;
 use super::create::CreateAclResultBody;
 use serde_json::Value;
 
+/// Where an entry's capability narrowing travels: the `ext` member
+/// `org.openvtc.capabilities`, holding the kebab-case capability names.
+///
+/// It rides `ext` rather than a member of its own because the published
+/// `acl/*` schemas are `additionalProperties: false` and declare an extension
+/// slot for exactly this — an ecosystem-local concept the framework has no
+/// vocabulary for. Same convention as `org.openvtc.vault-session` and the
+/// device binding's local capability list.
+pub const CAPABILITIES_EXT_MEMBER: &str = "org.openvtc.capabilities";
+
+/// Read a capability narrowing out of an `ext` object.
+///
+/// `None` means the member is absent — leave whatever is stored alone. An empty
+/// vec means it was present and empty, which is the spelling for "clear the
+/// narrowing": the two are different intentions and a caller that conflated
+/// them would silently widen an entry it meant to leave untouched.
+///
+/// Unknown names are an error rather than a skip. A capability this build has
+/// never heard of is precisely the one that must not be quietly dropped: the
+/// operator would be told the narrowing succeeded while the entry kept an
+/// authority they had just tried to remove.
+pub fn capabilities_from_ext(ext: Option<&Value>) -> Result<Option<Vec<String>>, String> {
+    let Some(member) = ext.and_then(|e| e.get(CAPABILITIES_EXT_MEMBER)) else {
+        return Ok(None);
+    };
+    let Some(items) = member.as_array() else {
+        return Err(format!(
+            "`{CAPABILITIES_EXT_MEMBER}` must be an array of capability names"
+        ));
+    };
+    items
+        .iter()
+        .map(|v| {
+            v.as_str().map(str::to_string).ok_or_else(|| {
+                format!("`{CAPABILITIES_EXT_MEMBER}` must contain strings, found {v}")
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+/// Put a capability narrowing into an `ext` object, preserving anything else
+/// already there.
+pub fn capabilities_into_ext(ext: Option<Value>, capabilities: &[String]) -> Option<Value> {
+    if capabilities.is_empty() {
+        // Nothing to say: an entry with no narrowing holds what its role
+        // implies, and an empty array here would read as "narrowed to nothing".
+        return ext;
+    }
+    let mut base = match ext {
+        Some(Value::Object(map)) => map,
+        // A non-object `ext` is not something to merge into — replace it rather
+        // than dropping the narrowing on the floor.
+        _ => serde_json::Map::new(),
+    };
+    base.insert(
+        CAPABILITIES_EXT_MEMBER.to_string(),
+        Value::Array(
+            capabilities
+                .iter()
+                .map(|c| Value::String(c.clone()))
+                .collect(),
+        ),
+    );
+    Some(Value::Object(base))
+}
+
 /// Per-entry step-up configuration — canonical `AclEntry.stepUp`.
 ///
 /// **Additive only.** A per-entry setting may raise the assurance required of
@@ -239,10 +306,10 @@ impl AclEntry {
             expires_at: r.expires_at.and_then(to_rfc3339),
             step_up: (!step_up.is_empty()).then_some(step_up),
             approve: (!approve.is_empty()).then_some(approve),
-            // The VTA does not author extension members; it only carries a
-            // producer's through. Nothing to put here when building the wire
-            // form from our own row.
-            ext: None,
+            // One extension member the VTA does author: the capability
+            // narrowing. The framework has no vocabulary for it, and an
+            // operator who cannot read a restriction back cannot verify it.
+            ext: capabilities_into_ext(None, &r.capabilities),
         }
     }
 

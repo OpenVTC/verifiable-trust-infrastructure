@@ -409,6 +409,26 @@ pub struct AclEntryResponse {
     /// Flattened out of the canonical `approve` object.
     #[serde(default)]
     approve: Option<ApproveWire>,
+    /// Ecosystem extension members. Carries the entry's capability narrowing
+    /// under `org.openvtc.capabilities`; read it through
+    /// [`AclEntryResponse::capabilities`] rather than indexing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ext: Option<serde_json::Value>,
+}
+
+impl AclEntryResponse {
+    /// The entry's capability narrowing, as kebab-case names.
+    ///
+    /// Empty means the entry is not narrowed and holds everything its role
+    /// implies — which is what an entry that has never been narrowed looks
+    /// like, and is deliberately not distinguished from "narrowed to nothing"
+    /// because narrowing to nothing is spelled by clearing the set.
+    pub fn capabilities(&self) -> Vec<String> {
+        crate::protocols::acl_management::entry::capabilities_from_ext(self.ext.as_ref())
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -681,6 +701,16 @@ pub struct UpdateAclRequest {
     /// pinned to the canonical `allowedKeys`.
     #[serde(rename = "allowedKeys", skip_serializing_if = "Option::is_none")]
     pub allowed_keys: Option<Option<Vec<String>>>,
+    /// Narrow what the entry may do, within what its role allows:
+    /// `None` leaves the narrowing unchanged, `Some(vec![])` clears it (the
+    /// entry regains everything its role implies — a privilege increase), and
+    /// `Some(names)` narrows to exactly those kebab-case capability names.
+    ///
+    /// Over the Trust-Task and DIDComm transports this travels in the body's
+    /// `ext` under `org.openvtc.capabilities`; the REST route takes it as a
+    /// member. Both spellings reach the same stored field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Vec<String>>,
 }
 
 // ── WebVH server types ──────────────────────────────────────────────

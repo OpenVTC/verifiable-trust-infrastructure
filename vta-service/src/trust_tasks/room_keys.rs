@@ -25,8 +25,8 @@
 //! request, so a presentation minted for A is worthless to B even if B obtains it.
 
 use serde_json::Value;
-use trust_tasks_rs::{RejectReason, TrustTask};
-use vti_common::acl::{Capability, role_has_capability};
+use trust_tasks_rs::TrustTask;
+use vti_common::acl::Capability;
 
 use crate::audit;
 use crate::auth::AuthClaims;
@@ -34,29 +34,18 @@ use crate::operations::room_oracle;
 use crate::server::AppState;
 
 use super::helpers::{
-    TRANSPORT_TRUST_TASK, TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with,
-    success_response,
+    TRANSPORT_TRUST_TASK, TrustTaskOutcome, app_error_to_reject, parse_payload, success_response,
 };
 
-/// Refuse unless the caller's role carries `cap`.
-fn require_cap(
+/// Refuse unless the caller holds `cap` — by role, and by whatever their ACL
+/// entry narrowed that to.
+async fn require_cap(
+    state: &AppState,
     auth: &AuthClaims,
     doc: &TrustTask<Value>,
     cap: Capability,
 ) -> Result<(), TrustTaskOutcome> {
-    if role_has_capability(&auth.role, cap) {
-        Ok(())
-    } else {
-        Err(reject_with(
-            doc,
-            RejectReason::PermissionDenied {
-                reason: format!(
-                    "minting a room presentation denied: role {} does not carry {cap:?}",
-                    auth.role
-                ),
-            },
-        ))
-    }
+    super::helpers::require_capability(state, auth, doc, cap, "minting a room presentation").await
 }
 
 /// `rooms/keys/present/0.1`.
@@ -65,7 +54,7 @@ pub(super) async fn handle_present(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_cap(auth, &doc, Capability::RoomPresent) {
+    if let Err(r) = require_cap(state, auth, &doc, Capability::RoomPresent).await {
         return r;
     }
 

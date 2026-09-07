@@ -823,6 +823,13 @@ didcomm_handler!(
         // No `role` here: role transitions are `acl/change-role`, which
         // carries the compare-and-swap this path cannot express.
         let role = None;
+        // Same `ext` narrowing the REST and Trust-Task paths accept; an
+        // unrecognised name is refused rather than dropped.
+        let capabilities = match body.capabilities() {
+            Ok(Some(names)) => Some(operations::acl::parse_capability_names(&names)?),
+            Ok(None) => None,
+            Err(reason) => return Err(crate::error::AppError::Validation(reason)),
+        };
         operations::acl::update_from_params(
             &s.acl_ks,
             &s.audit_sink,
@@ -831,6 +838,7 @@ didcomm_handler!(
             &body.did,
             operations::acl::UpdateAclParams {
                 role,
+                capabilities,
                 label: body.label.clone(),
                 allowed_contexts: body.allowed_contexts.clone(),
                 step_up_approver: body.step_up_approver(),

@@ -31,7 +31,10 @@ use trust_tasks_rs::{
 use uuid::Uuid;
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
 
+use crate::auth::AuthClaims;
 use crate::error::AppError;
+use crate::server::AppState;
+use vti_common::acl::Capability;
 // The SDK owns the spelling of every `details` member both sides touch,
 // so the service cannot drift from the client that reads it.
 use vta_sdk::protocols::trust_task_reject_details as details;
@@ -229,6 +232,67 @@ fn bound_details(details: Option<Value>) -> Option<Value> {
         return None;
     }
     Some(details)
+}
+
+/// The capability gate every gated task goes through.
+///
+/// # Why this reads the ACL rather than the token
+///
+/// A caller's role rides in their access token; their *narrowing* does not. It is
+/// read from the entry, per call, on purpose:
+///
+/// - A capability set is a **restriction**, and a restriction that takes effect
+///   at the subject's next token mint is a restriction with a fifteen-minute hole
+///   in it. Narrowing an entry stops the next call, not the next login.
+/// - The alternative — a `capabilities` claim in the JWT — would put the set in
+///   `AuthClaims`, a published struct built by literal in 130 places, and would
+///   still leave every unexpired token holding what it held before.
+///
+/// The read is one keyspace hit on the tasks that are capability-gated, which are
+/// already reading vault or memory keyspaces to do their work.
+///
+/// # An entry that is not there
+///
+/// Falls back to the role's own set. The offline CLI synthesizes claims under a
+/// `cli:<channel>` DID that is deliberately in no ACL, and DIDs authenticated
+/// before an entry existed behave as they always did. This gate narrows what an
+/// entry says to narrow; it is not an authorization check of its own, and the
+/// authenticated role is what it defers to.
+pub(super) async fn require_capability(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    cap: Capability,
+    what: &str,
+) -> Result<(), TrustTaskOutcome> {
+    let allowed = match vti_common::acl::get_acl_entry(&state.acl_ks, &auth.did).await {
+        Ok(Some(entry)) => vti_common::acl::entry_has_capability(&entry, cap),
+        // No entry: the role decides, exactly as before this gate existed.
+        Ok(None) => vti_common::acl::role_has_capability(&auth.role, cap),
+        // A store error must not become a grant. It also must not leak: the
+        // caller is told the capability is missing, and the operator gets the
+        // real reason in the log.
+        Err(e) => {
+            tracing::error!(
+                error = %e, did = %auth.did,
+                "could not read the ACL entry for a capability check; refusing"
+            );
+            false
+        }
+    };
+
+    if allowed {
+        return Ok(());
+    }
+    Err(reject_with(
+        doc,
+        RejectReason::PermissionDenied {
+            reason: format!(
+                "{what} denied: {} does not carry the {cap:?} capability",
+                auth.did
+            ),
+        },
+    ))
 }
 
 pub(super) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> TrustTaskOutcome {

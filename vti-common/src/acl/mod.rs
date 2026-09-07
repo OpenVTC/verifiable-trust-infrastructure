@@ -191,14 +191,58 @@ pub enum Capability {
 
 /// Returns true if `role` is granted `cap` by the default capability mapping.
 ///
-/// **This is what every capability gate in the workspace actually calls**, and it
-/// answers from the role alone — [`AclEntry::capabilities`] is not consulted here
-/// or anywhere else, because the authenticated claims a gate holds carry a role
-/// and no capability set. An entry's explicit capabilities are therefore
-/// descriptive today, not enforced; see the note on that field before writing a
-/// gate that assumes otherwise.
+/// The role's set is the **ceiling**, and this answers about the ceiling alone.
+/// A gate wants [`effective_capabilities`] (or, on the request path,
+/// `AuthClaims::has_capability`), which also honours an entry's own narrowing.
 pub fn role_has_capability(role: &Role, cap: Capability) -> bool {
     derived_capabilities_for_role(role).contains(&cap)
+}
+
+/// What an entry may actually do: its own set, bounded by its role's.
+///
+/// **An explicit set only ever narrows.** Empty means "whatever the role
+/// implies" — the shape every entry written before this had — and a non-empty
+/// one is intersected with the role's, never unioned. So `role` stays a true
+/// upper bound: an operator reading `role: reader` knows the entry holds no more
+/// than a reader, whatever else its capability list says, and a capability
+/// removed from a role's derived set is removed from every entry at once rather
+/// than surviving in the rows that happened to name it.
+///
+/// The alternative — letting the list replace the role's — was considered and
+/// declined. It buys targeted grants ("this one agent may present, nothing
+/// else") at the price of making the role no longer describe the entry, which is
+/// the property the ACL's own display, audit trail and role-assignment checks
+/// all lean on.
+pub fn effective_capabilities(role: &Role, explicit: &[Capability]) -> Vec<Capability> {
+    let derived = derived_capabilities_for_role(role);
+    if explicit.is_empty() {
+        return derived;
+    }
+    derived
+        .into_iter()
+        .filter(|c| explicit.contains(c))
+        .collect()
+}
+
+/// Whether `entry` may exercise `cap`, honouring both its role and its own
+/// narrowing. The storage-side counterpart of `AuthClaims::has_capability`.
+pub fn entry_has_capability(entry: &AclEntry, cap: Capability) -> bool {
+    effective_capabilities(&entry.role, &entry.capabilities).contains(&cap)
+}
+
+/// Capabilities named in `requested` that `role` does not carry.
+///
+/// A grant path calls this to refuse loudly rather than silently dropping what
+/// it cannot honour. Silently intersecting at write time would store a set the
+/// operator did not ask for and report success; the operator would then read the
+/// entry back and find a capability they granted simply absent.
+pub fn capabilities_beyond_role(role: &Role, requested: &[Capability]) -> Vec<Capability> {
+    let derived = derived_capabilities_for_role(role);
+    requested
+        .iter()
+        .filter(|c| !derived.contains(c))
+        .copied()
+        .collect()
 }
 
 /// Default capability set inferred from a role for entries that pre-date
@@ -499,20 +543,19 @@ pub struct AclEntry {
     /// rows deserialise as `Service { Daemon }`.
     #[serde(default)]
     pub kind: ConsumerKind,
-    /// Fine-grained capability set. Empty Vec on legacy rows.
+    /// Fine-grained capability set — what this entry may do **within** what its
+    /// role allows. Empty means "everything the role implies", which is what
+    /// every entry written before this field meant.
     ///
-    /// **Not enforced.** Every gate in the workspace asks
-    /// [`role_has_capability`], which answers from the role alone — the claims a
-    /// gate holds carry no capability set — and nothing over the wire can set
-    /// this field, so today it is only read to describe a registered device's
-    /// authority in a binding listing. Narrowing it narrows nothing and widening
-    /// it grants nothing.
+    /// Enforced through [`effective_capabilities`]: the set is intersected with
+    /// the role's, never unioned, so it can only narrow. A grant naming a
+    /// capability the role does not carry is refused at the ACL surface rather
+    /// than quietly dropped ([`capabilities_beyond_role`]), because storing less
+    /// than the operator asked for and reporting success is how an entry ends up
+    /// holding something nobody believes it holds.
     ///
-    /// Stated plainly because the shape invites the opposite assumption, and a
-    /// reader who assumed the auth layer consulted it would believe an entry was
-    /// least-privileged when it holds everything its role does. Making it real
-    /// means carrying the set in the authenticated claims and giving the ACL
-    /// surface a way to set it; until then, the role is the grant.
+    /// The set travels in the access token, so a change takes effect at the
+    /// subject's next token mint — the same latency a role change already has.
     #[serde(default)]
     pub capabilities: Vec<Capability>,
     /// Optional Companion/Service device-binding metadata. Populated by
@@ -1354,6 +1397,75 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Capability narrowing ────────────────────────────────────────
+
+    /// The shape every entry written before this feature has, and the one that
+    /// must keep behaving exactly as it did: no narrowing is not "narrowed to
+    /// nothing".
+    #[test]
+    fn an_entry_that_names_no_capabilities_holds_what_its_role_holds() {
+        let role = Role::Application;
+        assert_eq!(
+            effective_capabilities(&role, &[]),
+            derived_capabilities_for_role(&role)
+        );
+    }
+
+    #[test]
+    fn an_explicit_set_narrows_to_the_intersection() {
+        let held = effective_capabilities(
+            &Role::Application,
+            &[Capability::RoomPresent, Capability::MemoryRead],
+        );
+        assert_eq!(held.len(), 2, "{held:?}");
+        assert!(held.contains(&Capability::RoomPresent));
+        assert!(held.contains(&Capability::MemoryRead));
+        assert!(
+            !held.contains(&Capability::Sign),
+            "a capability the entry did not name must be gone: {held:?}"
+        );
+    }
+
+    /// The decision this feature turns on: the role is the ceiling. An entry
+    /// naming something its role never had gains nothing, so a stored row
+    /// cannot out-grant the role an operator reads beside it.
+    #[test]
+    fn an_explicit_set_cannot_widen_beyond_the_role() {
+        let held = effective_capabilities(&Role::Reader, &[Capability::RoomPresent]);
+        assert!(
+            held.is_empty(),
+            "a reader naming room-present must hold nothing: {held:?}"
+        );
+        assert_eq!(
+            capabilities_beyond_role(&Role::Reader, &[Capability::RoomPresent]),
+            vec![Capability::RoomPresent],
+            "and the grant path must be able to say which name it refused"
+        );
+    }
+
+    #[test]
+    fn narrowing_within_the_role_is_not_beyond_it() {
+        assert!(
+            capabilities_beyond_role(&Role::Application, &[Capability::RoomPresent]).is_empty()
+        );
+    }
+
+    #[test]
+    fn entry_has_capability_reads_both_the_role_and_the_narrowing() {
+        let mut entry = AclEntry::new("did:key:zAgent", Role::Application, "did:key:zAdmin");
+        assert!(
+            entry_has_capability(&entry, Capability::MemoryWrite),
+            "un-narrowed, the role decides"
+        );
+
+        entry.capabilities = vec![Capability::RoomPresent];
+        assert!(entry_has_capability(&entry, Capability::RoomPresent));
+        assert!(
+            !entry_has_capability(&entry, Capability::MemoryWrite),
+            "narrowed, what the entry did not name is gone even though the role has it"
+        );
     }
 
     // ── Test fixtures ───────────────────────────────────────────────

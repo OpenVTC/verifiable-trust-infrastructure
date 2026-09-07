@@ -389,12 +389,16 @@ have become the credential hand-off it exists to replace:
 - **A long-lived leaf** — the lifetime is a constant (4 hours), not a request
   parameter.
 
-> **How to grant it.** These gates read the caller's **role**, not the
-> capability list on its ACL entry — that field is descriptive today, and
-> narrowing it narrows nothing. `application` (what an agent integration is
-> normally granted), `initiator` and `admin` carry both room capabilities;
-> `reader` and `monitor` carry neither, deliberately, because minting a
+> **How to grant it.** The role is the ceiling: `application` (what an agent
+> integration is normally granted), `initiator` and `admin` carry both room
+> capabilities, while `reader` and `monitor` carry neither — minting a
 > credential on a principal's behalf is not a read.
+>
+> Within that ceiling, an entry's own list narrows:
+> `pnm acl update <did> --capabilities room-present` leaves an agent able to
+> present and nothing else, and `--capabilities-all` undoes it. Narrowing binds
+> the agent's next call, not its next token. A name the role does not carry is
+> refused rather than dropped, so the role always describes the entry.
 
 Withdrawing an agent's access is withdrawing it *at the VTA* — remove the ACL
 entry and no further presentations are minted. That is the whole value of an

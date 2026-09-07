@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use uuid::Uuid;
-use vti_common::acl::{Capability, role_has_capability};
+use vti_common::acl::Capability;
 use vti_common::vault::{
     LifecycleError, SecretKind, SiteTarget, StoredVaultEntry, VaultEntry, VaultListFilter,
     VaultSecret, VaultStatus, delete_vault_entry, get_stored_vault_entry, get_vault_entry,
@@ -418,39 +418,25 @@ struct VaultSessionExt {
     expires_at: String,
 }
 
-/// Reject the request unless the caller's role implies `cap`. `action` names
-/// the operation for the rejection message (`"read"`, `"write"`, `"release"`,
-/// `"proxy-login"`, `"sign-trust-task"`); the `{cap:?}` Debug repr renders the
-/// canonical capability name. When AclEntry-level explicit capabilities arrive
-/// (M4), this upgrades to consult the entry's `capabilities` Vec instead of
-/// deriving from role.
+/// Reject the request unless the caller holds `cap` — by role, and by whatever
+/// their ACL entry narrowed that to. `action` names the operation for the
+/// rejection message (`"read"`, `"write"`, `"release"`, `"proxy-login"`,
+/// `"sign-trust-task"`).
 ///
-/// Capability semantics (role→capability fallback in
-/// [`role_has_capability`]): `VaultRead` (list/get), `VaultWrite` (upsert/
-/// delete — Admin + Initiator), `FillRelease` (release — + Application),
-/// `ProxyLogin` (the VTA performs the login; same roles as FillRelease but the
-/// consumer never sees the long-term secret), `SignTrustTask` (per-envelope
-/// signing on the entry's principal DID — split from ProxyLogin so operators
-/// can limit blast radius on Service consumers).
-fn require_capability(
+/// Capability semantics: `VaultRead` (list/get), `VaultWrite` (upsert/delete —
+/// Admin + Initiator), `FillRelease` (release — + Application), `ProxyLogin`
+/// (the VTA performs the login; same roles as FillRelease but the consumer
+/// never sees the long-term secret), `SignTrustTask` (per-envelope signing on
+/// the entry's principal DID — split from ProxyLogin so operators can limit
+/// blast radius on Service consumers).
+async fn require_capability(
+    state: &AppState,
     auth: &AuthClaims,
     doc: &TrustTask<Value>,
     cap: Capability,
     action: &str,
 ) -> Result<(), TrustTaskOutcome> {
-    if role_has_capability(&auth.role, cap) {
-        Ok(())
-    } else {
-        Err(reject_with(
-            doc,
-            RejectReason::PermissionDenied {
-                reason: format!(
-                    "vault {action} denied: role {} does not carry {cap:?} capability",
-                    auth.role
-                ),
-            },
-        ))
-    }
+    super::helpers::require_capability(state, auth, doc, cap, &format!("vault {action}")).await
 }
 
 /// Reject if the caller may not act in `context_id` (when one is supplied).
@@ -599,7 +585,7 @@ pub(super) async fn handle_list(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_capability(auth, &doc, Capability::VaultRead, "read") {
+    if let Err(r) = require_capability(state, auth, &doc, Capability::VaultRead, "read").await {
         return r;
     }
 
@@ -689,7 +675,7 @@ pub(super) async fn handle_get(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_capability(auth, &doc, Capability::VaultRead, "read") {
+    if let Err(r) = require_capability(state, auth, &doc, Capability::VaultRead, "read").await {
         return r;
     }
     let req: VaultGetBody = match parse_payload(&doc) {
@@ -735,7 +721,7 @@ pub(super) async fn handle_upsert(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_capability(auth, &doc, Capability::VaultWrite, "write") {
+    if let Err(r) = require_capability(state, auth, &doc, Capability::VaultWrite, "write").await {
         return r;
     }
 
@@ -1180,7 +1166,7 @@ pub(super) async fn handle_delete(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_capability(auth, &doc, Capability::VaultWrite, "write") {
+    if let Err(r) = require_capability(state, auth, &doc, Capability::VaultWrite, "write").await {
         return r;
     }
 
@@ -1299,7 +1285,7 @@ async fn handle_lifecycle_transition(
     verb: &str,
     transition: impl Fn(&mut VaultEntry, &str, Option<&str>) -> Result<(), LifecycleError>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_capability(auth, &doc, Capability::VaultWrite, verb) {
+    if let Err(r) = require_capability(state, auth, &doc, Capability::VaultWrite, verb).await {
         return r;
     }
     let req: VaultLifecycleBody = match parse_payload(&doc) {
@@ -1338,7 +1324,7 @@ pub(super) async fn handle_purge(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_capability(auth, &doc, Capability::VaultWrite, "purge") {
+    if let Err(r) = require_capability(state, auth, &doc, Capability::VaultWrite, "purge").await {
         return r;
     }
     let req: VaultLifecycleBody = match parse_payload(&doc) {
@@ -1403,7 +1389,8 @@ pub(super) async fn handle_release(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_capability(auth, &doc, Capability::FillRelease, "release") {
+    if let Err(r) = require_capability(state, auth, &doc, Capability::FillRelease, "release").await
+    {
         return r;
     }
 
@@ -1548,7 +1535,9 @@ pub(super) async fn handle_proxy_login(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_capability(auth, &doc, Capability::ProxyLogin, "proxy-login") {
+    if let Err(r) =
+        require_capability(state, auth, &doc, Capability::ProxyLogin, "proxy-login").await
+    {
         return r;
     }
 
@@ -1752,7 +1741,15 @@ pub(super) async fn handle_sign_trust_task(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_capability(auth, &doc, Capability::SignTrustTask, "sign-trust-task") {
+    if let Err(r) = require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::SignTrustTask,
+        "sign-trust-task",
+    )
+    .await
+    {
         return r;
     }
     let req: VaultSignTrustTaskBody = match parse_payload(&doc) {

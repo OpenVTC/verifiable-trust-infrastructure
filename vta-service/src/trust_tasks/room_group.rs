@@ -28,8 +28,8 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use trust_tasks_rs::{RejectReason, TrustTask};
-use vti_common::acl::{Capability, role_has_capability};
+use trust_tasks_rs::TrustTask;
+use vti_common::acl::Capability;
 
 use crate::audit;
 use crate::auth::AuthClaims;
@@ -37,8 +37,7 @@ use crate::operations::{room_groups, room_invitation};
 use crate::server::AppState;
 
 use super::helpers::{
-    TRANSPORT_TRUST_TASK, TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with,
-    success_response,
+    TRANSPORT_TRUST_TASK, TrustTaskOutcome, app_error_to_reject, parse_payload, success_response,
 };
 
 /// How long an unused KeyPackage's private half is retained.
@@ -215,16 +214,16 @@ pub(super) async fn handle_open(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if !role_has_capability(&auth.role, Capability::RoomOpen) {
-        return reject_with(
-            &doc,
-            RejectReason::PermissionDenied {
-                reason: format!(
-                    "opening a room record denied: role {} does not carry RoomOpen",
-                    auth.role
-                ),
-            },
-        );
+    if let Err(r) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::RoomOpen,
+        "opening a room record",
+    )
+    .await
+    {
+        return r;
     }
 
     let req: trust_tasks_rs::specs::rooms::keys::open::v0_1::Payload = match parse_payload(&doc) {

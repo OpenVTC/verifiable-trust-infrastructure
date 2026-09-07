@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use uuid::Uuid;
-use vti_common::acl::{Capability, role_has_capability};
+use vti_common::acl::Capability;
 use vti_common::vault::{LifecycleError, VaultStatus};
 
 use crate::auth::AuthClaims;
@@ -47,25 +47,15 @@ use super::helpers::{
 /// Capability gate, mirroring [`super::vault::require_capability`] for the
 /// credential-vault surface (kept local so the two vault slices stay
 /// independent).
-fn require_cap(
+async fn require_cap(
+    state: &AppState,
     auth: &AuthClaims,
     doc: &TrustTask<Value>,
     cap: Capability,
     action: &str,
 ) -> Result<(), TrustTaskOutcome> {
-    if role_has_capability(&auth.role, cap) {
-        Ok(())
-    } else {
-        Err(reject_with(
-            doc,
-            RejectReason::PermissionDenied {
-                reason: format!(
-                    "credential-vault {action} denied: role {} does not carry {cap:?}",
-                    auth.role
-                ),
-            },
-        ))
-    }
+    super::helpers::require_capability(state, auth, doc, cap, &format!("credential-vault {action}"))
+        .await
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -138,7 +128,7 @@ pub(super) async fn handle_receive(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_cap(auth, &doc, Capability::VaultWrite, "receive") {
+    if let Err(r) = require_cap(state, auth, &doc, Capability::VaultWrite, "receive").await {
         return r;
     }
     let req: ReceiveBody = match parse_payload(&doc) {
@@ -372,7 +362,7 @@ pub(super) async fn handle_query(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_cap(auth, &doc, Capability::VaultRead, "query") {
+    if let Err(r) = require_cap(state, auth, &doc, Capability::VaultRead, "query").await {
         return r;
     }
     let query: CredentialQuery = match parse_payload(&doc) {
@@ -432,7 +422,7 @@ pub(super) async fn handle_get(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_cap(auth, &doc, Capability::VaultRead, "get") {
+    if let Err(r) = require_cap(state, auth, &doc, Capability::VaultRead, "get").await {
         return r;
     }
     let req: GetBody = match parse_payload(&doc) {
@@ -601,7 +591,7 @@ async fn cred_transition(
     verb: &str,
     transition: impl FnOnce(&mut crate::vault::model::StoredCredential) -> Result<(), LifecycleError>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_cap(auth, &doc, Capability::CredentialWrite, verb) {
+    if let Err(r) = require_cap(state, auth, &doc, Capability::CredentialWrite, verb).await {
         return r;
     }
     let req: CredLifecycleBody = match parse_payload(&doc) {
@@ -640,7 +630,7 @@ pub(super) async fn handle_delete(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_cap(auth, &doc, Capability::CredentialWrite, "delete") {
+    if let Err(r) = require_cap(state, auth, &doc, Capability::CredentialWrite, "delete").await {
         return r;
     }
     let req: CredDeleteBody = match parse_payload(&doc) {
@@ -713,7 +703,7 @@ pub(super) async fn handle_purge(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(r) = require_cap(auth, &doc, Capability::CredentialWrite, "purge") {
+    if let Err(r) = require_cap(state, auth, &doc, Capability::CredentialWrite, "purge").await {
         return r;
     }
     let req: CredLifecycleBody = match parse_payload(&doc) {

@@ -1238,6 +1238,9 @@ async fn main() {
                     None,
                     None,
                     allowed_keys,
+                    // cnm exposes no capability flags either; `None` leaves
+                    // any narrowing exactly as it is.
+                    None,
                 )
                 .await
             }

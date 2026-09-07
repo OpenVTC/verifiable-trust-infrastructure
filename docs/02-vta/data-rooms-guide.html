@@ -509,13 +509,16 @@
       does not open”, which reads like corruption. The VTA reports which epoch it holds for exactly
       this reason: that turns it into “a commit has not been delivered”.</p>
     </div>
-    <div class="warn">
-      <p><b>The grant is the role, not the entry's capability list.</b> The oracle gates read the
-      caller's role: <code>application</code> — what an agent integration is normally granted —
-      along with <code>initiator</code> and <code>admin</code> carries both room capabilities, and
-      <code>reader</code> and <code>monitor</code> carry neither. The per-entry
-      <code>capabilities</code> field is descriptive today, so narrowing it narrows nothing; scope
-      an agent by the role you give it and the context it may act in.</p>
+    <div class="pull">
+      <p><b>The role is the ceiling; the entry narrows within it.</b>
+      <code>application</code> — what an agent integration is normally granted — along with
+      <code>initiator</code> and <code>admin</code> carries both room capabilities, and
+      <code>reader</code> and <code>monitor</code> carry neither. To give one agent less than its
+      role allows, narrow its entry:
+      <code>pnm acl update &lt;did&gt; --capabilities room-present</code>, undone with
+      <code>--capabilities-all</code>. A name the role does not carry is refused rather than
+      dropped, so the role always describes the entry — and the gate reads the stored entry, so a
+      narrowing binds the agent's next call rather than its next token.</p>
     </div>
   </section>
 

@@ -122,6 +122,20 @@ pub(super) async fn handle_update(
     };
     // Role transitions live in `acl/change-role`, not here.
     let role = None;
+    // The capability narrowing rides `ext`; an unrecognised name is refused
+    // here rather than dropped, because a narrowing that silently kept a
+    // capability is the failure this whole surface exists to prevent.
+    let capabilities = match req.capabilities() {
+        Ok(Some(names)) => match operations::acl::parse_capability_names(&names) {
+            Ok(caps) => Some(caps),
+            Err(e) => return app_error_to_reject(&doc, e),
+        },
+        Ok(None) => None,
+        Err(reason) => {
+            return app_error_to_reject(&doc, crate::error::AppError::Validation(reason));
+        }
+    };
+
     match operations::acl::update_from_params(
         &state.acl_ks,
         &state.audit_sink,
@@ -130,6 +144,7 @@ pub(super) async fn handle_update(
         &req.did,
         operations::acl::UpdateAclParams {
             role,
+            capabilities,
             label: req.label.clone(),
             allowed_contexts: req.allowed_contexts.clone(),
             step_up_approver: req.step_up_approver(),
@@ -397,6 +412,11 @@ mod tests {
             // clear (`Some(None)` → explicit `null`) and leave-unchanged
             // (`None` → omitted) arms are pinned in `update.rs`'s own tests.
             allowed_keys: Some(Some(vec!["tenant-key-a".into()])),
+            // The narrowing rides `ext`; a fully-populated sample carries one
+            // so the round-trip pins its member name too.
+            ext: Some(serde_json::json!({
+                "org.openvtc.capabilities": ["memory-read"],
+            })),
         }
     }
 

@@ -134,6 +134,14 @@ pub struct CreateAclResultBody {
         alias = "allowed_keys"
     )]
     pub allowed_keys: Option<Vec<String>>,
+    /// The entry's capability narrowing, as kebab-case capability names.
+    ///
+    /// Empty means the entry holds everything its role implies — the shape of
+    /// every entry that has never been narrowed. Echoed so an operator can see
+    /// what a narrowing actually stored: a restriction nobody can read back is
+    /// one nobody can verify.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
 }
 
 #[cfg(test)]

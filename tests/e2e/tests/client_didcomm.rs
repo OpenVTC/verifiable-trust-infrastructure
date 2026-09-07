@@ -690,6 +690,7 @@ async fn update_acl_via_didcomm_carries_every_member() {
         step_up_require: Some("delegated".into()),
         approve_scope: Some(vta_sdk::acl::ApproveScope::Contexts(vec!["ctx-b".into()])),
         allowed_keys: Some(Some(vec!["tenant-key-a".into()])),
+        capabilities: None,
     };
     client.update_acl("did:key:zAdmin", req).await.unwrap();
 

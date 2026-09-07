@@ -56,11 +56,14 @@ pub(crate) async fn run(
             approve_none,
             allowed_keys,
             allowed_keys_unrestricted,
+            capabilities,
+            capabilities_all,
         } => {
             let approve_scope =
                 acl::approve_scope_from_flags(approve_all, approve_contexts, approve_none);
             let allowed_keys =
                 acl::allowed_keys_from_flags(allowed_keys, allowed_keys_unrestricted);
+            let capabilities = acl::capabilities_from_flags(capabilities, capabilities_all);
             acl::cmd_acl_update(
                 client,
                 &did,
@@ -71,6 +74,7 @@ pub(crate) async fn run(
                 step_up_require,
                 approve_scope,
                 allowed_keys,
+                capabilities,
             )
             .await
         }
