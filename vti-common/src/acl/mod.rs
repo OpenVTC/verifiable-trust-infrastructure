@@ -1010,11 +1010,24 @@ pub async fn check_acl_full(
     acl: &KeyspaceHandle,
     did: &str,
 ) -> Result<(Role, Vec<String>), AppError> {
+    let entry = check_acl_entry(acl, did).await?;
+    Ok((entry.role, entry.allowed_contexts))
+}
+
+/// The whole live entry, under the same expiry and membership rules as
+/// [`check_acl_full`].
+///
+/// [`check_acl_full`] reads the entry and returns two of its members. A caller
+/// wanting a third — `whoami` wants the capabilities, to answer "what may I do"
+/// — would otherwise read the same row a second time, and the two reads could
+/// disagree across a concurrent ACL edit: a caller could be told a role from
+/// before an update and a capability set from after it. One read, one answer.
+pub async fn check_acl_entry(acl: &KeyspaceHandle, did: &str) -> Result<AclEntry, AppError> {
     match get_acl_entry(acl, did).await? {
         Some(entry) if entry.is_expired(now_epoch()) => {
             Err(AppError::Forbidden(format!("ACL entry expired: {did}")))
         }
-        Some(entry) => Ok((entry.role, entry.allowed_contexts)),
+        Some(entry) => Ok(entry),
         None => Err(AppError::Forbidden(format!("DID not in ACL: {did}"))),
     }
 }
