@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<title>Data rooms — operator guide</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --paper:#F7F9F8; --ink:#16211F; --ink-2:#4A5A55; --ink-3:#7C8B86;
+    --line:#D8E0DD; --line-soft:#E6ECEA;
+    --pine:#1F6F62; --pine-soft:#E3EFEC; --pine-ink:#145248;
+    --amber:#A87B24; --amber-soft:#F5EBD8;
+    --card:#FFFFFF; --well:#EFF3F1;
+    --good:#1F6F62; --none:#B04A3A; --none-soft:#F6E7E4;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#101816; --ink:#E8EDEA; --ink-2:#A7B5B0; --ink-3:#76847F;
+      --line:#2A3733; --line-soft:#222E2A;
+      --pine:#4FA893; --pine-soft:#1A2A26; --pine-ink:#7FC7B5;
+      --amber:#D9A84E; --amber-soft:#2A2318;
+      --card:#161F1C; --well:#1A2421;
+      --good:#4FA893; --none:#D07B6B; --none-soft:#2A1D1A;
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#101816; --ink:#E8EDEA; --ink-2:#A7B5B0; --ink-3:#76847F;
+    --line:#2A3733; --line-soft:#222E2A;
+    --pine:#4FA893; --pine-soft:#1A2A26; --pine-ink:#7FC7B5;
+    --amber:#D9A84E; --amber-soft:#2A2318;
+    --card:#161F1C; --well:#1A2421;
+    --good:#4FA893; --none:#D07B6B; --none-soft:#2A1D1A;
+  }
+  *{box-sizing:border-box}
+  body{
+    background:var(--paper); color:var(--ink);
+    font-family:"IBM Plex Sans",-apple-system,"Segoe UI",sans-serif;
+    font-size:16px; line-height:1.65; margin:0;
+  }
+  .page{max-width:1020px; margin:0 auto; padding:56px 28px 96px}
+  .col{max-width:70ch; margin:0 auto}
+  .wide{max-width:960px; margin:0 auto}
+
+  .eyebrow{
+    font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--pine); font-weight:500; margin:0 0 10px;
+  }
+  h1{
+    font-family:"IBM Plex Serif",Georgia,serif; font-weight:600;
+    font-size:clamp(34px,5.5vw,52px); line-height:1.12; margin:0 0 18px;
+    text-wrap:balance; letter-spacing:-.01em;
+  }
+  h2{
+    font-family:"IBM Plex Serif",Georgia,serif; font-weight:600;
+    font-size:27px; line-height:1.25; margin:0 0 14px; text-wrap:balance;
+  }
+  h3{font-size:17px; font-weight:600; margin:26px 0 8px}
+  p{margin:0 0 16px; color:var(--ink)}
+  .lede{font-size:19px; line-height:1.6; color:var(--ink-2)}
+  a{color:var(--pine-ink); text-decoration-color:var(--line); text-underline-offset:3px}
+  a:focus-visible{outline:2px solid var(--pine); outline-offset:2px; border-radius:2px}
+  strong{font-weight:600}
+  code{font-family:"IBM Plex Mono",monospace; font-size:.86em; background:var(--well); padding:1px 5px; border-radius:4px}
+
+  .meta{display:flex; flex-wrap:wrap; gap:10px 22px; padding:14px 0; margin:26px 0 0;
+    border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+    font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--ink-2)}
+  .meta span b{color:var(--ink); font-weight:500}
+
+  section{margin:64px 0 0}
+  .figure-block{margin:30px 0 34px}
+  figure{margin:0; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:22px 22px 14px; overflow-x:auto}
+  figcaption{font-size:13.5px; color:var(--ink-2); padding:10px 2px 2px; border-top:1px solid var(--line-soft); margin-top:12px}
+  svg{max-width:100%; height:auto; display:block; color:var(--ink)}
+
+  table{border-collapse:collapse; width:100%; font-size:14.5px; background:var(--card);
+    border:1px solid var(--line); border-radius:10px; overflow:hidden}
+  .table-wrap{overflow-x:auto; margin:26px 0 10px; border-radius:10px}
+  th,td{padding:10px 14px; text-align:left; border-bottom:1px solid var(--line-soft); vertical-align:top}
+  thead th{font-family:"IBM Plex Mono",monospace; font-size:11.5px; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--ink-2); font-weight:500; background:var(--well)}
+  tbody tr:last-child td{border-bottom:none}
+  td.yes,span.yes{color:var(--good); font-weight:600}
+  td.no,span.no{color:var(--none); font-weight:600}
+  td.hd,th.hd{font-weight:600; color:var(--ink)}
+  td.mono,.mono{font-family:"IBM Plex Mono",monospace; font-size:13px}
+
+  .cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px; margin:28px 0 6px}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px 20px}
+  .card h3{margin:0 0 6px; font-size:16.5px}
+  .card p{font-size:14.5px; color:var(--ink-2); margin:8px 0 0}
+  .card .deploy{margin-top:12px; padding-top:10px; border-top:1px solid var(--line-soft);
+    font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--pine-ink)}
+  .chips{display:flex; gap:6px; flex-wrap:wrap; margin-top:2px}
+  .chip{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.05em;
+    padding:2px 8px; border-radius:99px; border:1px solid var(--line); color:var(--ink-2)}
+  .chip.t{background:var(--pine-soft); border-color:transparent; color:var(--pine-ink)}
+  .chip.v{background:var(--amber-soft); border-color:transparent; color:var(--amber)}
+
+  .pull{border-left:3px solid var(--pine); background:var(--pine-soft);
+    padding:16px 20px; border-radius:0 10px 10px 0; margin:26px 0}
+  .pull p{margin:0; color:var(--ink)}
+  .pull p + p{margin-top:10px}
+  .warn{border-left:3px solid var(--none); background:var(--none-soft);
+    padding:16px 20px; border-radius:0 10px 10px 0; margin:26px 0}
+  .warn p{margin:0}
+  .warn p + p{margin-top:10px}
+  .warn b{font-weight:600}
+
+  ol.steps{list-style:none; counter-reset:s; padding:0; margin:26px 0 0}
+  ol.steps > li{counter-increment:s; position:relative; padding:0 0 22px 46px; border-left:1px solid var(--line); margin-left:13px}
+  ol.steps > li:last-child{border-left-color:transparent; padding-bottom:0}
+  ol.steps > li::before{
+    content:counter(s); position:absolute; left:-13px; top:0;
+    width:26px; height:26px; border-radius:99px; background:var(--pine-soft);
+    color:var(--pine-ink); border:1px solid var(--pine);
+    font-family:"IBM Plex Mono",monospace; font-size:12.5px; font-weight:500;
+    display:grid; place-items:center;
+  }
+  ol.steps h3{margin:1px 0 6px}
+  ol.steps p{font-size:15px; color:var(--ink-2); margin:0 0 10px}
+  ol.steps p.code{
+    font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--ink);
+    background:var(--well); border:1px solid var(--line-soft); border-radius:8px;
+    padding:10px 12px; white-space:pre-wrap; line-height:1.5;
+  }
+
+  ul.plain{padding-left:22px; margin:0 0 16px}
+  ul.plain li{margin-bottom:8px}
+
+  .foot{margin-top:80px; padding-top:18px; border-top:1px solid var(--line);
+    font-size:13px; color:var(--ink-3)}
+  .foot p{color:var(--ink-3); margin:0 0 8px}
+  @media (prefers-reduced-motion: no-preference){ html{scroll-behavior:smooth} }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="col">
+    <p class="eyebrow">Operator guide · Verifiable Trust Infrastructure</p>
+    <h1>Data rooms: creating one, and keeping it</h1>
+    <p class="lede">A room is a shared space governed entirely by credentials it issues itself —
+    so it can move hosts without reissuing one. This is the working path through that: what you
+    assemble, which of the four topologies you are building, and every verb you use afterwards.</p>
+    <div class="meta">
+      <span>scope <b>operator + integrator</b></span>
+      <span>serves <b>open · attributed</b></span>
+      <span>built on <b>DTG credentials · MLS (RFC&nbsp;9420) · did:webvh</b></span>
+      <span>full text <b>docs/02-vta/data-rooms.md</b></span>
+    </div>
+  </header>
+
+  <section class="col">
+    <p class="eyebrow">Before anything else</p>
+    <h2>The one rule everything follows from</h2>
+    <p>A room operation is authorized by the credential chain <strong>the room issued</strong>,
+    verified against the room's own DID. Never by the host's ACL, never by a session, never by a
+    roster. Every call carries a presentation instead of a token.</p>
+    <p>That is why a host can hold a room it has no member list for — and why re-pointing a
+    service endpoint moves the room, with no credential reissued.</p>
+    <div class="pull">
+      <p>Practical consequence: <strong>a freshly registered room is one nobody can act in,
+      including you.</strong> Registering it with a host and issuing yourself a membership and
+      an authority credential are two separate acts, and the second is the one people forget.</p>
+    </div>
+  </section>
+
+  <section class="col">
+    <p class="eyebrow">Ground truth</p>
+    <h2>What works today</h2>
+    <p>Rooms are implemented across <code>vti-rooms</code>, <code>vti-rooms-dtg</code>,
+    <code>room-host</code>, <code>vtc-service</code> and <code>vta-service</code>. Not everything
+    in the design note is built, and knowing which half you are standing on saves an afternoon.</p>
+  </section>
+
+  <div class="wide table-wrap">
+    <table>
+      <thead><tr><th class="hd">Capability</th><th>State</th></tr></thead>
+      <tbody>
+        <tr><td class="hd"><span class="tiername mono">open</span> and <span class="mono">attributed</span> rooms</td>
+            <td><span class="yes">Serve.</span> Create, records, curate, epoch mint, transfer, claim</td></tr>
+        <tr><td class="hd"><span class="mono">private</span> rooms</td>
+            <td><span class="no">Store, but refuse to serve.</span> The same-subject binding needs a
+            zero-knowledge profile the DTG working group has not settled, and the refusal comes from
+            shared code so a VTC and a room host cannot disagree about what is safe</td></tr>
+        <tr><td class="hd">MLS group layer, record sealing</td>
+            <td>Work — create, add, remove, commit, exporter-derived storage keys</td></tr>
+        <tr><td class="hd">Member-side custody<br><span class="mono">rooms/keys/{key-package,welcome,commit,open}</span></td>
+            <td>Work. A member's VTA holds the group and opens records for their agents</td></tr>
+        <tr><td class="hd">Presentation oracle<br><span class="mono">rooms/keys/present</span></td>
+            <td>Works. Attenuates the member's own authority for an agent — one action, bound
+            audience, four hours</td></tr>
+        <tr><td class="hd">Succession — nomination, transfer, claim</td>
+            <td>Work, including the property that renewing defeats a pending claim</td></tr>
+        <tr><td class="hd">A CLI</td>
+            <td><span class="no">None.</span> No <code>pnm rooms …</code>; drive it from
+            <code>vtc-client</code> or by posting signed Trust Task documents</td></tr>
+        <tr><td class="hd">Credential issuance</td>
+            <td><span class="no">Library only.</span> Nothing serves “issue this member a VMC and a
+            VAC” — the owner mints them with <code>dtg-credentials</code> and delivers them out of band</td></tr>
+        <tr><td class="hd">Governance (<code>rooms.rego</code>)</td>
+            <td><span class="no">Not implemented</span> — and <code>rooms/create</code> is ungated
+            on both hosts as a result</td></tr>
+        <tr><td class="hd">Read mirrors, witnessed renewal anchoring</td>
+            <td><span class="no">Not implemented.</span> One write-primary; anchoring is the owner's
+            job and nothing does it yet</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <section class="col">
+    <p class="eyebrow">Step 1</p>
+    <h2>Pick a topology</h2>
+    <p>The protocol is identical in all four. What differs is where the room lives and who governs
+    creation — never what a room is. Two of them are nearly free: <strong>T3 is T2 plus
+    nothing</strong>, because a membership credential binds a member to <em>the room</em> rather
+    than to a community; <strong>T4 is T1 with the peer relationship as the door</strong>.</p>
+  </section>
+
+  <div class="wide cards">
+    <div class="card">
+      <div class="chips"><span class="chip t">T1</span><span class="chip">personal</span></div>
+      <h3>Your own room host</h3>
+      <p>Members are anyone you invite; you govern, and that sentence is the whole policy model.
+      Your own shareable space, on infrastructure you control, interoperable with every community
+      you belong to.</p>
+      <p class="deploy">deploy: the room-host binary</p>
+    </div>
+    <div class="card">
+      <div class="chips"><span class="chip t">T2</span><span class="chip">community</span></div>
+      <h3>Inside a VTC</h3>
+      <p>A community-wide library whose membership happens to be the roster, or a three-person
+      share — one model. Members of the room need not be members of the community.</p>
+      <p class="deploy">deploy: nothing — a VTC already serves rooms/*</p>
+    </div>
+    <div class="card">
+      <div class="chips"><span class="chip t">T3</span><span class="chip">cross-community</span></div>
+      <h3>One home host, many communities</h3>
+      <p>Members from three communities in one room is the ordinary case, not a bridge. Read
+      mirrors are the optional half, and the half not yet built.</p>
+      <p class="deploy">deploy: nothing beyond T2</p>
+    </div>
+    <div class="card">
+      <div class="chips"><span class="chip t">T4</span><span class="chip">peer</span></div>
+      <h3>Between peers, no community</h3>
+      <p>A room two connected peers both hold membership in, stood up in one action from the
+      edge. Nobody governs it but the owner.</p>
+      <p class="deploy">deploy: the room-host binary</p>
+    </div>
+  </div>
+
+  <div class="wide figure-block">
+    <figure>
+      <svg viewBox="0 0 960 250" role="img" aria-label="Four topologies side by side: a personal room host, a community VTC, one home VTC with a read mirror at a second, and a peer's room host. In each the room is the same entity and the members present credentials issued by the room itself.">
+        <defs>
+          <marker id="a1" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L8,4 L0,8 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <g font-family="IBM Plex Mono,monospace" font-size="11.5">
+          <g>
+            <text x="112" y="16" text-anchor="middle" fill="var(--pine)" font-weight="500">T1 · PERSONAL</text>
+            <rect x="22" y="28" width="180" height="132" rx="10" fill="none" stroke="currentColor" opacity=".5"/>
+            <text x="112" y="47" text-anchor="middle" fill="currentColor" opacity=".7">my room-host</text>
+            <rect x="52" y="60" width="120" height="66" rx="8" fill="var(--pine-soft)" stroke="var(--pine)" stroke-width="1.5"/>
+            <text x="112" y="88" text-anchor="middle" fill="var(--pine)" font-weight="500">room</text>
+            <text x="112" y="105" text-anchor="middle" fill="var(--pine)" font-size="10">did:webvh</text>
+            <circle cx="112" cy="205" r="7" fill="currentColor" opacity=".8"/>
+            <circle cx="76" cy="205" r="7" fill="none" stroke="currentColor"/>
+            <circle cx="148" cy="205" r="7" fill="none" stroke="currentColor"/>
+            <line x1="112" y1="194" x2="112" y2="134" stroke="currentColor" marker-end="url(#a1)"/>
+            <text x="122" y="170" fill="currentColor" opacity=".7" font-size="10">VMC</text>
+            <line x1="80" y1="195" x2="98" y2="134" stroke="currentColor" marker-end="url(#a1)"/>
+            <line x1="144" y1="195" x2="126" y2="134" stroke="currentColor" marker-end="url(#a1)"/>
+            <text x="112" y="233" text-anchor="middle" fill="currentColor" opacity=".65" font-size="10.5">me + anyone I invite</text>
+          </g>
+          <g transform="translate(238,0)">
+            <text x="112" y="16" text-anchor="middle" fill="var(--pine)" font-weight="500">T2 · COMMUNITY</text>
+            <rect x="22" y="28" width="180" height="132" rx="10" fill="none" stroke="currentColor" opacity=".5"/>
+            <text x="112" y="47" text-anchor="middle" fill="currentColor" opacity=".7">community VTC</text>
+            <rect x="52" y="60" width="120" height="66" rx="8" fill="var(--pine-soft)" stroke="var(--pine)" stroke-width="1.5"/>
+            <text x="112" y="88" text-anchor="middle" fill="var(--pine)" font-weight="500">room</text>
+            <text x="112" y="105" text-anchor="middle" fill="var(--pine)" font-size="10">did:webvh</text>
+            <circle cx="72" cy="205" r="7" fill="none" stroke="currentColor"/>
+            <circle cx="98" cy="205" r="7" fill="none" stroke="currentColor"/>
+            <circle cx="124" cy="205" r="7" fill="none" stroke="currentColor"/>
+            <circle cx="150" cy="205" r="7" fill="none" stroke="currentColor"/>
+            <line x1="112" y1="192" x2="112" y2="134" stroke="currentColor" marker-end="url(#a1)"/>
+            <text x="122" y="170" fill="currentColor" opacity=".7" font-size="10">VMC</text>
+            <text x="112" y="233" text-anchor="middle" fill="currentColor" opacity=".65" font-size="10.5">served in-process, no deploy</text>
+          </g>
+          <g transform="translate(476,0)">
+            <text x="112" y="16" text-anchor="middle" fill="var(--pine)" font-weight="500">T3 · CROSS-COMMUNITY</text>
+            <rect x="8" y="28" width="126" height="132" rx="10" fill="none" stroke="currentColor" opacity=".5"/>
+            <text x="71" y="47" text-anchor="middle" fill="currentColor" opacity=".7">home VTC</text>
+            <rect x="22" y="60" width="98" height="66" rx="8" fill="var(--pine-soft)" stroke="var(--pine)" stroke-width="1.5"/>
+            <text x="71" y="88" text-anchor="middle" fill="var(--pine)" font-weight="500">room</text>
+            <text x="71" y="105" text-anchor="middle" fill="var(--pine)" font-size="10">write-primary</text>
+            <rect x="152" y="28" width="90" height="132" rx="10" fill="none" stroke="currentColor" opacity=".35" stroke-dasharray="4 3"/>
+            <text x="197" y="47" text-anchor="middle" fill="currentColor" opacity=".5">VTC B</text>
+            <rect x="162" y="60" width="70" height="66" rx="8" fill="none" stroke="var(--pine)" stroke-dasharray="4 3" opacity=".6"/>
+            <text x="197" y="90" text-anchor="middle" fill="var(--pine)" font-size="10" opacity=".7">mirror</text>
+            <text x="197" y="106" text-anchor="middle" fill="var(--pine)" font-size="9" opacity=".7">not built</text>
+            <circle cx="46" cy="205" r="7" fill="none" stroke="currentColor"/>
+            <circle cx="96" cy="205" r="7" fill="none" stroke="currentColor"/>
+            <circle cx="197" cy="205" r="7" fill="none" stroke="currentColor"/>
+            <line x1="54" y1="196" x2="64" y2="134" stroke="currentColor" marker-end="url(#a1)"/>
+            <line x1="96" y1="194" x2="88" y2="134" stroke="currentColor" marker-end="url(#a1)"/>
+            <line x1="191" y1="195" x2="106" y2="132" stroke="currentColor" marker-end="url(#a1)"/>
+            <text x="120" y="233" text-anchor="middle" fill="currentColor" opacity=".65" font-size="10.5">members of A and B, one room</text>
+          </g>
+          <g transform="translate(730,0)">
+            <text x="104" y="16" text-anchor="middle" fill="var(--pine)" font-weight="500">T4 · PEERS</text>
+            <rect x="14" y="28" width="180" height="132" rx="10" fill="none" stroke="currentColor" opacity=".5"/>
+            <text x="104" y="47" text-anchor="middle" fill="currentColor" opacity=".7">a peer's room-host</text>
+            <rect x="44" y="60" width="120" height="66" rx="8" fill="var(--pine-soft)" stroke="var(--pine)" stroke-width="1.5"/>
+            <text x="104" y="88" text-anchor="middle" fill="var(--pine)" font-weight="500">room</text>
+            <text x="104" y="105" text-anchor="middle" fill="var(--pine)" font-size="10">did:webvh</text>
+            <circle cx="74" cy="205" r="7" fill="currentColor" opacity=".8"/>
+            <circle cx="134" cy="205" r="7" fill="none" stroke="currentColor"/>
+            <line x1="90" y1="205" x2="118" y2="205" stroke="currentColor" opacity=".8"/>
+            <text x="104" y="197" text-anchor="middle" fill="currentColor" opacity=".7" font-size="9.5">peer link</text>
+            <line x1="79" y1="194" x2="94" y2="134" stroke="currentColor" marker-end="url(#a1)"/>
+            <line x1="129" y1="194" x2="114" y2="134" stroke="currentColor" marker-end="url(#a1)"/>
+            <text x="104" y="233" text-anchor="middle" fill="currentColor" opacity=".65" font-size="10.5">no community at all</text>
+          </g>
+        </g>
+      </svg>
+      <figcaption>The same room in four homes. What changes between panels is who stores the bytes
+      and who governs creation; the arrows are membership credentials held against the
+      <em>room's</em> DID, so no panel's host keeps a member list of its own.</figcaption>
+    </figure>
+  </div>
+
+  <section class="col">
+    <p class="eyebrow">Step 2</p>
+    <h2>Pick a visibility tier</h2>
+    <p>Fixed at creation, for the life of the room. You cannot un-see cleartext, so a downgrade is
+    meaningless and an upgrade would protect only what came after while presenting as though it
+    protected everything.</p>
+  </section>
+
+  <div class="wide table-wrap">
+    <table>
+      <thead><tr><th class="hd">What the host can do</th><th class="mono">open</th><th class="mono">attributed</th><th class="mono">private</th></tr></thead>
+      <tbody>
+        <tr><td class="hd">Read bodies and titles</td><td>yes</td><td>no</td><td>no</td></tr>
+        <tr><td class="hd">See which member is acting</td><td>yes</td><td>yes</td><td>no — unlinkable proof</td></tr>
+        <tr><td class="hd">Search server-side</td><td>yes</td><td>no</td><td>no</td></tr>
+        <tr><td class="hd">Produce a per-member access log</td><td>yes</td><td>yes</td><td>no</td></tr>
+        <tr><td class="hd">Restore the content from its own backup</td><td>yes</td><td>no</td><td>no</td></tr>
+        <tr><td class="hd"><em>Serve it at all, today</em></td><td class="yes">yes</td><td class="yes">yes</td><td class="no">not yet</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <section class="col">
+    <p>The ladder measures <strong>the host, whoever that is</strong>. On a room you host yourself,
+    you-as-host see everything and already know the membership — you issued it — so the ladder
+    largely collapses there. Owner-hosting is not automatically the more private choice; a neutral
+    host that <em>cannot</em> read is a real alternative with a non-obvious answer.</p>
+    <p>On the sealed tiers, <strong>record keys must be opaque</strong>. A key reading
+    <code>decision/acquire-northwind</code> defeats the encryption sitting beside it — structured
+    naming belongs inside the sealed body.</p>
+  </section>
+
+  <section class="col">
+    <p class="eyebrow">Step 3</p>
+    <h2>Create the room</h2>
+    <ol class="steps">
+      <li>
+        <h3>Mint the room's identity</h3>
+        <p>The room's DID <em>is</em> its identifier and its credential issuer, so it exists before
+        anything else does. <code>did:webvh</code> rather than <code>did:peer</code> because a
+        room's controller must be able to change — transferring ownership is a controller change,
+        and <code>did:peer</code> encodes its keys in the identifier. Witness the log for any room
+        whose host you do not fully trust.</p>
+        <p class="code">pnm bootstrap provision-request --template room \
+  --var WEBVH_SERVER=https://dids.example.org \
+  --var MEDIATOR_DID=did:web:mediator.example.org --out room-request.json</p>
+      </li>
+      <li>
+        <h3>Register it with a host</h3>
+        <p>One <code>rooms/create/0.1</code> document. <strong>You bring the roomId</strong> — a
+        room identified by something its host chose could not move. The host sets epoch 1, an
+        expiry one epoch lifetime out, and the retention you asked for; it records the owner DID
+        you gave it.</p>
+      </li>
+      <li>
+        <h3>Issue yourself membership and authority</h3>
+        <p>A membership credential (you are in this room) and an authority credential (what you may
+        do: <code>read</code>, <code>write</code>, <code>curate</code>, <code>admin</code>), both
+        signed by the room's key. Store them in your VTA's credential vault — the oracle finds them
+        by issuer, so a credential filed anywhere else is one it cannot use.</p>
+      </li>
+      <li>
+        <h3>On a sealed tier, form the MLS group</h3>
+        <p>The group's epoch plus one is the room's epoch, so a group you have just created already
+        matches the number the host recorded. Read it rather than computing it: an off-by-one here
+        seals records under an epoch the host rejects, and the failure reads as a key problem.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="col">
+    <p class="eyebrow">Step 4</p>
+    <h2>Add a member, and equip their agent</h2>
+    <p>Joining is a <strong>two-party act</strong>. Without an invitation the owner could seal a
+    room key into your VTA and you would simply be <em>in</em>, holding keys to material you never
+    agreed to hold — so the invitation is checked, consumed exactly once, and consumed only
+    <em>after</em> the join succeeds.</p>
+  </section>
+
+  <div class="wide figure-block">
+    <figure>
+      <svg viewBox="0 0 940 300" role="img" aria-label="Who calls what: the owner sends an invitation and a welcome to the member's client, the client drives four tasks against the member's own VTA, the agent asks that VTA for a presentation and for decryption, and only presentations reach the host.">
+        <defs>
+          <marker id="a2" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L8,4 L0,8 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <g font-family="IBM Plex Mono,monospace" font-size="11.5">
+          <rect x="14" y="34" width="176" height="238" rx="10" fill="none" stroke="currentColor" opacity=".45"/>
+          <text x="102" y="24" text-anchor="middle" fill="var(--pine)" font-weight="500">OWNER</text>
+          <rect x="250" y="34" width="200" height="238" rx="10" fill="none" stroke="currentColor" opacity=".45"/>
+          <text x="350" y="24" text-anchor="middle" fill="var(--pine)" font-weight="500">MEMBER'S VTA</text>
+          <rect x="510" y="34" width="176" height="238" rx="10" fill="none" stroke="currentColor" opacity=".45"/>
+          <text x="598" y="24" text-anchor="middle" fill="var(--pine)" font-weight="500">AGENT</text>
+          <rect x="746" y="34" width="180" height="238" rx="10" fill="none" stroke="currentColor" opacity=".45"/>
+          <text x="836" y="24" text-anchor="middle" fill="var(--pine)" font-weight="500">HOST</text>
+
+          <g fill="currentColor" opacity=".78">
+            <text x="102" y="62" text-anchor="middle">holds the room key</text>
+            <text x="102" y="80" text-anchor="middle">issues VIC / VMC / VAC</text>
+            <text x="102" y="98" text-anchor="middle">commits the MLS group</text>
+            <text x="350" y="62" text-anchor="middle">holds VMC + VAC</text>
+            <text x="350" y="80" text-anchor="middle">holds the MLS leaf</text>
+            <text x="350" y="98" text-anchor="middle">never releases a key</text>
+            <text x="598" y="62" text-anchor="middle">holds nothing</text>
+            <text x="598" y="80" text-anchor="middle">read-only, 4 hours</text>
+            <text x="598" y="98" text-anchor="middle">bound to one host</text>
+            <text x="836" y="62" text-anchor="middle">stores ciphertext</text>
+            <text x="836" y="80" text-anchor="middle">verifies chains</text>
+            <text x="836" y="98" text-anchor="middle">holds no roster</text>
+          </g>
+
+          <g stroke="currentColor" fill="none" opacity=".85">
+            <line x1="190" y1="140" x2="248" y2="140" marker-end="url(#a2)"/>
+            <line x1="190" y1="176" x2="248" y2="176" marker-end="url(#a2)"/>
+            <line x1="510" y1="212" x2="452" y2="212" marker-end="url(#a2)"/>
+            <line x1="510" y1="244" x2="452" y2="244" marker-end="url(#a2)"/>
+            <line x1="686" y1="140" x2="744" y2="140" marker-end="url(#a2)"/>
+          </g>
+          <g fill="currentColor">
+            <text x="219" y="133" text-anchor="middle" font-size="10">VIC</text>
+            <text x="219" y="169" text-anchor="middle" font-size="10">Welcome</text>
+            <text x="481" y="205" text-anchor="middle" font-size="10">present</text>
+            <text x="481" y="237" text-anchor="middle" font-size="10">open</text>
+            <text x="715" y="133" text-anchor="middle" font-size="10">presentation</text>
+          </g>
+
+          <g fill="var(--pine)" font-size="10.5">
+            <text x="350" y="140" text-anchor="middle">rooms/keys/key-package</text>
+            <text x="350" y="158" text-anchor="middle">rooms/keys/welcome</text>
+            <text x="350" y="176" text-anchor="middle">rooms/keys/commit</text>
+          </g>
+          <g fill="var(--amber)" font-size="10.5">
+            <text x="350" y="212" text-anchor="middle">rooms/keys/present</text>
+            <text x="350" y="244" text-anchor="middle">rooms/keys/open</text>
+          </g>
+          <text x="470" y="288" text-anchor="middle" fill="currentColor" opacity=".6" font-size="10.5">
+            green: how a group reaches a VTA — amber: what the VTA does for an agent that holds nothing
+          </text>
+        </g>
+      </svg>
+      <figcaption>Nothing key-shaped crosses to the agent. It asks for a presentation and gets a
+      proof; it sends ciphertext and gets plaintext. Withdrawing its access is removing its entry
+      at the VTA — which is the whole value of an oracle over handing credentials across: there is
+      a place to say no.</figcaption>
+    </figure>
+  </div>
+
+  <div class="wide table-wrap">
+    <table>
+      <thead><tr><th class="hd">Task</th><th>Authorized by</th></tr></thead>
+      <tbody>
+        <tr><td class="mono hd">rooms/keys/key-package</td><td>an invitation — minting retains a private key against a Welcome that may never come</td></tr>
+        <tr><td class="mono hd">rooms/keys/welcome</td><td>that same invitation, consumed after the join succeeds</td></tr>
+        <tr><td class="mono hd">rooms/keys/commit</td><td>the MLS group itself — never an ACL of ours, which has no opinion about who a room's owner is</td></tr>
+        <tr><td class="mono hd">rooms/keys/open</td><td>the <code>roomOpen</code> capability — this one <em>is</em> our own principal's agent asking</td></tr>
+        <tr><td class="mono hd">rooms/keys/present</td><td>the <code>roomPresent</code> capability, plus access to the context holding the principal's key</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <section class="col">
+    <div class="warn">
+      <p><b>Commits are not optional, and their absence is silent.</b> Every membership change
+      produces a commit, and every existing member's VTA must apply it. A member who misses one is
+      stuck at their last epoch and can open nothing sealed after it — the symptom is “this record
+      does not open”, which reads like corruption. The VTA reports which epoch it holds for exactly
+      this reason: that turns it into “a commit has not been delivered”.</p>
+    </div>
+    <div class="warn">
+      <p><b>The agent role does not carry the agent capabilities.</b> The oracle gates read the
+      caller's role, and <code>Application</code> — the role agent integrations are normally granted
+      — carries neither <code>roomPresent</code> nor <code>roomOpen</code>. An agent that needs the
+      oracle today must hold a broader role than the design intends. Worth knowing before you scope
+      its entry.</p>
+    </div>
+  </section>
+
+  <section class="col">
+    <p class="eyebrow">Step 5</p>
+    <h2>Keep it alive</h2>
+    <p>No host can promise to hold every room forever, and on a sealed room the host is the
+    worst-placed party to judge value: it cannot read the content, and inactivity is not
+    worthlessness. <strong>So the host never decides.</strong> Every state below is computed from
+    two numbers the room already carries, and every one of them is undone by a single renewal
+    until the last.</p>
+  </section>
+
+  <div class="wide figure-block">
+    <figure>
+      <svg viewBox="-10 0 970 190" role="img" aria-label="Lifecycle timeline: live for one epoch lifetime, then lapsed and read-only, then dormant after a grace window, then reclaimable after the retention period. A single renewal returns the room to live from any state before reclaimable.">
+        <defs>
+          <marker id="a3" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L8,4 L0,8 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <g font-family="IBM Plex Mono,monospace" font-size="11.5">
+          <line x1="60" y1="70" x2="860" y2="70" stroke="currentColor" opacity=".35"/>
+          <g>
+            <circle cx="80" cy="70" r="9" fill="var(--pine)"/>
+            <text x="80" y="46" text-anchor="middle" fill="var(--pine)" font-weight="500">LIVE</text>
+            <text x="80" y="98" text-anchor="middle" fill="currentColor" opacity=".7" font-size="10.5">reads + writes</text>
+          </g>
+          <g>
+            <circle cx="330" cy="70" r="9" fill="var(--amber)"/>
+            <text x="330" y="46" text-anchor="middle" fill="var(--amber)" font-weight="500">LAPSED</text>
+            <text x="330" y="98" text-anchor="middle" fill="currentColor" opacity=".7" font-size="10.5">read-only · nothing destroyed</text>
+          </g>
+          <g>
+            <circle cx="580" cy="70" r="9" fill="var(--amber)"/>
+            <text x="580" y="46" text-anchor="middle" fill="var(--amber)" font-weight="500">DORMANT</text>
+            <text x="580" y="98" text-anchor="middle" fill="currentColor" opacity=".7" font-size="10.5">owner notified · claimable</text>
+          </g>
+          <g>
+            <circle cx="830" cy="70" r="9" fill="none" stroke="currentColor" stroke-dasharray="3 2"/>
+            <text x="830" y="46" text-anchor="middle" fill="currentColor" opacity=".8" font-weight="500">RECLAIMABLE</text>
+            <text x="830" y="98" text-anchor="middle" fill="currentColor" opacity=".7" font-size="10.5">reported, never automatic</text>
+          </g>
+          <g fill="currentColor" opacity=".65" font-size="10">
+            <text x="205" y="64" text-anchor="middle">epoch expires · 365d</text>
+            <text x="455" y="64" text-anchor="middle">grace · 30d</text>
+            <text x="705" y="64" text-anchor="middle">retention · you set it</text>
+          </g>
+          <path d="M830,132 C640,168 260,168 84,132" fill="none" stroke="var(--pine)" stroke-width="1.6" marker-end="url(#a3)" opacity=".9"/>
+          <text x="457" y="180" text-anchor="middle" fill="var(--pine)" font-size="11">a single renewal — minting an epoch, which is ordinary use</text>
+        </g>
+      </svg>
+      <figcaption>Reads deliberately do not extend the clock: a host counting reads would make a
+      sealed room's lifecycle depend on the one signal the host can see, which is exactly the
+      correlation the tiers exist to deny. Liveness is expressed by renewing, and a room being read
+      is a room whose members are in a position to renew it.</figcaption>
+    </figure>
+  </div>
+
+  <section class="col">
+    <p class="eyebrow">Step 6</p>
+    <h2>Hand it on</h2>
+    <p><strong>Transfer</strong> is the owner acting while present, gated on <code>admin</code> —
+    the same grant that mints epochs, because handing over the room is the more consequential of
+    the two. The host does not check that the incoming owner is a member: it holds no roster and
+    no group state, and a host that refused what it cannot verify would fail every correct
+    transfer. That obligation is the outgoing owner's, who can see the group.</p>
+    <p><strong>Claim</strong> is what happens when they are not there, and it needs three things at
+    once — a nomination the room issued naming this claimant, the room actually dormant, and the
+    claimant's own membership. Each closes a different route to a takeover: a nomination alone does
+    nothing while the owner renews, dormancy alone does nothing without a nomination, and neither
+    helps someone who could not commit once they had it.</p>
+    <div class="pull">
+      <p><strong>Renewing is the whole defence, and it is the same act as ordinary use.</strong> An
+      owner who was merely away defeats every pending claim by minting an epoch — which is what
+      they would have done anyway. Nothing has to be revoked and no dispute has to be raised.
+      Security that requires no vigilance is the only kind that survives contact with people on
+      holiday.</p>
+    </div>
+    <p>A claim hands over a dormant room and <em>leaves it dormant</em>. The new owner's first act
+    should be the renewal that proves they can perform it; if they cannot, the next nominee can
+    claim in turn — the succession chain working rather than failing.</p>
+  </section>
+
+  <section class="col">
+    <p class="eyebrow">Running a host</p>
+    <h2>What an operator owes the room</h2>
+    <ul class="plain">
+      <li><strong>Availability, and nothing else.</strong> Confidentiality, content integrity and
+      membership integrity need no trust in you. Availability and non-destruction irreducibly do —
+      which is why the lifecycle rules above are the ones a host must not shortcut.</li>
+      <li><strong>Network DID resolution is a decision.</strong> A standalone room host resolves
+      <code>did:key</code> only by default; serving <code>did:webvh</code> rooms means turning on
+      resolution, and that lets an unauthenticated request make your host fetch.</li>
+      <li><strong>Put it behind a proxy.</strong> The room-host binary carries no TLS and no rate
+      limiter, and <code>rooms/create</code> is not authorized on either host yet — anyone who can
+      reach the endpoint can register a room row. Every other verb verifies the document's proof
+      and the authority chain.</li>
+      <li><strong>Never log the actor on a private room.</strong> That decision is made once, in
+      the crate both hosts share, precisely because every host's logging wants to write the acting
+      DID — and on a private room that single line hands you the membership the room was built
+      never to disclose, assembled one entry at a time, with nothing breaking.</li>
+      <li><strong>Back up what only you hold.</strong> A VTC captures the room keyspaces in its
+      export; a standalone host's data directory is yours to back up. And a member's VTA backup
+      must carry their room groups — restore one without them and every sealed room they belong to
+      is unreadable, with no recovery but a fresh invitation from every owner.</li>
+    </ul>
+  </section>
+
+  <section class="col">
+    <p class="eyebrow">Reference</p>
+    <h2>Numbers worth knowing</h2>
+  </section>
+
+  <div class="wide table-wrap">
+    <table>
+      <thead><tr><th class="hd">Constant</th><th>Value</th><th>Why it is that</th></tr></thead>
+      <tbody>
+        <tr><td class="hd">Epoch lifetime</td><td class="mono">365 days</td><td>Long enough that renewal is not busywork, short enough that a room nobody has touched says something</td></tr>
+        <tr><td class="hd">Lapsed → dormant</td><td class="mono">30 days</td><td>A grace window, because “lapsed” is frequently somebody on holiday</td></tr>
+        <tr><td class="hd">Default retention</td><td class="mono">90 days</td><td>Counted from the lapse, never sooner than the dormancy window</td></tr>
+        <tr><td class="hd">Max authority-chain depth</td><td class="mono">8</td><td>Verification is linear in chain length and runs on every operation</td></tr>
+        <tr><td class="hd">Minted presentation lifetime</td><td class="mono">4 hours</td><td>A constant, not a request parameter — a caller that could ask for a year would be asking for the standing credential the oracle exists not to hand over</td></tr>
+        <tr><td class="hd">Unused key-package lifetime</td><td class="mono">7 days</td><td>The private half is retained key material; a caller that minted and never joined left a key behind</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <footer class="foot col">
+    <p>The full guide — commands, wire shapes, the refusal-to-cause table — is
+    <code>docs/02-vta/data-rooms.md</code>. The design and its rationale are
+    <code>docs/05-design-notes/data-rooms.md</code>, with two adversarial security reviews beside
+    it. A runnable end-to-end walkthrough ships as
+    <code>cargo run -p room-host --example data_room</code>: a real host on a real port, real
+    credentials, four acts.</p>
+    <p>Written against the implementation, not the design note — where the two differ, this page
+    follows the code.</p>
+  </footer>
+
+</div>
+</body>
+</html>
