@@ -513,6 +513,7 @@ async fn dispatch_provision_integration(
         assertion: None,
         vc_validity_seconds: None,
         create_context: false,
+        admin_scope: crate::provision_integration::http::AdminScope::default(),
     };
     let request_uri = ProvisionSpecVersion::CURRENT.request_uri();
     let payload = request_body_for_version(&body_struct, request_uri)

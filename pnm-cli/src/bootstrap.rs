@@ -511,9 +511,10 @@ pub async fn run_provision_integration(
     vc_validity_seconds: Option<i64>,
     out: PathBuf,
     create_context: bool,
+    admin_scope: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use vta_sdk::provision_integration::http::{
-        AssertionMode as WireAssertionMode, ProvisionIntegrationRequest,
+        AdminScope, AssertionMode as WireAssertionMode, ProvisionIntegrationRequest,
     };
 
     // 1. Parse the integration's VP (but don't verify locally — the
@@ -549,6 +550,21 @@ pub async fn run_provision_integration(
         }
     };
 
+    // 3b. Map the admin-scope flag. Clap's `value_parser` already rejects
+    //     anything outside the pair, so the fallthrough is a wiring bug rather
+    //     than operator input — say so instead of inventing a default, which
+    //     would silently narrow a grant someone asked to widen.
+    let admin_scope = match admin_scope.as_str() {
+        "context" => AdminScope::Context,
+        "unrestricted" => AdminScope::Unrestricted,
+        other => {
+            return Err(format!(
+                "invalid --admin-scope value '{other}' — use 'context' or 'unrestricted'"
+            )
+            .into());
+        }
+    };
+
     // 4. Submit.
     let resp = client
         .provision_integration(ProvisionIntegrationRequest {
@@ -561,6 +577,7 @@ pub async fn run_provision_integration(
             assertion: Some(assertion_mode),
             vc_validity_seconds,
             create_context,
+            admin_scope,
         })
         .await?;
 

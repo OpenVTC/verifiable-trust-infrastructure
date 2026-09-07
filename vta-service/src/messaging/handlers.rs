@@ -1504,6 +1504,7 @@ pub async fn handle_provision_integration(
             operations::provision_integration::ProvisionIntegrationParams {
                 request: verified,
                 context,
+                admin_scope: body.admin_scope,
                 assertion_mode,
                 vc_validity,
             },
@@ -1527,6 +1528,8 @@ pub async fn handle_provision_integration(
             output_count: output.summary.output_count,
             webvh_server_id: output.summary.webvh_server_id,
             context_created,
+            context: Some(output.summary.context),
+            admin_scope: Some(output.summary.admin_scope),
         },
     };
 

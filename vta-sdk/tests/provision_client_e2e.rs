@@ -28,7 +28,7 @@ use vta_sdk::provision_client::provision_via_rest;
 use vta_sdk::provision_client::result::ProvisionResult;
 use vta_sdk::provision_client::setup_key::EphemeralSetupKey;
 use vta_sdk::provision_integration::http::{
-    ProvisionIntegrationRequest, ProvisionIntegrationResponse, ProvisionSummary,
+    AdminScope, ProvisionIntegrationRequest, ProvisionIntegrationResponse, ProvisionSummary,
 };
 use vta_sdk::provision_integration::payload::{
     DidKeyMaterial, KeyPair, TemplateBootstrapConfig, TemplateBootstrapPayload, TemplateOutput,
@@ -195,6 +195,11 @@ impl Respond for SealResponder {
                 output_count: 1,
                 webvh_server_id: None,
                 context_created: false,
+                // Echoed the way a real VTA echoes them, so the success path
+                // these mocks cover exercises the response shape that is
+                // actually sent rather than an older one.
+                context: Some("ctx-1".into()),
+                admin_scope: Some(AdminScope::Context),
             },
         };
 
@@ -471,6 +476,11 @@ impl Respond for AdminRotationResponder {
                 output_count: 0,
                 webvh_server_id: None,
                 context_created: false,
+                // Echoed the way a real VTA echoes them, so the success path
+                // these mocks cover exercises the response shape that is
+                // actually sent rather than an older one.
+                context: Some("ctx-1".into()),
+                admin_scope: Some(AdminScope::Context),
             },
         };
 
@@ -554,6 +564,7 @@ async fn admin_rotated_via_rest_round_trip() {
         assertion: None,
         vc_validity_seconds: None,
         create_context: false,
+        admin_scope: AdminScope::default(),
     };
     let response = client
         .provision_integration(req)
@@ -710,6 +721,8 @@ async fn admin_rotated_didcomm_response_decoder_extracts_rotated_credentials() {
             output_count: 0,
             webvh_server_id: None,
             context_created: false,
+            context: Some("ctx-1".into()),
+            admin_scope: Some(AdminScope::Context),
         },
     };
 

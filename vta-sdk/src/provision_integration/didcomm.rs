@@ -35,7 +35,9 @@ use crate::protocols::provision_integration_management::{
 
 use serde_json::Value;
 
-use super::http::{AssertionMode, ProvisionIntegrationRequest, ProvisionIntegrationResponse};
+use super::http::{
+    AdminScope, AssertionMode, ProvisionIntegrationRequest, ProvisionIntegrationResponse,
+};
 
 /// Default DIDComm round-trip timeout (seconds). Generous so the VTA
 /// has time to mint keys, render templates, build the webvh log, and
@@ -106,6 +108,14 @@ pub async fn provision_integration_didcomm(
         assertion,
         vc_validity_seconds,
         create_context,
+        // Always the default. This helper drives *integration-class*
+        // provisioning — a mediator, a DID-hosting control plane — which acts
+        // in the context it was provisioned into and nowhere else. The
+        // unrestricted scope exists for an operator console, which reaches
+        // this task over the Trust-Task spine rather than through this
+        // client; if that ever changes, this becomes a parameter, not a
+        // default someone flipped.
+        admin_scope: AdminScope::default(),
     };
     let request_uri = spec_version.request_uri();
     let body = request_body_for_version(&body_struct, request_uri).map_err(VtaError::from)?;

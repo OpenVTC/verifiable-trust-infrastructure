@@ -10,6 +10,7 @@ use serde_json::Value;
 use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
+use vta_sdk::provision_integration::http::AdminScope;
 use vta_sdk::provision_integration::{BootstrapAsk, DidTemplateRef, VerifiedBootstrapRequest};
 
 use super::ProvisionIntegrationDeps;
@@ -216,14 +217,51 @@ pub async fn resolve_target_context(
     Ok((context, created))
 }
 
+/// Whether this caller may confer the requested [`AdminScope`].
+///
+/// An unrestricted admin may only be conferred by a super-admin — no admin
+/// hands out authority it does not itself hold, and routing the grant through
+/// a provisioning maintainer does not launder it.
+///
+/// `create_acl` enforces exactly this rule (`validate_acl_modification`
+/// refuses `ActScope::All` from a scoped caller) and remains *the*
+/// enforcement. This is the same rule read before any state changes: without
+/// it the refusal lands after the admin DID has been minted, published and
+/// issued a credential, leaving debris behind a request that was never going
+/// to be allowed — which is the whole reason this module runs first.
+///
+/// Its own function so it can be tested without standing up a store, a
+/// template registry and a signed VP, which is what reaching it through
+/// [`preconditions`] costs.
+pub(super) fn require_scope_authority(
+    auth: &AuthClaims,
+    admin_scope: AdminScope,
+) -> Result<(), AppError> {
+    if admin_scope == AdminScope::Context {
+        return Ok(());
+    }
+    auth.require_super_admin().map_err(|_| {
+        AppError::Forbidden(
+            "adminScope 'unrestricted' provisions an admin with authority over every \
+             context, which only a super-admin may confer. Re-run the grant for the \
+             relaying DID without '--contexts' and retry, or provision with the default \
+             context scope."
+                .into(),
+        )
+    })
+}
+
 pub(super) async fn preconditions(
     state: &ProvisionIntegrationDeps,
     auth: &AuthClaims,
     context: &str,
+    admin_scope: AdminScope,
     request: &VerifiedBootstrapRequest,
 ) -> Result<(), AppError> {
     auth.require_admin()?;
     auth.require_context(context)?;
+
+    require_scope_authority(auth, admin_scope)?;
 
     // Context must exist.
     if crate::contexts::get_context(&state.contexts_ks, context)
@@ -343,6 +381,65 @@ pub(super) fn extract_admin_template(ask: &BootstrapAsk) -> Option<DidTemplateRe
 }
 
 #[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use crate::acl::Role;
+
+    fn claims(role: Role, allowed_contexts: &[&str]) -> AuthClaims {
+        super::tests::auth(role, allowed_contexts.to_vec())
+    }
+
+    /// The default scope asks for nothing beyond what provisioning already
+    /// requires, so a context admin provisioning into its own context is
+    /// untouched by this gate.
+    #[test]
+    fn context_scope_needs_no_extra_authority() {
+        assert!(
+            require_scope_authority(&claims(Role::Admin, &["ctx-a"]), AdminScope::Context).is_ok()
+        );
+    }
+
+    /// The rule this whole member exists to keep: a context-scoped admin
+    /// cannot mint an admin wider than itself. Refused *here*, before any
+    /// minting — `create_acl` would refuse too, but only after a DID has been
+    /// published and a credential issued.
+    #[test]
+    fn scoped_admin_may_not_confer_unrestricted() {
+        let err =
+            require_scope_authority(&claims(Role::Admin, &["ctx-a"]), AdminScope::Unrestricted)
+                .expect_err("a context admin must not be able to mint a super-admin");
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "must be Forbidden, not a validation error: the request is well-formed and the \
+             caller simply lacks the authority — got {err:?}"
+        );
+    }
+
+    /// An empty context list is *unrestricted* for an admin and *nothing at
+    /// all* for every other role, so the role test is not redundant with the
+    /// scope test. Without it a scope-less monitor would read as the most
+    /// privileged caller there is.
+    #[test]
+    fn scopeless_non_admin_may_not_confer_unrestricted() {
+        for role in [Role::Reader, Role::Initiator, Role::Application] {
+            let label = format!("{role:?}");
+            assert!(
+                require_scope_authority(&claims(role, &[]), AdminScope::Unrestricted).is_err(),
+                "{label} with no contexts is not a super-admin"
+            );
+        }
+    }
+
+    #[test]
+    fn super_admin_may_confer_unrestricted() {
+        assert!(
+            require_scope_authority(&claims(Role::Admin, &[]), AdminScope::Unrestricted).is_ok(),
+            "admin with an empty context list is the super-admin shape"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::acl::Role;
@@ -361,7 +458,7 @@ mod tests {
         (dir, store, ks)
     }
 
-    fn auth(role: Role, allowed_contexts: Vec<&str>) -> AuthClaims {
+    pub(super) fn auth(role: Role, allowed_contexts: Vec<&str>) -> AuthClaims {
         AuthClaims {
             did: "did:key:zTestCaller".into(),
             role,

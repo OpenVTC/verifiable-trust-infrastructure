@@ -2432,6 +2432,17 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 output_count: 1,
                 webvh_server_id: Some("srv-1".into()),
                 context_created: true,
+                // Both carried, and `Unrestricted` on purpose. The emitting
+                // code always sets these, so a witness that left them absent
+                // would exercise a response this VTA never sends — and the
+                // response-conformance guard is the check that actually
+                // caught them missing from the 0.18.2 schema, turning a
+                // successful provisioning into a 500. Present here, they keep
+                // the floor in `Cargo.toml` honest: drop back to a
+                // `trust-tasks-rs` without them and this witness fails rather
+                // than the failure waiting for live traffic.
+                context: Some("ctx-1".into()),
+                admin_scope: Some(prov::AdminScope::Unrestricted),
             },
         });
         // Prove the canonical request also parses into our consumer type —

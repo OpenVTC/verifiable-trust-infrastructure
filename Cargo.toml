@@ -268,7 +268,14 @@ aws-lc-rs = "1.16"
 # `schema_index::schema_for` would answer `None` for every URI, `validate_payload`
 # would stop validating with one `debug!` line to say so, and `spec_policy_for`
 # would stop enforcing SPEC §7.2 the same way. Both fail *open*.
-trust-tasks-rs = { version = "0.18", default-features = false, features = [
+# 0.18.3 is a FLOOR, not a preference: it is the first release whose
+# `provision/integration/0.3` schema carries `adminScope` and the `context` /
+# `adminScope` summary members. The dispatch spine validates outgoing responses
+# against this crate's embedded schema, so against 0.18.2 a provisioning that
+# fully succeeded comes back as a 500 `responseSchemaViolation` — the members
+# are emitted and the schema rejects them. A caret on "0.18" would let a
+# resolver pick 0.18.2 and reintroduce exactly that.
+trust-tasks-rs = { version = "0.18.3", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
