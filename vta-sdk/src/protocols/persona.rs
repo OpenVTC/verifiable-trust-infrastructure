@@ -280,6 +280,16 @@ pub struct PersonaAttributeListBody {
     /// Return values, not just metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_values: Option<bool>,
+    /// Also return the values of attributes resolving to `sensitivity: high`.
+    ///
+    /// Widens [`include_values`](Self::include_values) and is never the member
+    /// that introduces plaintext: without it, a listing that asked for values
+    /// still omits the card number and returns the row around it. Separate from
+    /// `include_values` because a picker wants every name and no card, and
+    /// should not have to choose between plaintext for everything and plaintext
+    /// for nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_sensitive: Option<bool>,
     /// Include attributes whose backing credential could no longer be
     /// re-derived. Defaults to true: a holder deciding what to present needs
     /// to see that something went stale, not to have it quietly omitted.

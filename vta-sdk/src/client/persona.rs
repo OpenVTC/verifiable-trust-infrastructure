@@ -112,10 +112,16 @@ impl VtaClient {
     /// difference between "how many phone numbers do I hold" and a read of the
     /// holder's identity, so it is opt-in rather than something a caller has
     /// to remember to narrow.
+    ///
+    /// `include_sensitive` is the second escalation, and only ever widens the
+    /// first: values resolving to `sensitivity: high` — a card number, a
+    /// passport number, a mobile — are omitted from a listing that asked for
+    /// values but not for these.
     pub async fn persona_attribute_list(
         &self,
         type_prefix: Option<&str>,
         include_values: bool,
+        include_sensitive: bool,
         include_stale: Option<bool>,
         limit: Option<std::num::NonZeroU64>,
         cursor: Option<&str>,
@@ -123,6 +129,7 @@ impl VtaClient {
         let payload = body(PersonaAttributeListBody {
             type_prefix: type_prefix.map(str::to_string),
             include_values: include_values.then_some(true),
+            include_sensitive: include_sensitive.then_some(true),
             include_stale,
             limit,
             cursor: cursor.map(str::to_string),

@@ -3235,6 +3235,11 @@ pub(crate) enum PersonaAttributeCommands {
         /// the holder's identity, so it is opt-in.
         #[arg(long)]
         values: bool,
+        /// Also show the sensitive ones — cards, passports, phone numbers.
+        /// Widens `--values`; on its own it shows nothing extra, because it
+        /// can never be the flag that puts plaintext on your screen.
+        #[arg(long)]
+        sensitive: bool,
         /// Include attributes whose backing credential can no longer be
         /// re-derived. On by default — a holder deciding what to present needs
         /// to see what went stale, not have it quietly omitted.

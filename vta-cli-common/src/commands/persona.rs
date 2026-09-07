@@ -90,10 +90,15 @@ pub async fn cmd_attribute_put(
 /// Metadata-only unless `--values` is given. The default is not timidity: a
 /// listing that returns values is a read of the holder's identity, and the
 /// command that does it should be the one the operator typed on purpose.
+///
+/// `--sensitive` is the second half of that, and only widens the first: a card
+/// number or a passport number stays out of a `--values` listing until it is
+/// asked for by name.
 pub async fn cmd_attribute_list(
     client: &VtaClient,
     type_prefix: Option<String>,
     include_values: bool,
+    include_sensitive: bool,
     include_stale: Option<bool>,
     limit: Option<std::num::NonZeroU64>,
     cursor: Option<String>,
@@ -102,13 +107,25 @@ pub async fn cmd_attribute_list(
         .persona_attribute_list(
             type_prefix.as_deref(),
             include_values,
+            include_sensitive,
             include_stale,
             limit,
             cursor.as_deref(),
         )
         .await?;
-    if !is_json_output() && !include_values {
-        println!("{DIM}Names only — add --values to include the values themselves.{RESET}");
+    if !is_json_output() {
+        // Said only where it is true, and said once. The agent withholds a
+        // sensitive value without saying so in the response — the row comes
+        // back with no `value`, which reads exactly like a fact that never had
+        // one — so the person is told here or not at all.
+        if !include_values {
+            println!("{DIM}Names only — add --values to include the values themselves.{RESET}");
+        } else if !include_sensitive {
+            println!(
+                "{DIM}Sensitive values — cards, passports, phone numbers — are held back. \
+                 Add --sensitive to include them.{RESET}"
+            );
+        }
     }
     print_result("Your facts:", &result)
 }
