@@ -602,6 +602,70 @@ jobs:
       - name: Lockfile self-pin guard
         run: bash scripts/check-lockfile-self-pins.sh
 
+  lockfile-resolves:
+    # The sibling of the job above, and the same misattribution failure it
+    # describes — arrived at from the other direction. There, Cargo.lock pins a
+    # stale copy of one of our own crates. Here, Cargo.lock does not satisfy the
+    # manifests *at all*: a requirement no locked version matches, so every
+    # `--locked` command refuses to run.
+    #
+    # How that reaches main with every check green. Two dependency PRs, each
+    # correct alone and incompatible together:
+    #
+    #   #1297  pins the workspace to jsonschema 0.47
+    #   #1295  bumps regorus to 0.12, which requires jsonschema ^0.49.9
+    #
+    # #1295 was opened before #1297 merged, so its merge commit resolved against
+    # a main that still said 0.46 — green, honestly. Merging it did not re-run
+    # against the main that existed by then, and nothing afterwards checked the
+    # combination. Main went red and stayed red.
+    #
+    # The cost is the misattribution, exactly as #706 and #711. The next PRs to
+    # run inherited the broken lock through their own merge commits, and the
+    # failure surfaced under whatever job happened to touch it first — for
+    # #1296 that was **MSRV**, which sent the diagnosis after a Rust-version
+    # problem that did not exist. The dependency it was accused of raising
+    # declares `rust-version = "1.85"`, well under this workspace's floor.
+    #
+    # So: its own job, named for what it checks, and NOT PR-only. `cargo check`
+    # and `msrv` already pass `--locked` and would eventually fail on the same
+    # thing — but they fail slowly, in a compile job, wearing the wrong name.
+    # This runs on a push to main, in about a second, and says the true thing.
+    #
+    # `cargo metadata` because it resolves the whole graph without compiling
+    # anything: no system libraries, no toolchain-specific behaviour, no cache.
+    # Verified against the broken commit (95877dc9) and the fix (#1301).
+    name: lockfile resolves
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cargo.lock satisfies every workspace manifest
+        run: |
+          if cargo metadata --locked --format-version 1 > /dev/null; then
+            echo "Cargo.lock satisfies every manifest."
+            exit 0
+          fi
+
+          echo "::error::Cargo.lock does not satisfy the workspace manifests — every \`--locked\` build will fail."
+          cat <<'MSG'
+
+          A dependency requirement in a Cargo.toml has no matching version in
+          Cargo.lock, so cargo would have to re-resolve to proceed.
+
+          If your branch changed a dependency:
+            cargo check --workspace      # re-resolves
+            git add Cargo.lock           # and commit it
+
+          If you changed no dependency, and especially if this is failing on
+          main: a pull request was merged while stale. Its lock was resolved
+          against an older main and no longer matches the manifests it landed
+          beside. Fix it on main rather than in the branch that inherited it —
+          the branch is not what broke.
+          MSG
+          exit 1
+
   features:
     # Build the most-used non-default feature combinations so a misuse
     # of `cfg(feature = "...")` doesn't silently rot. Default-feature
