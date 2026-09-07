@@ -849,6 +849,28 @@ impl DIDCommSession {
     /// session in this SDK registered one, so `shutdown()` stopped the deletion
     /// handler and left a reconnecting socket behind for the life of the
     /// process.
+    /// Provision this session's own allow-all mediator ACL over its **live**
+    /// socket, awaiting the result.
+    ///
+    /// The connect-time hook ([`crate::acl_setup::set_client_acl_on_connection`])
+    /// is fire-and-forget and builds a second profile for the same DID; this
+    /// reuses the profile already attached here, so nothing contends for the
+    /// DID's one-socket-per-DID slot at the mediator. Best-effort: errors are
+    /// logged inside, not returned. No-op unless `acl-setup` is enabled.
+    pub async fn provision_client_acl(&self, client_name: &str) {
+        #[cfg(feature = "acl-setup")]
+        crate::acl_setup::set_client_acl_with_profile(
+            &self.atm,
+            &self.identity.profile,
+            &self.identity.did,
+            "didcomm-session",
+            client_name,
+        )
+        .await;
+        #[cfg(not(feature = "acl-setup"))]
+        let _ = client_name;
+    }
+
     ///
     /// On a shared hub the detach is the whole teardown: siblings keep running.
     /// On a hub this session built for itself, the hub is torn down too.

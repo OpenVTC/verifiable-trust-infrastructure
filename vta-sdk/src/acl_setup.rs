@@ -126,10 +126,15 @@ async fn set_client_acl_internal(
     // `queueLimits` — passing `None` for those two leaves them untouched, so this
     // is an ACL-only partial update exactly as `acl_set` was.
     //
-    // `account_update` waits for a response, which on an `ExplicitAllow` mediator
-    // cannot arrive until this very ACL grants `receive_forwarded` — so an `Err`
-    // here (typically a timeout) does NOT mean the request was dropped; the
-    // mediator still applies it. Hence debug, not warn, on error.
+    // `account_update` waits for a response, but that response is *direct*
+    // delivery on the socket this request arrived on — the mediator answering
+    // its own client — not a forward. `receive_forwarded` gates only the
+    // routing path (`Capability::ReceiveForwarded` is checked against the *next
+    // hop's* ACL in the mediator's `routing.rs`), so a still-closed account does
+    // not withhold this reply. An `Err` here is therefore a genuine transport
+    // failure or a slow mediator; it is logged at debug rather than propagated
+    // because the mediator applies the ACL before responding, so a lost or late
+    // reply still leaves the update applied.
     match atm
         .trust_tasks()
         .account_update(
