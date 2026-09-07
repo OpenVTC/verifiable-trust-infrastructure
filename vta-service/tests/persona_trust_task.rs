@@ -371,14 +371,22 @@ async fn an_attribute_reaches_a_context_only_as_a_count() {
     );
 }
 
-/// Editing the pool changes what a bound context presents — without the
-/// context reading anything.
+/// Editing the pool changes what the HOLDER sees resolved.
 ///
-/// "Edit once, everywhere" and the one-way boundary are in tension: the
-/// obvious way to keep a projection current is to let it resolve on read,
-/// which is a read *upward*. Instead the write above the boundary pushes.
-/// This is the test that the push actually happens; the store-level test can
-/// only show that `rematerialise` works when called.
+/// **This test does not show that anything was pushed, and it used to say it
+/// did.** Its docstring read "this is the test that the push actually happens";
+/// it asserts through `profile/get?resolve=true`, which resolves live from the
+/// pool on every call, so it passed with nothing pushed anywhere — and did,
+/// for the whole time `rematerialise` was called from no handler at all. A
+/// verifier was being handed the value from before the edit.
+///
+/// Kept, because the holder-side resolution is worth pinning on its own. The
+/// push is asserted by `a_pool_edit_reaches_the_copy_a_verifier_is_shown`,
+/// through the materialised copy, which is the only place the two differ.
+///
+/// The general lesson, and it is the same one VTI#1268 taught this family:
+/// a test that reads through the path it is trying to prove exists cannot
+/// fail. Assert through the *other* side.
 #[tokio::test]
 async fn editing_the_pool_updates_an_already_bound_context() {
     let (router, ctx) = build_test_app().await;
@@ -1046,5 +1054,89 @@ async fn a_context_local_profile_cannot_reference_the_pool() {
         refused(status, &body),
         "a context-local profile was allowed to reference the holder's pool: \
          {status} {body}"
+    );
+}
+
+/// **What a bound context actually holds after the pool is edited.**
+///
+/// `editing_the_pool_updates_an_already_bound_context` above claims to cover
+/// this and does not. It asserts through `profile/get?resolve=true`, which
+/// resolves live from the pool on every call — so it passes whether or not
+/// anything was ever pushed down, and would pass with `rematerialise` deleted
+/// outright. Its own docstring says it is "the test that the push actually
+/// happens", which is the reading that let the gap ship.
+///
+/// This asserts through `disclosure/preview`, which reads the **materialised**
+/// claims the binding holds. That is the copy a verifier is shown, and it is
+/// the only place the difference between "the profile projects X" and "the
+/// context holds X" is observable.
+#[tokio::test]
+async fn a_pool_edit_reaches_the_copy_a_verifier_is_shown() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "push", "admin", &[]).await;
+    let scoped = authed(&ctx, "push-scoped", "admin", &[CTX]).await;
+
+    let attr = put_attribute(&router, &holder, "name.display", "Ada").await;
+    let (_, body) = post(
+        &router,
+        &holder,
+        PROFILE_PUT,
+        json!({ "name": "pushed", "entries": [{ "ref": attr }] }),
+    )
+    .await;
+    let profile = payload_of(&body)
+        .get("profileId")
+        .and_then(Value::as_str)
+        .expect("profileId")
+        .to_string();
+
+    let persona = "did:key:z6MkPersonaPushed";
+    let (status, body) = post(
+        &router,
+        &holder,
+        BINDING_SET,
+        json!({ "contextId": CTX, "personaDid": persona, "profileId": profile }),
+    )
+    .await;
+    assert!(!refused(status, &body), "binding/set: {status} {body}");
+
+    // The edit the holder makes once, expecting it everywhere.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_PUT,
+        json!({
+            "attributeId": attr,
+            "type": "name.display",
+            "value": "Ada Lovelace",
+            "valueType": "string",
+            "provenance": { "kind": "selfAsserted" },
+        }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "attribute/put (edit): {status} {body}"
+    );
+
+    let (status, body) = post(
+        &router,
+        &scoped,
+        PREVIEW,
+        json!({
+            "contextId": CTX,
+            "personaDid": persona,
+            "verifierDid": "did:key:z6MkVerifierPushed",
+            "purpose": "who are you",
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "preview: {status} {body}");
+
+    let rendered = serde_json::to_string(payload_of(&body)).expect("serialises");
+    assert!(
+        rendered.contains("Ada Lovelace"),
+        "the verifier would be shown the value from before the edit — \"edit once, \
+         everywhere\" did not reach the materialised copy: {rendered}"
     );
 }

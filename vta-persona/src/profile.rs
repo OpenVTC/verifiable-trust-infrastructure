@@ -120,12 +120,18 @@ impl PersonaStore {
             }
         }
 
+        let profile_id = profile.profile_id.clone();
         self.ks
             .insert(
-                storage::profile_key(&profile.profile_id),
+                storage::profile_key(&profile_id),
                 &ProfileSlot::Live(profile),
             )
             .await?;
+
+        // Changing what a profile projects changes what every persona bound to
+        // it presents. Same reasoning as the attribute path in `store.rs`: the
+        // push belongs to the write, because a context cannot pull.
+        self.push_profile_locked(&profile_id).await?;
 
         Ok(Written { version, created })
     }
