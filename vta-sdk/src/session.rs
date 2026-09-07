@@ -919,6 +919,16 @@ impl SessionStore {
                 if transport == TransportChoice::Tsp {
                     return Err(no_tsp_endpoint_error(&vta_did, true, rest_url.is_some()));
                 }
+                // A pending-rotation session must swap its temp did:key here.
+                // This DIDComm connect path (unlike the REST one via
+                // `rest_client` → `ensure_authenticated`) previously ignored
+                // `needs_rotation`, so a DIDComm-only VTA never rotated. Delegate
+                // to the rotation-aware DIDComm path: it mints the fresh key,
+                // moves the ACL entry, opens the new DID's mediator account, and
+                // returns a client connected as the rotated DID.
+                if session.needs_rotation {
+                    return self.ensure_authenticated_didcomm(key).await;
+                }
                 debug!("connecting via DIDComm");
                 let client = connect_didcomm_bounded(
                     &session.client_did,
@@ -1085,6 +1095,11 @@ async fn rotate_key_didcomm(
     }
     probe.shutdown().await;
 
+    // Open the rotated DID's own mediator account now, over its live socket —
+    // the probe's connect-time self-provision is fire-and-forget and races the
+    // teardown above, so do it explicitly and awaited here.
+    provision_rotated_client_acl(&new_did, &new_private_key, mediator_did).await;
+
     let Session { vta_did, .. } = session.clone();
     Ok(Session {
         client_did: new_did,
@@ -1117,6 +1132,27 @@ fn generate_did_key()
     );
     let private_key_multibase = multibase::encode(multibase::Base::Base58Btc, seed);
     Ok((did, private_key_multibase, signing))
+}
+
+/// Open a freshly rotated DID's own allow-all mediator account so it is
+/// reachable for forwarded DIDComm immediately after rotation.
+///
+/// The connect-time self-provision ([`crate::acl_setup::set_client_acl_on_connection`])
+/// is fire-and-forget and races the rotation probe's teardown, so this awaited
+/// pass over a dedicated [`TrustPingSession`] makes reachability deterministic.
+/// Best-effort: a failure only means the account opens lazily on the next
+/// connect, exactly as before this hook existed.
+async fn provision_rotated_client_acl(client_did: &str, private_key: &str, mediator_did: &str) {
+    match TrustPingSession::new(client_did, private_key, mediator_did).await {
+        Ok(session) => {
+            session.provision_client_acl("pnm-rotate").await;
+            session.shutdown().await;
+        }
+        Err(e) => debug!(
+            error = %e,
+            "rotate: could not open session to provision rotated DID's mediator ACL (non-fatal)"
+        ),
+    }
 }
 
 /// Swap a `needs_rotation=true` session's temp did:key for a fresh one via the
@@ -1191,6 +1227,13 @@ async fn rotate_key(
         challenge_response(base_url, &new_did, &new_private_key, &session_vta_did)
             .await
             .map_err(|e| format!("rotate: new DID failed challenge-response after swap: {e}"))?;
+
+    // If the VTA advertises a mediator, open the rotated DID's mediator account
+    // so DIDComm (e.g. `pnm health`) works immediately. Pure-REST VTAs resolve
+    // to no mediator and are skipped.
+    if let Ok(Some(mediator_did)) = resolve_mediator_did(&session_vta_did).await {
+        provision_rotated_client_acl(&new_did, &new_private_key, &mediator_did).await;
+    }
 
     let Session { vta_did, .. } = session;
     let rotated = Session {
@@ -2061,6 +2104,7 @@ pub struct TrustPingSession {
     identity: crate::session_hub::AttachedIdentity,
     ownership: crate::session_hub::HubOwnership,
     mediator_did: String,
+    client_did: String,
 }
 
 impl TrustPingSession {
@@ -2151,6 +2195,7 @@ impl TrustPingSession {
             identity,
             ownership,
             mediator_did: mediator_did.to_string(),
+            client_did: client_did.to_string(),
         })
     }
 
@@ -2173,6 +2218,25 @@ impl TrustPingSession {
             )
             .await?;
         Ok(start.elapsed().as_millis())
+    }
+
+    /// Provision this client's own allow-all mediator ACL over the session's
+    /// live socket, awaiting the result. Call before pinging a VTA whose pong
+    /// the mediator must forward back: a freshly bootstrapped or rotated client
+    /// is otherwise closed for forwarded delivery and the reply is dropped.
+    /// No-op unless the `acl-setup` feature is enabled.
+    pub async fn provision_client_acl(&self, client_name: &str) {
+        #[cfg(feature = "acl-setup")]
+        crate::acl_setup::set_client_acl_with_profile(
+            self.identity.hub.atm(),
+            &self.identity.profile,
+            &self.client_did,
+            "trust-ping-session",
+            client_name,
+        )
+        .await;
+        #[cfg(not(feature = "acl-setup"))]
+        let _ = client_name;
     }
 
     /// Detach this identity — which is what stops its websocket — and, if this

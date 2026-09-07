@@ -294,6 +294,13 @@ pub(crate) async fn run(
                 .await
                 {
                     Ok(Ok(session)) => {
+                        // Open this client's own mediator account (allow-all)
+                        // over the session's live socket before the forwarded
+                        // VTA trust-ping. A freshly bootstrapped or rotated
+                        // client is closed for forwarded delivery, so the VTA's
+                        // pong would otherwise be dropped by the mediator.
+                        session.provision_client_acl("pnm").await;
+
                         // Ping mediator (steady-state: warm-up + measured)
                         match tokio::time::timeout(
                             std::time::Duration::from_secs(20),

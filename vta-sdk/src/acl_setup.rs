@@ -110,16 +110,8 @@ async fn set_client_acl_internal(
     .await
     .map_err(|e| format!("failed to create ATM profile: {e}"))?;
 
-    // Hash the client's DID for the mediator's ACL record (self-reference).
-    // SHA-256 hex to match the mediator's account-key convention
-    // (`sha256::digest(did)` in affinidi-messaging-sdk).
-    let mut hasher = Sha256::new();
-    hasher.update(client_did);
-    let hash_bytes = hasher.finalize();
-    let client_did_hash = hash_bytes
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<String>();
+    // SHA-256 hex of the DID — the mediator's account-key convention.
+    let client_did_hash = client_acl_hash(client_did);
 
     // Build an "allow all" ACL that accepts every message type. Fields left
     // `None` (e.g. the self-manage flags) keep the mediator's existing value.
@@ -171,6 +163,78 @@ async fn set_client_acl_internal(
     Ok(())
 }
 
+/// Provision a client's own allow-all mediator ACL over an **already
+/// connected** profile, awaiting the result.
+///
+/// Unlike [`set_client_acl_on_connection`] (fire-and-forget, which builds its
+/// own second `ATMProfile` for the DID), this reuses the caller's live
+/// profile/socket — so no second websocket contends for the DID's
+/// one-socket-per-DID slot — and *awaits* the mediator round-trip under a
+/// timeout. A caller can therefore rely on the account being open before its
+/// next forwarded-message operation, e.g. a health trust-ping whose reply the
+/// mediator must forward back to this client (which a closed account rejects
+/// with `receive_forwarded`).
+///
+/// The `account_update` reply rides the same live socket (direct delivery, not
+/// forwarded), so it returns even while the account is still closed. Errors and
+/// timeouts are logged, not propagated: the mediator applies the ACL before
+/// responding, so a lost/late reply does not mean the update failed.
+pub async fn set_client_acl_with_profile(
+    atm: &ATM,
+    profile: &Arc<ATMProfile>,
+    client_did: &str,
+    channel: &str,
+    client_name: &str,
+) {
+    // SHA-256 hex of the DID — the mediator's account-key convention.
+    let client_did_hash = client_acl_hash(client_did);
+
+    let acl = build_allow_all_acl();
+
+    // Bound the round-trip so a stuck mediator can't hang the caller.
+    const ACL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    match tokio::time::timeout(
+        ACL_TIMEOUT,
+        atm.trust_tasks()
+            .account_update(profile, Some(client_did_hash), None, Some(acl), None),
+    )
+    .await
+    {
+        Ok(Ok(_)) => info!(
+            channel,
+            client_did = %client_did,
+            client = client_name,
+            "client ACL configured on mediator"
+        ),
+        Ok(Err(e)) => debug!(
+            channel,
+            client_did = %client_did,
+            error = %e,
+            client = client_name,
+            "client ACL request error (mediator may still process asynchronously)"
+        ),
+        Err(_) => debug!(
+            channel,
+            client_did = %client_did,
+            client = client_name,
+            "client ACL request timed out (mediator may still process asynchronously)"
+        ),
+    }
+}
+
+/// SHA-256 hex of a DID — the mediator's per-account ACL key
+/// (`sha256::digest(did)` in affinidi-messaging-sdk). Self-referential: a
+/// client always provisions the account keyed by the hash of its own DID.
+fn client_acl_hash(did: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(did);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
+}
+
 /// Build a wire-format ACL that allows all message types.
 ///
 /// This creates a `MediatorAcl` wire format (the `acl` member of the trust-tasks
@@ -196,4 +260,55 @@ fn build_allow_all_acl() -> account::update::v0_1::MediatorAcl {
         ))
         .try_into()
         .expect("MediatorAcl has no required member")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_acl_hash_matches_mediator_account_key_convention() {
+        // Vector = sha256(did) hex, taken from a real mediator ACL entry — this
+        // is exactly the account key the mediator derives, so a mismatch means
+        // we would provision the wrong account.
+        assert_eq!(
+            client_acl_hash("did:key:z6MkovnNkdRq64BNcpZqpCnQGDhPe3g2cHeB35A5e7k4sNkS"),
+            "30a923cb69a99f8247469b72ea5b45b534e9f52a09200f92ce72f44e16714136"
+        );
+    }
+
+    #[test]
+    fn client_acl_hash_is_64_char_lowercase_hex() {
+        let h = client_acl_hash("did:webvh:QmExample:vta.example.com");
+        assert_eq!(h.len(), 64);
+        assert!(
+            h.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
+    }
+
+    #[test]
+    fn allow_all_acl_opens_everything_but_blocked() {
+        // Serialize so the assertion is agnostic to the wire type's field-name
+        // casing: every boolean must be `true` except the `blocked` flag, and
+        // the forwarded-delivery flags (the whole point) must be present.
+        let v = serde_json::to_value(build_allow_all_acl()).expect("MediatorAcl serializes");
+        let obj = v.as_object().expect("acl serializes to a JSON object");
+        let mut saw_forwarded = false;
+        for (field, value) in obj {
+            let Some(b) = value.as_bool() else { continue };
+            if field.to_ascii_lowercase().contains("block") {
+                assert!(!b, "`{field}` must be false in an allow-all ACL");
+            } else {
+                assert!(b, "`{field}` must be true in an allow-all ACL");
+            }
+            if field.to_ascii_lowercase().contains("forwarded") {
+                saw_forwarded = true;
+            }
+        }
+        assert!(
+            saw_forwarded,
+            "allow-all ACL must set the forwarded-delivery flags"
+        );
+    }
 }
