@@ -3615,17 +3615,18 @@ export interface components {
          *     `crossCommunityRoles`) — operators wire purposes into REST
          *     payloads + the policies CLI verbs.
          *
-         *     Per spec §7.1, the workspace ships nine purposes. They split
-         *     into three groups:
+         *     Per spec §7.1, the workspace ships ten purposes. They split
+         *     into four groups:
          *     - **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],
          *       [`Self::Personhood`].
          *     - **Discoverability**: [`Self::Registry`], [`Self::Directory`].
          *     - **Authorization**: [`Self::RoleDefinitions`],
          *       [`Self::CrossCommunityRoles`],
          *       [`Self::CrossCommunityRelationships`], [`Self::Relationships`].
+         *     - **Hosting**: [`Self::Rooms`].
          * @enum {string}
          */
-        PolicyPurpose: "join" | "removal" | "personhood" | "registry" | "directory" | "roleDefinitions" | "crossCommunityRoles" | "crossCommunityRelationships" | "relationships" | "roleChange";
+        PolicyPurpose: "join" | "removal" | "personhood" | "registry" | "directory" | "roleDefinitions" | "crossCommunityRoles" | "crossCommunityRelationships" | "relationships" | "roleChange" | "rooms";
         /** @enum {string} */
         PolicyStatusFilter: "active" | "archived";
         /**

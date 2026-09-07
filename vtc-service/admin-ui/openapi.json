@@ -7347,7 +7347,7 @@
       },
       "PolicyPurpose": {
         "type": "string",
-        "description": "What a policy decides. The keyspace `active_policies:<purpose>`\nhas at most one row per variant; the active pointer is a\nper-purpose singleton.\n\nWire shape is `camelCase` ASCII (`join`, `removal`,\n`crossCommunityRoles`) — operators wire purposes into REST\npayloads + the policies CLI verbs.\n\nPer spec §7.1, the workspace ships nine purposes. They split\ninto three groups:\n- **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],\n  [`Self::Personhood`].\n- **Discoverability**: [`Self::Registry`], [`Self::Directory`].\n- **Authorization**: [`Self::RoleDefinitions`],\n  [`Self::CrossCommunityRoles`],\n  [`Self::CrossCommunityRelationships`], [`Self::Relationships`].",
+        "description": "What a policy decides. The keyspace `active_policies:<purpose>`\nhas at most one row per variant; the active pointer is a\nper-purpose singleton.\n\nWire shape is `camelCase` ASCII (`join`, `removal`,\n`crossCommunityRoles`) — operators wire purposes into REST\npayloads + the policies CLI verbs.\n\nPer spec §7.1, the workspace ships ten purposes. They split\ninto four groups:\n- **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],\n  [`Self::Personhood`].\n- **Discoverability**: [`Self::Registry`], [`Self::Directory`].\n- **Authorization**: [`Self::RoleDefinitions`],\n  [`Self::CrossCommunityRoles`],\n  [`Self::CrossCommunityRelationships`], [`Self::Relationships`].\n- **Hosting**: [`Self::Rooms`].",
         "enum": [
           "join",
           "removal",
@@ -7358,7 +7358,8 @@
           "crossCommunityRoles",
           "crossCommunityRelationships",
           "relationships",
-          "roleChange"
+          "roleChange",
+          "rooms"
         ]
       },
       "PolicyStatusFilter": {
