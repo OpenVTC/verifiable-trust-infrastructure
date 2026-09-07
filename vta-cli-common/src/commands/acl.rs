@@ -329,6 +329,10 @@ pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn st
     if let Some(keys) = format_allowed_keys(entry.allowed_keys.as_deref()) {
         println!("Allowed keys:     {keys}");
     }
+    let held = entry.capabilities();
+    if !held.is_empty() {
+        println!("Capabilities:     {}", held.join(", "));
+    }
     if let Some(scope) =
         format_approve_scope(entry.approve_all_contexts(), entry.approve_contexts())
     {
@@ -352,9 +356,13 @@ pub async fn cmd_acl_create(
     approve_all: bool,
     approve_contexts: Vec<String>,
     allowed_keys: Option<Vec<String>>,
+    capabilities: Option<Vec<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_role(&role)?;
     let mut req = CreateAclRequest::new(did, role).contexts(contexts);
+    if let Some(ref caps) = capabilities {
+        req = req.capabilities(caps.clone());
+    }
     if let Some(keys) = allowed_keys {
         req = req.allowed_keys(keys);
     }
@@ -391,6 +399,12 @@ pub async fn cmd_acl_create(
     );
     if let Some(keys) = format_allowed_keys(entry.allowed_keys.as_deref()) {
         println!("  Allowed keys: {keys}");
+    }
+    // Echoed from the entry the VTA stored, so an operator sees the narrowing
+    // that actually took effect rather than the one they asked for.
+    let held = entry.capabilities();
+    if !held.is_empty() {
+        println!("  Capabilities: {}", held.join(", "));
     }
     if let Some(scope) =
         format_approve_scope(entry.approve_all_contexts(), entry.approve_contexts())

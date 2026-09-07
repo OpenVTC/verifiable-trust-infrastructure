@@ -554,6 +554,13 @@ pub struct CreateAclRequest {
     /// entry's contexts); `Some(∅)` = **no** keys at all — the two are
     /// opposite grants and are serialized distinctly.
     pub allowed_keys: Option<Vec<String>>,
+    /// Narrow the entry to exactly these capabilities at creation, within what
+    /// its role allows. Empty leaves it holding everything the role implies.
+    ///
+    /// Set here rather than by a follow-up update so the entry is never briefly
+    /// wider than intended — a window during which the subject may already be
+    /// authenticating.
+    pub capabilities: Vec<String>,
 }
 
 impl serde::Serialize for CreateAclRequest {
@@ -590,7 +597,13 @@ impl serde::Serialize for CreateAclRequest {
                 }),
                 step_up: has_step_up.then_some(step_up),
                 approve: has_approve.then_some(approve),
-                ext: None,
+                // The narrowing is ecosystem-local, so it rides the entry's
+                // `ext` slot — the same member the update path and the
+                // response use, so one spelling serves all three.
+                ext: crate::protocols::acl_management::entry::capabilities_into_ext(
+                    None,
+                    &self.capabilities,
+                ),
             },
             reason: None,
             ext: None,
@@ -612,6 +625,7 @@ impl CreateAclRequest {
             approve_all_contexts: false,
             approve_contexts: Vec::new(),
             allowed_keys: None,
+            capabilities: Vec::new(),
         }
     }
     pub fn label(mut self, label: impl Into<String>) -> Self {
@@ -654,6 +668,14 @@ impl CreateAclRequest {
     /// subject unfiltered (every key its contexts reach).
     pub fn allowed_keys(mut self, keys: Vec<String>) -> Self {
         self.allowed_keys = Some(keys);
+        self
+    }
+
+    /// Narrow the new entry to exactly these capabilities (kebab-case names),
+    /// within what its role allows. A name the role does not carry is refused
+    /// by the VTA rather than dropped.
+    pub fn capabilities(mut self, capabilities: Vec<String>) -> Self {
+        self.capabilities = capabilities;
         self
     }
 }

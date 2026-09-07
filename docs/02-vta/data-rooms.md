@@ -394,11 +394,13 @@ have become the credential hand-off it exists to replace:
 > capabilities, while `reader` and `monitor` carry neither — minting a
 > credential on a principal's behalf is not a read.
 >
-> Within that ceiling, an entry's own list narrows:
-> `pnm acl update <did> --capabilities room-present` leaves an agent able to
-> present and nothing else, and `--capabilities-all` undoes it. Narrowing binds
-> the agent's next call, not its next token. A name the role does not carry is
-> refused rather than dropped, so the role always describes the entry.
+> Within that ceiling, an entry's own list narrows — at creation
+> (`pnm acl create … --capabilities room-present`, which is the form to prefer,
+> since it leaves no window where the entry is wider) or after
+> (`pnm acl update <did> --capabilities room-present`, undone with
+> `--capabilities-all`). Narrowing binds the agent's next call, not its next
+> token, and a name the role does not carry is refused rather than dropped — so
+> the role always describes the entry.
 
 Withdrawing an agent's access is withdrawing it *at the VTA* — remove the ACL
 entry and no further presentations are minted. That is the whole value of an
