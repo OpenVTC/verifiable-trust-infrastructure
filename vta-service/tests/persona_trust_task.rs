@@ -1140,3 +1140,262 @@ async fn a_pool_edit_reaches_the_copy_a_verifier_is_shown() {
          everywhere\" did not reach the materialised copy: {rendered}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 5. The audit trail says what changed
+// ---------------------------------------------------------------------------
+
+/// Every row the audit keyspace holds, oldest first.
+///
+/// Read straight from the keyspace rather than through `audit/list`, because
+/// that task's own authorization is a separate subject and a test that had to
+/// satisfy it would be asserting two things at once. The storage key is
+/// `log:{timestamp:020}:{uuid}`, so a lexicographic scan is chronological.
+async fn audit_rows(
+    ctx: &TestAppContext,
+) -> Vec<vta_sdk::protocols::audit_management::list::AuditLogEntry> {
+    let mut pairs = ctx
+        .state
+        .audit_ks
+        .prefix_iter_raw("log:")
+        .await
+        .expect("audit prefix scan");
+    pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    pairs
+        .into_iter()
+        .filter_map(|(_k, v)| serde_json::from_slice(&v).ok())
+        .collect()
+}
+
+/// A persona write leaves an audit row that says **what changed** — and that
+/// row does not contain the value.
+///
+/// Both halves are needed and neither is sufficient. The positive half is the
+/// defect this exists for: `audit_persona` recorded action, actor, resource
+/// and outcome and nothing else, so a console audit pane showed
+/// `persona.attribute.put` against an opaque ULID with no way to tell a create
+/// from an update or a cascade delete from a no-op. The console renders
+/// `detail` in full; there was simply nothing to render.
+///
+/// The negative half is the rule `audit_persona` documents at length: the
+/// attribute VALUE is never recorded, because the audit log outlives the
+/// record it describes and a value copied into it would survive the holder's
+/// delete under a retention policy that delete does not reach.
+///
+/// **Asserted together, deliberately.** A test that only checks the value is
+/// absent passes against a handler that records no detail at all — which is
+/// exactly the state this pair of assertions replaces, and exactly the way a
+/// regression would look if `detail` were quietly dropped again.
+#[tokio::test]
+async fn a_persona_write_is_audited_with_what_changed_and_not_the_value() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "audit-detail", "admin", &[]).await;
+
+    // A value distinctive enough that finding it anywhere in the log is
+    // unambiguous — a substring like "Ada" could appear by coincidence in a
+    // claim type or an identifier, and the assertion would then be about the
+    // wrong thing.
+    const SECRET_VALUE: &str = "+61 400 999 777 zzq";
+
+    let attr = put_attribute(&router, &holder, "phone.mobile", SECRET_VALUE).await;
+
+    let rows = audit_rows(&ctx).await;
+    let put_row = rows
+        .iter()
+        .rev()
+        .find(|r| r.action == "persona.attribute.put")
+        .unwrap_or_else(|| panic!("no persona.attribute.put audit row in {rows:#?}"));
+
+    let detail = put_row
+        .detail
+        .as_deref()
+        .unwrap_or_else(|| panic!("the audit row carries no detail: {put_row:#?}"));
+
+    // What CHANGED, not merely that something did.
+    assert!(
+        detail.contains("created"),
+        "the detail does not say the attribute was created: {detail}"
+    );
+    assert!(
+        detail.contains("phone.mobile"),
+        "the detail does not name the claim type — the one fact that makes the row \
+         legible without resolving the id: {detail}"
+    );
+    assert!(
+        detail.contains("selfAsserted"),
+        "the detail does not name the provenance kind: {detail}"
+    );
+    assert!(
+        detail.contains(&attr),
+        "the detail does not name the attribute it describes: {detail}"
+    );
+
+    // And not the value — anywhere in the row, not merely in `detail`.
+    let whole_row = serde_json::to_string(put_row).expect("audit row serialises");
+    assert!(
+        !whole_row.contains(SECRET_VALUE),
+        "the attribute's VALUE reached the audit log. The log outlives the record, \
+         so this value would survive the holder deleting the attribute it came \
+         from: {whole_row}"
+    );
+
+    // The same pair on a delete, because that is the operation the lifetime
+    // argument is actually about: after it, the pool no longer holds the value
+    // and the audit row is the only place a copy could persist.
+    let (status, body) = post(
+        &router,
+        &holder,
+        ATTR_DELETE,
+        json!({ "attributeId": attr, "cascade": false }),
+    )
+    .await;
+    assert!(!refused(status, &body), "attribute/delete: {status} {body}");
+
+    let rows = audit_rows(&ctx).await;
+    let delete_row = rows
+        .iter()
+        .rev()
+        .find(|r| r.action == "persona.attribute.delete")
+        .unwrap_or_else(|| panic!("no persona.attribute.delete audit row in {rows:#?}"));
+    let detail = delete_row
+        .detail
+        .as_deref()
+        .unwrap_or_else(|| panic!("the delete audit row carries no detail: {delete_row:#?}"));
+    assert!(
+        detail.contains("deleted"),
+        "the delete detail does not distinguish a removal from a no-op: {detail}"
+    );
+
+    let whole_log = serde_json::to_string(&rows).expect("audit log serialises");
+    assert!(
+        !whole_log.contains(SECRET_VALUE),
+        "the deleted attribute's value is still in the audit log: {whole_log}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 6. `correlation/analyze` names where a value went
+// ---------------------------------------------------------------------------
+
+/// A finding names the profile, context and persona a shared value reaches —
+/// and the response validates against the published schema.
+///
+/// Two defects in one, and they are the same defect. `Finding` carried
+/// `sharedWithProfileCount`, which the response schema for
+/// `persona/correlation/analyze/1.0` does not define; the object is
+/// `additionalProperties: false`, so every response carrying a non-empty
+/// `findings` array was non-conformant. It went unnoticed because the only
+/// test of this task analysed a pool holding one attribute, which produces no
+/// findings at all — an empty array conforms to anything.
+///
+/// The schema instead defines `sharedWith`, an array of
+/// `{profileId?, contextId?, personaDid?, disclosedTo?}`. `PersonaStore::
+/// correlation_count` states the design's own reasoning for that: a count is
+/// what a *write* may return, because naming identifiers there would disclose
+/// the holder's other compositions to whatever tool made the write; this task
+/// is holder-authorized and is where identifiers belong. So the count was both
+/// the non-conformant answer and the weaker one, and the implementation is the
+/// side that had to move.
+///
+/// The assertion is therefore not "a member called sharedWith exists" but that
+/// it names the place the value actually reached. A `sharedWith` populated
+/// with empty objects would conform to the schema and tell the holder nothing.
+#[tokio::test]
+async fn a_correlation_finding_names_where_the_shared_value_went() {
+    let (router, ctx) = build_test_app().await;
+    let holder = authed(&ctx, "correlate", "admin", &[]).await;
+    let persona = "did:peer:2.Ez6LSpersonaCorrelate.Vz6MkpersonaCorrelate";
+
+    // The same value under two claim types. `subject` is the one being
+    // analysed; `reused` is the one that has been composed into a profile and
+    // pushed into a context, which is what the finding must be able to name.
+    const SHARED: &str = "+61 400 111 222";
+    let subject = put_attribute(&router, &holder, "phone.mobile", SHARED).await;
+    let reused = put_attribute(&router, &holder, "phone.work", SHARED).await;
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        PROFILE_PUT,
+        json!({ "name": "work", "entries": [{ "ref": reused }] }),
+    )
+    .await;
+    assert!(!refused(status, &body), "profile/put: {status} {body}");
+    let profile = payload_of(&body)
+        .get("profileId")
+        .and_then(Value::as_str)
+        .expect("profileId")
+        .to_string();
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        BINDING_SET,
+        json!({ "contextId": CTX, "personaDid": persona, "profileId": profile }),
+    )
+    .await;
+    assert!(!refused(status, &body), "binding/set: {status} {body}");
+
+    let (status, body) = post(
+        &router,
+        &holder,
+        CORRELATION,
+        json!({ "attributeId": subject }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "correlation/analyze: {status} {body}"
+    );
+
+    // Conformance, asserted twice over and deliberately. The dispatch spine's
+    // response-conformance layer already replaced a violating body with an
+    // error document, so `refused` above covers it — but that check is silent
+    // when it passes, and this one names the contract. The generated type is
+    // `deny_unknown_fields`, so a member the schema does not define (which is
+    // exactly what `sharedWithProfileCount` was) fails here with the offending
+    // name in the message.
+    let payload = payload_of(&body).clone();
+    let typed: trust_tasks_rs::specs::persona::correlation::analyze::v1_0::Response =
+        serde_json::from_value(payload.clone()).unwrap_or_else(|e| {
+            panic!("the response does not match the published schema: {e}\n{payload:#}")
+        });
+
+    let finding = typed
+        .findings
+        .iter()
+        .find(|f| f.attribute_id.as_deref().map(|s| &**s) == Some(subject.as_str()))
+        .unwrap_or_else(|| panic!("no finding for the analysed attribute: {payload:#}"));
+
+    // The count has not been lost — it moved into the prose, which is where a
+    // holder reads it. `sharedWith` is keyed on profiles and bindings, so it
+    // cannot restate a count of attributes.
+    assert!(
+        finding.why.contains("1 other attribute"),
+        "the finding no longer says how many other attributes hold the value: {}",
+        finding.why.as_str()
+    );
+
+    let reached = finding
+        .shared_with
+        .iter()
+        .find(|s| s.profile_id.as_deref().map(|p| &**p) == Some(profile.as_str()))
+        .unwrap_or_else(|| {
+            panic!(
+                "the finding does not name the profile the shared value reaches — a holder \
+                 told \"this links your personas\" and given no identifier has nothing to \
+                 act on: {payload:#}"
+            )
+        });
+    assert_eq!(
+        reached.context_id.as_deref(),
+        Some(CTX),
+        "the profile is named without the context it is bound in, which is the half that \
+         makes the finding actionable: {payload:#}"
+    );
+    assert_eq!(
+        reached.persona_did.as_deref(),
+        Some(persona),
+        "the binding is named without the persona presenting it: {payload:#}"
+    );
+}

@@ -220,18 +220,57 @@ fn put_opt<T: serde::Serialize>(body: &mut Value, key: &str, value: Option<T>) {
 
 /// Audit a persona task.
 ///
-/// The attribute VALUE is deliberately never recorded. Copying identity data
-/// into the audit store would give it a second home under a different retention
-/// policy — the same reasoning app-state applies to its values, and it matters
-/// more here because this store exists to hold personal data.
+/// `detail` is a short human-readable sentence saying what the operation
+/// *changed*, and it exists because the trail without one is unreadable. Every
+/// write in this family used to record action, actor, resource and outcome and
+/// nothing else, so an entire console audit pane read `persona.attribute.put`
+/// against an opaque ULID, twenty rows deep, with no way to tell a created
+/// attribute from an updated one or a cascade delete from a refused one. The
+/// console was never the problem: `AuditEnvelope` renders `detail` in full as
+/// `detail.reason`, and there was simply nothing to render.
+///
+/// # The attribute VALUE is never recorded — and the reason is LIFETIME
+///
+/// The obvious reading of that rule is an access-control one: that whoever
+/// reads the audit log is less trusted than whoever reads the pool. That
+/// reading is false here, and believing it leads to the wrong conclusion in
+/// both directions.
+///
+/// Persona rows are recorded with `context_id: None`, and
+/// [`crate::operations::audit`]'s `authorize` already refuses every entry not
+/// confined to a named context to anyone but an **unrestricted (super) admin**
+/// — precisely the caller [`Reach::Holder`] admits to `attribute/list`, which
+/// hands back the plaintext values on request. So a value written here would
+/// disclose nothing to anyone who could not already ask for it directly.
+/// Nobody gains a read.
+///
+/// What they gain is a **second copy with a different lifetime**. The audit
+/// keyspace is append-only and pruned on its own retention schedule
+/// (`vta_audit::cleanup_expired_logs`); the pool is deleted when the holder
+/// deletes an attribute. Copy a value across and `attribute/delete` quietly
+/// stops being a delete: the value outlives the record it came from, in a
+/// store the holder's delete does not reach and whose whole point is that it
+/// is not rewritten afterwards.
+///
+/// The distinction is spelled out because "don't log values", stated as a bare
+/// prohibition, is exactly the rule someone relaxes the first time an operator
+/// asks for a more useful trail — and the access-control argument, being
+/// false, does not survive that conversation. The lifetime argument does.
+///
+/// What `detail` may therefore carry: claim **types**, value *types*,
+/// provenance kinds, counts, versions, and identifiers. Each of those
+/// describes the shape of a change without being the personal data, and each
+/// is already reconstructible from the live record — so none of them acquires
+/// a life the record does not have.
 async fn audit_persona(
     state: &AppState,
     action: &str,
     auth: &AuthClaims,
     resource: Option<&str>,
     context_id: Option<&str>,
+    detail: Option<&str>,
 ) {
-    if let Err(e) = audit::record(
+    if let Err(e) = audit::record_with_detail(
         &state.audit_sink,
         action,
         &auth.did,
@@ -239,11 +278,38 @@ async fn audit_persona(
         "success",
         Some(super::helpers::TRANSPORT_TRUST_TASK),
         context_id,
+        detail,
     )
     .await
     {
         tracing::warn!(error = %e, action = %action, "audit record failed for persona task");
     }
+}
+
+/// The `kind` discriminant of a provenance, as the wire spells it.
+///
+/// Matched rather than serialised because only the tag is wanted: serialising
+/// a `CredentialBacked` provenance would carry `credentialId`, `claimPath` and
+/// `issuerDid` into the audit row alongside it, and a claim path is a
+/// description of what an issuer attested about the holder — a fact with the
+/// same lifetime problem as the value itself.
+fn provenance_kind(p: &vta_persona::Provenance) -> &'static str {
+    match p {
+        vta_persona::Provenance::SelfAsserted => "selfAsserted",
+        vta_persona::Provenance::CredentialBacked { .. } => "credentialBacked",
+        vta_persona::Provenance::Generated { .. } => "generated",
+    }
+}
+
+/// The wire spelling of a value type — `string`, `number`, `date`, …
+///
+/// Via serde rather than a second `match`, so a variant added to `ValueType`
+/// cannot end up spelled one way in a response and another in the audit row.
+fn value_type_name(v: ValueType) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|j| j.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 /// Map a storage error onto the published error taxonomy.
@@ -306,13 +372,18 @@ pub(super) async fn handle_attribute_put(
         }
     };
 
-    let provenance = match serde_json::to_value(&req.provenance)
+    let provenance: vta_persona::Provenance = match serde_json::to_value(&req.provenance)
         .ok()
         .and_then(|v| serde_json::from_value(v).ok())
     {
         Some(p) => p,
         None => return reject(&doc, AppError::Validation("unrecognised provenance".into())),
     };
+
+    // Read the discriminant before the value moves into the attribute. Only the
+    // tag survives into the audit row; `provenance_kind` says why the rest of a
+    // `CredentialBacked` provenance must not.
+    let provenance_kind = provenance_kind(&provenance);
 
     let mut attribute = new_attribute(
         req.type_.to_string(),
@@ -342,12 +413,29 @@ pub(super) async fn handle_attribute_put(
         None => 0,
     };
 
+    // Type, value TYPE, provenance kind and version — never `value`. See
+    // `audit_persona` for why that line is drawn on lifetime rather than on
+    // who may read the row.
+    let detail = format!(
+        "{} attribute {attribute_id}: claim type {}, valueType {}, provenance {}, now at \
+         version {}",
+        if written.created {
+            "created"
+        } else {
+            "updated"
+        },
+        req.type_.as_str(),
+        value_type_name(value_type),
+        provenance_kind,
+        written.version,
+    );
     audit_persona(
         state,
         "persona.attribute.put",
         auth,
         Some(&attribute_id),
         None,
+        Some(&detail),
     )
     .await;
 
@@ -389,7 +477,7 @@ pub(super) async fn handle_attribute_list(
         Err(e) => return reject(&doc, e),
     };
 
-    audit_persona(state, "persona.attribute.list", auth, None, None).await;
+    audit_persona(state, "persona.attribute.list", auth, None, None, None).await;
     success_response(&doc, serde_json::json!({ "attributes": attributes }))
 }
 
@@ -412,7 +500,28 @@ pub(super) async fn handle_attribute_delete(
         Err(e) => return reject(&doc, e),
     };
 
-    audit_persona(state, "persona.attribute.delete", auth, Some(&id), None).await;
+    // `existed` is the half a reader cannot reconstruct afterwards: the record
+    // is gone either way, so a row that only says "delete" cannot distinguish a
+    // removal from a no-op against a typo'd id.
+    let detail = format!(
+        "attribute {id} {}; cascade {}; removed from {} profile(s)",
+        if out.existed {
+            "deleted"
+        } else {
+            "did not exist"
+        },
+        req.cascade,
+        out.referring_profiles.len(),
+    );
+    audit_persona(
+        state,
+        "persona.attribute.delete",
+        auth,
+        Some(&id),
+        None,
+        Some(&detail),
+    )
+    .await;
     success_response(
         &doc,
         serde_json::json!({
@@ -462,6 +571,7 @@ pub(super) async fn handle_profile_put(
     }
     profile.credential_refs = req.credential_refs.iter().map(|c| (**c).clone()).collect();
     let profile_id = profile.profile_id.clone();
+    let entry_count = profile.entries.len();
 
     let written = match store(state)
         .put_profile(profile, req.expected_version.map(|v| *v))
@@ -471,7 +581,29 @@ pub(super) async fn handle_profile_put(
         Err(e) => return reject(&doc, e),
     };
 
-    audit_persona(state, "persona.profile.put", auth, Some(&profile_id), None).await;
+    // The entry COUNT, not the entries. An entry is either a pool reference —
+    // an identifier, safe — or an inline value, which is a claim value under
+    // another name and carries the whole lifetime problem with it.
+    let detail = format!(
+        "{} profile {profile_id} with {} entr{}, now at version {}",
+        if written.created {
+            "created"
+        } else {
+            "updated"
+        },
+        entry_count,
+        if entry_count == 1 { "y" } else { "ies" },
+        written.version,
+    );
+    audit_persona(
+        state,
+        "persona.profile.put",
+        auth,
+        Some(&profile_id),
+        None,
+        Some(&detail),
+    )
+    .await;
     success_response(
         &doc,
         json!({
@@ -518,7 +650,7 @@ pub(super) async fn handle_profile_get(
         None
     };
 
-    audit_persona(state, "persona.profile.get", auth, Some(&id), None).await;
+    audit_persona(state, "persona.profile.get", auth, Some(&id), None, None).await;
     let mut body = json!({ "profile": profile });
     if let Some(r) = resolved {
         // A resolved entry is a `ResolvedClaim`, not the pool `Attribute`, so an
@@ -572,7 +704,7 @@ pub(super) async fn handle_profile_list(
         Ok(p) => p,
         Err(e) => return reject(&doc, e),
     };
-    audit_persona(state, "persona.profile.list", auth, None, None).await;
+    audit_persona(state, "persona.profile.list", auth, None, None, None).await;
     success_response(&doc, json!({ "profiles": profiles }))
 }
 
@@ -618,7 +750,28 @@ pub(super) async fn handle_profile_delete(
         Ok(e) => e,
         Err(e) => return reject(&doc, e),
     };
-    audit_persona(state, "persona.profile.delete", auth, Some(&id), None).await;
+    // How many personas were left presenting nothing is the consequence a
+    // holder most needs to find later, and it is the one fact that survives
+    // nowhere else: the bindings it describes have already been cleared.
+    let detail = format!(
+        "profile {id} {}; {}; {} persona(s) unbound",
+        if existed { "deleted" } else { "did not exist" },
+        if req.unbind {
+            "unbind requested"
+        } else {
+            "no unbind requested"
+        },
+        bound.len(),
+    );
+    audit_persona(
+        state,
+        "persona.profile.delete",
+        auth,
+        Some(&id),
+        None,
+        Some(&detail),
+    )
+    .await;
     success_response(
         &doc,
         json!({ "profileId": id, "existed": existed, "unboundPersonas": bound }),
@@ -662,12 +815,27 @@ pub(super) async fn handle_binding_set(
         Err(e) => return reject(&doc, e),
     };
 
+    // The materialised claim count is what changed on the far side of the
+    // boundary: this write is a PUSH into a context, and the count is how much
+    // that context can now present. "unbound" is spelled out rather than left
+    // as an absent profileId, because a binding cleared and a binding never
+    // made read identically otherwise.
+    let detail = format!(
+        "persona {persona} in context {ctx} bound to {}; {} claim(s) materialised, now at \
+         version {}",
+        profile_id
+            .as_deref()
+            .map_or_else(|| "unbound".to_string(), |p| format!("profile {p}")),
+        bound.materialised_claim_count,
+        bound.version,
+    );
     audit_persona(
         state,
         "persona.binding.set",
         auth,
         Some(&persona),
         Some(&ctx),
+        Some(&detail),
     )
     .await;
     success_response(
@@ -714,6 +882,7 @@ pub(super) async fn handle_binding_get(
         auth,
         Some(&persona),
         Some(&ctx),
+        None,
     )
     .await;
     // Thin by construction: whether bound, the label, a claim count. Never
@@ -756,7 +925,7 @@ pub(super) async fn handle_binding_list(
         Ok(s) => s,
         Err(e) => return reject(&doc, e),
     };
-    audit_persona(state, "persona.binding.list", auth, None, Some(&ctx)).await;
+    audit_persona(state, "persona.binding.list", auth, None, Some(&ctx), None).await;
     let personas: Vec<Value> = sums
         .iter()
         .map(|s| {
@@ -822,6 +991,7 @@ pub(super) async fn handle_contact_put(
         auth,
         Some(&filed.contact_id),
         Some(&ctx),
+        None,
     )
     .await;
     success_response(
@@ -886,7 +1056,15 @@ pub(super) async fn handle_contact_get(
         None
     };
 
-    audit_persona(state, "persona.contact.get", auth, Some(&id), Some(&ctx)).await;
+    audit_persona(
+        state,
+        "persona.contact.get",
+        auth,
+        Some(&id),
+        Some(&ctx),
+        None,
+    )
+    .await;
     let mut body = json!({
         "contactId": contact.contact_id,
         "subjectDid": contact.subject_did,
@@ -928,7 +1106,7 @@ pub(super) async fn handle_contact_list(
         Err(e) => return reject(&doc, e),
     };
 
-    audit_persona(state, "persona.contact.list", auth, None, Some(&ctx)).await;
+    audit_persona(state, "persona.contact.list", auth, None, Some(&ctx), None).await;
     success_response(
         &doc,
         json!({
@@ -967,7 +1145,15 @@ pub(super) async fn handle_contact_delete(
         Err(e) => return reject(&doc, e),
     };
 
-    audit_persona(state, "persona.contact.delete", auth, Some(&id), Some(&ctx)).await;
+    audit_persona(
+        state,
+        "persona.contact.delete",
+        auth,
+        Some(&id),
+        Some(&ctx),
+        None,
+    )
+    .await;
     success_response(
         &doc,
         json!({
@@ -1022,6 +1208,7 @@ pub(super) async fn handle_disclosure_history(
         auth,
         None,
         ctx.as_deref(),
+        None,
     )
     .await;
     success_response(&doc, json!({ "disclosures": records }))
@@ -1058,7 +1245,7 @@ pub(super) async fn handle_correlation_analyze(
         Err(e) => return reject(&doc, e),
     };
 
-    audit_persona(state, "persona.correlation.analyze", auth, None, None).await;
+    audit_persona(state, "persona.correlation.analyze", auth, None, None, None).await;
     success_response(&doc, json!({ "findings": findings }))
 }
 
@@ -1181,6 +1368,7 @@ pub(super) async fn handle_local_profile_put(
         profile.profile_id = id.to_string();
     }
     let profile_id = profile.profile_id.clone();
+    let entry_count = profile.entries.len();
     let s = store(state);
 
     let written = match s
@@ -1211,12 +1399,30 @@ pub(super) async fn handle_local_profile_put(
         _ => false,
     };
 
+    // `matchesPoolValue` is carried because it is the reason this task is
+    // correlation-indexed at all: a throwaway identity is precisely where
+    // somebody reuses a real value, and a holder auditing that later needs to
+    // see WHICH local write raised the flag, not merely that one did. The flag
+    // is a boolean about a value, never the value.
+    let detail = format!(
+        "{} context-local profile {profile_id} in context {ctx} with {} entr{}, now at version \
+         {}; matches a pool value: {matches_pool}",
+        if written.created {
+            "created"
+        } else {
+            "updated"
+        },
+        entry_count,
+        if entry_count == 1 { "y" } else { "ies" },
+        written.version,
+    );
     audit_persona(
         state,
         "persona.local.profile.put",
         auth,
         Some(&profile_id),
         Some(&ctx),
+        Some(&detail),
     )
     .await;
     success_response(
@@ -1257,6 +1463,7 @@ pub(super) async fn handle_local_profile_get(
                 auth,
                 Some(&id),
                 Some(&ctx),
+                None,
             )
             .await;
             // Built member by member rather than serialising the stored
@@ -1301,7 +1508,15 @@ pub(super) async fn handle_local_profile_list(
         Ok(p) => p,
         Err(e) => return reject(&doc, e),
     };
-    audit_persona(state, "persona.local.profile.list", auth, None, Some(&ctx)).await;
+    audit_persona(
+        state,
+        "persona.local.profile.list",
+        auth,
+        None,
+        Some(&ctx),
+        None,
+    )
+    .await;
     success_response(
         &doc,
         json!({
@@ -1334,6 +1549,7 @@ pub(super) async fn handle_local_profile_delete(
     let id = req.profile_id.to_string();
     let s = store(state);
 
+    let mut unbound = 0usize;
     if req.unbind {
         // Clear every persona bound to this profile in this context.
         //
@@ -1350,6 +1566,7 @@ pub(super) async fn handle_local_profile_delete(
             Ok(p) => p,
             Err(e) => return reject(&doc, e),
         };
+        unbound = bound.len();
         for persona_did in bound {
             if let Err(e) = s.set_local_binding(&ctx, &persona_did, None).await {
                 return reject(&doc, e);
@@ -1361,12 +1578,21 @@ pub(super) async fn handle_local_profile_delete(
         Ok(e) => e,
         Err(e) => return reject(&doc, e),
     };
+    // The unbind count is the only surviving trace of the silent-unbind bug
+    // this handler used to have: `--unbind` cleared nobody, and nothing said
+    // so. A row reading "0 persona(s) unbound" against a profile that had
+    // bindings is now visible after the fact rather than only reproducible.
+    let detail = format!(
+        "context-local profile {id} in context {ctx} {}; {unbound} persona(s) unbound",
+        if existed { "deleted" } else { "did not exist" },
+    );
     audit_persona(
         state,
         "persona.local.profile.delete",
         auth,
         Some(&id),
         Some(&ctx),
+        Some(&detail),
     )
     .await;
     success_response(&doc, json!({ "profileId": id, "existed": existed }))
@@ -1402,12 +1628,25 @@ pub(super) async fn handle_local_binding_set(
         Err(e) => return reject(&doc, e),
     };
 
+    // No materialised count here, unlike `binding/set`: a context-local entry
+    // IS its own value, so there is no pool projection to count — the store
+    // takes the profile's inline entries as the claims directly. Saying so is
+    // better than reporting a count that would mean something different from
+    // the one on the pool task with the same name.
+    let detail = format!(
+        "persona {persona} in context {ctx} bound to {}, now at version {version}",
+        profile_id.as_deref().map_or_else(
+            || "unbound".to_string(),
+            |p| format!("context-local profile {p}")
+        ),
+    );
     audit_persona(
         state,
         "persona.local.binding.set",
         auth,
         Some(&persona),
         Some(&ctx),
+        Some(&detail),
     )
     .await;
     success_response(
@@ -1466,6 +1705,7 @@ pub(super) async fn handle_disclosure_preview(
         auth,
         Some(&preview.preview_id),
         Some(&ctx),
+        None,
     )
     .await;
 
@@ -1519,6 +1759,7 @@ pub(super) async fn handle_disclosure_present(
         auth,
         Some(&record.disclosure_id),
         Some(&ctx),
+        None,
     )
     .await;
 

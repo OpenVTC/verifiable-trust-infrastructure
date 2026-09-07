@@ -196,7 +196,59 @@ mod tests {
 
 // ─── Findings ────────────────────────────────────────────────────────────
 
+use std::collections::{BTreeSet, HashMap};
+
 use serde::Serialize;
+
+/// The published cap on `findings[].sharedWith` (`maxItems: 128`).
+///
+/// Enforced here rather than left to the response layer to catch. A finding
+/// truncated to the cap still names 128 places the value has reached, which is
+/// far past the point a holder is reading the list one row at a time; a
+/// finding that overflows the cap is *dropped whole* by schema validation, and
+/// the holder is told nothing at all about the value that has spread furthest.
+const MAX_SHARED_WITH: usize = 128;
+
+/// The published cap on `sharedWith[].disclosedTo` (`maxItems: 64`), for the
+/// same reason.
+const MAX_DISCLOSED_TO: usize = 64;
+
+/// One place a shared value has actually reached.
+///
+/// Every member is optional and every one is **absent rather than null** when
+/// it is unknown: the response schema types them `string` / `array`, neither
+/// of which accepts `null`, so a `None` serialised as `null` fails validation
+/// and takes the whole response with it.
+///
+/// The shape answers three widths of question with one type. A value sitting
+/// in a profile that is bound nowhere carries only `profileId` — it is one
+/// `binding/set` away from a disclosure and worth reporting, but there is no
+/// context to name. A bound one adds `contextId` and `personaDid`, which is
+/// what makes the finding actionable: a DID with no context beside it tells a
+/// holder nothing they can act on. `disclosedTo` is the strongest reading —
+/// not "this could link you" but "this already went to these verifiers".
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedWith {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona_did: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub disclosed_to: Vec<String>,
+}
+
+/// Verifier DIDs a claim type has actually been presented to, keyed by the
+/// binding that presented it: `(context_id, persona_did, claim_type)`.
+///
+/// Built once per analysis from a single pass over the disclosure log, rather
+/// than queried per finding. The per-finding shape is the obvious one and is
+/// quadratic: `analyze_correlation` with no `attributeId` walks the whole
+/// pool, and each finding would re-scan every disclosure record in every
+/// context to answer a question about one claim type.
+type DisclosureIndex = HashMap<(String, String, String), BTreeSet<String>>;
 
 /// One place the holder's identities link, and what can be done about it.
 #[derive(Clone, Debug, Serialize)]
@@ -206,8 +258,27 @@ pub struct Finding {
     pub severity: &'static str,
     /// Plain-language cause. A severity with no explanation is a warning a
     /// holder learns to dismiss.
+    ///
+    /// Carries the count of other attributes holding the value, which is the
+    /// one fact [`Finding::shared_with`] does not restate: that list is keyed
+    /// on the *profiles and bindings* the value reaches, and two attributes
+    /// referenced by one profile collapse to a single entry there.
     pub why: String,
-    pub shared_with_profile_count: usize,
+    /// Where the value has actually gone.
+    ///
+    /// Identifiers, not a count — and that asymmetry with the write tasks is
+    /// deliberate on both sides. `correlation_count` returns a bare number
+    /// because it answers a *write*, where naming the holder's other
+    /// compositions would disclose them to whatever tool made the write. This
+    /// task is holder-authorized and exists so the holder can act, and nobody
+    /// can act on a number: "this value appears in 3 other places" leaves them
+    /// with no way to find those places short of reading every profile.
+    ///
+    /// Empty is a legitimate answer (a value shared with an attribute that no
+    /// profile references), and it serialises as an absent member rather than
+    /// an empty array, matching the schema's `default`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shared_with: Vec<SharedWith>,
     /// What the holder can actually do.
     ///
     /// `reissueCredentialToThisDid` matters more than it looks: without it, a
@@ -219,6 +290,110 @@ pub struct Finding {
 }
 
 impl crate::PersonaStore {
+    /// Every verifier each (context, persona, claim type) has presented to.
+    ///
+    /// One pass over the whole disclosure log, across every context — which is
+    /// exactly why this is reachable only from a holder-authorized task. The
+    /// same scan `disclosure/history` performs, and it sits behind the same
+    /// gate.
+    async fn disclosure_index(&self) -> Result<DisclosureIndex, vti_common::error::AppError> {
+        let mut index = DisclosureIndex::new();
+        for record in self
+            .disclosure_history(&crate::HistoryQuery::default())
+            .await?
+        {
+            for claim in &record.claims {
+                index
+                    .entry((
+                        record.context_id.clone(),
+                        record.persona_did.clone(),
+                        claim.r#type.clone(),
+                    ))
+                    .or_default()
+                    .insert(record.verifier_did.clone());
+            }
+        }
+        Ok(index)
+    }
+
+    /// Where a value has reached: the profiles carrying it, the bindings
+    /// pushing those profiles into a context, and — when the claim type is
+    /// known — the verifiers each binding has actually presented it to.
+    ///
+    /// `claim_type` is `None` for a **candidate**, and that omission is
+    /// correct rather than a gap. A candidate is a value the holder has not
+    /// written, so there is no attribute and no claim type; the disclosures
+    /// this scan could reach belong to the *other* attributes already holding
+    /// the value, whose own findings report them under their own types.
+    /// Attributing those disclosures to the candidate would tell the holder
+    /// their unwritten value had already been presented somewhere, which is
+    /// false. So `disclosedTo` is left **absent** — never null, never an empty
+    /// array standing in for "unknown".
+    async fn shared_with(
+        &self,
+        value: &serde_json::Value,
+        excluding_attribute_id: &str,
+        claim_type: Option<&str>,
+        disclosures: &DisclosureIndex,
+    ) -> Result<Vec<SharedWith>, vti_common::error::AppError> {
+        let blind = blind(&self.correlation_key, value);
+        let others: Vec<String> = self
+            .indexed_ids(&blind)
+            .await?
+            .into_iter()
+            .filter(|id| id != excluding_attribute_id)
+            .collect();
+
+        // Deduplicated, and sorted by construction. One profile commonly
+        // references several of the attributes sharing a value, and naming it
+        // once per attribute would spend the schema's 128-entry budget saying
+        // the same thing repeatedly — pushing the entries that name a
+        // *different* place off the end.
+        let mut profiles: BTreeSet<String> = BTreeSet::new();
+        for id in &others {
+            profiles.extend(self.referring_profiles(id).await?);
+        }
+
+        let mut out: Vec<SharedWith> = Vec::new();
+        for profile_id in profiles {
+            let bindings = self.bindings_to_anywhere(&profile_id).await?;
+            if bindings.is_empty() {
+                // A composition that carries the value but is bound nowhere.
+                // Still worth naming — it is one `binding/set` away from being
+                // a disclosure — but there is no context and no persona, and
+                // those members stay absent rather than null.
+                out.push(SharedWith {
+                    profile_id: Some(profile_id),
+                    ..Default::default()
+                });
+                continue;
+            }
+            for (context_id, persona_did) in bindings {
+                let disclosed_to = claim_type
+                    .and_then(|t| {
+                        disclosures.get(&(context_id.clone(), persona_did.clone(), t.to_string()))
+                    })
+                    .map(|verifiers| {
+                        verifiers
+                            .iter()
+                            .take(MAX_DISCLOSED_TO)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                out.push(SharedWith {
+                    profile_id: Some(profile_id.clone()),
+                    context_id: Some(context_id),
+                    persona_did: Some(persona_did),
+                    disclosed_to,
+                });
+            }
+        }
+
+        out.truncate(MAX_SHARED_WITH);
+        Ok(out)
+    }
+
     /// Report where the holder's identities link.
     ///
     /// Accepts a **candidate** the holder is considering but has not written,
@@ -230,6 +405,7 @@ impl crate::PersonaStore {
         candidate: Option<&serde_json::Value>,
     ) -> Result<Vec<Finding>, vti_common::error::AppError> {
         let mut findings = Vec::new();
+        let disclosures = self.disclosure_index().await?;
 
         if let Some(value) = candidate {
             let count = self.correlation_count(value, "").await?;
@@ -242,7 +418,7 @@ impl crate::PersonaStore {
                          both links the personas that carry them, permanently, to anyone who \
                          sees both"
                     ),
-                    shared_with_profile_count: count,
+                    shared_with: self.shared_with(value, "", None, &disclosures).await?,
                     remedies: vec![
                         "useDifferentValue",
                         "reissueCredentialToThisDid",
@@ -275,21 +451,38 @@ impl crate::PersonaStore {
             let sev = severity(true, credential_backed, rung);
             findings.push(Finding {
                 attribute_id: Some(a.attribute_id.clone()),
+                // The published enum is `{low, high}` — a finding has no
+                // "none" rung, and emitting one was the second way this
+                // response failed its own schema. The mapping is not a
+                // workaround for that: `severity()` answers a narrower
+                // question than a finding asks. `None` from it means *this
+                // disclosure* links nothing, which is true of a credential
+                // presented at the Derived or Predicate rung. A finding says
+                // something wider — the value is reused, and the first time it
+                // is presented at a linking rung it links — so the weakest
+                // true thing a finding can say is `low`, never nothing at all.
                 severity: match sev {
                     Severity::High => "high",
-                    Severity::Low => "low",
-                    Severity::None => "none",
+                    Severity::Low | Severity::None => "low",
                 },
+                // Both branches state the count, because `shared_with` below
+                // does not: it is keyed on the profiles and bindings the value
+                // reaches, so two attributes referenced by one profile appear
+                // as one entry there. The count and the list answer different
+                // questions and neither substitutes for the other.
                 why: if credential_backed {
                     format!(
                         "credential-backed and presented at the {rung:?} rung. A credential \
                          presented whole carries the same issuer signature to every verifier, \
-                         so it links them however few claims each received"
+                         so it links them however few claims each received; the same value is \
+                         held by {count} other attribute(s)"
                     )
                 } else {
                     format!("the same value is held by {count} other attribute(s)")
                 },
-                shared_with_profile_count: count,
+                shared_with: self
+                    .shared_with(value, &a.attribute_id, Some(&a.r#type), &disclosures)
+                    .await?,
                 remedies: if credential_backed {
                     vec![
                         "reissueCredentialToThisDid",

@@ -301,6 +301,52 @@ impl PersonaStore {
             .collect())
     }
 
+    /// Every persona bound to a profile **and the context each is bound in**,
+    /// across every context.
+    ///
+    /// The sibling above answers "who would stop presenting if this profile
+    /// went away", which is a question about personas alone — so it discards
+    /// the key and loses the context. `correlation/analyze` asks a different
+    /// question: *where has this value actually gone*, and a persona DID with
+    /// no context attached does not answer it. A holder shown
+    /// `did:peer:0z6Mk…` and nothing else cannot act; shown that DID in
+    /// `ctx-employer` they can.
+    ///
+    /// Holder-only for the same reason as its sibling — it spans contexts,
+    /// which is precisely the view a context-scoped caller must not have.
+    ///
+    /// # Parsing the context out of the key
+    ///
+    /// The key is `pb:{context_id}:{persona_did}` and **a persona DID contains
+    /// colons** — `did:peer:2.Ez6…` has two before the method-specific id even
+    /// begins. So the key cannot be split on `':'` and indexed: `split(':')`
+    /// over that key yields `["pb", ctx, "did", "peer", …]`, and any call site
+    /// that takes a fixed element is reading a DID fragment as a context id.
+    /// Strip the `pb:` prefix, then `split_once(':')` — it consumes exactly the
+    /// **first** separator and hands back the whole remainder untouched, so the
+    /// colons inside the DID cannot be mistaken for structure. The persona DID
+    /// itself is read from the deserialised record rather than from that
+    /// remainder, so nothing is ever reassembled and there is nothing to
+    /// mangle.
+    pub async fn bindings_to_anywhere(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<(String, String)>, AppError> {
+        let rows = self.ks.prefix_iter_raw(b"pb:".to_vec()).await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(k, v)| {
+                let record = serde_json::from_slice::<BindingRecord>(&v).ok()?;
+                if record.binding.profile_id.as_deref() != Some(profile_id) {
+                    return None;
+                }
+                let key = String::from_utf8(k).ok()?;
+                let (context_id, _persona) = key.strip_prefix("pb:")?.split_once(':')?;
+                Some((context_id.to_string(), record.binding.persona_did))
+            })
+            .collect())
+    }
+
     /// Clear every binding to a profile, across every context.
     ///
     /// The deliberate half of profile deletion: it leaves those personas
@@ -428,6 +474,44 @@ mod tests {
         );
         s.put_profile(p.clone(), None).await.unwrap();
         (a.attribute_id, p.profile_id)
+    }
+
+    /// A binding is reported with the context it lives in — and the context id
+    /// survives a persona DID full of colons.
+    ///
+    /// `personas_bound_to_anywhere` discards the storage key, so the context is
+    /// simply not available to it. `bindings_to_anywhere` recovers it from the
+    /// key, and the key is `pb:{context_id}:{persona_did}` — where the persona
+    /// DID has colons of its own. The `did:peer:2.…` below is the shape that
+    /// breaks a naive `split(':')`: an implementation taking a fixed element
+    /// returns `"did"` as the context id, which is not obviously wrong when
+    /// read and is completely wrong when acted on.
+    #[tokio::test]
+    async fn a_binding_is_reported_with_the_context_it_lives_in() {
+        let (_d, s) = fresh().await;
+        let (_a, profile) = pool_profile(&s, "+61 400 000 000").await;
+        let persona = "did:peer:2.Ez6LSbXq3.Vz6MkfR9c";
+
+        s.set_binding("ctx-employer", persona, Some(&profile), vec![], None)
+            .await
+            .unwrap();
+
+        let found = s.bindings_to_anywhere(&profile).await.unwrap();
+        assert_eq!(
+            found,
+            vec![("ctx-employer".to_string(), persona.to_string())],
+            "the context id was lost or mangled parsing a key whose persona DID \
+             contains colons"
+        );
+
+        // And a profile nothing is bound to reports nothing, rather than every
+        // binding in the store.
+        assert!(
+            s.bindings_to_anywhere("01J0000000000000000000000A")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
