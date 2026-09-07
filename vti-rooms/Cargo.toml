@@ -1,7 +1,7 @@
 [package]
 name = "vti-rooms"
 description = "Data-room storage, wire types, and authorization — the parts of a room that are not a service"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -29,7 +29,7 @@ mls = [
 # The store abstraction and AppError. This crate's only internal dependency:
 # a room's storage and authorization need nothing from a community service,
 # which is the whole reason they are extractable.
-vti-common = { path = "../vti-common", version = "0.16" }
+vti-common = { path = "../vti-common", version = "0.17" }
 
 serde = { workspace = true }
 thiserror = { workspace = true }
