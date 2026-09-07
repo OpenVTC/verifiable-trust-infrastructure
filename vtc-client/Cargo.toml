@@ -1,7 +1,7 @@
 [package]
 name = "vtc-client"
 description = "Client SDK for Verifiable Trust Communities (VTC) — auth, members, join, removal, policies"
-version = "0.5.2"
+version = "0.5.3"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -21,7 +21,7 @@ mls = ["vti-rooms/mls"]
 # Reuses the VTA SDK's challenge-response auth (audience-agnostic) and the
 # published join-request protocol types. `session` gates `auth_light` +
 # `protocols`.
-vta-sdk = { path = "../vta-sdk", version = "0.32", features = ["session"] }
+vta-sdk = { path = "../vta-sdk", version = "0.33", features = ["session"] }
 
 # The room's wire types, and — under the `mls` feature — its group-key and
 # sealing layers, which this crate re-exports rather than owning. A VTA needs

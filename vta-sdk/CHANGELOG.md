@@ -2,6 +2,78 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.32.4...vta-sdk-v0.33.0) — 2026-09-07
+
+
+### Added
+
+- **vta-sdk**: Make AclEntry and AppStateWrite non-exhaustive ([#1271](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1271))
+
+The last two types the semver report flagged, deferred out of #1270 because
+  AclEntry looked like a 68-site migration through security-sensitive semantics.
+
+  It was not. The compiler finds ONE construction site outside vta-sdk. The 68 came
+  from a grep that conflated three different types — this wire `AclEntry`, the
+  unrelated `vti_common::acl::AclEntry`, and vtc-service's own `VtcAclEntry` — and
+  counted every `fn ... -> AclEntry {` body as a literal. The caution was right; the
+  arithmetic behind it was not, and the compiler was the census that settled it.
+
+  What the review did earn is the shape of the constructor. Both real fixtures set
+  `allowed_keys` deliberately and say why in a comment: `trust_task_decode.rs` uses
+  `Some(vec![])` because the empty vec must survive the wire as `"allowedKeys": []`,
+  and `conformance.rs` uses a populated vec because only a present value proves the
+  member survives under its canonical spelling. On this type `None` and `Some(∅)`
+  are OPPOSITE grants — absent reaches every key the entry's scopes reach,
+  present-but-empty reaches none.
+
+  So `AclEntry::new` takes subject, role and scopes, and leaves `allowed_keys`
+  absent — the meaning an entry predating the member already has. It defaults no
+  grant whose empty case is not its neutral case, and the doc comment says so.
+  Empty `scopes` has the same shape of hazard (unrestricted for an admin role,
+  authorized nowhere for every other), which is why it is an argument rather than a
+  default.
+
+- **vta-sdk**: Make the growth-prone wire bodies non-exhaustive ([#1270](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1270))
+
+Sixteen public request bodies gained an `ext` member in #1231 — under a `fix:`
+  type, which derives the smallest bump there is — and every consumer building one
+  with a struct literal stopped compiling. `vta-sdk` 0.32.4 shipped that as a patch
+  release, which a caret requirement takes on a routine `cargo update`.
+
+  `ext` is the framework's extension member (SPEC §4.5.1); these bodies gain
+  members whenever the schema revises. So the fix is not to remember the `!` next
+  time, it is for the addition to stop being breaking: fourteen of them are now
+  `#[non_exhaustive]` with a `new()` taking the members the schema requires. The
+  optional members stay public — set them on the returned value.
+
+  Deliberately NOT applied to `AclEntry` or `AppStateWrite`, which the same report
+  flagged. `AclEntry` has 68 construction sites, and its own doc comments record
+  that `None` and `Some([])` on `allowed_keys` are OPPOSITE grants: absent means
+  every key the entry's scopes reach, present-but-empty means no keys at all. A
+  generated constructor defaulting that to `None`, migrated mechanically across 68
+  sites, is precisely how the narrowest grant becomes the widest — the same class
+  of mistake CLAUDE.md already attributes to #746, #769 and #770 on the adjacent
+  `allowed_contexts` axis. That one wants per-site review, not a script, and it is
+  better done on its own.
+
+  The compiler was a better census than grep: I estimated 19 external construction
+  sites and it found 21, across five files including integration tests, which count
+  as outside the defining crate for this purpose.
+
+  Two of my own automation passes needed correcting on the way, both worth naming
+  because the second was nearly silent: the first brace matcher mis-parsed `//`
+  comments sitting inside the literals, and the second dropped the comment attached
+  to `authorization_context: None` while filtering out `None`-valued fields. That
+  comment records that `authorizationContext` is a member the published schema does
+  not define, so a producer cannot send it through the validated transport at all.
+  It is restored against the constructor default.
+
+  Breaking, so this wants the minor slot on vta-sdk. #1256's guard will say so if
+  the release proposes otherwise.
+
+- **persona**: Move to trust-tasks-rs 0.18 and resolve inline entries ([#1266](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1266))
+
+
 ## [0.32.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.32.3...vta-sdk-v0.32.4) — 2026-09-06
 
 
