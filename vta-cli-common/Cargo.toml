@@ -25,6 +25,12 @@ vta-sdk = { path = "../vta-sdk", version = "0.33", features = [
 ] }
 # Owner-only file-permission helper (`secure_file`), shared workspace-wide.
 vti-common = { path = "../vti-common", version = "0.17" }
+# The room client. Named for the VTC, but host-neutral by construction: a room's
+# protocol is the same whether a community or a standalone `room-host` serves it,
+# and `room-host`'s own example drives itself with this crate. Taking a second
+# copy of the `rooms/*` wire types into this crate is what the type duplication
+# in `vtc-client` was deleted to avoid.
+vtc-client = { path = "../vtc-client", version = "0.5" }
 affinidi-crypto = { workspace = true }
 chrono = { workspace = true }
 ed25519-dalek = { workspace = true }

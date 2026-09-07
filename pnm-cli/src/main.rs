@@ -303,6 +303,7 @@ async fn main() {
         Commands::Backup { command } => commands::backup::run(&client, command).await,
         Commands::Keys { command } => commands::keys::run(&client, command).await,
         Commands::Memory { command } => commands::memory::run(&client, command).await,
+        Commands::Rooms { command } => commands::rooms::run(&client, &keyring_key, command).await,
     };
 
     client.shutdown().await;

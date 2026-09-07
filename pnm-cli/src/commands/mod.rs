@@ -26,6 +26,7 @@ pub(crate) mod keys;
 pub(crate) mod memory;
 pub(crate) mod persona;
 pub(crate) mod policy;
+pub(crate) mod rooms;
 pub(crate) mod services;
 pub(crate) mod setup;
 pub(crate) mod vault;

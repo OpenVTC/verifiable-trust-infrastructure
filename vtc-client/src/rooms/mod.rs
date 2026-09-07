@@ -45,10 +45,10 @@ use crate::{VtcClient, VtcError};
 pub use vti_rooms::Visibility;
 pub use vti_rooms::authz::MAX_CHAIN_DEPTH;
 pub use vti_rooms::wire::{
-    AuthorityPresentation, CleartextContent, ListRecordsResponse, MintEpochResponse, OwnerResponse,
-    PutRecordResponse, ROOMS_CREATE_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_OWNER_CLAIM_TYPE,
-    ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_GET_TYPE, ROOMS_RECORDS_LIST_TYPE,
-    ROOMS_RECORDS_PUT_TYPE, SealedContent,
+    AuthorityPresentation, CleartextContent, CurateRecordResponse, ListRecordsResponse,
+    MintEpochResponse, OwnerResponse, PutRecordResponse, ROOMS_CREATE_TYPE, ROOMS_EPOCH_MINT_TYPE,
+    ROOMS_OWNER_CLAIM_TYPE, ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE,
+    ROOMS_RECORDS_GET_TYPE, ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, SealedContent,
 };
 
 /// A caller's standing in one room.
@@ -293,6 +293,62 @@ impl VtcClient {
         serde_json::from_value(value).map_err(|e| VtcError::Http {
             status: 200,
             body: format!("mint response is not a MintEpochResponse: {e}"),
+        })
+    }
+
+    /// Change a record's **standing** — its status, whether it is pinned, or both.
+    ///
+    /// Needs a chain conferring `curate`, which is deliberately *not* implied by `write`:
+    /// deciding what a room's shared knowledge is worth is a different grant from being
+    /// able to add to it.
+    ///
+    /// Separate from [`Self::put_record`] because standing is not content. On a sealed tier
+    /// a host cannot read what it stores, so "same body, now deprecated" through `put` would
+    /// make a member re-seal and re-upload bytes the host already holds, to say something
+    /// that is not about the bytes.
+    ///
+    /// `status` and `pinned` are independent: omit either to leave it unchanged, and passing
+    /// neither changes nothing. The curation assigns a **new version**, because a change
+    /// others must converge on is a change like any other — one that left the version alone
+    /// would be invisible to every `sinceVersion` watermark in the room.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn curate_record(
+        &self,
+        session: &RoomSession,
+        key: &str,
+        status: Option<String>,
+        pinned: Option<bool>,
+        reason: Option<String>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<CurateRecordResponse, VtcError> {
+        let mut payload = serde_json::json!({
+            "roomId": session.room_id,
+            "key": key,
+            "presentation": session.presentation,
+        });
+        // Each member is omitted when absent rather than sent as null: the
+        // published schema types them, and "leave unchanged" is absence.
+        if let Some(s) = status {
+            payload["status"] = serde_json::json!(s);
+        }
+        if let Some(p) = pinned {
+            payload["pinned"] = serde_json::json!(p);
+        }
+        if let Some(r) = reason {
+            payload["reason"] = serde_json::json!(r);
+        }
+        let value = self
+            .room_task(
+                ROOMS_RECORDS_CURATE_TYPE,
+                payload,
+                signer_did,
+                private_key_multibase,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("curate response is not a CurateRecordResponse: {e}"),
         })
     }
 

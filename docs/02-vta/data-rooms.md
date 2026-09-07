@@ -83,7 +83,7 @@ knowing which half you are standing on saves an afternoon.
 | VTA custody: `rooms/keys/{key-package,welcome,commit,open}` | **Work.** A member's VTA holds the group and opens records for their agents |
 | The presentation oracle: `rooms/keys/present` | **Works.** Attenuates the member's own VAC for an agent |
 | Succession: nomination, transfer, claim | **Work**, including the "renewing defeats a pending claim" property |
-| **A CLI** | **None.** No `pnm rooms …`. Rooms are driven from `vtc-client` (Rust) or by posting signed Trust Task documents |
+| **A CLI** | **`pnm rooms {create,list,get,put,curate,renew}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key. The **owner's** surface (issuing VIC/VMC/VAC) is not there: it needs the room's own signing key |
 | **Credential issuance** | **Library only.** Nothing serves "issue this member a VMC and a VAC"; the room's owner mints them with `dtg-credentials` and delivers them out of band |
 | **Governance (`rooms.rego`)** | **On a VTC.** A community decides who may create a room on it, in Rego, with the shipped default hosting `open`/`attributed` for its own members. A standalone `room-host` has no policy engine — T1's governance is its owner (§8.4) |
 | **Read mirrors** (T3) | **Not implemented.** One write-primary, and everyone reads from it |
@@ -518,6 +518,34 @@ sign as themselves: put it behind a proxy you control.
 ---
 
 ## 9. Use the room
+
+### From the CLI
+
+```bash
+# Every command needs both parties: your VTA (for the presentation) and the
+# room's host (which stores the bytes). --host-did binds the presentation to
+# that host; omit it and anyone who observes it can replay it for four hours.
+pnm rooms list  --room <room-did> --host https://rooms.example.org --host-did <host-did>
+pnm rooms get   decision/pricing-2026 --room <room-did> --host https://rooms.example.org
+pnm rooms put   decision/pricing-2026 "Agreed not to reprice." --room <room-did> \
+                --host https://rooms.example.org --title "Pricing holds" --expected-version 0
+pnm rooms curate decision/pricing-2026 --status deprecated --room <room-did> --host …
+pnm rooms renew 3 --room <room-did> --host …          # mint the next epoch (needs `admin`)
+```
+
+The CLI **never holds a room credential or a group key**. Each command asks your
+VTA to mint a presentation for exactly the action it performs (`read`, `write`,
+`curate`, `admin`), sends that to the host, and — on a sealed record — hands the
+ciphertext back to the VTA to open. A member who holds less than the action
+needs is refused by their own VTA rather than by the host, which is the earlier
+and clearer of the two.
+
+Two things it deliberately cannot do. **Write to a sealed room**: sealing needs
+the room's group key, which lives in the VTA, and no task seals on a caller's
+behalf. **Issue credentials**: minting a VIC, VMC or VAC needs the *room's*
+signing key, which is the owner's — a different party with different custody.
+
+### From Rust
 
 All record verbs carry a presentation and no token. `RoomSession` holds the
 credentials — build one per room per identity; a member's and their agent's are

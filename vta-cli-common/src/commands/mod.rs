@@ -15,6 +15,7 @@ pub mod memory;
 /// Raw Rego policy management over the canonical `policy/*` family.
 pub mod persona;
 pub mod policy;
+pub mod rooms;
 pub mod services;
 pub mod vault;
 pub mod webvh;
