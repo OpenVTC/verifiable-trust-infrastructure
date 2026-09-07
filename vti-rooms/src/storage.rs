@@ -247,6 +247,68 @@ pub async fn put_record(
     Ok(record)
 }
 
+/// Store a record **pulled from a primary**, exactly as the primary assigned it.
+///
+/// The mirror path, and it differs from [`put_record`] in the one way that
+/// matters: the version is the primary's, not this host's. A mirror that
+/// re-numbered what it copied would produce a room whose records disagree with
+/// their own AEAD binding — every sealed record commits to
+/// `roomId | key | version | epoch`, so a renumbered copy does not open — and
+/// whose watermark means something different from the primary's, which is the
+/// number every `sinceVersion` pull and every client's staleness check compares.
+///
+/// # What this deliberately does not check
+///
+/// The visibility/epoch shape checks `put_record` runs are the *primary's* job,
+/// and were run there before the record was ever signed. Re-running them here
+/// would mean a mirror refusing to copy a record its primary accepted — which
+/// is a mirror silently diverging, the one failure mode a copy must not have.
+/// What a mirror can still not do is forge: it holds ciphertext it cannot read
+/// and signatures it cannot produce.
+///
+/// # Refusing to go backwards
+///
+/// A pulled version at or below the mirror's watermark is refused. Records only
+/// ever gain versions, so a lower one means either a replayed pull or a primary
+/// that has rolled back — and quietly accepting it would let a mirror serve a
+/// fresh member an older room than the one it already had (R2‑5).
+pub async fn store_mirrored_record(
+    rooms: &KeyspaceHandle,
+    records: &KeyspaceHandle,
+    room_id: &str,
+    record: Record,
+    now: u64,
+) -> Result<Record, AppError> {
+    let mut room = get_room(rooms, room_id).await?;
+    if !room.is_mirror() {
+        // Writing a "mirrored" record into a room this host is the primary of
+        // would put a version on the row that its own counter did not assign,
+        // and the next local write would then collide with it.
+        return Err(AppError::Validation(format!(
+            "room `{room_id}` is primaried here; a mirrored record has no meaning on a primary"
+        )));
+    }
+    if record.version <= room.watermark() && room.watermark() > 0 {
+        return Err(AppError::Conflict(format!(
+            "record `{}` arrived at version {}, at or below this mirror's watermark {};              a mirror does not go backwards",
+            record.key,
+            record.version,
+            room.watermark()
+        )));
+    }
+
+    // The mirror's watermark tracks the primary's numbering rather than counting
+    // its own writes, so a gap in what it has pulled stays a gap it can see.
+    room.next_version = record.version + 1;
+    room.updated_at = now;
+
+    records
+        .insert(record_key(room_id, &record.key), &record)
+        .await?;
+    rooms.insert(room_key(room_id), &room).await?;
+    Ok(record)
+}
+
 /// Fetch one record.
 pub async fn get_record(
     records: &KeyspaceHandle,
@@ -441,6 +503,7 @@ mod tests {
             epoch_expires_at: None,
             created_at: 0,
             updated_at: 0,
+            mirror_of: None,
         }
     }
 
@@ -917,5 +980,102 @@ mod tests {
             .expect("a real DID");
         assert_eq!(moved.owner_did, "did:key:zBob");
         assert_eq!(moved.updated_at, 99);
+    }
+
+    // ── read mirrors (§7.3) ─────────────────────────────────────────────────
+
+    /// A mirror room, primaried elsewhere.
+    fn mirror(id: &str, visibility: Visibility) -> Room {
+        Room {
+            mirror_of: Some("https://primary.example.org".into()),
+            ..room(id, visibility)
+        }
+    }
+
+    /// The property that makes a copy usable: the primary's numbering survives.
+    /// A mirror that renumbered would break every sealed record's AEAD binding
+    /// and give its watermark a different meaning from the one clients compare.
+    #[tokio::test]
+    async fn a_mirrored_record_keeps_the_primarys_version() {
+        let (_d, rooms, records) = open().await;
+        create_room(&rooms, &mirror("r1", Visibility::Open))
+            .await
+            .unwrap();
+
+        let mut pulled = open_record("k1");
+        pulled.version = 42; // assigned by the primary, not by this host
+        let stored = store_mirrored_record(&rooms, &records, "r1", pulled, 10)
+            .await
+            .expect("a mirror stores what its primary assigned");
+        assert_eq!(stored.version, 42, "the primary's number, verbatim");
+
+        // …and the watermark tracks the primary rather than counting local writes,
+        // so the next pull resumes from the right place.
+        let room = get_room(&rooms, "r1").await.unwrap();
+        assert_eq!(room.watermark(), 42);
+        assert_eq!(room.next_version, 43);
+    }
+
+    /// R2-5: records only gain versions, so a lower one means a replayed pull or
+    /// a rolled-back primary. Accepting it would let the mirror serve a fresh
+    /// member an older room than the one it already had.
+    #[tokio::test]
+    async fn a_mirror_does_not_go_backwards() {
+        let (_d, rooms, records) = open().await;
+        create_room(&rooms, &mirror("r1", Visibility::Open))
+            .await
+            .unwrap();
+
+        let mut first = open_record("k1");
+        first.version = 42;
+        store_mirrored_record(&rooms, &records, "r1", first, 10)
+            .await
+            .unwrap();
+
+        let mut replayed = open_record("k2");
+        replayed.version = 41;
+        let err = store_mirrored_record(&rooms, &records, "r1", replayed, 11)
+            .await
+            .expect_err("a version at or below the watermark is refused");
+        assert!(
+            matches!(err, AppError::Conflict(ref m) if m.contains("backwards")),
+            "got {err:?}"
+        );
+    }
+
+    /// A "mirrored" record on a primary would carry a version its own counter
+    /// never assigned, and the next local write would collide with it.
+    #[tokio::test]
+    async fn a_primary_refuses_a_mirrored_record() {
+        let (_d, rooms, records) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+
+        let mut pulled = open_record("k1");
+        pulled.version = 42;
+        let err = store_mirrored_record(&rooms, &records, "r1", pulled, 10)
+            .await
+            .expect_err("this host is the primary");
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+    }
+
+    /// A mirror copies what its primary accepted, including shapes this host
+    /// would refuse to originate. Re-running the primary's validation here is
+    /// how a copy silently diverges from the room it is copying.
+    #[tokio::test]
+    async fn a_mirror_copies_a_record_sealed_under_another_epoch() {
+        let (_d, rooms, records) = open().await;
+        create_room(&rooms, &mirror("r1", Visibility::Attributed))
+            .await
+            .unwrap();
+
+        // The room row says epoch 1; the record was sealed under 7 at the
+        // primary. `put_record` would refuse this. A mirror must not.
+        let mut pulled = sealed_record("k1", 7);
+        pulled.version = 3;
+        store_mirrored_record(&rooms, &records, "r1", pulled, 10)
+            .await
+            .expect("a mirror stores what the primary sealed");
     }
 }

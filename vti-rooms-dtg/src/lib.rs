@@ -396,6 +396,7 @@ mod tests {
             epoch_expires_at: None,
             created_at: 0,
             updated_at: 0,
+            mirror_of: None,
         }
     }
 
@@ -648,6 +649,7 @@ mod signed {
                 epoch_expires_at: None,
                 created_at: 0,
                 updated_at: 0,
+                mirror_of: None,
             },
             owner_chain: vec![enc(&owner_vac)],
             owner_did,
@@ -1019,6 +1021,7 @@ pub mod test_support {
                     epoch_expires_at: None,
                     created_at: 0,
                     updated_at: 0,
+                    mirror_of: None,
                 },
                 owner_chain: vec![enc(&owner_vac)],
                 agent_chain: vec![enc(&agent_vac), enc(&owner_vac)],

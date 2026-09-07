@@ -239,6 +239,7 @@ pub(crate) async fn handle_create(state: &AppState, doc: TrustTask<Value>) -> Tr
         epoch_expires_at: Some(now() + EPOCH_LIFETIME_DAYS_SECS),
         created_at: now(),
         updated_at: now(),
+        mirror_of: None,
     };
 
     if let Err(e) = storage::create_room(&state.rooms_ks, &room).await {

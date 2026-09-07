@@ -19,6 +19,10 @@ vti-rooms = { path = "../vti-rooms", version = "0.1" }
 # The store and AppError. Nothing else internal.
 vti-common = { path = "../vti-common", version = "0.17" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
+# The room client, for pulling from a write-primary. Host-neutral despite the
+# name: a mirror reads its primary exactly as any member would, because that is
+# the only way to read a room.
+vtc-client = { path = "../vtc-client", version = "0.5" }
 
 axum = { workspace = true }
 tokio = { workspace = true }

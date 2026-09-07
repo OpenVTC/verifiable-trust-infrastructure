@@ -371,6 +371,27 @@ pub async fn authorize(
     // minting an epoch *is* the renewal, so a gate that refused it would leave a lapsed
     // room lapsed forever. It is checked before verification for the same reason depth is —
     // no point verifying a chain for an operation the room cannot accept.
+    // A **mirror** serves reads and refuses everything else, and says where the
+    // writes go. This is not an authorization decision about the caller — their
+    // chain may confer exactly what they asked for — it is this host declaring
+    // it is not the room's write-primary. Checked before verification for the
+    // same reason as the two above: no point verifying a chain for an operation
+    // this host would not perform however good the chain was.
+    //
+    // `Admin` is *not* exempt here, unlike the lapse gate below. Minting an
+    // epoch is a write to the room's own row, and a mirror that accepted one
+    // would fork the lifecycle clock its primary owns — the room would be live
+    // on the copy and lapsed at home.
+    if let Some(primary) = &room.mirror_of
+        && action != Action::Read
+    {
+        return Err(AppError::Forbidden(format!(
+            "this host holds a read mirror of room `{}`; {} goes to the write-primary at {primary}",
+            room.room_id,
+            action.as_str()
+        )));
+    }
+
     let lifecycle = room.lifecycle(now);
     if !matches!(action, Action::Admin) && !lifecycle.accepts_writes() && action != Action::Read {
         return Err(AppError::Forbidden(format!(
@@ -431,6 +452,7 @@ mod tests {
             epoch_expires_at: None,
             created_at: 0,
             updated_at: 0,
+            mirror_of: None,
         }
     }
 
@@ -505,6 +527,75 @@ mod tests {
             )
             .is_err(),
             "a fragment must not make two different DIDs equal"
+        );
+    }
+
+    /// A mirror serves reads and refuses everything else, whatever the chain
+    /// says. This is the host declaring it is not the write-primary, not a
+    /// judgement about the caller — so it holds for a chain conferring the
+    /// action outright.
+    #[tokio::test]
+    async fn a_mirror_serves_reads_and_refuses_every_write() {
+        let mirror = Room {
+            mirror_of: Some("https://primary.example.org".into()),
+            ..room(Visibility::Open)
+        };
+
+        authorize(
+            &mirror,
+            &presentation(1, false),
+            Action::Read,
+            PRESENTER,
+            NOW,
+            &Vouches::for_all(),
+        )
+        .await
+        .expect("a read is what a mirror is for");
+
+        for action in [Action::Write, Action::Curate, Action::Admin] {
+            let err = authorize(
+                &mirror,
+                &presentation(1, false),
+                action,
+                PRESENTER,
+                NOW,
+                &Vouches::for_all(),
+            )
+            .await
+            .expect_err("a mirror performs no writes");
+            // The refusal names where the write goes, per the workspace rule
+            // that an operator error should carry its own fix.
+            assert!(
+                matches!(&err, AppError::Forbidden(m) if m.contains("primary.example.org")),
+                "{action:?}: {err:?}"
+            );
+        }
+    }
+
+    /// `Admin` is exempt from the *lapse* gate — minting an epoch is the
+    /// renewal — but not from the mirror gate. A mirror that accepted an epoch
+    /// mint would fork the lifecycle clock its primary owns: live on the copy,
+    /// lapsed at home.
+    #[tokio::test]
+    async fn a_mirror_refuses_an_epoch_mint_even_though_a_lapsed_primary_would_not() {
+        let lapsed_mirror = Room {
+            mirror_of: Some("https://primary.example.org".into()),
+            epoch_expires_at: Some(NOW - 1),
+            ..room(Visibility::Open)
+        };
+        let err = authorize(
+            &lapsed_mirror,
+            &presentation(1, false),
+            Action::Admin,
+            PRESENTER,
+            NOW,
+            &Vouches::for_all(),
+        )
+        .await
+        .expect_err("renewal happens at the primary");
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("read mirror")),
+            "the mirror gate must answer first: {err:?}"
         );
     }
 

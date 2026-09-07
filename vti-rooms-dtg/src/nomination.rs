@@ -292,6 +292,7 @@ mod tests {
             epoch_expires_at: None,
             created_at: 0,
             updated_at: 0,
+            mirror_of: None,
         };
         let verifier = crate::DtgChainVerifier::without_zk(Box::new(DidKeyResolver));
 

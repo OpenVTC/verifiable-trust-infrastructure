@@ -86,7 +86,7 @@ knowing which half you are standing on saves an afternoon.
 | **A CLI** | **`pnm rooms {create,list,get,put,curate,renew}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key. The **owner's** surface (issuing VIC/VMC/VAC) is not there: it needs the room's own signing key |
 | **Credential issuance** | **Library only.** Nothing serves "issue this member a VMC and a VAC"; the room's owner mints them with `dtg-credentials` and delivers them out of band |
 | **Governance (`rooms.rego`)** | **On a VTC.** A community decides who may create a room on it, in Rego, with the shipped default hosting `open`/`attributed` for its own members. A standalone `room-host` has no policy engine — T1's governance is its owner (§8.4) |
-| **Read mirrors** (T3) | **Not implemented.** One write-primary, and everyone reads from it |
+| **Read mirrors** (T3) | **`room-host --mirror-config`** — a host serves a read-only copy fed by `sinceVersion` pulls and refuses every write, naming the primary. A mirror pulls **as a member**, presenting a room-issued `read` chain |
 | **Witnessed renewal anchoring** | **Blocked on a decision**, not on effort: §9 says a renewal anchors the epoch authenticator and version watermark in the room's witnessed log, but not *where in the log entry*. See [`epoch anchoring`](../05-design-notes/data-rooms-epoch-anchoring.md) |
 
 ---
@@ -485,11 +485,44 @@ room whose members come from three communities needs no bridging and no special
 configuration. Register the room on whichever host is the home, and every
 member's VTA presents to that one.
 
-What is *not* built is the optional half: **read mirrors** — other hosts holding
-ciphertext copies fed by `sinceVersion` pulls. Until they exist, T3 means one
-write-primary that everyone also reads from. Multi-primary replication is a
-non-goal, not a gap: replicated multi-writer room state needs state-resolution
-machinery whose failure modes took Matrix years to shake out.
+**Read mirrors** are the optional half, and they exist. Another `room-host` can
+hold a read-only copy of a room primaried elsewhere:
+
+```jsonc
+// mirrors.json — hardened to owner-only on load, because it holds a key
+{ "rooms": [{
+    "roomId": "did:webvh:room.example",
+    "primaryUrl": "https://primary.example.org",
+    "primaryDid": "did:web:primary.example.org",
+    "membership": "<the VMC the room issued this mirror>",
+    "authority": ["<a chain conferring read>"],
+    "signerDid": "did:key:zMirror",
+    "signerKeyMultibase": "z…"
+}] }
+```
+
+```bash
+room-host --mirror-config mirrors.json --mirror-interval-secs 300
+```
+
+**A mirror pulls as a member.** It presents a room-issued chain conferring
+`read`, exactly as any other reader does — there is no mirror-shaped exemption
+at the primary and no new verb, so the room admits a mirror the way it admits a
+person and can stop admitting it the same way. Two consequences, neither hidden:
+on `attributed`/`private` the mirror only ever holds ciphertext, so mirroring
+gives its operator nothing the primary's operator lacks; on `open` it reads
+cleartext, because everything on that tier is cleartext to whoever holds it.
+
+What a mirror **cannot** do is tamper — records are signed and AEAD-bound to
+`roomId | key | version | epoch`, so an altered or renumbered copy does not
+verify and does not open. Its only failure modes are **stale** and **silent**,
+and both are visible to a client watching the version watermark. Writes are
+refused naming the primary; even `admin` is refused, because a mirror that
+accepted an epoch mint would fork the lifecycle clock its primary owns.
+
+Multi-primary replication remains a non-goal, not a gap: replicated
+multi-writer room state needs state-resolution machinery whose failure modes
+took Matrix years to shake out.
 
 ### 8.4 T4 — peers, and what still governs creation
 

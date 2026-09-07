@@ -23,6 +23,21 @@ struct Args {
     /// makes rather than a default they inherit.
     #[arg(long)]
     resolve_dids: bool,
+    /// Rooms this host **mirrors**: a JSON file naming each room's write-primary
+    /// and the read credentials this mirror presents to it.
+    ///
+    /// A mirrored room serves reads from the copy and refuses every write,
+    /// naming its primary. The file holds a private key, so it is hardened to
+    /// owner-only on load.
+    #[arg(long)]
+    mirror_config: Option<std::path::PathBuf>,
+    /// Seconds between mirror pulls.
+    ///
+    /// A mirror is not latency-critical — it serves a copy, and a client that
+    /// needs the newest record reads the primary — so the default is unhurried.
+    /// Shorter intervals cost the primary a listing per room per pass.
+    #[arg(long, default_value_t = 300)]
+    mirror_interval_secs: u64,
 }
 
 #[tokio::main]
@@ -43,6 +58,24 @@ async fn main() -> anyhow::Result<()> {
         vti_common::auth::TrustTaskVmResolver::did_key_only()
     };
     let state = open_state_with_resolver(&args.data_dir, resolver)?;
+
+    // Mirrors start before the listener: a host that is going to serve a copy
+    // should begin catching up before it starts answering reads from it, and a
+    // config that does not parse is a startup failure rather than a warning
+    // discovered later.
+    if let Some(path) = &args.mirror_config {
+        let config = room_host::mirror::MirrorConfig::load(path)?;
+        tracing::info!(
+            rooms = config.rooms.len(),
+            interval_secs = args.mirror_interval_secs,
+            "mirroring rooms from their write-primaries"
+        );
+        tokio::spawn(room_host::mirror::run(
+            state.clone(),
+            config,
+            args.mirror_interval_secs,
+        ));
+    }
 
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     tracing::info!(
