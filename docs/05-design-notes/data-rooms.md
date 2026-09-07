@@ -678,6 +678,14 @@ version floor). What survives is a host that deletes anyway — I2's
 irreducible row — now as **provable misbehaviour** rather than a deniable
 shrug.
 
+**Where in the log entry the anchor goes is undecided, and blocks the build.**
+`Parameters1_0` is a closed struct, so the only slot that takes an
+ecosystem-defined value today is the DID document itself — and publishing an
+epoch authenticator there publishes the room's renewal cadence and write volume
+to anyone who resolves it, which is the shape of metadata the tiers exist to
+withhold. The candidates, the cost, and a recommendation are in
+[`data-rooms-epoch-anchoring.md`](data-rooms-epoch-anchoring.md).
+
 Owner absence must not kill a live room: the nominated successor claims
 (§10), or the k-of-n quorum renews. Where the host stores nothing (owner-hosted
 content), lifecycle is wholly the owner's.
