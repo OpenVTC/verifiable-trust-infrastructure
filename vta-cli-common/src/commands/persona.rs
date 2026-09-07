@@ -1,4 +1,19 @@
-//! `persona …` operator commands — the holder's own identity.
+//! `persona …` operator commands — a person's own identity.
+//!
+//! # Two vocabularies, and which one goes where
+//!
+//! Commands and flags keep the spec's words, because that is what they address:
+//! `persona profile put --profile-id` names `persona/profile/put/1.0`, and a
+//! command that did not would be a second name for a task, drifting from the
+//! URI it sends and from every script already written against it.
+//!
+//! What an operator *reads* uses the words a person would
+//! (`design-docs/persona-vocabulary.md`): an attribute is a **fact**, a profile
+//! is a **face** — the set of facts you show together — and a persona **wears**
+//! a face in a context. So `persona profile list` prints `Faces:` above JSON
+//! whose members are `profileId`. That pairing is deliberate: it is where an
+//! operator learns the mapping, once, in the one place both halves are on
+//! screen together.
 //!
 //! Thin wrappers over the `VtaClient::persona_*` methods, with one exception
 //! worth knowing about before reading further: [`cmd_disclosure_preview`]
@@ -67,7 +82,7 @@ pub async fn cmd_attribute_put(
             expected_version,
         )
         .await?;
-    print_result("Attribute:", &result)
+    print_result("Fact:", &result)
 }
 
 /// `persona attribute list` — enumerate the pool.
@@ -93,9 +108,9 @@ pub async fn cmd_attribute_list(
         )
         .await?;
     if !is_json_output() && !include_values {
-        println!("{DIM}Metadata only — add --values to include the values themselves.{RESET}");
+        println!("{DIM}Names only — add --values to include the values themselves.{RESET}");
     }
-    print_result("Attributes:", &result)
+    print_result("Your facts:", &result)
 }
 
 /// `persona attribute delete` — remove one attribute.
@@ -109,7 +124,10 @@ pub async fn cmd_attribute_delete(
         .persona_attribute_delete(&attribute_id, cascade, expected_version)
         .await?;
     if !is_json_output() && cascade {
-        println!("{DIM}Cascaded: profile entries referencing {attribute_id} were removed.{RESET}");
+        println!(
+            "{DIM}Cascaded: {attribute_id} was taken off every face that showed it. Nothing \
+             already shared is affected — that has left.{RESET}"
+        );
     }
     print_result("Result:", &result)
 }
@@ -136,7 +154,7 @@ pub async fn cmd_profile_put(
             expected_version,
         )
         .await?;
-    print_result("Profile:", &result)
+    print_result("Face:", &result)
 }
 
 /// `persona profile get` — read one profile.
@@ -144,10 +162,11 @@ pub async fn cmd_profile_get(client: &VtaClient, profile_id: String, resolve: bo
     let result = client.persona_profile_get(&profile_id, resolve).await?;
     if !is_json_output() && !resolve {
         println!(
-            "{DIM}Showing how the profile is built — add --resolve to see what it would present.{RESET}"
+            "{DIM}Showing how the face is built — add --resolve to see the facts it would \
+             show.{RESET}"
         );
     }
-    print_result("Profile:", &result)
+    print_result("Face:", &result)
 }
 
 /// `persona profile list` — enumerate profiles.
@@ -159,7 +178,7 @@ pub async fn cmd_profile_list(
     let result = client
         .persona_profile_list(limit, cursor.as_deref())
         .await?;
-    print_result("Profiles:", &result)
+    print_result("Faces:", &result)
 }
 
 /// `persona profile delete` — remove a profile.
@@ -174,7 +193,8 @@ pub async fn cmd_profile_delete(
         .await?;
     if !is_json_output() && unbind {
         println!(
-            "{YELLOW}Unbound: every persona presenting under {profile_id} now presents nothing until rebound.{RESET}"
+            "{YELLOW}Taken off: every persona wearing {profile_id} now shows nothing until \
+             it wears another. Nothing already shared is affected — that has left.{RESET}"
         );
     }
     print_result("Result:", &result)
@@ -205,13 +225,12 @@ pub async fn cmd_binding_set(
         .await?;
     if !is_json_output() {
         if clearing {
-            println!(
-                "{DIM}Binding cleared — {persona_did} now presents nothing in {context_id}.{RESET}"
-            );
+            println!("{DIM}Taken off — {persona_did} now shows nothing in {context_id}.{RESET}");
         } else {
             println!(
-                "{DIM}A copy of the profile's values was written into {context_id}. Editing the \
-                 pool refreshes it; nothing inside the context can read back the other way.{RESET}"
+                "{DIM}A context only ever gets a copy: the face's values were written into \
+                 {context_id}. Editing a fact refreshes it; copies go down, and nothing reads \
+                 up.{RESET}"
             );
         }
     }
@@ -380,7 +399,7 @@ fn render_preview(result: &Value, context_id: &str, verifier_did: &str, purpose:
     };
 
     println!();
-    println!("{BOLD}Disclosure preview{RESET} — nothing has been sent.");
+    println!("{BOLD}Before anything leaves{RESET} — nothing has been sent.");
     println!();
     println!("  {DIM}To{RESET}         {verifier_did}");
     println!("  {DIM}Context{RESET}    {context_id}");
@@ -420,7 +439,7 @@ fn render_preview(result: &Value, context_id: &str, verifier_did: &str, purpose:
         };
         let reason = c.get("reason").and_then(Value::as_str).unwrap_or("");
         println!(
-            "  {DIM}Linkable{RESET}   {colour}{}{RESET} {reason}",
+            "  {DIM}Linked{RESET}     {colour}{}{RESET} {reason}",
             severity.to_uppercase()
         );
     }
@@ -433,7 +452,7 @@ fn render_preview(result: &Value, context_id: &str, verifier_did: &str, purpose:
 
     println!();
     if claims.is_empty() {
-        println!("  {DIM}No claims would be disclosed.{RESET}");
+        println!("  {DIM}No facts would leave.{RESET}");
     }
     for claim in claims {
         let ty = claim.get("type").and_then(Value::as_str).unwrap_or("?");
@@ -533,7 +552,7 @@ pub async fn cmd_disclosure_present(
              (`keys derive-and-sign-document`) before sending it to a verifier.{RESET}"
         );
     }
-    print_result("Disclosure:", &result)
+    print_result("What left:", &result)
 }
 
 /// `persona disclosure history` — what was disclosed, to whom, when.
@@ -556,7 +575,7 @@ pub async fn cmd_disclosure_history(
             cursor.as_deref(),
         )
         .await?;
-    print_result("Disclosures:", &result)
+    print_result("What has left:", &result)
 }
 
 // ---------------------------------------------------------------------------
@@ -573,7 +592,7 @@ pub async fn cmd_correlate(
     let result = client
         .persona_correlation_analyze(attribute_id.as_deref(), profile_id.as_deref(), candidate)
         .await?;
-    print_result("Correlation:", &result)
+    print_result("Links:", &result)
 }
 
 /// `persona renderers` — the output formats, and what each one discards.
