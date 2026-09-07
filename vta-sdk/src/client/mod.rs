@@ -1176,6 +1176,20 @@ impl VtaClient {
         }
     }
 
+    /// Provision this client's own allow-all mediator ACL over its live DIDComm
+    /// socket, awaiting the result. No-op on a REST or TSP-only client.
+    ///
+    /// Call before an operation whose reply the mediator must *forward* back to
+    /// this DID — a freshly bootstrapped or rotated client is otherwise closed
+    /// for forwarded delivery and the reply is dropped. Reuses the connection
+    /// already open here rather than building a second one for the same DID.
+    #[cfg(feature = "session")]
+    pub async fn provision_client_acl(&self, client_name: &str) {
+        if let Transport::DIDComm { session, .. } = &self.transport {
+            session.provision_client_acl(client_name).await;
+        }
+    }
+
     /// Gracefully shut down the client.
     ///
     /// **Required for every DIDComm client** (no-op for REST). A DIDComm

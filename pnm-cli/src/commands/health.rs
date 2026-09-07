@@ -208,6 +208,22 @@ pub(crate) async fn run(
         println!("  {DIM}No transport advertised{RESET}");
     }
 
+    // Re-read the session before anything below uses its key material.
+    //
+    // The `session` above is a snapshot taken at the top of `run`, but the
+    // Authentication section just called `ensure_authenticated`, which rotates a
+    // `needs_rotation` temp did:key: it mints a fresh DID, moves the ACL entry
+    // onto it and *deletes the temp entry at the VTA*. The snapshot's
+    // `client_did` / `private_key_multibase` are the dead temp identity from
+    // that point on.
+    //
+    // Reading a stale identity used to cost only a failing ping. It now costs a
+    // write: the DIDComm probe below provisions an allow-all mediator account
+    // keyed on `sha256(client_did)`, so a stale DID here leaves a permanently
+    // open account for a throwaway credential — exactly the litter
+    // `vta_sdk::acl_setup`'s module docs say the SDK avoids.
+    let session = auth::loaded_session(keyring_key).or(session);
+
     // ── Mediator + DIDComm pings ──────────────────────────────────
     print_section("Mediator");
 
@@ -294,6 +310,13 @@ pub(crate) async fn run(
                 .await
                 {
                     Ok(Ok(session)) => {
+                        // Open this client's own mediator account (allow-all)
+                        // over the session's live socket before the forwarded
+                        // VTA trust-ping. A freshly bootstrapped or rotated
+                        // client is closed for forwarded delivery, so the VTA's
+                        // pong would otherwise be dropped by the mediator.
+                        session.provision_client_acl("pnm").await;
+
                         // Ping mediator (steady-state: warm-up + measured)
                         match tokio::time::timeout(
                             std::time::Duration::from_secs(20),

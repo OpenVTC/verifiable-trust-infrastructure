@@ -500,6 +500,17 @@ impl SessionStore {
             session.access_token = Some(new_token_result.access_token.clone());
             session.access_expires_at = Some(new_token_result.access_expires_at);
             self.save_session(key, &session)?;
+
+            // Only now — with the rotated key on disk — is it safe to touch the
+            // network again. If the VTA advertises a mediator, open the rotated
+            // DID's account so DIDComm (e.g. `pnm health`) works immediately;
+            // pure-REST VTAs resolve to no mediator and are skipped. Strictly
+            // best-effort and strictly *after* the commit: a failure here only
+            // means the account opens lazily on the next connect, whereas the
+            // same call before `save_session` could hang past a Ctrl-C and leave
+            // the operator locked out (the temp DID is already deleted by then).
+            open_rotated_mediator_account(&session_vta_did, &session).await;
+
             return Ok(new_token_result.access_token);
         }
 
@@ -581,7 +592,13 @@ impl SessionStore {
         };
 
         // Open the DIDComm session as the (possibly temp) DID.
-        let client = crate::client::VtaClient::connect_didcomm(
+        //
+        // Bounded, like every other DIDComm connect in this file: this path is
+        // reached from `connect_with_transport` whenever a session is pending
+        // rotation, so an unbounded connect here would turn an unreachable
+        // mediator from "errors in 30s naming `--transport rest`" back into an
+        // indefinite hang for exactly the operators least able to diagnose it.
+        let client = connect_didcomm_bounded(
             &session.client_did,
             &session.private_key,
             &vta_did,
@@ -603,7 +620,7 @@ impl SessionStore {
         client.shutdown().await;
         self.save_session(key, &rotated)?;
 
-        let new_client = crate::client::VtaClient::connect_didcomm(
+        let new_client = connect_didcomm_bounded(
             &rotated.client_did,
             &rotated.private_key,
             &vta_did,
@@ -740,6 +757,31 @@ impl SessionStore {
             debug!(url = %url, "connecting via REST (forced --transport rest)");
             let client = self.rest_client(&url, key).await?;
             return Ok(client);
+        }
+
+        // A pending-rotation session must swap its temp did:key before *any*
+        // mediator connect below, not just the one arm that used to check.
+        //
+        // Only the REST path (`rest_client` → `ensure_authenticated`) rotates on
+        // its own, so every other priority here would otherwise connect with the
+        // temp key and return, leaving the session flagged `needs_rotation`
+        // forever. That is three paths, not one: the explicit `mediator_did`
+        // config hint (priority 1), the `DIDComm` arm, and the `Tsp` arm — and a
+        // VTA advertising both TSP and DIDComm never reaches the `DIDComm` arm
+        // at all, so checking there alone left dual-transport deployments, the
+        // direction the workspace is moving, permanently unrotated.
+        //
+        // Gated on a DIDComm mediator actually being advertised: rotation runs
+        // over DIDComm, so a REST-only or TSP-only VTA must fall through to the
+        // paths below rather than fail here. Resolution is only performed while
+        // a rotation is pending — once per session lifetime — so the hint's
+        // resolution-free fast path is unaffected in steady state.
+        if session.needs_rotation
+            && transport != TransportChoice::Rest
+            && didcomm_mediator_advertised(&session_vta_did).await
+        {
+            debug!("session is pending rotation, delegating to the DIDComm rotation path");
+            return self.ensure_authenticated_didcomm(key).await;
         }
 
         // Priority 1: Explicit mediator DID from config → DIDComm directly.
@@ -1067,7 +1109,23 @@ async fn rotate_key_didcomm(
         )
     })?;
 
-    // 5. Drop the temp DID from the ACL using the new DID's session.
+    // 5. Open the new DID's own mediator account over the probe's **live**
+    //    socket, while the temp DID is still authoritative.
+    //
+    //    Deliberately before step 6, and deliberately on this connection:
+    //    - Before, because everything after the temp DID is deleted runs in a
+    //      window where the caller has not yet persisted `new_private_key`.
+    //      Optional work must not sit there — a hang past a Ctrl-C would leave
+    //      the operator with neither DID usable. Here, a failure is free: the
+    //      temp entry still exists, so the caller can simply retry.
+    //    - On this connection, because the mediator permits one socket per DID.
+    //      Opening a second session for `new_did` would make three open/close
+    //      cycles on that one slot in quick succession, and a slow teardown
+    //      surfaces as a `duplicate-channel` eviction of the authoritative
+    //      client the caller is about to build.
+    probe.provision_client_acl("pnm-rotate").await;
+
+    // 6. Drop the temp DID from the ACL using the new DID's session.
     //    Best-effort — if it fails, the new DID is already live, so
     //    we log and continue rather than leave the caller unauthenticated.
     match probe.delete_acl(&session.client_did).await {
@@ -1117,6 +1175,76 @@ fn generate_did_key()
     );
     let private_key_multibase = multibase::encode(multibase::Base::Base58Btc, seed);
     Ok((did, private_key_multibase, signing))
+}
+
+/// Whether `vta_did`'s DID document advertises a DIDComm mediator.
+///
+/// Used only to decide whether a pending rotation can be served over DIDComm.
+/// A resolution failure answers `false` — the caller then falls through to the
+/// transport priorities, which report their own (better-targeted) errors rather
+/// than turning an unresolvable DID into a rotation failure.
+async fn didcomm_mediator_advertised(vta_did: &str) -> bool {
+    matches!(
+        resolve_vta_endpoint(vta_did).await,
+        Ok(VtaEndpoint::DIDComm { .. })
+            | Ok(VtaEndpoint::Tsp {
+                didcomm_mediator_did: Some(_),
+                ..
+            })
+    )
+}
+
+/// Open a freshly rotated DID's own allow-all mediator account so it is
+/// reachable for forwarded DIDComm immediately after rotation.
+///
+/// The connect-time self-provision ([`crate::acl_setup::set_client_acl_on_connection`])
+/// is fire-and-forget and races a rotation teardown, so this awaited pass makes
+/// reachability deterministic.
+///
+/// **Call only after the rotated session has been persisted.** Everything here
+/// is optional — a failure means the account opens lazily on the next connect,
+/// exactly as before this hook existed — but between `acl/swap` and
+/// `save_session` the temp DID is already gone from the VTA's ACL while the new
+/// private key exists only in memory. Optional work that can block in that
+/// window can strand an operator with no usable credential, so the whole thing
+/// (DID resolution *and* the mediator round-trip) is bounded and never
+/// propagates an error.
+///
+/// Pure-REST VTAs resolve to no mediator and are skipped.
+async fn open_rotated_mediator_account(session_vta_did: &str, session: &Session) {
+    /// Covers `resolve_mediator_did` plus the socket and its round-trip. Well
+    /// clear of the 10s `set_client_acl_with_profile` uses internally, so a slow
+    /// mediator still reports through that path rather than being cut off here.
+    const ROTATED_ACL_TIMEOUT: Duration = Duration::from_secs(25);
+
+    let provision = async {
+        let Ok(Some(mediator_did)) = resolve_mediator_did(session_vta_did).await else {
+            return;
+        };
+        match TrustPingSession::new(&session.client_did, &session.private_key, &mediator_did).await
+        {
+            Ok(probe) => {
+                probe.provision_client_acl("pnm-rotate").await;
+                probe.shutdown().await;
+            }
+            Err(e) => debug!(
+                error = %e,
+                "rotate: could not open session to provision rotated DID's mediator ACL \
+                 (non-fatal)"
+            ),
+        }
+    };
+
+    if tokio::time::timeout(ROTATED_ACL_TIMEOUT, provision)
+        .await
+        .is_err()
+    {
+        debug!(
+            client_did = %session.client_did,
+            "rotate: opening the rotated DID's mediator account timed out (non-fatal — \
+             the account opens on the next connect)"
+        );
+    }
 }
 
 /// Swap a `needs_rotation=true` session's temp did:key for a fresh one via the
@@ -1192,6 +1320,12 @@ async fn rotate_key(
             .await
             .map_err(|e| format!("rotate: new DID failed challenge-response after swap: {e}"))?;
 
+    // NOTE: opening the rotated DID's mediator account deliberately does *not*
+    // happen here. Between the `acl/swap` above and the caller's `save_session`,
+    // `new_private_key` exists only in memory while the temp DID is already gone
+    // from the VTA's ACL — so anything that can block in this window can strand
+    // an operator with no usable credential. The caller runs it after the
+    // session is durable; see `SessionStore::ensure_authenticated`.
     let Session { vta_did, .. } = session;
     let rotated = Session {
         client_did: new_did,
@@ -2173,6 +2307,25 @@ impl TrustPingSession {
             )
             .await?;
         Ok(start.elapsed().as_millis())
+    }
+
+    /// Provision this client's own allow-all mediator ACL over the session's
+    /// live socket, awaiting the result. Call before pinging a VTA whose pong
+    /// the mediator must forward back: a freshly bootstrapped or rotated client
+    /// is otherwise closed for forwarded delivery and the reply is dropped.
+    /// No-op unless the `acl-setup` feature is enabled.
+    pub async fn provision_client_acl(&self, client_name: &str) {
+        #[cfg(feature = "acl-setup")]
+        crate::acl_setup::set_client_acl_with_profile(
+            self.identity.hub.atm(),
+            &self.identity.profile,
+            &self.identity.did,
+            "trust-ping-session",
+            client_name,
+        )
+        .await;
+        #[cfg(not(feature = "acl-setup"))]
+        let _ = client_name;
     }
 
     /// Detach this identity — which is what stops its websocket — and, if this
@@ -3412,6 +3565,135 @@ mod tests {
         let msg = no_rest_endpoint_error("did:webvh:scid:host.example.com").to_string();
         assert!(msg.contains("--url"));
         assert!(msg.contains("did:webvh:scid:host.example.com"));
+    }
+
+    // ── Rotation ordering guards ───────────────────────────────────
+    //
+    // Key rotation deletes the temp DID's ACL entry *at the VTA* before the
+    // caller persists the new private key. Anything that can block in that
+    // window — a DID resolution, a mediator socket — can be killed by a Ctrl-C
+    // or a CI timeout and leave the operator with the temp DID gone and the new
+    // key never written: locked out, with nothing to recover from.
+    //
+    // The ordering is what makes that safe, and it lives across three functions,
+    // so nothing type-level enforces it. These read this file's own source and
+    // fail if the calls move back into the window. Source-level because the
+    // alternative is a live mediator: the bug is *where* an await sits, which no
+    // unit-testable return value observes.
+
+    /// This file's own source, for the ordering guards below.
+    const SRC: &str = include_str!("session.rs");
+
+    /// Body of the item starting at `signature`, up to `terminator`
+    /// (`"\n}\n"` for a free function, `"\n    }\n"` for a method).
+    fn body_of(signature: &str, terminator: &str) -> &'static str {
+        let start = SRC
+            .find(signature)
+            .unwrap_or_else(|| panic!("`{signature}` not found — did it get renamed?"));
+        let rest = &SRC[start..];
+        let end = rest
+            .find(terminator)
+            .unwrap_or_else(|| panic!("could not find the end of `{signature}`"));
+        &rest[..end]
+    }
+
+    #[test]
+    fn rest_rotation_opens_the_mediator_account_only_after_the_key_is_saved() {
+        let rotate = body_of("async fn rotate_key(", "\n}\n");
+        assert!(
+            !rotate.contains("open_rotated_mediator_account"),
+            "`rotate_key` must not open the rotated DID's mediator account: it returns \
+             between `acl/swap` (which deletes the temp entry at the VTA) and the \
+             caller's `save_session`, so anything that blocks there can strand the \
+             operator with no usable credential. `ensure_authenticated` calls it after \
+             the session is durable."
+        );
+
+        let ensure = body_of("pub async fn ensure_authenticated(", "\n    }\n");
+        let saved = ensure
+            .find("self.save_session(key, &session)?;")
+            .expect("`ensure_authenticated` must persist the rotated session");
+        let opened = ensure.find("open_rotated_mediator_account").expect(
+            "`ensure_authenticated` must open the rotated DID's mediator account so \
+             DIDComm works immediately after rotation",
+        );
+        assert!(
+            saved < opened,
+            "`open_rotated_mediator_account` must run *after* `save_session` — before it, \
+             the rotated key exists only in memory while the temp DID is already gone."
+        );
+    }
+
+    #[test]
+    fn didcomm_rotation_opens_the_mediator_account_before_deleting_the_temp_entry() {
+        let rotate = body_of("async fn rotate_key_didcomm(", "\n}\n");
+
+        let provisioned = rotate.find("provision_client_acl").expect(
+            "`rotate_key_didcomm` must open the rotated DID's mediator account so its \
+             forwarded replies are not dropped",
+        );
+        let deleted = rotate
+            .find("delete_acl")
+            .expect("`rotate_key_didcomm` must delete the temp DID's ACL entry");
+        assert!(
+            provisioned < deleted,
+            "the mediator account must be opened *before* `delete_acl`: once the temp \
+             entry is gone the caller has not yet persisted the rotated key, so optional \
+             work in that window can lock the operator out. Before it, a failure is free \
+             — the temp DID is still authoritative and the caller can retry."
+        );
+
+        assert!(
+            !rotate.contains("TrustPingSession::new"),
+            "`rotate_key_didcomm` must provision over the probe's live socket, not a \
+             second session: the mediator permits one socket per DID, and a slow teardown \
+             of an extra one evicts the authoritative client as `duplicate-channel`."
+        );
+    }
+
+    #[test]
+    fn didcomm_rotation_path_bounds_its_connects() {
+        let ensure = body_of("pub async fn ensure_authenticated_didcomm(", "\n    }\n");
+        assert!(
+            !ensure.contains("VtaClient::connect_didcomm("),
+            "`ensure_authenticated_didcomm` must connect via `connect_didcomm_bounded`. \
+             `connect_with_transport` delegates here for every pending-rotation session, \
+             so an unbounded connect turns an unreachable mediator back into an \
+             indefinite hang instead of an error naming `--transport rest`."
+        );
+        assert!(
+            ensure.matches("connect_didcomm_bounded(").count() >= 2,
+            "both the pre-rotation and post-rotation connects must be bounded"
+        );
+    }
+
+    #[test]
+    fn every_didcomm_capable_transport_path_rotates() {
+        let connect = body_of("pub async fn connect_with_transport(", "\n    }\n");
+        let rotation_gate = connect
+            .find("session.needs_rotation")
+            .expect("`connect_with_transport` must handle a pending rotation");
+
+        // The check has to precede *every* mediator connect, not just one arm.
+        // It used to sit in the `DIDComm` arm alone, which a VTA advertising
+        // both TSP and DIDComm never reaches — so dual-transport deployments
+        // stayed flagged `needs_rotation` forever and never retired their temp
+        // did:key. Same for an explicit `mediator_did` config hint, which
+        // short-circuits earlier still.
+        let first_connect = connect
+            .find("connect_didcomm_bounded(")
+            .expect("`connect_with_transport` must connect over DIDComm somewhere");
+        assert!(
+            rotation_gate < first_connect,
+            "the `needs_rotation` check must come before the first mediator connect, so \
+             the config-hint, `DIDComm` and `Tsp` paths are all covered by one gate"
+        );
+        assert_eq!(
+            connect.matches("session.needs_rotation").count(),
+            1,
+            "one gate, not one per arm — a per-arm check is how the `Tsp` and \
+             config-hint paths were missed"
+        );
     }
 }
 
