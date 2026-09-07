@@ -191,6 +191,7 @@ mod tests {
             epoch_expires_at: expires_at,
             created_at: 0,
             updated_at: 0,
+            mirror_of: None,
         }
     }
 

@@ -43,6 +43,8 @@
 //! profile — the refusal comes from `vti-rooms-dtg`, which is also what a VTC uses, so the
 //! two cannot disagree about what is safe to serve.
 
+pub mod mirror;
+
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -110,6 +112,18 @@ impl HostState {
     /// write records around every authorization check in this file.
     pub fn rooms(&self) -> &KeyspaceHandle {
         &self.rooms
+    }
+
+    /// The record keyspace, for the mirror puller.
+    ///
+    /// Deliberately *not* the general-purpose escape hatch `rooms()` is careful
+    /// not to be: a mirror writes records this host did not authorize, which is
+    /// exactly what a copy is, and `storage::store_mirrored_record` refuses to
+    /// do it on a room this host primaries. An embedder reaching for this to
+    /// write records around the authorization checks would be writing them into
+    /// a room whose version counter disagrees.
+    pub fn records(&self) -> &KeyspaceHandle {
+        &self.records
     }
 
     /// The presenter — proven by the document's own proof, never claimed in its payload.
@@ -310,6 +324,7 @@ async fn create(
         epoch_expires_at: Some(now() + EPOCH_LIFETIME_DAYS_SECS),
         created_at: now(),
         updated_at: now(),
+        mirror_of: None,
     };
     match storage::create_room(&state.rooms, &room).await {
         Ok(()) => respond(
@@ -904,6 +919,170 @@ mod tests {
             "every reply must be a Trust Task document: {doc}"
         );
         (status, doc.get("payload").cloned().unwrap_or(Value::Null))
+    }
+
+    // ── read mirrors, end to end (§7.3) ─────────────────────────────────────
+
+    /// Serve `app` on an ephemeral port and hand back its base URL.
+    ///
+    /// A mirror reaches its primary over HTTP like any other client, so the
+    /// primary in these tests is a real socket rather than a direct call: a
+    /// mirror that only worked in-process would prove nothing about the pull.
+    async fn serve(app: Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    /// The whole point of a mirror: records written at the primary become
+    /// readable at the copy, under the primary's own version numbers.
+    #[tokio::test]
+    async fn a_mirror_serves_what_its_primary_wrote() {
+        let (_pd, primary_state) = state();
+        let (_md, mirror_state) = state();
+        let f = RoomFixture::new(Visibility::Open).await;
+
+        // The primary: an ordinary room with two records in it.
+        let primary_app = router(primary_state.clone());
+        register(&primary_app, &f).await;
+        for (key, body) in [("decision/one", "first"), ("decision/two", "second")] {
+            let (status, out) = call(
+                &primary_app,
+                ROOMS_RECORDS_PUT_TYPE,
+                serde_json::json!({
+                    "roomId": f.room.room_id,
+                    "key": key,
+                    "presentation": f.as_owner(),
+                    "cleartext": { "body": body },
+                }),
+                &f.owner,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{out}");
+        }
+        let primary_url = serve(primary_app).await;
+
+        // The mirror: the same room id, registered as a copy of that primary.
+        vti_rooms::storage::create_room(
+            mirror_state.rooms(),
+            &vti_rooms::Room {
+                mirror_of: Some(primary_url.clone()),
+                next_version: 1,
+                ..f.room.clone()
+            },
+        )
+        .await
+        .unwrap();
+
+        let outcome = crate::mirror::pull_once(
+            &mirror_state,
+            &crate::mirror::MirroredRoom {
+                room_id: f.room.room_id.clone(),
+                primary_url,
+                primary_did: Some("did:key:zHost".into()),
+                membership: f.membership.clone(),
+                authority: f.owner_chain.clone(),
+                signer_did: f.owner.did.clone(),
+                signer_key_multibase: f.owner.secret_multibase.clone(),
+            },
+        )
+        .await
+        .expect("the mirror pulls from its primary");
+        assert_eq!(outcome.copied, 2, "both records copied");
+
+        // Readable from the copy, with the primary's numbering intact — which is
+        // what makes a sealed record openable and a watermark comparable.
+        let mirror_app = router(mirror_state.clone());
+        let (status, body) = call(
+            &mirror_app,
+            ROOMS_RECORDS_GET_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "decision/one",
+                "presentation": f.as_owner(),
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["cleartext"]["body"], "first");
+        assert_eq!(
+            body["version"], 1,
+            "the primary's version, not the mirror's"
+        );
+
+        // A second pull is a no-op: the watermark resumed where the first left off.
+        let again = crate::mirror::pull_once(
+            &mirror_state,
+            &crate::mirror::MirroredRoom {
+                room_id: f.room.room_id.clone(),
+                // Deliberately unreachable: an unreachable primary must leave
+                // the mirror serving what it has rather than losing it.
+                primary_url: "http://127.0.0.1:1".to_string(),
+                primary_did: None,
+                membership: f.membership.clone(),
+                authority: f.owner_chain.clone(),
+                signer_did: f.owner.did.clone(),
+                signer_key_multibase: f.owner.secret_multibase.clone(),
+            },
+        )
+        .await;
+        assert!(again.is_err(), "an unreachable primary is an error");
+        let (status, body) = call(
+            &mirror_app,
+            ROOMS_RECORDS_GET_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "decision/one",
+                "presentation": f.as_owner(),
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "still serving the copy it has: {body}"
+        );
+    }
+
+    /// The refusal that makes a mirror a mirror, over the wire — and it names
+    /// the primary, so an operator knows where the write belongs.
+    #[tokio::test]
+    async fn a_mirror_refuses_a_write_and_says_where_it_goes() {
+        let (_d, st) = state();
+        let f = RoomFixture::new(Visibility::Open).await;
+        vti_rooms::storage::create_room(
+            st.rooms(),
+            &vti_rooms::Room {
+                mirror_of: Some("https://primary.example.org".into()),
+                ..f.room.clone()
+            },
+        )
+        .await
+        .unwrap();
+
+        let app = router(st);
+        let (status, body) = call(
+            &app,
+            ROOMS_RECORDS_PUT_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "decision/three",
+                "presentation": f.as_owner(),
+                "cleartext": { "body": "not here" },
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "a mirror performs no writes");
+        assert!(
+            body.to_string().contains("primary.example.org"),
+            "the refusal must name the primary: {body}"
+        );
     }
 
     /// Register `f`'s room with the host.

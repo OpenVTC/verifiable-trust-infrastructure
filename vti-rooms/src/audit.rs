@@ -216,6 +216,7 @@ mod tests {
             epoch_expires_at: None,
             created_at: 0,
             updated_at: 0,
+            mirror_of: None,
         };
         let presentation = AuthorityPresentation {
             membership: "vmc".into(),

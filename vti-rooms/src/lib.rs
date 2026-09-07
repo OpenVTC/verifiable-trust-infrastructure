@@ -174,10 +174,45 @@ pub struct Room {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch_expires_at: Option<u64>,
 
+    /// Where this room's write-primary is, when this host holds a **read mirror**
+    /// rather than the room itself.
+    ///
+    /// `None` — the shape every room stored before this field existed
+    /// deserialises to — means this host *is* the primary. `Some(url)` means it
+    /// serves reads from a copy and refuses every write, pointing the caller at
+    /// the primary instead (§7.3).
+    ///
+    /// A room has exactly one write-primary. MLS needs a single sequencer
+    /// anyway, and multi-primary replication is a stated non-goal: replicated
+    /// multi-writer room state needs state-resolution machinery whose failure
+    /// modes took Matrix years to shake out. A mirror cannot tamper — records
+    /// are signed and bound to `roomId | key | version | epoch` — so the only
+    /// things it can be are **stale** or **silent**, and both are detectable by
+    /// a client that watches the version watermark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirror_of: Option<String>,
+
     /// Unix-epoch seconds.
     pub created_at: u64,
     /// Unix-epoch seconds; bumped on epoch advance and on record writes.
     pub updated_at: u64,
+}
+
+impl Room {
+    /// Whether this host holds a read mirror of a room primaried elsewhere.
+    pub fn is_mirror(&self) -> bool {
+        self.mirror_of.is_some()
+    }
+
+    /// The highest version this host has, which is the watermark a puller
+    /// resumes from and the floor a client compares against.
+    ///
+    /// `next_version` is the *next* number to assign, so the highest assigned
+    /// is one less — and zero on a room that has never held a record, which is
+    /// why this saturates rather than wrapping.
+    pub fn watermark(&self) -> u64 {
+        self.next_version.saturating_sub(1)
+    }
 }
 
 /// Curation state of a record.
