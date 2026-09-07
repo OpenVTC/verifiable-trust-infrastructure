@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vta_sdk::protocols::auth::{RevokeSessionRequest, RevokeSessionResponse, epoch_to_rfc3339};
 
-use crate::acl::{Role, check_acl_full};
+use crate::acl::{Role, check_acl_entry, effective_capabilities};
 use crate::audit::audit;
 use crate::auth::AuthClaims;
 use crate::auth::session::{SessionState, delete_session, get_session, list_sessions, now_epoch};
@@ -220,13 +220,18 @@ pub(super) async fn handle_whoami(
         }
     };
 
-    // Re-resolve roles/scopes so a policy/ACL change since the token was minted
-    // is reflected. A caller deauthorised mid-token surfaces here as the ACL
-    // error (their authority really is gone).
-    let (role, contexts) = match check_acl_full(&state.acl_ks, &auth.did).await {
-        Ok(rc) => rc,
+    // Re-resolve roles/scopes/capabilities so a policy/ACL change since the token
+    // was minted is reflected. A caller deauthorised mid-token surfaces here as
+    // the ACL error (their authority really is gone).
+    //
+    // One read of the whole entry rather than two of its members: a second read
+    // could straddle a concurrent ACL edit and answer with a role from before it
+    // and a capability set from after.
+    let entry = match check_acl_entry(&state.acl_ks, &auth.did).await {
+        Ok(entry) => entry,
         Err(e) => return app_error_to_reject(&doc, e),
     };
+    let (role, contexts) = (entry.role.clone(), entry.allowed_contexts.clone());
 
     let mut session_info = json!({
         "id": auth.session_id,
@@ -243,10 +248,30 @@ pub(super) async fn handle_whoami(
     // Mirror the access token's scope representation (`ctx:<id>`), built by the
     // canonical authenticate handler.
     let scopes: Vec<String> = contexts.iter().map(|c| format!("ctx:{c}")).collect();
+    // Effective, not stored. The question a caller is asking is "what may I do",
+    // and an entry that narrows nothing means everything its role implies —
+    // returning the stored list would answer a different question and read as
+    // empty for the commonest entry there is. It is also the only way the
+    // additive capabilities are visible at all: no role derives `persona-holder`,
+    // so a consumer computing the role's own set would never see it.
+    let capabilities: Vec<String> = effective_capabilities(&entry.role, &entry.capabilities)
+        .into_iter()
+        .map(|c| {
+            serde_json::to_value(c)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                // Serialization of a fieldless enum cannot fail; the fallback
+                // exists so an unreachable branch cannot drop a capability
+                // silently from an authorization answer.
+                .unwrap_or_else(|| format!("{c:?}"))
+        })
+        .collect();
+
     let body = json!({
         "session": session_info,
         "roles": [role.to_string()],
         "scopes": scopes,
+        "capabilities": capabilities,
     });
 
     audit!(
