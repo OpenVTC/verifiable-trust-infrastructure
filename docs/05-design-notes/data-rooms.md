@@ -511,8 +511,9 @@ group layer without deciding what the *storage* layer wanted from it is what
 produced a room that erased itself.
 
 **The mechanism.** At each commit the committer seals the outgoing epoch's
-storage key under the incoming one — an `EpochLink`. The links form a chain a
-holder of the current key walks *backwards*:
+storage key under the incoming one — an `EpochLink`, bound by its associated
+data to `roomId` and to its own rung, exactly as a sealed record is. The links
+form a chain a holder of the current key walks *backwards*:
 
 ```
   epoch 4 key ──opens──▶ link(4) ──yields──▶ epoch 3 key
@@ -562,6 +563,12 @@ it needs a spec (§12.2).
   carries the current epoch and nothing below it, so a new member reads the
   room's history only once the links reach them. The crate supports it
   (`SealedRoom::{links, add_links}`) and the wire does not yet — §12.2.
+- *A rung is minted by `SealedRoom`, not by `RoomGroup`.* The binding names the
+  room, and the group deliberately does not know which room it is for — the same
+  separation that put `room_id` on `SealedRoom` for record sealing. The first
+  implementation bound only the epoch pair and rested cross-room safety on two
+  rooms deriving different keys; that holds, but it is an accident rather than a
+  statement, and `rooms/epoch/chain/0.1` requires the statement.
 
 ---
 

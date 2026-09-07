@@ -441,13 +441,18 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
          where a room erases itself — for everyone, including whoever wrote the record.",
     );
     let (carol_snapshot, carol_package) = IdentitySnapshot::mint("did:key:zCarol")?;
-    let change = alice_room.add_member(&carol_package)?;
+    let (change, link) = alice_room.add_member(&carol_package)?;
     let carol_welcome = change.welcome.clone().expect("an add produces a welcome");
     let commit = change.commit.clone();
+    note(&format!(
+        "the advance produced a rung for epoch {} — bound to this room, so a host cannot \
+         serve it under another",
+        link.as_ref().map(|l| l.epoch).unwrap_or(0)
+    ));
 
     // Bob is an existing member: he applies the commit, and *that* is what carries his
     // chain across the change. A member who skips it loses both directions at once.
-    bob_room.apply_commit(&commit)?;
+    let (_, _) = bob_room.apply_commit(&commit)?;
 
     let minted = client
         .mint_epoch(

@@ -75,8 +75,8 @@ pub type StorageKey = [u8; STORAGE_KEY_LEN];
 /// on its own. The binding would be belt-and-braces, and the cost is real: it would put a
 /// room identifier into [`crate::mls::RoomGroup`], which deliberately does not know which
 /// room it is for.
-fn link_aad(epoch: u32) -> Vec<u8> {
-    format!("epoch-link|{epoch}|{}", epoch.saturating_sub(1)).into_bytes()
+fn link_aad(room_id: &str, epoch: u32) -> Vec<u8> {
+    format!("{room_id}|epoch-link|{epoch}|{}", epoch.saturating_sub(1)).into_bytes()
 }
 
 /// Seal `predecessor` (epoch `epoch - 1`'s storage key) under `current` (epoch `epoch`'s).
@@ -84,6 +84,7 @@ fn link_aad(epoch: u32) -> Vec<u8> {
 /// Called at the moment of a commit, by the party making it — the only party holding both
 /// keys at once.
 pub fn seal_link(
+    room_id: &str,
     epoch: u32,
     current: &StorageKey,
     predecessor: &StorageKey,
@@ -105,7 +106,7 @@ pub fn seal_link(
             Nonce::from_slice(&nonce_bytes),
             Payload {
                 msg: predecessor.as_slice(),
-                aad: &link_aad(epoch),
+                aad: &link_aad(room_id, epoch),
             },
         )
         .map_err(|e| RoomKeyError::Seal(format!("seal the epoch link: {e}")))?;
@@ -118,7 +119,11 @@ pub fn seal_link(
 }
 
 /// Recover epoch `link.epoch - 1`'s storage key, given epoch `link.epoch`'s.
-pub fn open_link(link: &EpochLink, current: &StorageKey) -> Result<StorageKey, RoomKeyError> {
+pub fn open_link(
+    room_id: &str,
+    link: &EpochLink,
+    current: &StorageKey,
+) -> Result<StorageKey, RoomKeyError> {
     let wrapped = B64
         .decode(&link.wrapped)
         .map_err(|e| RoomKeyError::Seal(format!("decode the epoch link: {e}")))?;
@@ -138,7 +143,7 @@ pub fn open_link(link: &EpochLink, current: &StorageKey) -> Result<StorageKey, R
             Nonce::from_slice(&nonce),
             Payload {
                 msg: &wrapped,
-                aad: &link_aad(link.epoch),
+                aad: &link_aad(room_id, link.epoch),
             },
         )
         .map_err(|_| RoomKeyError::DidNotOpen)?;
@@ -163,17 +168,27 @@ pub fn open_link(link: &EpochLink, current: &StorageKey) -> Result<StorageKey, R
 /// Resolution is memoised, so opening a room's whole history walks each rung once rather
 /// than once per record. Memoised keys survive re-anchoring: epoch 3's key is epoch 3's key
 /// whatever epoch the group has since reached.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct EpochKeyChain {
+    room_id: String,
     anchor_epoch: u32,
     links: BTreeMap<u32, EpochLink>,
     resolved: BTreeMap<u32, StorageKey>,
 }
 
 impl EpochKeyChain {
-    /// An empty chain: no links, no anchor, nothing resolvable until [`Self::reanchor`].
-    pub fn new() -> Self {
-        Self::default()
+    /// An empty chain for one room: no links, no anchor, nothing resolvable until
+    /// [`Self::reanchor`].
+    ///
+    /// The room is held because every rung is bound to it. A chain cannot be handed a rung
+    /// from another room and quietly make use of it.
+    pub fn new(room_id: impl Into<String>) -> Self {
+        Self {
+            room_id: room_id.into(),
+            anchor_epoch: 0,
+            links: BTreeMap::new(),
+            resolved: BTreeMap::new(),
+        }
     }
 
     /// Set the epoch this chain resolves *from*, and the key for it.
@@ -254,7 +269,7 @@ impl EpochKeyChain {
                     sealed: epoch,
                     earliest: cursor,
                 })?;
-            let previous = open_link(link, &key)?;
+            let previous = open_link(&self.room_id, link, &key)?;
             cursor -= 1;
             self.resolved.insert(cursor, previous);
         }
@@ -270,6 +285,8 @@ impl EpochKeyChain {
 mod tests {
     use super::*;
 
+    const ROOM: &str = "did:webvh:zRoom";
+
     fn key(seed: u8) -> StorageKey {
         [seed; STORAGE_KEY_LEN]
     }
@@ -278,8 +295,8 @@ mod tests {
     fn a_link_round_trips() {
         let current = key(2);
         let previous = key(1);
-        let link = seal_link(2, &current, &previous).expect("seal");
-        assert_eq!(open_link(&link, &current).expect("open"), previous);
+        let link = seal_link(ROOM, 2, &current, &previous).expect("seal");
+        assert_eq!(open_link(ROOM, &link, &current).expect("open"), previous);
     }
 
     /// A link is 32 sealed bytes like every other link. Only the binding says which rung it
@@ -287,26 +304,48 @@ mod tests {
     #[test]
     fn a_link_lifted_to_another_rung_does_not_open() {
         let current = key(2);
-        let link = seal_link(2, &current, &key(1)).expect("seal");
+        let link = seal_link(ROOM, 2, &current, &key(1)).expect("seal");
 
         let mut moved = link.clone();
         moved.epoch = 3;
         assert!(
-            open_link(&moved, &current).is_err(),
+            open_link(ROOM, &moved, &current).is_err(),
             "relabelling a link's epoch must fail authentication"
+        );
+    }
+
+    /// The binding this room identifier is in the associated data for.
+    ///
+    /// Two rooms derive different keys, so a rung served under the wrong room would fail to
+    /// open anyway — which is exactly why this test pins the *stated* reason instead. A
+    /// property that holds by accident is one a later refactor is free to remove, and the
+    /// specification (`rooms/epoch/chain/0.1`) requires the binding rather than the accident.
+    #[test]
+    fn a_link_served_under_another_room_does_not_open() {
+        let current = key(2);
+        let link = seal_link(ROOM, 2, &current, &key(1)).expect("seal");
+
+        // Same rung, same key, same everything but the room it is presented as belonging to.
+        assert!(
+            open_link("did:webvh:zOtherRoom", &link, &current).is_err(),
+            "a rung must not open under a room it was not sealed for"
+        );
+        assert_eq!(
+            open_link(ROOM, &link, &current).expect("opens under its own room"),
+            key(1)
         );
     }
 
     #[test]
     fn the_wrong_key_does_not_open_a_link() {
-        let link = seal_link(2, &key(2), &key(1)).expect("seal");
-        assert!(open_link(&link, &key(9)).is_err());
+        let link = seal_link(ROOM, 2, &key(2), &key(1)).expect("seal");
+        assert!(open_link(ROOM, &link, &key(9)).is_err());
     }
 
     #[test]
     fn the_first_epoch_has_no_predecessor() {
-        assert!(seal_link(1, &key(1), &key(0)).is_err());
-        assert!(seal_link(0, &key(1), &key(0)).is_err());
+        assert!(seal_link(ROOM, 1, &key(1), &key(0)).is_err());
+        assert!(seal_link(ROOM, 0, &key(1), &key(0)).is_err());
     }
 
     /// The property the whole module exists for.
@@ -314,10 +353,12 @@ mod tests {
     fn a_chain_walks_back_to_the_first_epoch() {
         let keys: Vec<StorageKey> = (1..=5).map(key).collect();
         let links: Vec<EpochLink> = (2..=5)
-            .map(|e| seal_link(e, &keys[(e - 1) as usize], &keys[(e - 2) as usize]).expect("seal"))
+            .map(|e| {
+                seal_link(ROOM, e, &keys[(e - 1) as usize], &keys[(e - 2) as usize]).expect("seal")
+            })
             .collect();
 
-        let mut chain = EpochKeyChain::new();
+        let mut chain = EpochKeyChain::new(ROOM);
         chain.reanchor(5, keys[4]);
         chain.add_links(links);
 
@@ -337,11 +378,13 @@ mod tests {
         let keys: Vec<StorageKey> = (1..=4).map(key).collect();
         let links: Vec<EpochLink> = [3u32, 4]
             .iter()
-            .map(|&e| seal_link(e, &keys[(e - 1) as usize], &keys[(e - 2) as usize]).expect("seal"))
+            .map(|&e| {
+                seal_link(ROOM, e, &keys[(e - 1) as usize], &keys[(e - 2) as usize]).expect("seal")
+            })
             .collect();
 
         // link(2) is absent: everything below epoch 2 has been cryptographically deleted.
-        let mut chain = EpochKeyChain::new();
+        let mut chain = EpochKeyChain::new(ROOM);
         chain.reanchor(4, keys[3]);
         chain.add_links(links);
 
@@ -356,7 +399,7 @@ mod tests {
     /// Behind is not the same as severed, and the error must not say it is.
     #[test]
     fn an_epoch_ahead_is_reported_as_ahead() {
-        let mut chain = EpochKeyChain::new();
+        let mut chain = EpochKeyChain::new(ROOM);
         chain.reanchor(2, key(2));
         assert!(matches!(
             chain.key_for(5),
@@ -366,10 +409,11 @@ mod tests {
 
     #[test]
     fn re_anchoring_commit_by_commit_keeps_everything_below_reachable() {
-        let mut chain = EpochKeyChain::new();
+        let mut chain = EpochKeyChain::new(ROOM);
         chain.reanchor(1, key(1));
         for epoch in 2..=4u32 {
-            let link = seal_link(epoch, &key(epoch as u8), &key((epoch - 1) as u8)).expect("seal");
+            let link =
+                seal_link(ROOM, epoch, &key(epoch as u8), &key((epoch - 1) as u8)).expect("seal");
             chain.add_links(Some(link));
             chain.reanchor(epoch, key(epoch as u8));
         }
@@ -385,8 +429,8 @@ mod tests {
     /// stays walked out — the anchor is where resolution *starts*, not a rollback point.
     #[test]
     fn re_anchoring_is_idempotent() {
-        let link = seal_link(2, &key(2), &key(1)).expect("seal");
-        let mut chain = EpochKeyChain::new();
+        let link = seal_link(ROOM, 2, &key(2), &key(1)).expect("seal");
+        let mut chain = EpochKeyChain::new(ROOM);
         chain.add_links(Some(link));
 
         chain.reanchor(2, key(2));
@@ -405,7 +449,7 @@ mod tests {
     /// the anchor and no history.
     #[test]
     fn advancing_without_a_link_hands_on_no_history() {
-        let mut chain = EpochKeyChain::new();
+        let mut chain = EpochKeyChain::new(ROOM);
         chain.reanchor(1, key(1));
         chain.reanchor(2, key(2)); // a commit arrived, and carried no link
 
@@ -416,7 +460,7 @@ mod tests {
         );
 
         // The state anyone else — or this member after a restart — actually receives.
-        let mut rebuilt = EpochKeyChain::new();
+        let mut rebuilt = EpochKeyChain::new(ROOM);
         rebuilt.reanchor(2, key(2));
         rebuilt.add_links(chain.links());
         assert!(matches!(

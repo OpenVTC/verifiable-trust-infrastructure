@@ -50,7 +50,7 @@ fn a_new_member_can_read_what_was_already_in_the_room() {
     let sealed = alice.seal_record("k1", 1, b"the library").expect("seal");
 
     let (bob_snapshot, bob_kp) = IdentitySnapshot::mint("did:key:zBob").expect("mint bob");
-    let change = alice.add_member(&bob_kp).expect("add bob");
+    let (change, _link) = alice.add_member(&bob_kp).expect("add bob");
     let welcome = change.welcome.expect("an add produces a welcome");
 
     let mut bob = SealedRoom::new(
@@ -80,7 +80,7 @@ fn a_removed_member_still_cannot_read_what_came_after() {
     let mut alice = SealedRoom::new(ROOM, RoomGroup::create("did:key:zAlice").expect("group"));
 
     let (bob_snapshot, bob_kp) = IdentitySnapshot::mint("did:key:zBob").expect("mint bob");
-    let change = alice.add_member(&bob_kp).expect("add bob");
+    let (change, _link) = alice.add_member(&bob_kp).expect("add bob");
     let mut bob = SealedRoom::new(
         ROOM,
         RoomGroup::join_from_identity(&bob_snapshot, &change.welcome.expect("welcome"))

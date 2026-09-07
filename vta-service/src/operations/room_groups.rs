@@ -183,9 +183,15 @@ pub async fn apply_commit(
             "this VTA holds no group state for room `{room_id}`"
         ))
     })?;
-    let mut group = RoomGroup::restore(&record.snapshot)
-        .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?;
-    let current = group.epoch();
+    // A `SealedRoom` rather than a bare group: the epoch link this commit produces is bound
+    // to the room, so minting one needs the room's identifier and the group does not carry
+    // it. Restoring through the room type is what makes the link mintable at all.
+    let mut room = SealedRoom::new(
+        room_id,
+        RoomGroup::restore(&record.snapshot)
+            .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?,
+    );
+    let current = room.group().epoch();
 
     if claimed_epoch == current {
         // Already applied. Reporting success with the unchanged epoch is what makes
@@ -203,16 +209,24 @@ pub async fn apply_commit(
     // The link is what keeps everything already in the room readable across this commit.
     // Dropping it here would advance the epoch and silently sever the history — the defect
     // the chain exists to fix, so it is retained in the same write that advances the group.
-    let (_, link) = group
+    let (_, link) = room
         .apply_commit(commit)
         .map_err(|e| AppError::Validation(format!("the commit did not process: {e}")))?;
-    let epoch = group.epoch();
+    let epoch = room.group().epoch();
 
     let mut links = record.links;
     if let Some(link) = link {
         links.push(link);
     }
-    store(groups, room_id, &record.member_did, &group, links, now).await?;
+    store(
+        groups,
+        room_id,
+        &record.member_did,
+        room.group(),
+        links,
+        now,
+    )
+    .await?;
     Ok(epoch)
 }
 
