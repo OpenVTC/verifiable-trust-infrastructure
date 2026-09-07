@@ -189,10 +189,14 @@ pub enum Capability {
     RoomOpen,
 }
 
-/// Returns true if `role` is granted `cap` by the default capability
-/// mapping. Use for capability checks against legacy ACL entries that have
-/// no explicit `capabilities` set; for entries with explicit capabilities,
-/// check the entry's set directly.
+/// Returns true if `role` is granted `cap` by the default capability mapping.
+///
+/// **This is what every capability gate in the workspace actually calls**, and it
+/// answers from the role alone — [`AclEntry::capabilities`] is not consulted here
+/// or anywhere else, because the authenticated claims a gate holds carry a role
+/// and no capability set. An entry's explicit capabilities are therefore
+/// descriptive today, not enforced; see the note on that field before writing a
+/// gate that assumes otherwise.
 pub fn role_has_capability(role: &Role, cap: Capability) -> bool {
     derived_capabilities_for_role(role).contains(&cap)
 }
@@ -238,6 +242,22 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
         // grants exactly it, deliberately, so the memory service is not the
         // user. It must keep both memory capabilities or every existing
         // deployment of that plugin stops working.
+        //
+        // The two room capabilities are here for the same reason, and their
+        // absence was a defect rather than a restraint: the room oracle exists
+        // *for* this role — an agent holding strictly less than its human, asking
+        // the VTA to mint a scoped presentation and to open what it cannot
+        // decrypt — and without them the one consumer the oracle was built for
+        // could not call it. The workaround an operator reaches for is worse than
+        // the grant: running the agent as `initiator`, which carries `KeyMint` and
+        // `DeviceAdmin` besides.
+        //
+        // Neither widens what this role can do. `RoomPresent` mints a leaf
+        // attenuated from the principal's own room authority — one action, one
+        // room, four hours, bound to the caller — and this role already holds
+        // `Sign`, which is the principal's key for arbitrary bytes and therefore
+        // strictly more. `RoomOpen` decrypts a room record with a group key this
+        // VTA holds; the same role can already read the credential vault.
         Role::Application => vec![
             Capability::VaultRead,
             Capability::ProxyLogin,
@@ -246,6 +266,8 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::SignTrustTask,
             Capability::MemoryRead,
             Capability::MemoryWrite,
+            Capability::RoomPresent,
+            Capability::RoomOpen,
         ],
         Role::Reader => vec![Capability::VaultRead, Capability::MemoryRead],
         Role::Monitor => vec![],
@@ -477,9 +499,20 @@ pub struct AclEntry {
     /// rows deserialise as `Service { Daemon }`.
     #[serde(default)]
     pub kind: ConsumerKind,
-    /// Fine-grained capability set. Empty Vec on legacy rows; the auth
-    /// layer falls back to [`derived_capabilities_for_role`] when this
-    /// is empty so existing behaviour stays byte-identical.
+    /// Fine-grained capability set. Empty Vec on legacy rows.
+    ///
+    /// **Not enforced.** Every gate in the workspace asks
+    /// [`role_has_capability`], which answers from the role alone — the claims a
+    /// gate holds carry no capability set — and nothing over the wire can set
+    /// this field, so today it is only read to describe a registered device's
+    /// authority in a binding listing. Narrowing it narrows nothing and widening
+    /// it grants nothing.
+    ///
+    /// Stated plainly because the shape invites the opposite assumption, and a
+    /// reader who assumed the auth layer consulted it would believe an entry was
+    /// least-privileged when it holds everything its role does. Making it real
+    /// means carrying the set in the authenticated claims and giving the ACL
+    /// surface a way to set it; until then, the role is the grant.
     #[serde(default)]
     pub capabilities: Vec<Capability>,
     /// Optional Companion/Service device-binding metadata. Populated by
@@ -1293,6 +1326,35 @@ mod tests {
     use super::*;
     use crate::config::StoreConfig;
     use crate::store::Store;
+
+    /// The room oracle exists for an agent holding strictly less than its human,
+    /// and `application` is the role such an agent runs as. Pinned because the
+    /// two were missing here for a release: the tasks were gated, the capability
+    /// variants existed, and the one role meant to call them held neither — so
+    /// the intended flow was unreachable and the workaround was a wider role.
+    #[test]
+    fn the_agent_role_can_reach_the_room_oracle() {
+        for cap in [Capability::RoomPresent, Capability::RoomOpen] {
+            assert!(
+                role_has_capability(&Role::Application, cap),
+                "an agent must be able to {cap:?} — the oracle has no other consumer"
+            );
+        }
+    }
+
+    /// The other half of that grant: a read-only consumer is not an agent, and
+    /// minting a credential on a principal's behalf is not a read.
+    #[test]
+    fn a_reader_still_cannot_mint_or_decrypt() {
+        for role in [Role::Reader, Role::Monitor] {
+            for cap in [Capability::RoomPresent, Capability::RoomOpen] {
+                assert!(
+                    !role_has_capability(&role, cap),
+                    "{role:?} must not hold {cap:?}"
+                );
+            }
+        }
+    }
 
     // ── Test fixtures ───────────────────────────────────────────────
 
