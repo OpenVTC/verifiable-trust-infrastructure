@@ -35,6 +35,7 @@ use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 use vti_rooms::mls::{GroupSnapshot, IdentitySnapshot, RoomGroup};
 use vti_rooms::sealed::SealedRoom;
+use vti_rooms::wire::EpochLink;
 
 /// Storage key for a room's group state.
 fn group_key(room_id: &str) -> String {
@@ -69,6 +70,18 @@ pub struct RoomGroupRecord {
     pub snapshot: GroupSnapshot,
     /// The member this group is for.
     pub member_did: String,
+    /// The room's epoch key chain, as far as this VTA holds it.
+    ///
+    /// Retained here rather than fetched per open because this is the custody point: a link
+    /// is key material, wrapped, and the VTA is where the room's key material lives. Every
+    /// commit this VTA applies appends one, so a member who has kept up holds the chain back
+    /// to the epoch they joined at without asking anyone.
+    ///
+    /// **Empty for a room joined before the chain existed**, and for one whose owner has not
+    /// sent the history. `open` then reads only from the joining epoch forward and says so
+    /// — see `RoomKeyError::EpochUnreachable`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<EpochLink>,
     /// Unix seconds of the last change.
     pub updated_at: u64,
 }
@@ -143,7 +156,7 @@ pub async fn join(
         .map_err(|e| AppError::Validation(format!("the welcome did not process: {e}")))?;
     let epoch = group.epoch();
 
-    store(groups, room_id, member_did, &group, now).await?;
+    store(groups, room_id, member_did, &group, Vec::new(), now).await?;
     // The package is consumed. MLS consumes it on add, and a retained private half for a
     // used package is key material kept for nothing.
     groups
@@ -187,11 +200,19 @@ pub async fn apply_commit(
         )));
     }
 
-    group
+    // The link is what keeps everything already in the room readable across this commit.
+    // Dropping it here would advance the epoch and silently sever the history — the defect
+    // the chain exists to fix, so it is retained in the same write that advances the group.
+    let (_, link) = group
         .apply_commit(commit)
         .map_err(|e| AppError::Validation(format!("the commit did not process: {e}")))?;
     let epoch = group.epoch();
-    store(groups, room_id, &record.member_did, &group, now).await?;
+
+    let mut links = record.links;
+    if let Some(link) = link {
+        links.push(link);
+    }
+    store(groups, room_id, &record.member_did, &group, links, now).await?;
     Ok(epoch)
 }
 
@@ -227,17 +248,23 @@ pub async fn open_record(
         )));
     }
 
-    SealedRoom::new(room_id, group)
-        .open_record(
-            key,
-            version,
-            &vti_rooms::wire::SealedContent {
-                ciphertext: ciphertext.to_string(),
-                nonce: nonce.to_string(),
-                epoch,
-            },
-        )
-        .map_err(|e| AppError::Validation(e.to_string()))
+    // A record older than the current epoch is opened with *its own* epoch's key, walked out
+    // of the retained chain. Without the links this VTA reaches only the epoch it is at, and
+    // the error says which — an unreachable epoch is history that was severed or never
+    // delivered, not a record that failed to decrypt.
+    let mut room = SealedRoom::new(room_id, group);
+    room.add_links(record.links);
+
+    room.open_record(
+        key,
+        version,
+        &vti_rooms::wire::SealedContent {
+            ciphertext: ciphertext.to_string(),
+            nonce: nonce.to_string(),
+            epoch,
+        },
+    )
+    .map_err(|e| AppError::Validation(e.to_string()))
 }
 
 /// Record an invitation as consumed, refusing a second use.
@@ -288,6 +315,7 @@ async fn store(
     room_id: &str,
     member_did: &str,
     group: &RoomGroup,
+    links: Vec<EpochLink>,
     now: u64,
 ) -> Result<(), AppError> {
     let record = RoomGroupRecord {
@@ -295,6 +323,7 @@ async fn store(
             .snapshot()
             .map_err(|e| AppError::Internal(format!("snapshot the group: {e}")))?,
         member_did: member_did.to_string(),
+        links,
         updated_at: now,
     };
     groups

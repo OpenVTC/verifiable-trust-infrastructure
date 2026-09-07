@@ -185,6 +185,7 @@ mod tests {
             room_id: "did:key:zRoom".into(),
             owner_did: "did:key:zOwner".into(),
             visibility: Visibility::Open,
+            retention_policy: crate::RetentionPolicy::Chained,
             epoch: 1,
             next_version: 1,
             retention_days,

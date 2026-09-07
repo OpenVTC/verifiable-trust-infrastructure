@@ -490,6 +490,79 @@ rotation has, and should reuse whatever answer it gets (open, §14.2).
 If every member's VTA is gone, the room is gone; the host holds ciphertext
 and cannot help. Stated at creation, not in a footnote.
 
+### 5.5 The epoch key chain: a library, not a stream
+
+**The defect this fixes shipped.** Records are sealed under the exporter for
+the epoch current when they were written (§5.1), and MLS deliberately offers no
+way to derive an old epoch's exporter from a new one — that is forward secrecy,
+and it is what makes §5.2's removal mean anything. But `open` used the group's
+*current* key regardless of the record's epoch, so the first add or removal
+made every record already in the room fail to open, **for every member,
+including the one who wrote it.** Every test in the crate sealed and opened
+inside one epoch, so nothing caught it; the room-host demo never advanced an
+epoch either. It is fixed by `vti-rooms` #1293 with the mechanism below, and
+the regression test advances an epoch in all three directions that matter.
+
+Worth being precise about what was wrong, because "MLS gives forward secrecy"
+is true and was not the problem. MLS is a *messaging* protocol, and a message
+nobody can reread is a feature. A data room is a **library**: its whole purpose
+is that what was written stays readable to whoever is in the room. Adopting the
+group layer without deciding what the *storage* layer wanted from it is what
+produced a room that erased itself.
+
+**The mechanism.** At each commit the committer seals the outgoing epoch's
+storage key under the incoming one — an `EpochLink`. The links form a chain a
+holder of the current key walks *backwards*:
+
+```
+  epoch 4 key ──opens──▶ link(4) ──yields──▶ epoch 3 key
+                                                 │
+                                      ──opens──▶ link(3) ──yields──▶ epoch 2 key …
+```
+
+Backwards only, and that asymmetry is the whole design. A member holding
+epoch 2's key derives nothing at epoch 3, so **removal stays forward-only** and
+a removed member still reads nothing written after them. The links are
+ciphertext, so the host stores them and learns only that an epoch happened —
+which `Room.epoch` already told it.
+
+This is the upper tier of the retention system in the **Encrypted Spaces**
+architecture whitepaper (§4.2 — "each rekey produces a new group key that
+encrypts its predecessor"), reduced to the one shape our record model needs:
+we have no directory hierarchy for a lower tier to align to, so our chain is
+linear where theirs is a tree. §11 records what else that comparison is owed.
+
+**What it costs, stated rather than discovered.** Post-compromise security for
+*record content*. Once the chain exists, a compromised current key reaches
+every retained epoch. MLS's own PCS is untouched — a compromised leaf still
+heals at the next commit, a removed member still reads nothing forward — but
+the storage layer above it no longer inherits that healing. That is the trade a
+library makes and a stream does not, which is why it is a **policy**
+(`RetentionPolicy::{Chained, FromJoin}`) fixed at creation beside `visibility`,
+not a constant. `Chained` is what every host creates today; `FromJoin` is the
+room that keeps the old behaviour deliberately, and is not yet reachable over
+the wire (§12.2).
+
+**Cryptographic deletion falls out of it.** Dropping link *K* severs the chain
+there: nobody who does not already hold a key below *K* can reach one again,
+whatever the host still stores. That makes "delete everything before epoch K" a
+cryptographic act rather than a promise by the host to erase bytes — §6's
+tombstone-then-purge asks a host to forget, and against a backup or a snapshot
+that is a request. `prune_epoch_links_before` is the primitive; the verb over
+it needs a spec (§12.2).
+
+**Two things the implementation settled that this section had wrong.**
+
+- *An unlinked advance does not erase what a member already derived*, and must
+  not claim to. A key someone has read is a key they have; dropping it from a
+  map buys no secrecy. What `FromJoin` actually withholds is the means to
+  derive it *again* — after a restart, on another device, or on joining. The
+  first draft of the test asserted the stronger thing and failed, correctly.
+- *A joiner's backfill is a delivery problem, not a key problem.* A Welcome
+  carries the current epoch and nothing below it, so a new member reads the
+  room's history only once the links reach them. The crate supports it
+  (`SealedRoom::{links, add_links}`) and the wire does not yet — §12.2.
+
 ---
 
 ## 6. Records
@@ -825,6 +898,7 @@ was deliberately not used.
 | Matrix ([Room v12 / MSC4291](https://github.com/matrix-org/matrix-spec-proposals/blob/matthew/msc4291/proposals/4291-room-ids-as-hashes.md), [Project Hydra](https://matrix.org/blog/2025/08/project-hydra-improving-state-res/)) | self-certifying room identity (they converged on it; DID+SCID starts there) | multi-primary replication and state resolution — single write-primary + mirrors instead |
 | did:webvh witnessing (`didwebvh-rs`), key-transparency lineage | suppression-evident logs; renewal + epoch anchoring (§9) | — |
 | [UCAN](https://github.com/ucan-wg/spec) / [Biscuit](https://www.biscuitsec.org/) | VAC attenuation + audience binding (§4.2) | token-chain formats — the VAC is a VC, at home in the DTG |
+| [Encrypted Spaces](https://encryptedspaces.org/) ([whitepaper](https://encryptedspaces.org/whitepapers/encrypted-spaces.pdf), Orrù–Perrin–Trapp–Zaverucha 2026) | the **retention key tree** (§4.2) — §5.5's epoch chain is its upper tier, linearised. Under review: traces / data-commitment-verified reads (§14.7) | its group-key layer (linear rekey + mVE, not MLS); its identity model, which is a stated hole the DTG already fills; the zkVM fast-forward proof, which needs a GPU per batch |
 | [RLN](https://rate-limiting-nullifier.github.io/rln-docs/) | named as the future answer to anonymous rate limiting | for v1 — circuits |
 | Local-first / CRDTs | the warning about host-optional writes | mergeable records (§6) |
 | BBS+ / DTG ZKP presentations | already the stack's own | — |
@@ -878,6 +952,26 @@ Two things the implementation work surfaced that the note had not:
   camelCase. Additive values go into both in their own convention; the casing
   divergence is a separate question for whoever owns device bindings.
 
+### 12.2 The epoch chain's remaining wire work
+
+§5.5 landed the mechanism and the storage. Three pieces need the **spec**
+first, because every `rooms/*` request schema is `additionalProperties: false`
+— the same constraint that keeps `retention_days` a per-host constant rather
+than a per-room choice. Inventing fields locally would put this
+implementation's rooms out of conformance, so each is a
+`dtgwg-trust-tasks-tf` PR before it is code.
+
+| What | Why it needs the wire | Without it |
+|---|---|---|
+| **`retentionPolicy` on `rooms/create/0.1`** | the choice is the room's, made once, and there is no member for it | every host creates `Chained`; `FromJoin` is unreachable except in-crate |
+| **A chain-fetch task** (`rooms/keys/chain/0.1`, or links on the Welcome) | a joiner's Welcome carries the current epoch and nothing below it | a **new member reads only from their joining epoch**, and is told so precisely (`EpochUnreachable`) rather than seeing a room that looks corrupt |
+| **A prune verb** over `prune_epoch_links_before` | cryptographic deletion is an operation someone has to be authorized to perform | the primitive exists and nothing can reach it |
+
+The middle row is the one that matters most and is the reason §5.5 is not
+finished: an existing member's rooms are now correct, and a joining member's
+backfill is still a delivery gap. Both halves of the mechanism are built and
+tested; what is missing is the envelope.
+
 ---
 
 ## 13. The client
@@ -918,6 +1012,25 @@ read an `open` room the same way an agent's recall marks one.
 5. **Curation semantics** — pinning, review, supersession: from use.
 6. **Names** — `rooms/*` is the family slug; the product name is a separate
    decision under the `Agent[Capability]` house style.
+7. **Verified reads** — the one Encrypted Spaces idea worth taking that we have
+   not. Our `list` has **no completeness property**: a host can omit a record
+   from a listing and nothing goes red. Records are signed and location-bound,
+   so a host cannot forge or relocate one — but silence is free, and §9's
+   anchoring detects a rolled-back *room*, not a withheld *record*. ES answers
+   this with a Merkle trace opening exactly the keys a query read, verified
+   against a data commitment the client already trusts. The cheap half needs no
+   zkVM — it is hashing — and would mean a Merkle key-value store under
+   `vti_rooms::storage` plus a commitment in the record wire type. Sized, not
+   scheduled; it is a bigger change than §5.5 and it is not a defect fix.
+8. **Rooms created before the chain** (§5.5) — a room that has already advanced
+   past epoch 1 has lost the keys to everything below its current epoch, and
+   nothing can recover them: no member retained the old exporters and the host
+   never had them. `RetentionPolicy` deserialises such rooms to `FromJoin`,
+   which describes them accurately. Exposure is believed to be nil —
+   `vti-rooms` 0.1.x is days old and no room has been operated across a
+   membership change — but *believed* is the right word, and an operator who
+   finds otherwise should be told the truth rather than shown a repair that
+   cannot work.
 
 ---
 

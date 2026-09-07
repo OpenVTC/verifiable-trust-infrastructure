@@ -69,6 +69,9 @@ pub mod lifecycle;
 /// substantial dependency to make it carry.
 #[cfg(feature = "mls")]
 pub mod mls;
+/// The epoch key chain that keeps a room readable across a membership change.
+#[cfg(feature = "mls")]
+pub mod retention;
 #[cfg(feature = "mls")]
 pub mod sealed;
 pub mod storage;
@@ -84,6 +87,56 @@ pub const ROOMS_KEYSPACE: &str = "rooms";
 
 /// Keyspace holding room records.
 pub const ROOM_RECORDS_KEYSPACE: &str = "room_records";
+
+/// Keyspace holding the epoch key chain — one wrapped key per epoch advance.
+///
+/// Held by the host as opaque ciphertext it cannot read. See [`wire::EpochLink`].
+pub const ROOM_EPOCH_LINKS_KEYSPACE: &str = "room_epoch_links";
+
+/// Whether a room keeps its history readable across a membership change.
+///
+/// **Immutable for the life of a room**, like [`Visibility`] and for the same reason: the
+/// links either exist for an epoch or they do not, and a policy change cannot manufacture
+/// key material that was never sealed or unseal what was already severed.
+///
+/// The choice is a real one and it is not obvious, so it is stated at creation rather than
+/// defaulted silently. See [`wire::EpochLink`] for what each side costs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RetentionPolicy {
+    /// Every member reads the room's whole retained history, however long they have been in
+    /// it. A commit seals the outgoing epoch's key under the incoming one.
+    ///
+    /// What a **library** wants: joining a room means being able to read it. The cost is
+    /// post-compromise security for record content — a compromised current key reaches every
+    /// retained epoch.
+    Chained,
+
+    /// A member reads only from the epoch their group state is at. No links are produced,
+    /// so nothing carries history from one epoch to the next.
+    ///
+    /// What a **stream** wants, and what a room with strict forward-secrecy obligations
+    /// wants. The cost is that a new member joins an empty-looking room, and that nobody —
+    /// including the writer — can reread a record once their group state has moved past the
+    /// epoch it was sealed under.
+    ///
+    /// Precisely: a member keeps whatever keys they have already derived *in that session*,
+    /// because a key they have read is a key they have. What this policy withholds is the
+    /// means to derive one again — after a restart, on another device, or on joining.
+    ///
+    /// The default on deserialisation, because it is what a room stored before the chain
+    /// existed actually has: no links. New rooms are created [`Chained`](Self::Chained)
+    /// unless they ask otherwise.
+    #[default]
+    FromJoin,
+}
+
+impl RetentionPolicy {
+    /// Whether a commit under this policy must produce a link.
+    pub fn links_epochs(&self) -> bool {
+        matches!(self, RetentionPolicy::Chained)
+    }
+}
 
 /// How much of a room this service can see.
 ///
@@ -142,6 +195,15 @@ pub struct Room {
 
     /// Fixed at creation. See [`Visibility`].
     pub visibility: Visibility,
+
+    /// Fixed at creation. See [`RetentionPolicy`].
+    ///
+    /// Defaults to [`RetentionPolicy::FromJoin`] on deserialisation — the shape a room
+    /// stored before the epoch key chain existed deserialises to, and an accurate
+    /// description of it: such a room has no links, and no policy field can conjure the
+    /// keys that were never sealed.
+    #[serde(default)]
+    pub retention_policy: RetentionPolicy,
 
     /// The current key epoch. Advanced by the owner on removal; this service records the
     /// number and never learns the key.

@@ -231,6 +231,13 @@ pub(crate) async fn handle_create(state: &AppState, doc: TrustTask<Value>) -> Tr
         // this ever grows a second way to be authorized.
         owner_did: authorized.owner_did().to_string(),
         visibility: req.visibility,
+        // Every room this host creates is chained: joining a room means being able to read
+        // it, and the alternative silently loses the room's contents at the first membership
+        // change. Not yet a per-room choice because `rooms/create/0.1` has no member for one
+        // and its schema is `additionalProperties: false` — inventing a field locally would
+        // put these rooms out of conformance. A room wanting `FromJoin` is a spec change
+        // first, exactly as `retention_days` was.
+        retention_policy: vti_rooms::RetentionPolicy::Chained,
         epoch: 1,
         next_version: 1,
         retention_days: req.retention_days.unwrap_or(DEFAULT_RETENTION_DAYS),
