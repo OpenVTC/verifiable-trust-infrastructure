@@ -2,6 +2,55 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.17.0...vti-common-v0.18.0) — 2026-09-07
+
+
+### Added
+
+- **acl**: Enforce an entry's capabilities, and give an operator a way to set them ([#1279](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1279))
+
+
+### Fixed
+
+- **acl**: Let the role an agent runs as reach the room oracle ([#1275](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1275))
+
+The room presentation oracle exists for one consumer: an agent holding
+  strictly less than its human, asking its principal's VTA to mint a scoped
+  presentation and to open what it cannot decrypt. `application` is the role
+  such an agent runs as - `vta-agent-memory` grants exactly it - and it held
+  neither `RoomPresent` nor `RoomOpen`, so the one consumer the oracle was
+  built for could not call it.
+
+  The gates are role-derived (`role_has_capability` reads the role and nothing
+  else), so there was no way to grant the capability to a particular entry
+  either. The workaround an operator reaches for is worse than the grant:
+  running the agent as `initiator`, which carries `KeyMint` and `DeviceAdmin`
+  besides.
+
+  Neither capability widens what this role can do. `RoomPresent` mints a leaf
+  attenuated from the principal's own room authority - one action, one room,
+  four hours, bound to the caller - and the role already holds `Sign`, which is
+  the principal's key over arbitrary bytes and therefore strictly more.
+  `RoomOpen` decrypts a room record under a group key the VTA already holds,
+  and the same role can already read the credential vault. `Reader` and
+  `Monitor` get neither, and a test pins that: minting a credential on a
+  principal's behalf is not a read.
+
+  Also corrects two doc comments that described enforcement that does not
+  exist. `AclEntry::capabilities` said the auth layer falls back to the
+  role-derived set when it is empty, which reads as "and uses this set when it
+  is not" - but no gate consults the field, the authenticated claims carry no
+  capability set, and nothing over the wire can set it. It is read in exactly
+  one place, to describe a registered device's authority in a binding listing.
+  A reader who believed otherwise would think an entry was least-privileged
+  when it holds everything its role does, so the field and
+  `role_has_capability` now say what is true. Making it real means carrying the
+  set in the claims and giving the ACL surface a way to set it - a separate
+  change with its own design question about whether an entry's set may widen
+  beyond its role or only narrow within it.
+
+
+
 ## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.16.2...vti-common-v0.17.0) — 2026-09-07
 
 
