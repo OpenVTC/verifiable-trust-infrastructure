@@ -334,8 +334,29 @@ impl PersonaStore {
     /// the direction rule forbids.
     ///
     /// Returns how many projections were refreshed.
+    ///
+    /// **This is the maintenance entry point, not the mechanism.** Every write
+    /// that changes what a profile projects pushes for itself, from inside its
+    /// own lock — see [`Self::push_profile_locked`]. Calling this afterwards is
+    /// a no-op that costs a scan.
     pub async fn rematerialise(&self, profile_id: &str) -> Result<usize, AppError> {
         let _guard = self.write_lock.lock().await;
+        self.push_profile_locked(profile_id).await
+    }
+
+    /// The push itself. **Caller must hold `write_lock`.**
+    ///
+    /// Split out because the writes that need it already hold the lock, and
+    /// `tokio::sync::Mutex` is not reentrant — `put` calling `rematerialise`
+    /// would deadlock rather than fail, which is the worst way to find out.
+    ///
+    /// Holding the lock across both is not merely convenient, it is the
+    /// property that matters: the write and the push land together. A crash
+    /// between them would leave every bound context holding a projection of a
+    /// pool state that no longer exists, with nothing to notice or repair it —
+    /// and the holder would have no way to tell, because the console reads the
+    /// pool while the verifier is shown the copy.
+    pub(crate) async fn push_profile_locked(&self, profile_id: &str) -> Result<usize, AppError> {
         let claims = self.materialise(profile_id).await?;
 
         let mut refreshed = 0usize;
@@ -350,6 +371,23 @@ impl PersonaStore {
             record.claims = claims.clone();
             self.ks.insert(k, &record).await?;
             refreshed += 1;
+        }
+        Ok(refreshed)
+    }
+
+    /// Push every profile that references one attribute.
+    ///
+    /// The attribute-side entry point: a pool edit changes what every profile
+    /// referencing it projects, and the reverse index is what makes that
+    /// answerable without scanning every profile. **Caller must hold
+    /// `write_lock`.**
+    pub(crate) async fn push_attribute_locked(
+        &self,
+        attribute_id: &str,
+    ) -> Result<usize, AppError> {
+        let mut refreshed = 0usize;
+        for profile_id in self.referring_profiles(attribute_id).await? {
+            refreshed += self.push_profile_locked(&profile_id).await?;
         }
         Ok(refreshed)
     }

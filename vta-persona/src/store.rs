@@ -203,12 +203,27 @@ impl PersonaStore {
             }
         }
 
+        let attribute_id = attribute.attribute_id.clone();
         self.ks
             .insert(
-                storage::attribute_key(&attribute.attribute_id),
+                storage::attribute_key(&attribute_id),
                 &Slot::Live(attribute),
             )
             .await?;
+
+        // Edit once, everywhere — and it happens HERE, inside the write, not at
+        // the call site.
+        //
+        // A context holds a materialised copy and may never read the pool, so
+        // the copy only changes if a write above the boundary pushes it. Leaving
+        // that to handlers is the same decision taken once per call site, and
+        // forgetting it is silent: the pool shows the new value, the console
+        // shows the pool, and the verifier is handed the old one. That is
+        // exactly what shipped — nothing called `rematerialise` at all.
+        //
+        // On a create this is a no-op: nothing references a brand-new attribute
+        // yet, so the reverse index is empty and the scan does not run.
+        self.push_attribute_locked(&attribute_id).await?;
 
         Ok(Written { version, created })
     }
@@ -269,6 +284,15 @@ impl PersonaStore {
                 },
             )
             .await?;
+
+        // A cascade leaves the profile's `ref` in place and the attribute
+        // tombstoned, so resolution reports the claim stale rather than
+        // dropping it — which is the honest answer, and one the bound contexts
+        // must be given too. Without this push they would go on presenting the
+        // deleted value as though it were current.
+        for profile_id in &referring {
+            self.push_profile_locked(profile_id).await?;
+        }
 
         Ok(Deleted {
             existed: true,
