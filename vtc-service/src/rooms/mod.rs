@@ -10,6 +10,7 @@
 //! module had to move when the subsystem did.
 
 pub mod handlers;
+pub mod policy;
 
 pub use vti_rooms::{
     ROOM_RECORDS_KEYSPACE, ROOMS_KEYSPACE, Record, RecordStatus, Room, Visibility, authz, storage,

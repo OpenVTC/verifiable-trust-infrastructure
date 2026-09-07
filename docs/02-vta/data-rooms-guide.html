@@ -204,9 +204,11 @@
             <td><span class="no">Library only.</span> Nothing serves “issue this member a VMC and a
             VAC” — the owner mints them with <code>dtg-credentials</code> and delivers them out of band</td></tr>
         <tr><td class="hd">Governance (<code>rooms.rego</code>)</td>
-            <td><span class="no">Not implemented.</span> Creation checks that the signer is the
-            owner they name; <em>which</em> members a community lets create rooms on it is still
-            designed rather than built</td></tr>
+            <td><span class="yes">On a VTC.</span> A community decides in Rego who may create a
+            room on it; the shipped default hosts <span class="mono">open</span> /
+            <span class="mono">attributed</span> for its own members and refuses
+            <span class="mono">private</span> until an operator enables it. A standalone room host
+            has no policy engine — T1's governance is its owner</td></tr>
         <tr><td class="hd">Read mirrors, witnessed renewal anchoring</td>
             <td><span class="no">Not implemented.</span> One write-primary; anchoring is the owner's
             job and nothing does it yet</td></tr>
@@ -613,11 +615,11 @@
       <li><strong>Network DID resolution is a decision.</strong> A standalone room host resolves
       <code>did:key</code> only by default; serving <code>did:webvh</code> rooms means turning on
       resolution, and that lets an unauthenticated request make your host fetch.</li>
-      <li><strong>Put it behind a proxy.</strong> The room-host binary carries no TLS and no rate
-      limiter, and while creation now requires the signer to be the owner they name, nothing yet
-      governs <em>which</em> parties may create rooms on your host — so anyone who can reach the
-      endpoint can register one in their own name. Every other verb verifies the document's proof
-      and the authority chain.</li>
+      <li><strong>Put it behind a proxy.</strong> The room-host binary carries no TLS, no rate
+      limiter, and — by design — no policy engine and no roster: T1's governance is its owner, so
+      creation there is open to anyone who can sign as themselves. A VTC governs creation with its
+      <code>rooms</code> policy instead. Every other verb, on both hosts, verifies the document's
+      proof and the authority chain.</li>
       <li><strong>Never log the actor on a private room.</strong> That decision is made once, in
       the crate both hosts share, precisely because every host's logging wants to write the acting
       DID — and on a private room that single line hands you the membership the room was built
