@@ -167,7 +167,7 @@ futures-util = "0.3"
 dtg-credentials = "0.6"
 
 # JSON Schema validation (issue-time credentialSchema checks)
-jsonschema = "0.47"
+jsonschema = "0.49"
 
 # Async runtime
 tokio = { version = "1", features = [

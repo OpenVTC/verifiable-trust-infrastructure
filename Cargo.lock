@@ -10966,7 +10966,7 @@ dependencies = [
  "hmac 0.13.0",
  "http-body-util",
  "include_dir",
- "jsonschema 0.47.0",
+ "jsonschema 0.49.9",
  "jsonwebtoken 11.0.0",
  "keyring-core",
  "mime_guess",
