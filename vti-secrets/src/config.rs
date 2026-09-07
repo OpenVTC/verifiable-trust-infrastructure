@@ -34,7 +34,13 @@ pub enum SecretBackend {
     Plaintext,
 }
 
+/// `#[non_exhaustive]`: this struct has grown a field per backend since it was
+/// introduced and will keep growing. Marking it here makes a future field an
+/// additive change rather than a breaking one — at the cost of forbidding
+/// struct-literal (and functional-update) construction outside this crate.
+/// Build one with [`SecretsConfig::default`] and assign the fields you need.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct SecretsConfig {
     /// Explicit backend selector. When set it wins outright:
     /// [`create_seed_store`](crate::create_seed_store) builds exactly this
@@ -132,6 +138,32 @@ pub struct SecretsConfig {
     /// on disk in cleartext" footgun.)
     #[serde(default)]
     pub allow_plaintext: bool,
+    /// How long a successfully-read seed may be reused from memory before the
+    /// backend is consulted again, in seconds. `0` disables caching entirely —
+    /// every read hits the backend, which is how this crate behaved before the
+    /// cache existed.
+    ///
+    /// Why this exists: the seed is read on **every** key-touching request
+    /// (`load_seed_bytes`, ~25 call sites, including every signature), and on
+    /// the cloud backends each read is a remote call — for AWS one
+    /// `GetSecretValue`, which is in turn one billed KMS `Decrypt`. Uncached,
+    /// KMS request volume scales with request volume; cached, it scales with
+    /// wall-clock time.
+    ///
+    /// Why a bounded TTL rather than load-once: the seed for a generation is
+    /// immutable, and the only writer is in-process rotation (which invalidates
+    /// the cache explicitly), so a stale read is already near-impossible. The
+    /// TTL is the outer bound for anything that gets past that, and it caps how
+    /// long the master seed sits resident in process memory (P0.7).
+    #[serde(default = "default_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+}
+
+/// Default seed cache TTL. Short enough that an out-of-band seed change is
+/// picked up within a minute, long enough that a VTA under load makes one
+/// backend read per minute instead of one per request.
+fn default_cache_ttl_secs() -> u64 {
+    60
 }
 
 fn default_keyring_service() -> String {
@@ -196,6 +228,7 @@ impl Default for SecretsConfig {
             k8s_namespace: None,
             k8s_secret_key: default_k8s_secret_key(),
             allow_plaintext: false,
+            cache_ttl_secs: default_cache_ttl_secs(),
         }
     }
 }

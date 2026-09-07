@@ -1425,10 +1425,9 @@ fn secrets_config_from_input(
             }
             #[cfg(feature = "keyring")]
             {
-                SecretsConfig {
-                    keyring_service: service.clone(),
-                    ..SecretsConfig::default()
-                }
+                let mut c = SecretsConfig::default();
+                c.keyring_service = service.clone();
+                c
             }
         }
         SecretsBackendInput::ConfigSeed => {
@@ -1441,10 +1440,9 @@ fn secrets_config_from_input(
             }
             #[cfg(feature = "config-seed")]
             {
-                SecretsConfig {
-                    seed: Some(String::new()), // populated with hex(seed) by caller
-                    ..Default::default()
-                }
+                let mut c = SecretsConfig::default();
+                c.seed = Some(String::new()); // populated with hex(seed) by caller
+                c
             }
         }
         SecretsBackendInput::Aws {
@@ -1461,11 +1459,10 @@ fn secrets_config_from_input(
             }
             #[cfg(feature = "aws-secrets")]
             {
-                SecretsConfig {
-                    aws_secret_name: Some(secret_name.clone()),
-                    aws_region: region.clone(),
-                    ..Default::default()
-                }
+                let mut c = SecretsConfig::default();
+                c.aws_secret_name = Some(secret_name.clone());
+                c.aws_region = region.clone();
+                c
             }
         }
         SecretsBackendInput::Gcp {
@@ -1482,11 +1479,10 @@ fn secrets_config_from_input(
             }
             #[cfg(feature = "gcp-secrets")]
             {
-                SecretsConfig {
-                    gcp_project: Some(project.clone()),
-                    gcp_secret_name: Some(secret_name.clone()),
-                    ..Default::default()
-                }
+                let mut c = SecretsConfig::default();
+                c.gcp_project = Some(project.clone());
+                c.gcp_secret_name = Some(secret_name.clone());
+                c
             }
         }
         SecretsBackendInput::Azure {
@@ -1503,11 +1499,10 @@ fn secrets_config_from_input(
             }
             #[cfg(feature = "azure-secrets")]
             {
-                SecretsConfig {
-                    azure_vault_url: Some(vault_url.clone()),
-                    azure_secret_name: Some(secret_name.clone()),
-                    ..Default::default()
-                }
+                let mut c = SecretsConfig::default();
+                c.azure_vault_url = Some(vault_url.clone());
+                c.azure_secret_name = Some(secret_name.clone());
+                c
             }
         }
         SecretsBackendInput::Vault {
@@ -1551,23 +1546,22 @@ fn secrets_config_from_input(
             }
             #[cfg(feature = "vault-secrets")]
             {
-                SecretsConfig {
-                    vault_addr: Some(addr.clone()),
-                    vault_secret_path: Some(secret_path.clone()),
-                    vault_kv_mount: kv_mount.clone(),
-                    vault_secret_key: secret_key.clone(),
-                    vault_namespace: namespace.clone(),
-                    vault_auth_method: auth_method.clone(),
-                    vault_k8s_role: k8s_role.clone(),
-                    vault_k8s_mount: k8s_mount.clone(),
-                    vault_k8s_jwt_path: k8s_jwt_path.clone(),
-                    vault_token: token.clone(),
-                    vault_approle_role_id: approle_role_id.clone(),
-                    vault_approle_secret_id: approle_secret_id.clone(),
-                    vault_approle_mount: approle_mount.clone(),
-                    vault_skip_verify: *skip_verify,
-                    ..SecretsConfig::default()
-                }
+                let mut c = SecretsConfig::default();
+                c.vault_addr = Some(addr.clone());
+                c.vault_secret_path = Some(secret_path.clone());
+                c.vault_kv_mount = kv_mount.clone();
+                c.vault_secret_key = secret_key.clone();
+                c.vault_namespace = namespace.clone();
+                c.vault_auth_method = auth_method.clone();
+                c.vault_k8s_role = k8s_role.clone();
+                c.vault_k8s_mount = k8s_mount.clone();
+                c.vault_k8s_jwt_path = k8s_jwt_path.clone();
+                c.vault_token = token.clone();
+                c.vault_approle_role_id = approle_role_id.clone();
+                c.vault_approle_secret_id = approle_secret_id.clone();
+                c.vault_approle_mount = approle_mount.clone();
+                c.vault_skip_verify = *skip_verify;
+                c
             }
         }
         SecretsBackendInput::Kubernetes {
@@ -1585,12 +1579,11 @@ fn secrets_config_from_input(
             }
             #[cfg(feature = "k8s-secrets")]
             {
-                SecretsConfig {
-                    k8s_secret_name: Some(secret_name.clone()),
-                    k8s_namespace: namespace.clone(),
-                    k8s_secret_key: secret_key.clone(),
-                    ..SecretsConfig::default()
-                }
+                let mut c = SecretsConfig::default();
+                c.k8s_secret_name = Some(secret_name.clone());
+                c.k8s_namespace = namespace.clone();
+                c.k8s_secret_key = secret_key.clone();
+                c
             }
         }
         SecretsBackendInput::Plaintext => {
@@ -1609,10 +1602,9 @@ fn secrets_config_from_input(
             //
             // `allow_plaintext` is only the *permission*; `backend` below is
             // what actually selects plaintext over the compiled-in keyring.
-            SecretsConfig {
-                allow_plaintext: true,
-                ..SecretsConfig::default()
-            }
+            let mut c = SecretsConfig::default();
+            c.allow_plaintext = true;
+            c
         }
     };
     config.backend = Some(selector);

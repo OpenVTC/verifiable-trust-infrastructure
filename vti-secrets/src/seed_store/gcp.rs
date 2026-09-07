@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use tokio::sync::OnceCell;
 use tracing::debug;
 use vti_common::error::AppError;
 
@@ -12,6 +13,9 @@ use vti_common::error::AppError;
 pub struct GcpSeedStore {
     project: String,
     secret_name: String,
+    /// Built once on first use and reused. Constructing a client per call also
+    /// re-resolves credentials per call, which is a round trip of its own (R1.2).
+    client: OnceCell<google_cloud_secretmanager_v1::client::SecretManagerService>,
 }
 
 impl GcpSeedStore {
@@ -19,6 +23,7 @@ impl GcpSeedStore {
         Self {
             project,
             secret_name,
+            client: OnceCell::new(),
         }
     }
 
@@ -32,11 +37,17 @@ impl GcpSeedStore {
 
     async fn client(
         &self,
-    ) -> Result<google_cloud_secretmanager_v1::client::SecretManagerService, AppError> {
-        google_cloud_secretmanager_v1::client::SecretManagerService::builder()
-            .build()
+    ) -> Result<&google_cloud_secretmanager_v1::client::SecretManagerService, AppError> {
+        self.client
+            .get_or_try_init(|| async {
+                google_cloud_secretmanager_v1::client::SecretManagerService::builder()
+                    .build()
+                    .await
+                    .map_err(|e| {
+                        AppError::SecretStore(format!("GCP Secret Manager client error: {e}"))
+                    })
+            })
             .await
-            .map_err(|e| AppError::SecretStore(format!("GCP Secret Manager client error: {e}")))
     }
 }
 

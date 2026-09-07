@@ -2,6 +2,7 @@
 mod aws;
 #[cfg(feature = "azure-secrets")]
 mod azure;
+mod caching;
 #[cfg(feature = "config-seed")]
 mod config;
 #[cfg(feature = "gcp-secrets")]
@@ -20,6 +21,7 @@ mod vault;
 pub use aws::AwsSeedStore;
 #[cfg(feature = "azure-secrets")]
 pub use azure::AzureSeedStore;
+pub use caching::CachingSeedStore;
 #[cfg(feature = "config-seed")]
 pub use config::ConfigSeedStore;
 #[cfg(feature = "gcp-secrets")]
@@ -84,16 +86,45 @@ pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// A backend requested on a binary built without its feature is a hard
 /// `Config` error — never a silent fall-through to keyring or plaintext.
 ///
+/// **Caching.** The selected backend is wrapped in a [`CachingSeedStore`] unless
+/// `secrets.cache_ttl_secs` is `0`. The seed is read on every key-touching
+/// request, so on the remote backends an uncached store makes remote-call volume
+/// track request volume — on AWS, one billed KMS `Decrypt` per signature. See
+/// [`CachingSeedStore`]'s module docs for the invariants that make reuse safe.
+pub fn create_seed_store(
+    secrets: &SecretsConfig,
+    data_dir: &Path,
+) -> Result<Box<dyn SeedStore>, AppError> {
+    let backend = build_backend(secrets, data_dir)?;
+
+    // A zero TTL means "no caching" — hand back the bare backend rather than a
+    // decorator whose entries are expired the instant they are stored.
+    if secrets.cache_ttl_secs == 0 {
+        tracing::debug!("seed-store caching disabled (secrets.cache_ttl_secs = 0)");
+        return Ok(backend);
+    }
+
+    let ttl = std::time::Duration::from_secs(secrets.cache_ttl_secs);
+    tracing::debug!(
+        ttl_secs = secrets.cache_ttl_secs,
+        "seed-store reads cached in memory"
+    );
+    Ok(Box::new(CachingSeedStore::new(backend, ttl)))
+}
+
+/// Build the configured backend itself, before the cache is layered on.
+///
+/// Split out of [`create_seed_store`] so the caching decision is made in one
+/// place: this function has a `return` per backend arm, and wrapping at each of
+/// them is exactly how one arm ends up un-cached.
+///
 /// `unused_variables` allowed: `secrets` / `data_dir` are only read under
 /// specific feature flags; a build with none of the cloud/keyring/config-seed
 /// features compiled leaves them unused, which is fine — we fall through
 /// to the plaintext backend. rustc's dead-code lint can't see through
 /// the cfg-gated early returns.
 #[allow(unused_variables)]
-pub fn create_seed_store(
-    secrets: &SecretsConfig,
-    data_dir: &Path,
-) -> Result<Box<dyn SeedStore>, AppError> {
+fn build_backend(secrets: &SecretsConfig, data_dir: &Path) -> Result<Box<dyn SeedStore>, AppError> {
     let explicit = secrets.backend;
 
     // Is backend `b` the one to build? An explicit selector wins outright;

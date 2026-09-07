@@ -52,6 +52,8 @@ serde = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+# Wipes the cached master seed on eviction / drop (P0.7).
+zeroize = { version = "1" }
 
 # Onboarding feature: the SDK session/auth state machine + local did:key mint.
 vta-sdk = { path = "../vta-sdk", version = "0.33", features = [
@@ -102,7 +104,9 @@ keyring-core = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { workspace = true }
+# `test-util` gives the seed-cache tests a paused clock, so TTL expiry is
+# asserted deterministically instead of by sleeping.
+tokio = { workspace = true, features = ["test-util"] }
 toml = { workspace = true }
 
 [lints]
