@@ -226,7 +226,8 @@ pub fn served_not_advertised(served: &[Protocol], caps: &ServiceCapabilities) ->
 }
 
 /// How loudly a [`Finding`] should be reported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// The document promises something this build cannot deliver. Clients that
     /// obey the document will fail.
@@ -238,10 +239,53 @@ pub enum Severity {
     Info,
 }
 
+/// Which observation a [`Finding`] is, independent of how it is worded.
+///
+/// The prose in [`Finding::message`] is written for an operator and will be
+/// reworded; a console that keys its rendering off substrings of it breaks
+/// silently the first time it is. This enum is the stable identity, so a
+/// consumer can style, order and link a finding without parsing English.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum FindingCode {
+    /// The document advertises a messaging transport this build cannot serve.
+    /// The failure this module exists for: every conforming client picks it,
+    /// and the more correct the client, the more certainly it fails.
+    AdvertisedNotServable,
+    /// The document advertises no messaging transport at all — REST only.
+    NoMessagingAdvertised,
+    /// TSP is advertised with no `DIDCommMessaging` behind it, so a peer that
+    /// does not speak TSP has no messaging route in.
+    NoDidcommFallback,
+    /// This build serves a transport the document does not advertise. Normal
+    /// mid-rollout; never a fault.
+    ServedNotAdvertised,
+}
+
 /// One observation about the document-versus-binary relationship.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Carries both a one-line [`summary`](Finding::summary) and the full
+/// [`message`](Finding::message) because the two consumers need different
+/// lengths and must not be allowed to drift into different claims: `vtc
+/// status` and the daemon log print the message, the admin console renders the
+/// summary as a headline with the message beneath it. Both are written in
+/// [`findings_against`], once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Finding {
+    /// Stable identity — match on this, never on the prose.
+    pub code: FindingCode,
     pub severity: Severity,
+    /// The transport this is about (`"tsp"` / `"didcomm"` / `"rest"`), when it
+    /// is about one. [`FindingCode::NoMessagingAdvertised`] and
+    /// [`FindingCode::NoDidcommFallback`] are statements about the document as
+    /// a whole, so they carry `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    /// One line, no remediation — what state the document and binary are in.
+    pub summary: String,
+    /// The full operator-facing explanation: what is wrong, what it causes,
+    /// and every way to fix it (R6.4).
     pub message: String,
 }
 
@@ -259,7 +303,13 @@ pub fn findings_against(served: &[Protocol], caps: &ServiceCapabilities) -> Vec<
     // 1. Promised but not deliverable. The failure this module exists for.
     for u in unservable_against(served, caps) {
         out.push(Finding {
+            code: FindingCode::AdvertisedNotServable,
             severity: Severity::Error,
+            protocol: Some(u.protocol.as_str().to_string()),
+            summary: format!(
+                "the DID document advertises {} but this build cannot serve it",
+                u.protocol
+            ),
             message: u.remediation(),
         });
     }
@@ -271,7 +321,12 @@ pub fn findings_against(served: &[Protocol], caps: &ServiceCapabilities) -> Vec<
     //    that the document does not say so.
     if !advertises_messaging(caps) {
         out.push(Finding {
+            code: FindingCode::NoMessagingAdvertised,
             severity: Severity::Warn,
+            protocol: None,
+            summary: "the DID document advertises no messaging transport — this community is \
+                      reachable over REST only"
+                .to_string(),
             message: "this VTC's DID document advertises no messaging transport at all (no \
                       `TSPTransport`, no `DIDCommMessaging`) — a client resolving it can reach \
                       this community over REST only, and nothing can be delivered to it over \
@@ -284,7 +339,12 @@ pub fn findings_against(served: &[Protocol], caps: &ServiceCapabilities) -> Vec<
     // 3. TSP with nothing behind it.
     if lacks_didcomm_fallback(caps) {
         out.push(Finding {
+            code: FindingCode::NoDidcommFallback,
             severity: Severity::Warn,
+            protocol: None,
+            summary: "the DID document advertises TSP with no DIDComm fallback — a peer that \
+                      does not speak TSP has no messaging route in"
+                .to_string(),
             message: "this VTC advertises TSP but no DIDComm mediator, so a peer that does not \
                       speak TSP has no messaging transport to fall back to, and a build without \
                       the `tsp` feature would have none at all. tsp-enablement.md §12 Phase A \
@@ -297,7 +357,13 @@ pub fn findings_against(served: &[Protocol], caps: &ServiceCapabilities) -> Vec<
     // 4. Capable of more than it claims. A staged rollout, not a fault.
     for p in served_not_advertised(served, caps) {
         out.push(Finding {
+            code: FindingCode::ServedNotAdvertised,
             severity: Severity::Info,
+            protocol: Some(p.as_str().to_string()),
+            summary: format!(
+                "this build serves {p}, but the DID document does not advertise it, so no \
+                 client will choose it"
+            ),
             message: format!(
                 "this build serves {p} but the DID document does not advertise it, so no client \
                  will choose it. Normal mid-rollout (ship the capable binary, then add the \
@@ -955,5 +1021,111 @@ mod tests {
             Some(Severity::Error),
             "the unservable-transport error must lead: {f:?}"
         );
+    }
+
+    /// The deployed document against the build that actually ships — the state
+    /// an operator sees on a healthy VTC today, and the one the admin console
+    /// used to describe with a single grey line.
+    ///
+    /// Two findings, and the console could reconstruct only the second of them
+    /// from the per-protocol `advertised`/`serviceable` flags. The first is a
+    /// statement about the *shape* of the advertised set, which no pair of
+    /// booleans encodes — so the surface that showed "served but not
+    /// advertised: DIDComm" was structurally unable to also say why that
+    /// mattered.
+    #[test]
+    fn the_shipping_build_against_the_deployed_document_explains_both_halves() {
+        let f = findings_against(TSP_BUILD, &deployed_shape());
+
+        assert!(
+            messages(&f, Severity::Error).is_empty(),
+            "the shipping build serves the TSP this document advertises: {f:?}"
+        );
+
+        let codes: Vec<FindingCode> = f.iter().map(|f| f.code).collect();
+        assert_eq!(
+            codes,
+            vec![
+                FindingCode::NoDidcommFallback,
+                FindingCode::ServedNotAdvertised
+            ],
+            "the warning must come with — and before — the informational line \
+             it explains: {f:?}"
+        );
+
+        assert_eq!(
+            f[1].protocol.as_deref(),
+            Some("didcomm"),
+            "a per-protocol finding names its protocol so a consumer need not \
+             parse the prose: {f:?}"
+        );
+        assert_eq!(
+            f[0].protocol, None,
+            "a finding about the document as a whole names no single protocol: {f:?}"
+        );
+    }
+
+    /// Every finding carries a scannable headline *and* the remediation, and
+    /// they are not the same string.
+    ///
+    /// The two exist because the console renders the summary as a heading with
+    /// the message beneath it; a summary that merely repeated the message
+    /// would render as the paragraph twice, and one that was empty would
+    /// render as a blank heading. Neither fails to compile.
+    #[test]
+    fn every_finding_has_a_headline_distinct_from_its_remediation() {
+        for served in [TSP_BUILD, NON_TSP_BUILD] {
+            for caps in [
+                deployed_shape(),
+                tsp_and_didcomm(),
+                didcomm_only(),
+                rest_only(),
+            ] {
+                for f in findings_against(served, &caps) {
+                    assert!(!f.summary.is_empty(), "empty summary: {f:?}");
+                    assert!(!f.message.is_empty(), "empty message: {f:?}");
+                    assert_ne!(
+                        f.summary, f.message,
+                        "the headline must not restate the remediation: {f:?}"
+                    );
+                    assert!(
+                        f.summary.len() < f.message.len(),
+                        "the headline is the short one: {f:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The console styles, orders and groups on `code` and `severity`, so both
+    /// are part of the wire contract that `openapi.json` publishes. Pin the
+    /// spellings: a `rename_all` slipping off either enum retypes the console
+    /// against strings the daemon never sends, and TypeScript is happy either
+    /// way because it is checking generated types against themselves.
+    #[test]
+    fn finding_wire_shape_is_camel_case() {
+        let f = findings_against(TSP_BUILD, &deployed_shape());
+        let json = serde_json::to_value(&f[1]).expect("a finding serialises");
+
+        assert_eq!(json["code"], "servedNotAdvertised");
+        assert_eq!(json["severity"], "info");
+        assert_eq!(json["protocol"], "didcomm");
+        assert!(json.get("summary").is_some());
+        assert!(json.get("message").is_some());
+
+        // `protocol` is skipped rather than sent as null when the finding is
+        // about the document as a whole.
+        let whole = serde_json::to_value(&f[0]).expect("a finding serialises");
+        assert_eq!(whole["code"], "noDidcommFallback");
+        assert_eq!(whole["severity"], "warn");
+        assert!(
+            whole.get("protocol").is_none(),
+            "an absent protocol is absent, not null: {whole}"
+        );
+
+        let err = findings_against(NON_TSP_BUILD, &deployed_shape());
+        let err = serde_json::to_value(&err[0]).expect("a finding serialises");
+        assert_eq!(err["code"], "advertisedNotServable");
+        assert_eq!(err["severity"], "error");
     }
 }

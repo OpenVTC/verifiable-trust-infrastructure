@@ -403,12 +403,16 @@ fn print_transport_section(caps: Option<&vta_sdk::protocol::matching::ServiceCap
         eprintln!("  {GREEN}✓{RESET} document and binary agree");
         return;
     }
+    // Headline then remediation, rather than one long paragraph per finding.
+    // The operator running this is usually scanning for *which* thing is
+    // wrong; the fix is what they read second, once they have found it.
     for f in findings {
         let (mark, colour) = match f.severity {
             Severity::Error => ("✗", RED),
             Severity::Warn => ("!", YELLOW),
             Severity::Info => ("·", DIM),
         };
-        eprintln!("  {colour}{mark}{RESET} {}", f.message);
+        eprintln!("  {colour}{mark}{RESET} {}", f.summary);
+        eprintln!("    {DIM}{}{RESET}", f.message);
     }
 }

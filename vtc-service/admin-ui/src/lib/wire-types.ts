@@ -89,4 +89,7 @@ export type GraphEdge = Schemas["GraphEdge"];
 export type GraphHalf = Schemas["GraphHalf"];
 export type DiagnosticsResponse = Schemas["DiagnosticsResponse"];
 export type TransportStatus = Schemas["TransportStatus"];
+export type TransportFinding = Schemas["Finding"];
+export type TransportFindingCode = Schemas["FindingCode"];
+export type DiagnosticsExt = Schemas["DiagnosticsExt"];
 export type RegistryTransport = Schemas["RegistryTransport"];

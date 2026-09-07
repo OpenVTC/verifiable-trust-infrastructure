@@ -149,8 +149,10 @@ export function Recognition() {
               <QueueTile
                 label="Pending"
                 value={diagnostics.data.queueDepth}
+                // `null` (empty queue) and `undefined` (no response yet) both
+                // mean nothing is waiting; `== null` covers both.
                 foot={
-                  oldestPending === undefined
+                  oldestPending == null
                     ? "nothing waiting"
                     : `oldest ${formatDuration(oldestPending)}`
                 }
@@ -158,7 +160,7 @@ export function Recognition() {
                 // depth on its own is normal (a burst of joins drains); depth
                 // that stays *old* is the shape of a stuck reconciler.
                 tone={
-                  oldestPending !== undefined && oldestPending >= 3600
+                  oldestPending != null && oldestPending >= 3600
                     ? "warn"
                     : "neutral"
                 }

@@ -5227,6 +5227,19 @@
           }
         }
       },
+      "DiagnosticsExt": {
+        "type": "object",
+        "description": "The `ext` envelope on the diagnostics response.\n\n`spec/vtc/registry/diagnostics/0.1#response` is `additionalProperties:\nfalse` and `response_conformance` enforces it against every response an\nintegration test provokes, so a new top-level field here is a spec change\nupstream in `trust-tasks-rs` before it is a change in this repo. `ext` is\nthe mechanism the spec provides instead (SPEC.md §4.5.1) — an open object\nwhose immediate keys must each be a reverse-DNS namespace, with the\nstructure beneath one opaque to the framework.\n\nTyped rather than a bare `serde_json::Value` so the shape reaches\n`openapi.json`, and from there the console's generated `wire.ts`. An\nuntyped `ext` would publish the field and un-type exactly the consumer it\nexists for.",
+        "required": [
+          "org.openvtc"
+        ],
+        "properties": {
+          "org.openvtc": {
+            "$ref": "#/components/schemas/OpenVtcDiagnostics",
+            "description": "`org.openvtc`, not `vtc`: §4.5.1 requires at least two segments\n(`^[a-z][a-z0-9-]*(\\.[a-z0-9-]+)+$`), and a bare `vtc` claims a name\nnobody owns — the collision the rule exists to prevent. Same namespace\nthe audit surface already extends under."
+          }
+        }
+      },
       "DiagnosticsResponse": {
         "type": "object",
         "description": "Phase 3 M3.8 — admin-gated diagnostics view.\n\nSurfaces enough of the trust-registry reconciler's internal\nstate to debug \"is sync stuck?\" without shelling onto the\nhost. The fields are picked for *operator action*, not raw\nmetrics dump:\n\n- `registry_status` — does the daemon think the registry\n  is reachable right now? Mirrors the same flag on\n  `GET /v1/community/profile` (M3.2).\n- `queue_depth` — count of pending+InFlight rows. A\n  monotonically rising number means the registry is\n  refusing dispatch.\n- `oldest_pending_age_seconds` — staleness of the\n  longest-waiting job. Drives the \"≥1h behind →\n  degraded\" SLI per spec §8.3.\n- `rtbf_batched_count` — how many jobs are parked behind\n  the RTBF window. Lets operators verify the batch\n  protection is active without inspecting fjall.\n- `failed_count` — terminal-failure rows the syncer gave\n  up on (`attempts > max_attempts` or\n  `RegistryError::Permanent`). These need operator\n  triage; the syncer won't retry them.\n- `last_success_at` / `last_failure_at` / `last_error` —\n  replayed verbatim from the health probe state.\n\nDiagnostics is **admin-gated**, not super-admin: ops staff\nrunning on-call should be able to read this without\nholding the super-admin role.",
@@ -5239,9 +5252,14 @@
           "syncerRunning",
           "syncerRestarts",
           "messagingStatus",
-          "transports"
+          "transports",
+          "ext"
         ],
         "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/DiagnosticsExt",
+            "description": "Vendor-namespaced additions to the published response."
+          },
           "failedCount": {
             "type": "integer",
             "format": "int64",
@@ -5610,6 +5628,50 @@
             "type": "string"
           }
         }
+      },
+      "Finding": {
+        "type": "object",
+        "description": "One observation about the document-versus-binary relationship.\n\nCarries both a one-line [`summary`](Finding::summary) and the full\n[`message`](Finding::message) because the two consumers need different\nlengths and must not be allowed to drift into different claims: `vtc\nstatus` and the daemon log print the message, the admin console renders the\nsummary as a headline with the message beneath it. Both are written in\n[`findings_against`], once.",
+        "required": [
+          "code",
+          "severity",
+          "summary",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/FindingCode",
+            "description": "Stable identity — match on this, never on the prose."
+          },
+          "message": {
+            "type": "string",
+            "description": "The full operator-facing explanation: what is wrong, what it causes,\nand every way to fix it (R6.4)."
+          },
+          "protocol": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The transport this is about (`\"tsp\"` / `\"didcomm\"` / `\"rest\"`), when it\nis about one. [`FindingCode::NoMessagingAdvertised`] and\n[`FindingCode::NoDidcommFallback`] are statements about the document as\na whole, so they carry `None`."
+          },
+          "severity": {
+            "$ref": "#/components/schemas/Severity"
+          },
+          "summary": {
+            "type": "string",
+            "description": "One line, no remediation — what state the document and binary are in."
+          }
+        }
+      },
+      "FindingCode": {
+        "type": "string",
+        "description": "Which observation a [`Finding`] is, independent of how it is worded.\n\nThe prose in [`Finding::message`] is written for an operator and will be\nreworded; a console that keys its rendering off substrings of it breaks\nsilently the first time it is. This enum is the stable identity, so a\nconsumer can style, order and link a finding without parsing English.",
+        "enum": [
+          "advertisedNotServable",
+          "noMessagingAdvertised",
+          "noDidcommFallback",
+          "servedNotAdvertised"
+        ]
       },
       "FinishBody": {
         "type": "object",
@@ -6591,6 +6653,22 @@
             ],
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "OpenVtcDiagnostics": {
+        "type": "object",
+        "description": "What OpenVTC adds to the standard diagnostics payload.",
+        "required": [
+          "transportFindings"
+        ],
+        "properties": {
+          "transportFindings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Finding"
+            },
+            "description": "What the document-versus-binary comparison actually *means*, from\n[`transport_capability::findings_for_build`](crate::transport_capability::findings_for_build)\n— the same list `vtc status` prints and the daemon logs at messaging\nstart.\n\nServed rather than re-derived in the console because two of the four\nfindings cannot be reconstructed from\n[`DiagnosticsResponse::transports`] at all. \"advertises TSP with no\nDIDComm fallback\" and \"advertises no messaging at all\" are statements\nabout the *shape* of the advertised set, not about any one protocol's\ntwo booleans, so a console deriving its own view necessarily dropped\nthem — and the first of those is the finding that explains why an\noperator should care about the informational line it *could* render.\nRe-deriving also conflated \"this build cannot serve it\" with \"the\nmediator socket is down\", because `serviceable` is the conjunction,\nwhich turned a transient disconnect into a document-is-broken banner.\n\nAdmin-gated, which is what lets it carry the full remediation prose:\nthat text names build feature flags, and the unauthenticated community\nprofile deliberately excludes it (see\n[`TransportStatus`](crate::transport_capability::TransportStatus)).\n\nEmpty means either \"document and binary agree\" or \"the DID did not\nresolve\" — [`DiagnosticsResponse::transports`] being empty\ndistinguishes them."
           }
         }
       },
@@ -8423,6 +8501,15 @@
             "description": "The DID this session authenticates."
           }
         }
+      },
+      "Severity": {
+        "type": "string",
+        "description": "How loudly a [`Finding`] should be reported.",
+        "enum": [
+          "error",
+          "warn",
+          "info"
+        ]
       },
       "ShowWhen": {
         "type": "object",

@@ -301,11 +301,16 @@ pub async fn run_didcomm_service(
             // `vtc status` also renders — so an operator who runs `vtc status`
             // to explain a boot message is told the same story, not a second
             // one.
+            //
+            // `code` rides along as a structured field so a log pipeline can
+            // alert on the finding rather than on a substring of prose that
+            // exists to be reworded.
             for finding in crate::transport_capability::findings_for_build(&caps) {
+                let code = format!("{:?}", finding.code);
                 match finding.severity {
-                    Severity::Error => error!("{}", finding.message),
-                    Severity::Warn => warn!("{}", finding.message),
-                    Severity::Info => info!("{}", finding.message),
+                    Severity::Error => error!(finding = %code, "{}", finding.message),
+                    Severity::Warn => warn!(finding = %code, "{}", finding.message),
+                    Severity::Info => info!(finding = %code, "{}", finding.message),
                 }
             }
 
