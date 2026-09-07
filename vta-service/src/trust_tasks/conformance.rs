@@ -407,33 +407,29 @@ fn key_result() -> CreateKeyResultBody {
 
 /// A fully-populated canonical `AclEntry` (the family's shared component).
 fn acl_entry() -> AclEntry {
-    AclEntry {
-        subject: SUBJECT.into(),
-        role: "reader".into(),
+    let mut entry = AclEntry::new(SUBJECT.into(), "reader".into(), vec!["ctx-a".into()]);
+    entry.label = Some("build agent".into());
+    entry.created_at = Some(dt());
+    entry.created_by = Some("did:key:z6MkAdmin".into());
+    entry.updated_at = Some(dt());
+    entry.updated_by = Some("did:key:z6MkAdmin".into());
+    entry.expires_at = Some(dt());
+    entry.step_up = Some(StepUp {
+        approver: Some("did:key:z6MkApprover".into()),
+        require: Some("delegated".into()),
+    });
+    entry.approve = Some(Approve {
+        all: false,
         scopes: vec!["ctx-a".into()],
-        label: Some("build agent".into()),
-        created_at: Some(dt()),
-        created_by: Some("did:key:z6MkAdmin".into()),
-        updated_at: Some(dt()),
-        updated_by: Some("did:key:z6MkAdmin".into()),
-        expires_at: Some(dt()),
-        step_up: Some(StepUp {
-            approver: Some("did:key:z6MkApprover".into()),
-            require: Some("delegated".into()),
-        }),
-        approve: Some(Approve {
-            all: false,
-            scopes: vec!["ctx-a".into()],
-        }),
-        // `allowedKeys` (#818) reached the published
-        // `acl/_shared/0.1/acl-entry` component in `trust-tasks-rs` 0.2.51,
-        // so the entry every ACL response embeds now carries it. Populated
-        // rather than `None` deliberately: `None` and `Some(∅)` are opposite
-        // grants and only a present value proves the member survives the
-        // wire under its canonical `allowedKeys` spelling.
-        allowed_keys: Some(vec!["tenant-key-a".into()]),
-        ext: None,
-    }
+    });
+    // `allowedKeys` (#818) reached the published
+    // `acl/_shared/0.1/acl-entry` component in `trust-tasks-rs` 0.2.51,
+    // so the entry every ACL response embeds now carries it. Populated
+    // rather than the constructor's `None` deliberately: `None` and `Some(∅)`
+    // are opposite grants and only a present value proves the member survives
+    // the wire under its canonical `allowedKeys` spelling.
+    entry.allowed_keys = Some(vec!["tenant-key-a".into()]);
+    entry
 }
 
 fn to_v<T: serde::Serialize>(t: T) -> Value {
@@ -1802,19 +1798,19 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     namespace: "openvtc".into(),
                     mode: Some(PutManyMode::Independent),
                     writes: vec![
-                        AppStateWrite {
-                            key: "community/acme".into(),
-                            value: None,
-                            merge_patch: Some(serde_json::json!({ "role": "owner" })),
-                            expected_version: Some(52),
-                            ext: None,
+                        {
+                            let mut w = AppStateWrite::new("community/acme".into());
+                            w.merge_patch =
+                                Some(serde_json::json!({ "role": "owner" }));
+                            w.expected_version = Some(52);
+                            w
                         },
-                        AppStateWrite {
-                            key: "profile/labels".into(),
-                            value: Some(serde_json::json!({ "colours": { "acme": "blue" } })),
-                            merge_patch: None,
-                            expected_version: Some(0),
-                            ext: None,
+                        {
+                            let mut w = AppStateWrite::new("profile/labels".into());
+                            w.value =
+                                Some(serde_json::json!({ "colours": { "acme": "blue" } }));
+                            w.expected_version = Some(0);
+                            w
                         },
                     ],
                     ext: None,

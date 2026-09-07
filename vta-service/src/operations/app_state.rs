@@ -2559,27 +2559,24 @@ mod tests {
         put_value(&ks, &locks, "ctx", "openvtc", "b", json!(1)).await;
 
         let writes = vec![
-            AppStateWrite {
-                key: "a".into(),
-                value: Some(json!(2)),
-                merge_patch: None,
-                expected_version: Some(a.version),
-                ext: None,
+            {
+                let mut w = AppStateWrite::new("a".into());
+                w.value = Some(json!(2));
+                w.expected_version = Some(a.version);
+                w
             },
-            AppStateWrite {
-                key: "b".into(),
-                value: Some(json!(2)),
-                merge_patch: None,
+            {
+                let mut w = AppStateWrite::new("b".into());
+                w.value = Some(json!(2));
                 // Stale on purpose.
-                expected_version: Some(999),
-                ext: None,
+                w.expected_version = Some(999);
+                w
             },
-            AppStateWrite {
-                key: "c".into(),
-                value: Some(json!(1)),
-                merge_patch: None,
-                expected_version: Some(0),
-                ext: None,
+            {
+                let mut w = AppStateWrite::new("c".into());
+                w.value = Some(json!(1));
+                w.expected_version = Some(0);
+                w
             },
         ];
         let (results, high) = put_many(
@@ -2617,19 +2614,17 @@ mod tests {
         let counter_before = read_counter(&ks, "ctx", "openvtc").await.unwrap();
 
         let writes = vec![
-            AppStateWrite {
-                key: "member".into(),
-                value: Some(json!({"label": "Cyprus"})),
-                merge_patch: None,
-                expected_version: Some(0),
-                ext: None,
+            {
+                let mut w = AppStateWrite::new("member".into());
+                w.value = Some(json!({"label": "Cyprus"}));
+                w.expected_version = Some(0);
+                w
             },
-            AppStateWrite {
-                key: "index".into(),
-                value: Some(json!({"ids": ["cyprus"]})),
-                merge_patch: None,
-                expected_version: Some(999), // stale
-                ext: None,
+            {
+                let mut w = AppStateWrite::new("index".into());
+                w.value = Some(json!({"ids": ["cyprus"]}));
+                w.expected_version = Some(999); // stale
+                w
             },
         ];
         let err = put_many(&ks, &locks, "ctx", "openvtc", &writes, PutManyMode::Atomic)
@@ -2665,19 +2660,17 @@ mod tests {
         let (_d, ks, locks) = open().await;
         let idx = put_value(&ks, &locks, "ctx", "openvtc", "index", json!({"ids": []})).await;
         let writes = vec![
-            AppStateWrite {
-                key: "member".into(),
-                value: Some(json!({"label": "Cyprus"})),
-                merge_patch: None,
-                expected_version: Some(0),
-                ext: None,
+            {
+                let mut w = AppStateWrite::new("member".into());
+                w.value = Some(json!({"label": "Cyprus"}));
+                w.expected_version = Some(0);
+                w
             },
-            AppStateWrite {
-                key: "index".into(),
-                value: Some(json!({"ids": ["cyprus"]})),
-                merge_patch: None,
-                expected_version: Some(idx.version),
-                ext: None,
+            {
+                let mut w = AppStateWrite::new("index".into());
+                w.value = Some(json!({"ids": ["cyprus"]}));
+                w.expected_version = Some(idx.version);
+                w
             },
         ];
         let (results, _) = put_many(&ks, &locks, "ctx", "openvtc", &writes, PutManyMode::Atomic)
@@ -2690,19 +2683,15 @@ mod tests {
     async fn duplicate_keys_in_a_batch_are_refused() {
         let (_d, ks, locks) = open().await;
         let writes = vec![
-            AppStateWrite {
-                key: "k".into(),
-                value: Some(json!(1)),
-                merge_patch: None,
-                expected_version: None,
-                ext: None,
+            {
+                let mut w = AppStateWrite::new("k".into());
+                w.value = Some(json!(1));
+                w
             },
-            AppStateWrite {
-                key: "k".into(),
-                value: Some(json!(2)),
-                merge_patch: None,
-                expected_version: None,
-                ext: None,
+            {
+                let mut w = AppStateWrite::new("k".into());
+                w.value = Some(json!(2));
+                w
             },
         ];
         let err = put_many(
