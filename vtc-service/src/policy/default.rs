@@ -1,6 +1,6 @@
 //! Default policy bundle — spec §7.1 (M2.5).
 //!
-//! The workspace ships nine Rego modules — one per
+//! The workspace ships ten Rego modules — one per
 //! [`PolicyPurpose`] — under `vtc-service/policies/default/`.
 //! They are embedded at compile time via [`include_str!`] so the
 //! binary doesn't read from the filesystem at startup.
@@ -92,13 +92,17 @@ const DEFAULT_SOURCES: &[(PolicyPurpose, &str)] = &[
         PolicyPurpose::RoleChange,
         include_str!("../../policies/default/role_change.rego"),
     ),
+    (
+        PolicyPurpose::Rooms,
+        include_str!("../../policies/default/rooms.rego"),
+    ),
 ];
 
 /// Number of purposes the workspace ships defaults for. Asserted
 /// against [`PolicyPurpose::ALL`] at test time so a missed entry in
 /// `DEFAULT_SOURCES` surfaces as a build-time-ish failure rather
 /// than a silent runtime gap.
-pub const DEFAULT_COUNT: usize = 10;
+pub const DEFAULT_COUNT: usize = 11;
 
 /// Return the embedded default source for `purpose`. Useful to the
 /// admin UX layer that wants to show "reset to default" diffs
@@ -199,6 +203,7 @@ pub async fn install_defaults(
 /// `decision` rule is a pre-migration boolean leftover.
 const CEREMONY_DECISION_PACKAGES: &[(PolicyPurpose, &str)] = &[
     (PolicyPurpose::Directory, "vtc.directory"),
+    (PolicyPurpose::Rooms, "vtc.rooms"),
     (PolicyPurpose::Join, "vtc.join"),
     (PolicyPurpose::Removal, "vtc.removal"),
     (PolicyPurpose::RoleChange, "vtc.role_change"),

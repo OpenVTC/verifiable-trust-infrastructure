@@ -105,14 +105,15 @@ pub const POLICY_SOURCE_MAX_BYTES: usize = 64 * 1024;
 /// `crossCommunityRoles`) — operators wire purposes into REST
 /// payloads + the policies CLI verbs.
 ///
-/// Per spec §7.1, the workspace ships nine purposes. They split
-/// into three groups:
+/// Per spec §7.1, the workspace ships ten purposes. They split
+/// into four groups:
 /// - **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],
 ///   [`Self::Personhood`].
 /// - **Discoverability**: [`Self::Registry`], [`Self::Directory`].
 /// - **Authorization**: [`Self::RoleDefinitions`],
 ///   [`Self::CrossCommunityRoles`],
 ///   [`Self::CrossCommunityRelationships`], [`Self::Relationships`].
+/// - **Hosting**: [`Self::Rooms`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
@@ -131,6 +132,14 @@ pub enum PolicyPurpose {
     /// may grant `admin`, gated by a verified step-up. Distinct from
     /// [`Self::RoleDefinitions`] (the role→permission matrix).
     RoleChange,
+    /// Who may **create a data room** on this community (`vtc.rooms`).
+    ///
+    /// Creation only. Once a room exists, every operation on it is authorized
+    /// by credentials the room itself issued and this community's roster has
+    /// no say — invariant I5 of the data-rooms design, and what lets a room
+    /// change hosts. This purpose decides the narrower question a host is
+    /// unambiguously entitled to decide: whether to lend its disk.
+    Rooms,
 }
 
 impl PolicyPurpose {
@@ -138,7 +147,7 @@ impl PolicyPurpose {
     /// boot-time default-policy loader (M2.5) so missing rows can
     /// be filled from the bundled defaults without listing each
     /// purpose explicitly at the call site.
-    pub const ALL: [PolicyPurpose; 10] = [
+    pub const ALL: [PolicyPurpose; 11] = [
         PolicyPurpose::Join,
         PolicyPurpose::Removal,
         PolicyPurpose::Personhood,
@@ -149,6 +158,7 @@ impl PolicyPurpose {
         PolicyPurpose::CrossCommunityRelationships,
         PolicyPurpose::Relationships,
         PolicyPurpose::RoleChange,
+        PolicyPurpose::Rooms,
     ];
 
     /// Lowercase camelCase wire form of this purpose. Stable wire
@@ -166,6 +176,7 @@ impl PolicyPurpose {
             PolicyPurpose::CrossCommunityRelationships => "crossCommunityRelationships",
             PolicyPurpose::Relationships => "relationships",
             PolicyPurpose::RoleChange => "roleChange",
+            PolicyPurpose::Rooms => "rooms",
         }
     }
 
@@ -187,6 +198,11 @@ impl PolicyPurpose {
             PolicyPurpose::Removal => Some("vtc.removal"),
             PolicyPurpose::RoleChange => Some("vtc.role_change"),
             PolicyPurpose::Directory => Some("vtc.directory"),
+            // Probed by a fixed package like the ceremony purposes: a rooms
+            // policy compiled into the wrong one evaluates to `undefined`,
+            // which this service refuses rather than reads as consent — but an
+            // operator would see every registration denied with no clue why.
+            PolicyPurpose::Rooms => Some("vtc.rooms"),
             _ => None,
         }
     }
@@ -286,7 +302,7 @@ mod tests {
         // the bundled default would silently never load. Drive the
         // count + exhaustiveness assertion off the same constant
         // so a missed entry surfaces at test time.
-        assert_eq!(PolicyPurpose::ALL.len(), 10);
+        assert_eq!(PolicyPurpose::ALL.len(), 11);
         for purpose in PolicyPurpose::ALL {
             // Compiles iff the match is total — `as_str` exhaustively
             // matches every variant; this exists so the assertion

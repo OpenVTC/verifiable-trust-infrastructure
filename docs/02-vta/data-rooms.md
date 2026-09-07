@@ -85,7 +85,7 @@ knowing which half you are standing on saves an afternoon.
 | Succession: nomination, transfer, claim | **Work**, including the "renewing defeats a pending claim" property |
 | **A CLI** | **None.** No `pnm rooms …`. Rooms are driven from `vtc-client` (Rust) or by posting signed Trust Task documents |
 | **Credential issuance** | **Library only.** Nothing serves "issue this member a VMC and a VAC"; the room's owner mints them with `dtg-credentials` and delivers them out of band |
-| **Governance (`rooms.rego`)** | **Not implemented.** Creation checks that the signer is the owner they name (§8.4); *which* members a community lets create rooms on it is still designed rather than built |
+| **Governance (`rooms.rego`)** | **On a VTC.** A community decides who may create a room on it, in Rego, with the shipped default hosting `open`/`attributed` for its own members. A standalone `room-host` has no policy engine — T1's governance is its owner (§8.4) |
 | **Read mirrors** (T3) | **Not implemented.** One write-primary, and everyone reads from it |
 | **Witnessed renewal anchoring** | **Not implemented.** §9 of the design note makes this the owner's job, not the host's; nothing does it yet |
 
@@ -458,13 +458,25 @@ community's ACL or a session.
   `BACKED_UP`, so `POST /v1/backup/export` captures them.
 - **Audit**: room operations land in the VTC's hash-chained audit keyspace, with
   the same tier rule as above.
-- **Governance** (`rooms.rego` — which tiers a community permits, member counts,
-  hosting axes) is designed but **not implemented**; see §8.4.
+- **Governance**: the `rooms` policy purpose (`vtc.rooms` package) decides who
+  may create a room here. The shipped default hosts `open` and `attributed`
+  rooms for the community's own members and refuses `private` until an operator
+  activates a policy permitting it — §7.4's posture, on the grounds that a
+  community which has not decided should not discover it is hosting rooms whose
+  membership it cannot see. Replace it like any other policy:
+  `POST /v1/policies` then activate. A VTC with **no** active `rooms` policy
+  refuses creation rather than answering 500 — a missing decision is a closed
+  door, not a server fault.
+- **What a policy can see**: the creator (their DID, whether they hold a member
+  row, and their role) and the room's identifier, visibility and owner. It
+  deliberately does *not* carry the design's `didControlledBy` /
+  `contentStoredAt` hosting axes — the published `rooms/create/0.1` schema has
+  no member for either, so no host can know them.
 
 Members of a T2 room do not need to be members of the community. Community
-membership is meant to govern *who may create a room here* — that is what
-`rooms.rego` will decide once it lands — while room membership is, and stays,
-the room's own statement.
+membership governs *who may create a room here*; room membership is, and stays,
+the room's own statement — nothing in the family consults the roster once a room
+exists.
 
 ### 8.3 T3 — cross-community
 
@@ -495,10 +507,13 @@ What that does *not* establish is control of the identifier. Someone can still
 register a `roomId` they do not control while naming themselves owner, and so
 deny that id to its real owner on that host. The row confers nothing — every
 later verb needs credentials the real room issued — so it is a nuisance rather
-than a takeover, and bounding it is quota and access control. Community
-governance of *who may create a room here* (`rooms.rego`) is still designed
-rather than built, so on a public host, creation is open to anyone who can
-authenticate as themselves: put a room host behind a proxy you control.
+than a takeover, and bounding it is quota and access control.
+
+**On a VTC, creation is also governed** by the `rooms` policy (§8.2), which is
+how a community says whose rooms it will host. **A standalone `room-host` has no
+policy engine and no roster**, by design — T1's governance is its owner, and
+that sentence is the whole model — so creation there is open to anyone who can
+sign as themselves: put it behind a proxy you control.
 
 ---
 

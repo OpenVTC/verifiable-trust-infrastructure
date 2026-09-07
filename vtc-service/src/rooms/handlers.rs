@@ -22,6 +22,7 @@
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 
+use super::policy as room_policy;
 use crate::server::AppState;
 use crate::trust_tasks::helpers::{
     TrustTaskOutcome, app_error_to_reject, parse_payload, success_response, verify_trust_task_proof,
@@ -120,6 +121,77 @@ const DEFAULT_RETENTION_DAYS: u32 = 90;
 const EPOCH_LIFETIME_DAYS_SECS: u64 =
     vti_rooms::lifecycle::DEFAULT_EPOCH_LIFETIME_DAYS as u64 * 24 * 60 * 60;
 
+/// Ask the active `rooms` policy whether this community will host this room.
+///
+/// Reads the creator's member row — the only place in this file that touches the
+/// roster, and legitimate because the question is "will we lend our disk", not
+/// "who belongs to this room". A DID with no member row reaches the policy as
+/// `member: false` rather than being refused here, so an operator whose policy
+/// admits strangers gets what they wrote.
+async fn govern_creation(
+    state: &AppState,
+    authorized: &authz::AuthorizedCreate,
+    visibility: vti_rooms::Visibility,
+    retention_days: Option<u32>,
+) -> Result<(), vti_common::error::AppError> {
+    // Membership is the member row; the role is the ACL entry beside it — the
+    // same split `ceremony::assemble` uses, so a rooms policy branches on the
+    // same two facts every other purpose does.
+    let member = crate::members::storage::get_member(&state.members_ks, authorized.owner_did())
+        .await
+        .unwrap_or(None);
+    let role = crate::ceremony::assemble::load_actor_role(state, authorized.owner_did())
+        .await
+        .unwrap_or(None);
+
+    let verified = room_policy::VerifiedRoomCreation::assemble(room_policy::RoomCreationFacts {
+        now: chrono::Utc::now(),
+        actor: room_policy::Actor {
+            did: authorized.owner_did().to_string(),
+            role,
+            member: member.is_some(),
+        },
+        room: room_policy::RoomRequest {
+            room_id: authorized.room_id().to_string(),
+            visibility,
+            owner_did: authorized.owner_did().to_string(),
+            retention_days,
+        },
+    })?;
+
+    // A VTC with no active rooms policy **refuses**, rather than answering 500
+    // and inviting a retry. `install_defaults` fills the row at boot, so the
+    // gap means either a first boot that has not reached it or an operator who
+    // deleted the row — and in both cases "we are not currently deciding this"
+    // is a closed door, not a server fault. The message says which, because a
+    // bare 403 on a fresh upgrade would send an operator hunting their
+    // credentials instead of their policy list.
+    let policy = match crate::policy::load_active_compiled(
+        &state.active_policies_ks,
+        &state.policies_ks,
+        crate::policy::model::PolicyPurpose::Rooms,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                room = %authorized.room_id(),
+                "no active rooms policy; refusing the registration"
+            );
+            return Err(vti_common::error::AppError::Forbidden(
+                "room creation denied (no-policy): this community has no active `rooms` \
+                 policy, so it is not currently deciding whether to host rooms. The shipped \
+                 default installs at boot; check `GET /v1/policies`."
+                    .into(),
+            ));
+        }
+    };
+
+    room_policy::decide_room_creation(&verified, &policy)
+}
+
 /// `rooms/create/0.1`.
 ///
 /// The creator brings the room's identifier; this service does not assign one. A room
@@ -143,6 +215,14 @@ pub(crate) async fn handle_create(state: &AppState, doc: TrustTask<Value>) -> Tr
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+
+    // …and the one room operation this community governs. Registering a room is
+    // asking a host for its disk, which is the host's to refuse; every operation
+    // *within* the room stays authorized by the room's own credentials, and the
+    // handlers below never consult the roster. See `super::policy`.
+    if let Err(e) = govern_creation(state, &authorized, req.visibility, req.retention_days).await {
+        return app_error_to_reject(&doc, &e);
+    }
 
     let room = Room {
         room_id: authorized.room_id().to_string(),
@@ -705,8 +785,68 @@ mod tests {
         d.get("payload").cloned().unwrap_or(Value::Null)
     }
 
+    /// Make the fixture's room owner a member of this community.
+    ///
+    /// Needed because registering a room is now governed (`super::policy`): the
+    /// shipped default hosts rooms for its own members, and every fixture owner
+    /// is a fresh `did:key` this VTC has never met. Seeding the row is what the
+    /// tests below were implicitly assuming before creation was governed at all.
+    async fn seed_creator(state: &AppState, f: &RoomFixture) {
+        // The shipped defaults, which a real VTC installs at boot. Without them
+        // there is no active rooms policy and every registration is refused —
+        // correctly, and unhelpfully for a test about something else.
+        crate::policy::default::install_defaults(&state.policies_ks, &state.active_policies_ks)
+            .await
+            .expect("install the shipped default policies");
+
+        crate::members::storage::store_member(
+            &state.members_ks,
+            &crate::members::Member::fresh(f.room.owner_did.clone()),
+        )
+        .await
+        .expect("seed the creator's member row");
+    }
+
+    /// Enable `private` rooms, the way an operator would: by activating a rooms
+    /// policy that permits the tier.
+    ///
+    /// The shipped default denies it (§7.4), so a test about *serving* a private
+    /// room has to say the community decided to host them — which is also the
+    /// working example of how an operator turns the tier on.
+    async fn permit_private(state: &AppState) {
+        let source = "package vtc.rooms\n\n\
+             import rego.v1\n\n\
+             default decision := {\"effect\": \"deny\", \"with\": {\"code\": \"not-a-member\"}}\n\n\
+             decision := {\"effect\": \"allow\"} if input.actor.member == true\n";
+        let id = uuid::Uuid::new_v4();
+        let compiled =
+            crate::policy::engine::compile(source, id).expect("the permissive policy compiles");
+        let mut policy = crate::policy::storage::new_policy(
+            crate::policy::model::PolicyPurpose::Rooms,
+            source.to_string(),
+            *compiled.source_sha256(),
+            "did:key:zOperator".to_string(),
+            2,
+        );
+        policy.id = id;
+        crate::policy::storage::store_policy(&state.policies_ks, &policy)
+            .await
+            .expect("store");
+        crate::policy::storage::set_active_policy_id(
+            &state.active_policies_ks,
+            crate::policy::model::PolicyPurpose::Rooms,
+            id,
+        )
+        .await
+        .expect("activate");
+    }
+
     /// Register the fixture's room with this VTC.
     async fn create(state: &AppState, f: &RoomFixture) -> TrustTaskOutcome {
+        seed_creator(state, f).await;
+        if matches!(f.room.visibility, Visibility::Private) {
+            permit_private(state).await;
+        }
         handle_create(
             state,
             doc(
@@ -723,6 +863,105 @@ mod tests {
             .await,
         )
         .await
+    }
+
+    /// The gap this closes: before the policy gate, anyone who could reach the
+    /// endpoint could register a room here in their own name. A stranger signs a
+    /// perfectly valid registration and is refused by the community, not by the
+    /// proof — and no room row is left behind.
+    #[tokio::test]
+    async fn a_stranger_cannot_register_a_room_on_this_community() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+
+        // The defaults, but no member row for the creator.
+        crate::policy::default::install_defaults(&state.policies_ks, &state.active_policies_ks)
+            .await
+            .expect("install defaults");
+
+        let out = handle_create(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_CREATE_TYPE,
+                json!({
+                    "roomId": f.room.room_id,
+                    "visibility": f.room.visibility,
+                    "ownerDid": f.room.owner_did,
+                }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+
+        assert!(
+            !out.status.is_success(),
+            "a non-member must not register a room here: {}",
+            payload_of(&out)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.body).contains("not-a-member"),
+            "the refusal carries the policy's own code: {}",
+            payload_of(&out)
+        );
+        assert!(
+            vti_rooms::storage::get_room(&state.rooms_ks, &f.room.room_id)
+                .await
+                .is_err(),
+            "a refused registration must not leave the identifier taken"
+        );
+    }
+
+    /// The community's own posture, over the wire: a member may create the tiers
+    /// this community serves, and `private` is refused until an operator says
+    /// otherwise (§7.4).
+    #[tokio::test]
+    async fn a_member_is_refused_a_private_room_until_the_community_enables_it() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Private).await;
+
+        crate::policy::default::install_defaults(&state.policies_ks, &state.active_policies_ks)
+            .await
+            .expect("install defaults");
+        crate::members::storage::store_member(
+            &state.members_ks,
+            &crate::members::Member::fresh(f.room.owner_did.clone()),
+        )
+        .await
+        .expect("seed the member row");
+
+        let out = handle_create(
+            state,
+            doc(
+                state,
+                vti_rooms::wire::ROOMS_CREATE_TYPE,
+                json!({
+                    "roomId": f.room.room_id,
+                    "visibility": f.room.visibility,
+                    "ownerDid": f.room.owner_did,
+                }),
+                &f.owner.did,
+                &f.owner.secret_multibase,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            String::from_utf8_lossy(&out.body).contains("private-tier-not-enabled"),
+            "a member is still refused the tier the community has not enabled: {}",
+            payload_of(&out)
+        );
+
+        // …and enabling it is a policy upload, not a code change.
+        permit_private(state).await;
+        assert!(
+            create(state, &f).await.status.is_success(),
+            "once the community permits private rooms, the same request succeeds"
+        );
     }
 
     /// The community half of the same gate. Registration is the one verb no chain can
@@ -772,7 +1011,8 @@ mod tests {
         let tv = build_test_vtc().await;
         let state = &tv.state;
         let f = RoomFixture::new(Visibility::Open).await;
-        assert!(create(state, &f).await.status.is_success());
+        let out = create(state, &f).await;
+        assert!(out.status.is_success(), "create: {}", payload_of(&out));
 
         let out = handle_put_record(
             state,
