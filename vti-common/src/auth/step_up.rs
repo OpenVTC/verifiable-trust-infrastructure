@@ -60,6 +60,25 @@ pub struct PendingStepUp {
     pub created_at: u64,
     /// Unix seconds after which the step-up is no longer valid.
     pub expires_at: u64,
+    /// The single operation this approval authorises, **in addition to**
+    /// completing the ceremony.
+    ///
+    /// A `persona/disclosure/present` gated by `release: stepUp` needs an
+    /// approval it cannot get from an already-elevated session: reading `acr`
+    /// makes "each time" mean "once per login", which is the failure the
+    /// requirement exists to prevent. So the request that gates a disclosure
+    /// carries the `previewId` here, the relying party marks *that* preview
+    /// approved, and the gate reads the mark rather than the session.
+    ///
+    /// The session is still elevated — the subject did authenticate freshly,
+    /// and that is what the ceremony records. Recording it is not what
+    /// authorises the disclosure.
+    ///
+    /// `None` is the ordinary step-up with nothing bound to it.
+    /// `#[serde(default)]` so a record written before this field existed
+    /// deserialises as one, which is what it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_to: Option<String>,
 }
 
 // The `op_class` module lived here: eleven slugs (`acl/grant`,
@@ -190,6 +209,7 @@ pub fn new_pending_step_up(
         acceptable_evidence,
         created_at,
         expires_at: created_at.saturating_add(ttl_secs),
+        bound_to: None,
     }
 }
 
@@ -221,6 +241,7 @@ mod tests {
             acceptable_evidence: vec!["did-signed".into(), "webauthn".into()],
             created_at: 1000,
             expires_at,
+            bound_to: None,
         }
     }
 
