@@ -1462,6 +1462,14 @@ async fn rotate_key_over_client(
     //     pass authorises TSP too, but it is issued through the ATM and so needs
     //     a DIDComm mediator to issue it to. A failure costs a dropped forwarded
     //     reply on the next connect, never a credential.
+    //
+    //     Skipping it on a TSP-only mediator is correct, not a gap in this
+    //     rotation: the account is created by *authentication* — which the
+    //     reachability probe above just performed — carrying the mediator's
+    //     `global_acl_default`. A permissive default therefore needs nothing
+    //     from us. A restrictive one cannot be fixed from any client over TSP,
+    //     because the mediator's management-task dispatch is DIDComm-only. See
+    //     `crate::acl_setup`'s module docs for the mediator code that shows it.
     if let Some(mediator_did) = probe.account_mediator() {
         let opened = tokio::time::timeout(PROBE_TIMEOUT, async {
             let s = TrustPingSession::new(&new_did, &new_private_key, mediator_did)
