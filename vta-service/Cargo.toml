@@ -332,7 +332,7 @@ tempfile = { version = "3", optional = true }
 # A real dependency rather than a dev-dependency: `test-support` exists to serve
 # *external* consumers, and a dev-dependency would not be available to them.
 # `tsp` so the mediator routes raw-TSP frames, not just DIDComm.
-affinidi-messaging-test-mediator = { version = "0.4", optional = true, features = [
+affinidi-messaging-test-mediator = { version = "0.5", optional = true, features = [
     "tsp",
 ] }
 libc = { workspace = true, optional = true }
