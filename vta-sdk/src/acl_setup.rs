@@ -29,12 +29,41 @@
 //! against an `ExplicitAllow` mediator is expected to require its DID be
 //! pre-authorised.
 //!
-//! TODO(tsp-client): if/when the general client request transport gains a
-//! *persistent* TSP variant (a `Tsp` arm on the `#[non_exhaustive]`
-//! `TransportChoice`, or `TspPingSession` generalised into a request session),
-//! that connect path must also call [`set_client_acl_on_connection`], or an
-//! `ExplicitAllow` mediator will reject it exactly as it did before this
-//! feature. The provisioning logic lives here so only the trigger is needed.
+//! ## Why this is issued over DIDComm, and what that costs a TSP-only mediator
+//!
+//! Everything here goes through the ATM — `account_update` is a DIDComm
+//! message to the mediator — so it needs a DIDComm mediator to issue it to.
+//! That is not an oversight in this crate; **the mediator has no TSP route for
+//! its own management tasks**. In affinidi-messaging-mediator 0.21.0 the
+//! dispatcher that turns a `TrustTaskEnvelope` into `account/update`
+//! (`messages/mod.rs`, `MessageType::process` → `trust_tasks::process`) is
+//! wholly `#[cfg(feature = "didcomm")]` and takes a DIDComm `Message`. A TSP
+//! `Direct`/`Control` message addressed to the mediator does not reach it: it
+//! goes to `deliver_tsp_local` → `deliver_opaque`, which *stores it for
+//! pickup*. There is no packet a TSP-only client can send to set its own ACL.
+//!
+//! What saves a TSP-only deployment is that it usually does not need to. The
+//! account is created at **authentication**, not at first message, and that
+//! path is transport-agnostic: `handlers/authenticate/challenge.rs` carries no
+//! `cfg` gate and calls `account_add(did_hash, global_acl_default, None)`. So a
+//! TSP client that authenticates has an account with the mediator's default
+//! ACL, and where that default is permissive it can send and receive with no
+//! provisioning at all.
+//!
+//! The gap is therefore narrow and precise: **a TSP-only mediator whose
+//! `global_acl_default` is restrictive cannot have client ACLs provisioned by
+//! the client at all, over any transport.** Not a client-side bug, and not one
+//! a client-side change can close — it needs a TSP arm on the mediator's
+//! management dispatch. Until then such a deployment must set account ACLs
+//! administratively. This matters increasingly as TSP displaces DIDComm; see
+//! `docs/05-design-notes/tsp-enablement.md`.
+//!
+//! TSP delivery is *not* exempt from ACLs, so this is a real constraint rather
+//! than a theoretical one: `deliver_opaque` applies "existence, RECEIVE_MESSAGES
+//! and the access-list verdict" via `delivery_decision`, and a recipient that is
+//! not a local account is refused outright. It is only `receive_forwarded` that
+//! is DIDComm-specific — that gate lives in the DIDComm forward protocol
+//! (`messages/protocols/routing.rs`) and TSP never traverses it.
 
 use std::sync::Arc;
 

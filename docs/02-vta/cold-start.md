@@ -257,23 +257,36 @@ cargo run --package pnm-cli -- health
 What happens internally:
 
 1. PNM loads its session, sees `needs_rotation = true`.
-2. Authenticates as the temp did:key (challenge-response).
+2. Connects as the temp did:key over its best transport — **TSP if the
+   VTA advertises it, else DIDComm, else REST**. Rotation is not tied to
+   a transport: the swap is `acl/swap-key/0.1`, a dispatched Trust Task,
+   so one implementation serves all three.
 3. Mints a fresh Ed25519 did:key from CSPRNG.
-4. `GET /acl/<temp-did>` — reads the role + contexts the admin granted.
-5. `POST /acl` with the new DID, same role + contexts.
-6. Challenge-responds as the new DID to verify the grant is live.
-7. `DELETE /acl/<temp-did>` — removes the temp from the ACL.
-8. Saves the session with the new DID, clears the rotation flag.
-9. Finishes the original `pnm health` request.
+4. **Probes the mediator as the new DID** and opens its mediator account,
+   while the temp DID is still authoritative. This checks the one thing
+   the swap cannot: that the new DID is actually reachable. On REST it is
+   best-effort (a REST client never uses the mediator); on TSP/DIDComm a
+   failure aborts the rotation, which is free at this point — nothing has
+   changed yet.
+5. `acl/swap-key` — the VTA **atomically** moves the temp DID's ACL entry
+   (same role, same contexts) onto the new DID and drops the temp, proven
+   by a short-lived VP-JWT audience-bound to this VTA.
+6. Saves the session with the new DID, clears the rotation flag.
+7. Reconnects as the rotated DID and finishes the original `pnm health`.
 
-If the delete fails, PNM logs a warning and continues — the old temp
-is stale anyway. Re-running `pnm health` is a no-op after rotation.
+The swap is one atomic operation, so there is no instant at which two
+DIDs hold the same grant, and none at which neither does. Re-running
+`pnm health` is a no-op after rotation.
+
+If the VTA is unreachable partway through, nothing is half-done: every
+step before the swap leaves the temp DID authoritative, so the whole
+thing is safe to retry.
 
 ## That's it
 
 A fresh VTA with a rotated admin identity on the operator's workstation.
 No admin credentials ever crossed the wire; the temp did:key that briefly
-existed in `pnm setup`'s output is gone from the ACL after step 6.
+existed in `pnm setup`'s output is gone from the ACL after step 5.
 
 ---
 
