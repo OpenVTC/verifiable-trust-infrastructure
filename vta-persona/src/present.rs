@@ -124,6 +124,25 @@ pub struct Preview {
     pub renderer_drops: Vec<String>,
     pub purpose: Option<String>,
     pub expires_at: String,
+    /// Whether any claim in this preview needs a fresh approval to leave.
+    ///
+    /// **Resolved once, here, and stored** — unlike `sensitivity`, which is
+    /// derived at every read. The reason is where the inputs live: the answer
+    /// depends on the holder's per-attribute `release` override, which travels
+    /// down with the materialised claim and is *not* on `PreviewClaim`. The
+    /// preview response's schema declares `additionalProperties: false` on its
+    /// claims, so putting it there would put it on the wire, and this is an
+    /// at-rest decision rather than something a verifier is owed.
+    ///
+    /// Freezing it for the preview's lifetime is also the honest reading: a
+    /// preview is a snapshot of what the holder was shown, it is single-use,
+    /// and it expires in minutes. A holder who changes the override afterwards
+    /// previews again.
+    ///
+    /// `false` on a preview written before this field existed — which is what
+    /// those previews enforced.
+    #[serde(default)]
+    pub step_up_required: bool,
     /// When a step-up approval bound to this preview was recorded, if one was.
     ///
     /// **On the preview, not beside it.** An approval authorises one disclosure
@@ -169,7 +188,13 @@ impl PersonaStore {
         // can rank by what is new rather than listing everything equally.
         let seen = self.claim_types_seen_by(verifier_did).await?;
 
+        // The included originals are kept alongside, because the `release`
+        // decision is read from them and `PreviewClaim` deliberately does not
+        // carry it (see `Preview::step_up_required`). Filtered by `requested`
+        // exactly as `claims` is: a verifier asking for only a name must not be
+        // gated by a card the profile also holds but that is not being sent.
         let mut claims = Vec::new();
+        let mut included: Vec<crate::MaterialisedClaim> = Vec::new();
         for m in &materialised {
             if let Some(want) = requested
                 && !want.iter().any(|t| t == &m.r#type)
@@ -177,6 +202,7 @@ impl PersonaStore {
                 continue;
             }
             claims.push(preview_claim(m, &seen));
+            included.push(m.clone());
         }
 
         if claims.is_empty() {
@@ -213,6 +239,7 @@ impl PersonaStore {
             purpose: purpose.map(str::to_string),
             expires_at: (chrono::Utc::now() + chrono::Duration::seconds(PREVIEW_TTL_SECONDS))
                 .to_rfc3339(),
+            step_up_required: Self::any_claim_requires_step_up(&included),
             approved_at: None,
         };
 
@@ -259,18 +286,30 @@ impl PersonaStore {
     /// Whether this preview would disclose anything the holder has to approve
     /// afresh — any claim whose type resolves to [`ReleaseRequirement::StepUp`].
     ///
-    /// Resolved from the claim **type**, which is all this side of the boundary
-    /// has. A preview is built from the *materialised* copy in the context, and
-    /// a materialised claim deliberately carries no pool identifier — so a
-    /// holder's per-attribute `release` override cannot be read from here. It
-    /// would have to be carried down with the value when the binding is
-    /// written, which is the same direction everything else travels: copies go
-    /// down, nothing reads up. Until it is, no override is stored, so the
-    /// registry default is the whole answer rather than most of it.
+    /// Whether this preview needs a fresh approval before it may be presented.
+    ///
+    /// Reads the decision [`create_preview`](Self::create_preview) recorded.
+    /// See [`Preview::step_up_required`] for why it is stored rather than
+    /// re-derived here.
     #[must_use]
     pub fn requires_step_up(preview: &Preview) -> bool {
-        preview.claims.iter().any(|c| {
-            crate::claim_types::defaults_for(&c.r#type).release
+        preview.step_up_required
+    }
+
+    /// Does any of these materialised claims need a fresh approval to leave?
+    ///
+    /// Per claim: **the holder's override where one travelled down**, and the
+    /// claim-type registry otherwise. The override cannot be looked up from
+    /// here — nothing below the boundary may read the pool — so it is carried
+    /// down with the value at bind time and read off the copy. Copies go down;
+    /// nothing reads up.
+    ///
+    /// A binding written before that field existed carries `None` on every
+    /// claim and resolves entirely from the registry, which is what it did
+    /// before.
+    fn any_claim_requires_step_up(claims: &[crate::MaterialisedClaim]) -> bool {
+        claims.iter().any(|m| {
+            crate::claim_types::release_of_claim(&m.r#type, m.release)
                 == crate::claim_types::ReleaseRequirement::StepUp
         })
     }
@@ -509,6 +548,159 @@ mod tests {
             .await
             .unwrap();
         p.profile_id
+    }
+
+    /// As `bound_with_type`, returning the attribute id too, so a test can
+    /// reach back into the pool and set an override on it.
+    async fn bound_returning_ids(s: &PersonaStore, claim_type: &str) -> (String, String) {
+        let a = new_attribute(
+            claim_type,
+            ValueType::String,
+            serde_json::json!("4111111111111111"),
+            Provenance::SelfAsserted,
+        );
+        s.put(a.clone(), None).await.unwrap();
+        let p = new_profile(
+            "Work",
+            vec![ProfileEntry::Ref {
+                r#ref: a.attribute_id.clone(),
+            }],
+        );
+        s.put_profile(p.clone(), None).await.unwrap();
+        s.set_binding("ctx", "did:persona:a", Some(&p.profile_id), vec![], None)
+            .await
+            .unwrap();
+        (p.profile_id, a.attribute_id)
+    }
+
+    /// A holder's override reaches the gate, in both directions.
+    ///
+    /// This is the whole of what "carry it down at bind time" buys: the
+    /// override is set on the pool attribute, above the boundary, and the
+    /// decision has to arrive at a preview built entirely from the context's
+    /// copy — which cannot read the pool to ask.
+    ///
+    /// Both directions, because both are the holder's to make. Tightening an
+    /// ungated name is the easy case to get right; **loosening a card is the
+    /// one worth pinning**, since an agent that quietly kept gating it would be
+    /// overruling the person the gate exists to serve.
+    #[tokio::test]
+    async fn a_holders_release_override_reaches_the_gate() {
+        // Tighten: a display name the registry does not gate.
+        let (_d, s) = fresh().await;
+        let (p, id) = bound_returning_ids(&s, "name.display").await;
+        let ungated = s
+            .create_preview("ctx", "did:persona:a", "did:verifier:v", None, None, None)
+            .await
+            .unwrap();
+        assert!(
+            !PersonaStore::requires_step_up(&ungated),
+            "registry default"
+        );
+
+        let mut a = s.get(&id).await.unwrap().unwrap();
+        a.release = Some(crate::claim_types::ReleaseRequirement::StepUp);
+        s.put(a, None).await.unwrap();
+        s.set_binding("ctx", "did:persona:a", Some(&p), vec![], None)
+            .await
+            .unwrap();
+        let now_gated = s
+            .create_preview("ctx", "did:persona:a", "did:verifier:v", None, None, None)
+            .await
+            .unwrap();
+        assert!(
+            PersonaStore::requires_step_up(&now_gated),
+            "the holder asked for a fresh approval on their display name and did not get one"
+        );
+
+        // Loosen: a card the registry does gate.
+        let (_d2, s2) = fresh().await;
+        let (p2, id2) = bound_returning_ids(&s2, "payment.card").await;
+        let gated = s2
+            .create_preview("ctx", "did:persona:a", "did:verifier:v", None, None, None)
+            .await
+            .unwrap();
+        assert!(PersonaStore::requires_step_up(&gated), "registry default");
+
+        let mut a2 = s2.get(&id2).await.unwrap().unwrap();
+        a2.release = Some(crate::claim_types::ReleaseRequirement::Consent);
+        s2.put(a2, None).await.unwrap();
+        s2.set_binding("ctx", "did:persona:a", Some(&p2), vec![], None)
+            .await
+            .unwrap();
+        let now_open = s2
+            .create_preview("ctx", "did:persona:a", "did:verifier:v", None, None, None)
+            .await
+            .unwrap();
+        assert!(
+            !PersonaStore::requires_step_up(&now_open),
+            "the holder's own decision about their own pool was overruled"
+        );
+    }
+
+    /// A claim the verifier did not ask for does not gate the disclosure.
+    ///
+    /// The preview is filtered by `requestedClaims`; the gate must be filtered
+    /// the same way. A profile holding a card and a name, asked only for the
+    /// name, is a `consent` disclosure — gating it on the card would demand a
+    /// fresh approval for something that is not being sent.
+    #[tokio::test]
+    async fn a_claim_not_being_sent_does_not_gate_the_one_that_is() {
+        let (_d, s) = fresh().await;
+        let card = new_attribute(
+            "payment.card",
+            ValueType::String,
+            serde_json::json!("4111111111111111"),
+            Provenance::SelfAsserted,
+        );
+        let name = new_attribute(
+            "name.display",
+            ValueType::String,
+            serde_json::json!("Ada"),
+            Provenance::SelfAsserted,
+        );
+        s.put(card.clone(), None).await.unwrap();
+        s.put(name.clone(), None).await.unwrap();
+        let p = new_profile(
+            "Both",
+            vec![
+                ProfileEntry::Ref {
+                    r#ref: card.attribute_id.clone(),
+                },
+                ProfileEntry::Ref {
+                    r#ref: name.attribute_id.clone(),
+                },
+            ],
+        );
+        s.put_profile(p.clone(), None).await.unwrap();
+        s.set_binding("ctx", "did:persona:a", Some(&p.profile_id), vec![], None)
+            .await
+            .unwrap();
+
+        let name_only = s
+            .create_preview(
+                "ctx",
+                "did:persona:a",
+                "did:verifier:v",
+                None,
+                Some(&["name.display".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !PersonaStore::requires_step_up(&name_only),
+            "a card that is not being disclosed gated a disclosure of a display name"
+        );
+
+        let everything = s
+            .create_preview("ctx", "did:persona:a", "did:verifier:v", None, None, None)
+            .await
+            .unwrap();
+        assert!(
+            PersonaStore::requires_step_up(&everything),
+            "the card IS being disclosed here and must gate it"
+        );
     }
 
     /// A card number needs a fresh approval; a display name does not. The pair

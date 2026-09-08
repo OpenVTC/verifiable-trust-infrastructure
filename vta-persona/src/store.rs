@@ -537,6 +537,8 @@ pub fn new_attribute(
         // Unset, not `normal`: a new attribute records no holder decision, so
         // its sensitivity resolves from the registry every time it is read.
         sensitivity: None,
+        // Same, for the same reason.
+        release: None,
         version: 0,
         created_at: now.clone(),
         updated_at: now,

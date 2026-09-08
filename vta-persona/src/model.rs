@@ -16,7 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::claim_types::Sensitivity;
+use crate::claim_types::{ReleaseRequirement, Sensitivity};
 
 /// A ULID in Crockford base32. Record identity for attributes and profiles.
 ///
@@ -195,12 +195,22 @@ pub struct Attribute {
     /// instead would freeze it — a later tightening of the registry would then
     /// protect new attributes and leave this one exposed.
     ///
-    /// There is deliberately no `release` counterpart. The published schema
-    /// defines one, and nothing in this workspace enforces a `stepUp` at
-    /// disclosure yet; a stored override for a gate that does not exist is a
-    /// promise the holder would be entitled to rely on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sensitivity: Option<Sensitivity>,
+    /// What it takes to let this attribute **leave**, where the holder decided
+    /// it explicitly. Same rule as `sensitivity`: absent means no decision, and
+    /// the default is derived from the registry at read.
+    ///
+    /// This field was deliberately withheld until there was a gate to honour
+    /// it — "a stored override for a gate that does not exist is a promise the
+    /// holder would be entitled to rely on". `persona/disclosure/present` now
+    /// enforces `release: stepUp`, so the promise is one the agent keeps.
+    ///
+    /// Like `sensitivity`, an override wins in **both** directions — see
+    /// [`crate::claim_types::release_of`] for why loosening is honoured rather
+    /// than quietly refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release: Option<ReleaseRequirement>,
     pub version: Version,
     pub created_at: String,
     pub updated_at: String,

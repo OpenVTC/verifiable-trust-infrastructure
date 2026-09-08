@@ -44,6 +44,19 @@ pub struct MaterialisedClaim {
     /// short, and MUST NOT be disclosed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stale: bool,
+    /// The holder's `release` override, copied down with the value.
+    ///
+    /// **This is the whole mechanism for honouring an override below the
+    /// boundary.** A context cannot read the pool to ask what the holder
+    /// decided, so the decision travels with the projection or it does not
+    /// travel at all — copies go down, nothing reads up. Re-materialisation on
+    /// an attribute edit refreshes it, so changing the override changes what
+    /// every bound context enforces without any of them reading anything.
+    ///
+    /// `None` on a binding written before this field existed, which resolves to
+    /// the registry default — the behaviour those bindings already had.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<crate::ReleaseRequirement>,
 }
 
 /// The binding plus the claims it pushed into the context.
@@ -172,6 +185,7 @@ impl PersonaStore {
                 value: c.value,
                 provenance: c.provenance,
                 stale: c.stale,
+                release: c.release,
             })
             .collect())
     }

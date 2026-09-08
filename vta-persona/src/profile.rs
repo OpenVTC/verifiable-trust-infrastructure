@@ -57,6 +57,11 @@ pub struct ResolvedClaim {
     /// MUST NOT be disclosed; it is surfaced so a holder learns their profile
     /// has quietly stopped being fully presentable.
     pub stale: bool,
+    /// The holder's `release` override on the pool attribute behind this claim,
+    /// where they set one. `None` for an inline entry — it has no pool record,
+    /// so there is nowhere for a decision to have been recorded and the
+    /// registry default answers.
+    pub release: Option<crate::ReleaseRequirement>,
 }
 
 impl PersonaStore {
@@ -186,6 +191,7 @@ impl PersonaStore {
                     version: None,
                     updated_at: None,
                     stale: false,
+                    release: None,
                 },
             });
         }
@@ -211,6 +217,7 @@ impl PersonaStore {
                 version: None,
                 updated_at: None,
                 stale: true,
+                release: None,
             });
         };
 
@@ -229,6 +236,11 @@ impl PersonaStore {
             version: Some(a.version),
             updated_at: Some(a.updated_at.clone()),
             stale: stale || a.stale.unwrap_or(false),
+            // Carried down with the value, because nothing below the boundary
+            // can read the pool to ask. An `override` entry replaces the value
+            // and inherits everything else, this included — the holder's
+            // decision is about the attribute, not about one presentation of it.
+            release: a.release,
         })
     }
 
@@ -664,6 +676,10 @@ impl PersonaStore {
                                 value: Some(inline.value.clone()),
                                 provenance: inline.provenance.clone(),
                                 stale: false,
+                                // A context-local profile is inline-only, so
+                                // there is no pool attribute and no override to
+                                // carry — the registry default answers.
+                                release: None,
                             }),
                             // Unreachable: `put_local_profile` refuses anything
                             // else, and the schema cannot express it. Skipped
