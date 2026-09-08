@@ -53,6 +53,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
     let endorsements_ks = store.keyspace("endorsements").unwrap();
     let rooms_ks = store.keyspace("rooms").unwrap();
     let room_records_ks = store.keyspace("room_records").unwrap();
+    let room_epoch_links_ks = store.keyspace("room_epoch_links").unwrap();
     let audit_ks = store.keyspace("audit").unwrap();
     let audit_key_ks = store.keyspace("audit_key").unwrap();
     let audit_checkpoint_ks = store.keyspace("audit_checkpoint").unwrap();
@@ -101,6 +102,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         endorsements_ks: endorsements_ks.clone(),
         rooms_ks: rooms_ks.clone(),
         room_records_ks: room_records_ks.clone(),
+        room_epoch_links_ks: room_epoch_links_ks.clone(),
         invitations_ks,
         consumed_invitations_ks,
         registry_client: None,

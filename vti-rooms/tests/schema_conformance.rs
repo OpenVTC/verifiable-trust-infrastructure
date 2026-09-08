@@ -179,11 +179,69 @@ fn mint_epoch_conforms() {
         room_id: "did:webvh:example.com:rooms:northwind".into(),
         epoch: 2,
         presentation: presentation(),
+        link: None,
         reason: Some("membership change".into()),
     };
     check::<Payload>(
         "MintEpochBody",
         &serde_json::to_value(&body).expect("serialise"),
+    );
+
+    // With the rung, which is the shape a room that keeps its history actually sends. An
+    // absent `link` is a room's stated choice, so both shapes have to conform — checking
+    // only the empty one would let the member that carries key material go unvalidated.
+    let with_link = MintEpochBody {
+        link: Some(epoch_link(2)),
+        ..body
+    };
+    check::<Payload>(
+        "MintEpochBody with a link",
+        &serde_json::to_value(&with_link).expect("serialise"),
+    );
+}
+
+fn epoch_link(epoch: u32) -> EpochLink {
+    EpochLink {
+        epoch,
+        wrapped: "9jK2_QhV1sVvR0m5xAqZ7A".into(),
+        nonce: "b0Zt8Qm2Yq1sVvR0".into(),
+    }
+}
+
+/// `rooms/epoch/chain/0.1` — the request a joining member makes, and the rungs served back.
+#[test]
+fn epoch_chain_conforms() {
+    use trust_tasks_rs::specs::rooms::epoch::chain::v0_1::{Payload, Response};
+
+    let body = ChainBody {
+        room_id: "did:webvh:example.com:rooms:northwind".into(),
+        presentation: presentation(),
+        from_epoch: Some(5),
+        limit: Some(100),
+    };
+    check::<Payload>(
+        "ChainBody",
+        &serde_json::to_value(&body).expect("serialise"),
+    );
+
+    // The paging members are optional, and a member who wants the whole chain omits them.
+    let bare = ChainBody {
+        from_epoch: None,
+        limit: None,
+        ..body
+    };
+    check::<Payload>(
+        "ChainBody without paging",
+        &serde_json::to_value(&bare).expect("serialise"),
+    );
+
+    let response = ChainResponse {
+        room_id: "did:webvh:example.com:rooms:northwind".into(),
+        links: vec![epoch_link(4), epoch_link(3), epoch_link(2)],
+    };
+    check::<Response>(
+        "ChainResponse",
+        &serde_json::to_value(&response).expect("serialise"),
     );
 }
 
@@ -462,6 +520,10 @@ fn every_dispatched_uri_is_the_published_one() {
         (
             ROOMS_EPOCH_MINT_TYPE,
             <rooms::epoch::mint::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_EPOCH_CHAIN_TYPE,
+            <rooms::epoch::chain::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             ROOMS_OWNER_TRANSFER_TYPE,

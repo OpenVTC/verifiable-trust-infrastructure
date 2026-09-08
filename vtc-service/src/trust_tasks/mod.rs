@@ -162,6 +162,9 @@ pub(crate) async fn dispatch_trust_task_core(
         rooms_wire::ROOMS_EPOCH_MINT_TYPE => {
             crate::rooms::handlers::handle_mint_epoch(state, doc).await
         }
+        rooms_wire::ROOMS_EPOCH_CHAIN_TYPE => {
+            crate::rooms::handlers::handle_epoch_chain(state, doc).await
+        }
         rooms_wire::ROOMS_OWNER_TRANSFER_TYPE => {
             crate::rooms::handlers::handle_transfer_owner(state, doc).await
         }

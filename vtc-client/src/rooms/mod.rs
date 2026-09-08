@@ -45,10 +45,11 @@ use crate::{VtcClient, VtcError};
 pub use vti_rooms::Visibility;
 pub use vti_rooms::authz::MAX_CHAIN_DEPTH;
 pub use vti_rooms::wire::{
-    AuthorityPresentation, CleartextContent, CurateRecordResponse, ListRecordsResponse,
-    MintEpochResponse, OwnerResponse, PutRecordResponse, ROOMS_CREATE_TYPE, ROOMS_EPOCH_MINT_TYPE,
-    ROOMS_OWNER_CLAIM_TYPE, ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE,
-    ROOMS_RECORDS_GET_TYPE, ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, SealedContent,
+    AuthorityPresentation, ChainResponse, CleartextContent, CurateRecordResponse, EpochLink,
+    ListRecordsResponse, MintEpochResponse, OwnerResponse, PutRecordResponse, ROOMS_CREATE_TYPE,
+    ROOMS_EPOCH_CHAIN_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_OWNER_CLAIM_TYPE,
+    ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_TYPE,
+    ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, SealedContent,
 };
 
 /// A caller's standing in one room.
@@ -274,6 +275,35 @@ impl VtcClient {
         signer_did: &str,
         private_key_multibase: &str,
     ) -> Result<MintEpochResponse, VtcError> {
+        self.mint_epoch_with_link(
+            session,
+            epoch,
+            None,
+            reason,
+            signer_did,
+            private_key_multibase,
+        )
+        .await
+    }
+
+    /// Mint an epoch and hand the host the rung that keeps the room's past readable.
+    ///
+    /// The rung is the outgoing epoch's storage key sealed under the incoming one, and
+    /// minting is the only moment one party holds both — so this is the only call that can
+    /// carry it. A room that advances without one keeps working and silently loses the
+    /// ability to read everything written before, for every member including the writer.
+    ///
+    /// [`Self::mint_epoch`] is this with `None`, which is the right call only for a room
+    /// that has deliberately chosen not to keep its history.
+    pub async fn mint_epoch_with_link(
+        &self,
+        session: &RoomSession,
+        epoch: u32,
+        link: Option<&EpochLink>,
+        reason: Option<&str>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<MintEpochResponse, VtcError> {
         let mut payload = serde_json::json!({
             "roomId": session.room_id,
             "epoch": epoch,
@@ -281,6 +311,12 @@ impl VtcClient {
         });
         if let Some(r) = reason {
             payload["reason"] = serde_json::json!(r);
+        }
+        if let Some(l) = link {
+            payload["link"] = serde_json::to_value(l).map_err(|e| VtcError::Http {
+                status: 0,
+                body: format!("serialise the epoch link: {e}"),
+            })?;
         }
         let value = self
             .room_task(
@@ -293,6 +329,50 @@ impl VtcClient {
         serde_json::from_value(value).map_err(|e| VtcError::Http {
             status: 200,
             body: format!("mint response is not a MintEpochResponse: {e}"),
+        })
+    }
+
+    /// Fetch the room's epoch key chain, highest epoch first.
+    ///
+    /// What a member calls after joining, or after restoring their group state, so that
+    /// records sealed before then still open. Feed the result to
+    /// `SealedRoom::add_links`.
+    ///
+    /// Gated on `read` at the host: reading the room and reading the parts written earlier
+    /// are the same act. The rungs are ciphertext — a caller holding no epoch key learns
+    /// nothing from them but how many epochs the room has had.
+    ///
+    /// `from_epoch` returns only rungs at or below that epoch, which is how a member who
+    /// already holds the top of the chain asks for the rest.
+    pub async fn epoch_chain(
+        &self,
+        session: &RoomSession,
+        from_epoch: Option<u32>,
+        limit: Option<u32>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<ChainResponse, VtcError> {
+        let mut payload = serde_json::json!({
+            "roomId": session.room_id,
+            "presentation": session.presentation,
+        });
+        if let Some(f) = from_epoch {
+            payload["fromEpoch"] = serde_json::json!(f);
+        }
+        if let Some(l) = limit {
+            payload["limit"] = serde_json::json!(l);
+        }
+        let value = self
+            .room_task(
+                ROOMS_EPOCH_CHAIN_TYPE,
+                payload,
+                signer_did,
+                private_key_multibase,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("chain response is not a ChainResponse: {e}"),
         })
     }
 

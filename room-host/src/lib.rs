@@ -62,11 +62,12 @@ use vti_common::error::AppError;
 use vti_common::store::{KeyspaceHandle, Store};
 use vti_rooms::audit::{self as rooms_audit, RoomOperation};
 use vti_rooms::wire::{
-    ClaimOwnerBody, CreateRoomBody, CreateRoomResponse, CurateRecordBody, CurateRecordResponse,
-    GetRecordBody, ListRecordsBody, ListRecordsResponse, MintEpochBody, MintEpochResponse,
-    OwnerResponse, PutRecordBody, PutRecordResponse, ROOMS_CREATE_TYPE, ROOMS_EPOCH_MINT_TYPE,
-    ROOMS_OWNER_CLAIM_TYPE, ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE,
-    ROOMS_RECORDS_GET_TYPE, ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, TransferOwnerBody,
+    ChainBody, ChainResponse, ClaimOwnerBody, CreateRoomBody, CreateRoomResponse, CurateRecordBody,
+    CurateRecordResponse, GetRecordBody, ListRecordsBody, ListRecordsResponse, MintEpochBody,
+    MintEpochResponse, OwnerResponse, PutRecordBody, PutRecordResponse, ROOMS_CREATE_TYPE,
+    ROOMS_EPOCH_CHAIN_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_OWNER_CLAIM_TYPE,
+    ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_TYPE,
+    ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, TransferOwnerBody,
 };
 use vti_rooms::{
     ROOM_RECORDS_KEYSPACE, ROOMS_KEYSPACE, Record, RecordStatus, Room,
@@ -89,6 +90,8 @@ const EPOCH_LIFETIME_DAYS_SECS: u64 =
 pub struct HostState {
     rooms: KeyspaceHandle,
     records: KeyspaceHandle,
+    /// The rooms' epoch key chains. Wrapped key material this host cannot read.
+    epoch_links: KeyspaceHandle,
     /// How a DID resolves to the key that signed a credential.
     ///
     /// A room's credentials are issued by the room, which is normally a `did:webvh`, so a
@@ -266,6 +269,7 @@ async fn trust_task(State(state): State<Arc<HostState>>, body: Bytes) -> axum::r
         ROOMS_RECORDS_LIST_TYPE => list(&state, &doc, payload).await,
         ROOMS_RECORDS_CURATE_TYPE => curate(&state, &doc, payload).await,
         ROOMS_EPOCH_MINT_TYPE => mint(&state, &doc, payload).await,
+        ROOMS_EPOCH_CHAIN_TYPE => epoch_chain(&state, &doc, payload).await,
         ROOMS_OWNER_TRANSFER_TYPE => transfer_owner(&state, &doc, payload).await,
         ROOMS_OWNER_CLAIM_TYPE => claim_owner(&state, &doc, payload).await,
         other => reject(
@@ -543,6 +547,74 @@ async fn list(
     }
 }
 
+/// `rooms/epoch/chain/0.1` — serve the room's epoch key chain.
+///
+/// Gated on `read`: reading the room and reading what was written before you joined are the
+/// same act. What leaves is ciphertext — the key that opens a rung is a storage key this
+/// host never holds — so a party with the whole chain and no epoch key learns only how many
+/// epochs the room has had, which its epoch number already told them.
+async fn epoch_chain(
+    state: &HostState,
+    doc: &TrustTask<Value>,
+    payload: Value,
+) -> axum::response::Response {
+    let req: ChainBody = match serde_json::from_value(payload) {
+        Ok(r) => r,
+        Err(e) => {
+            return reject(
+                doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            );
+        }
+    };
+    let room = match storage::get_room(&state.rooms, &req.room_id).await {
+        Ok(r) => r,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
+        Ok(p) => p,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    let authorized = match authz::authorize(
+        &room,
+        &req.presentation,
+        Action::Read,
+        &presenter,
+        now(),
+        &verifier,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => return from_app_error(doc, &e),
+    };
+
+    let mut links = match storage::list_epoch_links(&state.epoch_links, &req.room_id).await {
+        Ok(l) => l,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    // Highest epoch first: the chain is walked downwards, so a member reads it in the order
+    // they will use it.
+    links.reverse();
+    if let Some(from) = req.from_epoch {
+        links.retain(|l| l.epoch <= from);
+    }
+    if let Some(limit) = req.limit {
+        links.truncate(limit as usize);
+    }
+
+    audit_room(&room, &authorized, RoomOperation::ListRecords, None);
+    respond(
+        doc,
+        ChainResponse {
+            room_id: req.room_id,
+            links,
+        },
+    )
+}
+
 async fn mint(
     state: &HostState,
     doc: &TrustTask<Value>,
@@ -583,8 +655,30 @@ async fn mint(
         Ok(a) => a,
         Err(e) => return from_app_error(doc, &e),
     };
+    // A rung that does not describe *this* advance is refused rather than stored beside it:
+    // accepting a mismatched one would launder someone else's key material into this room's
+    // history, and the members who walked the original would never see the difference.
+    if let Some(link) = &req.link
+        && link.epoch != req.epoch
+    {
+        return from_app_error(
+            doc,
+            &vti_common::error::AppError::Validation(format!(
+                "the epoch link is for epoch {} but this mint advances to {}",
+                link.epoch, req.epoch
+            )),
+        );
+    }
+
     match storage::advance_epoch(&state.rooms, &req.room_id, req.epoch, now()).await {
         Ok(updated) => {
+            // After the advance, so a rejected advance leaves no orphan rung.
+            if let Some(link) = &req.link
+                && let Err(e) =
+                    storage::put_epoch_link(&state.epoch_links, &req.room_id, link).await
+            {
+                return from_app_error(doc, &e);
+            }
             audit_room(&room, &authorized, RoomOperation::MintEpoch, None);
             respond(
                 doc,
@@ -861,6 +955,7 @@ pub fn open_state_with_resolver(
     Ok(Arc::new(HostState {
         rooms: store.keyspace(ROOMS_KEYSPACE)?,
         records: store.keyspace(ROOM_RECORDS_KEYSPACE)?,
+        epoch_links: store.keyspace(vti_rooms::ROOM_EPOCH_LINKS_KEYSPACE)?,
         resolver,
     }))
 }

@@ -32,9 +32,9 @@ use vti_rooms::audit::{self as rooms_audit, RoomOperation};
 use vti_rooms::authz::{self, Action};
 use vti_rooms::storage;
 use vti_rooms::wire::{
-    ClaimOwnerBody, CreateRoomBody, CreateRoomResponse, CurateRecordBody, CurateRecordResponse,
-    GetRecordBody, ListRecordsBody, ListRecordsResponse, MintEpochBody, MintEpochResponse,
-    OwnerResponse, PutRecordBody, PutRecordResponse, TransferOwnerBody,
+    ChainBody, ChainResponse, ClaimOwnerBody, CreateRoomBody, CreateRoomResponse, CurateRecordBody,
+    CurateRecordResponse, GetRecordBody, ListRecordsBody, ListRecordsResponse, MintEpochBody,
+    MintEpochResponse, OwnerResponse, PutRecordBody, PutRecordResponse, TransferOwnerBody,
 };
 use vti_rooms::{Record, RecordStatus, Room};
 use vti_rooms_dtg::{DataIntegrityKeys, DtgChainVerifier, nomination};
@@ -493,8 +493,33 @@ pub(crate) async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -
         Err(e) => return app_error_to_reject(&doc, &e),
     };
 
+    // The rung, before the advance. A link that does not describe *this* advance is refused
+    // outright rather than stored beside it: a host that accepted a mismatched one would be
+    // laundering someone else's key material into this room's history, and the members who
+    // walked the original rung would never see the difference.
+    if let Some(link) = &req.link
+        && link.epoch != req.epoch
+    {
+        return app_error_to_reject(
+            &doc,
+            &vti_common::error::AppError::Validation(format!(
+                "the epoch link is for epoch {} but this mint advances to {}",
+                link.epoch, req.epoch
+            )),
+        );
+    }
+
     match storage::advance_epoch(&state.rooms_ks, &req.room_id, req.epoch, now()).await {
         Ok(updated) => {
+            // After the advance, so a rejected advance leaves no orphan rung. `put_epoch_link`
+            // refuses to replace one it already holds, which is what makes a retried mint
+            // safe and a second, different rung impossible.
+            if let Some(link) = &req.link
+                && let Err(e) =
+                    storage::put_epoch_link(&state.room_epoch_links_ks, &req.room_id, link).await
+            {
+                return app_error_to_reject(&doc, &e);
+            }
             audit_room(state, &room, &authorized, RoomOperation::MintEpoch, None).await;
             success_response(
                 &doc,
@@ -506,6 +531,78 @@ pub(crate) async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -
         }
         Err(e) => app_error_to_reject(&doc, &e),
     }
+}
+
+/// `rooms/epoch/chain/0.1`.
+///
+/// Serves the room's epoch key chain so a member can read what was written before they
+/// joined, or before the last membership change they were absent for.
+///
+/// # Why `read`, and why serving this is safe
+///
+/// Reading the room and reading the parts of it written earlier are the same act, so they
+/// take the same grant. What leaves here is ciphertext: every rung is one epoch's storage
+/// key sealed under the next, and the key that opens one is a storage key this service never
+/// holds. A party who obtained the whole chain and no epoch key would learn how many epochs
+/// the room has had — which `Room.epoch`, which they can already read, told them.
+///
+/// That is the property that lets a *host* answer this at all, rather than requiring the
+/// room's owner to be online whenever somebody joins.
+pub(crate) async fn handle_epoch_chain(
+    state: &AppState,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: ChainBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
+        Ok(p) => p,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let authorized = match authz::authorize(
+        &room,
+        &req.presentation,
+        Action::Read,
+        &presenter,
+        now(),
+        &verifier,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+
+    let mut links = match storage::list_epoch_links(&state.room_epoch_links_ks, &req.room_id).await
+    {
+        Ok(l) => l,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+
+    // Highest epoch first: the chain is walked downwards, so a member reads it in the order
+    // they will use it.
+    links.reverse();
+    if let Some(from) = req.from_epoch {
+        links.retain(|l| l.epoch <= from);
+    }
+    if let Some(limit) = req.limit {
+        links.truncate(limit as usize);
+    }
+
+    audit_room(state, &room, &authorized, RoomOperation::ListRecords, None).await;
+    success_response(
+        &doc,
+        ChainResponse {
+            room_id: req.room_id,
+            links,
+        },
+    )
 }
 
 /// `rooms/owner/transfer/0.1`.

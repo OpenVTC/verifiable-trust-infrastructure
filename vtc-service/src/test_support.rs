@@ -230,6 +230,9 @@ impl TestVtcBuilder {
         let endorsements_ks = store.keyspace("endorsements").expect("endorsements ks");
         let rooms_ks = store.keyspace("rooms").expect("rooms ks");
         let room_records_ks = store.keyspace("room_records").expect("room_records ks");
+        let room_epoch_links_ks = store
+            .keyspace("room_epoch_links")
+            .expect("room_epoch_links ks");
         let audit_ks = store.keyspace("audit").expect("audit ks");
         let audit_key_ks = store.keyspace("audit_key").expect("audit_key ks");
         let audit_checkpoint_ks = store
@@ -361,6 +364,7 @@ impl TestVtcBuilder {
             endorsements_ks,
             rooms_ks,
             room_records_ks,
+            room_epoch_links_ks,
             audit_ks,
             audit_key_ks,
             audit_checkpoint_ks,

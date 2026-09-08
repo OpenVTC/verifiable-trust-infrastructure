@@ -428,7 +428,7 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "url",
  "uuid",
 ]
@@ -492,7 +492,7 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "url",
  "uuid",
 ]
@@ -617,7 +617,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "uuid",
 ]
 
@@ -8117,7 +8117,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trust-tasks-https",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "uuid",
  "vta-sdk",
  "vtc-client",
@@ -9737,7 +9737,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "uuid",
 ]
 
@@ -9753,7 +9753,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "uuid",
 ]
 
@@ -9772,7 +9772,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tower",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "uuid",
 ]
 
@@ -9790,7 +9790,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
 ]
 
 [[package]]
@@ -9810,9 +9810,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.18.3"
+version = "0.18.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65edfb23d5f3b740fd77297d62cd69eaaaa8811282a9823977c6bae26301f6fe"
+checksum = "a9a64b51eb2da3d74dadcb76d2d9a5ee983043194e5adebb364e7f6d8ba04164"
 dependencies = [
  "async-trait",
  "chrono",
@@ -10568,7 +10568,7 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tracing-subscriber",
  "trust-tasks-proof",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "uniffi",
  "vta-sdk",
 ]
@@ -10586,7 +10586,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "ulid",
  "vta-keyspaces",
  "vti-common",
@@ -10665,7 +10665,7 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "url",
  "utoipa",
  "uuid",
@@ -10750,7 +10750,7 @@ dependencies = [
  "trust-tasks-didcomm",
  "trust-tasks-https",
  "trust-tasks-proof",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "url",
  "urlencoding",
  "utoipa",
@@ -10919,7 +10919,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "vta-sdk",
  "vti-rooms",
 ]
@@ -10991,7 +10991,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trust-tasks-https",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "unicode-normalization",
  "url",
  "utoipa",
@@ -11049,7 +11049,7 @@ dependencies = [
  "tower",
  "tracing",
  "trust-tasks-capability-client",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "url",
  "utoipa",
  "utoipa-axum",
@@ -11105,7 +11105,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tls_codec",
  "tokio",
- "trust-tasks-rs 0.18.3",
+ "trust-tasks-rs 0.18.4",
  "vti-common",
 ]
 

@@ -968,16 +968,24 @@ than a per-room choice. Inventing fields locally would put this
 implementation's rooms out of conformance, so each is a
 `dtgwg-trust-tasks-tf` PR before it is code.
 
+**The chain-fetch task landed** as `rooms/epoch/chain/0.1`
+(`dtgwg-trust-tasks-tf#387`), together with an optional `link` on
+`rooms/epoch/mint/0.1` — the owner hands each rung to the host at the moment it
+is minted, and a joining member fetches the chain and reads the room's history.
+It is `epoch/` rather than `keys/` because every `rooms/keys/*` task terminates
+at a KeyHolder or an Oracle, and this one is served by a **host**.
+
+What remains:
+
 | What | Why it needs the wire | Without it |
 |---|---|---|
 | **`retentionPolicy` on `rooms/create/0.1`** | the choice is the room's, made once, and there is no member for it | every host creates `Chained`; `FromJoin` is unreachable except in-crate |
-| **A chain-fetch task** (`rooms/keys/chain/0.1`, or links on the Welcome) | a joiner's Welcome carries the current epoch and nothing below it | a **new member reads only from their joining epoch**, and is told so precisely (`EpochUnreachable`) rather than seeing a room that looks corrupt |
+| **Rungs into a joiner's VTA** | `rooms/keys/open` resolves from the chain the VTA accrued by applying commits; a joiner's is empty, and no task delivers rungs *to a VTA* | a joined member reads history in their **client** but their **agent** cannot, and is told so precisely (`EpochUnreachable`) rather than seeing a room that looks corrupt |
 | **A prune verb** over `prune_epoch_links_before` | cryptographic deletion is an operation someone has to be authorized to perform | the primitive exists and nothing can reach it |
 
-The middle row is the one that matters most and is the reason §5.5 is not
-finished: an existing member's rooms are now correct, and a joining member's
-backfill is still a delivery gap. Both halves of the mechanism are built and
-tested; what is missing is the envelope.
+The middle row is now the one that matters. It is a smaller gap than the one
+`rooms/epoch/chain` closed — the mechanism, the storage and the wire all exist,
+and what is missing is the leg from a member's client into their own VTA.
 
 ---
 
