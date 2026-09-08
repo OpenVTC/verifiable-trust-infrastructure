@@ -1091,8 +1091,8 @@ pub(super) async fn initiate_disclosure_step_up(
     let reason = format!(
         "Approve disclosing {} to {verifier_did}",
         match claim_types.len() {
-            1 => "1 fact".to_string(),
-            n => format!("{n} facts"),
+            1 => "1 attribute".to_string(),
+            n => format!("{n} attributes"),
         }
     );
     // The shape an approver's card already knows how to render:

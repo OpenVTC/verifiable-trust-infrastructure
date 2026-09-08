@@ -19,7 +19,7 @@
 //!
 //! Putting the pool above the context boundary bought a correlation check that
 //! can see across contexts. The cost is that a holder can no longer tell, by
-//! looking at one context, where a fact has gone. Filtering by claim type
+//! looking at one context, where an attribute has gone. Filtering by claim type
 //! settles that — *where has my home address reached* — and it is why this is a
 //! queryable record rather than an audit log line.
 
@@ -154,7 +154,7 @@ impl PersonaStore {
     /// Which contexts a claim type has reached.
     ///
     /// The specific question the agent-scoped pool owes the holder: having put
-    /// their facts above the context boundary, it must be able to say where
+    /// their attributes above the context boundary, it must be able to say where
     /// each one has gone.
     pub async fn contexts_reached_by(&self, claim_type: &str) -> Result<Vec<String>, AppError> {
         let mut contexts: Vec<String> = self
@@ -246,7 +246,7 @@ mod tests {
     #[tokio::test]
     async fn history_answers_where_a_fact_has_reached() {
         // The debt the scope split incurred: with the pool above the boundary,
-        // a holder cannot tell from one context where a fact has gone.
+        // a holder cannot tell from one context where an attribute has gone.
         let (_d, s) = fresh().await;
         s.record_disclosure(new_disclosure(
             "ctx-work",

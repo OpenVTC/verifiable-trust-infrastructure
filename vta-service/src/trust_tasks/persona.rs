@@ -363,7 +363,7 @@ async fn audit_persona(
 /// Matched rather than serialised because only the tag is wanted: serialising
 /// a `CredentialBacked` provenance would carry `credentialId`, `claimPath` and
 /// `issuerDid` into the audit row alongside it, and a claim path is a
-/// description of what an issuer attested about the holder — a fact with the
+/// description of what an issuer attested about the holder — an attribute with the
 /// same lifetime problem as the value itself.
 fn provenance_kind(p: &vta_persona::Provenance) -> &'static str {
     match p {

@@ -37,7 +37,7 @@ type HmacSha256 = Hmac<Sha256>;
 /// Canonicalisation is JSON with sorted object members, so that two values a
 /// holder would consider identical hash identically regardless of how a producer
 /// happened to serialise them. Without it, `{"a":1,"b":2}` and `{"b":2,"a":1}`
-/// would be two different facts and the guard would miss the reuse it exists to
+/// would be two different attributes and the guard would miss the reuse it exists to
 /// catch.
 #[must_use]
 pub fn blind(agent_key: &[u8; 32], value: &serde_json::Value) -> String {
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn member_order_does_not_change_the_blinded_key() {
-        // Two serialisations of the same fact must hash identically, or the
+        // Two serialisations of the same attribute must hash identically, or the
         // guard misses the reuse it exists to catch.
         let a: serde_json::Value = serde_json::from_str(r#"{"a":1,"b":2}"#).unwrap();
         let b: serde_json::Value = serde_json::from_str(r#"{"b":2,"a":1}"#).unwrap();
@@ -260,7 +260,7 @@ pub struct Finding {
     /// holder learns to dismiss.
     ///
     /// Carries the count of other attributes holding the value, which is the
-    /// one fact [`Finding::shared_with`] does not restate: that list is keyed
+    /// one thing [`Finding::shared_with`] does not restate: that list is keyed
     /// on the *profiles and bindings* the value reaches, and two attributes
     /// referenced by one profile collapse to a single entry there.
     pub why: String,

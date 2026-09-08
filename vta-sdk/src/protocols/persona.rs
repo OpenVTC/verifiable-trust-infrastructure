@@ -496,7 +496,7 @@ pub struct ContactClaim {
 ///
 /// Stored as received. The holder does not merge it into their own pool, and
 /// that separation is the point: a contact is somebody else's account of
-/// themselves, not a fact the holder is asserting.
+/// themselves, not an attribute the holder is asserting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContactDocument {

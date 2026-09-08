@@ -214,11 +214,11 @@ pub(crate) enum Commands {
         command: CredVaultCommands,
     },
 
-    /// Your own identity — the facts you hold about yourself, the faces that
+    /// Your own identity — the attributes you hold about yourself, the faces that
     /// show a set of them together, which face each persona wears where, and
     /// what other people have told you.
     ///
-    /// Your facts and your faces sit ABOVE every trust context. Reaching them
+    /// Your attributes and your faces sit ABOVE every trust context. Reaching them
     /// needs an agent credential with no context restriction, or one granted
     /// `persona-holder`. Wearing, contacts and what leaves are context-scoped
     /// and take `--context`.
@@ -3125,7 +3125,7 @@ pub(crate) enum ProofRungOpt {
 /// `pnm persona …` — the holder's own identity.
 #[derive(Subcommand)]
 pub(crate) enum PersonaCommands {
-    /// Your facts — what you hold about yourself, each held once.
+    /// Your attributes — what you say about yourself, each held once.
     ///
     /// Sits above every context, so it needs an agent credential with no
     /// context restriction, or one granted `persona-holder`. A context admin
@@ -3134,8 +3134,8 @@ pub(crate) enum PersonaCommands {
         #[command(subcommand)]
         command: PersonaAttributeCommands,
     },
-    /// Faces — the sets of facts you show together. Same authority as your
-    /// facts: above every context.
+    /// Faces — the sets of attributes you show together. Same authority as your
+    /// attributes: above every context.
     Profile {
         #[command(subcommand)]
         command: PersonaProfileCommands,
@@ -3156,19 +3156,19 @@ pub(crate) enum PersonaCommands {
         command: PersonaDisclosureCommands,
     },
     /// Faces and wearing that live INSIDE one context, built only from values
-    /// typed there — they cannot reach your facts.
+    /// typed there — they cannot reach your attributes.
     Local {
         #[command(subcommand)]
         command: PersonaLocalCommands,
     },
-    /// Report how linkable a value, a fact or a face would make you — "same
+    /// Report how linkable a value, an attribute or a face would make you — "same
     /// person to anyone who sees both". Reads only; writes nothing.
     ///
     /// Note the inversion: a credential shown WHOLE links you more than a value
     /// you simply said, because the issuer's signature is identical everywhere
     /// it goes — while a derived proof links you less.
     Correlate {
-        /// Analyse one fact you hold.
+        /// Analyse one attribute you hold.
         #[arg(long = "attribute-id")]
         attribute_id: Option<String>,
         /// Analyse a whole face.
@@ -3180,7 +3180,7 @@ pub(crate) enum PersonaCommands {
         candidate_file: Option<String>,
     },
     /// List the output formats this VTA can produce, and what each DISCARDS.
-    /// Worth running before a preview: one that drops where a fact came from
+    /// Worth running before a preview: one that drops where an attribute came from
     /// turns "my employer attested this" into something you merely said.
     ///
     /// Open to any authenticated caller — it names nothing about you, and a
@@ -3191,7 +3191,7 @@ pub(crate) enum PersonaCommands {
 /// `pnm persona attribute …`
 #[derive(Subcommand)]
 pub(crate) enum PersonaAttributeCommands {
-    /// Store one fact about the holder. Omit `--attribute-id` to create.
+    /// Store one attribute about the holder. Omit `--attribute-id` to create.
     Put {
         /// Vocabulary token naming what this is — `name.legal`,
         /// `phone.mobile`, `address.postal`. Dotted, most-general first;

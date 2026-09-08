@@ -2,7 +2,7 @@
 //!
 //! Two scopes, and the split is a security control rather than a filing
 //! decision. The **attribute pool and profiles are agent-scoped** — one person,
-//! one set of facts about themselves, above every trust context — so that the
+//! one set of attributes about themselves, above every trust context — so that the
 //! correlation index can see the risk it most needs to report: the same value
 //! presented by two personas in two different contexts, which a per-context
 //! index cannot see by construction. **Bindings, contacts and disclosure
@@ -160,10 +160,10 @@ pub enum StaleReason {
     NotFound,
 }
 
-/// One atomic fact a holder keeps about themselves. **Agent-scoped.**
+/// One atomic attribute a holder keeps about themselves. **Agent-scoped.**
 ///
 /// Several attributes may share a `type` — three phone numbers, a legal name and
-/// a preferred name — which is why `attribute_id` is the identity of a fact and
+/// a preferred name — which is why `attribute_id` is the identity of an attribute and
 /// `type` is not.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -259,7 +259,7 @@ pub enum ProfileEntry {
         #[serde(rename = "pinVersion")]
         pin_version: Version,
     },
-    /// The same fact, a different value here.
+    /// The same attribute, a different value here.
     ///
     /// Replaces value and label **only**: type, valueType and provenance are
     /// inherited. Letting an override replace provenance would let a
