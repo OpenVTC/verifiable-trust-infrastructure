@@ -430,6 +430,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // redelivery stores nothing and reports the same reachability. A lost reply
     // costs the caller the answer, never the state.
     (trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_1, RetrySafe),
+    // Idempotent by epoch on both halves: a rung already held is never replaced,
+    // and re-fetching from the host yields the same rungs. A retry that arrives
+    // after the first succeeded stores nothing and reports the same reach.
+    (trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1, RetrySafe),
     // Sealing is a pure function of the key and the bytes, and it stores nothing:
     // a lost reply costs the caller a round trip, never any state. Re-sealing the
     // same body yields a different nonce, which is correct and changes nothing.
@@ -443,6 +447,17 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // response is exactly what a caller who lost the reply wants — the same
     // credential rather than another one.
     (trust_tasks::TASK_ROOMS_OWNER_INVITE_0_1, Keyed),
+    // Convergent, unlike its `Keyed` neighbours here: the issuance verbs each
+    // mint a fresh credential, so a second execution leaves a second durable
+    // artefact — this one mints nothing. A host keys a room by its `roomId`, so
+    // registering the same room twice converges on the one row rather than
+    // creating a second.
+    //
+    // A host MAY answer the repeat as a conflict rather than a no-op, so a
+    // retry can report an error over a registration that in fact succeeded.
+    // That is a worse *message*, not a worse world, which is the distinction
+    // this axis is about.
+    (trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1, RetrySafe),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1, Keyed),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_1, Keyed),
     (trust_tasks::TASK_VTA_MEMORY_DELETE_0_1, RetrySafe),

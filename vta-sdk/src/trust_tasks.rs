@@ -826,6 +826,16 @@ pub const TASK_ROOMS_KEYS_COMMIT_0_1: &str = "https://trusttasks.org/spec/rooms/
 /// through; this covers the history it did not.
 pub const TASK_ROOMS_KEYS_CHAIN_0_1: &str = "https://trusttasks.org/spec/rooms/keys/chain/0.1";
 
+/// `spec/rooms/keys/backfill/0.1` — fetch the room's epoch key chain from its host
+/// and keep it, so history written before the principal joined becomes readable.
+///
+/// The agent-side counterpart to [`TASK_ROOMS_EPOCH_CHAIN_0_1`]-at-a-host: it
+/// mints the presentation, makes the call, and stores what comes back. A surface
+/// that reaches only its own agent cannot do the middle hop, which is why this
+/// exists.
+pub const TASK_ROOMS_KEYS_BACKFILL_0_1: &str =
+    "https://trusttasks.org/spec/rooms/keys/backfill/0.1";
+
 /// `spec/rooms/keys/seal/0.1` — seal one record body with the room's current
 /// epoch key. The mirror of `open`: plaintext in, ciphertext out, key stays put.
 /// Auth: `roomOpen` capability. It does not write — the caller takes the result
@@ -842,6 +852,12 @@ pub const TASK_ROOMS_KEYS_LIST_0_1: &str = "https://trusttasks.org/spec/rooms/ke
 /// Auth: `credentialWrite` capability, plus whatever the key oracle says about
 /// naming the room's signing key.
 pub const TASK_ROOMS_OWNER_INVITE_0_1: &str = "https://trusttasks.org/spec/rooms/owner/invite/0.1";
+
+/// `spec/rooms/owner/register/0.1` — ask this agent to register a room with a
+/// host. `rooms/create` performed by the agent, for the surfaces that cannot
+/// reach a host themselves.
+pub const TASK_ROOMS_OWNER_REGISTER_0_1: &str =
+    "https://trusttasks.org/spec/rooms/owner/register/0.1";
 
 /// `spec/rooms/owner/issue-membership/0.1` — mint the membership credential a member
 /// presents on every subsequent room operation. The room has no roster; this
@@ -1920,9 +1936,11 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_WELCOME_0_1,
     TASK_ROOMS_KEYS_COMMIT_0_1,
     TASK_ROOMS_KEYS_CHAIN_0_1,
+    TASK_ROOMS_KEYS_BACKFILL_0_1,
     TASK_ROOMS_KEYS_SEAL_0_1,
     TASK_ROOMS_KEYS_LIST_0_1,
     TASK_ROOMS_OWNER_INVITE_0_1,
+    TASK_ROOMS_OWNER_REGISTER_0_1,
     TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
     TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_1,
     TASK_VTA_MEMORY_DELETE_0_1,

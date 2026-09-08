@@ -2060,6 +2060,27 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_BACKFILL_0_1,
+            checked!(
+                specs::rooms::keys::backfill::v0_1::Payload,
+                specs::rooms::keys::backfill::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "fromEpoch": 6
+                }),
+                // All three numbers, because the response's whole point is that
+                // they come apart: two rungs arrived, both were new, and the
+                // reach moved to the room's first epoch.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "earliestReadableEpoch": 1,
+                    "fetched": 2,
+                    "stored": 2
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_SEAL_0_1,
             checked!(
                 specs::rooms::keys::seal::v0_1::Payload,
@@ -2109,6 +2130,26 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 }),
                 json!({ "credential": "eyJhbGciOiJFZERTQSJ9.room-credential",
                     "credentialId": "urn:uuid:11111111-1111-4111-8111-111111111111" })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_OWNER_REGISTER_0_1,
+            checked!(
+                specs::rooms::owner::register::v0_1::Payload,
+                specs::rooms::owner::register::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "visibility": "private",
+                    "retentionDays": 90
+                }),
+                // `host` echoed, per the specification: a caller records where
+                // its room actually landed rather than where it asked for.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "epoch": 1
+                })
             ),
         ),
         (
