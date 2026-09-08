@@ -428,7 +428,11 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "url",
  "uuid",
 ]
@@ -492,7 +496,11 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "url",
  "uuid",
 ]
@@ -617,7 +625,11 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "uuid",
 ]
 
@@ -8117,7 +8129,11 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trust-tasks-https",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "uuid",
  "vta-sdk",
  "vtc-client",
@@ -9737,7 +9753,11 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "uuid",
 ]
 
@@ -9753,7 +9773,11 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "uuid",
 ]
 
@@ -9772,7 +9796,11 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tower",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "uuid",
 ]
 
@@ -9790,7 +9818,11 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
 ]
 
 [[package]]
@@ -9810,9 +9842,15 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
+<<<<<<< HEAD
 version = "0.18.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9a64b51eb2da3d74dadcb76d2d9a5ee983043194e5adebb364e7f6d8ba04164"
+=======
+version = "0.18.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df2368308f6278f03c43dce6aee58c75f8815f8d8709540a7424a51dbe10bddc"
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
 dependencies = [
  "async-trait",
  "chrono",
@@ -10568,7 +10606,11 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tracing-subscriber",
  "trust-tasks-proof",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "uniffi",
  "vta-sdk",
 ]
@@ -10586,7 +10628,11 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "ulid",
  "vta-keyspaces",
  "vti-common",
@@ -10665,7 +10711,11 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "url",
  "utoipa",
  "uuid",
@@ -10750,7 +10800,11 @@ dependencies = [
  "trust-tasks-didcomm",
  "trust-tasks-https",
  "trust-tasks-proof",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "url",
  "urlencoding",
  "utoipa",
@@ -10919,7 +10973,11 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "vta-sdk",
  "vti-rooms",
 ]
@@ -10991,7 +11049,11 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trust-tasks-https",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "unicode-normalization",
  "url",
  "utoipa",
@@ -11049,7 +11111,11 @@ dependencies = [
  "tower",
  "tracing",
  "trust-tasks-capability-client",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "url",
  "utoipa",
  "utoipa-axum",
@@ -11105,7 +11171,11 @@ dependencies = [
  "thiserror 2.0.20",
  "tls_codec",
  "tokio",
+<<<<<<< HEAD
  "trust-tasks-rs 0.18.4",
+=======
+ "trust-tasks-rs 0.18.5",
+>>>>>>> 283f6bbb (feat(persona): serve the claim-type registry)
  "vti-common",
 ]
 

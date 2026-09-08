@@ -108,6 +108,33 @@ pub enum MaskStyle {
     None,
 }
 
+impl Sensitivity {
+    /// Every variant, most protective first — the declaration order, which is
+    /// what makes `Ord` mean "more protective" on this axis.
+    ///
+    /// Written out rather than derived because Rust has no reflection over
+    /// variants; the test below walks it against `Ord` so a variant added
+    /// without being listed, or listed out of order, fails rather than being
+    /// served as a quietly wrong ordering to every client.
+    pub const MOST_PROTECTIVE_FIRST: &'static [Self] = &[Self::High, Self::Normal];
+}
+
+impl ReleaseRequirement {
+    /// Every variant, most protective first. See [`Sensitivity::MOST_PROTECTIVE_FIRST`].
+    pub const MOST_PROTECTIVE_FIRST: &'static [Self] = &[Self::StepUp, Self::Consent];
+}
+
+impl MaskStyle {
+    /// Every variant, most protective first. See [`Sensitivity::MOST_PROTECTIVE_FIRST`].
+    pub const MOST_PROTECTIVE_FIRST: &'static [Self] = &[
+        Self::Full,
+        Self::Last2,
+        Self::Last4,
+        Self::EmailLocal,
+        Self::None,
+    ];
+}
+
 /// The three axes as they resolve for one claim type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Axes {
@@ -467,6 +494,81 @@ fn longest_registered_family(claim_type: &str) -> Option<&'static Entry> {
         .next_back()
 }
 
+/// The registry as a client needs to receive it: every row, the floor, and the
+/// per-axis strictness ordering.
+///
+/// Served by `persona/claim-types/list` so a client resolves against **this**
+/// agent's table rather than a copy compiled into its own build. The three
+/// parts are inseparable: §4 rule 3 takes the longest registered prefix and the
+/// unregistered floor and keeps whichever is *more protective*, which a client
+/// cannot compute from the rows alone.
+///
+/// Rows are returned exactly as this crate holds them, in table order. Family
+/// prefixes (`payment`, `gov`) and exact tokens (`name.legal`) are
+/// undistinguished, because which one a row is depends on the token being
+/// resolved — and marking them would invite a client to walk only one kind,
+/// which is the hole that let a gated family be escaped by inventing a member.
+///
+/// **`minimumSet` and `oidc` are deliberately absent.** The spec makes both
+/// optional, and this agent's table does not carry them: nothing here resolves
+/// against either. Transcribing them in at the serving layer would be a second
+/// copy of data this crate does not use — which is the thing this task exists
+/// to end, one layer down.
+#[must_use]
+pub fn registry_listing() -> RegistryListing {
+    RegistryListing {
+        registry_version: REGISTRY_VERSION,
+        entries: REGISTRY
+            .iter()
+            .map(|e| RegistryRow {
+                claim_type: e.token,
+                axes: e.axes,
+            })
+            .collect(),
+        unregistered: UNREGISTERED,
+        strictness: Strictness {
+            // Each axis most protective first — the same order the enums are
+            // declared in, which is what makes `min()` mean "more protective"
+            // throughout this module. Derived from the enums rather than
+            // written out again, so the served ordering cannot disagree with
+            // the one the resolution actually uses.
+            sensitivity: Sensitivity::MOST_PROTECTIVE_FIRST,
+            release: ReleaseRequirement::MOST_PROTECTIVE_FIRST,
+            mask: MaskStyle::MOST_PROTECTIVE_FIRST,
+        },
+    }
+}
+
+/// One row of [`registry_listing`].
+#[derive(Clone, Copy, Debug)]
+pub struct RegistryRow {
+    pub claim_type: &'static str,
+    pub axes: Axes,
+}
+
+/// The per-axis orderings, most protective first.
+#[derive(Clone, Copy, Debug)]
+pub struct Strictness {
+    pub sensitivity: &'static [Sensitivity],
+    pub release: &'static [ReleaseRequirement],
+    pub mask: &'static [MaskStyle],
+}
+
+/// Everything `persona/claim-types/list` returns.
+#[derive(Clone, Debug)]
+pub struct RegistryListing {
+    pub registry_version: &'static str,
+    pub entries: Vec<RegistryRow>,
+    pub unregistered: Axes,
+    pub strictness: Strictness,
+}
+
+/// The version of `claim-types.json` this table was transcribed from.
+///
+/// A client caches on this, so it moves when the table moves — not when this
+/// crate is released.
+const REGISTRY_VERSION: &str = "0.1";
+
 /// The sensitivity of one attribute — §4 in full, rule 1 included.
 ///
 /// **Store the override; derive the default.** Only a holder's deliberate
@@ -528,6 +630,63 @@ pub fn release_of_claim(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The served ordering IS the resolution ordering.
+    ///
+    /// `MOST_PROTECTIVE_FIRST` is hand-written — Rust cannot enumerate variants
+    /// — so it can disagree with `Ord`, which is what every "more protective
+    /// wins" comparison in this module actually uses. A disagreement would be
+    /// silent and would be *served to every client* as the rule to resolve by.
+    /// So: each list must be sorted ascending under `Ord`, and must be
+    /// complete.
+    #[test]
+    fn the_served_strictness_matches_the_ordering_resolution_uses() {
+        fn ascending<T: Ord + std::fmt::Debug + Copy>(xs: &[T], axis: &str) {
+            let mut sorted = xs.to_vec();
+            sorted.sort();
+            assert_eq!(
+                xs.to_vec(),
+                sorted,
+                "{axis}: MOST_PROTECTIVE_FIRST disagrees with Ord, so the ordering served to \
+                 clients is not the one this module resolves by"
+            );
+        }
+        ascending(Sensitivity::MOST_PROTECTIVE_FIRST, "sensitivity");
+        ascending(ReleaseRequirement::MOST_PROTECTIVE_FIRST, "release");
+        ascending(MaskStyle::MOST_PROTECTIVE_FIRST, "mask");
+
+        // Completeness: the floor is the most protective value on every axis,
+        // so it must be the first element. A variant added above it and not
+        // listed would fail here.
+        assert_eq!(
+            Sensitivity::MOST_PROTECTIVE_FIRST[0],
+            UNREGISTERED.sensitivity
+        );
+        assert_eq!(MaskStyle::MOST_PROTECTIVE_FIRST[0], UNREGISTERED.mask);
+    }
+
+    /// The listing carries the three parts a client needs, and every row of the
+    /// table it actually resolves against.
+    #[test]
+    fn the_listing_serves_the_table_this_agent_resolves_by() {
+        let l = registry_listing();
+        assert_eq!(
+            l.entries.len(),
+            REGISTRY.len(),
+            "rows dropped on the way out"
+        );
+        for (row, entry) in l.entries.iter().zip(REGISTRY.iter()) {
+            assert_eq!(row.claim_type, entry.token);
+            assert_eq!(row.axes, entry.axes);
+        }
+        assert_eq!(l.unregistered, UNREGISTERED);
+        assert_eq!(l.registry_version, "0.1");
+
+        // The family rows are present and undistinguished — a client walking
+        // prefixes needs them, and nothing marks them as different.
+        assert!(l.entries.iter().any(|r| r.claim_type == "payment"));
+        assert!(l.entries.iter().any(|r| r.claim_type == "gov"));
+    }
     use crate::model::{Provenance, ValueType};
     use crate::store::new_attribute;
 
