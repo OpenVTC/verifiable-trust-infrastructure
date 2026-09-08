@@ -29,41 +29,44 @@
 //! against an `ExplicitAllow` mediator is expected to require its DID be
 //! pre-authorised.
 //!
-//! ## Why this is issued over DIDComm, and what that costs a TSP-only mediator
+//! ## Both transports, and why the TSP arm looks different
 //!
-//! Everything here goes through the ATM — `account_update` is a DIDComm
-//! message to the mediator — so it needs a DIDComm mediator to issue it to.
-//! That is not an oversight in this crate; **the mediator has no TSP route for
-//! its own management tasks**. In affinidi-messaging-mediator 0.21.0 the
-//! dispatcher that turns a `TrustTaskEnvelope` into `account/update`
-//! (`messages/mod.rs`, `MessageType::process` → `trust_tasks::process`) is
-//! wholly `#[cfg(feature = "didcomm")]` and takes a DIDComm `Message`. A TSP
-//! `Direct`/`Control` message addressed to the mediator does not reach it: it
-//! goes to `deliver_tsp_local` → `deliver_opaque`, which *stores it for
-//! pickup*. There is no packet a TSP-only client can send to set its own ACL.
+//! [`set_client_acl_with_profile`] issues `account/update` through the ATM,
+//! i.e. over DIDComm. [`set_client_acl_over_tsp`] issues the same task as a TSP
+//! **Direct** message addressed to the mediator itself. Either one authorises
+//! the account for *both* transports — the mediator keys its ACL on
+//! `sha256(did)`, not on a protocol — so a client needs whichever it can reach
+//! the mediator on, not both.
 //!
-//! What saves a TSP-only deployment is that it usually does not need to. The
-//! account is created at **authentication**, not at first message, and that
-//! path is transport-agnostic: `handlers/authenticate/challenge.rs` carries no
-//! `cfg` gate and calls `account_add(did_hash, global_acl_default, None)`. So a
-//! TSP client that authenticates has an account with the mediator's default
-//! ACL, and where that default is permissive it can send and receive with no
-//! provisioning at all.
+//! The TSP arm exists because for a while there was no way to do this at all on
+//! a TSP-only mediator. The mediator's management dispatch
+//! (`MessageType::process` → `trust_tasks::process`) was `#[cfg(feature =
+//! "didcomm")]` and took a DIDComm `Message`, so a TSP message addressed to it
+//! was filed for pickup rather than answered — no packet a TSP-only client
+//! could send would set its own ACL. affinidi-tdk-rs#783 added the TSP wrapper;
+//! this is its client half.
 //!
-//! The gap is therefore narrow and precise: **a TSP-only mediator whose
-//! `global_acl_default` is restrictive cannot have client ACLs provisioned by
-//! the client at all, over any transport.** Not a client-side bug, and not one
-//! a client-side change can close — it needs a TSP arm on the mediator's
-//! management dispatch. Until then such a deployment must set account ACLs
-//! administratively. This matters increasingly as TSP displaces DIDComm; see
-//! `docs/05-design-notes/tsp-enablement.md`.
+//! **A mediator predating that fix files the request as mail instead of acting
+//! on it, and says nothing.** That is why the TSP arm does not report success:
+//! `send` returning `Ok` means the frame was accepted for delivery, never that
+//! the ACL was applied (R1.1). It logs what it sent, not what happened. The
+//! cost of being wrong is bounded — an account left on the mediator's
+//! `global_acl_default`, exactly where it would have been anyway.
 //!
-//! TSP delivery is *not* exempt from ACLs, so this is a real constraint rather
-//! than a theoretical one: `deliver_opaque` applies "existence, RECEIVE_MESSAGES
-//! and the access-list verdict" via `delivery_decision`, and a recipient that is
-//! not a local account is refused outright. It is only `receive_forwarded` that
-//! is DIDComm-specific — that gate lives in the DIDComm forward protocol
-//! (`messages/protocols/routing.rs`) and TSP never traverses it.
+//! Why a fire-and-forget send rather than a request/response: the mediator
+//! applies the ACL *before* responding, so a lost or late reply does not mean
+//! the update failed — the same reasoning that makes the DIDComm arm log its
+//! errors instead of propagating them. Awaiting a reply here would buy nothing
+//! and would stall for the full timeout against a mediator that is never going
+//! to answer.
+//!
+//! TSP delivery is *not* exempt from ACLs, which is why this matters rather
+//! than being theoretical: `deliver_opaque` applies "existence,
+//! RECEIVE_MESSAGES and the access-list verdict" via `delivery_decision`, and a
+//! recipient that is not a local account is refused outright. Only
+//! `receive_forwarded` is DIDComm-specific — that gate lives in the DIDComm
+//! forward protocol (`messages/protocols/routing.rs`), which TSP never
+//! traverses.
 
 use std::sync::Arc;
 
@@ -254,6 +257,95 @@ pub async fn set_client_acl_with_profile(
             "client ACL request timed out (mediator may still process asynchronously)"
         ),
     }
+}
+
+/// Provision a client's own allow-all mediator ACL over **TSP**, as a Direct
+/// message addressed to the mediator.
+///
+/// The TSP twin of [`set_client_acl_with_profile`], for a client whose mediator
+/// it reaches over TSP — including a TSP-only mediator, which no DIDComm-issued
+/// task can reach at all. Same task (`messaging/account/update/0.1`), same
+/// allow-all ACL, same account key (`sha256(did)`), so whichever arm runs, the
+/// account ends up authorised for both transports.
+///
+/// **Reports what it sent, not what happened.** A successful send means the
+/// mediator accepted the frame, not that it applied the ACL (R1.1) — and a
+/// mediator predating affinidi-tdk-rs#783 will file it as mail and answer
+/// nothing. Deliberately fire-and-forget: the mediator applies the ACL before
+/// responding, so a reply adds no information, while waiting for one would
+/// stall for the full timeout against a mediator that will never send it.
+///
+/// Best-effort like its twin — errors are logged, never propagated. The worst
+/// case is an account left on the mediator's `global_acl_default`.
+#[cfg(feature = "tsp")]
+pub async fn set_client_acl_over_tsp(
+    atm: &ATM,
+    profile: &Arc<ATMProfile>,
+    client_did: &str,
+    mediator_did: &str,
+    channel: &str,
+    client_name: &str,
+) {
+    let doc = match build_account_update_document(client_did, mediator_did) {
+        Ok(doc) => doc,
+        Err(e) => {
+            debug!(
+                channel,
+                client_did = %client_did,
+                error = %e,
+                client = client_name,
+                "could not build the account/update document for TSP (ACL unchanged)"
+            );
+            return;
+        }
+    };
+
+    match atm.tsp().send(profile, mediator_did, &doc).await {
+        // Note the wording: *sent*, not *configured*. See the module docs.
+        Ok(()) => debug!(
+            channel,
+            client_did = %client_did,
+            client = client_name,
+            "sent account/update to the mediator over TSP (delivery not confirmed)"
+        ),
+        Err(e) => debug!(
+            channel,
+            client_did = %client_did,
+            error = %e,
+            client = client_name,
+            "could not send account/update over TSP (ACL unchanged)"
+        ),
+    }
+}
+
+/// The `messaging/account/update/0.1` request that opens `client_did`'s account,
+/// serialised as the bare Trust Task document TSP carries.
+///
+/// Bare on purpose: the TSP binding puts the document on the wire directly,
+/// where DIDComm wraps it in a binding envelope whose `body` is the document.
+/// The mediator's TSP arm recognises a request by parsing the payload and
+/// matching its type, so what goes here has to be the document itself.
+#[cfg(feature = "tsp")]
+fn build_account_update_document(
+    client_did: &str,
+    mediator_did: &str,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    use trust_tasks_rs::TrustTask;
+
+    let payload: account::update::v0_1::Payload = account::update::v0_1::Payload::builder()
+        .did(client_acl_hash(client_did))
+        .acl(Some(build_allow_all_acl()))
+        .try_into()
+        .map_err(|e| format!("account/update payload: {e:?}"))?;
+
+    // `issuer`/`recipient` are set explicitly: the mediator's
+    // `validate_basic` checks the document is addressed to it, and the TSP
+    // envelope's sender is what authorises the change, so both have to be on
+    // the document rather than inferred.
+    let mut doc = TrustTask::for_payload(format!("urn:uuid:{}", uuid::Uuid::new_v4()), payload);
+    doc.issuer = Some(client_did.to_string());
+    doc.recipient = Some(mediator_did.to_string());
+    Ok(serde_json::to_vec(&doc)?)
 }
 
 /// SHA-256 hex of a DID — the mediator's per-account ACL key

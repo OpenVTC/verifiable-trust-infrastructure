@@ -1349,17 +1349,66 @@ impl<'a> MediatorProbe<'a> {
         })
     }
 
-    /// The DIDComm mediator whose account should be opened, if any.
-    fn account_mediator(&self) -> Option<&'a str> {
+    /// The mediator whose account should be opened, and how to reach it.
+    ///
+    /// DIDComm is preferred when the VTA advertises it, for the plain reason
+    /// that it is the arm every deployed mediator understands: the TSP
+    /// management route is newer (affinidi-tdk-rs#783), so on a dual-transport
+    /// VTA the DIDComm pass is the one certain to be acted on. A TSP-only VTA
+    /// takes the TSP arm, which is the whole point — it is that or nothing.
+    fn account_transport(&self) -> Option<(&'a str, AccountTransport)> {
         match self {
             Self::None => None,
-            Self::Didcomm { mediator_did, .. } => Some(mediator_did),
+            Self::Didcomm { mediator_did, .. } => Some((mediator_did, AccountTransport::Didcomm)),
             Self::Tsp {
-                didcomm_mediator_did,
+                didcomm_mediator_did: Some(didcomm),
                 ..
-            } => *didcomm_mediator_did,
+            } => Some((didcomm, AccountTransport::Didcomm)),
+            #[cfg(feature = "tsp")]
+            Self::Tsp {
+                mediator_did,
+                didcomm_mediator_did: None,
+            } => Some((mediator_did, AccountTransport::Tsp)),
+            // Without the `tsp` feature there is no TSP arm to send on, so a
+            // TSP-only mediator has no account pass. Unreachable in practice —
+            // this build cannot have connected over TSP to get here.
+            #[cfg(not(feature = "tsp"))]
+            Self::Tsp {
+                didcomm_mediator_did: None,
+                ..
+            } => None,
         }
     }
+}
+
+/// How the mediator-account pass reaches the mediator.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AccountTransport {
+    Didcomm,
+    #[cfg(feature = "tsp")]
+    Tsp,
+}
+
+/// Open `client_did`'s mediator account over TSP.
+///
+/// Opens a short-lived TSP session purely to carry one `account/update`. The
+/// rotation's reachability probe has already proven this DID can reach the
+/// mediator, so this is a second connect on a path known to work — kept
+/// separate because the probe's session is torn down before the swap, and
+/// holding it open across the commit is the thing the rotation ordering exists
+/// to avoid.
+#[cfg(feature = "tsp")]
+async fn send_account_update_over_tsp(
+    client_did: &str,
+    private_key: &str,
+    mediator_did: &str,
+) -> Result<(), String> {
+    let session = TspPingSession::new(client_did, private_key, mediator_did)
+        .await
+        .map_err(|e| e.to_string())?;
+    session.provision_client_acl("pnm-rotate").await;
+    session.shutdown().await;
+    Ok(())
 }
 
 /// Which transport a rotation reopens its socket on.
@@ -1457,39 +1506,65 @@ async fn rotate_key_over_client(
         debug!(%new_did, over_tsp, "rotation DID reached its mediator");
     }
 
-    // 2b. The mediator account. Always best-effort and always over DIDComm —
-    //     the ACL is keyed on the hashed DID rather than a protocol, so this one
-    //     pass authorises TSP too, but it is issued through the ATM and so needs
-    //     a DIDComm mediator to issue it to. A failure costs a dropped forwarded
-    //     reply on the next connect, never a credential.
+    // 2b. The mediator account, on whichever transport reaches the mediator.
+    //     Always best-effort: the ACL is keyed on the hashed DID rather than a
+    //     protocol, so one pass authorises both transports, and a failure costs
+    //     a dropped forwarded reply on the next connect, never a credential.
     //
-    //     Skipping it on a TSP-only mediator is correct, not a gap in this
-    //     rotation: the account is created by *authentication* — which the
-    //     reachability probe above just performed — carrying the mediator's
-    //     `global_acl_default`. A permissive default therefore needs nothing
-    //     from us. A restrictive one cannot be fixed from any client over TSP,
-    //     because the mediator's management-task dispatch is DIDComm-only. See
-    //     `crate::acl_setup`'s module docs for the mediator code that shows it.
-    if let Some(mediator_did) = probe.account_mediator() {
-        let opened = tokio::time::timeout(PROBE_TIMEOUT, async {
-            let s = TrustPingSession::new(&new_did, &new_private_key, mediator_did)
-                .await
-                .map_err(|e| e.to_string())?;
-            s.provision_client_acl("pnm-rotate").await;
-            s.shutdown().await;
-            Ok::<(), String>(())
-        })
-        .await
-        .unwrap_or_else(|_| Err(format!("timed out after {}s", PROBE_TIMEOUT.as_secs())));
+    //     A TSP-only mediator is served by the TSP arm rather than skipped. It
+    //     used to be skipped because it had to be — the mediator's management
+    //     dispatch was DIDComm-only, so no packet a TSP-only client could send
+    //     would set its own ACL (affinidi-tdk-rs#783 added the TSP wrapper).
+    //     Against a mediator predating that, the request is filed as mail and
+    //     nothing happens, which is exactly where skipping left us; the account
+    //     keeps the `global_acl_default` it was created with at authentication.
+    match probe.account_transport() {
+        Some((mediator_did, AccountTransport::Didcomm)) => {
+            let opened = tokio::time::timeout(PROBE_TIMEOUT, async {
+                let s = TrustPingSession::new(&new_did, &new_private_key, mediator_did)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                s.provision_client_acl("pnm-rotate").await;
+                s.shutdown().await;
+                Ok::<(), String>(())
+            })
+            .await
+            .unwrap_or_else(|_| Err(format!("timed out after {}s", PROBE_TIMEOUT.as_secs())));
 
-        match opened {
-            Ok(()) => debug!(%new_did, "opened the rotated DID's mediator account"),
-            Err(e) => tracing::debug!(
-                %new_did, error = %e,
-                "could not open the rotated DID's mediator account (non-fatal — it opens on \
-                 the next DIDComm connect)"
-            ),
+            match opened {
+                Ok(()) => debug!(%new_did, "opened the rotated DID's mediator account"),
+                Err(e) => tracing::debug!(
+                    %new_did, error = %e,
+                    "could not open the rotated DID's mediator account (non-fatal — it opens \
+                     on the next DIDComm connect)"
+                ),
+            }
         }
+        #[cfg(feature = "tsp")]
+        Some((mediator_did, AccountTransport::Tsp)) => {
+            let sent = tokio::time::timeout(
+                PROBE_TIMEOUT,
+                send_account_update_over_tsp(&new_did, &new_private_key, mediator_did),
+            )
+            .await
+            .unwrap_or_else(|_| Err(format!("timed out after {}s", PROBE_TIMEOUT.as_secs())));
+
+            match sent {
+                // *Sent*, not *opened*: a TSP send resolving `Ok` means the
+                // mediator accepted the frame, never that it applied the ACL
+                // (R1.1), and a mediator without the TSP management arm files it
+                // silently. Do not claim more than happened.
+                Ok(()) => debug!(
+                    %new_did,
+                    "sent the rotated DID's account/update over TSP (delivery not confirmed)"
+                ),
+                Err(e) => tracing::debug!(
+                    %new_did, error = %e,
+                    "could not send the rotated DID's account/update over TSP (non-fatal)"
+                ),
+            }
+        }
+        None => {}
     }
 
     // 3. Atomically move the ACL entry onto the new DID. The VP-JWT proves
@@ -2749,6 +2824,33 @@ impl TspPingSession {
     /// account (so the reply can't route back to it) — so waiting for a pong (as
     /// [`ping`](Self::ping) does) always times out and masks the send success.
     /// `Ok(())` means the relationship-free routed send worked (3c).
+    /// Open this client's own allow-all mediator account over the session's live
+    /// TSP socket.
+    ///
+    /// The TSP twin of [`TrustPingSession::provision_client_acl`]. Unlike that
+    /// one it cannot report whether the ACL was applied — see
+    /// [`crate::acl_setup::set_client_acl_over_tsp`]. No-op unless `acl-setup`
+    /// is enabled.
+    ///
+    /// Note this is deliberately *not* called on the `pnm health` TSP probe,
+    /// which runs on a throwaway DID: provisioning there would litter the
+    /// mediator with allow-all accounts for DIDs that never come back. It is for
+    /// a DID the caller is about to commit to.
+    pub async fn provision_client_acl(&self, client_name: &str) {
+        #[cfg(feature = "acl-setup")]
+        crate::acl_setup::set_client_acl_over_tsp(
+            self.identity.hub.atm(),
+            &self.identity.profile,
+            &self.client_did,
+            &self.mediator_did,
+            "tsp-ping-session",
+            client_name,
+        )
+        .await;
+        #[cfg(not(feature = "acl-setup"))]
+        let _ = client_name;
+    }
+
     pub async fn probe_send(&self, vta_did: &str) -> Result<(), Box<dyn std::error::Error>> {
         let body = serde_json::to_vec(&ping_document(&self.client_did, vta_did)?)?;
 
@@ -3843,6 +3945,61 @@ mod tests {
             reconnect.contains("required: true"),
             "a DIDComm rotation reconnects over the mediator, so its probe must be required: \
              the temp entry is gone by then, and an unreachable new DID is unrecoverable"
+        );
+    }
+
+    #[test]
+    fn a_tsp_only_mediator_still_gets_its_account_pass() {
+        // The reason this exists: a TSP-only mediator used to be skipped
+        // entirely, because the mediator's management dispatch was DIDComm-only
+        // and no packet a client could send would set its ACL
+        // (affinidi-tdk-rs#783 added the TSP arm). Skipping is no longer
+        // correct, and the way it would regress is by falling back to `None`
+        // rather than by failing — silent, and only on the deployments that
+        // depend on it.
+        let f = body_of("    fn account_transport(", "\n    }\n");
+
+        let tsp_only = f
+            .find("didcomm_mediator_did: None,")
+            .expect("a TSP-only mediator must be matched explicitly");
+        let arm = &f[tsp_only..];
+        assert!(
+            arm.contains("AccountTransport::Tsp"),
+            "a TSP-only mediator must take the TSP account pass, not `None` — that skip was \
+             only ever correct while the mediator had no TSP management route"
+        );
+
+        // Dual-transport prefers DIDComm: it is the arm every deployed mediator
+        // understands, so on a VTA offering both it is the one certain to act.
+        let dual = f
+            .find("didcomm_mediator_did: Some(didcomm)")
+            .expect("a dual-transport mediator must be matched");
+        let dual_arm = &f[dual..f[dual..].find("Self::Tsp").map_or(f.len(), |i| dual + i)];
+        assert!(
+            dual_arm.contains("AccountTransport::Didcomm"),
+            "a VTA advertising both transports must open its account over DIDComm"
+        );
+    }
+
+    #[test]
+    fn the_tsp_account_pass_never_claims_delivery() {
+        // R1.1: a TSP send resolving `Ok` means the mediator accepted the frame,
+        // not that it applied the ACL — and a mediator without the TSP
+        // management arm files it silently and answers nothing. Every
+        // "delivered" log in the ecosystem was built on that lie once already.
+        let rotate = body_of("async fn rotate_key_over_client(", "\n}\n");
+        let tsp_arm_start = rotate
+            .find("AccountTransport::Tsp")
+            .expect("the TSP account pass must exist");
+        let tsp_arm = &rotate[tsp_arm_start..];
+        let success_log = tsp_arm
+            .find("Ok(()) =>")
+            .map(|i| &tsp_arm[i..i + 300])
+            .expect("the TSP arm must log its success case");
+        assert!(
+            success_log.contains("sent") && !success_log.contains("opened"),
+            "the TSP success log must say what was *sent*, not what was opened — a send `Ok` \
+             is acceptance for delivery, never confirmation the ACL was applied"
         );
     }
 
