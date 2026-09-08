@@ -1711,6 +1711,9 @@ dispatch_table! {
     // Describes the agent's capabilities, not the holder. Discloses nothing.
     vta_sdk::trust_tasks::TASK_PERSONA_RENDERERS_LIST_1_0 => persona::handle_renderers_list
         [ None None false ],
+    // Describes the agent's vocabulary, not the holder. Discloses nothing.
+    vta_sdk::trust_tasks::TASK_PERSONA_CLAIM_TYPES_LIST_1_0 => persona::handle_claim_types_list
+        [ None None false ],
     // The context-local surface. Context-callable because authoring below the
     // boundary is safe; the rule exists to stop reading across it.
     vta_sdk::trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0 => persona::handle_local_profile_put

@@ -129,6 +129,7 @@ pub const REACH: &[(&str, Reach)] = &[
     (uris::TASK_PERSONA_DISCLOSURE_PRESENT_1_0, Reach::Context),
     // ── Neither side: the agent's own advertised capabilities ─────────────
     (uris::TASK_PERSONA_RENDERERS_LIST_1_0, Reach::Any),
+    (uris::TASK_PERSONA_CLAIM_TYPES_LIST_1_0, Reach::Any),
     // Authoring below the boundary is safe; the rule stops reading across it.
     (uris::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0, Reach::Context),
     (uris::TASK_PERSONA_LOCAL_PROFILE_GET_1_0, Reach::Context),
@@ -1506,6 +1507,59 @@ pub(super) async fn handle_renderers_list(
                 "drops": if r.carries_provenance { vec![] } else { vec!["provenance"] },
                 "canCarryPredicates": r.carries_predicates,
             })).collect::<Vec<_>>()
+        }),
+    )
+}
+
+/// Serve the claim-type registry this agent resolves against.
+pub(super) async fn handle_claim_types_list(
+    // Unused for the same reason as `handle_renderers_list`: the table is a
+    // compile-time constant, not stored state.
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let _req: spec::claim_types::list::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    // `Reach::Any`, and neither of the other two would do. An unscoped holder
+    // only would refuse the application that needs this most — one inside a
+    // context, deciding how to render a preview it was just shown. A context
+    // requirement would refuse the holder's own tooling, which has no context
+    // to name. The response describes a vocabulary and carries nothing about
+    // the holder, any context, or any stored state.
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_CLAIM_TYPES_LIST_1_0, None).await {
+        return reject(&doc, e);
+    }
+
+    // Sourced from `vta_persona::claim_types` — the same table `defaults_for`
+    // resolves against — so what is served and what is enforced cannot
+    // disagree. That is the task's central MUST, and building the response
+    // from a second literal here would break it on day one.
+    let l = vta_persona::claim_types::registry_listing();
+    let axes = |a: &vta_persona::Axes| {
+        json!({
+            "sensitivity": wire_name(a.sensitivity),
+            "release": wire_name(a.release),
+            "mask": wire_name(a.mask),
+        })
+    };
+    success_response(
+        &doc,
+        json!({
+            "registryVersion": l.registry_version,
+            "entries": l.entries.iter().map(|r| {
+                let mut e = axes(&r.axes);
+                e["type"] = json!(r.claim_type);
+                e
+            }).collect::<Vec<_>>(),
+            "unregistered": axes(&l.unregistered),
+            "strictness": {
+                "sensitivity": l.strictness.sensitivity.iter().map(|v| wire_name(*v)).collect::<Vec<_>>(),
+                "release": l.strictness.release.iter().map(|v| wire_name(*v)).collect::<Vec<_>>(),
+                "mask": l.strictness.mask.iter().map(|v| wire_name(*v)).collect::<Vec<_>>(),
+            },
         }),
     )
 }

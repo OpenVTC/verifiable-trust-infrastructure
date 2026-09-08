@@ -551,6 +551,12 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         trust_tasks::TASK_PERSONA_RENDERERS_LIST_1_0,
         RetrySafety::ReadOnly,
     ),
+    // A compile-time table describing the agent's vocabulary. Reads nothing,
+    // writes nothing, and returns the same answer to every caller.
+    (
+        trust_tasks::TASK_PERSONA_CLAIM_TYPES_LIST_1_0,
+        RetrySafety::ReadOnly,
+    ),
     (
         trust_tasks::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0,
         RetrySafety::Keyed,

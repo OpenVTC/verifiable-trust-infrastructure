@@ -43,6 +43,7 @@ const BINDING_GET: &str = "https://trusttasks.org/spec/persona/binding/get/1.0";
 const BINDING_LIST: &str = "https://trusttasks.org/spec/persona/binding/list/1.0";
 const CORRELATION: &str = "https://trusttasks.org/spec/persona/correlation/analyze/1.0";
 const RENDERERS: &str = "https://trusttasks.org/spec/persona/renderers/list/1.0";
+const CLAIM_TYPES: &str = "https://trusttasks.org/spec/persona/claim-types/list/1.0";
 const DISCLOSURE_HISTORY: &str = "https://trusttasks.org/spec/persona/disclosure/history/1.0";
 const PREVIEW: &str = "https://trusttasks.org/spec/persona/disclosure/preview/1.0";
 const PRESENT: &str = "https://trusttasks.org/spec/persona/disclosure/present/1.0";
@@ -2214,4 +2215,141 @@ async fn a_holders_release_override_gates_a_type_the_registry_does_not() {
         "an ungated name.display was gated, so the override is not what decided it: \
          {status} {body}"
     );
+}
+
+/// The registry is served, and it is the one the agent resolves by.
+///
+/// The task's central MUST is that a maintainer serves the table it actually
+/// applies — a served table that differs from the enforced one is worse than
+/// serving nothing, because a client would mask and gate by one rule while the
+/// agent disclosed by another and nothing would report the disagreement.
+///
+/// So this does not check the response against a literal. It checks it against
+/// **observed agent behaviour**: `payment.card` is served as `release: stepUp`,
+/// and a disclosure of `payment.card` is in fact refused for want of a step-up.
+/// A response built from a second hard-coded table would pass a literal
+/// comparison and fail this.
+#[tokio::test]
+async fn the_served_registry_is_the_one_the_agent_enforces() {
+    let (router, ctx) = build_provisionable_test_app().await;
+    let vta = &ctx.vta_did;
+    let scoped = authed(&ctx, "ct-scoped", "admin", &[CTX]).await;
+
+    let (status, body) = post_to(&router, &scoped, vta, CLAIM_TYPES, json!({})).await;
+    assert!(!refused(status, &body), "claim-types/list: {status} {body}");
+    let p = payload_of(&body);
+
+    assert_eq!(p["registryVersion"], "0.1", "{body}");
+
+    // The three parts are inseparable: §4 rule 3 needs the floor and an
+    // ordering, not just the rows.
+    assert_eq!(p["unregistered"]["sensitivity"], "high", "{body}");
+    assert_eq!(p["unregistered"]["release"], "consent", "{body}");
+    assert_eq!(p["unregistered"]["mask"], "full", "{body}");
+    assert_eq!(
+        p["strictness"]["release"][0], "stepUp",
+        "the strictness ordering must be most-protective-first, or a client's \
+         'more protective wins' resolves backwards: {body}"
+    );
+    assert_eq!(p["strictness"]["sensitivity"][0], "high", "{body}");
+    assert_eq!(p["strictness"]["mask"][0], "full", "{body}");
+
+    let entries = p["entries"].as_array().expect("entries");
+    let find = |t: &str| {
+        entries
+            .iter()
+            .find(|e| e["type"] == t)
+            .unwrap_or_else(|| panic!("no entry for {t} in {p:#}"))
+    };
+
+    // The family rows are present and undistinguished. A client walking
+    // prefixes needs them, and nothing marks them as a different kind of row —
+    // which is what stopped a gated family being escapable by inventing a
+    // member.
+    assert_eq!(find("payment")["release"], "stepUp", "{p:#}");
+    assert_eq!(find("gov")["release"], "stepUp", "{p:#}");
+    assert_eq!(find("name")["release"], "consent", "{p:#}");
+
+    // And now the half that makes this more than a literal comparison: the
+    // agent must BEHAVE the way the table it just served says it will.
+    let served_card_release = find("payment.card")["release"].clone();
+    assert_eq!(served_card_release, "stepUp", "{p:#}");
+
+    let holder = authed(&ctx, "ct-holder", "admin", &[]).await;
+    let attr = put_attribute_at(&router, &holder, vta, "payment.card", "4242424242424242").await;
+    let (_, body) = post_to(
+        &router,
+        &holder,
+        vta,
+        PROFILE_PUT,
+        json!({ "name": "card", "entries": [{ "ref": attr }] }),
+    )
+    .await;
+    let profile = payload_of(&body)["profileId"]
+        .as_str()
+        .expect("profileId")
+        .to_string();
+    let persona = "did:key:z6MkPersonaClaimTypes";
+    let (status, body) = post_to(
+        &router,
+        &holder,
+        vta,
+        BINDING_SET,
+        json!({ "contextId": CTX, "personaDid": persona, "profileId": profile }),
+    )
+    .await;
+    assert!(!refused(status, &body), "binding/set: {status} {body}");
+    let (_, body) = post_to(
+        &router,
+        &scoped,
+        vta,
+        PREVIEW,
+        json!({ "contextId": CTX, "personaDid": persona, "verifierDid": "did:key:z6MkV" }),
+    )
+    .await;
+    let preview_id = payload_of(&body)["previewId"]
+        .as_str()
+        .expect("previewId")
+        .to_string();
+    let (status, body) = post_to(
+        &router,
+        &scoped,
+        vta,
+        PRESENT,
+        json!({ "contextId": CTX, "previewId": preview_id }),
+    )
+    .await;
+    assert!(refused(status, &body), "{status} {body}");
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/disclosure/present:stepUpRequired",
+        "the agent served `payment.card: stepUp` and then disclosed it without one — a served \
+         table that differs from the enforced one is worse than serving nothing: {body}"
+    );
+}
+
+/// Any authenticated caller may read it — scoped and unscoped alike.
+///
+/// Both of the usual answers are wrong here in opposite directions, so both
+/// are asserted: refusing the scoped caller would refuse the application that
+/// needs this most, and refusing the unscoped one would refuse the holder's own
+/// tooling, which has no context to name.
+#[tokio::test]
+async fn the_registry_is_readable_by_scoped_and_unscoped_callers_alike() {
+    let (router, ctx) = build_provisionable_test_app().await;
+    let vta = &ctx.vta_did;
+    for (tag, contexts) in [("ct-any-scoped", &[CTX][..]), ("ct-any-holder", &[][..])] {
+        let token = authed(&ctx, tag, "admin", contexts).await;
+        let (status, body) = post_to(&router, &token, vta, CLAIM_TYPES, json!({})).await;
+        assert!(
+            !refused(status, &body),
+            "{tag} was refused: {status} {body}"
+        );
+        assert!(
+            payload_of(&body)["entries"]
+                .as_array()
+                .is_some_and(|e| !e.is_empty()),
+            "{tag} got an empty table: {body}"
+        );
+    }
 }
