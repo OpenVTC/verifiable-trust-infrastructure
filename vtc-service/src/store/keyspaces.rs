@@ -44,6 +44,15 @@ pub use vti_rooms::ROOMS_KEYSPACE as ROOMS;
 
 /// Room records at `room_records:<roomId>:<key>`. Ciphertext on the sealed tiers.
 pub use vti_rooms::ROOM_RECORDS_KEYSPACE as ROOM_RECORDS;
+
+/// The epoch key chain at `room_epoch_links:<roomId>:<epoch>`. Wrapped key material this
+/// service cannot read — the key that opens a rung is a storage key no host ever holds.
+///
+/// **Backed up, and not optionally.** A room's records survive a restore as ciphertext; the
+/// chain is what makes anything written before the last membership change openable at all.
+/// Restoring the records without it hands the members a room they can see the shape of and
+/// cannot read.
+pub use vti_rooms::ROOM_EPOCH_LINKS_KEYSPACE as ROOM_EPOCH_LINKS;
 pub const AUDIT: &str = "audit";
 pub const AUDIT_KEY: &str = "audit_key";
 /// Signed audit checkpoints (#708) — periodic Ed25519-signed commitments to
@@ -90,6 +99,7 @@ pub const ALL: &[&str] = &[
     ENDORSEMENTS,
     ROOMS,
     ROOM_RECORDS,
+    ROOM_EPOCH_LINKS,
     AUDIT,
     AUDIT_KEY,
     AUDIT_CHECKPOINT,
@@ -122,6 +132,7 @@ pub const BACKED_UP: &[&str] = &[
     ENDORSEMENTS,
     ROOMS,
     ROOM_RECORDS,
+    ROOM_EPOCH_LINKS,
     AUDIT,
     AUDIT_KEY,
     // Required, not optional: restoring the audit log without its
@@ -164,7 +175,7 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        assert_eq!(ALL.len(), 27, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 28, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

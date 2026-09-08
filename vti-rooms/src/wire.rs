@@ -48,6 +48,8 @@ pub const ROOMS_RECORDS_GET_TYPE: &str = "https://trusttasks.org/spec/rooms/reco
 pub const ROOMS_RECORDS_LIST_TYPE: &str = "https://trusttasks.org/spec/rooms/records/list/0.1";
 /// `rooms/epoch/mint/0.1`.
 pub const ROOMS_EPOCH_MINT_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/mint/0.1";
+/// `rooms/epoch/chain/0.1`.
+pub const ROOMS_EPOCH_CHAIN_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/chain/0.1";
 /// `rooms/owner/transfer/0.1`.
 pub const ROOMS_OWNER_TRANSFER_TYPE: &str = "https://trusttasks.org/spec/rooms/owner/transfer/0.1";
 /// `rooms/owner/claim/0.1`.
@@ -62,6 +64,7 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_RECORDS_GET_TYPE,
     ROOMS_RECORDS_LIST_TYPE,
     ROOMS_EPOCH_MINT_TYPE,
+    ROOMS_EPOCH_CHAIN_TYPE,
     ROOMS_RECORDS_CURATE_TYPE,
     ROOMS_OWNER_TRANSFER_TYPE,
     ROOMS_OWNER_CLAIM_TYPE,
@@ -332,8 +335,41 @@ pub struct MintEpochBody {
     pub room_id: String,
     pub epoch: u32,
     pub presentation: AuthorityPresentation,
+    /// The rung this advance produces — see [`EpochLink`].
+    ///
+    /// Absent where the room does not keep its history readable, and necessarily absent for
+    /// a room's first epoch. A host that receives one MUST refuse it unless its `epoch`
+    /// matches, and MUST NOT replace a rung it already holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<EpochLink>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// `rooms/epoch/chain/0.1` request.
+///
+/// A member asks a host for the room's epoch key chain, so records sealed before they
+/// joined can still be opened. The chain is walked *downwards*, which is why this pages with
+/// `from_epoch` rather than the `since_version` watermark its records sibling uses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChainBody {
+    pub room_id: String,
+    pub presentation: AuthorityPresentation,
+    /// Return only rungs at or below this epoch. Absent means from the current epoch down.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_epoch: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// `rooms/epoch/chain/0.1#response`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainResponse {
+    pub room_id: String,
+    /// The rungs, highest epoch first and contiguous within the range returned.
+    pub links: Vec<EpochLink>,
 }
 
 /// `rooms/epoch/mint/0.1#response`.

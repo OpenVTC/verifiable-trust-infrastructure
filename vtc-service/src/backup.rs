@@ -368,6 +368,7 @@ fn backed_up_handle<'a>(state: &'a AppState, name: &str) -> Option<&'a KeyspaceH
         // completely as losing plaintext would.
         x if x == ROOMS => &state.rooms_ks,
         x if x == ROOM_RECORDS => &state.room_records_ks,
+        x if x == ROOM_EPOCH_LINKS => &state.room_epoch_links_ks,
         x if x == INVITATIONS => &state.invitations_ks,
         x if x == CONSUMED_INVITATIONS => &state.consumed_invitations_ks,
         x if x == AUDIT => &state.audit_ks,

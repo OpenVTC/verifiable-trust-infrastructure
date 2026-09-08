@@ -455,9 +455,10 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
     let (_, _) = bob_room.apply_commit(&commit)?;
 
     let minted = client
-        .mint_epoch(
+        .mint_epoch_with_link(
             &alice,
             alice_room.room_epoch(),
+            link.as_ref(),
             Some("added carol"),
             &f.owner.did,
             &f.owner.secret_multibase,
@@ -489,9 +490,25 @@ async fn act_three(client: &VtcClient) -> anyhow::Result<()> {
         Ok(_) => unreachable!("a welcome carries the current epoch, not the room's history"),
     }
 
-    // The links are ciphertext, so they can travel through anyone — the owner here, a host
-    // once `rooms/keys/chain` exists. Handing them over is what backfills her.
-    carol_room.add_links(alice_room.links());
+    // Carol asks the *host* for the chain — she has never spoken to Alice about it. The
+    // rungs are ciphertext, which is what lets a host hold and serve them: it is handing
+    // over material it cannot read, to a member who can.
+    let carol_session = session(&f, false);
+    let fetched = client
+        .epoch_chain(
+            &carol_session,
+            None,
+            None,
+            &f.owner.did,
+            &f.owner.secret_multibase,
+        )
+        .await?;
+    note(&format!(
+        "the host served {} rung(s), highest epoch first: {:?}",
+        fetched.links.len(),
+        fetched.links.iter().map(|l| l.epoch).collect::<Vec<_>>()
+    ));
+    carol_room.add_links(fetched.links);
     let backfilled = carol_room.open_record(&key, put.version, &from_host)?;
     assert_eq!(backfilled, plaintext);
     note(&format!(
