@@ -1473,6 +1473,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/rooms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /v1/rooms` — every room this community hosts. */
+        get: operations["list_rooms"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/schemas": {
         parameters: {
             query?: never;
@@ -2601,6 +2618,42 @@ export interface components {
          * @enum {string}
          */
         HealthStatus: "active" | "degraded";
+        /** @description One room, as its host can honestly describe it. */
+        HostedRoom: {
+            /** Format: int64 */
+            createdAt: number;
+            /** Format: int32 */
+            epoch: number;
+            /**
+             * Format: int64
+             * @description When the current epoch expires. Absent means the room never lapses.
+             */
+            epochExpiresAt?: number | null;
+            /**
+             * @description Where the room sits on the lifecycle clock: `live`, `lapsed`, `dormant`
+             *     or `reclaimable`. Computed, never stored — minting an epoch *is* the
+             *     renewal, so a stored state would be a second thing to keep true.
+             */
+            lifecycle: string;
+            /**
+             * @description Present when this host serves a read-only copy rather than the room
+             *     itself, naming the primary it pulls from.
+             */
+            mirrorOf?: string | null;
+            /**
+             * @description The accountable party — visible at every tier, which is what makes the
+             *     lifecycle notice deliverable.
+             */
+            ownerDid: string;
+            /** Format: int32 */
+            retentionDays: number;
+            /** @description Whether the room keeps its history readable across a membership change. */
+            retentionPolicy: string;
+            roomId: string;
+            /** Format: int64 */
+            updatedAt: number;
+            visibility: string;
+        };
         /**
          * @description `POST /v1/admin/config/import` request — canonical
          *     `vtc/config/import/0.1`.
@@ -7997,6 +8050,40 @@ export interface operations {
             };
             /** @description Edge is already suspended, superseded or withdrawn */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_rooms: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rooms hosted here */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HostedRoom"][];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

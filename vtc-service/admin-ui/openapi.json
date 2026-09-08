@@ -3840,6 +3840,41 @@
         ]
       }
     },
+    "/v1/rooms": {
+      "get": {
+        "tags": [
+          "rooms"
+        ],
+        "summary": "`GET /v1/rooms` — every room this community hosts.",
+        "operationId": "list_rooms",
+        "responses": {
+          "200": {
+            "description": "Rooms hosted here",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/HostedRoom"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
     "/v1/schemas": {
       "get": {
         "tags": [
@@ -5842,6 +5877,77 @@
           "active",
           "degraded"
         ]
+      },
+      "HostedRoom": {
+        "type": "object",
+        "description": "One room, as its host can honestly describe it.",
+        "required": [
+          "roomId",
+          "ownerDid",
+          "visibility",
+          "retentionPolicy",
+          "epoch",
+          "lifecycle",
+          "retentionDays",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "createdAt": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "epoch": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "epochExpiresAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the current epoch expires. Absent means the room never lapses.",
+            "minimum": 0
+          },
+          "lifecycle": {
+            "type": "string",
+            "description": "Where the room sits on the lifecycle clock: `live`, `lapsed`, `dormant`\nor `reclaimable`. Computed, never stored — minting an epoch *is* the\nrenewal, so a stored state would be a second thing to keep true."
+          },
+          "mirrorOf": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present when this host serves a read-only copy rather than the room\nitself, naming the primary it pulls from."
+          },
+          "ownerDid": {
+            "type": "string",
+            "description": "The accountable party — visible at every tier, which is what makes the\nlifecycle notice deliverable."
+          },
+          "retentionDays": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "retentionPolicy": {
+            "type": "string",
+            "description": "Whether the room keeps its history readable across a membership change."
+          },
+          "roomId": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "visibility": {
+            "type": "string"
+          }
+        }
       },
       "ImportRequest": {
         "type": "object",

@@ -424,6 +424,37 @@ pub async fn get_record(
         .map_err(|e| AppError::Internal(format!("decode record `{key}`: {e}")))
 }
 
+/// Every room this host holds, for its operator.
+///
+/// # Why a host may enumerate what it cannot read
+///
+/// A room's *contents* and *membership* are withheld from a host by construction. What it
+/// stores about the room itself — the owner, the tier, the epoch number, the lifecycle clock
+/// — it stores precisely so it can be operated: quota, abuse, and the reclamation notice
+/// §9 requires it to send. Invariant I1 makes the owner visible at **every** tier for this
+/// reason, so an operator listing their rooms learns nothing the design withheld.
+///
+/// What this deliberately cannot return is a member list, because no host has one.
+///
+/// # Not paginated, and that is a decision with a shelf life
+///
+/// A host's room count is bounded by what its operator agreed to store, not by anything a
+/// caller controls. If that stops being true this needs the cursor treatment
+/// [`list_records`] already has — the shape to copy is there.
+pub async fn list_rooms(rooms: &KeyspaceHandle) -> Result<Vec<Room>, AppError> {
+    let pairs = rooms.prefix_iter_raw(ROOMS_PREFIX.to_string()).await?;
+    let mut out = Vec::with_capacity(pairs.len());
+    for (k, v) in pairs {
+        let room: Room = serde_json::from_slice(&v).map_err(|e| {
+            let which = String::from_utf8_lossy(&k).to_string();
+            AppError::Internal(format!("decode room at `{which}`: {e}"))
+        })?;
+        out.push(room);
+    }
+    out.sort_by(|a, b| a.room_id.cmp(&b.room_id));
+    Ok(out)
+}
+
 /// List a room's records, optionally filtered by key prefix and a `since_version`
 /// watermark.
 ///
@@ -1308,5 +1339,30 @@ mod tests {
                 .expect("list")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn listing_rooms_returns_every_room_in_identifier_order() {
+        let (_d, rooms, _r) = open().await;
+        for id in ["r3", "r1", "r2"] {
+            create_room(&rooms, &room(id, Visibility::Attributed))
+                .await
+                .expect("create");
+        }
+
+        let got = list_rooms(&rooms).await.expect("list");
+        assert_eq!(
+            got.iter().map(|r| r.room_id.as_str()).collect::<Vec<_>>(),
+            vec!["r1", "r2", "r3"],
+            "an operator's list is stable, or two reads disagree about nothing"
+        );
+    }
+
+    /// The scan is prefix-bound to the rooms keyspace, so nothing else it may share a
+    /// store with can appear in an operator's room list.
+    #[tokio::test]
+    async fn listing_rooms_is_empty_on_a_host_that_holds_none() {
+        let (_d, rooms, _r) = open().await;
+        assert!(list_rooms(&rooms).await.expect("list").is_empty());
     }
 }
