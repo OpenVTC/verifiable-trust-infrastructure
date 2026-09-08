@@ -136,6 +136,10 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // to the room's whole retained history. A blanket `vta_call` approval must
     // not silently cover widening what the principal's key holder can decrypt.
     ("rooms/keys/chain", Risk::Sensitive),
+    // Fetches key material from a named host and keeps it. Sensitive for the
+    // same reason `chain` is — it extends what this agent can decrypt — with the
+    // addition that it makes an outbound call to a party the caller names.
+    ("rooms/keys/backfill", Risk::Sensitive),
     // Secret material, accepted AND emitted. `seal` takes a record's plaintext and
     // returns it encrypted under the room's key — the one direction in this family
     // where cleartext room material travels INTO the oracle. It belongs beside
@@ -155,6 +159,10 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     ("rooms/owner/invite", Risk::Sensitive),
     ("rooms/owner/issue-membership", Risk::Sensitive),
     ("rooms/owner/issue-authority", Risk::Sensitive),
+    // Announces a room, and its owner, to a host the caller names. Nothing
+    // secret leaves — the disclosure is the room's existence and who answers for
+    // it — but it creates durable state at a third party.
+    ("rooms/owner/register", Risk::Sensitive),
     // The holder's own identity, emitted. `disclosure/present` is the one
     // persona task that hands claims to a named verifier, under a persona DID,
     // and writes the record saying it did. It sits beside `rooms/keys/present`

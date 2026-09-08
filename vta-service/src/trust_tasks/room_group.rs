@@ -392,6 +392,167 @@ pub(super) async fn handle_chain(
     )
 }
 
+/// Everything the gated signer needs, gathered from the running service.
+///
+/// A copy of `room_owner`'s rather than a shared one: the two modules sign as
+/// different identities and the struct is the argument list, not the policy.
+fn signing_context<'a>(
+    state: &'a AppState,
+    auth: &'a AuthClaims,
+) -> crate::operations::room_issuance::SigningContext<'a> {
+    crate::operations::room_issuance::SigningContext {
+        keys_ks: &state.keys_ks,
+        imported_ks: &state.imported_ks,
+        internal_ks: &state.internal_ks,
+        contexts_ks: &state.contexts_ks,
+        acl_ks: &state.acl_ks,
+        seed_store: &state.seed_store,
+        auth,
+    }
+}
+
+/// `rooms/keys/backfill/0.1` — fetch the chain from the host and keep it.
+///
+/// Three hops folded into one, performed by the party that can perform all three:
+/// mint a presentation, ask the host for the rungs, store what comes back. The
+/// member could do the first and third and not the second — a browser reaches its
+/// own agent and no third party — which is the whole reason this task exists.
+///
+/// **The presentation is minted for this VTA's own DID**, not the caller's, and
+/// that is load-bearing rather than incidental. `room_oracle::present` attenuates
+/// the principal's authority to whichever agent is named, and a host binds the
+/// presentation to the DID that signed the request envelope. This VTA is what
+/// signs the outbound document, so a presentation minted for anyone else is one
+/// the host is right to refuse — and the refusal would read as the member lacking
+/// authority rather than as an agent presenting somebody else's grant.
+pub(super) async fn handle_backfill(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(r) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::RoomOpen,
+        "fetching a room's readable history",
+    )
+    .await
+    {
+        return r;
+    }
+
+    let req: trust_tasks_rs::specs::rooms::keys::backfill::v0_1::Payload = match parse_payload(&doc)
+    {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let vta_did = match state.config.read().await.vta_did.clone() {
+        Some(d) => d,
+        None => {
+            return app_error_to_reject(
+                &doc,
+                vti_common::error::AppError::Validation(
+                    "this agent has no DID of its own, so it cannot present to a host as itself"
+                        .into(),
+                ),
+            );
+        }
+    };
+    let Some(resolver) = state.did_resolver.clone() else {
+        return app_error_to_reject(
+            &doc,
+            vti_common::error::AppError::Validation(
+                "this agent has no DID resolver configured, so it cannot find the host".into(),
+            ),
+        );
+    };
+
+    // `read`, and only `read`. Reading the room and reading the parts of it
+    // written earlier are the same act, so they take the same grant; asking for
+    // more would hand the host authority the operation never needed.
+    let minted = match crate::operations::room_oracle::present(
+        state,
+        auth,
+        &vta_did,
+        &req.room_id,
+        "read",
+        Some(req.host.as_str()),
+        None,
+    )
+    .await
+    {
+        Ok(m) => m,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    let mut payload = serde_json::json!({
+        "roomId": req.room_id,
+        "presentation": minted.presentation,
+    });
+    if let Some(from) = req.from_epoch {
+        payload["fromEpoch"] = serde_json::json!(u64::from(from));
+    }
+    if let Some(limit) = req.limit {
+        payload["limit"] = serde_json::json!(u64::from(limit));
+    }
+
+    let key = format!("{vta_did}#key-0");
+    let reply = match crate::operations::room_host::send_room_task(
+        signing_context(state, auth),
+        &resolver,
+        &req.host,
+        &key,
+        &vta_did,
+        &key,
+        vti_rooms::wire::ROOMS_EPOCH_CHAIN_TYPE,
+        &format!("{}#response", vti_rooms::wire::ROOMS_EPOCH_CHAIN_TYPE),
+        payload,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    let links: Vec<vti_rooms::wire::EpochLink> =
+        match serde_json::from_value(reply.get("links").cloned().unwrap_or(Value::Array(vec![]))) {
+            Ok(l) => l,
+            Err(e) => {
+                return app_error_to_reject(
+                    &doc,
+                    vti_common::error::AppError::Internal(format!(
+                        "room host `{}` served rungs this agent cannot read: {e}",
+                        req.host
+                    )),
+                );
+            }
+        };
+    let fetched = links.len();
+
+    // Nothing served is a real answer rather than an error — the host holds no
+    // rungs below what this agent already reads — and it needs no special case:
+    // `store_links` with an empty delivery stores nothing and still walks what
+    // is held, which is the reach this must report either way.
+    let (earliest, stored) =
+        match room_groups::store_links(&state.room_groups_ks, &req.room_id, links, now()).await {
+            Ok(r) => r,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
+
+    record(state, "rooms.keys.backfill", auth, &req.room_id).await;
+    success_response(
+        &doc,
+        serde_json::json!({
+            "roomId": req.room_id,
+            "earliestReadableEpoch": earliest,
+            "fetched": fetched,
+            "stored": stored,
+        }),
+    )
+}
+
 /// `rooms/keys/open/0.1`.
 pub(super) async fn handle_open(
     state: &AppState,

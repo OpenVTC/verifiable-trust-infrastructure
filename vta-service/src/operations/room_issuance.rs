@@ -136,6 +136,57 @@ impl Signer for RoomKeySigner<'_> {
     }
 }
 
+/// Signs with one of **this VTA's own** keys, through the same gated oracle.
+///
+/// The same mechanism as [`RoomKeySigner`] pointed at a different identity, and
+/// worth its own type rather than a bare-string constructor: the two are not
+/// interchangeable and confusing them is silent. Signing an outbound host
+/// request as a *room* would present credentials the room issued under a proof
+/// naming the room as presenter, and the host binds the presentation to whoever
+/// signed — so the mismatch surfaces at the far side as "this presentation is
+/// not yours", which reads like a credential problem and is not one.
+pub struct VtaKeySigner<'a> {
+    inner: RoomKeySigner<'a>,
+}
+
+impl<'a> VtaKeySigner<'a> {
+    /// `verification_method` is named rather than derived. A VTA's DID is
+    /// normally a `did:webvh`, whose document decides what its keys are called;
+    /// `#key-1` is the room template's convention and guessing it for an agent
+    /// would produce a proof nothing resolves.
+    pub fn new(
+        ctx: SigningContext<'a>,
+        key_id: impl Into<String>,
+        verification_method: impl Into<String>,
+    ) -> Self {
+        Self {
+            inner: RoomKeySigner {
+                ctx,
+                key_id: key_id.into(),
+                verification_method: verification_method.into(),
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Signer for VtaKeySigner<'_> {
+    fn key_type(&self) -> KeyType {
+        self.inner.key_type()
+    }
+
+    fn verification_method(&self) -> &str {
+        self.inner.verification_method()
+    }
+
+    async fn sign(
+        &self,
+        data: &[u8],
+    ) -> Result<Vec<u8>, affinidi_data_integrity::DataIntegrityError> {
+        self.inner.sign(data).await
+    }
+}
+
 /// Sign `credential` as the room, returning it serialised with its proof attached.
 pub async fn sign_as_room(
     ctx: SigningContext<'_>,

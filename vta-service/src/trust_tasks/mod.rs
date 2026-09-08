@@ -1643,12 +1643,22 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_1 => room_group::handle_chain
         [ Mutating None false ],
+    // `actsAsSubject`, unlike every other `rooms/keys/*`: this one presents the
+    // principal's credentials to a third party as them. The response discloses
+    // only how far back the agent can now read.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1 => room_group::handle_backfill
+        [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1 => room_group::handle_seal
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1 => room_group::handle_list
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_INVITE_0_1 => room_owner::handle_invite
         [ Mutating Metadata false ],
+    // `actsAsSubject`, unlike the issuance verbs beside it: those sign as the
+    // room and return the credential to the caller, while this one speaks to a
+    // third party as its principal.
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1 => room_owner::handle_register
+        [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1 => room_owner::handle_issue_membership
         [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_1 => room_owner::handle_issue_authority

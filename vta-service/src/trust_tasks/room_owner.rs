@@ -234,3 +234,114 @@ pub(super) async fn handle_issue_authority(
     )
     .await
 }
+
+/// `rooms/owner/register/0.1` — tell a host about a room that already exists.
+///
+/// `rooms/create` performed by the agent, for the same reason as
+/// [`super::room_group::handle_backfill`]: the surfaces owners create rooms from
+/// hold a channel to their own agent and to no third party.
+///
+/// **The order is unchanged and still forced.** The room's identity is minted
+/// first — that is a separate act, and this does not perform it — and a host is
+/// then told about a room that already exists. A host that named the room would
+/// be a host the room could not leave.
+///
+/// This signs as the **agent**, not as the room. A registration is a request to
+/// store something, authorised by the host's own creation policy against the
+/// party asking; signing as the room would claim the room is asking to be stored,
+/// which is neither true nor something the host can check.
+pub(super) async fn handle_register(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(r) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::CredentialWrite,
+        "registering a room with a host",
+    )
+    .await
+    {
+        return r;
+    }
+
+    let req: trust_tasks_rs::specs::rooms::owner::register::v0_1::Payload =
+        match parse_payload(&doc) {
+            Ok(r) => r,
+            Err(resp) => return resp,
+        };
+
+    let vta_did = match state.config.read().await.vta_did.clone() {
+        Some(d) => d,
+        None => {
+            return app_error_to_reject(
+                &doc,
+                vti_common::error::AppError::Validation(
+                    "this agent has no DID of its own, so it cannot speak to a host as itself"
+                        .into(),
+                ),
+            );
+        }
+    };
+    let Some(resolver) = state.did_resolver.clone() else {
+        return app_error_to_reject(
+            &doc,
+            vti_common::error::AppError::Validation(
+                "this agent has no DID resolver configured, so it cannot find the host".into(),
+            ),
+        );
+    };
+
+    // Absent `ownerDid` means the caller, per the specification. Defaulted here
+    // rather than at the host, because the host has no view of who asked this
+    // agent — it sees the agent.
+    let owner_did = req.owner_did.clone().unwrap_or_else(|| auth.did.clone());
+
+    let mut payload = serde_json::json!({
+        "roomId": req.room_id,
+        "visibility": req.visibility,
+        "ownerDid": owner_did,
+    });
+    if let Some(policy) = &req.retention_policy {
+        payload["retentionPolicy"] = serde_json::to_value(policy).unwrap_or(Value::Null);
+    }
+    if let Some(days) = req.retention_days {
+        payload["retentionDays"] = serde_json::json!(u64::from(days));
+    }
+
+    let key = format!("{vta_did}#key-0");
+    let reply = match crate::operations::room_host::send_room_task(
+        signing_context(state, auth),
+        &resolver,
+        &req.host,
+        &key,
+        &vta_did,
+        &key,
+        vti_rooms::wire::ROOMS_CREATE_TYPE,
+        &format!("{}#response", vti_rooms::wire::ROOMS_CREATE_TYPE),
+        payload,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    // The host's own answer for the epoch, not an assumption that a new room
+    // starts at 1: a host that already held this room reports where it actually
+    // stands, and a caller recording 1 over a live room would be recording a
+    // fiction.
+    let epoch = reply.get("epoch").and_then(Value::as_u64).unwrap_or(1);
+
+    success_response(
+        &doc,
+        serde_json::json!({
+            "roomId": req.room_id,
+            // Echoed from what was reached, per the specification.
+            "host": req.host,
+            "epoch": epoch,
+        }),
+    )
+}
