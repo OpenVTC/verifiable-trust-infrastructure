@@ -195,6 +195,11 @@ acl-setup = [
   "dep:sha2",
   "dep:tracing",
   "dep:tokio",
+  # The TSP arm mints a document id. Declared here rather than relied on from
+  # another feature: `cargo publish` verifies each crate in isolation, where
+  # nothing else supplies it, so unification hiding a missing `dep:` is a
+  # publish-time failure that no workspace build can reveal.
+  "dep:uuid",
 ]
 # DCQL credential selection + holder-bound OID4VP `vp_token` assembly
 # (`vp` module). `select_credentials` wraps the always-compiled
