@@ -217,3 +217,88 @@ fn every_tracked_entry_states_why() {
         );
     }
 }
+/// Documents this service produces that a **person** is shown and asked to act
+/// on, with the file that builds each.
+///
+/// The census above answers "is this URI published?". That is the half of
+/// #1177 a schema can answer, and it is not the half that mattered: the
+/// finding was a prompt reaching a human's phone *authenticated by nothing the
+/// device could check*. A published schema would not have helped. A signature
+/// is what lets the receiving device refuse a prompt that did not come from an
+/// enrolled issuer, which is precisely the check
+/// `vta-mobile-core::task::parse_step_up_request` already performs on the
+/// comparable path.
+///
+/// So this is a second, narrower table, and membership is a judgement rather
+/// than a fact a scan can derive: *does a human read this and tap something?*
+/// Adding a produced URI here is a deliberate act. The cost of getting the
+/// judgement wrong is asymmetric — a machine-to-machine document listed here
+/// is over-protected, a human-facing one omitted is #1177 again — so when in
+/// doubt, list it.
+const RENDERED_TO_A_HUMAN: &[(&str, &str)] = &[(
+    "https://trusttasks.org/spec/consent/approve-request/0.1",
+    "vta-service/src/trust_tasks/consent.rs",
+)];
+
+/// What a signed prompt's construction site must contain.
+///
+/// `issuer` and `recipient` are not decoration: SPEC §7.2 item 5b makes
+/// `recipient` REQUIRED and item 6 requires the in-band issuer to match the
+/// transport identity, so a proof over a document naming neither party can be
+/// lifted and replayed at a different approver. A signature over an unaddressed
+/// document is a weaker thing than it looks.
+const SIGNING_MARKERS: &[&str] = &["DataIntegrityProof::sign", "\"issuer\"", "\"recipient\""];
+
+/// A prompt a person is asked to approve must be signed, and addressed.
+///
+/// **This is a source scan and it proves less than it looks like it proves.**
+/// It cannot show that the signature covers the right bytes, that the key
+/// belongs to the agent, or that the failure arm does not send the document
+/// anyway. What it does is make the *absence* of signing visible at the place
+/// it would be missing, which is the whole of what went wrong in #1177: nothing
+/// anywhere objected to a prompt with no proof on it.
+///
+/// It would have failed before that fix — `consent.rs` built four members and
+/// signed nothing — and it fails again the day someone adds a second prompt the
+/// same way. That is the property worth having; the stronger checks belong to
+/// the device that receives the document, which is the one party that can
+/// actually refuse it.
+#[test]
+fn a_prompt_a_person_answers_is_signed_and_addressed() {
+    let root = workspace_root();
+    for (uri, file) in RENDERED_TO_A_HUMAN {
+        let path = root.join(file);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!("`{file}` is named by RENDERED_TO_A_HUMAN but cannot be read: {e}")
+        });
+        for marker in SIGNING_MARKERS {
+            assert!(
+                text.contains(marker),
+                "`{uri}` is shown to a person and answered by them, but `{file}` \
+                 does not contain `{marker}`. A prompt that reaches a phone \
+                 authenticated by nothing the device can check is #1177; if this \
+                 document moved, move its entry in RENDERED_TO_A_HUMAN with it."
+            );
+        }
+    }
+}
+
+/// The table names URIs this service actually produces, and keeps naming them.
+///
+/// Shrink-only in the same sense as the lists above: an entry whose URI has
+/// left the source is a line nobody is maintaining, and one that stays behind
+/// after the document it describes was deleted reads as coverage that is not
+/// there.
+#[test]
+fn every_human_facing_entry_still_names_a_produced_uri() {
+    let root = workspace_root();
+    let named = spec_uri_literals(&root.join("vta-service/src"));
+    for (uri, file) in RENDERED_TO_A_HUMAN {
+        assert!(
+            named.contains(*uri),
+            "RENDERED_TO_A_HUMAN lists `{uri}` (in `{file}`), but no source \
+             literal under `vta-service/src` names it any more. Remove the \
+             entry, or restore the document it was guarding."
+        );
+    }
+}
