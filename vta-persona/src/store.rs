@@ -281,7 +281,7 @@ impl PersonaStore {
     /// Remove one attribute, leaving a tombstone.
     ///
     /// Refuses while a profile refers to it unless `cascade`. Profiles reference
-    /// rather than copy, so removing a fact changes what every referring profile
+    /// rather than copy, so removing an attribute changes what every referring profile
     /// presents — and doing that silently is the surprise this store exists to
     /// prevent.
     ///
@@ -359,7 +359,7 @@ impl PersonaStore {
     ///
     /// A value withheld for sensitivity leaves its **row** in place: type,
     /// label, provenance, version and staleness all come back. This is
-    /// withholding a value, not hiding a fact — a holder listing their pool
+    /// withholding a value, not hiding an attribute — a holder listing their pool
     /// must still see that the card is there, or the control teaches them their
     /// own store has lost something.
     ///
@@ -849,7 +849,7 @@ mod list_tests {
         );
     }
 
-    /// Withholding a value is not hiding a fact. The row and everything about
+    /// Withholding a value is not hiding an attribute. The row and everything about
     /// it still come back, or a holder listing their own pool would conclude
     /// the store had lost the card.
     #[tokio::test]

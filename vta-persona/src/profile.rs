@@ -2,7 +2,7 @@
 //! delete able to name what it would break.
 //!
 //! A profile **references** attributes rather than copying them, which is the
-//! property that lets a holder change a fact once. The cost is that the store
+//! property that lets a holder change an attribute once. The cost is that the store
 //! has to know who refers to what — hence the reverse index, written here and
 //! read by [`crate::PersonaStore::referring_profiles`].
 //!
@@ -247,7 +247,7 @@ impl PersonaStore {
     /// Remove a profile, dropping its reverse-index edges.
     ///
     /// The pool is untouched: a profile references rather than owns, so
-    /// deleting a composition destroys no facts. That is the asymmetry with
+    /// deleting a composition destroys no attributes. That is the asymmetry with
     /// deleting an attribute, where removal *does* change what compositions
     /// present.
     pub async fn delete_profile(&self, profile_id: &str) -> Result<bool, AppError> {
@@ -500,7 +500,7 @@ mod tests {
     #[tokio::test]
     async fn deleting_a_profile_leaves_the_pool_alone() {
         // The asymmetry with attribute deletion: a profile references rather
-        // than owns, so removing one destroys no facts.
+        // than owns, so removing one destroys no attributes.
         let (_d, s) = fresh().await;
         let a = attr("keep me");
         s.put(a.clone(), None).await.unwrap();
@@ -515,7 +515,7 @@ mod tests {
         assert!(s.delete_profile(&p.profile_id).await.unwrap());
         assert!(
             s.get(&a.attribute_id).await.unwrap().is_some(),
-            "the fact survives"
+            "the attribute survives"
         );
         assert!(
             s.referring_profiles(&a.attribute_id)

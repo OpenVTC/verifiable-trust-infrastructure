@@ -8,9 +8,9 @@
 //! URI it sends and from every script already written against it.
 //!
 //! What an operator *reads* uses the words a person would
-//! (`design-docs/persona-vocabulary.md`): an attribute is a **fact**, a profile
-//! is a **face** — the set of facts you show together — and a persona **wears**
-//! a face in a context. So `persona profile list` prints `Faces:` above JSON
+//! (`design-docs/persona-vocabulary.md`): an attribute stays an **attribute**, a
+//! profile is a **face** — the set of attributes you show together — and a
+//! persona **wears** a face in a context. So `persona profile list` prints `Faces:` above JSON
 //! whose members are `profileId`. That pairing is deliberate: it is where an
 //! operator learns the mapping, once, in the one place both halves are on
 //! screen together.
@@ -59,7 +59,7 @@ fn print_result(label: &str, value: &Value) -> CmdResult {
 // The pool
 // ---------------------------------------------------------------------------
 
-/// `persona attribute put` — store one fact about the holder.
+/// `persona attribute put` — store one attribute about the holder.
 #[allow(clippy::too_many_arguments)]
 pub async fn cmd_attribute_put(
     client: &VtaClient,
@@ -82,7 +82,7 @@ pub async fn cmd_attribute_put(
             expected_version,
         )
         .await?;
-    print_result("Fact:", &result)
+    print_result("Attribute:", &result)
 }
 
 /// `persona attribute list` — enumerate the pool.
@@ -116,7 +116,7 @@ pub async fn cmd_attribute_list(
     if !is_json_output() {
         // Said only where it is true, and said once. The agent withholds a
         // sensitive value without saying so in the response — the row comes
-        // back with no `value`, which reads exactly like a fact that never had
+        // back with no `value`, which reads exactly like an attribute that never had
         // one — so the person is told here or not at all.
         if !include_values {
             println!("{DIM}Names only — add --values to include the values themselves.{RESET}");
@@ -127,7 +127,7 @@ pub async fn cmd_attribute_list(
             );
         }
     }
-    print_result("Your facts:", &result)
+    print_result("Your attributes:", &result)
 }
 
 /// `persona attribute delete` — remove one attribute.
@@ -179,7 +179,7 @@ pub async fn cmd_profile_get(client: &VtaClient, profile_id: String, resolve: bo
     let result = client.persona_profile_get(&profile_id, resolve).await?;
     if !is_json_output() && !resolve {
         println!(
-            "{DIM}Showing how the face is built — add --resolve to see the facts it would \
+            "{DIM}Showing how the face is built — add --resolve to see the attributes it would \
              show.{RESET}"
         );
     }
@@ -246,7 +246,7 @@ pub async fn cmd_binding_set(
         } else {
             println!(
                 "{DIM}A context only ever gets a copy: the face's values were written into \
-                 {context_id}. Editing a fact refreshes it; copies go down, and nothing reads \
+                 {context_id}. Editing an attribute refreshes it; copies go down, and nothing reads \
                  up.{RESET}"
             );
         }
@@ -469,7 +469,7 @@ fn render_preview(result: &Value, context_id: &str, verifier_did: &str, purpose:
 
     println!();
     if claims.is_empty() {
-        println!("  {DIM}No facts would leave.{RESET}");
+        println!("  {DIM}No attributes would leave.{RESET}");
     }
     for claim in claims {
         let ty = claim.get("type").and_then(Value::as_str).unwrap_or("?");

@@ -1248,7 +1248,7 @@ async fn a_persona_write_is_audited_with_what_changed_and_not_the_value() {
     );
     assert!(
         detail.contains("phone.mobile"),
-        "the detail does not name the claim type — the one fact that makes the row \
+        "the detail does not name the claim type — the one thing that makes the row \
          legible without resolving the id: {detail}"
     );
     assert!(
@@ -1339,7 +1339,7 @@ async fn details_for(ctx: &TestAppContext, action: &str) -> Vec<String> {
         .collect()
 }
 
-/// `includeValues` moves the ordinary facts and leaves the card behind;
+/// `includeValues` moves the ordinary attributes and leaves the card behind;
 /// `includeSensitive` is what moves the card.
 ///
 /// Asserted at the wire, because that is the only place the claim is about the
@@ -1393,7 +1393,7 @@ async fn a_listing_withholds_sensitive_values_and_says_so_in_the_audit_trail() {
         !serde_json::to_string(&body).unwrap().contains(CARD),
         "the card number is somewhere else in the response: {body}"
     );
-    // The row is still there. This is withholding a value, not hiding a fact:
+    // The row is still there. This is withholding a value, not hiding an attribute:
     // a holder must not conclude their agent has lost the card.
     assert_eq!(
         listed(&body, "payment.card")
@@ -1440,7 +1440,7 @@ async fn a_listing_withholds_sensitive_values_and_says_so_in_the_audit_trail() {
     // Three listings, three rows, and no two of them alike. The three ways this
     // task can behave are the three the holder most needs told apart, and the
     // response carries nothing that would let a reviewer reconstruct which was
-    // which — a withheld value and a fact that never had one look identical on
+    // which — a withheld value and an attribute that never had one look identical on
     // the wire.
     let details = details_for(&ctx, "persona.attribute.list").await;
     assert_eq!(details.len(), 3, "one row per listing: {details:#?}");
