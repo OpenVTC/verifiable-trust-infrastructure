@@ -495,7 +495,7 @@ fn rfc3339(unix_seconds: u64) -> String {
 /// Every one of these is consequential: joining a room, advancing its keys, or opening one
 /// of its records. "Which agent got into which room, and when" is the sentence an incident
 /// review needs, and none of it is reconstructible from anywhere else.
-async fn record(state: &AppState, action: &str, auth: &AuthClaims, room_id: &str) {
+pub(super) async fn record(state: &AppState, action: &str, auth: &AuthClaims, room_id: &str) {
     if let Err(e) = audit::record(
         &state.audit_sink,
         action,

@@ -66,6 +66,9 @@ pub struct TestStore {
     /// this, tests that read them back take the keyspace.
     pub audit: vta_audit::SharedAuditSink,
     pub imported_ks: KeyspaceHandle,
+    /// VTA-minted key material. Needed by anything that signs with a key this
+    /// service generated rather than one a caller imported.
+    pub internal_ks: KeyspaceHandle,
     pub webvh_ks: KeyspaceHandle,
     pub sealed_nonces_ks: KeyspaceHandle,
     /// Persisted drain set for the runtime service-management
@@ -107,6 +110,9 @@ pub async fn open_test_store() -> TestStore {
         imported_ks: store
             .keyspace(crate::keyspaces::IMPORTED_SECRETS)
             .expect("imported ks"),
+        internal_ks: store
+            .keyspace(crate::keyspaces::INTERNAL_KEYS)
+            .expect("internal keys ks"),
         webvh_ks: store.keyspace(crate::keyspaces::WEBVH).expect("webvh ks"),
         sealed_nonces_ks: store
             .keyspace(crate::keyspaces::SEALED_NONCES)

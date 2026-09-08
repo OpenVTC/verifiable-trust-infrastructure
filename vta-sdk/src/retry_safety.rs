@@ -435,6 +435,16 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // same body yields a different nonce, which is correct and changes nothing.
     (trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1, RetrySafe),
     (trust_tasks::TASK_ROOMS_KEYS_LIST_0_1, RetrySafe),
+    // Issuance mints a NEW credential with a fresh id on every call, so a retry
+    // without a key leaves a second durable artefact that persists and matters —
+    // two memberships for one member, or two grants where the owner meant one.
+    // `Keyed` rather than `KeyedSecret`: a room credential is presented to a host
+    // on every operation, so it is not secret material, and replaying the cached
+    // response is exactly what a caller who lost the reply wants — the same
+    // credential rather than another one.
+    (trust_tasks::TASK_ROOMS_OWNER_INVITE_0_1, Keyed),
+    (trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1, Keyed),
+    (trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_1, Keyed),
     (trust_tasks::TASK_VTA_MEMORY_DELETE_0_1, RetrySafe),
     // ── Application state ───────────────────────────────────────────────
     //
