@@ -615,6 +615,30 @@ pub fn registry_listing() -> RegistryListing {
 // harness refuses an unspecced one), so a runtime-managed registry is a
 // larger, upstream-first change. A file is diffable, reviewable, and belongs to
 // whoever owns the deployment — which is who this is for.
+//
+// ## A bad row is refused. A bad row does not stop the agent
+//
+// This first version refused the whole table and exited, on the reasoning that
+// serving a table the operator did not write is worse than not starting. That
+// reasoning holds for a laptop and fails for a hosted agent: an agent that will
+// not boot is an outage for everything it does — sessions, credentials,
+// mediation — over a mis-typed claim type, and in a hosted deployment nobody is
+// reading its stderr anyway.
+//
+// So rejection is now **per row**, and what is rejected is reported rather than
+// fatal: [`install_extensions`] returns every refusal with its reason, the
+// startup path logs them, and the `persona/claim-types/list` response carries
+// them so the holder's own console can say so where a person will see it.
+//
+// **Be clear about which direction that fails in.** A rejected row is simply
+// not applied, so its token resolves the way it did before the file existed —
+// the core table, or the floor. For a token core has never heard of that is the
+// *most* protective answer and the failure is safe. For a row that meant to
+// **tighten** a core token it is not: the looser core answer stays in force,
+// which is exactly the "a tightening you believe is in force is not" case the
+// old behaviour existed to prevent. Nothing can make that safe except somebody
+// seeing it, which is why the reasons travel all the way to a screen instead of
+// stopping at a log line.
 
 /// One claim type a deployment declares for itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -695,21 +719,119 @@ fn extensions() -> &'static [ExtensionEntry] {
     EXTENSIONS.get().map(Vec::as_slice).unwrap_or(&[])
 }
 
-/// Validate a deployment's extension table and install it, once.
+/// One row the agent would not apply, and why — carried to the operator rather
+/// than dropped into a log nobody reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RejectedEntry {
+    /// The token as the file spelled it. Reported verbatim: the operator has to
+    /// find this line in their own file, and a normalised spelling would send
+    /// them looking for something they did not write.
+    pub token: String,
+    /// The refusal in the words [`ExtensionError`] uses.
+    pub why: String,
+}
+
+/// What installation did.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct InstallReport {
+    /// Rows now in force.
+    pub applied: usize,
+    /// Rows refused, each with its reason. **Not applied**, so their tokens
+    /// resolve the way they did before the file existed.
+    pub rejected: Vec<RejectedEntry>,
+}
+
+/// Validate a deployment's extension table and install what is usable, once.
 ///
 /// Called at startup, before the first request. Every rule in the module
 /// comment above is enforced here rather than at the file's edge, so a caller
 /// that builds rows some other way cannot skip them.
 ///
+/// **Per row.** A refused row is left out and reported; the rest apply. See the
+/// module comment for which direction that fails in and why it is reported all
+/// the way to a screen rather than to a log.
+///
 /// # Errors
 ///
-/// Any row that is not a token, is in the `x:` namespace, repeats another, or
-/// loosens what the core table resolves — and calling twice.
-pub fn install_extensions(entries: Vec<ExtensionEntry>) -> Result<(), ExtensionError> {
-    validate(&entries)?;
+/// Only [`ExtensionError::AlreadyInstalled`] — a second call. That is a
+/// programming mistake rather than operator input, and swapping the table under
+/// a running agent would mean two requests in the same second resolving
+/// differently.
+pub fn install_extensions(entries: Vec<ExtensionEntry>) -> Result<InstallReport, ExtensionError> {
+    let (usable, rejected) = triage(entries);
+    let applied = usable.len();
     EXTENSIONS
-        .set(entries)
-        .map_err(|_| ExtensionError::AlreadyInstalled)
+        .set(usable)
+        .map_err(|_| ExtensionError::AlreadyInstalled)?;
+    REJECTED
+        .set(rejected.clone())
+        .map_err(|_| ExtensionError::AlreadyInstalled)?;
+    Ok(InstallReport { applied, rejected })
+}
+
+/// Rows this deployment declared and the agent would not apply. Served with the
+/// table so a console can show them; empty when everything applied, which is
+/// the state a deployment with no file is also in.
+#[must_use]
+pub fn rejected_extensions() -> &'static [RejectedEntry] {
+    REJECTED.get().map(Vec::as_slice).unwrap_or(&[])
+}
+
+static REJECTED: std::sync::OnceLock<Vec<RejectedEntry>> = std::sync::OnceLock::new();
+
+static FILE_ERROR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Record that the extension file itself could not be read or parsed.
+///
+/// Separate from a rejected row because it is a different sentence: no row was
+/// refused, none was applied, and the deployment's whole table is missing. An
+/// operator who mounted the wrong path otherwise sees a registry that looks
+/// exactly like one with no extensions at all.
+pub fn note_extension_file_error(why: String) {
+    let _ = FILE_ERROR.set(why);
+}
+
+/// The file-level failure, if there was one. Served beside the rejected rows.
+#[must_use]
+pub fn extension_file_error() -> Option<&'static str> {
+    FILE_ERROR.get().map(String::as_str)
+}
+
+/// Split a declared table into what may be applied and what may not.
+///
+/// A duplicated token disqualifies **every** row that names it, rather than
+/// letting the first win. Applying one of two conflicting declarations is a
+/// guess at which the operator meant, and the guess is invisible; leaving the
+/// token to the core table is the answer that is at least explicable, and the
+/// report names the token so it can be fixed.
+fn triage(entries: Vec<ExtensionEntry>) -> (Vec<ExtensionEntry>, Vec<RejectedEntry>) {
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for e in &entries {
+        *counts.entry(e.token.as_str()).or_default() += 1;
+    }
+    let duplicated: std::collections::BTreeSet<String> = counts
+        .iter()
+        .filter(|(_, n)| **n > 1)
+        .map(|(t, _)| (*t).to_owned())
+        .collect();
+
+    let mut usable = Vec::new();
+    let mut rejected = Vec::new();
+    for entry in entries {
+        let refusal = if duplicated.contains(&entry.token) {
+            Some(ExtensionError::Duplicate(entry.token.clone()))
+        } else {
+            check_row(&entry).err()
+        };
+        match refusal {
+            Some(e) => rejected.push(RejectedEntry {
+                token: entry.token.clone(),
+                why: e.to_string(),
+            }),
+            None => usable.push(entry),
+        }
+    }
+    (usable, rejected)
 }
 
 /// Read a deployment's extension table from the JSON an operator wrote.
@@ -766,28 +888,25 @@ pub fn parse_extensions(json: &str) -> Result<Vec<ExtensionEntry>, ExtensionErro
         .collect())
 }
 
-/// The checks, separated from installation so they can be tested without
+/// One row's checks, separated from installation so they can be tested without
 /// consuming the process-wide slot — a `OnceLock` takes one value per process,
 /// and a test suite needs to try many.
-fn validate(entries: &[ExtensionEntry]) -> Result<(), ExtensionError> {
-    let mut seen = std::collections::BTreeSet::new();
-    for e in entries {
-        if e.token.starts_with(EXTENSION_PREFIX) {
-            return Err(ExtensionError::ExtensionNamespace(e.token.clone()));
-        }
-        if !is_token(&e.token) {
-            return Err(ExtensionError::NotAToken(e.token.clone()));
-        }
-        if !seen.insert(e.token.as_str()) {
-            return Err(ExtensionError::Duplicate(e.token.clone()));
-        }
-        // Compared against what **core alone** resolves, which is the question
-        // being asked: may this deployment say something weaker than the
-        // published registry does about a token the published registry knows?
-        if core_covers(&e.token) {
-            let core = core_defaults_for(&e.token);
-            check_tightens(&e.token, e.axes, core)?;
-        }
+///
+/// Everything except duplication, which is a property of the table rather than
+/// of a row and is decided in [`triage`].
+fn check_row(e: &ExtensionEntry) -> Result<(), ExtensionError> {
+    if e.token.starts_with(EXTENSION_PREFIX) {
+        return Err(ExtensionError::ExtensionNamespace(e.token.clone()));
+    }
+    if !is_token(&e.token) {
+        return Err(ExtensionError::NotAToken(e.token.clone()));
+    }
+    // Compared against what **core alone** resolves, which is the question
+    // being asked: may this deployment say something weaker than the published
+    // registry does about a token the published registry knows?
+    if core_covers(&e.token) {
+        let core = core_defaults_for(&e.token);
+        check_tightens(&e.token, e.axes, core)?;
     }
     Ok(())
 }
@@ -1281,6 +1400,26 @@ mod tests {
     // nothing else. Each test below is one of the ways the second half fails
     // if nobody checks it.
 
+    /// What `triage` did with one table, as `(applied tokens, rejected tokens)`.
+    fn triaged(rows: Vec<ExtensionEntry>) -> (Vec<String>, Vec<String>) {
+        let (usable, rejected) = triage(rows);
+        (
+            usable.into_iter().map(|e| e.token).collect(),
+            rejected.into_iter().map(|r| r.token).collect(),
+        )
+    }
+
+    /// The reason a token was refused, so a test asserts the words an operator
+    /// is shown rather than a variant they never see.
+    fn refusal(rows: Vec<ExtensionEntry>, token: &str) -> String {
+        triage(rows)
+            .1
+            .into_iter()
+            .find(|r| r.token == token)
+            .unwrap_or_else(|| panic!("`{token}` was applied, not refused"))
+            .why
+    }
+
     fn ext(
         token: &str,
         sensitivity: Sensitivity,
@@ -1308,7 +1447,7 @@ mod tests {
             ReleaseRequirement::Consent,
             MaskStyle::None,
         )];
-        assert_eq!(validate(&rows), Ok(()));
+        assert_eq!(triaged(rows).1, Vec::<String>::new(), "nothing refused");
     }
 
     #[test]
@@ -1322,7 +1461,7 @@ mod tests {
             ReleaseRequirement::StepUp,
             MaskStyle::Full,
         )];
-        assert_eq!(validate(&rows), Ok(()));
+        assert_eq!(triaged(rows).1, Vec::<String>::new(), "nothing refused");
     }
 
     #[test]
@@ -1335,16 +1474,12 @@ mod tests {
             ReleaseRequirement::Consent,
             MaskStyle::None,
         )];
-        match validate(&rows) {
-            Err(ExtensionError::Loosens { token, axis, .. }) => {
-                assert_eq!(token, "gov.id.passport");
-                assert_eq!(
-                    axis, "sensitivity",
-                    "the first axis it weakens is the one named"
-                );
-            }
-            other => panic!("expected a loosening refusal, got {other:?}"),
-        }
+        let why = refusal(rows, "gov.id.passport");
+        assert!(
+            why.contains("weaken sensitivity"),
+            "the axis it weakens is named: {why}"
+        );
+        assert!(why.contains("may only tighten"), "and the rule is: {why}");
     }
 
     #[test]
@@ -1360,10 +1495,7 @@ mod tests {
             ReleaseRequirement::Consent,
             MaskStyle::None,
         )];
-        assert!(matches!(
-            validate(&rows),
-            Err(ExtensionError::Loosens { .. })
-        ));
+        assert_eq!(triaged(rows).1, vec!["payment.giftCard".to_owned()]);
     }
 
     #[test]
@@ -1377,10 +1509,7 @@ mod tests {
             ReleaseRequirement::Consent,
             MaskStyle::None,
         )];
-        assert!(matches!(
-            validate(&rows),
-            Err(ExtensionError::ExtensionNamespace(_))
-        ));
+        assert_eq!(triaged(rows).1, vec!["x:profile.github".to_owned()]);
     }
 
     #[test]
@@ -1399,8 +1528,9 @@ mod tests {
                 ReleaseRequirement::StepUp,
                 MaskStyle::Full,
             )];
-            assert!(
-                matches!(validate(&rows), Err(ExtensionError::NotAToken(_))),
+            assert_eq!(
+                triaged(rows).1,
+                vec![bad.to_owned()],
                 "`{bad}` should not be a token"
             );
         }
@@ -1424,7 +1554,83 @@ mod tests {
                 MaskStyle::Full,
             ),
         ];
-        assert!(matches!(validate(&rows), Err(ExtensionError::Duplicate(_))));
+        // **Both** rows go, not the second. Applying either is a guess at what
+        // the operator meant, and an invisible one; leaving the token to the
+        // core table is at least explicable, and the report names it.
+        let (applied, refused) = triaged(rows);
+        assert_eq!(applied, Vec::<String>::new());
+        assert_eq!(
+            refused,
+            vec!["profile.github".to_owned(), "profile.github".to_owned()]
+        );
+    }
+
+    #[test]
+    fn one_bad_row_does_not_take_the_good_ones_with_it() {
+        // The whole point of the change. A hosted agent must not fall over —
+        // nor silently drop a whole table — because one line is wrong. The good
+        // rows apply and the bad one is named.
+        let rows = vec![
+            ext(
+                "profile.github",
+                Sensitivity::Normal,
+                ReleaseRequirement::Consent,
+                MaskStyle::None,
+            ),
+            ext(
+                "gov.id.passport",
+                Sensitivity::Normal,
+                ReleaseRequirement::Consent,
+                MaskStyle::None,
+            ),
+            ext(
+                "company",
+                Sensitivity::Normal,
+                ReleaseRequirement::Consent,
+                MaskStyle::None,
+            ),
+        ];
+        let (applied, refused) = triaged(rows);
+        assert_eq!(
+            applied,
+            vec!["profile.github".to_owned(), "company".to_owned()]
+        );
+        assert_eq!(refused, vec!["gov.id.passport".to_owned()]);
+    }
+
+    #[test]
+    fn a_refused_row_leaves_the_token_where_it_was() {
+        // Which direction this fails in, asserted rather than described. A
+        // refused row simply does not apply, so `gov.id.passport` keeps the core
+        // answer — protective here, and exactly why a refusal has to reach a
+        // person: a refused *tightening* would leave the looser answer in force
+        // just as quietly.
+        let rows = vec![ext(
+            "gov.id.passport",
+            Sensitivity::Normal,
+            ReleaseRequirement::Consent,
+            MaskStyle::None,
+        )];
+        let (usable, _) = triage(rows);
+        assert!(usable.is_empty());
+        assert_eq!(
+            core_defaults_for("gov.id.passport").sensitivity,
+            Sensitivity::High
+        );
+    }
+
+    #[test]
+    fn the_reason_names_the_token_the_operator_wrote() {
+        // Reported verbatim: an operator has to find this line in their own
+        // file, and a normalised spelling sends them looking for something they
+        // did not write.
+        let rows = vec![ext(
+            "Not A Token",
+            Sensitivity::Normal,
+            ReleaseRequirement::Consent,
+            MaskStyle::None,
+        )];
+        assert!(refusal(rows, "Not A Token").contains("Not A Token"));
     }
 
     #[test]

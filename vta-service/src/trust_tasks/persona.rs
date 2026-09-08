@@ -1545,23 +1545,53 @@ pub(super) async fn handle_claim_types_list(
             "mask": wire_name(a.mask),
         })
     };
-    success_response(
-        &doc,
-        json!({
-            "registryVersion": l.registry_version,
-            "entries": l.entries.iter().map(|r| {
-                let mut e = axes(&r.axes);
-                e["type"] = json!(r.claim_type);
-                e
-            }).collect::<Vec<_>>(),
-            "unregistered": axes(&l.unregistered),
-            "strictness": {
-                "sensitivity": l.strictness.sensitivity.iter().map(|v| wire_name(*v)).collect::<Vec<_>>(),
-                "release": l.strictness.release.iter().map(|v| wire_name(*v)).collect::<Vec<_>>(),
-                "mask": l.strictness.mask.iter().map(|v| wire_name(*v)).collect::<Vec<_>>(),
-            },
-        }),
-    )
+    // What this deployment declared and the agent would not apply.
+    //
+    // Carried under `ext`, the specification's vendor-namespaced member
+    // (SPEC §4.5.1), because the response's own members are fixed and this is
+    // not registry data — it is this *agent* reporting on its own
+    // configuration. A client that does not know the key ignores it, which is
+    // the correct behaviour for one that cannot act on it.
+    //
+    // It is here at all because a refused row is invisible otherwise: the token
+    // resolves from the core table exactly as it would have with no file, and
+    // the operator's intended tightening is quietly not in force. A log line is
+    // where that goes to be missed — this is where a person is looking.
+    let rejected = vta_persona::claim_types::rejected_extensions();
+    let file_error = vta_persona::claim_types::extension_file_error();
+    let mut body = json!({
+        "registryVersion": l.registry_version,
+        "entries": l.entries.iter().map(|r| {
+            let mut e = axes(&r.axes);
+            e["type"] = json!(r.claim_type);
+            e
+        }).collect::<Vec<_>>(),
+        "unregistered": axes(&l.unregistered),
+        "strictness": {
+            "sensitivity": l.strictness.sensitivity.iter().map(|v| wire_name(*v)).collect::<Vec<_>>(),
+            "release": l.strictness.release.iter().map(|v| wire_name(*v)).collect::<Vec<_>>(),
+            "mask": l.strictness.mask.iter().map(|v| wire_name(*v)).collect::<Vec<_>>(),
+        },
+    });
+    if !rejected.is_empty() || file_error.is_some() {
+        let mut report = serde_json::Map::new();
+        if !rejected.is_empty() {
+            report.insert(
+                "rejected".into(),
+                json!(
+                    rejected
+                        .iter()
+                        .map(|r| json!({ "type": r.token, "reason": r.why }))
+                        .collect::<Vec<_>>()
+                ),
+            );
+        }
+        if let Some(e) = file_error {
+            report.insert("fileError".into(), json!(e));
+        }
+        body["ext"] = json!({ "org.openvtc.claim-types": report });
+    }
+    success_response(&doc, body)
 }
 
 // ─── Context-local surface ───────────────────────────────────────────────

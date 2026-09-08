@@ -1516,14 +1516,16 @@ const CLAIM_TYPE_EXTENSIONS_ENV: &str = "VTA_CLAIM_TYPE_EXTENSIONS";
 /// deploy — so nobody did, and every local token resolved to the floor and was
 /// shown to its holder masked as though it were a passport number.
 ///
-/// **A bad file stops the agent starting.** The alternative is serving a table
-/// the operator did not write: a tightening they believe is in force is not,
-/// and the values it was meant to protect are the ones they would learn about
-/// last. Starting is the recoverable failure; running with the wrong registry
-/// is not.
+/// **Nothing here stops the agent starting.** It used to: a bad file exited,
+/// on the reasoning that serving a table the operator did not write is worse
+/// than not serving at all. That is right for a laptop and wrong for a hosted
+/// agent, where refusing to boot takes out sessions, credentials and mediation
+/// over a mis-typed claim type — and where nobody is reading stderr.
 ///
-/// An absent variable is not an error — it is what almost every deployment
-/// wants, and it leaves the core table exactly as it was.
+/// So a bad row is refused, the rest apply, and every refusal is carried on
+/// `persona/claim-types/list` so the holder's own console can say so where a
+/// person will see it. The log below is the second-best place for that, not the
+/// only one.
 fn install_claim_type_extensions() {
     let Ok(path) = std::env::var(CLAIM_TYPE_EXTENSIONS_ENV) else {
         return;
@@ -1531,30 +1533,59 @@ fn install_claim_type_extensions() {
     let json = match std::fs::read_to_string(&path) {
         Ok(j) => j,
         Err(e) => {
-            eprintln!("{CLAIM_TYPE_EXTENSIONS_ENV} names `{path}`, which cannot be read: {e}");
-            std::process::exit(1);
+            // The file itself, rather than a row in it. Reported the same way
+            // and for the same reason: an operator who mounted the wrong path
+            // has a registry that is quietly the core table, and no boot
+            // failure to tell them so.
+            tracing::error!(
+                path = %path,
+                error = %e,
+                "{CLAIM_TYPE_EXTENSIONS_ENV} names a file that cannot be read — this deployment's own \
+                 claim types are NOT in force"
+            );
+            vta_persona::claim_types::note_extension_file_error(format!("{path}: {e}"));
+            return;
         }
     };
     let entries = match vta_persona::claim_types::parse_extensions(&json) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("`{path}`: {e}");
-            std::process::exit(1);
+            tracing::error!(
+                path = %path,
+                error = %e,
+                "claim-type extension file could not be read as a table — this deployment's own \
+                 claim types are NOT in force"
+            );
+            vta_persona::claim_types::note_extension_file_error(format!("{path}: {e}"));
+            return;
         }
     };
-    let count = entries.len();
-    if let Err(e) = vta_persona::claim_types::install_extensions(entries) {
-        eprintln!("`{path}`: {e}");
-        std::process::exit(1);
+    match vta_persona::claim_types::install_extensions(entries) {
+        Ok(report) => {
+            for rejected in &report.rejected {
+                // One line per refusal, at error level. A refused row is not a
+                // detail: the token it names resolves as though the deployment
+                // had never mentioned it, which for an intended tightening is
+                // the loose answer staying in force.
+                tracing::error!(
+                    token = %rejected.token,
+                    reason = %rejected.why,
+                    "claim type refused — it is NOT in force, and this token resolves from the core table"
+                );
+            }
+            tracing::info!(
+                path = %path,
+                applied = report.applied,
+                rejected = report.rejected.len(),
+                "claim-type registry extended by this deployment"
+            );
+        }
+        Err(e) => {
+            // Only `AlreadyInstalled`, which is a programming mistake rather
+            // than operator input — and still not a reason to refuse service.
+            tracing::error!(error = %e, "claim-type extensions were already installed");
+        }
     }
-    // Said out loud, with the count and the path. A registry that differs from
-    // the published one, silently, is the thing an operator debugging a
-    // masked value would most want to have been told.
-    tracing::info!(
-        path = %path,
-        count,
-        "claim-type registry extended by this deployment"
-    );
 }
 
 #[tokio::main]
