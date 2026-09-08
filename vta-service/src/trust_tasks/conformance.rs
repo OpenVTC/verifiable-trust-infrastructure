@@ -2952,6 +2952,37 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
+            u::TASK_PERSONA_CLAIM_TYPES_LIST_1_0,
+            (
+                json!({}),
+                parses::<specs::persona::claim_types::list::v1_0::Payload>,
+                validates::<specs::persona::claim_types::list::v1_0::Payload>,
+            ),
+            (
+                // The three parts are all REQUIRED, because §4 rule 3 —
+                // longest registered prefix vs the floor, more protective wins
+                // — is not computable from the rows alone.
+                json!({
+                    "registryVersion": "0.1",
+                    "entries": [
+                        // A family row and an exact row, undistinguished: which
+                        // one an entry is depends on the token being resolved.
+                        { "type": "payment", "sensitivity": "high",
+                          "release": "stepUp", "mask": "full" },
+                        { "type": "name.display", "sensitivity": "normal",
+                          "release": "consent", "mask": "none" }
+                    ],
+                    "unregistered": { "sensitivity": "high", "release": "consent", "mask": "full" },
+                    "strictness": {
+                        "sensitivity": ["high", "normal"],
+                        "release": ["stepUp", "consent"],
+                        "mask": ["full", "last2", "last4", "emailLocal", "none"]
+                    }
+                }),
+                parses::<specs::persona::claim_types::list::v1_0::Response>,
+            ),
+        ),
+        (
             u::TASK_PERSONA_LOCAL_PROFILE_PUT_1_0,
             (
                 // Inline only. A reference is unrepresentable here rather than
