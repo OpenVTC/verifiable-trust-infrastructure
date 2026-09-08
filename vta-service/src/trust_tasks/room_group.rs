@@ -256,7 +256,7 @@ pub(super) async fn handle_seal(
         &state.room_groups_ks,
         &req.room_id,
         &req.key,
-        u64::from(req.version),
+        req.version,
         &plaintext,
     )
     .await
