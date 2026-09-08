@@ -72,6 +72,19 @@ export type PoliciesPage = Schemas["PolicyListResponse"];
 export type ActiveBindingsResponse = Schemas["ActiveBindingsResponse"];
 export type PolicyUpsertResponse = Schemas["UploadResponse"];
 export type PolicyTestResponse = Schemas["TestResponse"];
+/**
+ * What a policy decides.
+ *
+ * Aliased rather than re-listed because the console's own copy had gone stale:
+ * it named ten purposes while the daemon served eleven, so the `rooms` policy —
+ * the one deciding whether this community lends its disk, and whose shipped
+ * default **denies** private rooms — was unreachable from the console entirely.
+ * Nothing failed; the tab was simply not there.
+ */
+export type PolicyPurpose = Schemas["PolicyPurpose"];
+
+// ── Rooms ───────────────────────────────────────────────────────────────
+export type HostedRoom = Schemas["HostedRoom"];
 
 // ── Community profile + ceremonies ──────────────────────────────────────
 export type Profile = Schemas["ProfileWithStatus"];

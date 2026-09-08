@@ -281,9 +281,13 @@ export const deleteJson = <T>(
 export const getJsonExempt = <T>(path: string): Promise<T> =>
   request<T>(path, { method: "GET" });
 
-// `/health` is the daemon's single Trust-Task-exempt endpoint.
+// `/health` and `GET /v1/rooms` are the daemon's two Trust-Task-exempt
+// endpoints, for unrelated reasons: `/health` predates the router, and the
+// rooms listing is the host's own view of what it stores — every `rooms/*`
+// task is authorised by a credential the ROOM issued, so naming one here
+// would claim a room governs an answer it has no view of.
 // `/admin/build-info.json` lives on the admin router (not the
-// TrustTaskRouter). Both are header-less by design.
+// TrustTaskRouter). All are header-less by design.
 export const fetchHealth = (): Promise<HealthResponse> =>
   getJsonExempt<HealthResponse>("/health");
 
