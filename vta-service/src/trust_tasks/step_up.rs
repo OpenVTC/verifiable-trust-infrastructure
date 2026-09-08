@@ -35,6 +35,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_1 as approve_response;
+use vta_sdk::trust_tasks as uris;
 // Only the DIDComm sends name the envelope; TSP carries the document bytes
 // directly, so this is unused when the binding is compiled out. Imported from the
 // binding crate rather than copied — one source, no local literals (#900).
@@ -432,26 +433,12 @@ pub(super) async fn handle_approve_response(
 
     // 7a. A *bound* approval marks the operation it was taken for.
     //
-    // This is what authorises the disclosure — not the elevation below. The
-    // gate in `persona::handle_disclosure_present` reads the preview's own
+    // This is what authorises the disclosure — not any elevation. The gate in
+    // `persona::handle_disclosure_present` reads the preview's own
     // `approved_at` and never the session's `acr`, so the next `release:
     // stepUp` disclosure is refused however freshly the session authenticated:
     // its preview carries no approval. That is the whole of what "each time"
     // asks for, and it is why the binding is to the `previewId`.
-    //
-    // The session is then elevated as it always is, because that is what this
-    // ceremony *is*: the subject proved, freshly, that they are still
-    // themselves, and `aal2` is the name for having done so. Recording that
-    // fact and refusing to record it are not made different by which operation
-    // prompted it — every other `initiate_self_step_up` caller shows its own
-    // authorization context and yields the same session-wide `aal2`.
-    //
-    // What that costs, stated plainly: an approval taken to disclose a card
-    // number leaves a session that satisfies an unrelated `requireStepUp` rule
-    // for the elevation window. The narrower answer — record the approval and
-    // elevate nothing — needs a third `status` on the ack, and the ack's
-    // version is the one the approver's request named, so a maintainer cannot
-    // reach for a newer minor on its own. See the PR for the follow-up.
     //
     // Marking a preview that is no longer there is not an error. An approval
     // can arrive after its preview expired or was consumed; the disclosure it
@@ -476,6 +463,31 @@ pub(super) async fn handle_approve_response(
                     },
                 );
             }
+        }
+
+        // 7b. And, if the approver asked in 0.3, it elevates NOTHING.
+        //
+        // This is the whole reason 0.3 exists. An approval taken to disclose a
+        // card number is not a reason to raise the session's assurance for
+        // everything else it can reach, and #1304 could only elevate anyway
+        // because 0.2's acknowledgement has exactly two statuses: `elevated`
+        // was untrue and `rejected` was worse, since the approval *had* been
+        // applied.
+        //
+        // The version is read from the REQUEST, not chosen. A response's type
+        // is the request's type plus `#response`, so an approver that minted
+        // 0.2 must be answered in 0.2 — and 0.2 still has no word for this. So
+        // a 0.1/0.2 bound approval falls through and elevates, exactly as
+        // before; only a 0.3 one gets the honest answer. That is the cutover,
+        // and it moves per approver rather than per deployment.
+        if doc.type_uri.to_string() == uris::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_3 {
+            audit!(
+                "auth.step_up.recorded",
+                actor = &pending.subject,
+                resource = preview_id,
+                outcome = "success"
+            );
+            return success_response(&doc, json!({ "status": "recorded", "boundTo": preview_id }));
         }
     }
 
