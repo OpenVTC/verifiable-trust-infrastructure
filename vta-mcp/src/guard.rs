@@ -130,6 +130,12 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // is a membership change made on the principal's behalf — not something a
     // blanket `vta_call` approval should cover silently.
     ("rooms/keys/welcome", Risk::Sensitive),
+    // Key material, accepted — and the verb rule would read `chain` as an
+    // ordinary mutation because what it stores is ciphertext. What it actually
+    // does is extend how far back every subsequent `rooms/keys/open` can reach,
+    // to the room's whole retained history. A blanket `vta_call` approval must
+    // not silently cover widening what the principal's key holder can decrypt.
+    ("rooms/keys/chain", Risk::Sensitive),
     // The holder's own identity, emitted. `disclosure/present` is the one
     // persona task that hands claims to a named verifier, under a persona DID,
     // and writes the record saying it did. It sits beside `rooms/keys/present`
