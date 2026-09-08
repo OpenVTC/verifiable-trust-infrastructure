@@ -980,12 +980,17 @@ What remains:
 | What | Why it needs the wire | Without it |
 |---|---|---|
 | **`retentionPolicy` on `rooms/create/0.1`** | the choice is the room's, made once, and there is no member for it | every host creates `Chained`; `FromJoin` is unreachable except in-crate |
-| **Rungs into a joiner's VTA** | `rooms/keys/open` resolves from the chain the VTA accrued by applying commits; a joiner's is empty, and no task delivers rungs *to a VTA* | a joined member reads history in their **client** but their **agent** cannot, and is told so precisely (`EpochUnreachable`) rather than seeing a room that looks corrupt |
 | **A prune verb** over `prune_epoch_links_before` | cryptographic deletion is an operation someone has to be authorized to perform | the primitive exists and nothing can reach it |
 
-The middle row is now the one that matters. It is a smaller gap than the one
-`rooms/epoch/chain` closed — the mechanism, the storage and the wire all exist,
-and what is missing is the leg from a member's client into their own VTA.
+**Both chain deliveries have landed**, and with `retentionPolicy` on
+`rooms/create` the policy is choosable as well as enforceable. `rooms/keys/chain`
+(`dtgwg-trust-tasks-tf#394`) is the leg from a member's client into their own
+VTA — the same word as the host-served fetch, deliberately in a different family,
+because every `rooms/keys/*` task terminates at a KeyHolder or an Oracle and the
+host-served one does not.
+
+What remains is the prune verb, and it stays deferred: nothing needs it yet, and
+`prune_epoch_links_before` is not reachable without it.
 
 ---
 

@@ -230,6 +230,69 @@ pub async fn apply_commit(
     Ok(epoch)
 }
 
+/// Retain epoch links this VTA's principal fetched from the room's host.
+///
+/// The last leg of a joining member's backfill. A key holder accrues a rung for every
+/// membership change it lives through — [`apply_commit`] keeps one from each — so what
+/// arrives here is the history it did **not** live through.
+///
+/// Returns `(earliest_readable_epoch, stored)`.
+///
+/// # Why the answer is not "how many arrived"
+///
+/// A rung extends reach only if every rung above it is present too, so counting what was
+/// delivered says nothing about what can now be read. The number worth returning is the one
+/// this VTA can only get by *walking* what it holds — which is why the specification puts it
+/// in the response and why a host serving the same rungs could not have answered it.
+///
+/// # A rung already held is never replaced
+///
+/// Same rule the hosts follow. A second rung for an epoch is either a replay — which must be
+/// a no-op rather than an error, or a retried delivery becomes a failure — or an attempt to
+/// re-point this member's history at key material of somebody else's choosing. Keeping the
+/// first is the only reading that is safe under both.
+pub async fn store_links(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    incoming: Vec<EpochLink>,
+    now: u64,
+) -> Result<(u32, usize), AppError> {
+    let record = load(groups, room_id).await?.ok_or_else(|| {
+        AppError::NotFound(format!(
+            "this VTA holds no group state for room `{room_id}`"
+        ))
+    })?;
+
+    let mut links = record.links;
+    let mut stored = 0;
+    for link in incoming {
+        if !links.iter().any(|held| held.epoch == link.epoch) {
+            links.push(link);
+            stored += 1;
+        }
+    }
+    links.sort_by_key(|l| l.epoch);
+
+    let group = RoomGroup::restore(&record.snapshot)
+        .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?;
+    let mut room = SealedRoom::new(room_id, group);
+    room.add_links(links.clone());
+    let earliest = room
+        .earliest_readable_epoch()
+        .map_err(|e| AppError::Internal(format!("walk the chain: {e}")))?;
+
+    store(
+        groups,
+        room_id,
+        &record.member_did,
+        room.group(),
+        links,
+        now,
+    )
+    .await?;
+    Ok((earliest, stored))
+}
+
 /// Open a sealed record with the room's group key.
 ///
 /// The key never leaves. That is the whole design: the caller sends ciphertext and gets
