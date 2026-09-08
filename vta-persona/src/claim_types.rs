@@ -35,18 +35,23 @@
 //!
 //! # What this module decides, and what it does not
 //!
-//! Only [`Sensitivity`] is acted on today, by
+//! [`Sensitivity`] is acted on by
 //! [`PersonaStore::list_attributes`](crate::PersonaStore::list_attributes),
-//! which is the read-path control that makes the axis more than cosmetic.
-//! Nothing consults [`ReleaseRequirement`]: `persona/disclosure/present` does
-//! not yet demand a fresh authentication for a `stepUp` attribute, and a holder
-//! **cannot** record a `release` override, precisely so that nothing here can
-//! be mistaken for a gate that exists. `MaskStyle` is a renderer's business and
-//! this crate draws nothing.
+//! which withholds a `high` value from a listing that did not ask for one —
+//! the read-path control that makes the axis more than cosmetic.
 //!
-//! They are resolved anyway because §4 is one rule over one table. The
-//! alternative is a second copy of both, added when the disclosure gate lands,
-//! which is how the two would come to disagree.
+//! [`ReleaseRequirement`] is acted on by
+//! [`present`](crate::present), which refuses a `stepUp` claim without a fresh
+//! approval bound to that preview. This paragraph said the opposite until the
+//! gate landed, and a holder could not record a `release` override either; both
+//! are now true, and the note is corrected rather than deleted because "what
+//! this module decides" is the first thing a reader needs and the easiest thing
+//! to leave stale.
+//!
+//! [`MaskStyle`] is still nobody's business here: it is a renderer's, and this
+//! crate draws nothing. It is resolved anyway because §4 is one rule over one
+//! table, and the alternative is a second copy of the rules that comes to
+//! disagree with this one.
 
 use serde::{Deserialize, Serialize};
 
