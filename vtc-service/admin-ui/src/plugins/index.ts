@@ -13,6 +13,7 @@
 
 import {
   ClipboardList,
+  DoorOpen,
   Inbox,
   KeyRound,
   LayoutDashboard,
@@ -38,6 +39,7 @@ import { MyPasskeys } from "@/plugins/myPasskeys";
 import { Profile } from "@/plugins/profile";
 import { Recognition } from "@/plugins/recognition";
 import { Relationships } from "@/plugins/relationshipsGraph";
+import { Rooms } from "@/plugins/rooms";
 import { Sessions } from "@/plugins/sessions";
 
 export function registerBuiltinPlugins(): void {
@@ -95,6 +97,14 @@ export function registerBuiltinPlugins(): void {
     path: "/members",
     iconComponent: Users,
     reactComponent: Members,
+  });
+
+  registerPlugin({
+    id: "rooms",
+    label: "Data rooms",
+    path: "/rooms",
+    iconComponent: DoorOpen,
+    reactComponent: Rooms,
   });
 
   registerPlugin({

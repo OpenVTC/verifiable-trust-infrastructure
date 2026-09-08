@@ -6,6 +6,7 @@
 // defaults for. The Ceremonies plugin manages all of them.
 
 import { getJson, postJson } from "@/lib/api";
+import type { PolicyPurpose } from "@/lib/wire-types";
 
 // One canonical task per verb (the shared upload/1.0 mount was retired
 // in phase 2a).
@@ -19,20 +20,39 @@ const TRUST_TASK_ACTIVATE = "https://trusttasks.org/spec/policy/activate/0.1";
 /// purpose is fixed by the module's Rego package), so it travels here.
 const PURPOSE_EXT = "org.openvtc.purpose";
 
-export const ALL_PURPOSES = [
-  "join",
-  "removal",
-  "personhood",
-  "registry",
-  "directory",
-  "roleDefinitions",
-  "crossCommunityRoles",
-  "crossCommunityRelationships",
-  "relationships",
-  "roleChange",
-] as const;
+/**
+ * Every purpose, in the order the console shows them.
+ *
+ * **Derived from the daemon, not described beside it.** This was a hand-written
+ * literal and it had already drifted: it named ten purposes while the daemon
+ * served eleven, so the `rooms` policy — which decides whether this community
+ * lends its disk to a data room, and whose shipped default **denies** the
+ * private tier — had no tab in the console and could not be read, tested or
+ * replaced from here. Nothing failed. The tab was simply absent, which is the
+ * quietest way for a policy to go unmanaged.
+ *
+ * The `Record<Purpose, true>` is what stops it happening again: a purpose added
+ * to the Rust enum reaches `wire.ts` on the next `wire:generate`, and this
+ * object then fails to compile until someone places it. Ordering is the
+ * object's, so a new purpose lands where it is put rather than at the end.
+ */
+export type Purpose = PolicyPurpose;
 
-export type Purpose = (typeof ALL_PURPOSES)[number];
+const PURPOSE_ORDER: Record<Purpose, true> = {
+  join: true,
+  removal: true,
+  personhood: true,
+  registry: true,
+  directory: true,
+  roleDefinitions: true,
+  crossCommunityRoles: true,
+  crossCommunityRelationships: true,
+  relationships: true,
+  roleChange: true,
+  rooms: true,
+};
+
+export const ALL_PURPOSES = Object.keys(PURPOSE_ORDER) as Purpose[];
 
 /// Purposes that are first-class ceremonies (have a flow + simulator).
 export const CEREMONY_PURPOSES: Purpose[] = [
