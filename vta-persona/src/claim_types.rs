@@ -456,18 +456,38 @@ pub fn defaults_for(claim_type: &str) -> Axes {
         return UNREGISTERED;
     }
 
-    if let Some(entry) = REGISTRY.iter().find(|e| e.token == claim_type) {
-        return entry.axes;
+    if let Some((_, axes)) = declared().find(|(token, _)| *token == claim_type) {
+        return axes;
     }
 
     match longest_registered_family(claim_type) {
-        Some(family) => Axes {
-            sensitivity: family.axes.sensitivity.min(UNREGISTERED.sensitivity),
-            release: family.axes.release.min(UNREGISTERED.release),
-            mask: family.axes.mask.min(UNREGISTERED.mask),
+        Some((_, axes)) => Axes {
+            sensitivity: axes.sensitivity.min(UNREGISTERED.sensitivity),
+            release: axes.release.min(UNREGISTERED.release),
+            mask: axes.mask.min(UNREGISTERED.mask),
         },
         None => UNREGISTERED,
     }
+}
+
+/// Every declared row: the core table, and this deployment's extensions.
+///
+/// **Extensions come first, and the order is the rule.** An extension may only
+/// ever be *more* protective than what core resolves for the same token
+/// ([`install_extensions`] refuses anything else), so taking the first match
+/// gives the tighter answer where both declare a token, and the core answer
+/// everywhere else.
+///
+/// One iterator rather than two lookups because §4's rules — exact, then
+/// longest family, then floor — are one walk over one table. A second table
+/// walked separately is two tables that resolve differently, and the family
+/// step is where that would show: an extension family that the exact step knew
+/// about and the walk did not.
+fn declared() -> impl Iterator<Item = (&'static str, Axes)> {
+    extensions()
+        .iter()
+        .map(|e| (e.token.as_str(), e.axes))
+        .chain(REGISTRY.iter().map(|e| (e.token, e.axes)))
 }
 
 /// The longest registered **proper** prefix of `claim_type`, on segment
@@ -484,11 +504,11 @@ pub fn defaults_for(claim_type: &str) -> Axes {
 /// disagree on any axis, so "longest" is currently unobservable in the result;
 /// pinning the mechanism is what keeps the rule right for the first table that
 /// can tell them apart.
-fn longest_registered_family(claim_type: &str) -> Option<&'static Entry> {
+fn longest_registered_family(claim_type: &str) -> Option<(&'static str, Axes)> {
     claim_type
         .match_indices('.')
         .map(|(i, _)| &claim_type[..i])
-        .filter_map(|prefix| REGISTRY.iter().find(|e| e.token == prefix))
+        .filter_map(|prefix| declared().find(|(token, _)| *token == prefix))
         // `match_indices` walks left to right, so the last match is the
         // longest — and taken from the back, the first one found is that match.
         .next_back()
@@ -518,12 +538,21 @@ fn longest_registered_family(claim_type: &str) -> Option<&'static Entry> {
 pub fn registry_listing() -> RegistryListing {
     RegistryListing {
         registry_version: REGISTRY_VERSION,
+        // Core first, then this deployment's extensions — the whole table a
+        // client must resolve against, because the client runs §4 over what it
+        // is served and the agent runs it over what it holds. Serving core only
+        // while resolving over both is the disagreement this task exists to
+        // prevent, with the client's answer the looser of the two.
         entries: REGISTRY
             .iter()
             .map(|e| RegistryRow {
                 claim_type: e.token,
                 axes: e.axes,
             })
+            .chain(extensions().iter().map(|e| RegistryRow {
+                claim_type: e.token.as_str(),
+                axes: e.axes,
+            }))
             .collect(),
         unregistered: UNREGISTERED,
         strictness: Strictness {
@@ -537,6 +566,315 @@ pub fn registry_listing() -> RegistryListing {
             mask: MaskStyle::MOST_PROTECTIVE_FIRST,
         },
     }
+}
+
+// ── Deployment extension types ─────────────────────────────────────────────
+//
+// ## Why this exists
+//
+// The core table is transcribed from the published registry and is the same
+// everywhere. A deployment's own vocabulary is not: `profile.github`,
+// `employer`, whatever a particular ecosystem keeps about its people. Until
+// now the only way to teach an agent one of those words was a pull request
+// against the specification repository, a publish, a hand-transcription into
+// the table above, a release and a deploy — five steps across two repositories
+// to add a word, two of them manual copying. So nobody did, every local token
+// resolved to the floor, and holders saw every value they had invented a name
+// for masked as though it were a passport number.
+//
+// `CLAIM-TYPES.md` §6 anticipated this: the served-table task was "worth doing
+// when the first extension type ships, not before". It ships now.
+//
+// ## What an operator may declare, and what they may not
+//
+// **Anything the core table does not cover.** A token core has never heard of
+// resolves to the floor *because nobody has reasoned about it* — §4 rule 3
+// says so in as many words — and an operator declaring it is that reasoning
+// arriving. This is the case the feature exists for.
+//
+// **Only tightenings of anything core does cover.** An entry may not resolve
+// looser on any axis than core already resolves for that same token, whether
+// core covers it exactly (`email.work`) or through a family (`payment.giftCard`
+// under `payment`). Otherwise a deployment could declare `gov.id.passport`
+// unremarkable, or invent a `payment.*` member outside its family's gate — and
+// the family walk exists precisely to stop the second one.
+//
+// **Never an `x:` token.** §4's last rule makes the extension namespace
+// unregistered by construction, and every client implements it that way. An
+// agent that declared one would serve a row no client would honour.
+//
+// ## Configured, not administered
+//
+// Installed once at startup from a file the deployment supplies. Not an admin
+// Trust Task: serving a new task URI requires a published spec (the dispatcher
+// harness refuses an unspecced one), so a runtime-managed registry is a
+// larger, upstream-first change. A file is diffable, reviewable, and belongs to
+// whoever owns the deployment — which is who this is for.
+
+/// One claim type a deployment declares for itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtensionEntry {
+    /// The vocabulary token, dotted most-general-segment-first.
+    pub token: String,
+    /// Its three axes, exactly as a core row carries them.
+    pub axes: Axes,
+}
+
+/// Why a deployment's extension table was refused.
+///
+/// Every one of these fails startup rather than dropping the offending row.
+/// A registry that silently served fewer types than its operator wrote is one
+/// where a tightening they believed was in force is not, and the values it was
+/// meant to protect are the ones they would find out about last.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExtensionError {
+    /// The file was not the shape a table has.
+    Malformed(String),
+    /// `x:` is unregistered by construction — see §4's last rule.
+    ExtensionNamespace(String),
+    /// Not a vocabulary token: empty, or with an empty or non-alphanumeric
+    /// segment. The core table's own tokens are the model.
+    NotAToken(String),
+    /// The same token declared twice, which leaves what it resolves to
+    /// dependent on the order rows happen to sit in.
+    Duplicate(String),
+    /// The token is one the core table already covers, and this row is looser
+    /// on `axis` than core resolves it. Carries both so the message can say
+    /// what it would have weakened.
+    Loosens {
+        token: String,
+        axis: &'static str,
+        core: String,
+        declared: String,
+    },
+    /// [`install_extensions`] was called twice. The table is read by the
+    /// disclosure gate and by the read-path withholding, and swapping it under
+    /// a running agent would mean two requests in the same second resolving
+    /// differently.
+    AlreadyInstalled,
+}
+
+impl std::fmt::Display for ExtensionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Malformed(why) => write!(f, "claim-type extensions are malformed: {why}"),
+            Self::ExtensionNamespace(t) => write!(
+                f,
+                "`{t}` is in the `x:` namespace, which is unregistered by construction — \
+                 no client would honour a row declaring one"
+            ),
+            Self::NotAToken(t) => write!(f, "`{t}` is not a vocabulary token"),
+            Self::Duplicate(t) => write!(f, "`{t}` is declared twice"),
+            Self::Loosens {
+                token,
+                axis,
+                core,
+                declared,
+            } => write!(
+                f,
+                "`{token}` would weaken {axis} from `{core}` to `{declared}`; the core table \
+                 already covers this token, and an extension may only tighten"
+            ),
+            Self::AlreadyInstalled => write!(f, "claim-type extensions are already installed"),
+        }
+    }
+}
+
+impl std::error::Error for ExtensionError {}
+
+static EXTENSIONS: std::sync::OnceLock<Vec<ExtensionEntry>> = std::sync::OnceLock::new();
+
+/// This deployment's extension rows — empty until [`install_extensions`] runs,
+/// which is the state every test and every default deployment is in.
+fn extensions() -> &'static [ExtensionEntry] {
+    EXTENSIONS.get().map(Vec::as_slice).unwrap_or(&[])
+}
+
+/// Validate a deployment's extension table and install it, once.
+///
+/// Called at startup, before the first request. Every rule in the module
+/// comment above is enforced here rather than at the file's edge, so a caller
+/// that builds rows some other way cannot skip them.
+///
+/// # Errors
+///
+/// Any row that is not a token, is in the `x:` namespace, repeats another, or
+/// loosens what the core table resolves — and calling twice.
+pub fn install_extensions(entries: Vec<ExtensionEntry>) -> Result<(), ExtensionError> {
+    validate(&entries)?;
+    EXTENSIONS
+        .set(entries)
+        .map_err(|_| ExtensionError::AlreadyInstalled)
+}
+
+/// Read a deployment's extension table from the JSON an operator wrote.
+///
+/// The rows are the same shape the agent serves — `type` plus the three axes —
+/// so an operator can copy a row out of `persona/claim-types/list`, change it,
+/// and put it back. Both the bare array and the `{"entries": [...]}` wrapper
+/// are accepted for that reason: one is what the file looks like, the other is
+/// what the served document looks like, and being strict about which would be
+/// a rule with nothing behind it.
+///
+/// Parsing only — every rule lives in [`install_extensions`], so a caller who
+/// builds rows another way gets the same checks.
+///
+/// # Errors
+///
+/// Anything that is not that shape, including an unknown axis value. An
+/// unknown value is refused rather than defaulted: a typo'd `"sensitivty"`
+/// silently becoming the floor would look like a working tightening, and a
+/// typo'd `"hgih"` silently becoming `normal` would look like a working
+/// loosening.
+pub fn parse_extensions(json: &str) -> Result<Vec<ExtensionEntry>, ExtensionError> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Row {
+        r#type: String,
+        sensitivity: Sensitivity,
+        release: ReleaseRequirement,
+        mask: MaskStyle,
+    }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum File {
+        Wrapped { entries: Vec<Row> },
+        Bare(Vec<Row>),
+    }
+
+    let parsed: File =
+        serde_json::from_str(json).map_err(|e| ExtensionError::Malformed(e.to_string()))?;
+    let rows = match parsed {
+        File::Wrapped { entries } => entries,
+        File::Bare(rows) => rows,
+    };
+    Ok(rows
+        .into_iter()
+        .map(|r| ExtensionEntry {
+            token: r.r#type,
+            axes: Axes {
+                sensitivity: r.sensitivity,
+                release: r.release,
+                mask: r.mask,
+            },
+        })
+        .collect())
+}
+
+/// The checks, separated from installation so they can be tested without
+/// consuming the process-wide slot — a `OnceLock` takes one value per process,
+/// and a test suite needs to try many.
+fn validate(entries: &[ExtensionEntry]) -> Result<(), ExtensionError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for e in entries {
+        if e.token.starts_with(EXTENSION_PREFIX) {
+            return Err(ExtensionError::ExtensionNamespace(e.token.clone()));
+        }
+        if !is_token(&e.token) {
+            return Err(ExtensionError::NotAToken(e.token.clone()));
+        }
+        if !seen.insert(e.token.as_str()) {
+            return Err(ExtensionError::Duplicate(e.token.clone()));
+        }
+        // Compared against what **core alone** resolves, which is the question
+        // being asked: may this deployment say something weaker than the
+        // published registry does about a token the published registry knows?
+        if core_covers(&e.token) {
+            let core = core_defaults_for(&e.token);
+            check_tightens(&e.token, e.axes, core)?;
+        }
+    }
+    Ok(())
+}
+
+/// A token is one or more non-empty segments of ASCII alphanumerics, separated
+/// by dots. Deliberately narrow: the core table's own tokens all satisfy it,
+/// and a token carrying a space or a slash is a file that has been edited into
+/// something that is not a vocabulary.
+fn is_token(token: &str) -> bool {
+    !token.is_empty()
+        && token
+            .split('.')
+            .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// Whether the **core** table has anything to say about this token — exactly,
+/// or through a family. Distinct from "resolves to something": every token
+/// resolves, most of them to the floor, and the floor is the answer that means
+/// nobody has looked.
+fn core_covers(token: &str) -> bool {
+    REGISTRY.iter().any(|e| e.token == token)
+        || token
+            .match_indices('.')
+            .map(|(i, _)| &token[..i])
+            .any(|prefix| REGISTRY.iter().any(|e| e.token == prefix))
+}
+
+/// [`defaults_for`] over the core table only, for the comparison above.
+fn core_defaults_for(token: &str) -> Axes {
+    if let Some(entry) = REGISTRY.iter().find(|e| e.token == token) {
+        return entry.axes;
+    }
+    match token
+        .match_indices('.')
+        .map(|(i, _)| &token[..i])
+        .filter_map(|prefix| REGISTRY.iter().find(|e| e.token == prefix))
+        .next_back()
+    {
+        Some(family) => Axes {
+            sensitivity: family.axes.sensitivity.min(UNREGISTERED.sensitivity),
+            release: family.axes.release.min(UNREGISTERED.release),
+            mask: family.axes.mask.min(UNREGISTERED.mask),
+        },
+        None => UNREGISTERED,
+    }
+}
+
+/// Each axis of `declared` must be at least as protective as `core`.
+///
+/// `min` is "more protective" throughout this module, because each enum is
+/// declared most-protective-first — the same ordering served as `strictness`,
+/// so an operator can check this rule themselves against what the agent
+/// publishes.
+fn check_tightens(token: &str, declared: Axes, core: Axes) -> Result<(), ExtensionError> {
+    let loosens = |axis, core_v: String, declared_v: String| ExtensionError::Loosens {
+        token: token.to_owned(),
+        axis,
+        core: core_v,
+        declared: declared_v,
+    };
+    if declared.sensitivity.min(core.sensitivity) != declared.sensitivity {
+        return Err(loosens(
+            "sensitivity",
+            wire_name(core.sensitivity),
+            wire_name(declared.sensitivity),
+        ));
+    }
+    if declared.release.min(core.release) != declared.release {
+        return Err(loosens(
+            "release",
+            wire_name(core.release),
+            wire_name(declared.release),
+        ));
+    }
+    if declared.mask.min(core.mask) != declared.mask {
+        return Err(loosens(
+            "mask",
+            wire_name(core.mask),
+            wire_name(declared.mask),
+        ));
+    }
+    Ok(())
+}
+
+/// An axis value as the wire spells it, for a message an operator reads
+/// alongside what the agent serves. Via `Serialize` so the two cannot drift:
+/// the same rename that produces the served table produces this word.
+fn wire_name<T: Serialize>(v: T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|j| j.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_owned())
 }
 
 /// One row of [`registry_listing`].
@@ -781,7 +1119,7 @@ mod tests {
         let chosen = longest_registered_family("name.legal.somethingNew")
             .expect("`name.legal` is registered and is a proper prefix");
         assert_eq!(
-            chosen.token, "name.legal",
+            chosen.0, "name.legal",
             "a shorter registered prefix won over a longer one"
         );
 
@@ -790,7 +1128,7 @@ mod tests {
         // rule 3 compare an exact entry against the floor — which is precisely
         // what rule 2 says must not happen.
         assert_eq!(
-            longest_registered_family("name.legal").map(|e| e.token),
+            longest_registered_family("name.legal").map(|e| e.0),
             Some("name")
         );
         assert!(
@@ -929,5 +1267,194 @@ mod tests {
         // member of a gated family becomes leavable.
         assert!(seen.contains("payment"));
         assert!(seen.contains("gov"));
+    }
+
+    // ── Deployment extension types ─────────────────────────────────────────
+    //
+    // The rules are the whole feature: an operator may name what the published
+    // registry has never heard of, and may tighten what it has, and may do
+    // nothing else. Each test below is one of the ways the second half fails
+    // if nobody checks it.
+
+    fn ext(
+        token: &str,
+        sensitivity: Sensitivity,
+        release: ReleaseRequirement,
+        mask: MaskStyle,
+    ) -> ExtensionEntry {
+        ExtensionEntry {
+            token: token.to_owned(),
+            axes: Axes {
+                sensitivity,
+                release,
+                mask,
+            },
+        }
+    }
+
+    #[test]
+    fn a_token_core_never_heard_of_may_be_declared_freely() {
+        // The case the feature exists for. `profile.github` resolves to the
+        // floor today *because nobody has reasoned about it*, and an operator
+        // declaring it is that reasoning arriving.
+        let rows = vec![ext(
+            "profile.github",
+            Sensitivity::Normal,
+            ReleaseRequirement::Consent,
+            MaskStyle::None,
+        )];
+        assert_eq!(validate(&rows), Ok(()));
+    }
+
+    #[test]
+    fn an_extension_may_tighten_a_token_core_declares() {
+        // `email.work` is `normal`/`consent`/`emailLocal`. A deployment
+        // deciding an address is worth withholding entirely is allowed to say
+        // so — that direction takes nothing away from anyone.
+        let rows = vec![ext(
+            "email.work",
+            Sensitivity::High,
+            ReleaseRequirement::StepUp,
+            MaskStyle::Full,
+        )];
+        assert_eq!(validate(&rows), Ok(()));
+    }
+
+    #[test]
+    fn an_extension_may_not_loosen_a_token_core_declares() {
+        // The one that matters. A deployment declaring a passport
+        // unremarkable would be serving every client a row saying so.
+        let rows = vec![ext(
+            "gov.id.passport",
+            Sensitivity::Normal,
+            ReleaseRequirement::Consent,
+            MaskStyle::None,
+        )];
+        match validate(&rows) {
+            Err(ExtensionError::Loosens { token, axis, .. }) => {
+                assert_eq!(token, "gov.id.passport");
+                assert_eq!(
+                    axis, "sensitivity",
+                    "the first axis it weakens is the one named"
+                );
+            }
+            other => panic!("expected a loosening refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_invented_member_cannot_escape_its_family() {
+        // `payment.giftCard` is not in the table, but `payment` is, and §4
+        // rule 3 resolves the member through the family. Without the family
+        // being consulted here, inventing a member would be the way around
+        // every gate the family carries — which is the exact hole rule 3 was
+        // added to close.
+        let rows = vec![ext(
+            "payment.giftCard",
+            Sensitivity::Normal,
+            ReleaseRequirement::Consent,
+            MaskStyle::None,
+        )];
+        assert!(matches!(
+            validate(&rows),
+            Err(ExtensionError::Loosens { .. })
+        ));
+    }
+
+    #[test]
+    fn an_extension_namespace_token_is_refused() {
+        // §4's last rule makes `x:` unregistered by construction. An agent
+        // declaring one would serve a row no conforming client would honour,
+        // so the disagreement is refused at the source.
+        let rows = vec![ext(
+            "x:profile.github",
+            Sensitivity::Normal,
+            ReleaseRequirement::Consent,
+            MaskStyle::None,
+        )];
+        assert!(matches!(
+            validate(&rows),
+            Err(ExtensionError::ExtensionNamespace(_))
+        ));
+    }
+
+    #[test]
+    fn a_token_that_is_not_a_token_is_refused() {
+        for bad in [
+            "",
+            "has space",
+            "trailing.",
+            ".leading",
+            "two..dots",
+            "slash/es",
+        ] {
+            let rows = vec![ext(
+                bad,
+                Sensitivity::High,
+                ReleaseRequirement::StepUp,
+                MaskStyle::Full,
+            )];
+            assert!(
+                matches!(validate(&rows), Err(ExtensionError::NotAToken(_))),
+                "`{bad}` should not be a token"
+            );
+        }
+    }
+
+    #[test]
+    fn a_repeated_token_is_refused_rather_than_last_one_wins() {
+        // Two rows for one token leave what it resolves to dependent on the
+        // order they happen to sit in the file.
+        let rows = vec![
+            ext(
+                "profile.github",
+                Sensitivity::Normal,
+                ReleaseRequirement::Consent,
+                MaskStyle::None,
+            ),
+            ext(
+                "profile.github",
+                Sensitivity::High,
+                ReleaseRequirement::StepUp,
+                MaskStyle::Full,
+            ),
+        ];
+        assert!(matches!(validate(&rows), Err(ExtensionError::Duplicate(_))));
+    }
+
+    #[test]
+    fn the_file_is_read_in_both_shapes_an_operator_would_write() {
+        let bare = r#"[{"type":"profile.github","sensitivity":"normal","release":"consent","mask":"none"}]"#;
+        let wrapped = r#"{"entries":[{"type":"profile.github","sensitivity":"normal","release":"consent","mask":"none"}]}"#;
+        let expected = vec![ext(
+            "profile.github",
+            Sensitivity::Normal,
+            ReleaseRequirement::Consent,
+            MaskStyle::None,
+        )];
+        assert_eq!(parse_extensions(bare).unwrap(), expected);
+        assert_eq!(
+            parse_extensions(wrapped).unwrap(),
+            expected,
+            "as copied out of the served table"
+        );
+    }
+
+    #[test]
+    fn an_unknown_axis_value_is_refused_rather_than_defaulted() {
+        // A typo that defaulted would look like a working rule: `hgih` reading
+        // as `normal` is a loosening nobody wrote and nobody would see.
+        let typo =
+            r#"[{"type":"profile.github","sensitivity":"hgih","release":"consent","mask":"none"}]"#;
+        assert!(matches!(
+            parse_extensions(typo),
+            Err(ExtensionError::Malformed(_))
+        ));
+        let misspelt_member =
+            r#"[{"type":"profile.github","sensitivty":"high","release":"consent","mask":"none"}]"#;
+        assert!(matches!(
+            parse_extensions(misspelt_member),
+            Err(ExtensionError::Malformed(_))
+        ));
     }
 }
