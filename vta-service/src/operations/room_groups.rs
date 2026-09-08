@@ -37,9 +37,12 @@ use vti_rooms::mls::{GroupSnapshot, IdentitySnapshot, RoomGroup};
 use vti_rooms::sealed::SealedRoom;
 use vti_rooms::wire::EpochLink;
 
+/// Prefix for a room's group state, and the scan `list_rooms` walks.
+const GROUP_PREFIX: &str = "room-group:";
+
 /// Storage key for a room's group state.
 fn group_key(room_id: &str) -> String {
-    format!("room-group:{room_id}")
+    format!("{GROUP_PREFIX}{room_id}")
 }
 
 /// Storage key for a consumed invitation.
@@ -228,6 +231,94 @@ pub async fn apply_commit(
     )
     .await?;
     Ok(epoch)
+}
+
+/// Seal a record body with the room's current epoch key.
+///
+/// The mirror of [`open_record`], and the reason a client can write to a sealed room at all:
+/// the key never leaves, so the caller sends plaintext and receives ciphertext.
+///
+/// # It does not write
+///
+/// The caller takes the result to a host and presents its own authority there. Sealing and
+/// being allowed to store are different questions asked of different parties — this VTA
+/// knows the key and nothing about the room's ACL; the host knows the credentials and cannot
+/// read a byte. Doing both here would make this VTA the party that decides what goes into a
+/// room, which is the one thing the design keeps it out of.
+pub async fn seal_record(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    key: &str,
+    version: u64,
+    plaintext: &[u8],
+) -> Result<vti_rooms::wire::SealedContent, AppError> {
+    let record = load(groups, room_id).await?.ok_or_else(|| {
+        AppError::NotFound(format!(
+            "this VTA holds no group state for room `{room_id}`"
+        ))
+    })?;
+    let group = RoomGroup::restore(&record.snapshot)
+        .map_err(|e| AppError::Internal(format!("restore the group: {e}")))?;
+
+    SealedRoom::new(room_id, group)
+        .seal_record(key, version, plaintext)
+        .map_err(|e| AppError::Validation(e.to_string()))
+}
+
+/// Every room this VTA holds group state for, with how far each one reads.
+///
+/// # Custody, not membership
+///
+/// This answers "what can I open", never "what am I a member of". A principal may hold a
+/// perfectly good membership credential for a room whose Welcome never arrived — absent
+/// here, correctly. And a VTA not yet told of a removal still holds keys for a room its
+/// principal has left: it cannot write there, because the host checks credentials that no
+/// longer verify, and it can still open what it already had. That is what removal has always
+/// meant, and a caller MUST NOT read this list as authority to act.
+pub async fn list_rooms(groups: &KeyspaceHandle) -> Result<Vec<HeldRoom>, AppError> {
+    let pairs = groups.prefix_iter_raw(GROUP_PREFIX.to_string()).await?;
+    let mut out = Vec::with_capacity(pairs.len());
+
+    for (k, v) in pairs {
+        let record: RoomGroupRecord = serde_json::from_slice(&v).map_err(|e| {
+            let which = String::from_utf8_lossy(&k).to_string();
+            AppError::Internal(format!("decode group state at `{which}`: {e}"))
+        })?;
+        let room_id = String::from_utf8_lossy(&k)
+            .strip_prefix(GROUP_PREFIX)
+            .unwrap_or_default()
+            .to_string();
+
+        // Restoring to answer is deliberate. The epoch could be read from the snapshot, but
+        // `earliestReadableEpoch` is only knowable by *walking* the chain — and a number
+        // derived two different ways is a number that will eventually disagree with itself.
+        let group = RoomGroup::restore(&record.snapshot)
+            .map_err(|e| AppError::Internal(format!("restore the group for `{room_id}`: {e}")))?;
+        let mut room = SealedRoom::new(&room_id, group);
+        room.add_links(record.links);
+
+        let epoch = room.room_epoch();
+        let earliest = room
+            .earliest_readable_epoch()
+            .map_err(|e| AppError::Internal(format!("walk the chain for `{room_id}`: {e}")))?;
+
+        out.push(HeldRoom {
+            room_id,
+            epoch,
+            earliest_readable_epoch: earliest,
+        });
+    }
+    out.sort_by(|a, b| a.room_id.cmp(&b.room_id));
+    Ok(out)
+}
+
+/// One room this VTA can open, as `rooms/keys/list` reports it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldRoom {
+    pub room_id: String,
+    pub epoch: u32,
+    pub earliest_readable_epoch: u32,
 }
 
 /// Retain epoch links this VTA's principal fetched from the room's host.

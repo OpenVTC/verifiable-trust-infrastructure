@@ -275,7 +275,7 @@ aws-lc-rs = "1.16"
 # fully succeeded comes back as a 500 `responseSchemaViolation` — the members
 # are emitted and the schema rejects them. A caret on "0.18" would let a
 # resolver pick 0.18.2 and reintroduce exactly that.
-trust-tasks-rs = { version = "0.18.6", default-features = false, features = [
+trust-tasks-rs = { version = "0.18.7", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

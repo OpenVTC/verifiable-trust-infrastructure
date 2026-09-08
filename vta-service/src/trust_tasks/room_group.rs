@@ -208,6 +208,110 @@ pub(super) async fn handle_commit(
     success_response(&doc, CommitResponse { epoch })
 }
 
+/// `rooms/keys/seal/0.1`.
+///
+/// The mirror of [`handle_open`], and gated on the same capability for the same reason:
+/// `RoomOpen` governs a principal's room records, and sealing one is acting on them.
+///
+/// Note what this returns and what it does not. It hands back ciphertext; it does not store
+/// anything and does not reach the room's host. A caller that wanted the record written must
+/// present its own authority there, which is the separation that keeps this VTA out of the
+/// decision about what a room contains.
+pub(super) async fn handle_seal(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(r) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::RoomOpen,
+        "sealing a room record",
+    )
+    .await
+    {
+        return r;
+    }
+
+    let req: trust_tasks_rs::specs::rooms::keys::seal::v0_1::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let plaintext = match base64::Engine::decode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        &req.plaintext,
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            return app_error_to_reject(
+                &doc,
+                vti_common::error::AppError::Validation(format!("plaintext is not base64url: {e}")),
+            );
+        }
+    };
+
+    let sealed = match room_groups::seal_record(
+        &state.room_groups_ks,
+        &req.room_id,
+        &req.key,
+        u64::from(req.version),
+        &plaintext,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    record(state, "rooms.keys.seal", auth, &req.room_id).await;
+    success_response(
+        &doc,
+        serde_json::json!({
+            "sealed": {
+                "ciphertext": sealed.ciphertext,
+                "nonce": sealed.nonce,
+                "epoch": sealed.epoch,
+            }
+        }),
+    )
+}
+
+/// `rooms/keys/list/0.1`.
+///
+/// Which rooms this VTA can open, and how far back each reads.
+///
+/// Gated on `RoomOpen` because that is the capability the answer is *about*: an agent that
+/// may not open a principal's rooms has no business enumerating them, and the list is the
+/// principal's room membership as key custody sees it — more than any single room operation
+/// discloses.
+pub(super) async fn handle_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(r) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::RoomOpen,
+        "listing the rooms this VTA holds keys for",
+    )
+    .await
+    {
+        return r;
+    }
+
+    let rooms = match room_groups::list_rooms(&state.room_groups_ks).await {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    record(state, "rooms.keys.list", auth, "").await;
+    success_response(&doc, serde_json::json!({ "rooms": rooms }))
+}
+
 /// `rooms/keys/chain/0.1`.
 ///
 /// The principal hands this VTA the room's epoch key chain, so it can open records sealed

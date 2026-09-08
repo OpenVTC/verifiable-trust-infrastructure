@@ -136,6 +136,16 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // to the room's whole retained history. A blanket `vta_call` approval must
     // not silently cover widening what the principal's key holder can decrypt.
     ("rooms/keys/chain", Risk::Sensitive),
+    // Secret material, accepted AND emitted. `seal` takes a record's plaintext and
+    // returns it encrypted under the room's key — the one direction in this family
+    // where cleartext room material travels INTO the oracle. It belongs beside
+    // `open`, which is the same exchange run the other way.
+    ("rooms/keys/seal", Risk::Sensitive),
+    // A read, and the verb rule would get it right — but what it lists is the
+    // principal's room membership as key custody sees it, which is more than any
+    // single room operation discloses. Named here so that is a decision rather
+    // than a default.
+    ("rooms/keys/list", Risk::ReadOnly),
     // The holder's own identity, emitted. `disclosure/present` is the one
     // persona task that hands claims to a named verifier, under a persona DID,
     // and writes the record saying it did. It sits beside `rooms/keys/present`

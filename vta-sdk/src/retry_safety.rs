@@ -430,6 +430,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // redelivery stores nothing and reports the same reachability. A lost reply
     // costs the caller the answer, never the state.
     (trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_1, RetrySafe),
+    // Sealing is a pure function of the key and the bytes, and it stores nothing:
+    // a lost reply costs the caller a round trip, never any state. Re-sealing the
+    // same body yields a different nonce, which is correct and changes nothing.
+    (trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1, RetrySafe),
+    (trust_tasks::TASK_ROOMS_KEYS_LIST_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_MEMORY_DELETE_0_1, RetrySafe),
     // ── Application state ───────────────────────────────────────────────
     //
