@@ -86,6 +86,7 @@ mod produced_census;
 mod provision_integration;
 mod room_group;
 mod room_keys;
+mod room_owner;
 mod seeds;
 // `operations::protocol` — every service operation these handlers call — is
 // `#[cfg(feature = "webvh")]`, because advertising a transport means editing
@@ -1646,6 +1647,12 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1 => room_group::handle_list
         [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_INVITE_0_1 => room_owner::handle_invite
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1 => room_owner::handle_issue_membership
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_1 => room_owner::handle_issue_authority
+        [ Mutating Metadata false ],
     // ─── Application-state slice (spec/vta/app-state/*) ──────────
     // Versioned, namespaced per-context JSON the VTA stores but never
     // interprets. Gated on context access (require_context), NOT operator

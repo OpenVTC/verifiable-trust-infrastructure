@@ -2097,6 +2097,48 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_OWNER_INVITE_0_1,
+            checked!(
+                specs::rooms::owner::invite::v0_1::Payload,
+                specs::rooms::owner::invite::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "signingKeyId": "room-northwind-signing",
+                    "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "validUntil": "2026-02-01T00:00:00Z"
+                }),
+                json!({ "credential": "eyJhbGciOiJFZERTQSJ9.room-credential",
+                    "credentialId": "urn:uuid:11111111-1111-4111-8111-111111111111" })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
+            checked!(
+                specs::rooms::owner::issue_membership::v0_1::Payload,
+                specs::rooms::owner::issue_membership::v0_1::Response,
+                json!({ "roomId": "did:webvh:example.com:rooms:northwind",
+                    "signingKeyId": "room-northwind-signing",
+                    "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK" }),
+                json!({ "credential": "eyJhbGciOiJFZERTQSJ9.room-credential",
+                    "credentialId": "urn:uuid:11111111-1111-4111-8111-111111111111" })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_1,
+            checked!(
+                specs::rooms::owner::issue_authority::v0_1::Payload,
+                specs::rooms::owner::issue_authority::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "signingKeyId": "room-northwind-signing",
+                    "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "actions": ["read", "write"]
+                }),
+                json!({ "credential": "eyJhbGciOiJFZERTQSJ9.room-credential",
+                    "credentialId": "urn:uuid:11111111-1111-4111-8111-111111111111" })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_OPEN_0_1,
             checked!(
                 specs::rooms::keys::open::v0_1::Payload,

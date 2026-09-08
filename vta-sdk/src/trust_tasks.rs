@@ -837,6 +837,27 @@ pub const TASK_ROOMS_KEYS_SEAL_0_1: &str = "https://trusttasks.org/spec/rooms/ke
 /// room whose Welcome never arrived is absent even where a good VMC is held.
 pub const TASK_ROOMS_KEYS_LIST_0_1: &str = "https://trusttasks.org/spec/rooms/keys/list/0.1";
 
+/// `spec/rooms/owner/invite/0.1` — mint a Verifiable Invitation Credential in the
+/// room's own name. Joining is consent, and this is the artefact.
+/// Auth: `credentialWrite` capability, plus whatever the key oracle says about
+/// naming the room's signing key.
+pub const TASK_ROOMS_OWNER_INVITE_0_1: &str = "https://trusttasks.org/spec/rooms/owner/invite/0.1";
+
+/// `spec/rooms/owner/issue-membership/0.1` — mint the membership credential a member
+/// presents on every subsequent room operation. The room has no roster; this
+/// credential IS the membership.
+/// Auth: `credentialWrite` capability, plus whatever the key oracle says about
+/// naming the room's signing key.
+pub const TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1: &str =
+    "https://trusttasks.org/spec/rooms/owner/issue-membership/0.1";
+
+/// `spec/rooms/owner/issue-authority/0.1` — mint a Verifiable Authority Credential — a
+/// chain root at the room's scope, conferring read/write/curate/admin.
+/// Auth: `credentialWrite` capability, plus whatever the key oracle says about
+/// naming the room's signing key.
+pub const TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_1: &str =
+    "https://trusttasks.org/spec/rooms/owner/issue-authority/0.1";
+
 /// `spec/vta/memory/delete/0.1` — remove one entry by key (`not_found` if
 /// absent). Auth: context access. Payload:
 /// [`crate::protocols::memory::MemoryDeleteBody`].
@@ -1901,6 +1922,9 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_CHAIN_0_1,
     TASK_ROOMS_KEYS_SEAL_0_1,
     TASK_ROOMS_KEYS_LIST_0_1,
+    TASK_ROOMS_OWNER_INVITE_0_1,
+    TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
+    TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_1,
     TASK_VTA_MEMORY_DELETE_0_1,
     // Application-state slice (spec/vta/app-state/*)
     TASK_VTA_APP_STATE_GET_1_0,

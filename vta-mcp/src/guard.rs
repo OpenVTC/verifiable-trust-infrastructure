@@ -146,6 +146,15 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // single room operation discloses. Named here so that is a decision rather
     // than a default.
     ("rooms/keys/list", Risk::ReadOnly),
+    // Issuance, signed as the room. `invite` and `issue-membership` decide who
+    // may enter and remain; `issue-authority` decides what they may do, and an
+    // `admin` grant is the authority to mint epochs and transfer the room. The
+    // verb rule would read all three as ordinary mutations. An MCP host approves
+    // a *tool*, so a blanket `vta_call` must not silently cover deciding a room's
+    // membership.
+    ("rooms/owner/invite", Risk::Sensitive),
+    ("rooms/owner/issue-membership", Risk::Sensitive),
+    ("rooms/owner/issue-authority", Risk::Sensitive),
     // The holder's own identity, emitted. `disclosure/present` is the one
     // persona task that hands claims to a named verifier, under a persona DID,
     // and writes the record saying it did. It sits beside `rooms/keys/present`
