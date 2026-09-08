@@ -283,6 +283,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     rooms_wire::ROOMS_RECORDS_GET_TYPE,
     rooms_wire::ROOMS_RECORDS_LIST_TYPE,
     rooms_wire::ROOMS_EPOCH_MINT_TYPE,
+    rooms_wire::ROOMS_EPOCH_CHAIN_TYPE,
     rooms_wire::ROOMS_RECORDS_CURATE_TYPE,
     rooms_wire::ROOMS_OWNER_TRANSFER_TYPE,
     rooms_wire::ROOMS_OWNER_CLAIM_TYPE,
