@@ -820,6 +820,12 @@ pub const TASK_ROOMS_KEYS_WELCOME_0_1: &str = "https://trusttasks.org/spec/rooms
 /// this VTA advances one epoch. Auth: the group itself.
 pub const TASK_ROOMS_KEYS_COMMIT_0_1: &str = "https://trusttasks.org/spec/rooms/keys/commit/0.1";
 
+/// `spec/rooms/keys/chain/0.1` — the principal hands this VTA the room's epoch
+/// key chain, so it can open records sealed before they joined. Auth: `roomOpen`
+/// capability. The rungs it accrues from `commit` cover the memberships it lived
+/// through; this covers the history it did not.
+pub const TASK_ROOMS_KEYS_CHAIN_0_1: &str = "https://trusttasks.org/spec/rooms/keys/chain/0.1";
+
 /// `spec/vta/memory/delete/0.1` — remove one entry by key (`not_found` if
 /// absent). Auth: context access. Payload:
 /// [`crate::protocols::memory::MemoryDeleteBody`].
@@ -1881,6 +1887,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
     TASK_ROOMS_KEYS_WELCOME_0_1,
     TASK_ROOMS_KEYS_COMMIT_0_1,
+    TASK_ROOMS_KEYS_CHAIN_0_1,
     TASK_VTA_MEMORY_DELETE_0_1,
     // Application-state slice (spec/vta/app-state/*)
     TASK_VTA_APP_STATE_GET_1_0,

@@ -2041,6 +2041,25 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_CHAIN_0_1,
+            checked!(
+                specs::rooms::keys::chain::v0_1::Payload,
+                specs::rooms::keys::chain::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "links": [
+                        { "epoch": 3, "wrapped": "Tf6yNb2VhZx5pRoS7wCl9Q", "nonce": "d2Bv0So4As3uXxT2" },
+                        { "epoch": 2, "wrapped": "Wq8zMd4XjBy7rTqU9yEn1Q", "nonce": "e3Cw1Tp5Bt4vYyU3" }
+                    ]
+                }),
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "earliestReadableEpoch": 1,
+                    "stored": 2
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_OPEN_0_1,
             checked!(
                 specs::rooms::keys::open::v0_1::Payload,

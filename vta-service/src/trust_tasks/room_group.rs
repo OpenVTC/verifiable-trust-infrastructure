@@ -208,6 +208,86 @@ pub(super) async fn handle_commit(
     success_response(&doc, CommitResponse { epoch })
 }
 
+/// `rooms/keys/chain/0.1`.
+///
+/// The principal hands this VTA the room's epoch key chain, so it can open records sealed
+/// before the principal joined.
+///
+/// # Gated on `RoomOpen`, and that is the whole of the authorization
+///
+/// The specification's entitlement is *being this key holder's own principal* — not a
+/// credential the room issued. Fetching these rungs from a host took a room-issued `read`
+/// chain; handing them on takes none, because this VTA is not being asked to believe
+/// anything about the room. It is being handed material it will verify by trying to use it.
+///
+/// `RoomOpen` is the right capability because it is the one that governs *reading a room's
+/// records*, and this extends how far back that reaches. Gating it on anything wider would
+/// grant more than the task needs; on `Sign`, as the oracle's own docs argue, strictly more.
+pub(super) async fn handle_chain(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(r) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::RoomOpen,
+        "extending a room's readable history",
+    )
+    .await
+    {
+        return r;
+    }
+
+    let req: trust_tasks_rs::specs::rooms::keys::chain::v0_1::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    // Converted rather than clamped: an epoch outside `u32` is a malformed rung, and
+    // saturating it to `u32::MAX` would store one under an epoch nobody will ever ask for —
+    // a delivery that reports success and extends nothing.
+    let links: Result<Vec<vti_rooms::wire::EpochLink>, _> = req
+        .links
+        .iter()
+        .map(|l| {
+            u32::try_from(l.epoch).map(|epoch| vti_rooms::wire::EpochLink {
+                epoch,
+                wrapped: l.wrapped.clone(),
+                nonce: l.nonce.clone(),
+            })
+        })
+        .collect();
+    let links = match links {
+        Ok(l) => l,
+        Err(_) => {
+            return app_error_to_reject(
+                &doc,
+                vti_common::error::AppError::Validation(
+                    "an epoch link names an epoch outside the representable range".into(),
+                ),
+            );
+        }
+    };
+
+    let (earliest, stored) =
+        match room_groups::store_links(&state.room_groups_ks, &req.room_id, links, now()).await {
+            Ok(r) => r,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
+
+    record(state, "rooms.keys.chain", auth, &req.room_id).await;
+    success_response(
+        &doc,
+        serde_json::json!({
+            "roomId": req.room_id,
+            "earliestReadableEpoch": earliest,
+            "stored": stored,
+        }),
+    )
+}
+
 /// `rooms/keys/open/0.1`.
 pub(super) async fn handle_open(
     state: &AppState,

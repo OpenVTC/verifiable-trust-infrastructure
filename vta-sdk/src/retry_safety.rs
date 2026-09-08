@@ -426,6 +426,10 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // keying it would add a dedup record to something already deduplicated by
     // the epoch it names.
     (trust_tasks::TASK_ROOMS_KEYS_COMMIT_0_1, RetrySafe),
+    // Rungs are identified by epoch and one already held is never replaced, so a
+    // redelivery stores nothing and reports the same reachability. A lost reply
+    // costs the caller the answer, never the state.
+    (trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_MEMORY_DELETE_0_1, RetrySafe),
     // ── Application state ───────────────────────────────────────────────
     //
