@@ -2,6 +2,347 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.34.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.34.0...vta-sdk-v0.34.1) — 2026-09-08
+
+
+### Added
+
+- **rooms**: A VTA mints the credentials that make a room joinable ([#1329](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1329))
+
+* feat(rooms): sign a room's credentials through the key oracle
+
+  The seam the owner tasks need, and the one design question scoping this work
+  flagged as its biggest unknown: how a VTA signs AS a room without holding the
+  room's key in a way that breaks the property the rooms family rests on.
+
+- **rooms**: The VTA seals records and lists the rooms it can open ([#1326](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1326))
+
+* feat(rooms): the VTA seals records and lists the rooms it can open
+
+  Implements rooms/keys/seal/0.1 and rooms/keys/list/0.1
+  (dtgwg-trust-tasks-tf#399), which are the two gaps that made a room UI
+  impossible.
+
+  ## seal — the mirror of open
+
+  A client could read a sealed room and not write to one, because sealing needs
+  the epoch's storage key and the key never leaves the VTA. Plaintext in,
+  ciphertext out.
+
+  It does not write, and does not reach the room's host. The caller presents its
+  own authority there. Sealing and being allowed to store are different questions
+  asked of different parties — this VTA knows the key and nothing about the room's
+  ACL; the host knows the credentials and cannot read a byte. Doing both here
+  would make the VTA the party that decides what a room contains.
+
+  ## list — where a roomId comes from
+
+  Every other room task took an identifier the caller already knew.
+
+  It restores each group to answer rather than reading the epoch out of the
+  snapshot, because `earliestReadableEpoch` is only knowable by *walking* the
+  chain — and a number derived two different ways is a number that will eventually
+  disagree with itself.
+
+  Custody, not membership: a room whose Welcome never arrived is absent even where
+  a good VMC is held, and a VTA not yet told of a removal still lists a room it can
+  open but can no longer write to. A caller MUST NOT read it as authority.
+
+  ## Six census sites, located before writing any code
+
+  The URI constants, ALL_URIS, retry_safety, dispatch, the conformance witnesses,
+  and the vta-mcp guard. The last is invisible to a
+  `grep TASK_ROOMS_KEYS_CHAIN_0_1` sweep because it classifies by SLUG — which is
+  exactly how it was missed on #1320, so it was checked by name this time.
+
+  `seal` is Sensitive there, beside `open`: it is the same exchange run the other
+  way, and the one direction where cleartext room material travels INTO the
+  oracle. `list` is ReadOnly, named rather than defaulted because what it returns
+  is the principal's room membership as key custody sees it.
+
+  trust-tasks-rs moves 0.18.6 → 0.18.7.
+
+- **rooms**: A joined member's agent can read the room's history ([#1320](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1320))
+
+* feat(rooms): a joined member's agent can read the room's history
+
+  The last leg. `rooms/epoch/chain` ([#1314](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1314)) gets the rungs from the room's host to
+  the member; this is `rooms/keys/chain/0.1`, which gets them from the member into
+  their own VTA — the party that actually opens records for their agent.
+
+  Until now a member who joined read the room's history in their client and their
+  agent did not: `rooms/keys/open` resolves from the chain the VTA accrued by
+  applying commits, and a joiner's was empty.
+
+  ## The response is the interesting part
+
+  `earliestReadableEpoch` is not a count of what arrived. A rung extends reach only
+  if every rung above it is present too, so the number worth returning is the one
+  this VTA can only get by walking what it holds. A host serving the same rungs
+  could not have answered it — which is why the specification puts it here.
+
+  A rung already held is never replaced, so a redelivery stores nothing and
+  reports the same reachability. That is why it is `RetrySafe`.
+
+  ## Five censuses
+
+  Adding a task to `vta-service` owes all of them, and they were done up front
+  rather than one CI run at a time: the URI constant, `ALL_URIS`, `retry_safety`,
+  dispatch, and the conformance witness. No `vta-mcp` guard verb — this is
+  inbound from the principal, like `commit` and `welcome`, not an agent-facing
+  verb.
+
+  An epoch outside `u32` is refused rather than saturated: clamping it to
+  `u32::MAX` would store a rung under an epoch nobody will ever ask for, which is
+  a delivery that reports success and extends nothing.
+
+  trust-tasks-rs moves 0.18.5 → 0.18.6, the release carrying the spec.
+
+- **auth/step-up**: Record a bound approval without elevating the session ([#1316](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1316))
+
+* feat(auth/step-up): record a bound approval without elevating the session
+
+  Closes the compromise #1304 stated and could not avoid: a `release: stepUp`
+  approval marked the preview it was bound to AND raised the session's assurance,
+  because 0.2's acknowledgement has exactly two statuses — `elevated` was untrue
+  and `rejected` was worse, since the approval had been applied.
+
+- **persona**: Serve the claim-type registry ([#1315](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1315))
+
+* feat(persona): serve the claim-type registry
+
+  The agent side of trust-tasks #390, now that trust-tasks-rs 0.18.5 is
+  published. Bumps the pin and implements `persona/claim-types/list/1.0`.
+
+  Served from `vta_persona::claim_types` — the same REGISTRY and UNREGISTERED
+  that `defaults_for` resolves through — because the task's central MUST is that
+  a maintainer serves the table it actually applies. A served table that differs
+  from the enforced one is worse than serving nothing: a client would mask and
+  gate by one rule while the agent disclosed by another, and nothing would report
+  it. The end-to-end test asserts that behaviourally, not by comparison: the
+  agent serves `payment.card: stepUp` and then refuses a `payment.card`
+  disclosure for want of one.
+
+  `strictness` is carried because §4 rule 3 is not computable without it. The
+  orderings come from new MOST_PROTECTIVE_FIRST constants, which are hand-written
+  — Rust cannot enumerate variants — so a unit test asserts each agrees with
+  `Ord`, the ordering the module actually resolves by. A disagreement would be
+  silent and served to every client as the rule.
+
+  `minimumSet` and `oidc` are omitted: both optional, and this agent's table does
+  not carry them. Transcribing them at the serving layer would be a second copy
+  of data nothing here resolves against.
+
+- **sdk**: Open the rotated DID's mediator account over TSP too ([#1312](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1312))
+
+#1309 left the mediator-account pass DIDComm-only and documented why: the
+  mediator's management dispatch (`MessageType::process` →
+  `trust_tasks::process`) was `#[cfg(feature = "didcomm")]` and took a
+  DIDComm `Message`, so a TSP message addressed to it was filed for pickup
+  rather than answered. There was no packet a TSP-only client could send to
+  set its own account ACL, over any transport.
+
+  affinidi-tdk-rs#783 added the TSP wrapper. This is its client half, and
+  it makes that documented limitation false — which is the point, since it
+  would otherwise have quietly outlived the constraint that justified it.
+
+  `acl_setup` gains `set_client_acl_over_tsp`, sending the same
+  `messaging/account/update/0.1` task as a TSP Direct message addressed to
+  the mediator. Same task, same allow-all ACL, same account key
+  (`sha256(did)`), so whichever arm runs the account ends up authorised for
+  both transports — the mediator keys its ACL on the DID, not the protocol.
+
+  `rotate_key_over_client` now routes the pass by transport instead of
+  skipping:
+
+  - DIDComm available, including dual-transport → the DIDComm arm. It is
+    what every deployed mediator understands, so on a VTA offering both it
+    is the one certain to be acted on.
+  - TSP-only → the TSP arm. Previously skipped, because it had to be.
+
+  Two things it deliberately does not do.
+
+  It never claims delivery. A TSP send resolving `Ok` means the mediator
+  accepted the frame, not that it applied the ACL (R1.1), and a mediator
+  predating #783 files it silently. The success log says what was *sent*,
+  with delivery unconfirmed; a guard asserts the word "opened" never
+  appears there.
+
+  It does not wait for a reply. The mediator applies the ACL before
+  responding, so a reply carries no information — the same reasoning that
+  makes the DIDComm arm log its errors rather than propagate them — while
+  waiting for one would stall for the full timeout against a mediator that
+  is never going to send it. Against such a mediator this degrades to
+  exactly the previous behaviour: the account keeps the `global_acl_default`
+  it was created with at authentication.
+
+  Also declares `dep:uuid` on the `acl-setup` feature. It was compiling
+  only because another enabled feature happened to supply it, which builds
+  in the workspace and fails under `cargo publish`'s isolated verification
+  — a class this workspace has been bitten by before.
+
+  Verified across all four relevant feature combinations rather than
+  `--all-features` alone. A helper whose only caller sits behind a `cfg` is
+  live in one build and dead in the other, and testing the first says
+  nothing about the second; that exact miss failed CI on the mediator side
+  of this pair an hour earlier.
+
+  Not covered end-to-end: the workspace's transitive test-mediator is
+  pinned at 0.20.11 and the TSP management arm ships in 0.22.3, so there is
+  no live mediator here to exercise it against yet. The guards pin the
+  routing and the honesty of the logging, not the wire exchange.
+
+- **sdk**: One key rotation for every transport, TSP included ([#1309](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1309))
+
+* feat(sdk): one key rotation for every transport, TSP included
+
+  A `needs_rotation` session on a TSP-only VTA could never retire its temp
+  did:key: rotation ran over DIDComm, and a VTA that advertises only `#tsp`
+  has no DIDComm mediator to run it on. The cold-start temp DID is meant to
+  be short-lived, so it stayed indefinitely.
+
+  `acl/swap-key/0.1` is a dispatched Trust Task, and TSP carries the
+  Trust-Task surface, so the VTA could already service this — TSP inbound
+  reaches `dispatch_trust_task_core`, the same spine DIDComm uses. The gap
+  was entirely client-side. Rather than add a third rotation path, this
+  collapses the two that existed into one: `rotate_key_over_client` issues
+  the swap through whatever transport the client holds, so REST, DIDComm
+  and TSP share an implementation and TSP comes free.
+
+  That also closes a divergence. REST rotated with the atomic
+  `acl/swap-key`; DIDComm used create-then-delete, minting an entry for the
+  new DID while the temp still held the same grant — the over-privilege
+  window `acl/swap-key` exists to avoid. The old code said so in a comment
+  and deferred it. One entry now exists at every instant.
+
+  What the swap cannot prove is that the new DID can *reach* its mediator,
+  and a rotation that commits to an unreachable DID is unrecoverable: the
+  temp entry is gone. So the new DID is probed first, while a failure is
+  still free. Two things kept separate there, because conflating them is a
+  bug:
+
+  - **Reachability** is proven over the transport the caller reconnects on.
+    A DIDComm trust-ping against a TSP-only mediator proves the wrong thing
+    and fails outright, which would have refused good DIDs on exactly the
+    deployments this change is for. The TSP arm probes with
+    `TspPingSession`.
+  - **The mediator account** is keyed on `sha256(did)` rather than a
+    protocol, so one pass authorises both transports — but it is issued
+    through the ATM, so it needs a DIDComm mediator and is attempted only
+    where one exists. Always best-effort: a closed account costs a dropped
+    forwarded reply on the next connect, never a credential.
+
+  Fatality follows need. A REST client never touches the mediator, so
+  failing its rotation on one would make `--transport rest` depend on
+  DIDComm infrastructure it does not use; there the probe is best-effort.
+
+  Transport selection follows the workspace order — TSP where advertised,
+  else DIDComm, else REST — so a dual-transport VTA rotates over TSP.
+
+  Eight source-level guards pin the ordering and the transport matching,
+  which live across several functions with nothing type-level holding them.
+  They read this file's own source, truncated at the test module so a guard
+  cannot match its own string literal. Six were mutation-checked to fail on
+  exactly the regression they target; the seventh is redundant with the
+  type system, which rejects the substitution outright.
+
+  `docs/02-vta/cold-start.md` described the create-then-delete flow, which
+  was already wrong for REST before this change.
+
+  No public API changes: every function this touches is private, and
+  `SessionStore::ensure_authenticated{,_didcomm}` and
+  `connect_with_transport` keep their signatures. `cargo semver-checks`
+  against the merge base reports no required update.
+
+
+
+### Documentation
+
+- **persona**: Say "attribute" on screen, not "fact" ([#1319](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1319))
+
+`design-docs/persona-vocabulary.md` translated `attribute` to **fact** for
+  everything a person reads. That was wrong in two independent ways.
+
+  It asserts what the model cannot promise. What a holder keeps in the pool is
+  self-asserted until a credential backs it, and a face exists so a person can
+  choose what to show — an old value, a pinned version, a value overridden for one
+  context, or a value that is simply not true. The step-up card said "Approve
+  disclosing 1 fact" about exactly that.
+
+  And the word was already spent: `fact` is the VTC ceremony engine's term for a
+  *verified* policy input (`vtc-service/src/ceremony/facts.rs`, `Facts` assembly,
+  every `.rego`) — very nearly the opposite meaning, in the same product.
+
+  `detail` is the persona audit envelope's own field, `trait` is a keyword,
+  `entry` names an entry in a face and `value` is the field inside an attribute,
+  so the spec word comes to the screen instead and that row stops translating.
+  Truth is carried by the provenance beneath the value, never by the noun.
+
+  - step-up approval card: "1 fact" → "1 attribute" (the string an approver reads
+    on their phone)
+  - `pnm persona …` help text and `vta-cli-common` printed output: "Your facts:"
+    → "Your attributes:", "Fact:" → "Attribute:", and the surrounding guidance
+  - `vta-persona` doc comments that define the model in the old word
+
+  Commands, flags, task URIs and wire records are untouched — they always said
+  `attribute`. Nothing in `vtc-service/src/ceremony/` is touched; that `Facts` is
+  the other meaning.
+
+  vta-persona 88 tests and vta-service persona_trust_task 23 tests pass.
+
+
+
+### Fixed
+
+- **sdk**: Finish the rotation test's migration to the Trust-Task binding ([#1313](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1313))
+
+main has been red since #1309, whose own Feature combos failed before it merged.
+  Every PR opened since inherits it.
+
+  #1309 moved rotation off a hand-rolled `POST /acl/swap` onto the dispatched
+  `acl/swap-key`, and the test file's header already describes that world — but
+  one of its four stubs never moved. The request went to an unmocked path and
+  404'd.
+
+  Two halves, and the second is why a permissive mock would have been worse than
+  the red: the response shape also changed, because `AclEntryResponse` renames
+  `subject` to `did` and `scopes` to `allowed_contexts`, so a stub written from
+  the Rust field names decodes to "missing field `subject`". A mock matched on the
+  path alone would have gone green while exercising neither half. This one matches
+  on the document `type` and `payload.currentSubject`, as the correctly-migrated
+  `config/show` stub in the same file already does.
+
+  Both halves probed: pointing the matcher at another task type fails, and using
+  the old REST field names fails. 24 passed, 0 failed.
+
+- **sdk**: A bare key whose first bytes spell a multicodec prefix is not truncated ([#1308](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1308))
+
+Both key decoders accept two encodings — a 2-byte multicodec prefix followed by
+  32 key bytes, or 32 bare key bytes — and told them apart by looking at the
+  leading bytes. A bare key is free to begin with any two bytes at all, including
+  a prefix's, so such a key had its first two stripped and arrived as 30:
+  `InvalidSeedLength`, for a key that was perfectly valid.
+
+  For randomly generated keys that is 3 chances in 65536 (0x8026 Ed25519, 0x8226
+  X25519, 0x8626 P256, plus 0xed01 on the public side) — rare enough to read as
+  noise, frequent enough to fail CI. It did, on room-host's
+  `a_member_without_a_nomination_cannot_claim`, which is what surfaced it. That
+  test's fixture is not at fault: it encodes a bare seed, which both functions
+  document as supported.
+
+  Length is the only sound disambiguator, because the leading bytes carry no
+  information a bare key is obliged to respect. A prefix is stripped only from a
+  34-byte input.
+
+  Both directions are pinned. Two tests fail without this change; two more pass
+  with or without it and exist to stop the wrong fix — simply not stripping would
+  satisfy the first pair and break every real caller.
+
+  These are public `vta-sdk` functions, so the exposure was never limited to the
+  test fixture: any caller storing a bare key could hit it.
+
+
+
 ## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.33.0...vta-sdk-v0.34.0) — 2026-09-07
 
 

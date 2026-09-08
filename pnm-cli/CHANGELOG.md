@@ -2,6 +2,45 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.15.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.15.0...pnm-cli-v0.15.1) — 2026-09-08
+
+
+### Documentation
+
+- **persona**: Say "attribute" on screen, not "fact" ([#1319](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1319))
+
+`design-docs/persona-vocabulary.md` translated `attribute` to **fact** for
+  everything a person reads. That was wrong in two independent ways.
+
+  It asserts what the model cannot promise. What a holder keeps in the pool is
+  self-asserted until a credential backs it, and a face exists so a person can
+  choose what to show — an old value, a pinned version, a value overridden for one
+  context, or a value that is simply not true. The step-up card said "Approve
+  disclosing 1 fact" about exactly that.
+
+  And the word was already spent: `fact` is the VTC ceremony engine's term for a
+  *verified* policy input (`vtc-service/src/ceremony/facts.rs`, `Facts` assembly,
+  every `.rego`) — very nearly the opposite meaning, in the same product.
+
+  `detail` is the persona audit envelope's own field, `trait` is a keyword,
+  `entry` names an entry in a face and `value` is the field inside an attribute,
+  so the spec word comes to the screen instead and that row stops translating.
+  Truth is carried by the provenance beneath the value, never by the noun.
+
+  - step-up approval card: "1 fact" → "1 attribute" (the string an approver reads
+    on their phone)
+  - `pnm persona …` help text and `vta-cli-common` printed output: "Your facts:"
+    → "Your attributes:", "Fact:" → "Attribute:", and the surrounding guidance
+  - `vta-persona` doc comments that define the model in the old word
+
+  Commands, flags, task URIs and wire records are untouched — they always said
+  `attribute`. Nothing in `vtc-service/src/ceremony/` is touched; that `Facts` is
+  the other meaning.
+
+  vta-persona 88 tests and vta-service persona_trust_task 23 tests pass.
+
+
+
 ## [0.15.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.14.6...pnm-cli-v0.15.0) — 2026-09-07
 
 
