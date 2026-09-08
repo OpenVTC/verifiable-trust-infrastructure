@@ -401,6 +401,9 @@ async fn ensure_authenticated_runs_full_rotation_flow() {
     let server = MockServer::start().await;
     mount_challenge(&server).await;
 
+    let (temp_did, temp_pk) = did_key_from_seed(0x10);
+    let (vta_did, _) = did_key_from_seed(0x20);
+
     let future = now_secs() + 3600;
     Mock::given(method("POST"))
         .and(path("/auth/"))
@@ -442,25 +445,50 @@ async fn ensure_authenticated_runs_full_rotation_flow() {
         .mount(&server)
         .await;
 
-    let (temp_did, temp_pk) = did_key_from_seed(0x10);
-    let (vta_did, _) = did_key_from_seed(0x20);
-
-    // `POST /acl/swap` — one atomic operation, and the reason this stub is a
-    // single mock where it used to be three. Rotation was read-the-entry,
-    // create-under-the-new-DID, delete-the-temp; `acl/swap-key` moves the
-    // entry's role and contexts onto the new DID in one step, so there is no
-    // window in which both DIDs are privileged. The new DID is minted inside
-    // `rotate_key` and unknown here, which is exactly why the swap carries a
-    // VP-JWT proving control of it rather than the caller naming it.
+    // `acl/swap-key/0.1`, dispatched on the Trust-Task binding — **not** a
+    // bespoke `POST /acl/swap`, which the SDK stopped calling in #1309 when
+    // rotation was unified across REST, DIDComm and TSP. This stub was the one
+    // the migration missed; the rest of the file had already moved, and the
+    // header above describes the world it did not reach.
+    //
+    // One atomic operation, and the reason this is a single mock where it used
+    // to be three. Rotation was read-the-entry, create-under-the-new-DID,
+    // delete-the-temp; `acl/swap-key` moves the entry's role and contexts onto
+    // the new DID in one step, so there is no window in which both DIDs are
+    // privileged. The new DID is minted inside `rotate_key` and unknown here,
+    // which is exactly why the swap carries a VP-JWT proving control of it
+    // rather than the caller naming it.
+    //
+    // Matched on the document `type` and on `payload.currentSubject`, not on
+    // the path alone. A mock that answered any POST to the binding would go
+    // green while rotation dispatched the wrong task entirely — which is the
+    // failure that reached `main` here, one layer up.
     Mock::given(method("POST"))
-        .and(path("/acl/swap"))
+        .and(path("/trust-tasks"))
+        .and(wiremock::matchers::body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/acl/swap-key/0.1",
+            "payload": { "currentSubject": temp_did.clone() },
+        })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "did": "did:key:zNew",
-            "role": "admin",
-            "label": "ops",
-            "allowed_contexts": ["primary"],
-            "created_at": 1_700_000_000_u64,
-            "created_by": "did:web:vta",
+            "id": "urn:uuid:stub-swap-response",
+            "type": "https://trusttasks.org/spec/acl/swap-key/0.1#response",
+            "issuedAt": "2026-01-01T00:00:00Z",
+            // The canonical wire spelling, which is NOT the old REST body:
+            // `subject`/`scopes`, not `did`/`allowed_contexts`.
+            // `AclEntryResponse` renames both, so a stub written from the field
+            // names decodes to "missing field `subject`" — which is the second
+            // half of the same migration, and the reason a mock matched only on
+            // the path would have been worse than the red it replaced.
+            "payload": {
+                "entry": {
+                    "subject": "did:key:zNew",
+                    "role": "admin",
+                    "label": "ops",
+                    "scopes": ["primary"],
+                    "created_at": 1_700_000_000_u64,
+                    "created_by": "did:web:vta",
+                }
+            },
         })))
         .expect(1)
         .mount(&server)
