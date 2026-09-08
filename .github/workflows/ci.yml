@@ -602,6 +602,24 @@ jobs:
       - name: Lockfile self-pin guard
         run: bash scripts/check-lockfile-self-pins.sh
 
+  authz-context-types:
+    # An approver's device chooses which approval card to render by
+    # discriminating on the authorization context's `type` URI. Two producers
+    # sharing one means an approver reads a prompt describing an act that is not
+    # the one they are authorising — so each must be unique, and each must be a
+    # named constant rather than a literal inside a `json!`, because a literal
+    # is invisible to the uniqueness check.
+    #
+    # Cheap and independent of the build, so it runs on its own rather than
+    # behind the compile jobs: a naming mistake should be reported in seconds.
+    name: authorization-context types
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Authorization-context type uniqueness guard
+        run: bash scripts/check-authz-context-types.sh
+
   lockfile-resolves:
     # The sibling of the job above, and the same misattribution failure it
     # describes — arrived at from the other direction. There, Cargo.lock pins a
