@@ -2060,6 +2060,43 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_SEAL_0_1,
+            checked!(
+                specs::rooms::keys::seal::v0_1::Payload,
+                specs::rooms::keys::seal::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "key": "giXFLTGBdnnQJRoIsktuIg",
+                    "version": 1,
+                    "plaintext": "IyBOb3J0aHdpbmQ"
+                }),
+                json!({
+                    "sealed": {
+                        "ciphertext": "3QhV1sVvR0m5xAqZ7Aw2mQnR4vBk8QLp3wXc9TgYw",
+                        "nonce": "b0Zt8Qm2Yq1sVvR0",
+                        "epoch": 4
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_LIST_0_1,
+            checked!(
+                specs::rooms::keys::list::v0_1::Payload,
+                specs::rooms::keys::list::v0_1::Response,
+                json!({}),
+                json!({
+                    "rooms": [
+                        {
+                            "roomId": "did:webvh:example.com:rooms:northwind",
+                            "epoch": 4,
+                            "earliestReadableEpoch": 1
+                        }
+                    ]
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_OPEN_0_1,
             checked!(
                 specs::rooms::keys::open::v0_1::Payload,

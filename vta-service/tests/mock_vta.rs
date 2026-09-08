@@ -1069,8 +1069,34 @@ async fn consent_family_response_shapes() {
 ///
 /// Minting one against the stub host and pointing `vta_did` at it is what
 /// unlocks the whole family, which is why this is one test rather than five.
-#[tokio::test]
-async fn services_write_paths_against_a_hosted_vta_did() {
+/// Run on a thread with a real stack rather than libtest's 2 MiB.
+///
+/// This body boots an entire in-process VTA and drives the whole write family
+/// through it, so the future is enormous in a debug build — and it grows every
+/// time the dispatch table does. It overflowed for the first time when two
+/// `rooms/keys/*` arms were added, which is not a fact about those arms: it is
+/// this test sitting just under a limit nobody had written down.
+///
+/// `RUST_MIN_STACK=16777216` also fixes it, and that is how it was diagnosed —
+/// but a test that passes only when an environment variable is set is a test
+/// that fails for the next person. The stack is asked for here instead.
+#[test]
+fn services_write_paths_against_a_hosted_vta_did() {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build a runtime")
+                .block_on(services_write_paths_against_a_hosted_vta_did_inner());
+        })
+        .expect("spawn the test thread")
+        .join()
+        .expect("the test thread panicked");
+}
+
+async fn services_write_paths_against_a_hosted_vta_did_inner() {
     use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
 

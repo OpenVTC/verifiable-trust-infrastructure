@@ -1642,6 +1642,10 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_CHAIN_0_1 => room_group::handle_chain
         [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1 => room_group::handle_seal
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1 => room_group::handle_list
+        [ None Metadata false ],
     // ─── Application-state slice (spec/vta/app-state/*) ──────────
     // Versioned, namespaced per-context JSON the VTA stores but never
     // interprets. Gated on context access (require_context), NOT operator

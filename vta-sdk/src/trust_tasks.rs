@@ -826,6 +826,17 @@ pub const TASK_ROOMS_KEYS_COMMIT_0_1: &str = "https://trusttasks.org/spec/rooms/
 /// through; this covers the history it did not.
 pub const TASK_ROOMS_KEYS_CHAIN_0_1: &str = "https://trusttasks.org/spec/rooms/keys/chain/0.1";
 
+/// `spec/rooms/keys/seal/0.1` — seal one record body with the room's current
+/// epoch key. The mirror of `open`: plaintext in, ciphertext out, key stays put.
+/// Auth: `roomOpen` capability. It does not write — the caller takes the result
+/// to a host and presents its own authority there.
+pub const TASK_ROOMS_KEYS_SEAL_0_1: &str = "https://trusttasks.org/spec/rooms/keys/seal/0.1";
+
+/// `spec/rooms/keys/list/0.1` — which rooms this VTA can open, and how far back
+/// each reads. Auth: `roomOpen` capability. Key custody, never membership: a
+/// room whose Welcome never arrived is absent even where a good VMC is held.
+pub const TASK_ROOMS_KEYS_LIST_0_1: &str = "https://trusttasks.org/spec/rooms/keys/list/0.1";
+
 /// `spec/vta/memory/delete/0.1` — remove one entry by key (`not_found` if
 /// absent). Auth: context access. Payload:
 /// [`crate::protocols::memory::MemoryDeleteBody`].
@@ -1888,6 +1899,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_WELCOME_0_1,
     TASK_ROOMS_KEYS_COMMIT_0_1,
     TASK_ROOMS_KEYS_CHAIN_0_1,
+    TASK_ROOMS_KEYS_SEAL_0_1,
+    TASK_ROOMS_KEYS_LIST_0_1,
     TASK_VTA_MEMORY_DELETE_0_1,
     // Application-state slice (spec/vta/app-state/*)
     TASK_VTA_APP_STATE_GET_1_0,
