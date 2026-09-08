@@ -1504,6 +1504,59 @@ enum DrainCommands {
     },
 }
 
+/// Environment variable naming this deployment's claim-type extension file.
+const CLAIM_TYPE_EXTENSIONS_ENV: &str = "VTA_CLAIM_TYPE_EXTENSIONS";
+
+/// Load the deployment's own claim types, if it declares any.
+///
+/// The core table is the published registry and is the same everywhere; the
+/// words a particular ecosystem keeps about its people are not. Without this,
+/// teaching an agent `profile.github` meant a pull request against the
+/// specification repository, a publish, a hand-transcription, a release and a
+/// deploy — so nobody did, and every local token resolved to the floor and was
+/// shown to its holder masked as though it were a passport number.
+///
+/// **A bad file stops the agent starting.** The alternative is serving a table
+/// the operator did not write: a tightening they believe is in force is not,
+/// and the values it was meant to protect are the ones they would learn about
+/// last. Starting is the recoverable failure; running with the wrong registry
+/// is not.
+///
+/// An absent variable is not an error — it is what almost every deployment
+/// wants, and it leaves the core table exactly as it was.
+fn install_claim_type_extensions() {
+    let Ok(path) = std::env::var(CLAIM_TYPE_EXTENSIONS_ENV) else {
+        return;
+    };
+    let json = match std::fs::read_to_string(&path) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("{CLAIM_TYPE_EXTENSIONS_ENV} names `{path}`, which cannot be read: {e}");
+            std::process::exit(1);
+        }
+    };
+    let entries = match vta_persona::claim_types::parse_extensions(&json) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("`{path}`: {e}");
+            std::process::exit(1);
+        }
+    };
+    let count = entries.len();
+    if let Err(e) = vta_persona::claim_types::install_extensions(entries) {
+        eprintln!("`{path}`: {e}");
+        std::process::exit(1);
+    }
+    // Said out loud, with the count and the path. A registry that differs from
+    // the published one, silently, is the thing an operator debugging a
+    // masked value would most want to have been told.
+    tracing::info!(
+        path = %path,
+        count,
+        "claim-type registry extended by this deployment"
+    );
+}
+
 #[tokio::main]
 async fn main() {
     // Pin rustls to the aws-lc-rs backend before any TLS object is built;
@@ -1523,6 +1576,8 @@ async fn main() {
     vta_sdk::keyring_init::warn_store_unavailable("vta");
 
     print_banner();
+
+    install_claim_type_extensions();
 
     match cli.command {
         Some(Commands::Setup { from }) => {
