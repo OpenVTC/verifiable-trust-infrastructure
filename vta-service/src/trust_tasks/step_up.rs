@@ -569,6 +569,14 @@ const DEFAULT_STEP_UP_REASON: &str = "this operation requires a stepped-up (AAL2
 /// the same key.
 const EXT_KEY_AUTHZ_CONTEXT: &str = "org.openvtc.authorization-context";
 
+/// `type` of the authorization context a `release: stepUp` disclosure carries.
+///
+/// The context is passed through to the approver's device untouched, and the
+/// card that renders it discriminates on this member — the Cierge share ask
+/// (`https://openvtc.org/cierge/authorization-context/0.1`) is the exemplar.
+/// A context without one is a card the approver cannot choose.
+const PERSONA_AUTHZ_CONTEXT_TYPE: &str = "https://openvtc.org/persona/authorization-context/0.1";
+
 /// Pick the reason string + optional structured authorization context from a
 /// gated request's payload. A request MAY carry a `payload.authorizationContext`
 /// (e.g. a Cierge share/spend/tool ask); when it does, its human `summary`
@@ -1087,15 +1095,35 @@ pub(super) async fn initiate_disclosure_step_up(
             n => format!("{n} facts"),
         }
     );
-    let mut context = json!({
-        "operation": "persona/disclosure/present",
+    // The shape an approver's card already knows how to render:
+    // `{type, summary, risk, action}`, with the specifics under `action` keyed
+    // by `kind`. The first version of this emitted a flat bag of members with
+    // no `type`, which a native layer that discriminates on `type` cannot pick
+    // a card for — so the context that exists to show the approver what would
+    // leave would have shown them nothing.
+    //
+    // `summary` is the same string as `reason` on purpose, not by coincidence:
+    // `reason_and_context` reads `summary` back out as the reason for any
+    // context that carries one, so two different sentences here would put two
+    // different accounts of the same act in one document.
+    let mut action = json!({
+        "kind": "disclose",
         "previewId": preview_id,
         "verifierDid": verifier_did,
         "claimTypes": claim_types,
     });
     if let Some(p) = purpose {
-        context["purpose"] = json!(p);
+        action["purpose"] = json!(p);
     }
+    let context = json!({
+        "type": PERSONA_AUTHZ_CONTEXT_TYPE,
+        "summary": reason,
+        // Every disclosure that reaches this gate is one the claim-type
+        // registry marked `release: stepUp`. That is what `high` means here —
+        // it is the registry's judgement restated, not a fresh one.
+        "risk": "high",
+        "action": action,
+    });
 
     match mint_pending_step_up(
         &state.sessions_ks,
