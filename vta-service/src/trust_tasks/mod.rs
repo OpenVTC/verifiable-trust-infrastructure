@@ -1383,12 +1383,19 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1 => auth::handle_sessions_list
         [ None Metadata false ],
-    // Dual-accept: both versions route to the same typed handler, which
-    // normalises the `evidence.kind` discriminator on a copy (the signed
-    // document is never mutated). Not edge-transformed in `wire_v0_2` because
-    // the payload carries the approver's signature.
+    // All three versions route to the same typed handler, which normalises the
+    // `evidence.kind` discriminator on a copy (the signed document is never
+    // mutated). Not edge-transformed in `wire_v0_2` because the payload carries
+    // the approver's signature.
+    //
+    // The REQUEST payloads are field-for-field identical across 0.1/0.2/0.3 —
+    // 0.3 changed only the acknowledgement, adding `recorded`. What differs is
+    // what the handler may ANSWER, and it reads `doc.type_uri` to decide: a
+    // bound approval can be acknowledged honestly only to a 0.3 request,
+    // because a response's type is the request's type plus `#response`.
     vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1
         | vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2
+        | vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_3
         => step_up::handle_approve_response
         [ Mutating None false ],
     // ─── Policy slice (runtime PDP management) ────────────────────

@@ -135,6 +135,19 @@ pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1: &str =
 pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2: &str =
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.2";
 
+/// `spec/auth/step-up/approve-response/0.3` — successor to
+/// [`TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2`]; adds the `recorded`
+/// acknowledgement for an approval bound to a single operation.
+///
+/// **A relying party cannot reach for this on its own.** A response document's
+/// `type` is the request's `type` plus `#response`, so an approver that mints
+/// 0.2 gets a 0.2 answer, which has no word for "applied, nothing elevated".
+/// The maintainer must accept 0.3 *before* any approver mints it, never the
+/// other way round — an approver that moved first would have every step-up
+/// refused as an unsupported type.
+pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_3: &str =
+    "https://trusttasks.org/spec/auth/step-up/approve-response/0.3";
+
 // ─── Device slice (spec/device/*) ────────────────────────────────────────
 // Canonical Trust Task registry shapes (dtgwg `device/*`). Companion/Service
 // lifecycle on the VTA: register a device, heartbeat, list, disable, wipe, and
@@ -1691,6 +1704,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
     TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,
     TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2,
+    TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_3,
     // Device slice
     TASK_DEVICE_REGISTER_0_1,
     TASK_DEVICE_REGISTER_0_2,
