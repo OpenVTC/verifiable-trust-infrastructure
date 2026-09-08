@@ -655,6 +655,20 @@ async fn mint(
         Ok(a) => a,
         Err(e) => return from_app_error(doc, &e),
     };
+    // The room's policy governs whether it has a chain at all, so a rung for a room that
+    // does not chain is refused rather than dropped. Storing it would give the room a chain
+    // it declared it would not have; dropping it silently would let a client believe the
+    // room's history was being retained when it was not.
+    if req.link.is_some() && !room.retention_policy.links_epochs() {
+        return from_app_error(
+            doc,
+            &vti_common::error::AppError::Validation(format!(
+                "room `{}` does not keep an epoch key chain, so it accepts no epoch link",
+                req.room_id
+            )),
+        );
+    }
+
     // A rung that does not describe *this* advance is refused rather than stored beside it:
     // accepting a mismatched one would launder someone else's key material into this room's
     // history, and the members who walked the original would never see the difference.
@@ -1539,6 +1553,72 @@ mod tests {
         storage::create_room(&st.rooms, &room)
             .await
             .expect("register the room");
+    }
+
+    /// A room that does not chain refuses a rung, rather than storing one it said it would
+    /// not have.
+    ///
+    /// Written straight to the store because `FromJoin` is not reachable over the wire —
+    /// `rooms/create` has no member for it yet. That is the same reason this guard is worth
+    /// a test now: an unreachable branch is exactly the kind that rots, and the policy it
+    /// enforces was inert code until this test existed.
+    #[tokio::test]
+    async fn a_room_that_does_not_chain_refuses_an_epoch_link() {
+        let (_d, st) = state();
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Attributed).await;
+
+        let room = Room {
+            retention_policy: vti_rooms::RetentionPolicy::FromJoin,
+            ..f.room.clone()
+        };
+        storage::create_room(&st.rooms, &room)
+            .await
+            .expect("register the room");
+
+        let (status, body) = call(
+            &app,
+            ROOMS_EPOCH_MINT_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "epoch": f.room.epoch + 1,
+                "presentation": f.as_owner(),
+                "link": {
+                    "epoch": f.room.epoch + 1,
+                    "wrapped": "9jK2_QhV1sVvR0m5xAqZ7A",
+                    "nonce": "b0Zt8Qm2Yq1sVvR0"
+                }
+            }),
+            &f.owner,
+        )
+        .await;
+
+        assert_ne!(status, StatusCode::OK, "a rung must be refused: {body}");
+        assert!(
+            body.to_string()
+                .contains("does not keep an epoch key chain"),
+            "expected a policy refusal, got: {body}"
+        );
+
+        // And the same mint without a rung is fine: the policy refuses the link, not the
+        // advance. A room that does not chain still advances its epochs.
+        let (status, body) = call(
+            &app,
+            ROOMS_EPOCH_MINT_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "epoch": f.room.epoch + 1,
+                "presentation": f.as_owner(),
+            }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["epoch"].as_u64(),
+            Some(u64::from(f.room.epoch + 1)),
+            "an unlinked advance must still work: {body}"
+        );
     }
 
     fn days_ago(n: u64) -> Option<u64> {
