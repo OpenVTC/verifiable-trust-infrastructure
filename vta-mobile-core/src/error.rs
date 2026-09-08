@@ -34,4 +34,17 @@ pub enum FfiError {
     /// logging `reason`).
     #[error("untrusted issuer: {reason}")]
     UntrustedIssuer { reason: String },
+
+    /// The request is authentic and from an enrolled issuer, but it is
+    /// addressed to a different approver. The device MUST NOT prompt.
+    ///
+    /// **Separate from [`FfiError::UntrustedIssuer`] on purpose.** Nothing is
+    /// wrong with the signature or the enrolment, so folding the two together
+    /// would send whoever reads the log to check an allowlist that is correct.
+    /// What failed is addressing: a document signed for one approver arriving
+    /// at another is either misrouting or a valid prompt being replayed
+    /// somewhere it can be answered by the wrong person, and the `recipient`
+    /// member exists to make that refusable.
+    #[error("addressed to {recipient}, not to this approver")]
+    NotForThisApprover { recipient: String },
 }
