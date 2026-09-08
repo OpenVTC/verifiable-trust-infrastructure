@@ -493,6 +493,20 @@ pub(crate) async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -
         Err(e) => return app_error_to_reject(&doc, &e),
     };
 
+    // The room's policy governs whether it has a chain at all, so a rung for a room that
+    // does not chain is refused rather than dropped. Storing it would give the room a chain
+    // it declared it would not have; dropping it silently would let a client believe the
+    // room's history was being retained when it was not.
+    if req.link.is_some() && !room.retention_policy.links_epochs() {
+        return app_error_to_reject(
+            &doc,
+            &vti_common::error::AppError::Validation(format!(
+                "room `{}` does not keep an epoch key chain, so it accepts no epoch link",
+                req.room_id
+            )),
+        );
+    }
+
     // The rung, before the advance. A link that does not describe *this* advance is refused
     // outright rather than stored beside it: a host that accepted a mismatched one would be
     // laundering someone else's key material into this room's history, and the members who

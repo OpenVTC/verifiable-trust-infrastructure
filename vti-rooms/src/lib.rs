@@ -110,6 +110,14 @@ pub enum RetentionPolicy {
     /// What a **library** wants: joining a room means being able to read it. The cost is
     /// post-compromise security for record content — a compromised current key reaches every
     /// retained epoch.
+    ///
+    /// **The default on deserialisation**, which is a statement about what a room will *do*
+    /// rather than what it already *has*. A room stored before the chain existed holds no
+    /// rungs, and nothing can give it any for the epochs it has already left behind — but it
+    /// can chain from here, and since this policy is immutable, defaulting it the other way
+    /// would condemn it to keep losing its history at every membership change. Its
+    /// unreachable early epochs are a fact about its past, not a policy about its future.
+    #[default]
     Chained,
 
     /// A member reads only from the epoch their group state is at. No links are produced,
@@ -124,15 +132,21 @@ pub enum RetentionPolicy {
     /// because a key they have read is a key they have. What this policy withholds is the
     /// means to derive one again — after a restart, on another device, or on joining.
     ///
-    /// The default on deserialisation, because it is what a room stored before the chain
-    /// existed actually has: no links. New rooms are created [`Chained`](Self::Chained)
-    /// unless they ask otherwise.
-    #[default]
+    /// Never reached by deserialisation, and not yet reachable over the wire: choosing it
+    /// needs a member on `rooms/create`, which is a spec change. It exists so that
+    /// [`links_epochs`](Self::links_epochs) has something to mean, and so a host that is one
+    /// day told a room does not chain refuses rungs for it rather than storing them anyway.
     FromJoin,
 }
 
 impl RetentionPolicy {
-    /// Whether a commit under this policy must produce a link.
+    /// Whether a commit under this policy produces a link, and therefore whether a host
+    /// **may store one**.
+    ///
+    /// A host that ignored this would give a room a chain it declared it would not have, and
+    /// its members would be able to read history the room told them they could not. Silently
+    /// — which is why the hosts refuse a rung here rather than dropping it: a client whose
+    /// configuration disagrees with the room should be told, not quietly accommodated.
     pub fn links_epochs(&self) -> bool {
         matches!(self, RetentionPolicy::Chained)
     }
@@ -396,5 +410,46 @@ impl Record {
             }
         }
         serde_json::Value::Object(map)
+    }
+}
+
+#[cfg(test)]
+mod retention_policy_tests {
+    use super::*;
+
+    /// The default is a statement about what a room will *do*, not what it already has.
+    ///
+    /// A room stored before the chain existed deserialises here. Defaulting it to
+    /// `FromJoin` — which an earlier version of this enum did — would have been the more
+    /// literal description of its contents and the wrong policy: the choice is immutable,
+    /// so it would have condemned every pre-chain room to keep losing its history at every
+    /// membership change, which is the defect the chain exists to fix.
+    #[test]
+    fn a_room_stored_before_the_chain_existed_chains_from_here() {
+        let json = r#"{
+            "roomId": "did:webvh:example.com:rooms:legacy",
+            "ownerDid": "did:key:zOwner",
+            "visibility": "attributed",
+            "epoch": 4,
+            "nextVersion": 9,
+            "retentionDays": 90,
+            "createdAt": 0,
+            "updatedAt": 0
+        }"#;
+        let room: Room = serde_json::from_str(json).expect("a pre-chain room deserialises");
+        assert_eq!(room.retention_policy, RetentionPolicy::Chained);
+        assert!(
+            room.retention_policy.links_epochs(),
+            "a legacy room must be able to chain from here, whatever it lost before"
+        );
+    }
+
+    /// The method exists so a host can refuse a rung for a room that does not chain. If this
+    /// ever stops being consulted, the policy is documentation and the hosts store rungs for
+    /// rooms that declared they would have none.
+    #[test]
+    fn only_a_chained_room_accepts_rungs() {
+        assert!(RetentionPolicy::Chained.links_epochs());
+        assert!(!RetentionPolicy::FromJoin.links_epochs());
     }
 }
