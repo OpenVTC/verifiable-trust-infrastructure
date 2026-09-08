@@ -12,9 +12,12 @@ const ED25519_PUB_CODEC: [u8; 2] = [0xed, 0x01];
 /// Decode an Ed25519 public key from its multibase form. Inverse of
 /// [`ed25519_multibase_pubkey`]. Accepts both multicodec-prefixed
 /// (`0xed01`) and raw-bytes encodings; returns the 32-byte key.
+///
+/// **Length disambiguates, not the leading bytes** — see
+/// [`decode_private_key_multibase`] for the failure that rule prevents.
 pub fn decode_ed25519_public_key_multibase(mb: &str) -> Result<[u8; 32], DidKeyError> {
     let (_, raw) = multibase::decode(mb).map_err(|e| DidKeyError::Multibase(e.to_string()))?;
-    let key_bytes = if raw.len() >= 2 && [raw[0], raw[1]] == ED25519_PUB_CODEC {
+    let key_bytes = if raw.len() == PREFIXED_KEY_LEN && [raw[0], raw[1]] == ED25519_PUB_CODEC {
         &raw[2..]
     } else {
         &raw[..]
@@ -23,6 +26,16 @@ pub fn decode_ed25519_public_key_multibase(mb: &str) -> Result<[u8; 32], DidKeyE
         .try_into()
         .map_err(|_| DidKeyError::InvalidSeedLength)
 }
+
+/// A 2-byte multicodec prefix followed by a 32-byte key.
+///
+/// The **only** thing that distinguishes a prefixed key from a bare one, because a bare key
+/// is free to begin with any two bytes at all — including a prefix's. Matching on the
+/// leading bytes alone truncated a bare 32-byte key to 30 whenever its first two happened to
+/// collide, which for randomly generated keys is 3 chances in 65536: rare enough to look
+/// like noise and frequent enough to fail CI. It did, on `room-host`'s
+/// `a_member_without_a_nomination_cannot_claim`.
+const PREFIXED_KEY_LEN: usize = 34;
 
 /// Known 2-byte multicodec varint prefixes for private keys.
 const ED25519_PRIV_CODEC: [u8; 2] = [0x80, 0x26]; // 0x1300
@@ -39,11 +52,12 @@ const P256_PRIV_CODEC: [u8; 2] = [0x86, 0x26]; // 0x1306
 /// before returning the raw key bytes.
 pub fn decode_private_key_multibase(mb: &str) -> Result<[u8; 32], DidKeyError> {
     let (_, raw) = multibase::decode(mb).map_err(|e| DidKeyError::Multibase(e.to_string()))?;
-    let key_bytes = if raw.len() >= 2 {
-        match [raw[0], raw[1]] {
-            ED25519_PRIV_CODEC | X25519_PRIV_CODEC | P256_PRIV_CODEC => &raw[2..],
-            _ => &raw[..],
-        }
+    let key_bytes = if raw.len() == PREFIXED_KEY_LEN
+        && matches!(
+            [raw[0], raw[1]],
+            ED25519_PRIV_CODEC | X25519_PRIV_CODEC | P256_PRIV_CODEC
+        ) {
+        &raw[2..]
     } else {
         &raw[..]
     };
