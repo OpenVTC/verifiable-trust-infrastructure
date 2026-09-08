@@ -20,6 +20,7 @@ pub(crate) mod policies;
 pub mod recognise;
 mod recognition_admin;
 pub(crate) mod relationships;
+pub(crate) mod rooms;
 mod schemas;
 pub(crate) mod status_lists;
 pub mod trust_tasks;
@@ -821,6 +822,14 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(policies::read::list_policies),
             "https://trusttasks.org/spec/policy/list/0.2",
         ))
+        // Plain REST, and deliberately not a Trust Task. Every `rooms/*` task is
+        // authorized by credentials the ROOM issued, against the room's own
+        // identifier — that is invariant I5, and it is what lets a room move
+        // hosts. This is the opposite question: what is this *operator* storing.
+        // It is answered from the host's own admin authority, so pairing it with
+        // a room task would be claiming a room governs an answer it has no view
+        // of.
+        .routes(routes!(rooms::list_rooms))
         .routes(tt(
             routes!(policies::admin::upload),
             "https://trusttasks.org/spec/policy/upsert/0.2",
@@ -1379,6 +1388,7 @@ mod openapi_tests {
             "/v1/community/profile",
             "/v1/join-requests",
             "/v1/policies",
+            "/v1/rooms",
             "/v1/credentials/endorsements",
             "/v1/endorsement-types",
             "/v1/schemas",
