@@ -592,6 +592,29 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_3,
+            checked!(
+                specs::auth::step_up::approve_response::v0_3::Payload,
+                specs::auth::step_up::approve_response::v0_3::Response,
+                // The request is field-for-field 0.2. Only the acknowledgement
+                // moved, which is the whole reason the version had to.
+                json!({
+                    "subject": SUBJECT,
+                    "sessionId": "sess-1",
+                    "challenge": "chal-0123456789abcdef",
+                    "decision": "approved",
+                    "grantedAcr": "aal2",
+                    "evidence": { "kind": "didSigned" },
+                }),
+                // The witness is the BOUND form deliberately: `elevated` is
+                // already witnessed by 0.2 above, and `recorded` is the member
+                // this version exists for. No `session` — it changes none, and
+                // a snapshot here would witness an elevation that does not
+                // happen.
+                json!({ "status": "recorded", "boundTo": "01J0000000000000000000000A" })
+            ),
+        ),
+        (
             uris::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2,
             checked!(
                 specs::auth::step_up::approve_response::v0_2::Payload,
