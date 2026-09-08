@@ -165,8 +165,21 @@ pub enum StaleReason {
 /// Several attributes may share a `type` — three phone numbers, a legal name and
 /// a preferred name — which is why `attribute_id` is the identity of an attribute and
 /// `type` is not.
+/// **Not exhaustively constructible from outside this crate**, and the reason
+/// is its own history: `sensitivity` arrived in #1299 and `release` in #1310,
+/// each a `pub` field on a struct any consumer could write as a literal, so
+/// each was a compatibility break for a record that is only going to keep
+/// growing as the persona specification does. Marked once, in a release that
+/// already carried the break, so the next member is an addition rather than
+/// another one.
+///
+/// Nothing outside this crate builds one today — an `Attribute` arrives from
+/// the store or from a deserialised document — so this costs a consumer
+/// nothing it was actually doing. Inside the crate, literal construction is
+/// unaffected.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct Attribute {
     pub attribute_id: Ulid,
     /// Vocabulary token — `name.legal`, `phone.mobile`. The store's own; every
