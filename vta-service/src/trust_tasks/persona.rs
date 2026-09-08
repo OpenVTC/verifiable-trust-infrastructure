@@ -260,7 +260,10 @@ fn decide(
 // noticing. The generated types cannot.
 
 use trust_tasks_rs::specs::persona as spec;
-use vta_persona::{Listing, PersonaStore, Sensitivity, ValueType, ValueVisibility, new_attribute};
+use vta_persona::{
+    Listing, PersonaStore, ReleaseRequirement, Sensitivity, ValueType, ValueVisibility,
+    new_attribute,
+};
 
 /// Open the store for this request.
 ///
@@ -499,6 +502,23 @@ pub(super) async fn handle_attribute_put(
         },
     };
 
+    // Same route as `sensitivity` above, and for the same reason: through the
+    // wire spelling rather than a match, because the generated enum is
+    // `#[non_exhaustive]` and a wildcard arm is where a variant added upstream
+    // would land silently.
+    let release: Option<ReleaseRequirement> = match req.release.as_ref() {
+        None => None,
+        Some(r) => match serde_json::to_value(r)
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+        {
+            Some(parsed) => Some(parsed),
+            None => {
+                return reject(&doc, AppError::Validation("unrecognised release".into()));
+            }
+        },
+    };
+
     let mut attribute = new_attribute(
         req.type_.to_string(),
         value_type,
@@ -510,6 +530,7 @@ pub(super) async fn handle_attribute_put(
     }
     attribute.label = req.label.as_ref().map(|l| (**l).clone());
     attribute.sensitivity = sensitivity;
+    attribute.release = release;
 
     let attribute_id = attribute.attribute_id.clone();
     let value = attribute.value.clone();
@@ -537,11 +558,21 @@ pub(super) async fn handle_attribute_put(
         None => String::new(),
     };
 
+    // Recorded for the same reason, and it matters more here: `release` decides
+    // what it takes to let the value LEAVE, so a holder relaxing their own card
+    // from `stepUp` to `consent` is the single most consequential thing this
+    // task can do. A trail that showed only "attribute updated" would not let
+    // them find the moment the gate came off.
+    let release_note = match release {
+        Some(r) => format!(", release {} set by the holder", wire_name(r)),
+        None => String::new(),
+    };
+
     // Type, value TYPE, provenance kind and version — never `value`. See
     // `audit_persona` for why that line is drawn on lifetime rather than on
     // who may read the row.
     let detail = format!(
-        "{} attribute {attribute_id}: claim type {}, valueType {}, provenance {}{}, now at \
+        "{} attribute {attribute_id}: claim type {}, valueType {}, provenance {}{}{}, now at \
          version {}",
         if written.created {
             "created"
@@ -552,6 +583,7 @@ pub(super) async fn handle_attribute_put(
         wire_name(value_type),
         provenance_kind,
         sensitivity_note,
+        release_note,
         written.version,
     );
     audit_persona(

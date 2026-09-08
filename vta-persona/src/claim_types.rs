@@ -486,6 +486,45 @@ pub fn sensitivity_of(attribute: &Attribute) -> Sensitivity {
         .unwrap_or_else(|| defaults_for(&attribute.r#type).sensitivity)
 }
 
+/// What it takes to let one attribute leave — §4 per the `release` axis.
+///
+/// Same shape as [`sensitivity_of`], and an override wins in **both**
+/// directions for the same reason: the holder is the principal, and an agent
+/// that kept gating a value its owner had decided needed no gate would be
+/// overruling the person the control exists to serve.
+///
+/// That the loosening direction is available is not a hole, because of where
+/// the write happens. `release` is set through `persona/attribute/put`, which
+/// is **holder-scoped** — above the boundary, refused to every context-scoped
+/// caller and to every application inside a context. A verifier cannot reach
+/// it, and neither can the site asking for the disclosure. The only party who
+/// can relax the gate is the one it protects.
+///
+/// Worth considering separately: whether *loosening* should itself require a
+/// step-up, so the act of turning a gate off is gated. That is a real idea and
+/// deliberately not built here — it is a new gate, not this one.
+#[must_use]
+pub fn release_of(attribute: &Attribute) -> ReleaseRequirement {
+    attribute
+        .release
+        .unwrap_or_else(|| defaults_for(&attribute.r#type).release)
+}
+
+/// The `release` of a claim that has already been pushed into a context.
+///
+/// The pool is not readable from here — that is the boundary — so the holder's
+/// override has to have travelled *down* with the value when the binding was
+/// written. `None` means the projection carries no decision and the registry
+/// default answers, which is also what every binding written before this field
+/// existed says.
+#[must_use]
+pub fn release_of_claim(
+    claim_type: &str,
+    override_: Option<ReleaseRequirement>,
+) -> ReleaseRequirement {
+    override_.unwrap_or_else(|| defaults_for(claim_type).release)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

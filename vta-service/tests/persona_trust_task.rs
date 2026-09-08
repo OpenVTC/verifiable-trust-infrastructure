@@ -2040,3 +2040,178 @@ async fn an_ungated_claim_is_not_gated() {
         "a name.display disclosure was gated behind a step-up: {status} {body}"
     );
 }
+
+/// A holder's `release` override survives the wire and reaches the gate.
+///
+/// The store test beside `requires_step_up` asserts the resolution. This
+/// asserts the *system*: that `attribute/put` accepts the member, stores it,
+/// carries it across the boundary at bind time, and that `present` then
+/// enforces it — four layers, none of which the unit test can see.
+///
+/// Uses `name.display`, which the registry does **not** gate, so a pass cannot
+/// come from the registry default. The gate here exists only because the
+/// holder asked for it.
+#[tokio::test]
+async fn a_holders_release_override_gates_a_type_the_registry_does_not() {
+    let (router, ctx) = build_provisionable_test_app().await;
+    let vta = &ctx.vta_did;
+    let holder = authed(&ctx, "rel-holder", "admin", &[]).await;
+    let scoped = authed(&ctx, "rel-scoped", "admin", &[CTX]).await;
+
+    let (status, body) = post_to(
+        &router,
+        &holder,
+        vta,
+        ATTR_PUT,
+        json!({
+            "type": "name.display",
+            "value": "Ada",
+            "valueType": "string",
+            "provenance": { "kind": "selfAsserted" },
+            "release": "stepUp",
+        }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "attribute/put with release: {status} {body}"
+    );
+    let attr = payload_of(&body)["attributeId"]
+        .as_str()
+        .expect("attributeId")
+        .to_string();
+
+    let (status, body) = post_to(
+        &router,
+        &holder,
+        vta,
+        PROFILE_PUT,
+        json!({ "name": "gated-name", "entries": [{ "ref": attr }] }),
+    )
+    .await;
+    assert!(!refused(status, &body), "profile/put: {status} {body}");
+    let profile = payload_of(&body)["profileId"]
+        .as_str()
+        .expect("profileId")
+        .to_string();
+
+    let persona = "did:key:z6MkPersonaRelease";
+    let (status, body) = post_to(
+        &router,
+        &holder,
+        vta,
+        BINDING_SET,
+        json!({ "contextId": CTX, "personaDid": persona, "profileId": profile }),
+    )
+    .await;
+    assert!(!refused(status, &body), "binding/set: {status} {body}");
+
+    let (status, body) = post_to(
+        &router,
+        &scoped,
+        vta,
+        PREVIEW,
+        json!({
+            "contextId": CTX,
+            "personaDid": persona,
+            "verifierDid": "did:key:z6MkVerifier",
+        }),
+    )
+    .await;
+    assert!(!refused(status, &body), "preview: {status} {body}");
+    let preview_id = payload_of(&body)["previewId"]
+        .as_str()
+        .expect("previewId")
+        .to_string();
+
+    let (status, body) = post_to(
+        &router,
+        &scoped,
+        vta,
+        PRESENT,
+        json!({ "contextId": CTX, "previewId": preview_id }),
+    )
+    .await;
+    assert!(
+        refused(status, &body),
+        "the holder asked for a fresh approval on this attribute and the disclosure went \
+         through without one: {status} {body}"
+    );
+    assert_eq!(
+        payload_of(&body)["code"],
+        "persona/disclosure/present:stepUpRequired",
+        "refused, but not for the reason the holder asked for: {body}"
+    );
+
+    // And the override is what did it — the same type with no override is not
+    // gated. Without this the test passes for a gate that fires on everything.
+    let plain = authed(&ctx, "rel-plain", "admin", &[]).await;
+    let (_, body) = post_to(
+        &router,
+        &plain,
+        vta,
+        ATTR_PUT,
+        json!({
+            "type": "name.display",
+            "value": "Grace",
+            "valueType": "string",
+            "provenance": { "kind": "selfAsserted" },
+        }),
+    )
+    .await;
+    let attr2 = payload_of(&body)["attributeId"]
+        .as_str()
+        .expect("attributeId")
+        .to_string();
+    let (_, body) = post_to(
+        &router,
+        &plain,
+        vta,
+        PROFILE_PUT,
+        json!({ "name": "plain-name", "entries": [{ "ref": attr2 }] }),
+    )
+    .await;
+    let profile2 = payload_of(&body)["profileId"]
+        .as_str()
+        .expect("profileId")
+        .to_string();
+    let persona2 = "did:key:z6MkPersonaPlain";
+    let (status, body) = post_to(
+        &router,
+        &plain,
+        vta,
+        BINDING_SET,
+        json!({ "contextId": CTX, "personaDid": persona2, "profileId": profile2 }),
+    )
+    .await;
+    assert!(!refused(status, &body), "binding/set: {status} {body}");
+    let (_, body) = post_to(
+        &router,
+        &scoped,
+        vta,
+        PREVIEW,
+        json!({
+            "contextId": CTX,
+            "personaDid": persona2,
+            "verifierDid": "did:key:z6MkVerifier",
+        }),
+    )
+    .await;
+    let preview2 = payload_of(&body)["previewId"]
+        .as_str()
+        .expect("previewId")
+        .to_string();
+    let (status, body) = post_to(
+        &router,
+        &scoped,
+        vta,
+        PRESENT,
+        json!({ "contextId": CTX, "previewId": preview2 }),
+    )
+    .await;
+    assert!(
+        !refused(status, &body),
+        "an ungated name.display was gated, so the override is not what decided it: \
+         {status} {body}"
+    );
+}
