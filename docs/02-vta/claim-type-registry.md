@@ -58,22 +58,38 @@ escape a gated family by inventing a member of it.
 every client implements it that way, so a row declaring one would be a row no
 client would honour.
 
-## Getting it wrong stops the agent starting
+## Getting a row wrong does not stop the agent
 
-A file that cannot be read, is not that shape, carries an unknown axis value,
-repeats a token, or loosens a core row, is a startup failure with the reason on
-stderr. That is deliberate. Serving a table you did not write means a tightening
-you believe is in force is not — and the values it was meant to protect are the
-ones you would hear about last. Failing to start is recoverable; running with
-the wrong registry quietly is not.
+A row that cannot be read, carries an unknown axis value, repeats another, or
+loosens a core row **is refused on its own**. The rest of the file applies, and
+the agent starts.
 
-A misspelt member or value is refused rather than defaulted, for the same
-reason: `"hgih"` silently reading as `normal` would look exactly like a rule
-that was working.
+That is a deliberate change from the first version, which exited. Refusing to
+boot is right for a laptop and wrong for a hosted agent: it takes out sessions,
+credentials and mediation over a mis-typed claim type, and nobody is reading its
+stderr anyway.
 
-When rows are loaded the agent logs the path and the count. If a value is masked
-and you do not know why, that line and `persona/claim-types/list` are the two
-places to look.
+**A refused row is not a small thing, though, and it fails in two directions.**
+The token resolves as if you had never declared it — from the core table, or the
+floor. For a word the registry has never heard of, that is the *most* protective
+answer and no harm is done. For a row that meant to **tighten** a core type, the
+looser answer stays in force: the tightening you believe is in place is not.
+
+Nothing can make that safe except somebody seeing it, so a refusal travels:
+
+- one `ERROR` log line per refused row, naming the token and the reason;
+- carried on `persona/claim-types/list` under `ext["org.openvtc.claim-types"]`,
+  as `rejected: [{ type, reason }]`, so the holder's console can say so where a
+  person is actually looking;
+- and `fileError` in the same place when the file itself could not be read —
+  a different sentence, because then *nothing* you declared is in force.
+
+A misspelt member or value is refused rather than defaulted: `"hgih"` silently
+reading as `normal` would look exactly like a rule that was working.
+
+When rows load the agent logs the path, the applied count and the refused count.
+If a value is masked and you do not know why, that line and
+`persona/claim-types/list` are the two places to look.
 
 ## What this is not
 
