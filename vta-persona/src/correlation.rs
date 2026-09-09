@@ -232,6 +232,13 @@ const MAX_DISCLOSED_TO: usize = 64;
 pub struct SharedWith {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_id: Option<String>,
+    /// The facet this profile belongs to, where it belongs to one.
+    ///
+    /// Absent for a profile in no facet, and that is a real and common state
+    /// rather than a gap: most profiles are unarranged until somebody arranges
+    /// them. A consumer MUST NOT read absence as a facet of its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facet_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -249,6 +256,33 @@ pub struct SharedWith {
 /// pool, and each finding would re-scan every disclosure record in every
 /// context to answer a question about one claim type.
 type DisclosureIndex = HashMap<(String, String, String), BTreeSet<String>>;
+
+/// Which facet each profile belongs to.
+///
+/// Built once per analysis, for the reason [`DisclosureIndex`] is: the
+/// per-finding shape re-lists every facet for every finding, and
+/// `analyze_correlation` with no `attributeId` walks the whole pool.
+///
+/// Empty is meaningful and is not the same as "not built" — see
+/// [`FacetIndex::any`], which is what decides whether `crossesFacets` is
+/// answered at all.
+#[derive(Default)]
+pub(crate) struct FacetIndex {
+    by_profile: HashMap<String, String>,
+    any: bool,
+}
+
+impl FacetIndex {
+    /// Whether the holder keeps any facets. False means the question has no
+    /// answer rather than the answer being "no crossing".
+    pub(crate) fn any(&self) -> bool {
+        self.any
+    }
+
+    pub(crate) fn of(&self, profile_id: &str) -> Option<&str> {
+        self.by_profile.get(profile_id).map(String::as_str)
+    }
+}
 
 /// One place the holder's identities link, and what can be done about it.
 #[derive(Clone, Debug, Serialize)]
@@ -279,6 +313,27 @@ pub struct Finding {
     /// an empty array, matching the schema's `default`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub shared_with: Vec<SharedWith>,
+    /// Whether this linkage spans two or more of the holder's facets.
+    ///
+    /// **A second axis, not a restatement of `severity`.** `severity` says how
+    /// strongly a disclosure would link the holder — a fact about provenance
+    /// and proof rung, true whatever they intended. This says whether they
+    /// would mind: a value shared between two profiles in the *same* facet is
+    /// linkage they arranged on purpose, and alarming on it teaches people to
+    /// dismiss alarms, which costs them the one that matters.
+    ///
+    /// `None` — omitted on the wire — where the holder keeps no facets at all,
+    /// because `false` asserts that these identities sit in one part of their
+    /// life and there is no such finding to make. The specification requires a
+    /// consumer to read absence as *unknown*.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crosses_facets: Option<bool>,
+    /// The distinct facets this linkage touches, so a consumer can name them.
+    ///
+    /// Identifiers, never names: the caller holds the facet records and can
+    /// resolve one, and the name is the member of a facet worth protecting.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub facet_ids: Vec<String>,
     /// What the holder can actually do.
     ///
     /// `reissueCredentialToThisDid` matters more than it looks: without it, a
@@ -335,6 +390,7 @@ impl crate::PersonaStore {
         excluding_attribute_id: &str,
         claim_type: Option<&str>,
         disclosures: &DisclosureIndex,
+        facets: &FacetIndex,
     ) -> Result<Vec<SharedWith>, vti_common::error::AppError> {
         let blind = blind(&self.correlation_key, value);
         let others: Vec<String> = self
@@ -363,6 +419,7 @@ impl crate::PersonaStore {
                 // a disclosure — but there is no context and no persona, and
                 // those members stay absent rather than null.
                 out.push(SharedWith {
+                    facet_id: facets.of(&profile_id).map(str::to_owned),
                     profile_id: Some(profile_id),
                     ..Default::default()
                 });
@@ -382,6 +439,7 @@ impl crate::PersonaStore {
                     })
                     .unwrap_or_default();
                 out.push(SharedWith {
+                    facet_id: facets.of(&profile_id).map(str::to_owned),
                     profile_id: Some(profile_id.clone()),
                     context_id: Some(context_id),
                     persona_did: Some(persona_did),
@@ -392,6 +450,28 @@ impl crate::PersonaStore {
 
         out.truncate(MAX_SHARED_WITH);
         Ok(out)
+    }
+
+    /// Build the profile → facet index for one analysis.
+    async fn facet_index(&self) -> Result<FacetIndex, vti_common::error::AppError> {
+        let facets = self.list_facets().await?;
+        let mut by_profile = HashMap::new();
+        for facet in &facets {
+            for face in &facet.face_ids {
+                // A profile belongs to at most one facet — `put_facet` refuses
+                // otherwise — so the first writer wins here and the second is
+                // a state the store does not permit. Not an assertion: an index
+                // is the wrong place to discover a store invariant, and picking
+                // one answer keeps the analysis running either way.
+                by_profile
+                    .entry(face.clone())
+                    .or_insert(facet.facet_id.clone());
+            }
+        }
+        Ok(FacetIndex {
+            by_profile,
+            any: !facets.is_empty(),
+        })
     }
 
     /// Report where the holder's identities link.
@@ -406,10 +486,15 @@ impl crate::PersonaStore {
     ) -> Result<Vec<Finding>, vti_common::error::AppError> {
         let mut findings = Vec::new();
         let disclosures = self.disclosure_index().await?;
+        let facets = self.facet_index().await?;
 
         if let Some(value) = candidate {
             let count = self.correlation_count(value, "").await?;
             if count > 0 {
+                let shared = self
+                    .shared_with(value, "", None, &disclosures, &facets)
+                    .await?;
+                let (crosses_facets, facet_ids) = crossing(&shared, &facets);
                 findings.push(Finding {
                     attribute_id: None,
                     severity: "high",
@@ -418,7 +503,9 @@ impl crate::PersonaStore {
                          both links the personas that carry them, permanently, to anyone who \
                          sees both"
                     ),
-                    shared_with: self.shared_with(value, "", None, &disclosures).await?,
+                    shared_with: shared,
+                    crosses_facets,
+                    facet_ids,
                     remedies: vec![
                         "useDifferentValue",
                         "reissueCredentialToThisDid",
@@ -458,6 +545,16 @@ impl crate::PersonaStore {
                 _ => crate::ProofRung::Whole,
             };
             let sev = severity(true, credential_backed, rung);
+            let shared = self
+                .shared_with(
+                    value,
+                    &a.attribute_id,
+                    Some(&a.r#type),
+                    &disclosures,
+                    &facets,
+                )
+                .await?;
+            let (crosses_facets, facet_ids) = crossing(&shared, &facets);
             findings.push(Finding {
                 attribute_id: Some(a.attribute_id.clone()),
                 // The published enum is `{low, high}` — a finding has no
@@ -489,9 +586,9 @@ impl crate::PersonaStore {
                 } else {
                     format!("the same value is held by {count} other attribute(s)")
                 },
-                shared_with: self
-                    .shared_with(value, &a.attribute_id, Some(&a.r#type), &disclosures)
-                    .await?,
+                shared_with: shared,
+                crosses_facets,
+                facet_ids,
                 remedies: if credential_backed {
                     vec![
                         "reissueCredentialToThisDid",
@@ -509,5 +606,125 @@ impl crate::PersonaStore {
         }
 
         Ok(findings)
+    }
+}
+
+/// Whether a set of locations spans two or more facets, and which.
+///
+/// **Only distinct, named facets count.** A profile belonging to no facet is
+/// unarranged, not a second facet — count it as one and every holder who has
+/// arranged one part of their life and not the rest sees a crossing on
+/// everything they own, which is the dismissal problem arriving from the other
+/// direction.
+///
+/// Returns `None` for the whole question when the holder keeps no facets: the
+/// specification requires absence rather than `false`, because `false` asserts
+/// these identities sit in one part of a life and an agent with no facets has
+/// made no such finding.
+fn crossing(shared: &[SharedWith], facets: &FacetIndex) -> (Option<bool>, Vec<String>) {
+    if !facets.any() {
+        return (None, Vec::new());
+    }
+    let distinct: BTreeSet<&str> = shared
+        .iter()
+        .filter_map(|s| s.facet_id.as_deref())
+        .collect();
+    (
+        Some(distinct.len() >= 2),
+        distinct.into_iter().map(str::to_owned).collect(),
+    )
+}
+
+#[cfg(test)]
+mod facet_crossing_tests {
+    use super::*;
+
+    fn at(profile: &str, facet: Option<&str>) -> SharedWith {
+        SharedWith {
+            profile_id: Some(profile.to_owned()),
+            facet_id: facet.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    fn index(pairs: &[(&str, &str)]) -> FacetIndex {
+        FacetIndex {
+            by_profile: pairs
+                .iter()
+                .map(|(p, f)| ((*p).to_owned(), (*f).to_owned()))
+                .collect(),
+            any: !pairs.is_empty(),
+        }
+    }
+
+    #[test]
+    fn no_facets_means_the_question_has_no_answer() {
+        // Absent, never `false`. `false` asserts these identities sit in one
+        // part of the holder's life, and an agent with no facets has made no
+        // such finding — the specification requires a consumer to read absence
+        // as unknown, which it cannot do if we answer.
+        let (crosses, ids) = crossing(&[at("p1", None), at("p2", None)], &FacetIndex::default());
+        assert_eq!(crosses, None);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn sharing_inside_one_facet_is_not_a_crossing() {
+        // The linkage the holder arranged on purpose — a work email in every
+        // work profile. Alarming on it teaches people to dismiss alarms.
+        let facets = index(&[("p1", "w1"), ("p2", "w1")]);
+        let (crosses, ids) = crossing(&[at("p1", Some("w1")), at("p2", Some("w1"))], &facets);
+        assert_eq!(crosses, Some(false));
+        assert_eq!(ids, vec!["w1".to_owned()]);
+    }
+
+    #[test]
+    fn sharing_across_two_facets_is_the_finding_worth_raising() {
+        let facets = index(&[("p1", "w1"), ("p2", "w2")]);
+        let (crosses, ids) = crossing(&[at("p1", Some("w1")), at("p2", Some("w2"))], &facets);
+        assert_eq!(crosses, Some(true));
+        assert_eq!(ids, vec!["w1".to_owned(), "w2".to_owned()]);
+    }
+
+    #[test]
+    fn an_unarranged_profile_is_not_a_second_facet() {
+        // The defect this closes: counting "no facet" as a facet makes every
+        // holder who has arranged one part of their life and not the rest see a
+        // crossing on everything they own.
+        let facets = index(&[("p1", "w1")]);
+        let (crosses, ids) = crossing(&[at("p1", Some("w1")), at("p2", None)], &facets);
+        assert_eq!(
+            crosses,
+            Some(false),
+            "an unarranged profile read as a crossing"
+        );
+        assert_eq!(ids, vec!["w1".to_owned()]);
+    }
+
+    #[test]
+    fn every_location_unarranged_is_no_crossing_but_still_answered() {
+        // The holder keeps facets, so the question HAS an answer — it is just
+        // "no". Distinct from the no-facets case above, which has none.
+        let facets = index(&[("pX", "w1")]);
+        let (crosses, ids) = crossing(&[at("p1", None), at("p2", None)], &facets);
+        assert_eq!(crosses, Some(false));
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn the_facets_touched_are_distinct_and_ordered() {
+        // Ordered so two findings over the same worlds list them the same way;
+        // deduplicated so a world holding three of the sharing profiles is
+        // named once.
+        let facets = index(&[("p1", "w2"), ("p2", "w1"), ("p3", "w2")]);
+        let (_, ids) = crossing(
+            &[
+                at("p1", Some("w2")),
+                at("p2", Some("w1")),
+                at("p3", Some("w2")),
+            ],
+            &facets,
+        );
+        assert_eq!(ids, vec!["w1".to_owned(), "w2".to_owned()]);
     }
 }
