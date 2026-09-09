@@ -1,13 +1,20 @@
 # Anchoring a room's renewals in its witnessed log
 
-Status: **open question, not a plan.** One decision has to be made before any of
-this can be built, and it is written down here because it was blocking in a
-conversation rather than in the repository.
+Status: **decided, and now buildable.** This was an open question; it was
+answered on 2026-09-09 and the note is kept as the reasoning behind the answer
+rather than as a request for one.
 
 [`data-rooms.md`](data-rooms.md) §9 says a renewal writes the room's current
 **MLS epoch authenticator** and **version watermark** to the room's witnessed
-`did:webvh` log. It does not say *where in the log entry they go*, and there is
-no obvious slot. That is the question.
+`did:webvh` log. It did not say *where in the log entry they go*, and there was
+no obvious slot. **They go in a typed service entry — §3a.** The alternatives in
+§3b and §3c are kept because a shape chosen with its rejected siblings deleted is
+one nobody can argue with later.
+
+The other question §5 raised — *what a client does with a mismatch* — is
+answered too, and by the same decision that answers it for
+[`data-rooms-read-through.md`](data-rooms-read-through.md): **serve reads, refuse
+writes.** The two notes were asking one question in two vocabularies.
 
 ---
 
@@ -67,7 +74,7 @@ So the answer is "somewhere in `state`", and the real question is **what shape**
 
 ## 3. Three shapes, and what each costs
 
-### 3a. A typed service entry (recommended)
+### 3a. A typed service entry — **decided**
 
 ```jsonc
 "service": [
@@ -173,10 +180,18 @@ anyway by having entries.
   (§7.1's first row) cannot anchor honestly, since the party being checked
   would be writing the check. Worth stating as a constraint on that
   configuration rather than discovering it later.
-- **What a client does with a mismatch.** An anchored authenticator that does
-  not match the member's own is evidence of a fork, and evidence is not an
-  action. Refuse to read? Warn? Both, depending on tier? §9 does not say, and a
-  detection nobody acts on is a log line.
+- ~~**What a client does with a mismatch.**~~ **Answered: serve reads, refuse
+  writes.** An anchored authenticator that does not match the member's own is
+  evidence of a fork, and evidence is not an action — so the action is stated.
+  Reading is how a member gathers what they need to show what happened, and the
+  records that would prove it are inside the room a refusal would lock them out
+  of; writing to a host you have caught is what compounds the damage. The same
+  rule governs a root that fails to reconcile
+  ([`data-rooms-read-through.md`](data-rooms-read-through.md) §5), because it is
+  the same question. **The refusal is the mechanism and a flag is not**: a rule
+  nobody would guess needs the refused write to explain itself in the room's own
+  words, or the member reads it as their agent malfunctioning and blames the
+  wrong party.
 - **Cadence as a room parameter.** §9 says a high-assurance room anchors per
   commit. `rooms/create/0.1` has no member for it — the same gap the hosting
   axes hit in the creation-policy work — so either it is a client-side setting
@@ -186,7 +201,7 @@ anyway by having entries.
 
 ## 6. What this unblocks
 
-With the shape settled, the work is bounded and sits entirely on the owner's
+The shape is settled, so the work is bounded and sits entirely on the owner's
 side:
 
 1. `RoomGroup::epoch_authenticator()` already returns the value (implemented).
@@ -197,6 +212,16 @@ side:
 None of it needs a host change, which is consistent with §9: the host's
 contribution to lifecycle is *never deciding*, and the anchor is what makes that
 checkable rather than trusted.
+
+It also unblocks something outside §9. The **data commitment** now shipped on
+both read paths offers three comparisons, and the anchor is the only one that
+needs neither a gossip channel rooms deliberately do not have nor durable state
+in a member's agent — so until this is built, a root is comparable only by an
+agent that has read the same room before. `dataCommitment` rides the same slot
+this note settles, as
+[`data-rooms-verified-reads.md`](data-rooms-verified-reads.md) §3.2 anticipated;
+it is one more member of the `serviceEndpoint` map above, not a second
+mechanism.
 
 ---
 

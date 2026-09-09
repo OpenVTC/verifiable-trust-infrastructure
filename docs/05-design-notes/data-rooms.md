@@ -1065,10 +1065,16 @@ read an `open` room the same way an agent's recall marks one.
    roots "cannot claim a transient" — false while a room moves, and corrected in
    tt#422 by carrying `headVersion` and `recordCount` beside the root.
 
-   What remains is the **witnessed anchor**, which is what turns a root from the
-   host's own assertion into evidence, and which is still blocked on
-   [`data-rooms-epoch-anchoring.md`](data-rooms-epoch-anchoring.md)'s open
-   question — and a party that *compares* roots, which is item 9.
+   The tree head followed in tt#422: a root names no state, so two of them
+   differing is a room that moved as readily as a host that equivocated — which
+   the shipped prose had got wrong. `headVersion` and `recordCount` fix it.
+
+   What remains is not implementation. The **witnessed anchor** is what turns a
+   root from the host's own assertion into evidence, and it is **no longer
+   blocked**: [`data-rooms-epoch-anchoring.md`](data-rooms-epoch-anchoring.md)'s
+   question was answered on 2026-09-09 (shape 3a, a typed service entry), and the
+   commitment rides the same slot. The other half is a party that *compares*
+   roots, which is item 9.
 8. **Rooms created before the chain** (§5.5) — a room that has already advanced
    past epoch 1 has lost the keys to everything below its current epoch, and
    nothing can recover them: no member retained the old exporters and the host
@@ -1089,9 +1095,16 @@ read an `open` room the same way an agent's recall marks one.
    Worked out in
    [`data-rooms-read-through.md`](data-rooms-read-through.md), which recommends
    `rooms/keys/{read,browse}` with verification first and the root memory second,
-   and leaves one question open on purpose: **what an agent does when it catches
-   a host** — refusing the read locks a member out of their own room with their
-   own agent, and a flag that blocks nothing is a flag that gets dismissed.
+   Its open question — **what an agent does when it catches a host** — was
+   answered on 2026-09-09: **serve reads, refuse writes.** Reading is how a
+   member gathers the evidence, and the records that would prove what happened
+   are inside the room a refusal would lock them out of; writing to a host you
+   have caught compounds the damage. Two consequences worth carrying: the
+   **refusal is the mechanism and a flag is not**, so a refused write owes an
+   explanation in the room's own words or the member blames their own agent; and
+   the agent's durable root memory becomes a **prerequisite** of any refusal
+   rather than a second increment, because a refusal that lasts only as long as
+   the process that noticed is not one.
 
 ---
 

@@ -1,6 +1,7 @@
 # Read-through: the agent as the room's memory
 
-Status: **proposal for review, not a plan.** It works out the last unbuilt piece
+Status: **accepted.** The question in §5 was answered on 2026-09-09; the
+sequencing in §6 stands, amended by that answer. It works out the last unbuilt piece
 of the rooms UI far enough to be argued with, and names one thing that has to be
 decided before any of it is built.
 
@@ -138,31 +139,60 @@ sealed.
 
 ---
 
-## 5. What has to be decided
+## 5. Decided: serve reads, refuse writes
 
-**One question, and it is not a small one: what does the agent do when it catches
-a host?**
+**What does the agent do when it catches a host?** Answered 2026-09-09:
+**it keeps serving reads and refuses to write.**
 
-Three answers, and the note deliberately does not pick:
+Reading is how a member gathers the evidence, and the records they may need in
+order to prove what happened are inside the room they would otherwise be locked
+out of — by their own agent, on account of somebody else's misbehaviour. Writing
+to a host you have caught is the act that compounds the damage: it hands more
+material to a party you now have reason to believe will misrepresent what it
+holds.
 
-- **Refuse the read.** Honest, and it makes the detection load-bearing. It also
-  means a member whose host has misbehaved once loses access to their own room
-  through their own agent — including, plausibly, the records they need to prove
-  what happened.
-- **Return the record, flagged.** The member keeps working. A flag that appears
-  in a pane and blocks nothing is a flag that gets dismissed, and the room's
-  vocabulary has no word for *this host has been caught* that is stronger than a
-  pill.
-- **Refuse to write, serve reads.** The asymmetry has some logic — writing to a
-  host you have caught equivocating is the act that compounds the damage, while
-  reading is how you gather evidence — but it is a rule nobody would guess, so it
-  would need to be said very loudly on screen.
+The two answers not taken, and why they are worth remembering rather than
+deleting:
 
-A second, smaller question rides along: **how much history does the agent keep?**
-Retaining every `(headVersion, root)` grows without bound. Retaining only the
-latest catches a host that answers two reads inconsistently and misses one that
-alternates. The obvious middle — the last N, plus the highest `headVersion` ever
-seen — is probably right, and "probably" is why it is written here.
+- **Refuse the read.** Honest, and it makes the detection unmissable. It also
+  punishes the member for the host's act, at the exact moment they most need
+  what the room holds.
+- **Return it flagged, block nothing.** A flag that appears in a pane and stops
+  no action is a flag that gets dismissed. The room's on-screen vocabulary has
+  no word for *this host has been caught* stronger than a pill, and inventing
+  one is not a substitute for a mechanism.
+
+### The refusal is the mechanism; the flag is not
+
+This is the part that decides whether the rule works. "Serve reads, refuse
+writes" is a rule **nobody would guess**, so a member who hits it and is only
+shown a failure will read it as a bug in their agent — and the one thing worse
+than no detection is a detection the member blames on the wrong party.
+
+So the refusal owes an explanation in the room's own words, at the point of the
+refused write, saying what was observed and what it means: *two different record
+sets, both claimed as this room at version N.* A pill will not carry that. This
+is a copy problem before it is a code problem, and it belongs in
+`design-docs/persona-vocabulary.md`'s sibling for rooms rather than in a
+component.
+
+### And it makes the memory a prerequisite, not a second increment
+
+§6 originally sequenced the root memory after the tasks, as an additive extra.
+The decision changes that: **a refusal that lasts only as long as the process
+that noticed is not a refusal.** An agent that catches a host, then restarts and
+happily writes, has a detection and no consequence. So the durable
+`(headVersion, root)` record is load-bearing from the first increment that
+refuses anything — the tasks may ship verifying-and-reporting before it, but
+they may not ship *refusing* before it.
+
+### How much history to keep
+
+Still open, and genuinely smaller. Retaining every `(headVersion, root)` grows
+without bound; retaining only the latest catches a host that answers two reads
+inconsistently and misses one that alternates. The obvious middle — the last N,
+plus the highest `headVersion` ever seen — is probably right, and "probably" is
+why it stays written down. Nothing is blocked on it: the first N can be one.
 
 ---
 
@@ -173,9 +203,11 @@ without the memory.** They unblock the console immediately, and trace
 verification against the root in the same response is worth having on its own —
 it is what makes a served trace mean anything at all.
 
-Then add the memory as a second increment, once the question in §5 has an answer.
-It is a strictly additive change to a task that already exists by then, and it is
-the one piece here that turns a commitment from a number into a check.
+Then the memory — which §5's answer promotes from *additive extra* to
+*prerequisite of any refusal*. It is still a strictly additive change to tasks
+that exist by then, and it is the one piece here that turns a commitment from a
+number into a check. A read task may ship verifying-and-reporting without it; a
+write task may not ship refusing without it.
 
 `rooms/keys/write` last. It composes two things that already work and unblocks
 nothing that reading does not.
