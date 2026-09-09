@@ -376,12 +376,12 @@ misrepresent it.
 |---|---|---|---|
 | 1 | vti | Gate `storage`/`authz`/`audit` behind a default-on `host` feature; `vti-common` becomes optional. `--no-default-features --features mls` builds for wasm32 | — |
 | 2 | vti | `vti-rooms-wasm`: wasm-bindgen bindings — identity, key package, welcome, commit, seal, open, chain, present | 1 |
-| 3 | vti | Reword `room.json`'s portability sentence (§4.1) — a doc fix, not a schema change | — |
+| 3 | vti | ~~Reword `room.json`'s portability sentence (§4.1)~~ — **done**; it now says portability comes from the room issuing its own credentials, and that a host pointer in the document would be wrong rather than stale | — |
 | 4 | plugin | `@openvtc/pnm-core/rooms` host calls usable against a host base URL (they are already shaped for it); publish | — |
 | 5 | new | The broker: catalogue + `POST /join` (§4.2), driving a demo-owner VTA | — |
 | 6 | new | The site: identity → catalogue → join → read | 2, 4, 5 |
 | 7 | new | Write, curate, and the keys/epoch pane | 6 |
-| 8 | spec | `rooms/join/*` as a Trust Task family, from what §4.2 turned out to need | 5 |
+| 8 | spec | ~~`rooms/join/*` as a Trust Task family~~ — **superseded, see §10.3.** The gap is real; a task family is the wrong shape for it, because a Trust Task is an instruction to your own agent and this is a stranger asking an owner to decide. A request protocol between two parties, closer to a VTC's `join-requests/*` | 5 |
 
 1–2 are the ones with real risk and none of it is unknown; 3 is a paragraph.
 6–7 are the demo.
