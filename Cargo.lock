@@ -10969,7 +10969,10 @@ name = "vti-rooms-wasm"
 version = "0.1.0"
 dependencies = [
  "affinidi-data-integrity",
+ "affinidi-did-common",
+ "affinidi-did-resolver-traits",
  "affinidi-secrets-resolver",
+ "affinidi-tdk",
  "base64 0.23.1",
  "chrono",
  "dtg-credentials",

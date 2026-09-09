@@ -41,9 +41,15 @@
 //! # Why no resolver
 //!
 //! The proof is checked against raw public-key bytes, and a room identified by a `did:key`
-//! carries its own key in its identifier. So verification is lexical: no network, no cache,
-//! nothing to be offline. A `did:webvh` room — what production mints — would need real
-//! resolution, and that is the one thing this module would grow.
+//! or a `did:peer` carries its own key in its identifier. So verification needs no network,
+//! no cache, and nothing to be online for. The same guarantee `room-host` makes on the other
+//! side, and since `vta-sdk`'s verifier learned `did:peer` the two agree about which methods
+//! it covers.
+//!
+//! `did:peer` matters rather than being a bonus: only it can carry a **service block**, so
+//! only it lets a room advertise the mediator its members reach its owner through. A
+//! `did:webvh` room — what production mints — would need real resolution, and that is the
+//! one thing this module would grow.
 
 use chrono::Utc;
 use dtg_credentials::{DTGCredential, DTGCredentialType};
@@ -56,27 +62,74 @@ pub struct VerifiedInvitation {
     pub credential_id: String,
 }
 
-/// The Ed25519 public key a `did:key` verification method names.
+/// The Ed25519 public key a verification method names, with **no network**.
 ///
-/// `did:key:z6Mk…#z6Mk…` — the fragment is the identifier, so the key is *in* the name. The
-/// multibase decodes to a two-byte multicodec prefix (`0xed 0x01`, Ed25519) and 32 bytes of
-/// key.
-fn did_key_public_key(verification_method: &str) -> Result<Vec<u8>, String> {
+/// Two methods, and the same reason for both: they carry their keys in their identifiers,
+/// so resolving one is arithmetic rather than a lookup. That is what lets a browser member
+/// verify an invitation while offline, and it is the same guarantee `room-host` makes on
+/// the other side — its verifier is configured for no I/O, and since
+/// `vta-sdk`'s `TrustTaskVmResolver` learned `did:peer` the two agree about which methods
+/// that covers.
+///
+/// - `did:key:z6Mk…#z6Mk…` — the fragment *is* the identifier; decode the multibase.
+/// - `did:peer:2.Vz6Mk…` — resolved by `PeerResolver`, which the specification's own
+///   implementation describes as "pure computation (no IO)". Not hand-decoded here: the
+///   segment layout and the fragment convention are the resolver's to know, and a second
+///   opinion about them is a second thing to get wrong.
+///
+/// A `did:webvh` room — what production mints — would need real resolution, and that is the
+/// one thing this module would have to grow.
+fn verification_key(verification_method: &str) -> Result<Vec<u8>, String> {
     let did = verification_method
         .split('#')
         .next()
         .unwrap_or(verification_method);
-    let multibase = did
-        .strip_prefix("did:key:")
-        .ok_or_else(|| format!("`{did}` is not a did:key, and this build resolves nothing else"))?;
-    let (_base, bytes) =
-        multibase::decode(multibase).map_err(|e| format!("decode `{did}`: {e}"))?;
-    match bytes.split_at_checked(2) {
-        Some(([0xed, 0x01], key)) if key.len() == 32 => Ok(key.to_vec()),
-        _ => Err(format!(
-            "`{did}` does not name an Ed25519 key; a room signs with Ed25519"
-        )),
+
+    if let Some(multibase) = did.strip_prefix("did:key:") {
+        let (_base, bytes) =
+            multibase::decode(multibase).map_err(|e| format!("decode `{did}`: {e}"))?;
+        return match bytes.split_at_checked(2) {
+            Some(([0xed, 0x01], key)) if key.len() == 32 => Ok(key.to_vec()),
+            _ => Err(format!(
+                "`{did}` does not name an Ed25519 key; a room signs with Ed25519"
+            )),
+        };
     }
+
+    if did.starts_with("did:peer:") {
+        use affinidi_did_common::DID;
+        use affinidi_did_resolver_traits::{PeerResolver, Resolver};
+
+        let parsed =
+            DID::try_from(did).map_err(|e| format!("`{did}` is not a well-formed DID: {e}"))?;
+        let doc = PeerResolver
+            .resolve(&parsed)
+            .ok_or_else(|| format!("`{did}` is not a did:peer this build resolves"))?
+            .map_err(|e| format!("`{did}` did not resolve: {e}"))?;
+
+        // A proof names a method absolutely; a document may name it relatively. Accept
+        // both spellings of the same method rather than requiring the document to have
+        // chosen ours.
+        let relative = verification_method
+            .split_once('#')
+            .map(|(_, fragment)| format!("#{fragment}"))
+            .unwrap_or_default();
+        let entry = doc
+            .verification_method
+            .iter()
+            .find(|m| m.id.as_str() == verification_method || m.id.as_str() == relative)
+            .ok_or_else(|| {
+                format!("`{verification_method}` is not in the DID document for `{did}`")
+            })?;
+        return entry
+            .get_public_key_bytes()
+            .map_err(|e| format!("`{verification_method}` public key: {e}"));
+    }
+
+    Err(format!(
+        "`{did}` names a method this build cannot resolve without a network — only \
+         `did:key` and `did:peer` carry their keys in the identifier"
+    ))
 }
 
 /// Run the five checks. `spent` is the set of credential ids this key holder has already
@@ -154,7 +207,7 @@ pub fn verify(
         ));
     }
 
-    let key = did_key_public_key(&proof.verification_method)?;
+    let key = verification_key(&proof.verification_method)?;
     credential
         .verify_proof_with_public_key(&key)
         .map_err(|e| format!("the invitation's proof did not verify: {e}"))?;

@@ -803,6 +803,54 @@ mod tests {
         verify(&json, &room, me, &[]).expect("an invitation valid from now must verify now");
     }
 
+    /// A room identified by `did:peer:2` can issue an invitation this member verifies.
+    ///
+    /// The case that matters for admission: only a `did:peer:2` carries a service block, so
+    /// only it can advertise the mediator a member reaches the room's owner through. If the
+    /// invitation from such a room did not verify here, a room could be reachable and
+    /// un-joinable at the same time.
+    ///
+    /// Still no network — `PeerResolver` is pure computation, which is why the same check
+    /// works in a browser that is offline.
+    #[test]
+    fn an_invitation_from_a_did_peer_room_verifies() {
+        use affinidi_tdk::dids::{DID, KeyType, PeerKeyRole};
+
+        let (room, secrets) = DID::generate_did_peer(
+            vec![
+                (PeerKeyRole::Verification, KeyType::Ed25519),
+                (PeerKeyRole::Encryption, KeyType::X25519),
+            ],
+            None,
+        )
+        .expect("mint the room's did:peer");
+
+        // The room signs with its verification key, named the way a proof names one.
+        let signing = secrets
+            .iter()
+            .find(|s| s.id.ends_with("#key-1"))
+            .expect("the verification secret")
+            .clone();
+
+        let me = "did:key:zMember";
+        let now = chrono::Utc::now();
+        let mut vic = dtg_credentials::DTGCredential::new_vic(
+            room.clone(),
+            me.to_string(),
+            now - chrono::Duration::minutes(1),
+            Some(now + chrono::Duration::hours(1)),
+        )
+        .with_id("urn:uuid:peer-invite");
+        futures_lite::future::block_on(vic.sign(&signing, None)).expect("sign as the room");
+
+        let encoded = serde_json::to_string(vic.credential()).unwrap();
+        verify(&encoded, &room, me, &[])
+            .expect("a did:peer room's invitation must verify, with no network");
+
+        // And the issuer binding still bites: the same invitation, for somebody else.
+        assert!(verify(&encoded, &room, "did:key:zOther", &[]).is_err());
+    }
+
     /// Each of the five checks, made to bite.
     ///
     /// A gate is only worth having if every clause of it refuses something, and a five-check
