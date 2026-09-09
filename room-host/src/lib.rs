@@ -45,12 +45,16 @@
 
 pub mod mirror;
 
+/// Being reachable at a mediator, as well as at a URL.
+#[cfg(feature = "didcomm")]
+pub mod didcomm;
+
 use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+
 use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::{Value, json};
@@ -191,6 +195,34 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// What answering a request produces: **the document, and separately a status.**
+///
+/// The document is the answer. It is a routed Trust-Task `#response` or `trust-task-error`,
+/// self-describing — it carries its own `type` and, when it refuses, a framework `code` — so
+/// a caller switches on what is *in* it and never on how it arrived.
+///
+/// The status is the same fact restated for one carrier that insists on having it out of
+/// band. HTTP does; DIDComm and TSP do not, and on those wires it is simply dropped. Keeping
+/// them as two fields rather than one `Response` is what lets one dispatch serve all three:
+/// the moment a handler builds an HTTP response, every other carrier has to take it apart
+/// again to find the answer inside.
+pub struct Answer {
+    /// The HTTP status this answer would be, derived from the document's own code.
+    pub status: u16,
+    /// The routed Trust-Task document. **This is the answer.**
+    pub document: Value,
+}
+
+impl axum::response::IntoResponse for Answer {
+    fn into_response(self) -> axum::response::Response {
+        (
+            StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(self.document),
+        )
+            .into_response()
+    }
+}
+
 /// Refuse a request, as a routed `trust-task-error` document.
 ///
 /// A room host and a VTC serve the same protocol, so they must refuse it the same way: a
@@ -200,20 +232,21 @@ fn now() -> u64 {
 ///
 /// The reason text distinguishes the cases for an operator reading logs; the framework code
 /// is what a caller switches on.
-fn reject(doc: &TrustTask<Value>, reason: RejectReason) -> axum::response::Response {
+fn reject(doc: &TrustTask<Value>, reason: RejectReason) -> Answer {
     let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), reason);
-    (
-        StatusCode::from_u16(status_for_code(&routed.payload.code))
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-        Json(serde_json::to_value(&routed).unwrap_or(Value::Null)),
-    )
-        .into_response()
+    Answer {
+        status: status_for_code(&routed.payload.code),
+        document: serde_json::to_value(&routed).unwrap_or(Value::Null),
+    }
 }
 
 /// Answer a request, as a routed `#response` document.
-fn respond<R: serde::Serialize>(doc: &TrustTask<Value>, payload: R) -> axum::response::Response {
+fn respond<R: serde::Serialize>(doc: &TrustTask<Value>, payload: R) -> Answer {
     let response = doc.respond_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
-    Json(serde_json::to_value(&response).unwrap_or(Value::Null)).into_response()
+    Answer {
+        status: 200,
+        document: serde_json::to_value(&response).unwrap_or(Value::Null),
+    }
 }
 
 /// An `AppError` from the storage or authorization layer, as a rejection.
@@ -221,7 +254,7 @@ fn respond<R: serde::Serialize>(doc: &TrustTask<Value>, payload: R) -> axum::res
 /// One mapping, so this host and the VTC classify the same failure identically. Both
 /// services reach these from shared code in `vti-rooms`; disagreeing here would mean the
 /// same refusal read as a different kind of problem depending on who was hosting.
-fn from_app_error(doc: &TrustTask<Value>, e: &AppError) -> axum::response::Response {
+fn from_app_error(doc: &TrustTask<Value>, e: &AppError) -> Answer {
     let reason = e.to_string();
     reject(
         doc,
@@ -240,38 +273,52 @@ fn from_app_error(doc: &TrustTask<Value>, e: &AppError) -> axum::response::Respo
     )
 }
 
-/// The one entry point: a `rooms/*` document, routed by its own `type`.
+/// The HTTP mount. Everything it does is [`dispatch`]; this only says which carrier asked.
+async fn trust_task(State(state): State<Arc<HostState>>, body: Bytes) -> Answer {
+    dispatch(&state, &body).await
+}
+
+/// **The one entry point**: a `rooms/*` document, routed by its own `type`, whatever carried
+/// it here.
 ///
 /// One mount rather than five routes, because the document's `type` is its identity — the
-/// same shape the VTC's holder-facing surface uses.
-async fn trust_task(State(state): State<Arc<HostState>>, body: Bytes) -> axum::response::Response {
+/// same shape the VTC's holder-facing surface uses. And one function rather than one per
+/// carrier, because a host that routed or authorized differently depending on how a request
+/// arrived would have as many authorization models as it has wires. HTTP, DIDComm and TSP
+/// all land here with the same bytes.
+///
+/// Nothing about *who* is asking comes from the carrier. The presenter is taken from the
+/// document's own `eddsa-jcs-2022` proof and the authority from the chain it carries, so a
+/// request is exactly as authorized over a socket as over a POST — and a transport that
+/// authenticated its sender confers nothing extra, which is the property that lets this be
+/// one function at all.
+pub async fn dispatch(state: &Arc<HostState>, body: &[u8]) -> Answer {
     // A body that is not a Trust Task document cannot be *routed* — there is no issuer to
     // address a rejection to and no thread to correlate it with — so this one case answers
     // with an unrouted error, exactly as the VTC's `body_parse_error_response` does.
-    let doc: TrustTask<Value> = match serde_json::from_slice(&body) {
+    let doc: TrustTask<Value> = match serde_json::from_slice(body) {
         Ok(d) => d,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
+            return Answer {
+                status: 400,
+                document: json!({
                     "error": format!("body is not a Trust Task document: {e}"),
-                })),
-            )
-                .into_response();
+                }),
+            };
         }
     };
 
     let payload = doc.payload.clone();
     match doc.type_uri.to_string().as_str() {
-        ROOMS_CREATE_TYPE => create(&state, &doc, payload).await,
-        ROOMS_RECORDS_PUT_TYPE => put(&state, &doc, payload).await,
-        ROOMS_RECORDS_GET_TYPE => get(&state, &doc, payload).await,
-        ROOMS_RECORDS_LIST_TYPE => list(&state, &doc, payload).await,
-        ROOMS_RECORDS_CURATE_TYPE => curate(&state, &doc, payload).await,
-        ROOMS_EPOCH_MINT_TYPE => mint(&state, &doc, payload).await,
-        ROOMS_EPOCH_CHAIN_TYPE => epoch_chain(&state, &doc, payload).await,
-        ROOMS_OWNER_TRANSFER_TYPE => transfer_owner(&state, &doc, payload).await,
-        ROOMS_OWNER_CLAIM_TYPE => claim_owner(&state, &doc, payload).await,
+        ROOMS_CREATE_TYPE => create(state, &doc, payload).await,
+        ROOMS_RECORDS_PUT_TYPE => put(state, &doc, payload).await,
+        ROOMS_RECORDS_GET_TYPE => get(state, &doc, payload).await,
+        ROOMS_RECORDS_LIST_TYPE => list(state, &doc, payload).await,
+        ROOMS_RECORDS_CURATE_TYPE => curate(state, &doc, payload).await,
+        ROOMS_EPOCH_MINT_TYPE => mint(state, &doc, payload).await,
+        ROOMS_EPOCH_CHAIN_TYPE => epoch_chain(state, &doc, payload).await,
+        ROOMS_OWNER_TRANSFER_TYPE => transfer_owner(state, &doc, payload).await,
+        ROOMS_OWNER_CLAIM_TYPE => claim_owner(state, &doc, payload).await,
         other => reject(
             &doc,
             // The framework's own code for this: a host that does not implement a task
@@ -284,11 +331,7 @@ async fn trust_task(State(state): State<Arc<HostState>>, body: Bytes) -> axum::r
     }
 }
 
-async fn create(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> axum::response::Response {
+async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     let req: CreateRoomBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -349,11 +392,7 @@ async fn create(
     }
 }
 
-async fn put(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> axum::response::Response {
+async fn put(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     let req: PutRecordBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -439,11 +478,7 @@ async fn put(
     }
 }
 
-async fn get(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> axum::response::Response {
+async fn get(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     let req: GetRecordBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -485,11 +520,7 @@ async fn get(
     }
 }
 
-async fn list(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> axum::response::Response {
+async fn list(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     let req: ListRecordsBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -572,11 +603,7 @@ async fn list(
 /// same act. What leaves is ciphertext — the key that opens a rung is a storage key this
 /// host never holds — so a party with the whole chain and no epoch key learns only how many
 /// epochs the room has had, which its epoch number already told them.
-async fn epoch_chain(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> axum::response::Response {
+async fn epoch_chain(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     let req: ChainBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -634,11 +661,7 @@ async fn epoch_chain(
     )
 }
 
-async fn mint(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> axum::response::Response {
+async fn mint(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     let req: MintEpochBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -734,11 +757,7 @@ async fn mint(
 /// no group state, and a delivery service never will. The spec's `notAMember` is for a host
 /// that "could independently establish" it; inventing a check here would refuse every
 /// correct transfer, which is a worse failure than the one it imagines it is preventing.
-async fn transfer_owner(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> axum::response::Response {
+async fn transfer_owner(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     let req: TransferOwnerBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -797,11 +816,7 @@ async fn transfer_owner(
 /// and "the room is still live" would send them back in a month to hear the real one.
 ///
 /// The claim does not renew the room — see [`storage::set_owner`].
-async fn claim_owner(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> axum::response::Response {
+async fn claim_owner(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     let req: ClaimOwnerBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -874,11 +889,7 @@ async fn claim_owner(
 ///
 /// Gated on `Action::Curate` — not implied by `write`, because deciding what a room's shared
 /// knowledge is worth is a different grant from being able to add to it.
-async fn curate(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> axum::response::Response {
+async fn curate(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     let req: CurateRecordBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -1294,6 +1305,85 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// **The same bytes, answered identically, whichever carrier brought them.**
+    ///
+    /// This is the property the whole carrier-neutral split exists for, and it is asserted
+    /// rather than assumed: a host that routed or authorized differently depending on how a
+    /// request arrived would have as many authorization models as it has wires, and the
+    /// difference would show up as "it works over HTTP but not over DIDComm" — a report with
+    /// nowhere to start looking.
+    ///
+    /// A DIDComm or TSP listener calls `dispatch` with exactly these bytes; only the framing
+    /// around them differs, and none of it reaches here. So driving `dispatch` directly is
+    /// driving what those carriers drive.
+    #[tokio::test]
+    async fn one_dispatch_answers_the_same_over_any_carrier() {
+        let (_dir, st) = state();
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+
+        let document = vta_sdk::trust_task_sign::build_signed(
+            ROOMS_RECORDS_LIST_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "presentation": f.as_owner(),
+            }),
+            &f.owner.did,
+            &f.owner.secret_multibase,
+            "did:key:zHost",
+        )
+        .await
+        .expect("sign the request");
+
+        // Over HTTP, through the router.
+        let http = app
+            .clone()
+            .oneshot(
+                Request::post("/trust-tasks")
+                    .header("content-type", "application/json")
+                    .body(Body::from(document.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let http_status = http.status();
+        let http_body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(http.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+
+        // Straight into `dispatch`, which is what a mediator listener does.
+        let carried = dispatch(&st, document.as_bytes()).await;
+
+        assert_eq!(http_status, StatusCode::OK, "{http_body}");
+        assert_eq!(
+            carried.status, 200,
+            "the status is derived from the document, so both carriers agree on it"
+        );
+        // Guard the guard: comparing fields neither document has would pass while asserting
+        // nothing, and the framework's field names are not this crate's to choose.
+        // Everything that says *what happened* and *to whom*. `id` and `issuedAt` are
+        // per-answer and correctly differ between two dispatches of one request.
+        let says_what_happened = ["type", "payload", "threadId", "recipient", "issuer"];
+        for field in says_what_happened {
+            assert!(
+                http_body.get(field).is_some(),
+                "the response document has no `{field}` to compare — this test would pass \
+                 vacuously: {http_body}"
+            );
+        }
+        for field in says_what_happened {
+            assert_eq!(
+                http_body.get(field),
+                carried.document.get(field),
+                "`{field}` must not depend on the carrier"
+            );
+        }
     }
 
     /// Registration is the one verb no chain can authorize, so the proof on the request
