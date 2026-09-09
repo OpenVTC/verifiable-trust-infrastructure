@@ -152,6 +152,7 @@ COPY vtc-service/ vtc-service/
 COPY vti-common/ vti-common/
 COPY vti-rooms/ vti-rooms/
 COPY vti-rooms-dtg/ vti-rooms-dtg/
+COPY vti-rooms-wasm/ vti-rooms-wasm/
 COPY vti-secrets/ vti-secrets/
 COPY vti-webauthn/ vti-webauthn/
 
