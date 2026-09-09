@@ -594,11 +594,37 @@ async fn attach_proof(
             return None;
         }
     };
+    if !attach_proof_in_place(secret, &mut doc).await {
+        return None;
+    }
+    serde_json::to_vec(&doc)
+        .inspect_err(|e| tracing::error!(error = %e, "could not serialise the signed response"))
+        .ok()
+}
+
+/// [`attach_proof`] over a document already parsed, signing it in place.
+///
+/// Split out so a harness that *stands in* for this agent can sign a document
+/// it holds as JSON, without a serialise-and-reparse round trip on both sides —
+/// `test_support::sign_response_document` is the one caller, and it exists
+/// because a stand-in that signs differently from the thing it stands in for
+/// tests the difference rather than the contract.
+///
+/// `false` when the signature will not attach; the caller decides what an
+/// unsigned answer means, because the two callers disagree — this agent
+/// refuses to send one, a harness has nothing to refuse with.
+pub(crate) async fn attach_proof_in_place(
+    secret: &affinidi_secrets_resolver::secrets::Secret,
+    doc: &mut serde_json::Value,
+) -> bool {
     // A proof never covers itself.
-    doc.as_object_mut()?.remove("proof");
+    let Some(obj) = doc.as_object_mut() else {
+        return false;
+    };
+    obj.remove("proof");
 
     let proof = match affinidi_data_integrity::DataIntegrityProof::sign(
-        &doc,
+        &*doc,
         secret,
         affinidi_data_integrity::SignOptions::new(),
     )
@@ -607,16 +633,21 @@ async fn attach_proof(
         Ok(p) => p,
         Err(e) => {
             tracing::error!(error = %e, "could not sign the success response; answering unsigned");
-            return None;
+            return false;
         }
     };
-    let proof_value = serde_json::to_value(&proof)
+    let Ok(proof_value) = serde_json::to_value(&proof)
         .inspect_err(|e| tracing::error!(error = %e, "could not serialise the response proof"))
-        .ok()?;
-    doc.as_object_mut()?.insert("proof".into(), proof_value);
-    serde_json::to_vec(&doc)
-        .inspect_err(|e| tracing::error!(error = %e, "could not serialise the signed response"))
-        .ok()
+    else {
+        return false;
+    };
+    match doc.as_object_mut() {
+        Some(obj) => {
+            obj.insert("proof".into(), proof_value);
+            true
+        }
+        None => false,
+    }
 }
 
 pub(crate) async fn dispatch_trust_task_core(

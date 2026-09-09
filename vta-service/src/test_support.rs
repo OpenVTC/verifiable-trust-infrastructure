@@ -234,6 +234,36 @@ pub(crate) fn test_vta_signer() -> VtaOwnSigner {
     }
 }
 
+/// Sign a Trust-Task response document the way this agent signs its own.
+///
+/// The agent's own [`attach_proof_in_place`](crate::trust_tasks::attach_proof_in_place),
+/// exposed so a harness standing in for a VTA signs identically rather than
+/// approximately. `secret.id` names the verification method the proof carries,
+/// so it has to be a key in the stand-in's own DID document — `{did}#key-1` for
+/// a `did:peer:2` minted with an Ed25519 verification key first.
+///
+/// # Why a harness needs this at all
+///
+/// `VtaClient` verifies a reply's proof and binds the proven signer to the
+/// agent it is addressing (OpenVTC/verifiable-trust-infrastructure#1341). A
+/// responder that answers unsigned is therefore not a cheap stand-in any more —
+/// it is a VTA that behaves in a way no real one does, and every round trip
+/// through it fails with the client blaming the reply. Same reasoning as
+/// [`TEST_VTA_SEED`], one layer further out: that one covers a mock this crate
+/// builds, this one a DIDComm responder in a downstream test crate.
+///
+/// Sign only what the binding says is a Trust-Task document. A reply body under
+/// some other DIDComm type is not one, nothing verifies it, and a `proof`
+/// member added to it is a member its consumer never asked for.
+///
+/// `false` when the signature will not attach.
+pub async fn sign_response_document(
+    secret: &affinidi_secrets_resolver::secrets::Secret,
+    doc: &mut serde_json::Value,
+) -> bool {
+    crate::trust_tasks::attach_proof_in_place(secret, doc).await
+}
+
 /// An ed25519 signing key as a `Secret`.
 ///
 /// **Multicodec-prefixed** (`0x80 0x26`, ed25519-priv). `Secret::from_multibase`

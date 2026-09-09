@@ -34,14 +34,12 @@ use vta_sdk::protocols::key_management::sign::SignAlgorithm;
 use vta_sdk::trust_tasks;
 
 mod common;
-use common::test_vta_responder::{ResponderReply, TestVtaResponder};
+// `TT_ENVELOPE` lives with the responder because that is what decides which
+// replies it signs: one definition, so a test cannot dispatch under one
+// envelope type and be answered unsigned under another.
+use common::test_vta_responder::{ResponderReply, TT_ENVELOPE, TestVtaResponder};
 
 // ── Trust-task envelope helpers ─────────────────────────────────────
-
-/// The DIDComm binding envelope every Trust Task rides in. `rpc_tt` sends
-/// this as the message type and puts the trust-task document in the body;
-/// the reply must come back under the same type (`send_and_wait` checks it).
-const TT_ENVELOPE: &str = "https://trusttasks.org/binding/didcomm/0.1/envelope";
 
 /// True when this inbound message is a Trust Task dispatch for `tt_uri`.
 ///
