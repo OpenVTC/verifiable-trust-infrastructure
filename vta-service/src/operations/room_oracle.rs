@@ -219,12 +219,237 @@ async fn find_room_credential(
                 .ok_or_else(|| {
                     AppError::Internal(format!("credential `{}` vanished mid-read", found[0].id))
                 })?;
-            serde_json::to_value(&stored.body)
+            // `body` is **opaque bytes** — the vault never parses what it holds. So it is
+            // PARSED here, not converted: `to_value` on a `Vec<u8>` yields a JSON array of
+            // byte values, which then fails to deserialise as a credential with "invalid
+            // type: sequence, expected struct DTGCommon". That is what it did until the
+            // round-trip test below was written.
+            serde_json::from_slice(&stored.body)
                 .map_err(|e| AppError::Internal(format!("stored {type_tag} for `{room_id}`: {e}")))
         }
         n => Err(AppError::Conflict(format!(
             "this VTA holds {n} {type_tag}s issued by room `{room_id}`; which one to \
              attenuate from is not a question this can answer safely"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration as Span;
+    use dtg_credentials::DTGCredential;
+    use vti_rooms::authz::{Action, ChainVerifier};
+    use vti_rooms::wire::AuthorityPresentation;
+    use vti_rooms::{RetentionPolicy, Room, Visibility};
+    use vti_rooms_dtg::test_support::Party;
+    use vti_rooms_dtg::{DataIntegrityKeys, DtgChainVerifier};
+
+    /// Put a signed credential in the vault the way the receive path would.
+    async fn vault(state: &AppState, type_tag: &str, issuer: &str, cred: &DTGCredential) {
+        use crate::vault::model::{CredentialFormat, CredentialStatus, StoredCredential};
+        use vti_common::vault::VaultStatus;
+        let stored = StoredCredential {
+            id: format!("{type_tag}-{issuer}"),
+            format: CredentialFormat::EddsaJcs2022,
+            types: vec![type_tag.into()],
+            schema_id: None,
+            community_did: None,
+            context_id: None,
+            subject_did: None,
+            issuer_did: Some(issuer.to_string()),
+            purpose: None,
+            status: CredentialStatus::Unknown,
+            valid_from: None,
+            valid_until: None,
+            received_at: "2026-01-01T00:00:00Z".into(),
+            source: None,
+            tags: Default::default(),
+            body: serde_json::to_vec(cred).expect("serialise the credential"),
+            lifecycle: VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
+        };
+        crate::vault::storage::put(&state.vault_ks, &stored)
+            .await
+            .expect("store the credential");
+    }
+
+    /// **The seam this whole task turns on, and the one nothing exercised.**
+    ///
+    /// Mint through [`present`], then hand the result to the verifier a host actually runs.
+    /// Every defect this test would have caught was found by hand instead, months apart:
+    ///
+    /// - the request carried an `audience` no presenter could satisfy, so a host refused
+    ///   every presentation minted with one (dtgwg-trust-tasks-tf#414);
+    /// - it carried a `nonce` written into a closed object, so a host refused the
+    ///   presentation as malformed;
+    /// - the credentials crossed as JSON *objects* where the wire form is a *string*, so
+    ///   the presentation never deserialised at all;
+    /// - and the vault body — opaque bytes — was handed to `serde_json::to_value`, which
+    ///   turns `Vec<u8>` into an array of numbers rather than reading the credential.
+    ///
+    /// Each side was internally consistent and well tested. The seam between them was not
+    /// tested at all, which is why "green" said nothing about whether this worked.
+    #[tokio::test]
+    async fn a_minted_presentation_verifies_at_a_host() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+
+        // The member's key is one this VTA manages — presenting means signing as the
+        // subject, so a key it does not hold cannot attenuate.
+        let member_did =
+            crate::test_support::seed_holder_key(&state, "m/44'/0'/7'/0'/1'", None).await;
+        let room = Party::new();
+        let agent = Party::new();
+        let now = Utc::now();
+
+        let mut vac = DTGCredential::new_vac(
+            room.did.clone(),
+            member_did.clone(),
+            room.did.clone(),
+            vec!["read".into(), "write".into()],
+            now - Span::minutes(1),
+            now + Span::days(30),
+        )
+        .expect("the room's grant to the member")
+        .with_id("urn:uuid:vac-member");
+        vac.sign(&room.secret, None).await.expect("sign the VAC");
+
+        let mut vmc = DTGCredential::new_vmc(
+            room.did.clone(),
+            member_did.clone(),
+            now - Span::minutes(1),
+            Some(now + Span::days(30)),
+            false,
+        );
+        vmc.sign(&room.secret, None).await.expect("sign the VMC");
+
+        vault(&state, AUTHORITY_TYPE, &room.did, &vac).await;
+        vault(&state, MEMBERSHIP_TYPE, &room.did, &vmc).await;
+
+        let minted = present(
+            &state,
+            &crate::test_support::super_admin_claims(),
+            &agent.did,
+            &room.did,
+            "read",
+        )
+        .await
+        .expect("the oracle mints a presentation");
+
+        // A host receives this as a document member and deserialises it. An object where
+        // the schema says string does not get that far.
+        let presentation: AuthorityPresentation =
+            serde_json::from_value(minted.presentation.clone()).unwrap_or_else(|e| {
+                panic!(
+                    "a host cannot read the minted presentation: {e}\n{:#}",
+                    minted.presentation
+                )
+            });
+
+        let verifier = DtgChainVerifier::without_zk(Box::new(DataIntegrityKeys(
+            state.trust_task_vm_resolver(),
+        )));
+        let room_row = Room {
+            room_id: room.did.clone(),
+            owner_did: member_did.clone(),
+            visibility: Visibility::Open,
+            retention_policy: RetentionPolicy::Chained,
+            epoch: 1,
+            next_version: 1,
+            retention_days: 90,
+            epoch_expires_at: None,
+            created_at: 0,
+            updated_at: 0,
+            mirror_of: None,
+        };
+
+        // The presenter is the agent: the leaf was granted to it, and a VAC is not a bearer
+        // credential, so nobody else can present this.
+        let verified = verifier
+            .verify(&room_row, &presentation, Action::Read, &agent.did)
+            .await
+            .expect("the host verifies the chain the oracle minted");
+
+        assert_eq!(verified.subject, agent.did);
+        assert!(verified.actions.iter().any(|a| a == "read"));
+    }
+
+    /// The other half of the same property: the oracle cannot mint something a *third*
+    /// party could use. Attenuation narrows to the caller, so the member who owns the
+    /// credentials cannot present the chain minted for their own agent.
+    #[tokio::test]
+    async fn a_minted_presentation_is_useless_to_anyone_else() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let member_did =
+            crate::test_support::seed_holder_key(&state, "m/44'/0'/7'/0'/2'", None).await;
+        let room = Party::new();
+        let agent = Party::new();
+        let now = Utc::now();
+
+        let mut vac = DTGCredential::new_vac(
+            room.did.clone(),
+            member_did.clone(),
+            room.did.clone(),
+            vec!["read".into()],
+            now - Span::minutes(1),
+            now + Span::days(30),
+        )
+        .expect("the room's grant")
+        .with_id("urn:uuid:vac-member-2");
+        vac.sign(&room.secret, None).await.expect("sign the VAC");
+
+        let mut vmc = DTGCredential::new_vmc(
+            room.did.clone(),
+            member_did.clone(),
+            now - Span::minutes(1),
+            Some(now + Span::days(30)),
+            false,
+        );
+        vmc.sign(&room.secret, None).await.expect("sign the VMC");
+
+        vault(&state, AUTHORITY_TYPE, &room.did, &vac).await;
+        vault(&state, MEMBERSHIP_TYPE, &room.did, &vmc).await;
+
+        let minted = present(
+            &state,
+            &crate::test_support::super_admin_claims(),
+            &agent.did,
+            &room.did,
+            "read",
+        )
+        .await
+        .expect("mint");
+        let presentation: AuthorityPresentation =
+            serde_json::from_value(minted.presentation).expect("readable presentation");
+
+        let verifier = DtgChainVerifier::without_zk(Box::new(DataIntegrityKeys(
+            state.trust_task_vm_resolver(),
+        )));
+        let room_row = Room {
+            room_id: room.did.clone(),
+            owner_did: member_did.clone(),
+            visibility: Visibility::Open,
+            retention_policy: RetentionPolicy::Chained,
+            epoch: 1,
+            next_version: 1,
+            retention_days: 90,
+            epoch_expires_at: None,
+            created_at: 0,
+            updated_at: 0,
+            mirror_of: None,
+        };
+
+        // The member holds strictly more authority than the agent, and still cannot use
+        // this: the chain says the agent is acting.
+        let err = verifier
+            .verify(&room_row, &presentation, Action::Read, &member_did)
+            .await
+            .expect_err("the principal must not be able to present their agent's chain");
+        assert!(
+            format!("{err}").contains(&agent.did),
+            "the refusal should name who the leaf grants to: {err}"
+        );
     }
 }

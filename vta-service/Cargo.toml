@@ -357,6 +357,10 @@ hmac = "0.13"
 aws-lc-rs = { version = "1", optional = true }
 
 [dev-dependencies]
+# The signed room fixtures, for the oracle round-trip test. A dev-dependency so
+# the feature never reaches a release build — a permissive fixture is exactly
+# what should not ship, which is why the crate gates it.
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.1", features = ["test-support"] }
 tempfile = "3"
 # The exact parser the DID-hosting server uses to read `alsoKnownAs` off a
 # published log. Dev-only: it lets the agent-name contract test assert that
