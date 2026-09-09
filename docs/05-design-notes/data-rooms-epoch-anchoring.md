@@ -192,7 +192,8 @@ anyway by having entries.
   nobody would guess needs the refused write to explain itself in the room's own
   words, or the member reads it as their agent malfunctioning and blames the
   wrong party.
-- **Cadence as a room parameter.** §9 says a high-assurance room anchors per
+- **Cadence as a room parameter**, and it costs more than freshness — §6.2:
+  each anchor rotates the room DID's update key. §9 says a high-assurance room anchors per
   commit. `rooms/create/0.1` has no member for it — the same gap the hosting
   axes hit in the creation-policy work — so either it is a client-side setting
   the host never sees, or it needs an upstream schema change.
@@ -201,17 +202,74 @@ anyway by having entries.
 
 ## 6. What this unblocks
 
-The shape is settled, so the work is bounded and sits entirely on the owner's
-side:
+The shape is settled, so the work is bounded:
 
 1. `RoomGroup::epoch_authenticator()` already returns the value (implemented).
-2. On `rooms/epoch/mint`, the owner's client builds the anchor and publishes a
-   webvh update through their VTA.
-3. A member verifying resolves the room DID, reads the anchor, and compares.
+2. The owner's client **reads the room's head from the host** — see §6.1, which
+   this note originally missed.
+3. It builds the anchor and publishes a webvh update through the owner's VTA.
+4. A member verifying resolves the room DID, reads the anchor, and compares.
 
-None of it needs a host change, which is consistent with §9: the host's
-contribution to lifecycle is *never deciding*, and the anchor is what makes that
-checkable rather than trusted.
+**None of it needs a host *change*.** That much was right, and it is consistent
+with §9: the host's contribution to lifecycle is *never deciding*, and the anchor
+is what makes that checkable rather than trusted. What was wrong is the sentence
+that said the work "sits entirely on the owner's side" — publishing does;
+assembling does not.
+
+### 6.1 The owner cannot anchor from what it holds
+
+Checked against the specifications rather than assumed, because this note asserted
+the opposite for two days.
+
+`rooms/epoch/mint`'s response is `{roomId, epoch}`. There is **no version
+watermark in it**, and there is no reason there should be: minting is an act on
+the epoch, and the watermark is a fact about the room's records — which live at
+the host. The data commitment lives there too, and always did.
+
+So an owner assembling an anchor holds exactly one of the three values it is
+about to publish. The other two it must **read from the host**, presenting its
+own room credentials like any other member. That read is
+[`rooms/keys/browse`](https://trusttasks.org/spec/rooms/keys/browse/0.1), whose
+response carries `head.dataCommitment`, `head.headVersion` and `head.recordCount`
+from one snapshot — so the anchor is downstream of the read-through work
+([`data-rooms-read-through.md`](data-rooms-read-through.md)) rather than parallel
+to it.
+
+**And the owner is anchoring a value the host gave it.** That is sound and worth
+being precise about, because it looks circular. The owner is not vouching for the
+root's honesty — it cannot; it did not compute the tree. What the anchor does is
+make the root **singular and witnessed**: a host that has claimed root `R` at
+version `V` in a witnessed log can no longer claim `R'` at `V` to anybody. That
+is exactly Certificate Transparency's arrangement, where the log operator's own
+STH is the thing published and gossip is what makes equivocation fatal.
+
+An owner **SHOULD** nonetheless reconcile before anchoring: a complete unfiltered
+browse whose `verification.count` reads `short` is a host contradicting itself,
+and anchoring that is publishing a number already known to be wrong.
+
+### 6.2 Publishing needs no new task — and costs a key rotation
+
+`vta/webvh/dids/update/1.0` already exists and takes the new `document` plus a
+witness configuration, so the owner's VTA can publish an anchor today with
+nothing added.
+
+What that task's own description says, and what changes how §5's cadence question
+should be read:
+
+> Supplying this **ROTATES the DID's update key** and refreshes its pre-rotation
+> commitments, as a parallel consequence of the change.
+
+So an anchor is not a cheap append. Each one is a witnessed DID update **and** a
+rotation of the room DID's update key. Per-renewal anchoring therefore means
+per-renewal rotation, with witness co-signing each time and a fresh pre-rotation
+commitment to keep. That is manageable — the owner's VTA holds the key and does
+this for every webvh DID it controls — but it makes **cadence an operational
+decision rather than only a freshness one**, and a room that anchors on every
+write would be rotating its own DID's update key on every write.
+
+It also touches §10 succession: a transfer that lands between an anchor and its
+successor is aiming at a key that has moved. Not a new problem — every webvh
+update has it — but worth knowing before scheduling anchors densely.
 
 It also unblocks something outside §9. The **data commitment** now shipped on
 both read paths offers three comparisons, and the anchor is the only one that
