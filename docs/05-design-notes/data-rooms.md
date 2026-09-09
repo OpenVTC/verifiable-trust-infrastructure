@@ -1042,6 +1042,13 @@ read an `open` room the same way an agent's recall marks one.
    zkVM — it is hashing — and would mean a Merkle key-value store under
    `vti_rooms::storage` plus a commitment in the record wire type. Sized, not
    scheduled; it is a bigger change than §5.5 and it is not a defect fix.
+   Worked out far enough to argue with in
+   [`data-rooms-verified-reads.md`](data-rooms-verified-reads.md), which
+   substitutes the witnessed log for ES's fast-forward proof (so no zkVM), bounds
+   the property it would buy to "complete as of the last renewal", and finds a
+   prerequisite worth doing on its own: **the put acknowledgement is unsigned**,
+   so a writer holds no receipt with which to contradict a commitment that omits
+   their record.
 8. **Rooms created before the chain** (§5.5) — a room that has already advanced
    past epoch 1 has lost the keys to everything below its current epoch, and
    nothing can recover them: no member retained the old exporters and the host
