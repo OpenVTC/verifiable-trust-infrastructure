@@ -56,6 +56,17 @@ use affinidi_tdk::messaging::profiles::ATMProfile;
 use serde_json::Value;
 use tokio::sync::oneshot;
 
+/// The DIDComm binding envelope a Trust Task rides in, and the only reply this
+/// responder signs.
+///
+/// The body under this type is a Trust-Task document, and `VtaClient` verifies
+/// its proof (OpenVTC/verifiable-trust-infrastructure#1341). A reply under any
+/// other type — the legacy protocol messages, a problem report, the
+/// deliberately-wrong types `didcomm_session.rs` sends — is not a Trust-Task
+/// document, nothing verifies it, and a `proof` member on it is a member its
+/// consumer never asked for.
+pub const TT_ENVELOPE: &str = "https://trusttasks.org/binding/didcomm/0.1/envelope";
+
 /// Reply the responder builds for an inbound message.
 pub enum ResponderReply {
     /// Successful result. `result_type` is the DIDComm `typ` field of
@@ -99,6 +110,23 @@ pub enum ResponderError {
     Profile(String),
     #[error("websocket enable failed: {0}")]
     Websocket(String),
+    #[error("the responder identity carries no Ed25519 verification key to sign with")]
+    NoSigningKey,
+}
+
+/// The responder's own Ed25519 verification key — the one its replies are
+/// signed with, and the one a client resolves out of its `did:peer:2` document.
+///
+/// Chosen by key *type* rather than by the `#key-1` fragment `generate_did_peer`
+/// happens to mint: the fragment is a numbering convention, the key type is the
+/// property that makes a key able to sign. The X25519 half (`#key-2`) is for
+/// encryption and cannot.
+fn signing_secret(secrets: &[Secret]) -> Result<Secret, ResponderError> {
+    secrets
+        .iter()
+        .find(|s| s.get_key_type() == affinidi_secrets_resolver::secrets::KeyType::Ed25519)
+        .cloned()
+        .ok_or(ResponderError::NoSigningKey)
 }
 
 /// A `did:peer:2`-identified DIDComm responder, listening on a
@@ -128,6 +156,9 @@ impl TestVtaResponder {
             None,
         )
         .map_err(|e| ResponderError::DidGeneration(e.to_string()))?;
+        // Resolved before anything is stood up: an identity that cannot sign is
+        // a fixture bug, and failing here leaks no socket.
+        let signer = signing_secret(&secrets)?;
 
         // 2. Stand up TDK + ATM + profile.
         let tdk = TDKSharedState::new(
@@ -179,6 +210,7 @@ impl TestVtaResponder {
                 atm_loop,
                 profile_loop,
                 responder_did,
+                signer,
                 handler,
                 &mut shutdown_rx,
             )
@@ -241,6 +273,7 @@ impl TestVtaResponder {
     where
         F: Fn(&str, &Value) -> ResponderReply + Send + Sync + 'static,
     {
+        let signer = signing_secret(&secrets)?;
         let tdk = TDKSharedState::new(
             TDKConfig::builder()
                 .build()
@@ -288,6 +321,7 @@ impl TestVtaResponder {
                 atm_loop,
                 profile_loop,
                 responder_did,
+                signer,
                 handler,
                 &mut shutdown_rx,
             )
@@ -334,6 +368,7 @@ async fn run_dispatch_loop<F>(
     atm: Arc<ATM>,
     profile: Arc<ATMProfile>,
     responder_did: String,
+    signer: Secret,
     handler: Arc<F>,
     shutdown_rx: &mut oneshot::Receiver<()>,
 ) where
@@ -380,7 +415,7 @@ async fn run_dispatch_loop<F>(
         };
 
         let reply = handler(&msg.typ, &msg.body);
-        let (result_type, body) = match reply {
+        let (result_type, mut body) = match reply {
             ResponderReply::Ok { result_type, body } => (result_type, body),
             ResponderReply::Problem { code, comment } => (
                 "https://didcomm.org/report-problem/2.0/problem-report".to_string(),
@@ -388,6 +423,20 @@ async fn run_dispatch_loop<F>(
             ),
             ResponderReply::Drop => continue,
         };
+
+        // A VTA signs every Trust-Task success response, and `VtaClient` now
+        // checks it — so a stand-in that answers unsigned is not a cheap mock,
+        // it is an agent that behaves in a way no real one does. This calls the
+        // agent's own signing code (`test_support::sign_response_document`)
+        // rather than a lookalike, and signs with this responder's own
+        // verification key, so the proven signer is the DID the client
+        // addressed.
+        if result_type == TT_ENVELOPE
+            && !vta_service::test_support::sign_response_document(&signer, &mut body).await
+        {
+            tracing::error!("the responder could not sign its reply; sending nothing");
+            continue;
+        }
 
         let reply_id = uuid::Uuid::new_v4().to_string();
         let reply_msg = Message::build(reply_id.clone(), result_type, body)

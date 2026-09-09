@@ -1059,6 +1059,70 @@ async fn consent_family_response_shapes() {
     mock.shutdown().await;
 }
 
+/// Dispatch one Trust Task over the REST binding, without `VtaClient`.
+///
+/// Used only by [`services_write_paths_against_a_hosted_vta_did`], and only
+/// after it repoints `vta_did`. That test hands the agent a `did:webvh` at
+/// runtime, and the agent's *response-signing* identity does not follow:
+/// `signing_vm_id` is fixed at boot (`server.rs` computes `{vta_did}#key-0`
+/// there, and `config_registry_round_trips_and_identity_stays_read_only`
+/// records that identity is read-only through config, so no live VTA reaches
+/// this state). The mock therefore answers signed as its `did:key` while
+/// claiming to be the hosted DID, and `VtaClient` — which verifies a reply's
+/// proof and binds the proven signer to the agent it is addressing
+/// (OpenVTC/verifiable-trust-infrastructure#1341) — refuses every answer.
+/// Correctly: that is the check working.
+///
+/// Booting the mock with the hosted identity would fix the signer and not the
+/// verification. `did:webvh:…:webvh-host.test` is minted against
+/// [`StubWebvhHost`], which publishes nothing and answers on loopback under a
+/// domain that resolves nowhere — so a reply signed as that DID is
+/// unverifiable by *any* client, in this process or another. There is no
+/// arrangement of this fixture in which a verifying client accepts an answer
+/// from a stub-hosted DID.
+///
+/// The subject here is the agent's `services/*` write paths, so the request
+/// goes direct: the same signed document `VtaClient` builds
+/// (`trust_task_sign::build_signed` is the code path behind
+/// `signed_task_document`), to the same `/trust-tasks` route, with the same
+/// bearer token. Everything server-side is unchanged — §7.2 admission, the
+/// dispatch spine, the handlers, the response proof. Only the client-side
+/// verification of the reply is out of the picture, and it is not what this
+/// test is about.
+async fn post_trust_task(
+    mock: &MockVta,
+    identity: &vta_sdk::client::ClientIdentity,
+    token: &str,
+    type_uri: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let body = vta_sdk::trust_task_sign::build_signed(
+        type_uri,
+        payload,
+        &identity.client_did,
+        &identity.private_key_multibase,
+        &identity.vta_did,
+    )
+    .await
+    .map_err(|e| format!("build a signed {type_uri}: {e}"))?;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/trust-tasks", mock.base_url()))
+        .bearer_auth(token)
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| format!("POST {type_uri}: {e}"))?;
+
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!("{type_uri} answered {status}: {text}"));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("{type_uri} reply is not JSON: {e} ({text})"))
+}
+
 /// The `services/*` write paths, against a VTA whose own DID is hosted.
 ///
 /// These were the last uncovered block with a shared cause. `services/enable`
@@ -1138,16 +1202,17 @@ async fn services_write_paths_against_a_hosted_vta_did_inner() {
         cfg.vta_did = Some(did.clone());
     }
 
-    // And re-address the client. The VTA's identity just changed, and a
+    // And re-address the caller. The VTA's identity just changed, and a
     // document's `recipient` has to name the consumer it is sent to — SPEC §7.2
     // item 5 rejects one that does not. Reusing the old client would fail on
     // `wrongRecipient` before reaching anything this test is about.
+    //
+    // From here the dispatches go over the REST binding directly rather than
+    // through `VtaClient`; `post_trust_task` records why.
     let (identity, token) = mock
         .ctx
         .mint_signing_identity(0x40, "admin", vec![], &did)
         .await;
-    let client = VtaClient::new(mock.base_url()).with_identity(identity);
-    client.set_token_async(token).await;
 
     // REST throughout: it is the transport with no live handshake, so these
     // exercise the publish path rather than a service-liveness probe.
@@ -1156,41 +1221,45 @@ async fn services_write_paths_against_a_hosted_vta_did_inner() {
     // document advertises no REST service, while the fixture's config says REST
     // is on. Reconciling that disagreement is what enable is for — and until
     // this change it refused to, leaving the state unmanageable.
-    client
-        .dispatch_trust_task(
-            vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0,
-            serde_json::json!({ "service": "rest", "config": { "url": "https://vta.test" } }),
-            30,
-        )
-        .await
-        .expect("services/enable");
+    post_trust_task(
+        &mock,
+        &identity,
+        &token,
+        vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0,
+        serde_json::json!({ "service": "rest", "config": { "url": "https://vta.test" } }),
+    )
+    .await
+    .expect("services/enable");
 
-    client
-        .dispatch_trust_task(
-            vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0,
-            serde_json::json!({ "service": "rest", "config": { "url": "https://vta.test/moved" } }),
-            30,
-        )
-        .await
-        .expect("services/update");
+    post_trust_task(
+        &mock,
+        &identity,
+        &token,
+        vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0,
+        serde_json::json!({ "service": "rest", "config": { "url": "https://vta.test/moved" } }),
+    )
+    .await
+    .expect("services/update");
 
-    client
-        .dispatch_trust_task(
-            vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_0,
-            serde_json::json!({ "service": "rest" }),
-            30,
-        )
-        .await
-        .expect("services/disable");
+    post_trust_task(
+        &mock,
+        &identity,
+        &token,
+        vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_0,
+        serde_json::json!({ "service": "rest" }),
+    )
+    .await
+    .expect("services/disable");
 
-    client
-        .dispatch_trust_task(
-            vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_0,
-            serde_json::json!({ "service": "rest" }),
-            30,
-        )
-        .await
-        .expect("services/rollback");
+    post_trust_task(
+        &mock,
+        &identity,
+        &token,
+        vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_0,
+        serde_json::json!({ "service": "rest" }),
+    )
+    .await
+    .expect("services/rollback");
 
     // `passkey-vms/revoke` is *not* here, and the reason is worth recording:
     // it refuses a fragment that is not on the document
