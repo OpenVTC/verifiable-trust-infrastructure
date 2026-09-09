@@ -101,17 +101,27 @@ Three builds against `wasm32-unknown-unknown`:
 | `dtg-credentials` 0.7 (`default-features = false`) + `affinidi-data-integrity` 0.7 | **builds** |
 | `vti-rooms`' member half, **sources unmodified**, host modules and `vti-common` removed | **builds** — 465 KB `.wasm` |
 
+Since shipped as the `host` feature: `cargo check -p vti-rooms --lib
+--no-default-features --features mls --target wasm32-unknown-unknown` passes in
+the workspace, guarded by two steps in CI's `features` job.
+
 Three facts worth not re-deriving:
 
 - **`openmls` 0.9 ships a first-class `js` feature** (`dep:web-time`,
   `getrandom/wasm_js`). Without it the build fails on `use web_time::SystemTime`
   in `key_packages/lifetime.rs`, which reads like an unsupported target and is
   not.
-- **Three `getrandom` majors are live in one graph** (0.2 via `rand 0.8`, 0.3,
-  0.4), and each needs its own opt-in: `features = ["js"]` on 0.2,
-  `features = ["wasm_js"]` on 0.3/0.4, *and*
-  `RUSTFLAGS='--cfg getrandom_backend="wasm_js"'`. Every failure here reports as
-  a `compile_error!` naming one version, so it is fixed three times.
+- **Two `getrandom` majors are live in one graph.** The 0.4 is `vti-rooms`' own;
+  the 0.2 arrives transitively under `openmls_rust_crypto`, through RustCrypto's
+  elliptic-curve stack, so no feature the crate declares can reach it — it needs
+  a direct `features = ["js"]` shim. Every failure here reports as a
+  `compile_error!` naming one version, which reads like an unsupported target and
+  is not.
+- **No `RUSTFLAGS` are needed.** An early probe set
+  `--cfg getrandom_backend="wasm_js"` and it was never removed to check; with
+  both getrandoms declared per-target with their features, the build is clean
+  without it. Worth stating because "you must also set RUSTFLAGS" is the kind of
+  detail that gets copied into a Dockerfile and never questioned.
 - **`dtg-credentials`' `affinidi-signing` feature is optional and default-on.**
   Turning it off drops `affinidi-secrets-resolver`, and `DTGCredential::sign`
   still works because `affinidi-data-integrity` takes a `Signer` **trait
