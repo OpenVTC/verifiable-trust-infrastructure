@@ -610,15 +610,43 @@ pub fn digest_multibase(doc: &JsonValue) -> Result<String, AppError> {
     Ok(multibase::encode(multibase::Base::Base58Btc, multihash))
 }
 
+/// Digest of a credential in the form DTG Core Credentials **now** specifies for
+/// `credentialSubject.digestMultibase`: SHA-256 over the JCS canonicalization of the
+/// document with its top-level `proof` removed, as a base58btc multibase multihash.
+///
+/// Delegated to `dtg-credentials` rather than written here, and that is the point. This
+/// module already carries two digest functions that differ in encoding *and* coverage, and
+/// the acknowledgement binding used to be a third — a hand-rolled copy of a definition the
+/// counterparty computes with the library. Working Draft 02 changed the encoding and the
+/// copy did not follow, so the two sides stopped agreeing; the tests in
+/// `members::inbound_vmc` caught it, being written for exactly that
+/// ("two implementations, one definition — this is the assertion that catches either side
+/// drifting").
+///
+/// One definition, one implementation, and it belongs to the party that publishes the
+/// specification.
+///
+/// **Not [`digest_multibase`]**, which is the same encoding over *different* coverage — it
+/// digests the document whole, `proof` included. Substituting one for the other compiles
+/// and produces a plausible string that matches nothing.
+pub fn dtg_credential_digest_multibase(doc: &JsonValue) -> Result<String, AppError> {
+    dtg_credentials::digest_multibase_json(doc)
+        .map_err(|e| AppError::Validation(format!("credential is not canonicalizable: {e}")))
+}
+
 /// Digest of a credential in the form DTG Core Credentials specifies for
 /// `credentialSubject.digest`: SHA-256 over the RFC 8785 (JCS)
 /// canonicalization of the document **with its top-level `proof` removed**,
 /// encoded as `sha256:` followed by the lowercase hexadecimal digest.
 ///
-/// This is what a member-issued VMC carries of the grant it acknowledges, and
-/// what a VWC carries of the edge credential it attests. Distinct from
-/// [`digest_multibase`] in encoding *and* coverage — do not substitute one for
-/// the other.
+/// **Working Draft 01, and kept only to read what is already in the field.** WD02 replaced
+/// this with the multibase multihash [`dtg_credential_digest_multibase`] computes, and
+/// renamed the property to `digestMultibase`. Members whose client predates that change
+/// still send the old form, and their acknowledgements must keep verifying — so this stays
+/// for the read path and nothing new should emit it.
+///
+/// Distinct from [`digest_multibase`] in encoding *and* coverage — do not substitute one
+/// for the other.
 ///
 /// # Over the document as it stands, not a re-serialised model
 ///

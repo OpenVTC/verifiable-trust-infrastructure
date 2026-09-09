@@ -197,18 +197,53 @@ pub async fn receive_member_vmc_inner(
 /// Deliberate asymmetry, and the reason it is safe: an unbound acknowledgement
 /// claims *less* than a bound one, so admitting it grants nothing. A
 /// mismatched one claims something false.
+/// Which spelling of the digest a member sent.
+///
+/// Not a preference: the two encode the same bytes differently, so each is compared against
+/// an expected value computed the same way. Naming the form keeps that pairing in one place
+/// — a check that compared a WD02 digest against a WD01 expectation would refuse a correct
+/// acknowledgement and say the member acknowledged a different grant.
+#[derive(Clone, Copy)]
+enum DigestForm {
+    /// `credentialSubject.digestMultibase` — Working Draft 02, base58btc multihash.
+    Multibase,
+    /// `credentialSubject.digest` — Working Draft 01, `sha256:<lowercase hex>`.
+    LegacyHex,
+}
+
+impl DigestForm {
+    fn property(self) -> &'static str {
+        match self {
+            Self::Multibase => "credentialSubject.digestMultibase",
+            Self::LegacyHex => "credentialSubject.digest",
+        }
+    }
+}
+
 fn check_acknowledgement_binding(
     vc: &JsonValue,
     grant: Option<&JsonValue>,
     member_did: &str,
 ) -> Result<bool, AppError> {
-    let claimed = vc
-        .get("credentialSubject")
-        .and_then(JsonValue::as_object)
-        .and_then(|s| s.get("digest"))
-        .and_then(JsonValue::as_str);
+    // Two property names, because two Working Drafts are in the field. WD02 renamed
+    // `digest` to `digestMultibase` and changed its encoding from `sha256:<hex>` to a
+    // base58btc multihash; a member whose client predates that still sends the old one, and
+    // their acknowledgement must keep verifying. Whichever arrives is compared against the
+    // expected value *for that form* — this widens what is accepted, never what counts as a
+    // match.
+    let subject = vc.get("credentialSubject").and_then(JsonValue::as_object);
+    let claimed = subject
+        .and_then(|s| s.get("digestMultibase"))
+        .and_then(JsonValue::as_str)
+        .map(|d| (d, DigestForm::Multibase))
+        .or_else(|| {
+            subject
+                .and_then(|s| s.get("digest"))
+                .and_then(JsonValue::as_str)
+                .map(|d| (d, DigestForm::LegacyHex))
+        });
 
-    let (Some(claimed), Some(grant)) = (claimed, grant) else {
+    let (Some((claimed, form)), Some(grant)) = (claimed, grant) else {
         // R6.3: say which of the two is missing, so an operator looking at an
         // incomplete edge can tell "the member's client is old" from "we never
         // kept the grant to check against".
@@ -222,12 +257,29 @@ fn check_acknowledgement_binding(
         return Ok(false);
     };
 
-    let expected = crate::credentials::ingress::dtg_credential_digest(grant)?;
-    if claimed != expected {
+    let matches = match form {
+        // Compared as decoded bytes, never as strings: one multihash has more than one
+        // spelling, and a string comparison would report a mismatch where the two sides
+        // agree. The specification requires the byte comparison and the library does it.
+        DigestForm::Multibase => {
+            let expected = crate::credentials::ingress::dtg_credential_digest_multibase(grant)?;
+            dtg_credentials::digests_match(claimed, &expected).map_err(|e| {
+                AppError::Validation(format!(
+                    "member vmc digest is not a valid multibase digest: {e}"
+                ))
+            })?
+        }
+        DigestForm::LegacyHex => {
+            claimed == crate::credentials::ingress::dtg_credential_digest(grant)?
+        }
+    };
+
+    if !matches {
         return Err(AppError::Validation(format!(
-            "member vmc `credentialSubject.digest` does not match the membership \
-             credential this community issued to {member_did} — it acknowledges a \
-             different grant. Re-issue against the current one."
+            "member vmc `{}` does not match the membership credential this community \
+             issued to {member_did} — it acknowledges a different grant. Re-issue against \
+             the current one.",
+            form.property()
         )));
     }
 
@@ -364,6 +416,62 @@ mod binding_tests {
             check_acknowledgement_binding(&ack, Some(&grant), "did:key:zMember").unwrap(),
             "the catalog's digest must verify against this service's"
         );
+    }
+
+    /// A member whose client predates Working Draft 02 still verifies.
+    ///
+    /// The one case the fixture above cannot produce, because `dtg-credentials` emits only
+    /// the current form — so this hand-builds the old one. That is worth the awkwardness:
+    /// this is the population the fallback exists for, and without a test the fallback is a
+    /// branch nobody has run. Deleting it would look safe right up until an old member's
+    /// acknowledgement was refused for "acknowledging a different grant", which it did not.
+    #[test]
+    fn a_working_draft_01_acknowledgement_still_binds() {
+        let (grant, ack) = pair();
+
+        // Same grant, digested the old way, under the old property name.
+        let legacy_digest =
+            crate::credentials::ingress::dtg_credential_digest(&grant).expect("legacy digest");
+        assert!(
+            legacy_digest.starts_with("sha256:"),
+            "the WD01 form is `sha256:<hex>`, and this test is about that spelling"
+        );
+
+        let mut legacy_ack = ack.clone();
+        let subject = legacy_ack
+            .get_mut("credentialSubject")
+            .and_then(JsonValue::as_object_mut)
+            .expect("the acknowledgement has a subject");
+        subject.remove("digestMultibase");
+        subject.insert("digest".into(), JsonValue::String(legacy_digest));
+
+        assert!(
+            check_acknowledgement_binding(&legacy_ack, Some(&grant), "did:key:zMember").unwrap(),
+            "an acknowledgement from before WD02 must keep verifying"
+        );
+    }
+
+    /// …and the old form is still *checked*, not merely tolerated.
+    ///
+    /// The failure mode a fallback invites: accepting the property and never comparing it,
+    /// so every legacy acknowledgement passes whatever it says.
+    #[test]
+    fn a_working_draft_01_acknowledgement_of_a_different_grant_is_refused() {
+        let (grant, ack) = pair();
+
+        let mut legacy_ack = ack.clone();
+        let subject = legacy_ack
+            .get_mut("credentialSubject")
+            .and_then(JsonValue::as_object_mut)
+            .expect("the acknowledgement has a subject");
+        subject.remove("digestMultibase");
+        subject.insert(
+            "digest".into(),
+            JsonValue::String(format!("sha256:{}", "0".repeat(64))),
+        );
+
+        check_acknowledgement_binding(&legacy_ack, Some(&grant), "did:key:zMember")
+            .expect_err("a mismatched legacy digest must be refused too");
     }
 
     /// The community re-signing a grant must not invalidate consent already
