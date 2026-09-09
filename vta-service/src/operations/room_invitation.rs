@@ -264,15 +264,91 @@ mod tests {
         id: &str,
     ) -> String {
         let now = Utc::now();
-        let mut vic = DTGCredential::new_vic(
-            issuer.to_string(),
-            subject.to_string(),
+        an_invitation_valid(
+            issuer,
+            signer,
+            subject,
+            id,
             now - chrono::Duration::minutes(1),
             Some(now + chrono::Duration::hours(1)),
         )
-        .with_id(id);
+        .await
+    }
+
+    /// The same, with the window said explicitly.
+    ///
+    /// Split out because a window cannot be tested by a helper that hardcodes a good one —
+    /// which is why it was not tested.
+    async fn an_invitation_valid(
+        issuer: &str,
+        signer: &affinidi_secrets_resolver::secrets::Secret,
+        subject: &str,
+        id: &str,
+        from: chrono::DateTime<Utc>,
+        until: Option<chrono::DateTime<Utc>>,
+    ) -> String {
+        let mut vic = DTGCredential::new_vic(issuer.to_string(), subject.to_string(), from, until)
+            .with_id(id);
         vic.sign(signer, None).await.expect("sign the invitation");
         serde_json::to_string(vic.credential()).expect("serialise")
+    }
+
+    /// **An invitation's window, which nothing was checking.**
+    ///
+    /// Both clauses were here and both were unexercised — on this side and in the browser
+    /// member's copy of the same gate (`vti-rooms-wasm`). That is the failure mode worth
+    /// naming: a regression here breaks nothing visibly. Expired invitations simply keep
+    /// working, and the party who would care — whoever issued one and expected it to lapse —
+    /// has no way to find out.
+    #[tokio::test]
+    async fn an_invitation_outside_its_window_is_refused() {
+        let (room, room_secret) = a_party(0x47);
+        let me = "did:key:zMember";
+        let now = Utc::now();
+
+        let expired = an_invitation_valid(
+            &room,
+            &room_secret,
+            me,
+            "urn:uuid:w-1",
+            now - chrono::Duration::hours(2),
+            Some(now - chrono::Duration::hours(1)),
+        )
+        .await;
+        let err = verify(&expired, &room, me, &DidKeyOnly)
+            .await
+            .expect_err("an invitation that has run out must not still admit");
+        assert!(format!("{err}").contains("expired"), "{err}");
+
+        let premature = an_invitation_valid(
+            &room,
+            &room_secret,
+            me,
+            "urn:uuid:w-2",
+            now + chrono::Duration::hours(1),
+            Some(now + chrono::Duration::hours(2)),
+        )
+        .await;
+        let err = verify(&premature, &room, me, &DidKeyOnly)
+            .await
+            .expect_err("nor one that has not started");
+        assert!(format!("{err}").contains("not valid yet"), "{err}");
+
+        // No `validUntil` at all: the credential type permits it, so a room *can* issue one
+        // that never lapses. Asserted as accepted, because that is the issuer's decision and
+        // not something a verifier should overrule on their behalf.
+        let forever = an_invitation_valid(
+            &room,
+            &room_secret,
+            me,
+            "urn:uuid:w-3",
+            now - chrono::Duration::minutes(1),
+            None,
+        )
+        .await;
+        verify(&forever, &room, me, &DidKeyOnly)
+            .await
+            .expect("an open-ended invitation is the issuer's call, not this gate's");
     }
 
     #[tokio::test]
