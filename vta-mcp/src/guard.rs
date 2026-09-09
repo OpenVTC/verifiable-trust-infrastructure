@@ -143,6 +143,9 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // Returns a record's PLAINTEXT — on a sealed tier, material the room
     // withholds from its own host — after an outbound call to a party the caller
     // names. Both halves are why this is sensitive; either alone would be.
+    // Publishes permanently, in the room's name, and rotates the room DID's
+    // update key on the way. Nothing here can be taken back.
+    ("rooms/owner/anchor", Risk::Destructive),
     ("rooms/keys/read", Risk::Sensitive),
     // Metadata only, and still sensitive: it presents the principal's room
     // credentials to a caller-named host, which on a tier that discloses

@@ -438,6 +438,12 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // the same record, and this agent opens it again. What a retry costs is one
     // more disclosure of the presentation to the host, which is why it is safe
     // rather than free.
+    // `Keyed`, and the reason is that "harmless duplicate" is not quite true
+    // here. A second anchor supersedes the first and says the same thing, so it
+    // converges on state — but each attempt appends a permanent witnessed log
+    // entry AND rotates the room DID's update key. Both are durable artefacts
+    // that persist and matter, which is what `Keyed` is for.
+    (trust_tasks::TASK_ROOMS_OWNER_ANCHOR_0_1, Keyed),
     (trust_tasks::TASK_ROOMS_KEYS_READ_0_1, RetrySafe),
     // Same, over a listing. The room may have moved between attempts, so two
     // tries can differ — that is the room changing, not the task misbehaving,

@@ -1827,6 +1827,10 @@ dispatch_table! {
     // Returns a record's plaintext — on a sealed tier, material the room
     // withholds from its own host — after presenting the principal's
     // credentials to a party the caller names.
+    // Publishes a witnessed log entry in the room's name, which cannot be
+    // withdrawn — only superseded.
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ANCHOR_0_1 => room_owner::handle_anchor
+        [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_1 => room_group::handle_read
         [ None Secret true ],
     // Metadata only, and still `actsAsSubject`: the presentation names a member

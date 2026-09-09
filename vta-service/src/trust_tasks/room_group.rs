@@ -549,7 +549,7 @@ pub(super) async fn handle_backfill(
 /// the third caller appeared — `backfill`, `read` and `browse` refusing in three
 /// slightly different sentences would be three chances for one of them to say
 /// something untrue about why.
-async fn outbound_identity(
+pub(super) async fn outbound_identity(
     state: &AppState,
     doc: &TrustTask<Value>,
 ) -> Result<(String, affinidi_did_resolver_cache_sdk::DIDCacheClient), TrustTaskOutcome> {
