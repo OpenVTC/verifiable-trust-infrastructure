@@ -37,6 +37,12 @@ serde_json = { workspace = true }
 # The published schema types `updatedAt` as an RFC 3339 string.
 chrono = { workspace = true }
 
+# The record commitment (`merkle`). RFC 8785 canonicalisation so a leaf commits
+# to the record's *meaning* rather than to one serialiser's field order, and
+# SHA-256 with RFC 6962's domain separation.
+serde_json_canonicalizer = { workspace = true }
+sha2 = { workspace = true }
+
 # MLS (RFC 9420) for room group keys, behind the `mls` feature. The design note
 # adopts MLS rather than a hand-rolled epoch scheme: post-compromise security and
 # O(log n) membership change are not things to reimplement.

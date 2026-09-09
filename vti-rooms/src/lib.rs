@@ -63,6 +63,12 @@ pub mod audit;
 pub mod authz;
 pub mod error;
 pub mod lifecycle;
+/// The record commitment — a Merkle tree over a room's records, so a listing
+/// that omits one can be caught.
+///
+/// See `docs/05-design-notes/data-rooms-verified-reads.md` for what it buys and
+/// what it does not.
+pub mod merkle;
 /// The room's group-key layer (RFC 9420), behind the `mls` feature.
 ///
 /// Off by default: a host that only stores ciphertext needs none of it, and OpenMLS is a
