@@ -23,7 +23,7 @@ crate-type = ["cdylib", "rlib"]
 # The member half, and nothing else from the workspace. `default-features =
 # false` is the whole point: with `host` on, this would pull `vti-common` and
 # with it axum, fjall and tokio, none of which reach wasm.
-vti-rooms = { path = "../vti-rooms", version = "0.1", default-features = false, features = [
+vti-rooms = { path = "../vti-rooms", version = "0.2", default-features = false, features = [
   "mls",
 ] }
 

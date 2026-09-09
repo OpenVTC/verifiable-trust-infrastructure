@@ -2,6 +2,81 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.3.0...vta-persona-v0.3.1) — 2026-09-09
+
+
+### Added
+
+- **persona**: Say whether a link crosses a part of the holder's life ([#1342](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1342))
+
+Serves the members added in dtgwg-trust-tasks-tf#408, published in
+  trust-tasks-rs 0.18.10: `crossesFacets` and `facetIds` on a finding,
+  `facetId` on each `sharedWith` location. This needs a floor of 0.18.10 —
+  the spine validates OUTGOING responses, so under an older schema an analysis
+  that fully succeeded would come back 500 `responseSchemaViolation` — and no
+  longer moves one: main reached 0.18.11 while this sat open, which satisfies
+  it. The bump this branch carried is dropped rather than resolved downward.
+
+  **Severity is how linkable. Facets are whether the holder minds.** Nothing
+  here touches `severity`, and that is the design rather than an omission. A
+  value shared between two profiles in one facet still links them for anyone
+  who sees both — the holder's filing changes nothing a counterparty can do —
+  so softening severity on intent would report a false all-clear. What the
+  facets add is a second axis: which of these findings the holder would
+  actually want to act on.
+
+  **Absent is unknown, not false.** `crosses_facets` is `Option<bool>` and is
+  `None` when the holder keeps no facets, because `false` asserts these
+  identities sit in one part of a life and an agent with no facets has made no
+  such finding. `FacetIndex::any` is what carries that distinction, which is
+  why the index is a struct rather than a map.
+
+  **An unarranged profile is not a second facet.** Only distinct, named facets
+  count toward a crossing. Counting "no facet" as one would make every holder
+  who has arranged one part of their life and not the rest see a crossing on
+  everything they own — the dismissal problem arriving from the other
+  direction.
+
+  `facet_index` is built once per analysis for the reason `disclosure_index`
+  is: `analyze_correlation` with no `attributeId` walks the whole pool, and
+  the per-finding shape re-lists every facet for every finding.
+
+  The conformance witness now exercises the three new members rather than
+  merely permitting them — they are the ones added last, and an outgoing
+  member the embedded schema has not caught up with is a 500 on a call that
+  succeeded.
+
+  vta-persona 118/118 (6 new, one per rule above), vta-service lib 1063/1063,
+  clippy --all-targets clean.
+
+- **persona**: Serve persona/facet — the holder's arrangement of their identity ([#1338](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1338))
+
+Implements the three tasks specified in dtgwg-trust-tasks-tf#405, published
+  in trust-tasks-rs 0.18.9.
+
+  A holder who uses this model for a while ends up with twenty profiles, and a
+  flat list of twenty is a list nobody reads. A facet is the arrangement over
+  them — "Work", "Home", "Play" — and it is agent-scoped, like the pool and
+  the profiles it groups.
+
+  **An arrangement, not a container.** Nothing is stored inside a facet, and
+  `delete_facet` touches no profile and no attribute. There is no cascading
+  form because there is no cascading form of the idea: a grouping that could
+  take its members with it is a folder, and a holder who reads it as a folder
+  is right to be afraid of it. `releasedFaces` reports what now belongs
+  nowhere, which is what a screen needs to say what it will look like
+  afterwards. `deleting_a_facet_deletes_nothing_it_named` pins it.
+
+  **Membership lives on the facet.** A `facet_id` on `Attribute` would be the
+  obvious alternative and is the wrong shape: `attribute/put` REPLACES, and a
+  well-behaved consumer does not hold the values it would have to resend —
+  `attribute/list` withholds `sensitivity: high` plaintext unless asked by
+  name. It would either request every sensitive value the holder owns to
+  perform an arrangement that has nothing to do with values, or send a put
+  without one and destroy them.
+
+
+
 ## [0.3.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.2.0...vta-persona-v0.3.0) — 2026-09-08
 
 

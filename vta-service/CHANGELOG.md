@@ -2,6 +2,649 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.24.1...vta-service-v0.25.0) — 2026-09-09
+
+
+### Added
+
+- **persona**: Say whether a link crosses a part of the holder's life ([#1342](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1342))
+
+Serves the members added in dtgwg-trust-tasks-tf#408, published in
+  trust-tasks-rs 0.18.10: `crossesFacets` and `facetIds` on a finding,
+  `facetId` on each `sharedWith` location. This needs a floor of 0.18.10 —
+  the spine validates OUTGOING responses, so under an older schema an analysis
+  that fully succeeded would come back 500 `responseSchemaViolation` — and no
+  longer moves one: main reached 0.18.11 while this sat open, which satisfies
+  it. The bump this branch carried is dropped rather than resolved downward.
+
+  **Severity is how linkable. Facets are whether the holder minds.** Nothing
+  here touches `severity`, and that is the design rather than an omission. A
+  value shared between two profiles in one facet still links them for anyone
+  who sees both — the holder's filing changes nothing a counterparty can do —
+  so softening severity on intent would report a false all-clear. What the
+  facets add is a second axis: which of these findings the holder would
+  actually want to act on.
+
+  **Absent is unknown, not false.** `crosses_facets` is `Option<bool>` and is
+  `None` when the holder keeps no facets, because `false` asserts these
+  identities sit in one part of a life and an agent with no facets has made no
+  such finding. `FacetIndex::any` is what carries that distinction, which is
+  why the index is a struct rather than a map.
+
+  **An unarranged profile is not a second facet.** Only distinct, named facets
+  count toward a crossing. Counting "no facet" as one would make every holder
+  who has arranged one part of their life and not the rest see a crossing on
+  everything they own — the dismissal problem arriving from the other
+  direction.
+
+  `facet_index` is built once per analysis for the reason `disclosure_index`
+  is: `analyze_correlation` with no `attributeId` walks the whole pool, and
+  the per-finding shape re-lists every facet for every finding.
+
+  The conformance witness now exercises the three new members rather than
+  merely permitting them — they are the ones added last, and an outgoing
+  member the embedded schema has not caught up with is a 500 on a call that
+  succeeded.
+
+  vta-persona 118/118 (6 new, one per rule above), vta-service lib 1063/1063,
+  clippy --all-targets clean.
+
+- **rooms**: Cut over to present/0.2 and issue-authority/0.2 ([#1365](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1365))
+
+The consuming half of trustoverip/dtgwg-trust-tasks-tf#415 and #418, unblocked
+  by affinidi/affinidi-tdk-rs#784.
+
+  `trust-tasks-rs` 0.19 carries both new spec versions, but this workspace could
+  not take it: `affinidi-messaging-sdk 0.22.0` required 0.18, so pinning 0.19 put
+  two `trust-tasks-rs` nodes in the graph and broke `vta-sdk` on `expected
+  MediatorAcl, found a different MediatorAcl`. TDK #784 moved the messaging family
+  to 0.19 and 0.23.0.
+
+  Taking it exposed pins that had drifted apart underneath: `vta-sdk` was on
+  messaging-sdk 0.22 while `vta-service` and the e2e tests were on 0.21, and three
+  `trust-tasks-rs` versions were resolving at once. All of it is now consolidated:
+  the lockfile holds exactly ONE `trust-tasks-rs` and ONE `affinidi-messaging-sdk`,
+  where before it held three of each.
+
+  `rooms/keys/present` 0.1 -> 0.2 and `rooms/owner/issue-authority` 0.1 -> 0.2.
+  Both 0.1s are retired upstream. Neither is dual-accepted, deliberately: for
+  `present`, 0.1's extra members are exactly the two nothing could honour; for
+  `issue-authority`, accepting 0.1 means accepting a request with no `validUntil`,
+  which is the thing 0.2 exists to refuse.
+
+  The hand-rolled `validUntil` guard in `room_owner.rs` is deleted. 0.2 makes the
+  member REQUIRED, so the generated payload types it as a `DateTime` and the
+  envelope schema rejects a request without one before dispatch. Same rule, one
+  layer up, which is where a shape constraint belongs.
+
+  `every_witnessed_task_round_trips_through_its_generated_types` refused two
+  witnesses that had been green for as long as they existed:
+
+  1. The `issue-authority` witness carried no `validUntil` — a chain root with no
+     expiry, the exact request 0.2 forbids, and one this service could have sent.
+  2. The `present` witness carried `"audience": "did:key:z6MkHost"` — a HOST DID,
+     the precise shape #414 reported as impossible to satisfy, since the field
+     named the party that had to PRESENT the credential.
+
+  `room_oracle` emitted `membership` and `authority[]` as JSON **objects**;
+  `AuthorityPresentation` types both as strings, and the host's opener reads
+  base64url or bare JSON text. So the oracle's output could not deserialize at a
+  host at all — `rooms/keys/present` had never worked end to end. It went unseen
+  because 0.1's response typed `presentation` as an opaque object; 0.2 names the
+  shared component, which turned a runtime refusal nothing exercised into a type
+  error. The oracle now serialises each credential. That is the first half of
+  have caught all three of these years earlier.
+
+- **rooms**: A browser can be a room member ([#1347](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1347))
+
+* feat(rooms): a `host` feature, so a room's member half reaches wasm
+
+  `vti-rooms` already had two halves and no name for them: `vta-service`
+  imports `mls`/`sealed`/`wire` and nothing else, while `vtc-service`,
+  `room-host` and `vti-rooms-dtg` import `storage`/`authz`/`audit`. This
+  names the second half `host`, on by default, and makes `vti-common`
+  optional behind it.
+
+  `vti-common` describes itself as server-side infrastructure and pulls
+  axum, fjall and tokio, so it was the whole of what kept a room's member
+  code off `wasm32-unknown-unknown`. With it optional,
+  `--no-default-features --features mls` builds there — which is what lets
+  a browser hold a room's keys itself rather than ask an agent to. See
+  `docs/05-design-notes/data-rooms-demo-site.md`.
+
+  The member half needed **no source changes** to get there. That is a
+  property of `error.rs`, which deliberately does not use
+  `vti_common::error::AppError` because key material is not a service's
+  concern; a decision made for its own reasons that paid for itself here.
+
+  `lifecycle` is deliberately left ungated: only hosts consume it today,
+  but it needs nothing from `vti-common`, and a member computing a room's
+  lifecycle state to explain it on screen should not need a host's
+  dependencies.
+
+  Three things about the wasm plumbing, each of which reports as a
+  `compile_error!` that reads like an unsupported target:
+
+  - OpenMLS 0.9 has a first-class `js` feature (`web-time` for the
+    `SystemTime` wasm lacks, plus getrandom's JS backend). Declared
+    per-target rather than as a feature of this crate, so building for
+    wasm just works — verified wasm-only: `web-time` appears in the wasm
+    tree and not the native one.
+  - There are two getrandom majors in the graph. The 0.4 is ours; the 0.2
+    arrives transitively under `openmls_rust_crypto` via RustCrypto's
+    elliptic-curve stack, so no feature declared here could reach it.
+    `getrandom_02` is a feature shim, not a dependency this crate calls.
+  - With both declared per-target, **no `RUSTFLAGS` are needed** — the
+    `wasm_js` feature alone selects the backend.
+
+  CI gains two steps in the `features` job: clippy on the member half with
+  no host, and a wasm32 `--lib` check, so neither property rots silently.
+
+  `vta-service` now takes `default-features = false`: a VTA holds room keys
+  and is never a room's host, so it no longer compiles one.
+
+  * feat(rooms): vti-rooms-wasm — a data room's member half, in a browser
+
+  The MLS group, record sealing and the epoch key chain, compiled to
+  WebAssembly, so a tab can *be* a member rather than drive an agent that
+  is one. `vti-rooms` supplies all of it; this crate is only the boundary,
+  and its job is deciding what crosses.
+
+  **Secrets do not cross.** Everything returned is public — a KeyPackage,
+  ciphertext, an epoch number — with one deliberate exception: the
+  snapshot, which is key material because OpenMLS persists a group through
+  its provider rather than as a value. It goes in IndexedDB and nowhere
+  else; the docs say so at the method, since it is the one thing here a
+  caller could reasonably mishandle.
+
+  ## Two layers, and why
+
+  Every method appears twice: a plain Rust one with the logic, and a
+  one-line `#[wasm_bindgen]` wrapper that converts the error. Not
+  ceremony — `JsError` and `JsValue` are imported JS functions, so
+  constructing one on a native target panics. A crate whose only entry
+  points were wrapped would have no reachable native tests at all, and the
+  tests worth having are exactly the ones asserting a *failure*.
+
+  Both tests are of that kind, and both are round-trips rather than unit
+  assertions, because everything worth catching happens between the steps:
+
+  - a record must not open at a version or under a key it was not sealed
+    for — the binding is in the AEAD's associated data, not merely
+    alongside it;
+  - a snapshot taken before a commit must *refuse* rather than return
+    garbage, which is the failure mode a browser member will actually hit
+    (a tab closed for a week, reopened after somebody else joined).
+
+  ## Two API decisions
+
+  - **JSON strings in and out**, not `serde-wasm-bindgen`. The structures
+    crossing are the published `rooms/*` wire types and JSON is the form
+    they already travel in, so the boundary speaks the transport's
+    language and there is one fewer representation to get wrong.
+  - **`applyCommit` returns `{ epoch, link }`**, not just the epoch. The
+    rung is minted in the one moment any party knows both the outgoing and
+    incoming keys; it is added to the member's own chain here, and
+    returned because it is also what a host stores on their behalf. A
+    member who never uploads one keeps their history only as long as this
+    browser does.
+
+  ## Size
+
+  A `wasm-release` profile (`opt-level = "z"`, fat LTO, `panic = "abort"`)
+  takes the artifact from 693 KB gzipped to **540 KB**. Separate from
+  `release` because it trades compile time and native performance for
+  bytes — right for one downloaded module, wrong for the services.
+  `wasm-opt -Oz` is worth another slice and is not a cargo concern.
+
+  CI reports both sizes rather than gating on a threshold: one picked today
+  would be either slack enough to mean nothing or tight enough to fail on a
+  dependency's patch release, and what a reviewer needs is the number in
+  the log beside the diff that moved it.
+
+  * feat(rooms): gate the browser member on a room invitation
+
+  A VIC is the consent artefact: joining a room is a two-party act and the
+  invitation is the other party's half. Ported from vta-service's
+  operations::room_invitation, including its check order.
+
+  The gate is on the MEMBER's side, which looks wrong until you ask what it
+  defends. Not the room — this key holder. Minting retains a private key
+  against a Welcome that may never come, so a key holder that minted for
+  anyone is one anyone can fill; and a Welcome carries a group's secrets,
+  so accepting an uninvited one holds keys for a room nobody agreed to
+  join. The room's own protection is the owner refusing an uninvited key
+  package. Two parties, two threats, neither substituting for the other.
+
+  Verification is lexical: the proof is checked against raw public-key
+  bytes and a did:key room carries its key in its own name, so a browser
+  needs no resolver and cannot be offline. A did:webvh room would need real
+  resolution, and that is the one thing this would grow.
+
+  ## A check the original is missing
+
+  Writing a test per clause — rather than one 'a bad invitation is refused'
+  case, which passes with any four of five — showed the forgery clause did
+  not bite. Nothing binds the proof's verification method to the ISSUER.
+  verify_proof_with_public_key checks a signature against whatever bytes it
+  is handed, so resolving the method the proof names and verifying against
+  that proves somebody signed it, which is also true of a forgery: mint an
+  invitation naming the room as issuer, sign it with your own key, point
+  the proof at your own verification method, and every other check passes.
+
+  Added here as its own clause. vta-service's copy has the same shape and
+  needs the same fix — reported separately; this is a second copy of a gate
+  that should live in vti-rooms where both can share it.
+
+  * feat(rooms): the member's key and its authority presentation, in wasm
+
+  Two halves of one thing: everything a member signs is signed in wasm, so
+  the private key never crosses into JavaScript.
+
+  The first cut minted the key with WebCrypto and kept the JWK in
+  `localStorage` — a raw private key in a page's heap and in a string store
+  any script on the origin can read, contradicting this crate's own rule
+  that secrets do not cross. Minting it here costs nothing (`ed25519-dalek`
+  already arrives through OpenMLS) and leaves JS holding two opaque
+  snapshots and no key. `Debug` is hand-written to redact: the places a
+  `Debug` reaches — a log line, a panic, a test failure — are exactly the
+  places key material must not turn up.
+
+  `present` mints the authority presentation every host task takes:
+  attenuate the room's VAC to one action, sign as the member, and return
+  `{membership, authority: [leaf, root], nonce}`. Attenuation refuses to
+  widen, so asking for more than the room granted fails here — where the
+  member can be told why — rather than as a refusal from a host worded as
+  though they were at fault.
+
+  ## It takes no `audience` parameter, and that is the point
+
+  `audience` is not who the presentation is addressed to. `verify_chain`
+  compares it to the PRESENTER — "the leaf must be presentable by whoever
+  is presenting it" — so it is holder binding, and its job is to make a
+  captured presentation worthless to anyone else. A browser member always
+  presents its own, so the only correct value is its own DID, and offering
+  the choice is offering a way to get it wrong.
+
+  Not hypothetical: `vta-cli-common`'s `RoomTarget` passes the HOST's DID
+  as the audience, so `pnm-cli rooms --host-did …` mints a leaf bound to an
+  audience no presenter can match — refused as `WrongAudience` every time —
+  while omitting the flag leaves the presentation bearer-shaped for four
+  hours. Its doc states the intent exactly ("with it, a captured
+  presentation is worthless to anyone else") and names the wrong party.
+  Reported separately.
+
+  Tests assert against `dtg_credentials::authority::verify_chain` itself,
+  not a restatement of it: the presentation verifies, a narrowing to `read`
+  does not authorise `curate`, over-asking is refused locally, and a
+  captured presentation fails for the thief as `WrongAudience` rather than
+  as a bad signature. Also pins the shape the server path never produces —
+  a browser member is its own agent, so the leaf's subject and the chain
+  root's are the same DID.
+
+  * fix(rooms): a presentation travels as strings, not objects
+
+  AuthorityPresentation types membership as a String and authority as a
+  Vec<String>: the credential TEXT is the wire form, and vti-rooms-dtg
+  decodes base64url or bare JSON on the way in. present() was emitting
+  parsed objects, so room-host refused the whole request as "invalid type:
+  map, expected a string" — which reads as a malformed payload rather than
+  as the shape mismatch it is, and points at the wrong field.
+
+  Found by sending one to a real host rather than by reading the type.
+
+  The root is now passed through exactly as received instead of being
+  re-serialised, so nothing on this side can touch the bytes its proof was
+  made over. Both tests assert the wire form — that each authority link is
+  a string and membership is one too — because a chain that verifies in a
+  test and is refused on the wire is the failure this cost an hour to.
+
+  * fix(rooms): the wasm member links a chain the way its hosts verify one
+
+  dtg-credentials 0.7 changed how an authority chain links — a link's
+  `parent` went from naming the parent's `id` to naming a *digest* of its
+  claims — so a 0.7 `attenuate` and a 0.6 `verify_chain` cannot
+  interoperate. The refusal reads as a broken chain rather than a version
+  skew:
+
+      chain link 0 names parent `zQmPvoS…`,
+      but was presented after `urn:uuid:0647…`
+
+  Found by pointing a browser member at `room-host` and watching a
+  perfectly good presentation be refused. Pinned to what the workspace
+  verifies with. Reported upstream as OpenVTC/dtg-credentials#22, which
+  asks for ordering guidance and a hint in that error message.
+
+- **persona**: Serve persona/facet — the holder's arrangement of their identity ([#1338](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1338))
+
+Implements the three tasks specified in dtgwg-trust-tasks-tf#405, published
+  in trust-tasks-rs 0.18.9.
+
+  A holder who uses this model for a while ends up with twenty profiles, and a
+  flat list of twenty is a list nobody reads. A facet is the arrangement over
+  them — "Work", "Home", "Play" — and it is agent-scoped, like the pool and
+  the profiles it groups.
+
+  **An arrangement, not a container.** Nothing is stored inside a facet, and
+  `delete_facet` touches no profile and no attribute. There is no cascading
+  form because there is no cascading form of the idea: a grouping that could
+  take its members with it is a folder, and a holder who reads it as a folder
+  is right to be afraid of it. `releasedFaces` reports what now belongs
+  nowhere, which is what a screen needs to say what it will look like
+  afterwards. `deleting_a_facet_deletes_nothing_it_named` pins it.
+
+  **Membership lives on the facet.** A `facet_id` on `Attribute` would be the
+  obvious alternative and is the wrong shape: `attribute/put` REPLACES, and a
+  well-behaved consumer does not hold the values it would have to resend —
+  `attribute/list` withholds `sensitivity: high` plaintext unless asked by
+  name. It would either request every sensitive value the holder owns to
+  perform an arrangement that has nothing to do with values, or send a put
+  without one and destroy them.
+
+
+
+### Changed
+
+- **sdk**: Move the Trust-Task proof verifier down from vti-common ([#1340](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1340))
+
+Pure move plus re-exports; no behaviour changes. It exists so the next
+  change can be small: `VtaClient` needs to verify the responses it receives,
+  and the verifier it needs already exists one layer up where a client cannot
+  reach it.
+
+  `vti-common` was the right home while services verifying their *inbound*
+  requests were the only consumer. A client verifying its *replies* is the
+  same operation over the same document shape, and `vta-sdk` is the layer both
+  can see.
+
+  **The part worth not duplicating is the verification-method resolver.**
+  Resolving one looks trivial and is not: a DID document may name its methods
+  absolutely (`did:webvh:…:glenn#key-0`) or relatively (`#key-0`), while a
+  proof always names them absolutely, so a resolver accepting only the
+  spelling it expects refuses perfectly good documents from conforming peers.
+  A second copy would drift, and drift in a verifier means refusing honest
+  documents or accepting dishonest ones. Writing that copy is what this move
+  avoids.
+
+  Behind a new `proof-verify` feature rather than `client`, because
+  `vti-common` takes `vta-sdk` with `default-features = false` and must not
+  acquire reqwest to keep verifying. It adds no dependency to `vti-common` —
+  that crate already depended on `affinidi-data-integrity` and the DID
+  resolver directly. `client` enables it: a client that cannot verify its
+  replies is the gap being closed.
+
+  The resolver rides in the feature deliberately. Verification is only as good
+  as the party it resolves — a `did:key` signer needs no I/O, and a
+  `did:webvh` one, which is what a real agent is, cannot be verified without
+  resolving its document.
+
+  Call sites that used the module path (`vti_common::auth::di_proof::…`) now
+  use the flat re-export, so there is one canonical path rather than an alias
+  to go stale. Two doc comments naming the old location updated with them.
+
+  `cargo clippy --workspace --all-targets` clean; `vta-service --lib` 1063
+  passed; `vta-sdk` + `vti-common` suites pass, including the four resolver
+  tests that moved with the code.
+
+
+
+### Fixed
+
+- **rooms**: Bind an invitation's proof to its issuer ([#1353](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1353))
+
+An invitation naming a room as issuer, signed by anybody at all, was
+  accepted. Every other clause passed: it is an invitation, the issuer
+  field is the room, the subject is the member, the window is open, and
+  the proof verifies — against the attacker's own key, which is the one
+  the proof named and the one this module went and resolved.
+
+  Nothing looked at *whose* key it was. So anyone could mint themselves an
+  invitation to any room, hand it to their own agent, mint a KeyPackage
+  against it, accept the Welcome, and hold that room's group keys. The
+  invitation is the consent artefact for joining; without this check it
+  consented to nothing.
+
+  The fix is four lines, before the resolver call rather than after: a
+  credential that cannot be the room's own is refused without a network
+  round trip.
+
+  ## How it was found, which is the part worth keeping
+
+  By porting this module to a browser and writing a test per clause instead
+  of one "a bad invitation is refused" case. That shape passes with any
+  five of six, and did. The module had no unit tests at all — verify() is
+  async and takes a `&dyn VerificationKeys`, which reads as needing a
+  resolver and a network, when a fifteen-line did:key resolver is enough to
+  exercise the whole of it. Four tests added on that.
+
+  The check list in the module docs is renumbered five to six. A doc
+  comment that counts its own checks is load-bearing: it is how the next
+  reader knows whether one went missing.
+
+- **rooms**: A presentation is bound to its presenter — and dtg-credentials 0.6 → 0.9.1 ([#1356](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1356))
+
+* fix(rooms): bind a presentation to its presenter, not to the host
+
+  `pnm-cli rooms --host-did …` could never work. Every request it made was
+  refused as `WrongAudience`, and omitting the flag "worked" only by
+  skipping the check it exists to perform — so the flag's two states were
+  broken and unprotected.
+
+  `audience` is not who a presentation is addressed to.
+  `dtg_credentials::authority::verify_chain` compares it to the PRESENTER —
+  "the leaf must be presentable by whoever is presenting it" — so it is
+  holder binding, and its whole job is to make a captured presentation
+  worthless to whoever captured it. Filled with the host's DID it named a
+  party no presenter can ever match.
+
+  The value to bind to was already named a few lines away: `RoomSigner`'s
+  doc says "a room request is signed by the party the presentation was
+  minted for". This passes exactly that. There is no unbound case left, so
+  the warning about one goes, and `--host-did` keeps its real job of naming
+  the document's recipient.
+
+  ## The spec says otherwise, and that is filed separately
+
+  `rooms/keys/present/0.1` describes `audience` as "the party the
+  presentation is for … a host's identifier, normally". The CLI implemented
+  the spec faithfully; the spec and the credential library it runs on
+  disagree, identically in dtg-credentials 0.6 and 0.7, so it is not
+  version drift.
+
+  This changes the CLI to match the verifier rather than the prose, because
+  a presentation that cannot verify protects nobody while being wrong in
+  the other direction. Which side should move is a working-group question —
+  0.7's own notes point at upstream PR #41, "a key-control demonstration at
+  invocation, which removes `audience` as redundant" — and is raised there.
+
+  * fix(rooms)!: stop sending `audience` and `nonce` on rooms/keys/present
+
+  Completes the previous commit, which repointed `audience` at the presenter so
+  it would at least verify. It should not be sent at all, and neither should
+  `nonce`. Both are removed from `rooms/keys/present` by spec 0.2.
+
+  `audience` named the party that had to PRESENT a credential, not the one it was
+  addressed to — so a host DID named somebody no presenter can ever be, and the
+  host refused every request. That is now moot: dtg-credentials 0.8.0 removed the
+  property and made the real rule explicit, which the VTA was already satisfying.
+  The leaf grants to the DID this VTA authenticated, and a host refuses a chain
+  whose leaf grants to anyone else. Who may present is established, not declared.
+
+  `nonce` was written into the presentation object, which is closed and has no
+  member for it — so a caller supplying one got a presentation the host rejects
+  as malformed. It could not have been made to work: every signature in a
+  presentation is an ISSUER's, never the presenter's, so a challenge inside it is
+  unauthenticated and a replay copies it along with everything else. Freshness is
+  the request's, via `issuedAt` and the duplicate-execution rule keyed on
+  document `id`.
+
+  ## A second live instance, found while doing this
+
+  `rooms/keys/backfill` passed the caller-named host as the audience in
+  `vta-service`, exactly as that spec's normative MUST instructed. Every backfill
+  this VTA attempted was refused for the same reason. What actually makes a
+  caller-named host safe is that the leaf grants to the VTA: naming a host
+  transfers no standing. It does hand that host sight of the principal's
+  credentials, which is a disclosure rather than an escalation, and the comment
+  now says so.
+
+  ## Nothing binds a presentation to a host, deliberately
+
+  A chain is scoped to the ROOM. One rooted in a room confers nothing anywhere
+  else, and any host serving that room would honour it — a room may have more
+  than one host, and moving between them without reissuing credentials is the
+  point. Binding a request to its destination is `recipient` on the document that
+  carries the presentation, per SPEC.md §4.8.2, which its proof covers.
+
+- The last two #1341 fallout failures ([#1359](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1359))
+
+* fix(vta): the hosted-DID services test drives REST directly
+
+  `services_write_paths_against_a_hosted_vta_did` repoints `cfg.vta_did` at a
+  `did:webvh` the mock mints at runtime. The agent's response-signing identity
+  does not follow — `signing_vm_id` is computed once at boot — so the mock
+  answers signed as its `did:key` while claiming to be the hosted DID, and
+  `VtaClient` refuses every reply since #1341. The refusal is correct; the
+  fixture is what is inconsistent.
+
+  Booting the mock with the hosted identity, which is the obvious repair, fixes
+  the signer and not the verification. The DID is minted against `StubWebvhHost`,
+  which publishes nothing and answers on loopback under a domain that resolves
+  nowhere, so a reply signed as it is unverifiable by any client in any process.
+  There is no arrangement of this fixture in which a verifying client accepts an
+  answer from a stub-hosted DID.
+
+  The subject of the test is the agent's `services/*` write paths, so the four
+  dispatches go over the REST binding directly: the same signed document
+  `VtaClient` builds, to the same `/trust-tasks` route, with the same bearer
+  token. Everything server-side is unchanged — §7.2 admission, the dispatch
+  spine, the handlers, the response proof. Only the client's verification of the
+  reply is out of the picture, and it is not what this test covers.
+
+  Making `signing_vm_id` runtime-mutable was the other candidate and is worse: it
+  would reshape `AppState` to permit something production forbids, which
+  `config_registry_round_trips_and_identity_stays_read_only` exists to record.
+
+- **sdk**: The mock VTA signs its answers, as every real one does ([#1355](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1355))
+
+* fix(sdk): the mock VTA signs its answers, as every real one does
+
+  Third wave of the #1341 regression, and the first to be fixed at the cause
+  rather than per-test. Main is red on `vta-service`'s round-trip suite; this
+  takes it from 0/10 to 10/10 without touching a single test.
+
+  **The harness never did what production does.** `server.rs` sets
+  `signing_vm_id` to `{vta_did}#key-0` for every DID method that is not
+  `did:peer`, so a REST-only VTA signs its answers with its own key and needs
+  no transport identity to do it. `build_test_app` populated that slot *only*
+  from `build_transport_state`, which requires a `did:peer:2` — so a `MockVta`
+  answered unsigned where the real thing signs, and every round-trip test
+  failed with the client blaming the reply for something the harness had never
+  provided.
+
+  **The sentinel had to go, for the reason `TEST_ADMIN_SEED` records.** The
+  mock's `did:key:z6MkTestVTA` was not a `did:key` at all — the same mistake
+  that note describes fixing for the admin identity, and for the same reason:
+  nothing resolves it, so nothing it signs can carry a verifiable proof. It is
+  now derived from `TEST_VTA_SEED`, and the 28 references that named the
+  literal name the real one.
+
+  Deliberately *not* a full provisioning. The default mock gets a real identity
+  and the key behind it, and still no seed records or keystore, so a test that
+  asserts an unprovisioned VTA still gets one. Only enough to sign.
+
+  `secret_from_ed25519` carries the sharp edge: `Secret::from_multibase` needs
+  the multicodec prefix (`0x80 0x26`, ed25519-priv) and refuses raw bytes with
+  `Unsupported key type`, while `decode_private_key_multibase` accepts either.
+  The two encodings look interchangeable and are not.
+
+  Also, in the spine: a VTA **configured to sign and unable to** now answers
+  with a 500 naming the verification method, instead of silently answering
+  unsigned into a client that will refuse it and report the reply as the
+  problem. A VTA with no signing identity at all still answers unsigned —
+  unchanged, and correct for a pre-setup agent.
+
+  `client_round_trip` 10/10, `mock_vta` 12/13. Two known failures remain and
+  are the same regression in two more stand-ins; see the PR.
+
+- **rooms**: Verify a host's reply before believing it ([#1337](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1337))
+
+#1334 and #1335 made both services sign their responses. Nothing verified
+  one, so the property was not yet bought: producers signing and consumers not
+  checking leaves the signature decorative.
+
+  This is the first consumer to check, and it is the one the rooms work
+  introduced — the VTA calling a room's host on its principal's behalf.
+
+  **A reply is bytes off a socket.** Without a proof it attests to nothing: an
+  intermediary can rewrite a record listing, change the epoch a chain claims
+  to reach, or answer for a host that never spoke, and every check downstream
+  would pass — because the checks downstream are about shape.
+
+  Two things are required, and the second is the one easy to omit. The proof
+  must verify, and its proven signer must be **the host this agent addressed**.
+  `verify_trust_task_proof_with` says so in its own documentation: a proof by
+  `did:webvh:…:someone-else#key-0` verifies perfectly well, and that it is not
+  the party you expected is a separate check. Without the binding, "signed by
+  somebody" gets mistaken for "signed by the host", which is the entire
+  property.
+
+  Error documents are exempt, from the specification rather than for
+  convenience: a refusal's `type` resolves to `trust-task-error`, whose own
+  proof requirement is RECOMMENDED (SPEC §8.1). Demanding one would make every
+  conforming refusal unreadable — including the `hostRefused` this family
+  declares, whose whole purpose is carrying the host's reason to an operator.
+  A refusal confers nothing, which is why the framework asks less of it.
+
+  This rejects unsigned success replies outright rather than warning, so a
+  room host that predates #1334 will be refused. That is the intended
+  behaviour and it is a deployment-order constraint: hosts upgrade before
+  agents that talk to them.
+
+  `cargo test -p vta-service --lib`: 1063 passed, 0 failed.
+
+- **vta**: Sign success responses, completing the producer half ([#1335](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1335))
+
+The agent side of #1334. Same gap, same reasoning: SPEC §7.3 item 7 makes a
+  single `proofRequirement: REQUIRED` bind the response as well as the
+  request, 265 published specifications declare one, and this service attached
+  a proof to none of their responses. No consumer verifies one either, which
+  is why nothing ever went red.
+
+  Two things made the agent harder than the community, and both are decisions
+  rather than mechanics.
+
+  **It does not sign through `load_vta_issuer_secret`.** That helper reads the
+  keystore, derives, and writes an audit entry per access. Signing every
+  response through it would turn "the agent's issuer key was used" into one
+  line per request — drowning a security control in its own noise, which is a
+  worse outcome than the gap being closed. It signs from the resident secret
+  `secrets_resolver` already holds for the messaging layer: no keystore read,
+  no audit entry. The agent signing its own words is not a key access worth
+  recording, it is the agent speaking.
+
+  **`signing_vm_id` is no longer feature-gated.** It was
+  `#[cfg(any(feature = "didcomm", feature = "tsp"))]`, which would have made a
+  `--no-default-features --features rest` build answer the same specifications
+  without the proof they require. Conformance must not depend on which
+  transports were compiled in.
+
+  The guard is in three parts because the first two are not enough, and
+  finding that out is the useful part. `attach_proof` is tested directly — it
+  produces a verifiable proof, replaces a stale one rather than nesting, and
+  degrades on an unsignable body. Those tests **passed with the call deleted
+  from the spine**, which is exactly the shape of the bug they exist to
+  prevent, so a source assertion covers the wiring and a state-level test
+  covers the plumbing. A comfort is not a guard.
+
+  Worth recording: `build_signing_test_app_state` already ships a resident
+  signing secret. The degradation case clears it explicitly rather than
+  assuming its absence — the first draft assumed, and was wrong.
+
+  `cargo test -p vta-service --lib`: 1061 passed, 0 failed.
+
+
+
 ## [0.24.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.24.0...vta-service-v0.24.1) — 2026-09-08
 
 

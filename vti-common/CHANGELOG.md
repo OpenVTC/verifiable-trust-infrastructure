@@ -2,6 +2,54 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.18.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.18.1...vti-common-v0.18.2) — 2026-09-09
+
+
+### Changed
+
+- **sdk**: Move the Trust-Task proof verifier down from vti-common ([#1340](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1340))
+
+Pure move plus re-exports; no behaviour changes. It exists so the next
+  change can be small: `VtaClient` needs to verify the responses it receives,
+  and the verifier it needs already exists one layer up where a client cannot
+  reach it.
+
+  `vti-common` was the right home while services verifying their *inbound*
+  requests were the only consumer. A client verifying its *replies* is the
+  same operation over the same document shape, and `vta-sdk` is the layer both
+  can see.
+
+  **The part worth not duplicating is the verification-method resolver.**
+  Resolving one looks trivial and is not: a DID document may name its methods
+  absolutely (`did:webvh:…:glenn#key-0`) or relatively (`#key-0`), while a
+  proof always names them absolutely, so a resolver accepting only the
+  spelling it expects refuses perfectly good documents from conforming peers.
+  A second copy would drift, and drift in a verifier means refusing honest
+  documents or accepting dishonest ones. Writing that copy is what this move
+  avoids.
+
+  Behind a new `proof-verify` feature rather than `client`, because
+  `vti-common` takes `vta-sdk` with `default-features = false` and must not
+  acquire reqwest to keep verifying. It adds no dependency to `vti-common` —
+  that crate already depended on `affinidi-data-integrity` and the DID
+  resolver directly. `client` enables it: a client that cannot verify its
+  replies is the gap being closed.
+
+  The resolver rides in the feature deliberately. Verification is only as good
+  as the party it resolves — a `did:key` signer needs no I/O, and a
+  `did:webvh` one, which is what a real agent is, cannot be verified without
+  resolving its document.
+
+  Call sites that used the module path (`vti_common::auth::di_proof::…`) now
+  use the flat re-export, so there is one canonical path rather than an alias
+  to go stale. Two doc comments naming the old location updated with them.
+
+  `cargo clippy --workspace --all-targets` clean; `vta-service --lib` 1063
+  passed; `vta-sdk` + `vti-common` suites pass, including the four resolver
+  tests that moved with the code.
+
+
+
 ## [0.18.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.18.0...vti-common-v0.18.1) — 2026-09-08
 
 
