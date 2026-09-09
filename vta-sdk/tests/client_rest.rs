@@ -41,13 +41,8 @@ const TASK_SEEDS_EXPORT_MNEMONIC: &str =
 const TASK_WEBVH_DIDS_LIST: &str = "https://trusttasks.org/spec/vta/webvh/dids/list/1.0";
 
 /// A success response document carrying `payload`.
-fn tt_ok(payload: Value) -> ResponseTemplate {
-    ResponseTemplate::new(200).set_body_json(json!({
-        "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
-        "type": "urn:test:response",
-        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "payload": payload,
-    }))
+async fn tt_ok(payload: Value) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(signed_response(payload).await)
 }
 
 /// Assert a key is *absent* from the payload.
@@ -91,9 +86,59 @@ fn test_identity() -> vta_sdk::client::ClientIdentity {
             multibase::Base::Base58Btc,
             sk.to_bytes().as_slice(),
         ),
-        vta_did: "did:key:z6MkTestVta".into(),
+        vta_did: test_vta_key().0,
         verification_method: None,
     }
+}
+
+/// The VTA this file's mocks answer as: a real `did:key` and its private half.
+///
+/// It used to be the literal `did:key:z6MkTestVta`, which is not a decodable
+/// `did:key` at all and did not need to be — nothing checked who replied. Since
+/// #1341 the client verifies the proof on every reply **and** binds its signer to
+/// the VTA it believes it is talking to, so the stub has to be able to sign as
+/// itself. Every test in this file therefore exercises that check rather than
+/// opting out of it, which is worth the two helpers it costs.
+fn test_vta_key() -> (String, String) {
+    let sk = ed25519_dalek::SigningKey::from_bytes(&[0xC2; 32]);
+    let mut mc = vec![0xed, 0x01];
+    mc.extend_from_slice(sk.verifying_key().as_bytes());
+    let did = format!(
+        "did:key:{}",
+        multibase::encode(multibase::Base::Base58Btc, mc)
+    );
+    let mut priv_mc = vec![0x80, 0x26];
+    priv_mc.extend_from_slice(sk.to_bytes().as_slice());
+    (did, multibase::encode(multibase::Base::Base58Btc, &priv_mc))
+}
+
+/// Wrap a payload in a `#response` document and sign it as the mock VTA.
+///
+/// The type is a stand-in: nothing on the reply path matches it against the
+/// request, and these tests assert on the payload. Where a test names its own
+/// response type deliberately, it uses [`signed_response_typed`].
+async fn signed_response(payload: Value) -> Value {
+    signed_response_typed(
+        "https://trusttasks.org/spec/config/show/0.1#response",
+        payload,
+    )
+    .await
+}
+
+/// [`signed_response`], keeping the caller's own response type.
+async fn signed_response_typed(type_uri: &str, payload: Value) -> Value {
+    let (vta_did, vta_priv) = test_vta_key();
+    let mut doc: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
+        "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
+        "type": type_uri,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "payload": payload,
+    }))
+    .expect("a well-formed Trust-Task document");
+    vta_sdk::trust_task_sign::sign_in_place(&mut doc, &vta_did, &vta_priv)
+        .await
+        .expect("sign the mock VTA's reply");
+    serde_json::to_value(doc).expect("serialise the signed reply")
 }
 
 async fn client(server: &MockServer) -> VtaClient {
@@ -132,12 +177,7 @@ async fn mount_json(
     status: u16,
     body: Value,
 ) -> wiremock::MockGuard {
-    let resp = ResponseTemplate::new(status).set_body_json(json!({
-        "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
-        "type": "urn:test:response",
-        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "payload": body,
-    }));
+    let resp = ResponseTemplate::new(status).set_body_json(signed_response(body).await);
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
@@ -494,10 +534,13 @@ async fn list_keys_paginates_query_params() {
                 "status": "active", "contextId": "ctx-a"
             }
         })))
-        .respond_with(tt_ok(json!({
-            "keys": [key_record_json("k1")],
-            "total": 1
-        })))
+        .respond_with(
+            tt_ok(json!({
+                "keys": [key_record_json("k1")],
+                "total": 1
+            }))
+            .await,
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -758,7 +801,7 @@ async fn list_acl_with_context_query() {
             "type": TASK_ACL_LIST,
             "payload": {"scope": "ctx-a"}
         })))
-        .respond_with(tt_ok(json!({"entries": []})))
+        .respond_with(tt_ok(json!({"entries": []})).await)
         .expect(1)
         .mount(&server)
         .await;
@@ -781,7 +824,7 @@ async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
         .and(body_partial_json(json!({
             "payload": {"scope": "acme/eng", "direction": "subtree"}
         })))
-        .respond_with(tt_ok(json!({"entries": []})))
+        .respond_with(tt_ok(json!({"entries": []})).await)
         .expect(1)
         .mount(&server)
         .await;
@@ -798,7 +841,7 @@ async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
         // An old VTA rejects an unknown field, so the default direction must
         // be omitted rather than spelled out.
         .and(no_payload_key("direction"))
-        .respond_with(tt_ok(json!({"entries": []})))
+        .respond_with(tt_ok(json!({"entries": []})).await)
         .expect(2)
         .mount(&server)
         .await;
@@ -829,15 +872,18 @@ async fn swap_acl_sends_the_canonical_task_over_rest() {
                 "newSubject": "did:key:zNew",
             },
         })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "urn:uuid:0000",
-            "type": "https://trusttasks.org/spec/acl/swap-key/0.1#response",
-            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": {
-                "entry": acl_entry_json("did:key:zNew"),
-                "previousSubject": "did:key:zOld",
-            },
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                signed_response_typed(
+                    "https://trusttasks.org/spec/acl/swap-key/0.1#response",
+                    json!({
+                        "entry": acl_entry_json("did:key:zNew"),
+                        "previousSubject": "did:key:zOld",
+                    }),
+                )
+                .await,
+            ),
+        )
         .expect(1)
         .mount_as_scoped(&server)
         .await;
@@ -958,7 +1004,7 @@ async fn delete_acl_returns_unit() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(json!({})).await))
         .expect(1)
         .mount(&server)
         .await;
@@ -1109,7 +1155,7 @@ async fn delete_context_with_force_query() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(json!({})).await))
         .expect(1)
         .mount(&server)
         .await;
@@ -1123,7 +1169,7 @@ async fn delete_context_no_force_omits_query() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(json!({})).await))
         .expect(1)
         .mount(&server)
         .await;
@@ -1259,7 +1305,7 @@ async fn remove_webvh_server_deletes() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(json!({})).await))
         .expect(1)
         .mount(&server)
         .await;
@@ -1347,9 +1393,12 @@ async fn list_dids_webvh_filters_by_context() {
             // literal happened to say.
             "payload": {"contextId": "primary", "serverId": "s1"}
         })))
-        .respond_with(tt_ok(json!({
-            "dids": [webvh_did_record_json("did:webvh:Qabc:server.example.com:primary")]
-        })))
+        .respond_with(
+            tt_ok(json!({
+                "dids": [webvh_did_record_json("did:webvh:Qabc:server.example.com:primary")]
+            }))
+            .await,
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -1406,7 +1455,7 @@ async fn delete_did_webvh_returns_unit() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(json!({})).await))
         .expect(1)
         .mount(&server)
         .await;
@@ -1431,18 +1480,22 @@ async fn update_did_webvh_by_did_sends_the_canonical_task() {
                 "document": {"id": "did:webvh:Qabc:host:slug"},
             },
         })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "urn:uuid:0000",
-            "type": "https://trusttasks.org/spec/vta/webvh/dids/update/1.0#response",
-            "payload": {
-                "did": "did:webvh:Qabc:host:slug",
-                "newVersionId": "2-z",
-                "newScid": "Qabc",
-                "newLogEntry": "{}",
-                "updateKeysCount": 1,
-                "preRotationKeyCount": 0
-            },
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                signed_response_typed(
+                    "https://trusttasks.org/spec/vta/webvh/dids/update/1.0#response",
+                    json!({
+                        "did": "did:webvh:Qabc:host:slug",
+                        "newVersionId": "2-z",
+                        "newScid": "Qabc",
+                        "newLogEntry": "{}",
+                        "updateKeysCount": 1,
+                        "preRotationKeyCount": 0
+                    }),
+                )
+                .await,
+            ),
+        )
         .expect(1)
         .mount_as_scoped(&server)
         .await;
@@ -1537,17 +1590,20 @@ async fn list_audit_logs_paginates() {
                 "cursor": "opaque-token"
             }
         })))
-        .respond_with(tt_ok(json!({
-            "entries": [{
-                "eventId": "e1",
-                "recordedAt": "2026-07-01T00:00:00+00:00",
-                "action": "key.create",
-                "outcome": "success",
-                "actor": "did:key:zActor",
-            }],
-            "truncated": true,
-            "cursor": "next-token"
-        })))
+        .respond_with(
+            tt_ok(json!({
+                "entries": [{
+                    "eventId": "e1",
+                    "recordedAt": "2026-07-01T00:00:00+00:00",
+                    "action": "key.create",
+                    "outcome": "success",
+                    "actor": "did:key:zActor",
+                }],
+                "truncated": true,
+                "cursor": "next-token"
+            }))
+            .await,
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -1578,7 +1634,7 @@ async fn audit_list_percent_encodes_rfc3339_bounds() {
         .and(body_partial_json(json!({
             "payload": {"from": "2026-07-01T00:00:00Z"}
         })))
-        .respond_with(tt_ok(json!({"entries": [], "truncated": false})))
+        .respond_with(tt_ok(json!({"entries": [], "truncated": false})).await)
         .expect(1)
         .mount(&server)
         .await;
@@ -1724,7 +1780,7 @@ async fn delete_did_template_returns_unit() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(json!({})).await))
         .expect(1)
         .mount(&server)
         .await;
@@ -1828,7 +1884,7 @@ async fn delete_context_did_template_returns_unit() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"payload": {}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(signed_response(json!({})).await))
         .expect(1)
         .mount(&server)
         .await;
@@ -1902,10 +1958,13 @@ async fn fetch_context_secrets_walks_all_pages() {
             "type": TASK_KEYS_LIST,
             "payload": {"offset": 0}
         })))
-        .respond_with(tt_ok(json!({
-            "keys": page1_keys,
-            "total": 101
-        })))
+        .respond_with(
+            tt_ok(json!({
+                "keys": page1_keys,
+                "total": 101
+            }))
+            .await,
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -1918,10 +1977,13 @@ async fn fetch_context_secrets_walks_all_pages() {
             "type": TASK_KEYS_LIST,
             "payload": {"offset": 100}
         })))
-        .respond_with(tt_ok(json!({
-            "keys": [key_record_json("k100")],
-            "total": 101
-        })))
+        .respond_with(
+            tt_ok(json!({
+                "keys": [key_record_json("k100")],
+                "total": 101
+            }))
+            .await,
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -1937,12 +1999,15 @@ async fn fetch_context_secrets_walks_all_pages() {
         .and(body_partial_json(
             json!({"type": TASK_SEEDS_EXPORT_MNEMONIC}),
         ))
-        .respond_with(tt_ok(json!({
-            "key_id": "k",
-            "key_type": "x25519",
-            "public_key_multibase": "z6LSqHQEbN8eMpx9NhMTXmxqYDhtbW5kqwQYWN9y91vxqMtq",
-            "private_key_multibase": "z3wei5qxuQ8mvebtP4WQiK3CsPuiL6XvfVmuhXKfzKKAwgvY"
-        })))
+        .respond_with(
+            tt_ok(json!({
+                "key_id": "k",
+                "key_type": "x25519",
+                "public_key_multibase": "z6LSqHQEbN8eMpx9NhMTXmxqYDhtbW5kqwQYWN9y91vxqMtq",
+                "private_key_multibase": "z3wei5qxuQ8mvebtP4WQiK3CsPuiL6XvfVmuhXKfzKKAwgvY"
+            }))
+            .await,
+        )
         .expect(101)
         .mount(&server)
         .await;
