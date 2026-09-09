@@ -68,7 +68,25 @@ pub(super) async fn verify_authorization(
 ) -> Result<(), String> {
     let _ = tx.send(VtaEvent::CheckStart(DiagCheck::VerifyAuthorization));
 
-    let served = match client.supported_trust_tasks(&["*"]).await {
+    // The probe tolerates an UNSIGNED reply, and only an unsigned one.
+    //
+    // This is a diagnostic and deliberately not a gate — see the module docs:
+    // refusing to provision a VTA that cannot answer it "would turn a
+    // diagnostic into an outage, which is the one way this module could be
+    // worse than not existing". Reply verification (#1341) put a second way to
+    // fail into a path whose failures are all swallowed below, so an agent that
+    // does not sign its replies stopped producing the two findings this module
+    // exists for — a missing grant and a version skew — and produced "could not
+    // ask" instead. The skew then surfaced as a bare 404 from the mint call,
+    // which is the exact failure the module was written to replace.
+    //
+    // `trusting_unsigned_replies` is the narrow tool for it: a *present* proof
+    // is still verified and still bound to this VTA, so a rewritten reply is
+    // still refused. Only the absence of a proof is tolerated, which is what an
+    // agent predating #1334/#1335 sends. Every task that is not this advisory
+    // probe keeps the full check.
+    let probe = client.clone().trusting_unsigned_replies();
+    let served = match probe.supported_trust_tasks(&["*"]).await {
         Ok(resp) => resp.supported_types,
 
         // No grant for this DID on this VTA. The two things worth naming are

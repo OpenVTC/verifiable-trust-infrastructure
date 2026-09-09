@@ -752,6 +752,69 @@ mod tests {
     /// A VTA on the previous provisioning version is stopped before any key is
     /// minted, and told which version it is on.
     ///
+    /// The other half of the probe's tolerance, and the half worth pinning:
+    /// an unsigned reply is accepted, a **badly signed** one is not.
+    ///
+    /// `trusting_unsigned_replies` is narrow on purpose — a *present* proof is
+    /// still verified and still bound to this VTA — so a rewritten reply cannot
+    /// steer the diagnostic. Without this test the fix for the regression below
+    /// reads exactly like "verification was turned off for the probe", which is
+    /// what it must not be: the skew message here would prove a forged task
+    /// list had been believed.
+    #[tokio::test]
+    async fn a_reply_with_a_broken_proof_does_not_steer_the_diagnostic() {
+        let server = MockServer::start().await;
+        mount_auth(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/trust-tasks"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "urn:uuid:11111111-1111-4111-8111-111111111111",
+                "type": "https://trusttasks.org/spec/trust-task-discovery/0.1#response",
+                "payload": {
+                    "frameworkVersion": "0.2",
+                    "supportedTypes": [
+                        "https://trusttasks.org/spec/provision/integration/0.2"
+                    ]
+                },
+                // Present, and nonsense. The narrow tolerance must reject this.
+                "proof": {
+                    "type": "DataIntegrityProof",
+                    "cryptosuite": "eddsa-jcs-2022",
+                    "created": "2026-01-01T00:00:00Z",
+                    "verificationMethod": "did:key:zNotTheAgent#zNotTheAgent",
+                    "proofPurpose": "assertionMethod",
+                    "proofValue": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let key = EphemeralSetupKey::generate().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let ask = ProvisionAsk::didcomm_mediator("mediator", "https://mediator.example.com");
+
+        let outcome = run_rest_attempt_full_setup(
+            &server.uri(),
+            &test_vta_did_key(),
+            key.did.clone(),
+            key.private_key_multibase().to_string(),
+            ask,
+            &tx,
+        )
+        .await;
+
+        // The forged list said 0.2 and only 0.2. If it had been believed, the
+        // run would stop with the version-skew message naming it.
+        if let AttemptOutcome::PostAuthFailure(reason) = &outcome {
+            assert!(
+                !reason.contains("version skew"),
+                "a reply with a broken proof steered the diagnostic: {reason}"
+            );
+        }
+        drop(tx);
+        let _ = drain(&mut rx);
+    }
+
     /// REGRESSION (2026-08-31). #1147 cut `provision/integration` 0.2 -> 0.3
     /// with no dual-accept window; a current client against a VTA still on 0.2
     /// signed its VP, dispatched, and got back
