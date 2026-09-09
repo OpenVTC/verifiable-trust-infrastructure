@@ -235,6 +235,13 @@ pub struct ListRecordsBody {
 pub struct ListRecordsResponse {
     /// Metadata only — never bodies.
     pub records: Vec<serde_json::Value>,
+    /// The room's data commitment, as a `DigestMultibase`.
+    ///
+    /// Optional on the wire because a host that maintains no tree must not
+    /// invent a root: its absence honestly says "no completeness guarantee
+    /// here", and a fabricated one would say the opposite while meaning less.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_commitment: Option<String>,
 }
 
 /// `rooms/records/curate/0.1` request.

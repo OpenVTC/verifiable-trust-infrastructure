@@ -540,6 +540,25 @@ async fn list(
                 doc,
                 ListRecordsResponse {
                     records: records.iter().take(limit).map(|r| r.metadata()).collect(),
+                    // The reference host commits too. A host that served
+                    // listings without one would be a working example of the
+                    // thing the commitment exists to make detectable.
+                    data_commitment: match storage::data_commitment(&state.records, &req.room_id)
+                        .await
+                    {
+                        Ok(root) => Some(vti_rooms::merkle::to_multibase(&root)),
+                        Err(e) => {
+                            // Advisory, so it must not fail the read — a member
+                            // who asked for records and got an error because the
+                            // tree was unhappy has lost a working operation.
+                            tracing::error!(
+                                room = %req.room_id,
+                                error = %e,
+                                "could not compute the data commitment; answering without one"
+                            );
+                            None
+                        }
+                    },
                 },
             )
         }
