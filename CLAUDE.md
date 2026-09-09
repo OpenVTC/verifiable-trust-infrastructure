@@ -964,11 +964,11 @@ check if the functionality already exists. Prefer existing SDKs over custom
 implementations. Before writing any fix, analyze the root cause and explain
 the diagnosis. Fix the cause, not the symptom — no workarounds.
 
-## Running the tests: two ways to be green and wrong
+## Running the tests: green and wrong
 
-Both of these cost a day in September 2026 — #1341 merged green and broke main
-in 68 places, and the fix went three rounds because each round only revealed
-the next failure.
+All of these cost a day in September 2026 — #1341 broke main in 68 places and
+the fix went four rounds (#1348, #1350, #1355, #1359), because each round only
+revealed the next failure.
 
 **A per-crate run compiles a fraction of the tests.** `cargo test -p vta-sdk`
 runs **306**; the workspace run runs **742**, because feature unification from
@@ -988,11 +988,49 @@ features. Chasing the same failure under `--all-features` finds real but
 unrelated breakage (a stack overflow in `mock_vta`, nine failures elsewhere)
 that CI never sees, and none of it is the thing that is red.
 
-So, before pushing a change that could touch another crate's tests:
+**A warning is an error, and only in CI.** `cargo clippy` prints warnings and
+exits 0; the CI job is `-- -D warnings`, so the same output is a failure there.
+`--all-targets` is part of it too — without it clippy sees only the lib and
+bin targets, and dead code in `tests/` accumulates unseen. `vta-service` gets
+two further clippy runs under reduced feature sets, which catch what the
+default build cannot: a `#[cfg]` arm nothing else compiles.
+
+So, before pushing a change that could touch another crate's tests, run what CI
+runs:
 
 ```sh
 cargo test --workspace --exclude vtc-service --exclude vtc-client --no-fail-fast
+cargo test -p vtc-service -p vtc-client          # a separate CI job
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
 ```
+
+## A merge is not evidence that anything passed
+
+The only **required** status check on `main` is `DCO`. Every job above — the
+build, both test jobs, clippy, fmt, MSRV, `cargo-deny` — is advisory, so a
+pull request merges on a red suite exactly as readily as on a green one, and
+no prompt appears.
+
+This is not hypothetical and it is why the section above exists. On 9 September
+2026 `main` was red for five and a half hours across six consecutive merges —
+#1341, then #1344, #1346, #1348, #1350 and #1355 — each landing on an already
+failing main, until #1359 returned it to green. The account of it that first
+reached this file said "#1341 merged green", which is the natural reading and
+is false: nothing was checking.
+
+Two things follow, and both are habits rather than rules:
+
+- **Do not read a merge as evidence its suite passed.** Read the run. And read
+  the run's own jobs (`gh api repos/.../actions/runs/<id>/jobs`) rather than the
+  aggregate rollup, which reports staleness as success across a re-run.
+- **Do not assume a red main is your regression.** Check when it went red
+  first. It may have been red since before you branched, and the failure you
+  are looking at may be somebody else's — or your own, four merges ago.
+
+Whether the CI workflow should be a required check is a repository-settings
+decision that has not been taken. Until it is, the discipline above is what
+stands in for one.
 
 ## Cross-service networking & integration discipline
 
