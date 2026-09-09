@@ -343,6 +343,73 @@ pub struct Profile {
     pub updated_at: String,
 }
 
+/// A colour **name**, resolved by each consumer against its own palette.
+///
+/// Never a literal. A hex value cannot be legible in a terminal, a light theme
+/// and a dark one at once, so a stored one is wrong somewhere and the holder
+/// has no way to know where — and a consumer that reserves colours to carry
+/// meaning (an error, a warning, an irreversible act) cannot keep a decorative
+/// choice out of that channel unless the set is closed.
+///
+/// None of the eight is named for success, warning or danger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FacetColour {
+    Slate,
+    Indigo,
+    Teal,
+    Moss,
+    Sand,
+    Clay,
+    Rose,
+    Plum,
+}
+
+/// A named part of the holder's life, and what belongs to it. **Agent-scoped.**
+///
+/// An *arrangement*, not a container: nothing is stored inside a facet, and
+/// deleting one deletes nothing but the arrangement. That distinction is the
+/// whole of its design, and it is worth stating in the type because the
+/// intuitive reading is the other one — a grouping that looked like a folder,
+/// and behaved like one, would make `delete` the most dangerous call in this
+/// crate, and a holder cannot tell which kind they have from the button.
+///
+/// `#[non_exhaustive]` from the start, for the reason [`Attribute`] acquired it
+/// after two compatibility breaks: this record is going to grow as the persona
+/// specification does, and the next member should be an addition rather than a
+/// third break.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct Facet {
+    pub facet_id: Ulid,
+    /// The holder's own word — "Work", "Home". Never disclosed, and never
+    /// interpreted: it is not a scope, a policy input, or a name a counterparty
+    /// sees. It is also the most revealing member in the record, which is easy
+    /// to miss because it carries no value *about* the holder: "Work" discloses
+    /// nothing and "the divorce" discloses a great deal. It MUST NOT reach an
+    /// operational log or a metric label.
+    pub name: String,
+    pub colour: FacetColour,
+    /// One or two emoji. Stored opaquely and never parsed; a consumer that
+    /// cannot render it shows the name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Profiles belonging to this facet. A profile belongs to **at most one**,
+    /// because this is where a consumer reads its colour from and two answers
+    /// is no answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub face_ids: Vec<Ulid>,
+    /// Attributes belonging to this facet. An attribute **may** belong to
+    /// several — a mobile number is genuinely part of both a working life and a
+    /// home one — so no exclusivity is enforced here and none may be inferred.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attribute_ids: Vec<Ulid>,
+    pub version: Version,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 /// Assignment of a profile to a persona DID. **Context-scoped.**
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

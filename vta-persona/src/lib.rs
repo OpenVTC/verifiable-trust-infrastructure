@@ -42,6 +42,7 @@ pub mod claim_types;
 pub mod contact;
 pub mod correlation;
 pub mod disclosure;
+pub mod facet;
 pub mod model;
 pub mod present;
 pub mod profile;
@@ -55,9 +56,10 @@ pub use binding::{BindingSummary, Bound, MaterialisedClaim};
 pub use claim_types::{Axes, MaskStyle, ReleaseRequirement, Sensitivity};
 pub use contact::{Contact, ContactClaim, ContactDocument, ContactRevision, ContactSummary, Filed};
 pub use disclosure::{DisclosedClaim, DisclosureRecord, HistoryQuery, new_disclosure};
+pub use facet::{FacetPlacement, PlacedElsewhere, new_facet};
 pub use model::{
-    Attribute, Binding, InlineValue, OverrideValue, Profile, ProfileEntry, ProofRung, Provenance,
-    StaleReason, Ulid, ValueType, Version,
+    Attribute, Binding, Facet, FacetColour, InlineValue, OverrideValue, Profile, ProfileEntry,
+    ProofRung, Provenance, StaleReason, Ulid, ValueType, Version,
 };
 pub use present::{PREVIEW_TTL_SECONDS, Preview, PreviewClaim, Renderer, renderer};
 pub use profile::{ResolvedClaim, is_pool_free, new_profile};

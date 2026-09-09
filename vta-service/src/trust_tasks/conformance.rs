@@ -2775,6 +2775,7 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
     const PERSONA_DID: &str = "did:webvh:vta.test:persona-fixture";
     const VERIFIER: &str = "did:web:verifier.test";
     const SUBJECT: &str = "did:peer:0zfixturepairwisesubject";
+    const FACET: &str = "01J8ZQ2CCCCCCCCCCCCCCCCCCC";
     const NOW: &str = "2026-01-01T00:00:00Z";
 
     let self_asserted = json!({ "kind": "selfAsserted" });
@@ -2881,6 +2882,58 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                     "profileId": PROFILE, "name": "Work", "entries": [], "version": 2, "updatedAt": NOW
                 }]}),
                 parses::<specs::persona::profile::list::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_FACET_PUT_1_0,
+            (
+                // Both membership lists populated and an icon present, so the
+                // witness covers every optional member rather than the shape a
+                // minimal create happens to take.
+                json!({
+                    "name": "Work",
+                    "colour": "teal",
+                    "icon": "\u{1F4BC}",
+                    "faceIds": [PROFILE],
+                    "attributeIds": [ATTR],
+                    "expectedVersion": 0
+                }),
+                parses::<specs::persona::facet::put::v1_0::Payload>,
+                validates::<specs::persona::facet::put::v1_0::Payload>,
+            ),
+            (
+                json!({ "facetId": FACET, "version": 2, "created": true, "updatedAt": NOW }),
+                parses::<specs::persona::facet::put::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_FACET_LIST_1_0,
+            (
+                json!({}),
+                parses::<specs::persona::facet::list::v1_0::Payload>,
+                validates::<specs::persona::facet::list::v1_0::Payload>,
+            ),
+            (
+                // No `nextCursor`: its absence is what says a listing is
+                // complete, so the witness is the complete-page shape.
+                json!({ "facets": [{
+                    "facetId": FACET, "name": "Work", "colour": "teal",
+                    "faceIds": [PROFILE], "attributeIds": [ATTR],
+                    "version": 2, "updatedAt": NOW
+                }]}),
+                parses::<specs::persona::facet::list::v1_0::Response>,
+            ),
+        ),
+        (
+            u::TASK_PERSONA_FACET_DELETE_1_0,
+            (
+                json!({ "facetId": FACET }),
+                parses::<specs::persona::facet::delete::v1_0::Payload>,
+                validates::<specs::persona::facet::delete::v1_0::Payload>,
+            ),
+            (
+                json!({ "existed": true, "releasedFaces": 1 }),
+                parses::<specs::persona::facet::delete::v1_0::Response>,
             ),
         ),
         (

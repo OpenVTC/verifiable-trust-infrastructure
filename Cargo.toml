@@ -275,7 +275,15 @@ aws-lc-rs = "1.16"
 # fully succeeded comes back as a 500 `responseSchemaViolation` — the members
 # are emitted and the schema rejects them. A caret on "0.18" would let a
 # resolver pick 0.18.2 and reintroduce exactly that.
-trust-tasks-rs = { version = "0.18.8", default-features = false, features = [
+#
+# 0.18.9 raises that floor for the same reason one version later: it is the
+# first release carrying the `persona/facet/*` schemas. The spine validates
+# outgoing responses against the embedded schema, so on 0.18.8 a facet write
+# that fully succeeded would come back 500 `responseSchemaViolation` — the
+# members are emitted and the schema has never heard of them. Same failure
+# shape as `adminScope` above, which is why the floor moves rather than the
+# feature being guarded.
+trust-tasks-rs = { version = "0.18.9", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
@@ -491,4 +499,5 @@ type_complexity = "allow"
 # ever reports one, the fix is the same choice we faced here: patch it (fast,
 # and it will break again on the next minor bump) or cut the dependency edge
 # upstream (slower, permanent).
+
 
