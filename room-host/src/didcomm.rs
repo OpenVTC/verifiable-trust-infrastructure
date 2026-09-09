@@ -275,26 +275,12 @@ pub async fn serve(
             continue;
         }
 
-        let (envelope, reply_thread) = match frame.message.protocol {
-            // TSP carries the Trust-Task envelope as its payload, with no wrapper at all —
-            // byte-identical to the HTTP body. Nothing to unwrap.
-            //
-            // The thread is the **document's own `id`**, read out of it, and not the frame's.
-            // A caller correlates on the id it put on the document, which is the only id it
-            // ever saw; `frame.message.id` is the transport's handle for the delivery and
-            // means nothing on the other side. Threading with it produces a reply that is
-            // sent, accepted, and matched by nobody — the caller waits out its timeout while
-            // the answer sits unclaimed.
-            Protocol::TSP => {
-                let id = document_id(&frame.message.payload).unwrap_or_default();
-                (frame.message.payload.clone(), id)
-            }
-            // DIDComm wraps it: one reserved envelope `type`, whose `body` is the document.
-            _ => match didcomm_envelope(&frame.message.payload) {
-                Some(v) => v,
-                None => continue,
-            },
+        let Some(Request { envelope, thread }) =
+            unwrap_request(frame.message.protocol, &frame.message.payload)
+        else {
+            continue;
         };
+        let reply_thread = thread;
 
         let answer = crate::dispatch(&state, &envelope).await;
         // The document is the answer, and it is self-describing. The status `dispatch`
@@ -340,31 +326,68 @@ pub async fn serve(
     Ok(())
 }
 
-/// A Trust-Task document's own `id`, which is what its sender correlates the answer by.
-fn document_id(envelope: &[u8]) -> Option<String> {
-    let document: serde_json::Value = serde_json::from_slice(envelope).ok()?;
-    Some(document.get("id")?.as_str()?.to_string())
+/// One inbound frame, reduced to what answering it needs.
+#[derive(Debug, PartialEq, Eq)]
+struct Request {
+    /// The Trust-Task document, exactly as `dispatch` and the HTTP route take it.
+    envelope: Vec<u8>,
+    /// What to thread the reply on, so the caller can recognise it.
+    thread: String,
 }
 
-/// The Trust-Task document inside a DIDComm message, and the id to thread the reply to.
+/// Take the request out of a frame, whichever carrier brought it.
 ///
-/// `None` for anything that is not an envelope — a problem report, a forward that arrived
-/// un-unwrapped, a message under some other protocol. Answering those would either spin
-/// against the mediator's own policy or reply to a message nobody sent us.
-fn didcomm_envelope(payload: &[u8]) -> Option<(Vec<u8>, String)> {
-    let message: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    let type_ = message.get("type")?.as_str()?;
-    if type_ != ENVELOPE_TYPE {
-        tracing::debug!(
-            got = type_,
-            expected = ENVELOPE_TYPE,
-            "ignoring a DIDComm message that is not a Trust-Task envelope"
-        );
-        return None;
+/// `None` for anything that is not a request: a problem report, a forward that arrived
+/// un-unwrapped, a DIDComm message under some other type. Answering those would either spin
+/// against the mediator's own policy or reply to a message nobody sent.
+///
+/// # The thread is the document's, never the frame's
+///
+/// A caller correlates on the id it put on the **document** — the only id it ever saw. A
+/// frame's id is the transport's handle for one delivery and means nothing on the other side.
+/// Threading on it produces a reply that is sent, accepted by the mediator, and matched by
+/// nobody: the caller waits out its whole timeout while the answer sits unclaimed, and
+/// neither end logs anything wrong. That was a real bug here, found only by running it.
+///
+/// DIDComm has an id of its own on the envelope and a caller correlates on that, so the two
+/// carriers read it from different places — which is the reason this is one function and not
+/// an `if` at the call site.
+fn unwrap_request(protocol: Protocol, payload: &[u8]) -> Option<Request> {
+    let json: serde_json::Value = serde_json::from_slice(payload).ok()?;
+
+    match protocol {
+        // TSP carries the document as its payload, with no wrapper at all — byte-identical to
+        // the HTTP body. Nothing to unwrap, and the id can only come from the document.
+        Protocol::TSP => Some(Request {
+            envelope: payload.to_vec(),
+            thread: json.get("id")?.as_str()?.to_string(),
+        }),
+        // DIDComm wraps it: one reserved envelope `type`, whose `body` is the document.
+        _ => {
+            let type_ = json.get("type")?.as_str()?;
+            if type_ != ENVELOPE_TYPE {
+                tracing::debug!(
+                    got = type_,
+                    expected = ENVELOPE_TYPE,
+                    "ignoring a DIDComm message that is not a Trust-Task envelope"
+                );
+                return None;
+            }
+            Some(Request {
+                envelope: serde_json::to_vec(json.get("body")?).ok()?,
+                thread: json.get("id")?.as_str()?.to_string(),
+            })
+        }
     }
-    let body = serde_json::to_vec(message.get("body")?).ok()?;
-    let id = message.get("id")?.as_str()?.to_string();
-    Some((body, id))
+}
+
+/// Frame an answer for TSP: `{ thid, document }`.
+///
+/// The document is unchanged inside it. TSP has no headers, so correlation has to ride in the
+/// payload — and it is the *reply* that needs it, not the request: a request's type is the
+/// document's own `type` field, but nothing in a document says which request it answers.
+fn tsp_reply(document: &serde_json::Value, thread: &str) -> serde_json::Value {
+    serde_json::json!({ "thid": thread, "document": document })
 }
 
 /// Return an answer over DIDComm: authcrypt to the caller, then forward through the mediator.
@@ -429,8 +452,7 @@ async fn send_tsp(
     reply: &serde_json::Value,
     thread: &str,
 ) -> anyhow::Result<()> {
-    let framed = serde_json::json!({ "thid": thread, "document": reply });
-    let bytes = serde_json::to_vec(&framed)?;
+    let bytes = serde_json::to_vec(&tsp_reply(reply, thread))?;
     atm.tsp()
         .send_routed(
             profile,
@@ -440,4 +462,119 @@ async fn send_tsp(
         .await
         .map_err(|e| anyhow::anyhow!("send the TSP answer: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A Trust-Task document, as a caller would send one.
+    fn document() -> serde_json::Value {
+        json!({
+            "id": "urn:uuid:11111111-1111-1111-1111-111111111111",
+            "type": "https://trusttasks.org/spec/rooms/records/list/0.1",
+            "issuedAt": "2026-09-09T00:00:00Z",
+            "payload": { "roomId": "did:key:zRoom" },
+        })
+    }
+
+    /// **The regression.** Over TSP the thread must be the document's own `id`.
+    ///
+    /// It was the frame's — the transport's handle for one delivery, which means nothing on
+    /// the other side. The reply was sent, the mediator accepted it, and no waiter matched it;
+    /// the caller waited out its whole timeout while the answer sat unclaimed, and neither end
+    /// logged anything wrong. Only running it against a real mediator showed it, which is why
+    /// it is pinned here where a unit test can hold it.
+    #[test]
+    fn a_tsp_request_threads_on_the_documents_own_id() {
+        let payload = serde_json::to_vec(&document()).unwrap();
+        let request = unwrap_request(Protocol::TSP, &payload).expect("a TSP payload is a request");
+
+        assert_eq!(
+            request.thread, "urn:uuid:11111111-1111-1111-1111-111111111111",
+            "the caller correlates on the id it put on the document, and saw no other"
+        );
+        assert_eq!(
+            request.envelope, payload,
+            "and the document reaches dispatch byte-identical to the HTTP body — no wrapper"
+        );
+    }
+
+    /// DIDComm carries an id on the envelope, and a caller correlates on **that**.
+    #[test]
+    fn a_didcomm_envelope_threads_on_the_message_id() {
+        let payload = serde_json::to_vec(&json!({
+            "id": "urn:uuid:22222222-2222-2222-2222-222222222222",
+            "type": ENVELOPE_TYPE,
+            "body": document(),
+        }))
+        .unwrap();
+
+        let request = unwrap_request(Protocol::DIDComm, &payload).expect("an envelope");
+        assert_eq!(
+            request.thread,
+            "urn:uuid:22222222-2222-2222-2222-222222222222"
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&request.envelope).unwrap(),
+            document(),
+            "the body is the document, unwrapped"
+        );
+    }
+
+    /// Everything that is not a request is ignored rather than answered.
+    ///
+    /// Answering a problem report feeds the mediator's own policy back into the loop and
+    /// spins; answering a forward that arrived un-unwrapped replies to a message nobody sent.
+    #[test]
+    fn a_didcomm_message_that_is_not_an_envelope_is_not_a_request() {
+        for typ in [
+            "https://didcomm.org/report-problem/2.0/problem-report",
+            "https://didcomm.org/routing/2.0/forward",
+            "https://didcomm.org/trust-ping/2.0/ping",
+            // The near-miss: a caller sending the *task* type instead of the binding's
+            // envelope type. This is the mistake the shared `ENVELOPE_TYPE` constant exists
+            // to prevent, and a conformant peer drops it silently — so it must drop here too.
+            "https://trusttasks.org/spec/rooms/records/list/0.1",
+        ] {
+            let payload =
+                serde_json::to_vec(&json!({ "id": "urn:uuid:x", "type": typ, "body": {} }))
+                    .unwrap();
+            assert_eq!(
+                unwrap_request(Protocol::DIDComm, &payload),
+                None,
+                "`{typ}` is not a Trust-Task envelope"
+            );
+        }
+    }
+
+    /// Neither carrier answers something that is not JSON, or that carries no id to thread on.
+    #[test]
+    fn a_request_with_nothing_to_correlate_it_by_is_refused() {
+        for protocol in [Protocol::TSP, Protocol::DIDComm] {
+            assert_eq!(unwrap_request(protocol, b"not json at all"), None);
+        }
+        // A TSP payload with no `id` cannot be answered: the reply would carry a thread the
+        // caller never sent, which is the same failure as threading on the wrong one.
+        let no_id = serde_json::to_vec(&json!({ "type": "x", "payload": {} })).unwrap();
+        assert_eq!(unwrap_request(Protocol::TSP, &no_id), None);
+    }
+
+    /// The TSP reply puts the thread where a caller looks, and leaves the document alone.
+    #[test]
+    fn a_tsp_reply_carries_the_thread_beside_an_untouched_document() {
+        let answer = json!({ "type": "…#response", "payload": { "records": [] } });
+        let framed = tsp_reply(&answer, "urn:uuid:33333333-3333-3333-3333-333333333333");
+
+        assert_eq!(
+            framed["thid"],
+            "urn:uuid:33333333-3333-3333-3333-333333333333"
+        );
+        assert_eq!(
+            framed["document"], answer,
+            "a caller that ignored the wrapper would read the same bytes the other two \
+             carriers deliver"
+        );
+    }
 }
