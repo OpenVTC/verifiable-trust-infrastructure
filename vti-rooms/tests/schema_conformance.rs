@@ -150,6 +150,7 @@ fn get_and_list_requests_conform() {
         presentation: presentation(),
         prefix: Some("decision/".into()),
         since_version: Some(4),
+        cursor: Some("v412".into()),
         limit: Some(50),
     };
     check::<ListPayload>(
@@ -163,6 +164,7 @@ fn get_and_list_requests_conform() {
         presentation: presentation(),
         prefix: None,
         since_version: None,
+        cursor: None,
         limit: None,
     };
     check::<ListPayload>(
@@ -357,6 +359,21 @@ fn responses_conform() {
     );
 
     check::<ListResponse>("ListRecordsResponse", &json!({ "records": records }));
+
+    // And with a cursor, which is what a host serves when more remain. The
+    // member was in the published schema and this implementation never emitted
+    // it, so a caller could not tell a page from a room.
+    check::<ListResponse>(
+        "ListRecordsResponse mid-listing",
+        &serde_json::to_value(ListRecordsResponse {
+            records: records.clone(),
+            cursor: Some("v412".into()),
+            data_commitment: None,
+            record_count: None,
+            head_version: None,
+        })
+        .expect("serialise"),
+    );
 }
 
 /// The single-record read, on every tier and on a tombstone.

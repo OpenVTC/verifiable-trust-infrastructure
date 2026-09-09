@@ -225,6 +225,17 @@ pub struct ListRecordsBody {
     pub prefix: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_version: Option<u64>,
+    /// Opaque continuation token from a previous response.
+    ///
+    /// This member is in the published request schema and was **missing here**,
+    /// and `deny_unknown_fields` turns a missing member into a refusal: a
+    /// conforming client that paged got its second page rejected as malformed.
+    /// The two halves of the defect were symmetrical — a host that never issued
+    /// a cursor and could not have accepted one back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// Page size to ask for. **Never a cap on the result**: a caller that wants
+    /// the whole room follows [`ListRecordsResponse::cursor`] to its absence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
 }
@@ -370,6 +381,14 @@ pub struct ListRecordsResponse {
     /// Optional on the wire because a host that maintains no tree must not
     /// invent a root: its absence honestly says "no completeness guarantee
     /// here", and a fabricated one would say the opposite while meaning less.
+    /// Present when more records remain, absent at the end.
+    ///
+    /// **Absence is the only end-of-listing signal**, which is why a host that
+    /// truncated silently was worse than one that did not paginate at all: a
+    /// short page and a complete room were the same bytes. A consumer MUST NOT
+    /// infer exhaustion from a page shorter than the limit it asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_commitment: Option<String>,
     /// How many records the room holds, as of `data_commitment`.

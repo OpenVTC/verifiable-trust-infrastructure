@@ -168,6 +168,7 @@ async fn act_one(client: &VtcClient) -> anyhow::Result<()> {
             &agent,
             Some("decision/"),
             None,
+            None,
             &f.agent.did,
             &f.agent.secret_multibase,
         )

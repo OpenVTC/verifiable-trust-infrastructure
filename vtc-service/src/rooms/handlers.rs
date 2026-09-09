@@ -442,19 +442,23 @@ pub(crate) async fn handle_list_records(
         Err(e) => return app_error_to_reject(&doc, &e),
     };
 
-    let records = match storage::list_records(
+    // Paginated honestly: the page the caller asked for, and a cursor when more
+    // remain. This used to `take(limit)` and drop the rest without a word, so a
+    // short page and a complete room were indistinguishable.
+    let page = match storage::list_records_page(
         &state.room_records_ks,
         &req.room_id,
         req.prefix.as_deref(),
         req.since_version,
+        req.cursor.as_deref(),
+        req.limit,
     )
     .await
     {
-        Ok(r) => r,
+        Ok(p) => p,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
 
-    let limit = req.limit.unwrap_or(usize::MAX);
     // A listing names no single record, so the entry records the room and the fact of a
     // listing — which is the event: who has seen what this room holds.
     audit_room(state, &room, &authorized, RoomOperation::ListRecords, None).await;
@@ -462,7 +466,8 @@ pub(crate) async fn handle_list_records(
     success_response(
         &doc,
         ListRecordsResponse {
-            records: records.iter().take(limit).map(|r| r.metadata()).collect(),
+            records: page.records.iter().map(|r| r.metadata()).collect(),
+            cursor: page.cursor,
             // One head, so the three values a reader compares cannot come
             // from three moments.
             data_commitment: head
