@@ -36,7 +36,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{RecordStatus, Visibility};
+use crate::{Record, RecordStatus, Visibility};
 
 /// `rooms/create/0.1`.
 pub const ROOMS_CREATE_TYPE: &str = "https://trusttasks.org/spec/rooms/create/0.1";
@@ -227,6 +227,117 @@ pub struct ListRecordsBody {
     pub since_version: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+}
+
+/// **The leaf preimage of the record tree** — the object a host hashes into a
+/// leaf and a reader reassembles to check a [`crate::merkle::InclusionProof`].
+///
+/// This is the wire's `CommittedRecord` (`rooms/_shared/0.1`), and it is
+/// deliberately not [`Record`]. A commitment nobody but its author can
+/// recompute is not a commitment, and hashing the *storage* record made it one:
+/// `updatedAt` is unix seconds in the store and RFC 3339 on the wire, `epoch`
+/// and `nonce` sit flat in the store and inside `sealed` on the wire, and
+/// `epoch` serialises as `null` on an open room where the wire has it absent.
+/// A second implementation reading only the specification could not reproduce
+/// a single root.
+///
+/// **Absence carries meaning**, so every presence rule here is exact:
+///
+/// - `pinned` is serialised **only** when true. `false` is not a spelling of
+///   this member; absent is. Two spellings would give one record two roots.
+/// - `epoch` is not a member. It lives inside `sealed`, where the AEAD binds
+///   it, and a top-level copy would be a second place for it to disagree with
+///   itself.
+/// - `sealed` on the sealed tiers, `cleartext` on `open`, and **neither** on a
+///   `retracted` tombstone.
+/// - `title`/`description` are not members: a listing lifts them out of an open
+///   room's body, and committing to both would commit to the same bytes twice.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommittedRecord {
+    pub key: String,
+    pub version: u64,
+    pub status: RecordStatus,
+    /// RFC 3339. The digest is over the **wire** form, never over the unix
+    /// seconds the store keeps.
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed: Option<SealedContent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleartext: Option<serde_json::Value>,
+}
+
+/// `rooms/records/get/0.1#response`.
+///
+/// # Why this type exists, having not existed
+///
+/// Both hosts answered a read by serialising [`Record`] — the *storage* record
+/// — and adding `dataCommitment` to whatever came out. That is not this task's
+/// response and never was. `sealed` is stored as a bare base64url string where
+/// the schema types it as a `SealedRecord` object, and `epoch`, `nonce`,
+/// `status`, `pinned`, `author` and `updatedAt` were emitted flat — so under the
+/// response's `additionalProperties: false` a single read produced a type error
+/// and six violations.
+///
+/// It survived because this module's rule — every wire type appears in
+/// `tests/schema_conformance.rs` — can only be applied to types that *exist*.
+/// A response with no type had no line to be missing from, and a storage record
+/// reached the wire because nothing stood between them.
+///
+/// The consumer is not hypothetical: `@openvtc/pnm-core`'s `roomsRecordsGet` is
+/// typed on the **generated** payload, so a caller reading `sealed.ciphertext`
+/// got `undefined` from a live host — with a green type-check on both sides.
+///
+/// # The response *is* the leaf preimage, plus three members
+///
+/// Strip `dataCommitment`, `trace` and `ext` and what remains is exactly a
+/// [`CommittedRecord`], which is why the flattened field is that type rather
+/// than a repetition of it. A reader reassembles the preimage by **deletion**,
+/// not reconstruction, and the ciphertext is never carried twice.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetRecordResponse {
+    /// Everything the room's commitment covers.
+    #[serde(flatten)]
+    pub record: CommittedRecord,
+    /// The room's data commitment, as a `DigestMultibase`.
+    ///
+    /// Optional for the same reason it is on a listing: a host that maintains
+    /// no tree must not invent a root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_commitment: Option<String>,
+    /// The path from this record's leaf to `data_commitment`.
+    ///
+    /// Served only with the commitment it reaches, and computed from the same
+    /// snapshot: a trace is a statement about the tree it was cut from, and a
+    /// room moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<crate::merkle::InclusionProof>,
+}
+
+impl GetRecordResponse {
+    /// The response for `record`, with whatever verification the host can
+    /// offer.
+    ///
+    /// Built here rather than in each host so the two cannot answer a read
+    /// differently — which is exactly how the shape above went wrong, in two
+    /// files, for as long as the response had no type.
+    #[must_use]
+    pub fn of(
+        record: &Record,
+        data_commitment: Option<String>,
+        trace: Option<crate::merkle::InclusionProof>,
+    ) -> Self {
+        Self {
+            record: record.committed(),
+            data_commitment,
+            trace,
+        }
+    }
 }
 
 /// `rooms/records/list/0.1#response`.

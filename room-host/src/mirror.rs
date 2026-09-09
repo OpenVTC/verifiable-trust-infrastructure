@@ -189,7 +189,14 @@ pub async fn pull_once(state: &HostState, mirror: &MirroredRoom) -> anyhow::Resu
                 &mirror.signer_key_multibase,
             )
             .await?;
-        let record: Record = serde_json::from_value(full)?;
+        // The wire is not this host's storage format. It used to be — a get
+        // response deserialised straight into `Record`, which worked only
+        // because the response *was* the storage record — and that coupling is
+        // what put a storage type on the wire. `Record::from_wire` is the stated
+        // inverse of `Record::committed`, so the mirror now reads a response and
+        // rebuilds a record, rather than assuming they are one thing.
+        let wire: vti_rooms::wire::GetRecordResponse = serde_json::from_value(full)?;
+        let record = Record::from_wire(&wire.record)?;
         let version = record.version;
 
         match storage::store_mirrored_record(

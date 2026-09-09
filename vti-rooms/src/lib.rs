@@ -443,6 +443,108 @@ impl Record {
         }
         serde_json::Value::Object(map)
     }
+
+    /// The **leaf preimage**: this record in the form the room's commitment
+    /// covers.
+    ///
+    /// Not [`Record`] itself, and the difference is the whole point. Hashing
+    /// the storage record made the commitment reproducible only by another copy
+    /// of this crate: `updatedAt` is unix seconds here and RFC 3339 on the wire,
+    /// `epoch` and `nonce` are flat here and inside `sealed` on the wire, and
+    /// `epoch` serialises as `null` on an open room where the wire has it
+    /// absent. Three ways for two honest implementations to disagree about a
+    /// root, and nothing said which one counted.
+    ///
+    /// `sealed` is assembled only when all three of its parts are present. A
+    /// ciphertext with no nonce or no epoch is a **corrupt store** —
+    /// [`storage::put_record`] writes the three together or writes nothing — and
+    /// it degrades to a body-less record rather than to a fabricated half of
+    /// one, because a substituted epoch hands a reader a body whose AEAD open
+    /// fails for a reason pointing at the wrong thing.
+    #[must_use]
+    pub fn committed(&self) -> wire::CommittedRecord {
+        let sealed = match (&self.sealed, &self.nonce, self.epoch) {
+            (Some(ciphertext), Some(nonce), Some(epoch)) => Some(wire::SealedContent {
+                ciphertext: ciphertext.clone(),
+                nonce: nonce.clone(),
+                epoch,
+            }),
+            _ => None,
+        };
+        wire::CommittedRecord {
+            key: self.key.clone(),
+            version: self.version,
+            status: self.status,
+            updated_at: rfc3339(self.updated_at),
+            pinned: self.pinned,
+            author: self.author.clone(),
+            sealed,
+            cleartext: self.cleartext.clone(),
+        }
+    }
+
+    /// Read a wire record back into a storage record — the inverse of
+    /// [`Record::committed`].
+    ///
+    /// # Why this has to exist
+    ///
+    /// A mirror pulls records from its primary and stores them, and it used to
+    /// do that with `serde_json::from_value::<Record>(response)` — which worked
+    /// only because the response *was* the storage record. That coupling is
+    /// what put a storage type on the wire in the first place, so removing one
+    /// without the other breaks replication. The two functions are inverses and
+    /// `a_record_round_trips_through_its_committed_form` says so, which is a
+    /// property rather than the coincidence of their being one type.
+    ///
+    /// # One thing does not survive, deliberately
+    ///
+    /// A **retracted** record keeps its epoch in storage and has nowhere to put
+    /// it on the wire: the epoch travels inside `sealed`, where the AEAD binds
+    /// it, and a tombstone has no `sealed`. So a mirrored tombstone comes back
+    /// with `epoch: None`.
+    ///
+    /// That is the right trade rather than a gap to plug. A top-level `epoch`
+    /// beside `sealed` is a second place for the same value to live, which is
+    /// the disagreement this whole type exists to end — and a tombstone's epoch
+    /// is read nowhere: the only check against it (`storage::put_record`) runs
+    /// on a write that a retracted record can never take again.
+    pub fn from_wire(record: &wire::CommittedRecord) -> Result<Self, FromWireError> {
+        let parsed = chrono::DateTime::parse_from_rfc3339(&record.updated_at).map_err(|_| {
+            FromWireError::UpdatedAt {
+                key: record.key.clone(),
+                value: record.updated_at.clone(),
+            }
+        })?;
+        let updated_at =
+            u64::try_from(parsed.timestamp()).map_err(|_| FromWireError::UpdatedAt {
+                key: record.key.clone(),
+                value: record.updated_at.clone(),
+            })?;
+        Ok(Self {
+            key: record.key.clone(),
+            version: record.version,
+            epoch: record.sealed.as_ref().map(|s| s.epoch),
+            status: record.status,
+            pinned: record.pinned,
+            sealed: record.sealed.as_ref().map(|s| s.ciphertext.clone()),
+            nonce: record.sealed.as_ref().map(|s| s.nonce.clone()),
+            cleartext: record.cleartext.clone(),
+            author: record.author.clone(),
+            updated_at,
+        })
+    }
+}
+
+/// A wire record that could not be read back into a storage record.
+#[derive(Debug, thiserror::Error)]
+pub enum FromWireError {
+    /// `updatedAt` was not an RFC 3339 timestamp, or named an instant before
+    /// the epoch. Either way the record cannot be stored: a mirror that guessed
+    /// a time would write a record whose age is fiction.
+    #[error(
+        "record `{key}` carries `updatedAt` = `{value}`, which is not a storable RFC 3339 timestamp"
+    )]
+    UpdatedAt { key: String, value: String },
 }
 
 #[cfg(test)]
