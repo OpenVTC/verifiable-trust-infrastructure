@@ -186,12 +186,61 @@ nothing that touches how a record is sealed.
 1. **Where the anchored values go in a log entry.** Already open in
    [`data-rooms-epoch-anchoring.md`](data-rooms-epoch-anchoring.md); this adds a
    value to the same slot rather than a second question.
-2. **Whether "complete as of the last renewal" is the property we want to
-   claim.** It is weaker than continuous completeness and much stronger than
-   nothing. If it is not enough, the next step is update proofs broadcast on
-   write (ES's online path) — still no zkVM, but it puts a verification cost on
-   every member for every write, and that is a different trade to make
-   deliberately.
+2. ~~Whether "complete as of the last renewal" is the property we want to
+   claim.~~ **Answered — and the question was mis-posed. See §6.1.**
+### 6.1 It is not "per-write or per-renewal", and the answer is CT's shape
+
+The question as first written — *is the tree maintained per write or per
+renewal* — is a false dichotomy, and noticing that is most of the answer. **A
+Merkle root that lags the writes is not a root.** The tree is maintained per
+write, necessarily and cheaply: an insert is `O(log n)` hashing. What was
+actually undecided is *how often the commitment is published, and by whom*.
+
+Three pieces of evidence settle it.
+
+**Encrypted Spaces is continuous, not periodic.** §3.3 and Figure 2: the server
+"broadcasts each change with its trace to every online member", and the
+fast-forward proof exists *only* so a member who was offline can catch up
+without replaying. Completeness there is not anchored periodically; it is
+maintained continuously and compressed for latecomers. Reading the zkVM as the
+mechanism, rather than as the catch-up optimisation it is, is what produced the
+periodic framing here.
+
+**A yearly anchor would be nearly vacuous for the workload rooms are for.**
+`DEFAULT_EPOCH_LIFETIME_DAYS` is **365**, and only an epoch advance resets it
+(`storage::advance_epoch`). A room with membership churn anchors often — every
+add and remove advances the epoch — but a **membership-stable, write-active**
+room anchors once a year. That is exactly the agent-memory case, the primary
+workload: "complete as of the last renewal" would exclude up to twelve months of
+writes, which is most of the room.
+
+**Certificate Transparency already solved this shape.** CT does not anchor per
+write to an expensive medium, and it does not anchor rarely either. It uses two
+tiers:
+
+| CT | Rooms |
+|---|---|
+| **SCT** — log-signed receipt at submission, a *promise* to include within the Maximum Merge Delay | the **signed put acknowledgement**, which exists now that both services sign responses (#1334, #1335) |
+| **STH** — signed tree head, published on a cadence (24h typical; ≤1 minute under `static-ct-api`) | the **host-signed data commitment**, served with reads |
+| **Gossip / auditing** — what catches a log presenting different views to different clients | the **witnessed epoch anchor** — a signed root alone never proved non-equivocation, in CT or here |
+
+So the design is:
+
+- **The host signs the data commitment** and serves it with every read. Cheap,
+  and newly possible: before responses were signed, a host-asserted root was
+  unattributable and therefore worthless.
+- **The witnessed epoch anchor is the equivocation check, not the freshness
+  mechanism.** This is the correction that matters. A host that shows two
+  members two different roots is caught when both compare against the witnessed
+  one; the anchor's job was never to be fresh.
+- **The write receipt covers the window between anchors**, exactly as an SCT
+  covers the window before a certificate appears in an STH.
+
+**The property to claim** is therefore not "complete as of the last renewal" but:
+*complete against a host-signed commitment, with host equivocation detectable at
+each witnessed epoch.* Bounded, honest, and stronger than the periodic version
+by roughly the ratio of a write interval to a year.
+
 3. **Whether a host is willing to be bound this way at all.** A commitment is a
    claim a host can be caught breaking. That is the point, and it is also a
    thing an operator is entitled to weigh before adopting.
@@ -209,7 +258,14 @@ to schedule rather than slip in, and **settle question 2 before starting it** �
 the answer decides whether the tree is maintained per-write or per-renewal, and
 that is expensive to change afterwards.
 
-Also still owed, and not a rooms question: `vta-sdk`'s `VtaClient` does not
-verify the responses it receives, and it is the surface the CLI, cierge and the
-services all go through. Its verification is what makes the signing above worth
-anything to them.
+The client verification that was owed here is **done** — `vta-sdk`'s
+`VtaClient` (#1341), the VTA reading a host's reply (#1337) and the browser
+wallet (pnm-browser-plugin #215) all verify and bind the signer. That is what
+makes a host-signed commitment worth anything, and it is why §6.1's design is
+available now and was not before.
+
+Build order, smallest first: the Merkle store under `vti_rooms::storage`, then
+the commitment on read responses, then traces. The witnessed anchor rides
+[`data-rooms-epoch-anchoring.md`](data-rooms-epoch-anchoring.md) whenever that
+lands — it is the equivocation check, so it gates detection of a lying host, not
+the property itself.
