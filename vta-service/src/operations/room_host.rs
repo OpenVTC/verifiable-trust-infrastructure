@@ -109,6 +109,74 @@ pub fn build_room_task(task: &str, host: &str, issuer: &str, payload: Value) -> 
     })
 }
 
+/// Check that a host's reply is actually from the host, before believing a word
+/// of it.
+///
+/// # Why this is not optional
+///
+/// A reply is bytes off a socket. Without a proof it attests to nothing: an
+/// intermediary can rewrite a record listing, change the epoch a chain claims to
+/// reach, or answer for a host that never spoke — and every downstream check
+/// would pass, because the downstream checks are about *shape*.
+///
+/// Two things are required and the second is the one that is easy to omit: the
+/// proof must **verify**, and its proven signer must be **the host we
+/// addressed**. `verify_trust_task_proof_with` says so in its own docs — a proof
+/// by `did:webvh:…:someone-else#key-0` verifies perfectly well, and that it is
+/// not the party you expected is a separate check. Skipping it turns "signed by
+/// somebody" into "signed by the host", which is the whole property.
+///
+/// # Why an error document is exempt
+///
+/// A refusal's `type` resolves to the framework's `trust-task-error`
+/// specification, whose own proof requirement is **RECOMMENDED**, not REQUIRED
+/// (SPEC §8.1). Demanding one would make every conforming refusal unreadable —
+/// including the `hostRefused` this family declares, whose entire purpose is to
+/// carry the host's reason back to an operator. A refusal is believed only to
+/// the extent of being a refusal; it confers nothing and grants nothing, which
+/// is why the framework asks less of it.
+async fn verify_host_reply(
+    reply: &Value,
+    host: &str,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+) -> Result<(), AppError> {
+    let doc_type = reply
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if doc_type.starts_with("https://trusttasks.org/spec/trust-task-error/") {
+        return Ok(());
+    }
+
+    let doc: trust_tasks_rs::TrustTask<Value> =
+        serde_json::from_value(reply.clone()).map_err(|e| {
+            bad_gateway_error(format!(
+                "room host `{host}` sent a reply this agent cannot read as a Trust-Task \
+                 document: {e}"
+            ))
+        })?;
+
+    let vm_resolver = vti_common::auth::TrustTaskVmResolver::from_optional(Some(resolver.clone()));
+    let signer = vti_common::auth::verify_trust_task_proof_with(&doc, &vm_resolver)
+        .await
+        .map_err(|e| {
+            AppError::Forbidden(format!(
+                "the reply from room host `{host}` is unsigned or its proof does not verify \
+                 ({e}), so nothing in it can be believed — an unsigned answer is bytes, not \
+                 evidence"
+            ))
+        })?;
+
+    if signer != host {
+        return Err(AppError::Forbidden(format!(
+            "the reply claiming to come from room host `{host}` is signed by `{signer}`. The \
+             proof verifies, which means somebody really signed it — just not the party this \
+             agent asked"
+        )));
+    }
+    Ok(())
+}
+
 /// Read a host's reply, distinguishing the three things it can be.
 ///
 /// A room host answers a Trust Task with the task's own `#response`, or with a
@@ -226,6 +294,7 @@ pub async fn send_room_task(
                     "room host `{host}` sent a body that is not a Trust-Task document: {e}: {body}"
                 ))
             })?;
+            verify_host_reply(&reply, host, resolver).await?;
             read_reply(&reply, response_task, host)
         }
         // Unreachable while `OUTBOUND_SUPPORTED` holds REST alone; kept as an
@@ -333,6 +402,52 @@ mod tests {
             matches!(err, AppError::Forbidden(_)),
             "a refusal, not a 502"
         );
+    }
+
+    /// A refusal is exempt, and deliberately: `trust-task-error` declares its
+    /// proof RECOMMENDED, so demanding one would make every conforming refusal
+    /// unreadable — including the `hostRefused` whose whole job is to carry the
+    /// host's reason back.
+    #[tokio::test]
+    async fn a_refusal_is_read_without_a_proof() {
+        let reply = serde_json::json!({
+            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+            "payload": { "code": "notAMember", "reason": "no" }
+        });
+        verify_host_reply(&reply, "did:example:host", &test_resolver().await)
+            .await
+            .expect("a refusal needs no proof");
+    }
+
+    /// An unsigned success reply is refused. Bytes off a socket attest to
+    /// nothing, and every check downstream of this one is about *shape* — so an
+    /// intermediary that rewrote a record listing would pass all of them.
+    #[tokio::test]
+    async fn an_unsigned_success_reply_is_refused() {
+        let reply = serde_json::json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
+            "type": "https://trusttasks.org/spec/rooms/epoch/chain/0.1#response",
+            "issuer": "did:example:host",
+            "recipient": "did:example:agent",
+            "issuedAt": "2026-01-01T00:00:00Z",
+            "payload": { "links": [] }
+        });
+        let err = verify_host_reply(&reply, "did:example:host", &test_resolver().await)
+            .await
+            .expect_err("an unsigned success reply must not be believed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bytes, not") || msg.contains("unsigned"),
+            "the refusal must say why an unsigned answer is worthless: {msg}"
+        );
+    }
+
+    async fn test_resolver() -> affinidi_did_resolver_cache_sdk::DIDCacheClient {
+        affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+        )
+        .await
+        .expect("a resolver for tests")
     }
 
     #[test]
