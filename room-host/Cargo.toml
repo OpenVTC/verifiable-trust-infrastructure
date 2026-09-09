@@ -51,8 +51,9 @@ uuid = { workspace = true }
 affinidi-tdk = { workspace = true, optional = true }
 # `affinidi-messaging-sdk/tsp` is what compiles the real TSP unpack arm; without
 # it the transport drops every TSP frame with a log line and nothing else. The
-# facade forwards it since affinidi-tdk-rs#785, and this names the SDK anyway
-# because it needs `DidCommTransport` and `affinidi-messaging-core`'s shapes.
+# facade forwards it on `main` since affinidi-tdk-rs#785 but in no published
+# release yet, so this asks for it directly — and would anyway, because it needs
+# `DidCommTransport` and `affinidi-messaging-core`'s shapes.
 affinidi-messaging-sdk = { version = "0.23", optional = true, default-features = false, features = ["tsp"] }
 affinidi-messaging-core = { workspace = true, optional = true }
 affinidi-secrets-resolver = { workspace = true, optional = true }
