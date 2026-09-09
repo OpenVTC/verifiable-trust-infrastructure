@@ -122,12 +122,19 @@ pub fn mint_key_package(
     room_id: &str,
     invitation: &str,
     spent: &str,
+    issuer_key: Option<Vec<u8>>,
 ) -> Result<String, String> {
     // Gated, and gated *here* rather than only at the Welcome, because minting is
     // not free: it retains a private key against a Welcome that may never come. A
     // key holder that minted for anyone is one anyone can fill.
     let spent: Vec<String> = serde_json::from_str(spent).map_err(err)?;
-    invitation::verify(invitation, room_id, member_did, &spent)?;
+    invitation::verify(
+        invitation,
+        room_id,
+        member_did,
+        &spent,
+        issuer_key.as_deref(),
+    )?;
 
     let (identity, key_package) = IdentitySnapshot::mint(member_did).map_err(err)?;
     serde_json::to_string(&MintedIdentity {
@@ -144,8 +151,9 @@ pub fn mint_key_package_js(
     room_id: &str,
     invitation: &str,
     spent: &str,
+    issuer_key: Option<Vec<u8>>,
 ) -> Result<String, JsError> {
-    mint_key_package(member_did, room_id, invitation, spent).map_err(js)
+    mint_key_package(member_did, room_id, invitation, spent, issuer_key).map_err(js)
 }
 
 /// A member's signing identity — the JS boundary over [`identity::MemberIdentity`].
@@ -219,11 +227,18 @@ pub fn verify_invitation_js(
     room_id: &str,
     member_did: &str,
     spent: &str,
+    issuer_key: Option<Vec<u8>>,
 ) -> Result<String, JsError> {
     let spent: Vec<String> = serde_json::from_str(spent).map_err(|e| js(e.to_string()))?;
-    invitation::verify(invitation, room_id, member_did, &spent)
-        .map(|v| v.credential_id)
-        .map_err(js)
+    invitation::verify(
+        invitation,
+        room_id,
+        member_did,
+        &spent,
+        issuer_key.as_deref(),
+    )
+    .map(|v| v.credential_id)
+    .map_err(js)
 }
 
 /// One room this browser can open.
@@ -249,6 +264,7 @@ impl RoomMember {
         welcome: &[u8],
         invitation: &str,
         spent: &str,
+        issuer_key: Option<Vec<u8>>,
     ) -> Result<RoomMember, String> {
         let minted: MintedIdentity = serde_json::from_str(minted).map_err(err)?;
 
@@ -257,7 +273,13 @@ impl RoomMember {
         // accepted an uninvited one would hold keys for a room nobody agreed to
         // join — and would have made the invitation decorative.
         let spent: Vec<String> = serde_json::from_str(spent).map_err(err)?;
-        invitation::verify(invitation, room_id, minted.identity.member_did(), &spent)?;
+        invitation::verify(
+            invitation,
+            room_id,
+            minted.identity.member_did(),
+            &spent,
+            issuer_key.as_deref(),
+        )?;
 
         let group = RoomGroup::join_from_identity(&minted.identity, welcome).map_err(err)?;
         Ok(RoomMember {
@@ -391,8 +413,9 @@ impl RoomMember {
         welcome: &[u8],
         invitation: &str,
         spent: &str,
+        issuer_key: Option<Vec<u8>>,
     ) -> Result<RoomMember, JsError> {
-        Self::join(room_id, minted, welcome, invitation, spent).map_err(js)
+        Self::join(room_id, minted, welcome, invitation, spent, issuer_key).map_err(js)
     }
 
     /// See [`RoomMember::restore`].
@@ -493,6 +516,26 @@ mod tests {
         (did, secret)
     }
 
+    /// A signing secret published under `vm` — any verification method, not only a
+    /// `did:key`'s own.
+    ///
+    /// `a_room` can only make a secret whose method is derived from its key, which is exactly
+    /// what a `did:webvh` room does not have.
+    fn a_secret_for(vm: &str, seed: u8) -> affinidi_secrets_resolver::secrets::Secret {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64U;
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        affinidi_secrets_resolver::secrets::Secret::from_str(
+            vm,
+            &serde_json::json!({
+                "crv": "Ed25519",
+                "d": B64U.encode(sk.to_bytes()),
+                "kty": "OKP",
+                "x": B64U.encode(sk.verifying_key().to_bytes()),
+            }),
+        )
+        .expect("build a signing secret")
+    }
+
     /// An invitation from `room` to `subject`, signed, open from a minute ago for an hour.
     fn an_invitation(
         room: &str,
@@ -550,7 +593,7 @@ mod tests {
         let (room_did, room_secret) = a_room(0x11);
         let joiner = "did:key:zJoiner";
         let vic = an_invitation(&room_did, &room_secret, joiner, "urn:uuid:invite-1");
-        let minted = mint_key_package(joiner, &room_did, &vic, NONE_SPENT).unwrap();
+        let minted = mint_key_package(joiner, &room_did, &vic, NONE_SPENT, None).unwrap();
         let parsed: MintedIdentity = serde_json::from_str(&minted).unwrap();
         let key_package = B64.decode(&parsed.key_package).unwrap();
 
@@ -560,7 +603,8 @@ mod tests {
             .clone()
             .expect("adding a member makes a Welcome");
 
-        let mut member = RoomMember::join(&room_did, &minted, &welcome, &vic, NONE_SPENT).unwrap();
+        let mut member =
+            RoomMember::join(&room_did, &minted, &welcome, &vic, NONE_SPENT, None).unwrap();
         assert_eq!(member.room_id(), room_did);
 
         // A record the member writes and reads back.
@@ -822,7 +866,7 @@ mod tests {
         futures_lite::future::block_on(vic.sign(&secret, None)).unwrap();
         let json = serde_json::to_string(vic.credential()).unwrap();
 
-        verify(&json, &room, me, &[]).expect("an invitation valid from now must verify now");
+        verify(&json, &room, me, &[], None).expect("an invitation valid from now must verify now");
     }
 
     /// A room identified by `did:peer:2` can issue an invitation this member verifies.
@@ -866,11 +910,11 @@ mod tests {
         futures_lite::future::block_on(vic.sign(&signing, None)).expect("sign as the room");
 
         let encoded = serde_json::to_string(vic.credential()).unwrap();
-        verify(&encoded, &room, me, &[])
+        verify(&encoded, &room, me, &[], None)
             .expect("a did:peer room's invitation must verify, with no network");
 
         // And the issuer binding still bites: the same invitation, for somebody else.
-        assert!(verify(&encoded, &room, "did:key:zOther", &[]).is_err());
+        assert!(verify(&encoded, &room, "did:key:zOther", &[], None).is_err());
     }
 
     /// Each of the five checks, made to bite.
@@ -887,7 +931,7 @@ mod tests {
 
         let good = an_invitation(&room, &secret, me, "urn:uuid:i-1");
         assert!(
-            verify(&good, &room, me, &[]).is_ok(),
+            verify(&good, &room, me, &[], None).is_ok(),
             "the control must pass"
         );
 
@@ -906,7 +950,7 @@ mod tests {
         futures_lite::future::block_on(vrc.sign(&secret, None)).unwrap();
         let as_json = serde_json::to_string(vrc.credential()).unwrap();
         assert!(
-            verify(&as_json, &room, me, &[])
+            verify(&as_json, &room, me, &[], None)
                 .unwrap_err()
                 .contains("not an invitation")
         );
@@ -914,7 +958,7 @@ mod tests {
         // 2. Issued by a different room. Valid, and not an invitation to *this* one.
         let elsewhere = an_invitation(&other_room, &other_secret, me, "urn:uuid:i-3");
         assert!(
-            verify(&elsewhere, &room, me, &[])
+            verify(&elsewhere, &room, me, &[], None)
                 .unwrap_err()
                 .contains("issued by")
         );
@@ -923,7 +967,7 @@ mod tests {
         //    third party could place a member into a room they were invited to.
         let theirs = an_invitation(&room, &secret, "did:key:zSomeoneElse", "urn:uuid:i-4");
         assert!(
-            verify(&theirs, &room, me, &[])
+            verify(&theirs, &room, me, &[], None)
                 .unwrap_err()
                 .contains("not transferable")
         );
@@ -933,7 +977,7 @@ mod tests {
         //    check that makes the other four mean anything.
         let forged = an_invitation(&room, &other_secret, me, "urn:uuid:i-5");
         assert!(
-            verify(&forged, &room, me, &[])
+            verify(&forged, &room, me, &[], None)
                 .unwrap_err()
                 .contains("is signed by")
         );
@@ -942,7 +986,7 @@ mod tests {
         //    entitlement to rejoin a room you were removed from.
         let spent = vec!["urn:uuid:i-1".to_string()];
         assert!(
-            verify(&good, &room, me, &spent)
+            verify(&good, &room, me, &spent, None)
                 .unwrap_err()
                 .contains("already been used")
         );
@@ -959,6 +1003,76 @@ mod tests {
     /// An hour is chosen for a real invitation because it is an act somebody is about to
     /// perform, not a standing entitlement. That reasoning is only true if the window is
     /// enforced.
+    /// **A `did:webvh` room, which is what production mints and what a VTC-hosted room is.**
+    ///
+    /// It cannot be resolved here — that means fetching a log over HTTPS and verifying its
+    /// history, which is I/O, and this crate compiles to a target where I/O belongs to the
+    /// host page. So the caller resolves it and passes the issuer's key in.
+    ///
+    /// What this asserts is that the trust moved but the checking did not: the proof must
+    /// still name the issuer, and it must still verify under the key supplied. A wrong key
+    /// fails. What this module cannot do is tell a correctly-resolved key from a
+    /// convincingly-wrong one — that is the resolver's job, and it is why the parameter
+    /// exists rather than this module growing an HTTP client it could not use.
+    #[test]
+    fn a_webvh_room_verifies_against_the_key_its_resolver_found() {
+        let me = "did:key:zMe";
+        // A room whose identifier says nothing about its key — the whole point of the case.
+        let room = "did:webvh:QmScid:rooms.example:northwind";
+        // Signed under a verification method *of the room's own DID*, which is what makes
+        // the issuer-binding check pass. The key behind it is the thing a resolver had to go
+        // and find — nothing in `did:webvh:QmScid:…` reveals it.
+        //
+        // Signed with that method from the start rather than rewritten afterwards: an
+        // `eddsa-jcs-2022` proof covers its own `verificationMethod`, so editing it after the
+        // fact invalidates the signature. Which is the proof doing its job.
+        let secret = a_secret_for(&format!("{room}#key-0"), 0x31);
+        let key = secret.get_public_bytes().to_vec();
+
+        let now = chrono::Utc::now();
+        let mut vic = dtg_credentials::DTGCredential::new_vic(
+            room.to_string(),
+            me.to_string(),
+            now - chrono::Duration::minutes(1),
+            Some(now + chrono::Duration::hours(1)),
+        )
+        .with_id("urn:uuid:webvh-1");
+        futures_lite::future::block_on(vic.sign(&secret, None)).unwrap();
+        let encoded = serde_json::to_string(vic.credential()).unwrap();
+
+        // Without a key there is nothing to check against, and it says so rather than
+        // guessing.
+        let err = verify(&encoded, room, me, &[], None).unwrap_err();
+        assert!(err.contains("cannot resolve"), "{err}");
+        assert!(err.contains("pass the issuer's key in"), "{err}");
+
+        // With the resolved key, and with the signature intact, it passes.
+        let ok = verify(&encoded, room, me, &[], Some(&key))
+            .expect("a resolved key is what a webvh room is verified against");
+        assert_eq!(ok.credential_id, "urn:uuid:webvh-1");
+
+        // With somebody else's key it does not. The caller supplies the key; it does not get
+        // to supply the verdict.
+        let wrong = a_secret_for(&format!("{room}#key-0"), 0x32)
+            .get_public_bytes()
+            .to_vec();
+        assert!(
+            verify(&encoded, room, me, &[], Some(&wrong))
+                .unwrap_err()
+                .contains("did not verify"),
+            "a key that is not the signer's must fail"
+        );
+
+        // And a supplied key is ignored where the identifier already carries one — otherwise
+        // a caller could talk this module out of the one check it can make entirely alone.
+        let (lexical_room, lexical_secret) = a_room(0x33);
+        let good = an_invitation(&lexical_room, &lexical_secret, me, "urn:uuid:lex-1");
+        assert!(
+            verify(&good, &lexical_room, me, &[], Some(&wrong)).is_ok(),
+            "a did:key room derives its key, and a supplied one must not displace it"
+        );
+    }
+
     #[test]
     fn an_invitation_outside_its_window_is_refused() {
         let (room, secret) = a_room(0x24);
@@ -974,7 +1088,7 @@ mod tests {
             Some(now - chrono::Duration::hours(1)),
         );
         assert!(
-            verify(&expired, &room, me, &[])
+            verify(&expired, &room, me, &[], None)
                 .unwrap_err()
                 .contains("expired"),
             "an invitation that has run out must not still admit"
@@ -989,7 +1103,7 @@ mod tests {
             Some(now + chrono::Duration::hours(2)),
         );
         assert!(
-            verify(&premature, &room, me, &[])
+            verify(&premature, &room, me, &[], None)
                 .unwrap_err()
                 .contains("not valid yet"),
             "nor one that has not started"
@@ -1008,7 +1122,7 @@ mod tests {
             None,
         );
         assert!(
-            verify(&forever, &room, me, &[]).is_ok(),
+            verify(&forever, &room, me, &[], None).is_ok(),
             "an open-ended invitation is the issuer's call, not this gate's"
         );
     }
@@ -1021,7 +1135,7 @@ mod tests {
         let (room_did, room_secret) = a_room(0x11);
         let joiner = "did:key:zJoiner";
         let vic = an_invitation(&room_did, &room_secret, joiner, "urn:uuid:invite-1");
-        let minted = mint_key_package(joiner, &room_did, &vic, NONE_SPENT).unwrap();
+        let minted = mint_key_package(joiner, &room_did, &vic, NONE_SPENT, None).unwrap();
         let parsed: MintedIdentity = serde_json::from_str(&minted).unwrap();
         let change = owner
             .add_member_from_bytes(&B64.decode(&parsed.key_package).unwrap())
@@ -1032,6 +1146,7 @@ mod tests {
             &change.welcome.unwrap(),
             &vic,
             NONE_SPENT,
+            None,
         )
         .unwrap();
 
@@ -1044,7 +1159,8 @@ mod tests {
             "did:key:zOther",
             "urn:uuid:invite-2",
         );
-        let other = mint_key_package("did:key:zOther", &room_did, &other_vic, NONE_SPENT).unwrap();
+        let other =
+            mint_key_package("did:key:zOther", &room_did, &other_vic, NONE_SPENT, None).unwrap();
         let other_parsed: MintedIdentity = serde_json::from_str(&other).unwrap();
         let change = owner
             .add_member_from_bytes(&B64.decode(&other_parsed.key_package).unwrap())
