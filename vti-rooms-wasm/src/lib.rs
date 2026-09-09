@@ -54,6 +54,7 @@
 //! whose leaf nobody added, which fails at the first read looking like a bad Welcome rather
 //! than a wrong identity.
 
+pub mod identity;
 pub mod invitation;
 
 use base64::Engine as _;
@@ -145,6 +146,67 @@ pub fn mint_key_package_js(
     spent: &str,
 ) -> Result<String, JsError> {
     mint_key_package(member_did, room_id, invitation, spent).map_err(js)
+}
+
+/// A member's signing identity — the JS boundary over [`identity::MemberIdentity`].
+///
+/// Every secret this member has now lives on this side: the Ed25519 key that names their
+/// `did:key` and signs, and the MLS keys inside [`RoomMember`]. JavaScript holds two opaque
+/// snapshots and no key.
+#[wasm_bindgen]
+pub struct Identity {
+    inner: identity::MemberIdentity,
+}
+
+#[wasm_bindgen]
+impl Identity {
+    /// Mint a fresh `did:key`.
+    #[wasm_bindgen(js_name = mint)]
+    pub fn mint_js() -> Result<Identity, JsError> {
+        identity::MemberIdentity::mint()
+            .map(|inner| Identity { inner })
+            .map_err(js)
+    }
+
+    /// Restore one from [`Identity::snapshot`].
+    #[wasm_bindgen(js_name = restore)]
+    pub fn restore_js(snapshot: &str) -> Result<Identity, JsError> {
+        identity::MemberIdentity::restore(snapshot)
+            .map(|inner| Identity { inner })
+            .map_err(js)
+    }
+
+    /// **Key material.** Per-origin, per-device storage and nowhere else — anyone holding
+    /// this is this member.
+    #[wasm_bindgen(js_name = snapshot)]
+    pub fn snapshot_js(&self) -> Result<String, JsError> {
+        self.inner.snapshot().map_err(js)
+    }
+
+    #[wasm_bindgen(getter, js_name = did)]
+    pub fn did_js(&self) -> String {
+        self.inner.did().to_string()
+    }
+
+    /// See [`identity::MemberIdentity::sign_document`].
+    #[wasm_bindgen(js_name = signDocument)]
+    pub fn sign_document_js(&self, document: &str) -> Result<String, JsError> {
+        self.inner.sign_document(document).map_err(js)
+    }
+
+    /// See [`identity::MemberIdentity::present`].
+    #[wasm_bindgen(js_name = present)]
+    pub fn present_js(
+        &self,
+        vac: &str,
+        vmc: &str,
+        action: &str,
+        nonce: Option<String>,
+    ) -> Result<String, JsError> {
+        self.inner
+            .present(vac, vmc, action, nonce.as_deref())
+            .map_err(js)
+    }
 }
 
 /// Run the five invitation checks and return the credential id to record as spent.
@@ -512,6 +574,187 @@ mod tests {
             restored.epoch(),
             "with no links, the earliest readable epoch is the current one"
         );
+    }
+
+    /// A room grants a member `read`; the browser narrows it to one action and signs; the
+    /// **real chain verifier** accepts it.
+    ///
+    /// This is the assertion the whole authority slice rests on, and it is deliberately
+    /// made against `dtg_credentials::authority::verify_chain` — the same function a host
+    /// runs — rather than against a restatement of what it ought to do.
+    ///
+    /// It also pins the shape that is unusual here. Server-side, a presentation attenuates
+    /// to a *separate agent*, so the leaf's subject differs from the chain root's. A browser
+    /// member is its own agent, so they are the same DID: a case the VTA's path never
+    /// produces. The pooling defence compares the chain's **root** subject rather than its
+    /// leaf, so it should hold — asserted here rather than assumed.
+    #[test]
+    fn a_browser_minted_presentation_verifies_against_the_real_chain_verifier() {
+        use dtg_credentials::authority::verify_chain;
+
+        let (room, room_secret) = a_room(0x31);
+        let me = crate::identity::MemberIdentity::mint().unwrap();
+        let now = chrono::Utc::now();
+
+        // The room grants this member `read` and `curate` at its own scope.
+        let mut vac = dtg_credentials::DTGCredential::new_vac(
+            room.clone(),
+            me.did().to_string(),
+            room.clone(),
+            vec!["read".into(), "curate".into()],
+            now - chrono::Duration::minutes(1),
+            now + chrono::Duration::days(30),
+        )
+        .expect("mint the room's authority credential")
+        .with_id("urn:uuid:vac-1");
+        futures_lite::future::block_on(vac.sign(&room_secret, None)).unwrap();
+        let vac_json = serde_json::to_string(vac.credential()).unwrap();
+        let vmc_json = serde_json::json!({ "id": "urn:uuid:vmc-1" }).to_string();
+
+        let presentation: serde_json::Value = serde_json::from_str(
+            &me.present(&vac_json, &vmc_json, "read", Some("n-1"))
+                .expect("mint a presentation"),
+        )
+        .unwrap();
+
+        // Echoed unchanged: its value to the verifier is that it came back as sent.
+        assert_eq!(presentation["nonce"], "n-1");
+
+        let chain: Vec<dtg_credentials::DTGCredential> =
+            serde_json::from_value(presentation["authority"].clone()).unwrap();
+        assert_eq!(
+            chain.len(),
+            2,
+            "leaf first, then the credential the room issued"
+        );
+
+        verify_chain(&chain, &room, &room, "read", me.did(), chrono::Utc::now())
+            .expect("the host's own verifier must accept what the browser minted");
+
+        // The narrowing is real: `curate` is held at the root but was not asked for, so the
+        // leaf does not carry it. A presentation is for one action.
+        assert!(
+            verify_chain(&chain, &room, &room, "curate", me.did(), chrono::Utc::now()).is_err(),
+            "a presentation minted for `read` must not authorise `curate`"
+        );
+    }
+
+    /// A captured presentation is worthless to anyone else.
+    ///
+    /// This is what the `audience` binding buys, and the reason [`identity::MemberIdentity::present`]
+    /// takes no audience parameter: bound to the member, a presentation somebody observes on
+    /// the wire authorises nothing when they present it themselves.
+    ///
+    /// Worth pinning because the same field, filled with the *host's* DID instead, refuses
+    /// the legitimate presenter and protects nobody — which is what `vta-cli-common` does
+    /// today.
+    #[test]
+    fn a_captured_presentation_does_not_work_for_whoever_captured_it() {
+        use dtg_credentials::authority::verify_chain;
+
+        let (room, room_secret) = a_room(0x33);
+        let me = crate::identity::MemberIdentity::mint().unwrap();
+        let thief = crate::identity::MemberIdentity::mint().unwrap();
+        let now = chrono::Utc::now();
+
+        let mut vac = dtg_credentials::DTGCredential::new_vac(
+            room.clone(),
+            me.did().to_string(),
+            room.clone(),
+            vec!["read".into()],
+            now - chrono::Duration::minutes(1),
+            now + chrono::Duration::days(30),
+        )
+        .unwrap()
+        .with_id("urn:uuid:vac-3");
+        futures_lite::future::block_on(vac.sign(&room_secret, None)).unwrap();
+
+        let presentation: serde_json::Value = serde_json::from_str(
+            &me.present(
+                &serde_json::to_string(vac.credential()).unwrap(),
+                "{}",
+                "read",
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let chain: Vec<dtg_credentials::DTGCredential> =
+            serde_json::from_value(presentation["authority"].clone()).unwrap();
+
+        // The rightful member: accepted.
+        verify_chain(&chain, &room, &room, "read", me.did(), chrono::Utc::now()).unwrap();
+
+        // Whoever lifted it off the wire: refused, and refused as a wrong audience rather
+        // than as a bad signature — the chain is perfectly valid, it is just not theirs.
+        let err = verify_chain(
+            &chain,
+            &room,
+            &room,
+            "read",
+            thief.did(),
+            chrono::Utc::now(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                dtg_credentials::authority::AuthorityError::WrongAudience { .. }
+            ),
+            "expected a WrongAudience refusal, got {err:?}"
+        );
+    }
+
+    /// `attenuate` refuses to widen, and it refuses on *this* side.
+    ///
+    /// Asking for an action the member does not hold fails in the credential library, where
+    /// the member can be told why — rather than as a refusal from a host, which arrives
+    /// worded as though the member were at fault.
+    #[test]
+    fn a_member_cannot_ask_for_more_than_the_room_gave_them() {
+        let (room, room_secret) = a_room(0x32);
+        let me = crate::identity::MemberIdentity::mint().unwrap();
+        let now = chrono::Utc::now();
+
+        let mut vac = dtg_credentials::DTGCredential::new_vac(
+            room.clone(),
+            me.did().to_string(),
+            room.clone(),
+            vec!["read".into()],
+            now - chrono::Duration::minutes(1),
+            now + chrono::Duration::days(30),
+        )
+        .unwrap()
+        .with_id("urn:uuid:vac-2");
+        futures_lite::future::block_on(vac.sign(&room_secret, None)).unwrap();
+        let vac_json = serde_json::to_string(vac.credential()).unwrap();
+        let vmc_json = "{}".to_string();
+
+        let refused = me.present(&vac_json, &vmc_json, "write", None).unwrap_err();
+        assert!(
+            refused.contains("cannot narrow your authority"),
+            "{refused}"
+        );
+    }
+
+    /// An identity survives a restart, and a tampered snapshot does not load.
+    #[test]
+    fn an_identity_round_trips_and_refuses_a_mismatched_snapshot() {
+        let me = crate::identity::MemberIdentity::mint().unwrap();
+        let snapshot = me.snapshot().unwrap();
+        let back = crate::identity::MemberIdentity::restore(&snapshot).unwrap();
+        assert_eq!(back.did(), me.did());
+
+        // A `did:key` is derived from its key, so a snapshot naming a different DID is one
+        // that was edited. It fails here rather than as an unexplained refusal from a host.
+        let other = crate::identity::MemberIdentity::mint().unwrap();
+        let swapped: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        let mut swapped = swapped.as_object().unwrap().clone();
+        swapped.insert("did".into(), other.did().into());
+        let err =
+            crate::identity::MemberIdentity::restore(&serde_json::to_string(&swapped).unwrap())
+                .unwrap_err();
+        assert!(err.contains("does not match its key"), "{err}");
     }
 
     /// Each of the five checks, made to bite.

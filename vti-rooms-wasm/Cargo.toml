@@ -33,6 +33,17 @@ vti-rooms = { path = "../vti-rooms", version = "0.1", default-features = false, 
 # the verifying side with it. `affinidi-secrets-resolver` comes along and builds
 # for wasm regardless, since `affinidi-data-integrity` depends on it anyway.
 dtg-credentials = "0.7"
+# The member's own signing key lives here rather than in JavaScript, so the
+# private half never crosses the boundary. Both already arrive through OpenMLS
+# and data-integrity respectively; naming them is honesty about what is used.
+ed25519-dalek = { workspace = true }
+affinidi-secrets-resolver = { workspace = true }
+affinidi-data-integrity = { workspace = true }
+getrandom = { version = "0.4", features = ["wasm_js"] }
+# `sign` is async and this boundary is not; the future is CPU-bound with no I/O
+# in it, so blocking on it is exact rather than a workaround.
+futures-lite = "2"
+
 chrono = { workspace = true }
 multibase = { workspace = true }
 

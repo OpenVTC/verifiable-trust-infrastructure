@@ -11033,12 +11033,14 @@ dependencies = [
 name = "vti-rooms-wasm"
 version = "0.1.0"
 dependencies = [
+ "affinidi-data-integrity",
  "affinidi-secrets-resolver",
  "base64 0.23.1",
  "chrono",
  "dtg-credentials 0.7.0",
  "ed25519-dalek 3.0.0",
  "futures-lite",
+ "getrandom 0.4.3",
  "multibase",
  "serde",
  "serde_json",
