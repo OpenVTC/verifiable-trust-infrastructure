@@ -7991,6 +7991,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower",
+ "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
  "trust-tasks-https",
