@@ -37,37 +37,30 @@ use crate::trust_tasks;
 const ROOM_TT_TIMEOUT: u64 = 30;
 
 impl VtaClient {
-    /// `rooms/keys/present/0.1` — mint a presentation for **one** operation.
+    /// `rooms/keys/present` — mint a presentation for **one** operation.
     ///
     /// `action` is a single room verb (`read`, `write`, `curate`, `admin`);
-    /// there is no "everything" value, deliberately. `audience`, when given,
-    /// binds the minted leaf to that party so a captured presentation is
-    /// worthless elsewhere — pass the host's DID whenever you know it.
+    /// there is no "everything" value, deliberately.
+    ///
+    /// **There is nothing to say about who may present it.** The VTA grants the
+    /// minted leaf to the caller it authenticated, and a host refuses a chain
+    /// whose leaf grants to anyone else — so a presentation minted for this
+    /// client is worthless to anybody who captures it, and a parameter naming a
+    /// different party would only be a way to get that wrong. There is likewise
+    /// nothing to say about the host: the chain is bound to a *room*, which is
+    /// what lets a room have more than one host, and binding the *request* to
+    /// its destination is the `recipient` member of the document that carries
+    /// this, per SPEC.md §4.8.2.
     ///
     /// The reply carries `presentation` (send this to the host) and
     /// `expiresAt`. A request for more than the principal holds fails at the
     /// VTA, in the credential library, rather than producing a presentation the
     /// host will later refuse.
-    pub async fn room_present(
-        &self,
-        room_id: &str,
-        action: &str,
-        audience: Option<&str>,
-        nonce: Option<&str>,
-    ) -> Result<Value, VtaError> {
-        let mut payload = json!({
+    pub async fn room_present(&self, room_id: &str, action: &str) -> Result<Value, VtaError> {
+        let payload = json!({
             "roomId": room_id,
             "action": action,
         });
-        // Omitted rather than sent as null: the published payload types the
-        // members as strings, and a `null` would fail schema validation at the
-        // spine — the defect class #919 and #921 both landed in.
-        if let Some(audience) = audience {
-            payload["audience"] = Value::String(audience.to_string());
-        }
-        if let Some(nonce) = nonce {
-            payload["nonce"] = Value::String(nonce.to_string());
-        }
         self.dispatch_trust_task(
             trust_tasks::TASK_ROOMS_KEYS_PRESENT_0_1,
             payload,
