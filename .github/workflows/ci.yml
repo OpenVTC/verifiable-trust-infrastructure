@@ -796,6 +796,18 @@ jobs:
           rustup target add wasm32-unknown-unknown
           cargo check -p vti-rooms --lib --no-default-features --features mls \
             --target wasm32-unknown-unknown
+      # The artifact itself, and its size. The size is reported rather than
+      # gated: a threshold picked today would either be slack enough to be
+      # meaningless or tight enough to fail on a dependency's patch release, and
+      # what a reviewer needs is the number in the log next to the diff that
+      # moved it.
+      - name: vti-rooms-wasm artifact
+        run: |
+          cargo build -p vti-rooms-wasm --profile wasm-release \
+            --target wasm32-unknown-unknown
+          f=target/wasm32-unknown-unknown/wasm-release/vti_rooms_wasm.wasm
+          echo "raw:      $(( $(wc -c < "$f") / 1024 )) KB"
+          echo "gzipped:  $(( $(gzip -9 -c "$f" | wc -c) / 1024 )) KB"
 
       - name: vta-sdk attest-verify
         run: cargo check -p vta-sdk --features attest-verify

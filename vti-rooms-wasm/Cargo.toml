@@ -1,0 +1,33 @@
+[package]
+name = "vti-rooms-wasm"
+description = "A data room's member half, for the browser — MLS group custody, record sealing, and the epoch key chain, compiled to WebAssembly"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Not published to crates.io. This crate's artifact is a `.wasm` module and the
+# JS glue beside it; its distribution channel is npm, via `wasm-pack`, and a
+# crates.io release would ship source nobody consumes from there. `vti-rooms`
+# stays published — that is the reusable half.
+publish = false
+
+[lib]
+# `cdylib` is the wasm artifact; `rlib` keeps the crate testable natively, which
+# matters more than it looks: the round-trip tests below are the only place the
+# member half is exercised end to end outside a browser.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The member half, and nothing else from the workspace. `default-features =
+# false` is the whole point: with `host` on, this would pull `vti-common` and
+# with it axum, fjall and tokio, none of which reach wasm.
+vti-rooms = { path = "../vti-rooms", version = "0.1", default-features = false, features = [
+  "mls",
+] }
+
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen = "0.2"

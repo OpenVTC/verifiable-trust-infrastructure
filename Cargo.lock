@@ -10999,6 +10999,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vti-rooms-wasm"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "serde",
+ "serde_json",
+ "vti-rooms",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "vti-secrets"
 version = "0.3.3"
 dependencies = [

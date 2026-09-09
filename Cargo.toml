@@ -29,6 +29,7 @@ members = [
   "vti-common",
   "vti-rooms",
   "vti-rooms-dtg",
+  "vti-rooms-wasm",
   "vti-secrets",
   "vti-webauthn",
 ]
@@ -448,6 +449,21 @@ debug = false
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# The browser member's artifact, which is downloaded rather than installed, so
+# its size is a page-load cost paid by every visitor. Separate from `release`
+# because these settings trade compile time and native performance for bytes,
+# which is the right trade for one wasm module and the wrong one for the
+# services.
+#
+# Build with `cargo build -p vti-rooms-wasm --profile wasm-release --target
+# wasm32-unknown-unknown`. `wasm-opt -Oz` on top is worth another slice again,
+# but it is a separate tool and not a cargo concern.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+panic = "abort"
 
 # Workspace-wide lint policy. Each crate inherits via `lints.workspace = true`
 # in its own Cargo.toml. Per-crate `#[allow(...)]` overrides are still possible
