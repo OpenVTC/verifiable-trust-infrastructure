@@ -500,6 +500,150 @@ async fn store(
         .map_err(|e| AppError::Internal(format!("store group state for `{room_id}`: {e}")))
 }
 
+/// Prefix for what a host has told this agent about a room's tree.
+const ROOTS_PREFIX: &str = "room-roots:";
+
+/// Storage key for a room's observed roots.
+fn roots_key(room_id: &str) -> String {
+    format!("{ROOTS_PREFIX}{room_id}")
+}
+
+/// How many `(headVersion, root)` observations to keep per room.
+///
+/// One is weaker than it looks in a specific way, and stronger than it looks in
+/// another. It *does* catch a host that alternates at one version — `(V, A)`
+/// then `(V, B)` differ, and differ again on the way back. What it misses is a
+/// head that **advances and then goes backwards**: `(V, A)`, `(V+1, X)`,
+/// `(V, B)` leaves the agent holding `V+1` with nothing to compare `V` against.
+/// That is the mirror case and the rollback case, which are the two this is for.
+///
+/// Sixteen versions is more history than a member reads across in a session, and
+/// a few hundred bytes.
+const KEEP_ROOTS: usize = 16;
+
+/// What a host has said about a room's tree, over time.
+///
+/// **Keyed by room, not by host**, and that is the decision worth not undoing. A
+/// room's tree at version `V` is a fact about the *room*; who served it is not
+/// part of that fact. Keying by `(room, host)` would file two hosts of one room
+/// in two drawers and never compare them — and a room may deliberately have
+/// several, a mirror serving reads while its primary takes writes.
+///
+/// Keyed this way, a member who reads the same room from two of its hosts gets
+/// the comparison for free: two hosts reporting **different roots at one
+/// `headVersion`** is exactly as damning as one host disagreeing with itself.
+/// That is a comparison the specification's own list does not include, and it
+/// needs no gossip channel, no anchor and no second member.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RootHistory {
+    /// Observations, most recent `headVersion` last. At most [`KEEP_ROOTS`].
+    pub seen: Vec<RootObservation>,
+    /// The highest `headVersion` ever seen for this room.
+    ///
+    /// Separate from `seen` because it answers a question no single pair can:
+    /// **has this room gone backwards?** A pruned observation still leaves this
+    /// behind.
+    pub highest: u64,
+    /// The version at which this room was caught, if it ever was.
+    ///
+    /// **Remembered rather than recomputed.** A conflict is a fact about the
+    /// past, and the pair that revealed it is prunable — an agent that inferred
+    /// "caught" from what it still holds would exonerate a host by doing enough
+    /// reading. Once set it is never cleared here: it is cleared by
+    /// [`forget`], with the membership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caught_at: Option<u64>,
+}
+
+/// One thing a host said about a room's tree.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RootObservation {
+    pub head_version: u64,
+    /// The root, as the wire spells it — a `DigestMultibase`.
+    pub root: String,
+}
+
+/// What comparing a root against what is held came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootVerdict {
+    /// Seen at this head before, same root.
+    Agree,
+    /// Seen at this head before, **different root**. A host caught: there is no
+    /// write to attribute the difference to, because a write would have moved
+    /// the head.
+    Conflict,
+    /// First observation at this head. Not evidence of anything — a memory of
+    /// one is not a comparison.
+    NoneHeld,
+}
+
+/// Record what a host asserted, and say what it came to.
+///
+/// The write happens either way, including on a conflict: an agent that stopped
+/// recording once it caught a host would forget the evidence at the moment it
+/// acquired it.
+pub async fn observe_head(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+    head_version: u64,
+    root: &str,
+) -> Result<RootVerdict, AppError> {
+    let key = roots_key(room_id);
+    let mut history: RootHistory = groups
+        .get(key.clone())
+        .await
+        .map_err(|e| AppError::Internal(format!("read the root history of `{room_id}`: {e}")))?
+        .unwrap_or_default();
+
+    let verdict = match history.seen.iter().find(|o| o.head_version == head_version) {
+        Some(prior) if prior.root == root => RootVerdict::Agree,
+        Some(_) => RootVerdict::Conflict,
+        None => RootVerdict::NoneHeld,
+    };
+
+    if matches!(verdict, RootVerdict::Conflict) {
+        // Earliest wins: the first version at which this host was caught is the
+        // one worth naming, and later conflicts do not make the first less true.
+        history.caught_at = Some(
+            history
+                .caught_at
+                .map_or(head_version, |v| v.min(head_version)),
+        );
+    }
+    if matches!(verdict, RootVerdict::NoneHeld) {
+        history.seen.push(RootObservation {
+            head_version,
+            root: root.to_string(),
+        });
+        history.seen.sort_by_key(|o| o.head_version);
+        // Drop the OLDEST versions, not the oldest writes: what a member is
+        // likely to read again is what the room is at now.
+        if history.seen.len() > KEEP_ROOTS {
+            let excess = history.seen.len() - KEEP_ROOTS;
+            history.seen.drain(0..excess);
+        }
+    }
+    history.highest = history.highest.max(head_version);
+
+    groups
+        .insert(key, &history)
+        .await
+        .map_err(|e| AppError::Internal(format!("record the root history of `{room_id}`: {e}")))?;
+    Ok(verdict)
+}
+
+/// Everything this agent has been told about a room's tree, for a caller that
+/// wants to compare out of band.
+pub async fn root_history(groups: &KeyspaceHandle, room_id: &str) -> Result<RootHistory, AppError> {
+    groups
+        .get(roots_key(room_id))
+        .await
+        .map_err(|e| AppError::Internal(format!("read the root history of `{room_id}`: {e}")))
+        .map(Option::unwrap_or_default)
+}
+
 /// Discard everything this VTA holds for a room.
 ///
 /// Called on removal from the group. A key-holder that kept its state would retain the
@@ -513,5 +657,122 @@ pub async fn forget(groups: &KeyspaceHandle, room_id: &str) -> Result<(), AppErr
     groups
         .remove(pending_key(room_id))
         .await
-        .map_err(|e| AppError::Internal(format!("discard a pending key package: {e}")))
+        .map_err(|e| AppError::Internal(format!("discard a pending key package: {e}")))?;
+    // The root history goes with the membership. It carries no record content,
+    // but it is a record of when this member read this room, and an agent that
+    // kept it afterwards would be keeping a diary of a room its principal can no
+    // longer open.
+    groups
+        .remove(roots_key(room_id))
+        .await
+        .map_err(|e| AppError::Internal(format!("discard the root history of `{room_id}`: {e}")))
+}
+
+#[cfg(test)]
+mod root_memory_tests {
+    use super::*;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    const ROOM: &str = "did:webvh:example.com:rooms:northwind";
+    const A: &str = "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR";
+    const B: &str = "zQmXo1sV5aJ7bT2kQdF9wRnPzYcH4uMgLtEjV6NrBqWsDpK";
+
+    async fn open() -> (tempfile::TempDir, KeyspaceHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace(crate::keyspaces::ROOM_GROUPS).unwrap();
+        (dir, ks)
+    }
+
+    /// A memory of one is not a comparison, and the first read must say so.
+    #[tokio::test]
+    async fn a_first_reading_holds_nothing_to_compare() {
+        let (_d, ks) = open().await;
+        assert_eq!(
+            observe_head(&ks, ROOM, 412, A).await.unwrap(),
+            RootVerdict::NoneHeld
+        );
+    }
+
+    /// The whole mechanism: same state, two roots, no write to blame.
+    #[tokio::test]
+    async fn two_roots_at_one_version_is_a_host_caught() {
+        let (_d, ks) = open().await;
+        observe_head(&ks, ROOM, 412, A).await.unwrap();
+        assert_eq!(
+            observe_head(&ks, ROOM, 412, A).await.unwrap(),
+            RootVerdict::Agree
+        );
+        assert_eq!(
+            observe_head(&ks, ROOM, 412, B).await.unwrap(),
+            RootVerdict::Conflict
+        );
+    }
+
+    /// A room that moved is not a host that lied, and the version is what tells
+    /// them apart. Without it every second read would look like equivocation.
+    #[tokio::test]
+    async fn a_different_version_is_a_different_moment() {
+        let (_d, ks) = open().await;
+        observe_head(&ks, ROOM, 412, A).await.unwrap();
+        assert_eq!(
+            observe_head(&ks, ROOM, 413, B).await.unwrap(),
+            RootVerdict::NoneHeld,
+            "a write moved the head, so a different root explains itself"
+        );
+    }
+
+    /// One slot would miss this, which is why the memory is a map.
+    ///
+    /// The head advances and then a host serves the older version again — the
+    /// mirror case and the rollback case. An agent keeping only the latest pair
+    /// is holding `V+1` and has nothing to compare `V` against.
+    #[tokio::test]
+    async fn a_head_that_goes_backwards_is_still_compared() {
+        let (_d, ks) = open().await;
+        observe_head(&ks, ROOM, 412, A).await.unwrap();
+        observe_head(&ks, ROOM, 500, B).await.unwrap();
+        assert_eq!(
+            observe_head(&ks, ROOM, 412, B).await.unwrap(),
+            RootVerdict::Conflict,
+            "the older version is still held, and its root still disagrees"
+        );
+    }
+
+    /// The bound drops the OLDEST versions and keeps the highest-ever anyway,
+    /// because "has this room gone backwards" is a question no single pair can
+    /// answer.
+    #[tokio::test]
+    async fn the_history_is_bounded_and_the_high_water_mark_survives_it() {
+        let (_d, ks) = open().await;
+        for v in 1..=(KEEP_ROOTS as u64 + 5) {
+            observe_head(&ks, ROOM, v, A).await.unwrap();
+        }
+        let history = root_history(&ks, ROOM).await.unwrap();
+        assert_eq!(history.seen.len(), KEEP_ROOTS);
+        assert_eq!(history.highest, KEEP_ROOTS as u64 + 5);
+        assert_eq!(
+            history.seen.first().unwrap().head_version,
+            6,
+            "the oldest versions are what gets dropped"
+        );
+    }
+
+    /// Bounded by membership. An agent that kept this after a removal would keep
+    /// a record of when its principal read a room it can no longer open.
+    #[tokio::test]
+    async fn forgetting_a_room_forgets_what_its_host_said() {
+        let (_d, ks) = open().await;
+        observe_head(&ks, ROOM, 412, A).await.unwrap();
+        forget(&ks, ROOM).await.unwrap();
+        assert_eq!(
+            observe_head(&ks, ROOM, 412, B).await.unwrap(),
+            RootVerdict::NoneHeld,
+            "nothing survived the removal to compare against"
+        );
+    }
 }
