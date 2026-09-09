@@ -62,7 +62,7 @@ impl VtaClient {
             "action": action,
         });
         self.dispatch_trust_task(
-            trust_tasks::TASK_ROOMS_KEYS_PRESENT_0_1,
+            trust_tasks::TASK_ROOMS_KEYS_PRESENT_0_2,
             payload,
             ROOM_TT_TIMEOUT,
         )

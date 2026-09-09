@@ -2165,15 +2165,20 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_1,
+            uris::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
             checked!(
-                specs::rooms::owner::issue_authority::v0_1::Payload,
-                specs::rooms::owner::issue_authority::v0_1::Response,
+                specs::rooms::owner::issue_authority::v0_2::Payload,
+                specs::rooms::owner::issue_authority::v0_2::Response,
                 json!({
                     "roomId": "did:webvh:example.com:rooms:northwind",
                     "signingKeyId": "room-northwind-signing",
                     "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-                    "actions": ["read", "write"]
+                    "actions": ["read", "write"],
+                    // REQUIRED since 0.2. The 0.1 witness omitted it, which is what this
+                    // harness caught on the move: a chain root with no expiry is authority
+                    // nobody can withdraw by waiting, and this service could have emitted
+                    // exactly this request.
+                    "validUntil": "2026-02-01T00:00:00Z"
                 }),
                 json!({ "credential": "eyJhbGciOiJFZERTQSJ9.room-credential",
                     "credentialId": "urn:uuid:11111111-1111-4111-8111-111111111111" })
@@ -2206,22 +2211,27 @@ fn table() -> Vec<(&'static str, Conformance)> {
         // ordering is the contract with every verifier — a witness that showed
         // it either way round would check nothing about the half that matters.
         (
-            uris::TASK_ROOMS_KEYS_PRESENT_0_1,
+            uris::TASK_ROOMS_KEYS_PRESENT_0_2,
             checked!(
-                specs::rooms::keys::present::v0_1::Payload,
-                specs::rooms::keys::present::v0_1::Response,
+                specs::rooms::keys::present::v0_2::Payload,
+                specs::rooms::keys::present::v0_2::Response,
+                // `audience` and `nonce` are gone in 0.2. This witness carried a HOST DID
+                // as the audience — the exact shape dtgwg-trust-tasks-tf#414 reported, which
+                // no host could ever accept, since the field named the party that had to
+                // PRESENT the credential.
                 json!({
                     "roomId": "did:webvh:example.com:rooms:northwind",
-                    "action": "read",
-                    "audience": "did:key:z6MkHost",
-                    "nonce": "n-1"
+                    "action": "read"
                 }),
+                // Credentials are STRINGS. The witness carried objects, matching what the
+                // oracle emitted and what no host could deserialize; 0.2's response names
+                // the shared `AuthorityPresentation`, which types both members as strings.
                 json!({
                     "presentation": {
-                        "membership": { "id": "urn:uuid:vmc-1" },
+                        "membership": "{\"id\":\"urn:uuid:vmc-1\"}",
                         "authority": [
-                            { "id": "urn:uuid:vac-agent" },
-                            { "id": "urn:uuid:vac-member" }
+                            "{\"id\":\"urn:uuid:vac-agent\"}",
+                            "{\"id\":\"urn:uuid:vac-member\"}"
                         ]
                     },
                     "expiresAt": TS

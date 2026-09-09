@@ -407,7 +407,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // and a caller that lost the reply has no way to use the one it never saw.
     // Keying it would buy a dedup record against a duplicate that costs
     // nothing, at the price of failing a retry the caller legitimately needs.
-    (trust_tasks::TASK_ROOMS_KEYS_PRESENT_0_1, RetrySafe),
+    (trust_tasks::TASK_ROOMS_KEYS_PRESENT_0_2, RetrySafe),
     // Reads group state and returns plaintext. Nothing is written, and a second
     // execution is indistinguishable from one.
     (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_1, ReadOnly),
@@ -459,7 +459,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // this axis is about.
     (trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_1, RetrySafe),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1, Keyed),
-    (trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_1, Keyed),
+    (trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2, Keyed),
     (trust_tasks::TASK_VTA_MEMORY_DELETE_0_1, RetrySafe),
     // ── Application state ───────────────────────────────────────────────
     //
