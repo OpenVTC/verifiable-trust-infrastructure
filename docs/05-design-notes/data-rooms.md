@@ -1046,9 +1046,12 @@ read an `open` room the same way an agent's recall marks one.
    [`data-rooms-verified-reads.md`](data-rooms-verified-reads.md), which
    substitutes the witnessed log for ES's fast-forward proof (so no zkVM), bounds
    the property it would buy to "complete as of the last renewal", and finds a
-   prerequisite worth doing on its own: **the put acknowledgement is unsigned**,
-   so a writer holds no receipt with which to contradict a commitment that omits
-   their record.
+   prerequisite worth doing on its own: **the put acknowledgement was unsigned**,
+   so a writer held no receipt with which to contradict a commitment that omits
+   their record. That turned out to be the general form — 265 specifications
+   require a proof on their response and neither service sent one — and is fixed
+   at both dispatch spines (#1334, #1335), with the first consumer verifying in
+   #1337. What remains unbuilt is the commitment itself.
 8. **Rooms created before the chain** (§5.5) — a room that has already advanced
    past epoch 1 has lost the keys to everything below its current epoch, and
    nothing can recover them: no member retained the old exporters and the host
