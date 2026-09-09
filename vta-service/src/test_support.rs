@@ -197,6 +197,62 @@ pub fn test_deps(ts: &TestStore) -> ProvisionIntegrationDeps {
 /// that cannot sign cannot exercise any of them.
 pub const TEST_ADMIN_SEED: [u8; 32] = [0x7A; 32];
 
+/// The mock VTA's own seed, and the reason it is no longer a sentinel.
+///
+/// It used to be the literal `"did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD"` — the same mistake
+/// `TEST_ADMIN_SEED` above records fixing for the *admin*: not a `did:key` at
+/// all, resolving nowhere, so nothing it signed could carry a verifiable proof.
+/// That was survivable while only requests were checked and a VTA's answers
+/// were taken on trust.
+///
+/// `VtaClient` verifies replies now
+/// (OpenVTC/verifiable-trust-infrastructure#1341), and production has always
+/// signed them with `{vta_did}#key-0` for every DID method that is not
+/// `did:peer` (`server.rs`). A mock that cannot sign is therefore not a cheap
+/// stand-in any more — it is a VTA that behaves in a way no real one does, and
+/// every test through it fails with the client blaming the reply.
+pub const TEST_VTA_SEED: [u8; 32] = [0x5A; 32];
+
+/// The mock VTA's `did:key` and its `#key-0` verification method.
+///
+/// Derived, not written down: a literal here is what the sentinel was.
+pub fn test_vta_did() -> (String, String) {
+    let (did, _vm) = did_for_seed(TEST_VTA_SEED[0]);
+    let vm = format!("{did}#key-0");
+    (did, vm)
+}
+
+/// The mock VTA's own signing secret, as production wires it into
+/// `signing_vm_id`.
+pub(crate) fn test_vta_signer() -> VtaOwnSigner {
+    use ed25519_dalek::SigningKey;
+    let sk = SigningKey::from_bytes(&[TEST_VTA_SEED[0]; 32]);
+    let (_did, vm_id) = test_vta_did();
+    VtaOwnSigner {
+        vm_id: vm_id.clone(),
+        secret: secret_from_ed25519(&sk, vm_id),
+    }
+}
+
+/// An ed25519 signing key as a `Secret`.
+///
+/// **Multicodec-prefixed** (`0x80 0x26`, ed25519-priv). `Secret::from_multibase`
+/// requires the prefix and refuses raw bytes with `Unsupported key type`, while
+/// `decode_private_key_multibase` accepts either — so the two encodings look
+/// interchangeable and are not.
+pub(crate) fn secret_from_ed25519(
+    sk: &ed25519_dalek::SigningKey,
+    id: String,
+) -> affinidi_tdk::secrets_resolver::secrets::Secret {
+    let mut prefixed = vec![0x80u8, 0x26];
+    prefixed.extend_from_slice(sk.to_bytes().as_slice());
+    let mb = multibase::encode(multibase::Base::Base58Btc, prefixed);
+    let mut secret = affinidi_tdk::secrets_resolver::secrets::Secret::from_multibase(&mb, None)
+        .expect("construct an ed25519 Secret");
+    secret.id = id;
+    secret
+}
+
 /// The test super-admin's `did:key`, and the verification method inside it.
 ///
 /// `did:key` encodes the public key in the identifier, so the DID document is
@@ -387,7 +443,7 @@ async fn provision_vta_signing_identity(
     keys_ks: &KeyspaceHandle,
     data_dir: &std::path::Path,
     vta_did_override: Option<&str>,
-) -> (String, Arc<PlaintextSeedStore>) {
+) -> (String, Arc<PlaintextSeedStore>, VtaOwnSigner) {
     use crate::keys::seeds::{SeedRecord, save_seed_record, set_active_seed_id};
 
     // Deterministic 64-byte seed (BIP-32 wants ≥16 bytes; 64 mirrors
@@ -431,6 +487,38 @@ async fn provision_vta_signing_identity(
     };
     let key_id = format!("{vta_did}#key-0");
 
+    // The same key, as a `Secret` the response signer can use.
+    //
+    // Production sets `signing_vm_id` to `{vta_did}#key-0` for did:webvh and
+    // did:key alike (`server.rs`, the non-`did:peer` branch of `AuthInit`), so
+    // a REST-only VTA signs its answers with its own key and needs no transport
+    // identity to do it. This harness never ran that path — it populated the
+    // signer only from `build_transport_state`, which requires a `did:peer:2` —
+    // so a `MockVta` answered unsigned where the real thing signs.
+    //
+    // That gap was invisible until `VtaClient` began verifying replies
+    // (#1341), at which point every round-trip test failed with the client
+    // blaming the reply for something the harness had never provided.
+    let own_signer = {
+        // Multicodec-prefixed, which is what `Secret::from_multibase` reads —
+        // `0x80 0x26` is ed25519-priv. The raw 32 bytes decode fine through
+        // `decode_private_key_multibase`, which tolerates an unprefixed key,
+        // and are refused here; the two are not interchangeable.
+        let mut prefixed = vec![0x80u8, 0x26];
+        prefixed.extend_from_slice(signing.to_bytes().as_slice());
+        let private_key_multibase = multibase::encode(multibase::Base::Base58Btc, prefixed);
+        let mut secret = affinidi_tdk::secrets_resolver::secrets::Secret::from_multibase(
+            &private_key_multibase,
+            None,
+        )
+        .expect("construct the VTA's own signing secret");
+        secret.id = key_id.clone();
+        VtaOwnSigner {
+            vm_id: key_id.clone(),
+            secret,
+        }
+    };
+
     save_key_record(
         keys_ks,
         &key_id,
@@ -468,11 +556,15 @@ async fn provision_vta_signing_identity(
     .await
     .expect("save VTA sealed-transfer key record");
 
-    (vta_did, Arc::new(PlaintextSeedStore::new(data_dir)))
+    (
+        vta_did,
+        Arc::new(PlaintextSeedStore::new(data_dir)),
+        own_signer,
+    )
 }
 
 pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegrationDeps) {
-    let (vta_did, _seed_store) =
+    let (vta_did, _seed_store, _own_signer) =
         provision_vta_signing_identity(&ts.keys_ks, &ts.data_dir, None).await;
 
     let mut config = test_app_config(ts.data_dir.clone());
@@ -535,7 +627,8 @@ pub async fn build_signing_test_app_state_with_sink(
     // Provision the VTA's `{vta_did}#key-0` VC-issuance key into the keystore
     // and point the config at the resulting self-resolving did:key.
     let keys_ks = store.keyspace(crate::keyspaces::KEYS).expect("keys ks");
-    let (vta_did, seed_store) = provision_vta_signing_identity(&keys_ks, dir.path(), None).await;
+    let (vta_did, seed_store, _own_signer) =
+        provision_vta_signing_identity(&keys_ks, dir.path(), None).await;
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> = seed_store;
 
     let mut config = test_app_config(dir.path().to_path_buf());
@@ -700,7 +793,7 @@ pub struct TestAppContext {
     /// The contexts keyspace — exposed so a harness can seed the trust context a
     /// DID mint requires, the way a provisioning flow would.
     pub contexts_ks: KeyspaceHandle,
-    /// The VTA DID this app is configured with — the `did:key:z6MkTestVTA`
+    /// The VTA DID this app is configured with — the `did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD`
     /// sentinel for [`build_test_app`], or a real, self-resolving `did:key`
     /// for [`build_provisionable_test_app`]. A harness driving a URL-direct
     /// provision passes this as the `vta_did` argument.
@@ -870,6 +963,17 @@ pub struct VtaTransportIdentity {
     pub mediator_did: String,
 }
 
+/// The VTA's own response-signing key, as production wires it.
+///
+/// `{vta_did}#key-0` — the same verification method `server.rs` puts in
+/// `signing_vm_id` for every DID method that is not `did:peer`. Carried out of
+/// [`provision_vta_signing_identity`] rather than re-derived, so the harness
+/// signs with the key it actually provisioned.
+struct VtaOwnSigner {
+    vm_id: String,
+    secret: affinidi_tdk::secrets_resolver::secrets::Secret,
+}
+
 /// What [`build_transport_state`] hands back — a struct rather than a tuple so
 /// the TSP slot can be `cfg`-gated (attributes are not allowed on tuple type
 /// elements) and so the five `Option`s stay distinguishable at the call site.
@@ -989,7 +1093,7 @@ pub async fn build_offline_atm() -> affinidi_tdk::messaging::ATM {
 /// `aws_lc` JWT provider via [`init_jwt_provider`], and the full
 /// `routes::router()` + `routes::health_router()` merged together.
 ///
-/// `vta_did` is `did:key:z6MkTestVTA` — a sentinel that resolves
+/// `vta_did` is `did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD` — a sentinel that resolves
 /// nowhere but satisfies the routes that just compare it as a string.
 /// `vta_name` and `public_url` are set so the JWT audience / DID
 /// document construction don't take their None branches in tests.
@@ -1091,21 +1195,29 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     // Provisionable: a real signing identity (active seed + `#key-0` +
     // `#sealed-transfer-0`) derived into `keys_ks`, and `vta_did` set to the
     // resulting self-resolving `did:key`.
-    let (vta_did, seed_store): (String, Arc<dyn crate::keys::seed_store::SeedStore>) =
-        if opts.provisionable_vta {
-            let (did, ps) = provision_vta_signing_identity(
-                &keys_ks,
-                dir.path(),
-                opts.vta_transport.as_ref().map(|t| t.did.as_str()),
-            )
-            .await;
-            let store: Arc<dyn crate::keys::seed_store::SeedStore> = ps;
-            (did, store)
-        } else {
-            let store: Arc<dyn crate::keys::seed_store::SeedStore> =
-                Arc::new(TestSeedStore(vec![0xABu8; 32]));
-            ("did:key:z6MkTestVTA".to_string(), store)
-        };
+    let (vta_did, seed_store, own_signer): (
+        String,
+        Arc<dyn crate::keys::seed_store::SeedStore>,
+        Option<VtaOwnSigner>,
+    ) = if opts.provisionable_vta {
+        let (did, ps, signer) = provision_vta_signing_identity(
+            &keys_ks,
+            dir.path(),
+            opts.vta_transport.as_ref().map(|t| t.did.as_str()),
+        )
+        .await;
+        let store: Arc<dyn crate::keys::seed_store::SeedStore> = ps;
+        (did, store, Some(signer))
+    } else {
+        // A real `did:key` and the key behind it — but no seed records and no
+        // keystore, so a test that asserts an *unprovisioned* VTA still gets
+        // one. The identity is only as real as it must be for the mock to sign
+        // its answers, which every production VTA does.
+        let store: Arc<dyn crate::keys::seed_store::SeedStore> =
+            Arc::new(TestSeedStore(vec![0xABu8; 32]));
+        let (did, _vm) = test_vta_did();
+        (did, store, Some(test_vta_signer()))
+    };
 
     let mut config: AppConfig = toml::from_str(&format!(
         r#"
@@ -1167,7 +1279,24 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     // gives the *listener* its own, and the mediator permits one socket per DID
     // — a second would be terminated as `w.websocket.duplicate-channel`. Same
     // split, and the same reason, as `MockVtcDidcomm`.
-    let transport = build_transport_state(opts.vta_transport.as_ref(), did_resolver.as_ref()).await;
+    let mut transport =
+        build_transport_state(opts.vta_transport.as_ref(), did_resolver.as_ref()).await;
+
+    // A REST-only VTA signs with its own `#key-0`, exactly as production does.
+    // `build_transport_state` only ever fills these from a `did:peer:2`
+    // transport identity, so without this a `MockVta` answers unsigned — which
+    // the real thing does not, and which every round-trip test now fails on.
+    // The transport key wins where there is one: that is the production
+    // ordering and this must not change it.
+    if transport.signing_vm_id.is_none()
+        && let Some(signer) = own_signer
+    {
+        use affinidi_secrets_resolver::SecretsResolver as _;
+        let (resolver, _task) = affinidi_secrets_resolver::ThreadedSecretsResolver::new(None).await;
+        resolver.insert(signer.secret).await;
+        transport.secrets_resolver = Some(Arc::new(resolver));
+        transport.signing_vm_id = Some(signer.vm_id);
+    }
 
     let policy_ks = store.keyspace(crate::keyspaces::POLICY).unwrap();
     let state = crate::server::AppState {

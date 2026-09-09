@@ -111,7 +111,14 @@ async fn post(
     uri: &str,
     payload: Value,
 ) -> (StatusCode, Value) {
-    post_to(router, token, "did:key:z6MkTestVTA", uri, payload).await
+    post_to(
+        router,
+        token,
+        "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
+        uri,
+        payload,
+    )
+    .await
 }
 
 /// As [`post`], addressed to `recipient`.
@@ -178,7 +185,14 @@ async fn put_attribute(
     claim_type: &str,
     value: &str,
 ) -> String {
-    put_attribute_at(router, token, "did:key:z6MkTestVTA", claim_type, value).await
+    put_attribute_at(
+        router,
+        token,
+        "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
+        claim_type,
+        value,
+    )
+    .await
 }
 
 /// As [`put_attribute`], against the VTA named by `recipient`.

@@ -79,7 +79,7 @@ fn signed_authenticate_doc(
         "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": { "challenge": challenge, "sessionId": session_id },
     });
     let mut doc: TrustTask<Value> = serde_json::from_value(doc_json).unwrap();
@@ -288,7 +288,7 @@ async fn tt_challenge_returns_tt_response_doc() {
         "type": "https://trusttasks.org/spec/auth/challenge/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": { "subject": did },
     });
     let (status, body) = send(

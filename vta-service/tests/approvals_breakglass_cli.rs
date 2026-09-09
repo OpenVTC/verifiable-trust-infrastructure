@@ -31,7 +31,7 @@ fn write_config(dir: &Path) -> std::path::PathBuf {
     std::fs::write(
         &config_path,
         format!(
-            r#"vta_did = "did:key:z6MkTestVTA"
+            r#"vta_did = "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD"
 
 [server]
 port = 8080
