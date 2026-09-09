@@ -284,7 +284,7 @@ aws-lc-rs = "1.16"
 # members are emitted and the schema has never heard of them. Same failure
 # shape as `adminScope` above, which is why the floor moves rather than the
 # feature being guarded.
-trust-tasks-rs = { version = "0.19.2", default-features = false, features = [
+trust-tasks-rs = { version = "0.19.3", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

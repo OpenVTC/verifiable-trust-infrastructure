@@ -434,6 +434,15 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // and re-fetching from the host yields the same rungs. A retry that arrives
     // after the first succeeded stores nothing and reports the same reach.
     (trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1, RetrySafe),
+    // A read stores nothing and changes nothing at either end: the host serves
+    // the same record, and this agent opens it again. What a retry costs is one
+    // more disclosure of the presentation to the host, which is why it is safe
+    // rather than free.
+    (trust_tasks::TASK_ROOMS_KEYS_READ_0_1, RetrySafe),
+    // Same, over a listing. The room may have moved between attempts, so two
+    // tries can differ — that is the room changing, not the task misbehaving,
+    // and `headVersion` is what tells them apart.
+    (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1, RetrySafe),
     // Sealing is a pure function of the key and the bytes, and it stores nothing:
     // a lost reply costs the caller a round trip, never any state. Re-sealing the
     // same body yields a different nonce, which is correct and changes nothing.
