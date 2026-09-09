@@ -25,6 +25,8 @@ vti-rooms-dtg = { path = "../vti-rooms-dtg" }
 vtc-client = { path = "../vtc-client", version = "0.5" }
 
 axum = { workspace = true }
+# CORS only, and only when an operator asks for it — see `router_with_origins`.
+tower-http = { workspace = true, features = ["cors"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

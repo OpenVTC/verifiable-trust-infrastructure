@@ -4,7 +4,7 @@
 //! test or the `data_room` example without a socket.
 
 use clap::Parser;
-use room_host::{open_state_with_resolver, router};
+use room_host::{open_state_with_resolver, router_with_origins};
 
 #[derive(Parser, Debug)]
 #[command(name = "room-host", about = "Store and serve data-room records")]
@@ -23,6 +23,15 @@ struct Args {
     /// makes rather than a default they inherit.
     #[arg(long)]
     resolve_dids: bool,
+    /// Origins allowed to reach this host from a browser. Repeatable.
+    ///
+    /// Off by default, and explicit origins only — no wildcard. A room's member may be a
+    /// web page, and without this a browser cannot reach this host at all: the response is
+    /// discarded before any script sees it, so the failure reads as a network error with
+    /// nothing in it about origins. Which sites may ask is an operator's decision; what the
+    /// answer is remains the credentials'.
+    #[arg(long = "allow-origin")]
+    allow_origin: Vec<String>,
     /// Rooms this host **mirrors**: a JSON file naming each room's write-primary
     /// and the read credentials this mirror presents to it.
     ///
@@ -84,6 +93,6 @@ async fn main() -> anyhow::Result<()> {
         network_resolution = args.resolve_dids,
         "room host ready — storing records for rooms it does not govern"
     );
-    axum::serve(listener, router(state)).await?;
+    axum::serve(listener, router_with_origins(state, &args.allow_origin)).await?;
     Ok(())
 }
