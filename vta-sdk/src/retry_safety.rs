@@ -540,6 +540,15 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         trust_tasks::TASK_PERSONA_PROFILE_DELETE_1_0,
         RetrySafety::RetrySafe,
     ),
+    (trust_tasks::TASK_PERSONA_FACET_PUT_1_0, RetrySafety::Keyed),
+    (
+        trust_tasks::TASK_PERSONA_FACET_LIST_1_0,
+        RetrySafety::ReadOnly,
+    ),
+    (
+        trust_tasks::TASK_PERSONA_FACET_DELETE_1_0,
+        RetrySafety::RetrySafe,
+    ),
     (
         trust_tasks::TASK_PERSONA_BINDING_SET_1_0,
         RetrySafety::Keyed,

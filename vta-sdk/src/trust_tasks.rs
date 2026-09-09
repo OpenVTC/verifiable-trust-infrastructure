@@ -915,6 +915,16 @@ pub const TASK_PERSONA_PROFILE_LIST_1_0: &str =
 pub const TASK_PERSONA_PROFILE_DELETE_1_0: &str =
     "https://trusttasks.org/spec/persona/profile/delete/1.0";
 
+/// `spec/persona/facet/put/1.0`
+pub const TASK_PERSONA_FACET_PUT_1_0: &str = "https://trusttasks.org/spec/persona/facet/put/1.0";
+
+/// `spec/persona/facet/list/1.0`
+pub const TASK_PERSONA_FACET_LIST_1_0: &str = "https://trusttasks.org/spec/persona/facet/list/1.0";
+
+/// `spec/persona/facet/delete/1.0`
+pub const TASK_PERSONA_FACET_DELETE_1_0: &str =
+    "https://trusttasks.org/spec/persona/facet/delete/1.0";
+
 /// `spec/persona/binding/set/1.0`
 pub const TASK_PERSONA_BINDING_SET_1_0: &str =
     "https://trusttasks.org/spec/persona/binding/set/1.0";
@@ -1959,6 +1969,9 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PERSONA_PROFILE_GET_1_0,
     TASK_PERSONA_PROFILE_LIST_1_0,
     TASK_PERSONA_PROFILE_DELETE_1_0,
+    TASK_PERSONA_FACET_PUT_1_0,
+    TASK_PERSONA_FACET_LIST_1_0,
+    TASK_PERSONA_FACET_DELETE_1_0,
     TASK_PERSONA_BINDING_SET_1_0,
     TASK_PERSONA_BINDING_GET_1_0,
     TASK_PERSONA_BINDING_LIST_1_0,

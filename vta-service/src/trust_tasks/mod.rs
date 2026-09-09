@@ -1811,6 +1811,16 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_LIST_1_0 => persona::handle_profile_list
         [ None Metadata false ],
+    // A facet arranges records; it never touches one. `put` is Mutating because
+    // it writes a record of its own, and `delete` Destructive for the same
+    // reason — neither reaches a profile or an attribute, which is the property
+    // `deleting_a_facet_deletes_nothing_it_named` pins in vta-persona.
+    vta_sdk::trust_tasks::TASK_PERSONA_FACET_PUT_1_0 => persona::handle_facet_put
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_FACET_LIST_1_0 => persona::handle_facet_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_PERSONA_FACET_DELETE_1_0 => persona::handle_facet_delete
+        [ Destructive None false ],
     vta_sdk::trust_tasks::TASK_PERSONA_PROFILE_DELETE_1_0 => persona::handle_profile_delete
         [ Destructive None false ],
     // The critical gate. Holder-only, and Mutating because it materialises a

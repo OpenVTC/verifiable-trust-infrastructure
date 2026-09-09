@@ -39,7 +39,9 @@ use crate::audit;
 use crate::auth::AuthClaims;
 use crate::server::AppState;
 
-use super::helpers::{TrustTaskOutcome, error_response, parse_payload, success_response};
+use super::helpers::{
+    TrustTaskOutcome, error_response, parse_payload, reject_with_code, success_response,
+};
 
 /// The family namespace for codes shared across the slice. A proper path prefix
 /// of each task slug, which SPEC §8.5 permits so a family-wide meaning is
@@ -102,6 +104,14 @@ pub const REACH: &[(&str, Reach)] = &[
     (uris::TASK_PERSONA_PROFILE_GET_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_LIST_1_0, Reach::Holder),
     (uris::TASK_PERSONA_PROFILE_DELETE_1_0, Reach::Holder),
+    // A facet states which of the holder's identities are, to them, parts of
+    // one life — the linkage map the whole family exists to keep from being
+    // assembled by anyone else, written down by the only person entitled to
+    // write it. A context-scoped caller reading one would learn how the holder
+    // arranges every *other* context.
+    (uris::TASK_PERSONA_FACET_PUT_1_0, Reach::Holder),
+    (uris::TASK_PERSONA_FACET_LIST_1_0, Reach::Holder),
+    (uris::TASK_PERSONA_FACET_DELETE_1_0, Reach::Holder),
     // The critical gate. An application able to call this could bind any
     // profile to a persona it controls and read the result back through a
     // disclosure it requests of itself. Every other read leaks; this one is
@@ -2173,6 +2183,177 @@ pub(super) async fn handle_disclosure_present(
 // ─────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────
+
+// ── Facets: the holder's own arrangement of their own identity ──────────────
+
+pub(super) async fn handle_facet_put(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::facet::put::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_FACET_PUT_1_0, None).await {
+        return reject(&doc, e);
+    }
+
+    let s = store(state);
+    // `.map(|u| u.to_string())` rather than `.map(ToString::to_string)`: the
+    // generated `Ulid` is a newtype with `Deref` and no `Display`, so the
+    // method call auto-derefs to `String` while the function path does not.
+    let face_ids: Vec<String> = req.face_ids.iter().map(|u| u.to_string()).collect();
+    let attribute_ids: Vec<String> = req.attribute_ids.iter().map(|u| u.to_string()).collect();
+    let Some(colour) = colour_of(&req.colour) else {
+        return reject_with_code(
+            &doc,
+            ext(&slug_from_doc(&doc), "unsupportedColour"),
+            "this agent does not know that colour",
+            Some(json!({ "colour": req.colour.to_string() })),
+        );
+    };
+    let mut facet = vta_persona::new_facet(
+        req.name.to_string(),
+        colour,
+        req.icon.as_ref().map(|i| i.to_string()),
+        face_ids,
+        attribute_ids,
+    );
+    // A supplied id addresses an existing record; an absent one keeps the
+    // minted ULID, which is what makes a create idempotent under retry only
+    // when the producer chose the id itself.
+    if let Some(id) = req.facet_id.as_ref() {
+        facet.facet_id = id.to_string();
+    }
+    let facet_id = facet.facet_id.clone();
+
+    // The exclusivity refusal is its own extended code rather than a validation
+    // string, because the details are what make it actionable: told only that
+    // the write failed, a consumer can do nothing but send the holder off to
+    // find where the face already is.
+    let clash = match s
+        .placement_conflicts(&facet.face_ids, Some(&facet_id))
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => return reject(&doc, e),
+    };
+    if !clash.placed.is_empty() {
+        return reject_with_code(
+            &doc,
+            ext(&slug_from_doc(&doc), "faceAlreadyPlaced"),
+            "one or more faces already belong to another facet",
+            Some(json!({ "placed": clash.placed })),
+        );
+    }
+
+    let written = match s
+        .put_facet(facet, req.expected_version.map(u64::from))
+        .await
+    {
+        Ok(w) => w,
+        Err(e) => return reject(&doc, e),
+    };
+    // The name is the most revealing member in the record and never reaches an
+    // audit line: "Work" discloses nothing and "the divorce" discloses a great
+    // deal, and a holder naming a part of their life is not thinking about logs.
+    audit_persona(state, "persona.facet.put", auth, None, None, None).await;
+    success_response(
+        &doc,
+        json!({
+            "facetId": facet_id,
+            "version": written.version,
+            "created": written.created,
+            "updatedAt": chrono::Utc::now().to_rfc3339(),
+        }),
+    )
+}
+
+pub(super) async fn handle_facet_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let _req: spec::facet::list::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_FACET_LIST_1_0, None).await {
+        return reject(&doc, e);
+    }
+    let facets = match store(state).list_facets().await {
+        Ok(f) => f,
+        Err(e) => return reject(&doc, e),
+    };
+    audit_persona(state, "persona.facet.list", auth, None, None, None).await;
+    // No `nextCursor`: this maintainer returns every facet in one page. The
+    // member is absent rather than null, which is what says the listing is
+    // complete — a consumer following the cursor sees exactly one page.
+    success_response(&doc, json!({ "facets": facets }))
+}
+
+pub(super) async fn handle_facet_delete(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: spec::facet::delete::v1_0::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = authorize(state, auth, uris::TASK_PERSONA_FACET_DELETE_1_0, None).await {
+        return reject(&doc, e);
+    }
+    // Touches no profile and no attribute. There is no cascading form of this
+    // call because there is no cascading form of the idea: a facet is an
+    // arrangement, not a container.
+    let (existed, released) = match store(state)
+        .delete_facet(
+            &req.facet_id.to_string(),
+            req.expected_version.map(u64::from),
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return reject(&doc, e),
+    };
+    audit_persona(state, "persona.facet.delete", auth, None, None, None).await;
+    success_response(
+        &doc,
+        json!({ "existed": existed, "releasedFaces": released }),
+    )
+}
+
+/// The wire colour to the store's.
+///
+/// **Returns `None` for a colour this build does not know, and the caller
+/// refuses the document.** The generated enum is `#[non_exhaustive]`, so the
+/// compiler cannot make this match exhaustive across the crate boundary and a
+/// wildcard arm is mandatory — which means the choice is what the wildcard
+/// *does*. Mapping an unknown colour to a default would be a facet silently
+/// changing colour: a small thing the holder cannot explain and cannot fix,
+/// arriving with no error anywhere. Refusing says which member this build did
+/// not understand.
+///
+/// Unreachable from the wire today — serde rejects an unknown string before the
+/// payload parses — but reachable the moment `trust-tasks-rs` is bumped to a
+/// version declaring a ninth colour, which is exactly when it should be loud.
+fn colour_of(c: &spec::facet::put::v1_0::FacetColour) -> Option<vta_persona::FacetColour> {
+    use spec::facet::put::v1_0::FacetColour as W;
+    use vta_persona::FacetColour as S;
+    Some(match c {
+        W::Slate => S::Slate,
+        W::Indigo => S::Indigo,
+        W::Teal => S::Teal,
+        W::Moss => S::Moss,
+        W::Sand => S::Sand,
+        W::Clay => S::Clay,
+        W::Rose => S::Rose,
+        W::Plum => S::Plum,
+        _ => return None,
+    })
+}
 
 #[cfg(test)]
 mod tests {

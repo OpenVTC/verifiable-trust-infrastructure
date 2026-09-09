@@ -26,6 +26,21 @@ pub fn profile_key(profile_id: &str) -> String {
 
 pub const PROFILE_PREFIX: &str = "pp:";
 
+/// One facet — the holder's name for a part of their life, and what belongs
+/// to it.
+///
+/// **Agent-scoped, and that is the whole of its security story.** A facet says
+/// which of the holder's identities they consider parts of one life, which is
+/// precisely the join multiple personas exist to deny a verifier. A context
+/// that could address one would learn how the holder arranges every *other*
+/// context.
+#[must_use]
+pub fn facet_key(facet_id: &str) -> String {
+    format!("pf:{facet_id}")
+}
+
+pub const FACET_PREFIX: &str = "pf:";
+
 /// Correlation index, keyed by a keyed hash of the value so that exact-match
 /// lookup works with no plaintext index over the holder's personal data.
 #[must_use]
@@ -134,6 +149,7 @@ pub const CORRELATION_HMAC_KEY: &str = "pxkey";
 const PREFIX_SCOPES: &[(&str, Scope)] = &[
     ("pa:", Scope::Agent),
     ("pp:", Scope::Agent),
+    ("pf:", Scope::Agent),
     ("pxi:", Scope::Agent),
     ("pxr:", Scope::Agent),
     ("pb:", Scope::Context),
