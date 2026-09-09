@@ -946,6 +946,66 @@ pub fn router(state: Arc<HostState>) -> Router {
         .with_state(state)
 }
 
+/// [`router`], reachable from a browser at the named origins.
+///
+/// A room's own client may be a web page — a member is a party holding credentials, not a
+/// party running a server, and increasingly that means a tab. Without a CORS layer a
+/// browser cannot reach this host at all: the request is made and the response is discarded
+/// before any script sees it, so the failure surfaces as a network error with nothing in it
+/// about origins, and the page's author goes looking at the wrong end.
+///
+/// Off unless asked for, and by explicit origin rather than `*`. This host stores rooms it
+/// does not govern; which sites may talk to it from a user's browser is an operator's
+/// decision, and a wildcard is the one answer that cannot be reviewed. Mirrors
+/// `vta-service`'s layer, including its refusal to partially apply: a half-configured CORS
+/// surface is worse than none, because it looks configured.
+///
+/// Note this changes nothing about **authorization**. A browser reaching this host is still
+/// a request carrying a proof and a chain, refused exactly as any other would be. CORS
+/// decides who may ask, never what the answer is.
+pub fn router_with_origins(state: Arc<HostState>, allowed_origins: &[String]) -> Router {
+    let router = router(state);
+    match cors_layer(allowed_origins) {
+        Some(layer) => router.layer(layer),
+        None => router,
+    }
+}
+
+/// The CORS layer for `allowed_origins`, or `None` when there is nothing usable to apply.
+fn cors_layer(allowed_origins: &[String]) -> Option<tower_http::cors::CorsLayer> {
+    use axum::http::{HeaderName, HeaderValue, Method};
+    use tower_http::cors::{AllowOrigin, CorsLayer};
+
+    if allowed_origins.is_empty() {
+        return None;
+    }
+    // `AllowOrigin::list` panics on a wildcard, and falling through to `any()` is not the
+    // intent — an operator who wants every origin can say so in a proxy, where it is
+    // visible. Malformed entries are dropped for the same reason a typo should show up in
+    // the startup log rather than silently widen anything.
+    let parsed: Vec<HeaderValue> = allowed_origins
+        .iter()
+        .filter(|o| !o.is_empty() && *o != "*")
+        .filter_map(|o| HeaderValue::from_str(o).ok())
+        .collect();
+    if parsed.is_empty() {
+        tracing::warn!(
+            "every --allow-origin value was empty, a wildcard, or unparseable; serving with \
+             no CORS layer rather than a partial one"
+        );
+        return None;
+    }
+    Some(
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(parsed))
+            // One route takes a body, and it is a POST. Nothing here is a GET a browser
+            // would send credentials with.
+            .allow_methods([Method::GET, Method::POST])
+            .allow_headers([HeaderName::from_static("content-type")])
+            .max_age(std::time::Duration::from_secs(60)),
+    )
+}
+
 /// Open the store with a `did:key`-only verifier.
 ///
 /// The conservative construction, and what a test or the example wants: no network
