@@ -63,6 +63,9 @@ pub enum MerkleError {
         #[source]
         source: serde_json::Error,
     },
+    /// A wire value is not a commitment this build can compare against.
+    #[error("`{value}` is not a usable data commitment: {why}")]
+    NotACommitment { value: String, why: &'static str },
 }
 
 /// Hash one record into a leaf.
@@ -250,10 +253,45 @@ mod hex_hash {
     }
 }
 
-/// Hex-encode a commitment for the wire.
+/// Encode a commitment as the wire carries it: a `DigestMultibase`.
+///
+/// `0x12 0x20` (sha2-256, 32 bytes) followed by the digest, base58btc with the
+/// `z` prefix — the same shape `sealed_transfer::bundle_digest_multibase`
+/// produces, and what `rooms/records/{list,get}`'s `dataCommitment` is typed as.
+///
+/// **Not hex.** A bare hex string hard-codes SHA-256 into the wire contract,
+/// which is exactly what the framework's `DigestMultibase` exists to avoid:
+/// multihash names the algorithm in-band, so moving off SHA-256 later is a
+/// change of value rather than another schema revision.
 #[must_use]
-pub fn to_hex(hash: &Hash) -> String {
-    hash.iter().map(|b| format!("{b:02x}")).collect()
+pub fn to_multibase(hash: &Hash) -> String {
+    let mut mh = Vec::with_capacity(34);
+    mh.extend_from_slice(&[0x12, 0x20]);
+    mh.extend_from_slice(hash);
+    multibase::encode(multibase::Base::Base58Btc, mh)
+}
+
+/// Read a wire `dataCommitment` back to a [`Hash`].
+///
+/// Refuses anything that is not a sha2-256 multihash. A commitment is what a
+/// comparison turns on, so silently accepting an algorithm this build cannot
+/// compute would turn "these two roots differ" into "these two roots are not
+/// comparable" without saying so.
+pub fn from_multibase(value: &str) -> Result<Hash, MerkleError> {
+    let (_, bytes) = multibase::decode(value).map_err(|_| MerkleError::NotACommitment {
+        value: value.to_string(),
+        why: "not valid multibase",
+    })?;
+    let Some((&[0x12, 0x20], digest)) = bytes.split_at_checked(2) else {
+        return Err(MerkleError::NotACommitment {
+            value: value.to_string(),
+            why: "not a sha2-256 multihash (expected the 0x12 0x20 prefix)",
+        });
+    };
+    digest.try_into().map_err(|_| MerkleError::NotACommitment {
+        value: value.to_string(),
+        why: "a sha2-256 multihash carries exactly 32 bytes",
+    })
 }
 
 #[cfg(test)]
@@ -466,6 +504,48 @@ mod tests {
         let leaves = [leaf_hash(&record("a", 1)).expect("hashes")];
         assert!(inclusion_proof(&leaves, 1).is_none());
         assert!(inclusion_proof(&[], 0).is_none());
+    }
+
+    /// The wire encoding is `DigestMultibase`, not hex. A bare hex string
+    /// hard-codes SHA-256 into the contract, which is what the framework's
+    /// definition exists to prevent.
+    #[test]
+    fn a_commitment_encodes_as_a_sha2_256_multihash() {
+        let root = commit_records(&mut [record("a", 1)]).expect("commits");
+        let encoded = to_multibase(&root);
+
+        assert!(
+            encoded.starts_with('z'),
+            "base58btc is RECOMMENDED: {encoded}"
+        );
+        let (_, bytes) = multibase::decode(&encoded).expect("valid multibase");
+        assert_eq!(&bytes[..2], &[0x12, 0x20], "sha2-256 multihash prefix");
+        assert_eq!(bytes.len(), 34);
+        assert_eq!(from_multibase(&encoded).expect("round-trips"), root);
+    }
+
+    /// A commitment is what a comparison turns on, so an unreadable one must be
+    /// an error rather than a value that quietly fails to match.
+    #[test]
+    fn something_that_is_not_a_commitment_is_refused() {
+        // Bare hex — the encoding this replaced.
+        assert!(from_multibase(&to_hex_for_test(&empty_root())).is_err());
+        // A multihash naming another algorithm.
+        let mut other = vec![0x13, 0x20];
+        other.extend_from_slice(&[7u8; 32]);
+        let encoded = multibase::encode(multibase::Base::Base58Btc, other);
+        assert!(
+            from_multibase(&encoded).is_err(),
+            "accepted a non-sha2-256 digest"
+        );
+        // Right prefix, wrong length.
+        let short = multibase::encode(multibase::Base::Base58Btc, vec![0x12, 0x20, 1, 2, 3]);
+        assert!(from_multibase(&short).is_err());
+        assert!(from_multibase("not multibase at all").is_err());
+    }
+
+    fn to_hex_for_test(hash: &Hash) -> String {
+        hash.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     #[test]
