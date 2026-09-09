@@ -6,8 +6,8 @@
 //! Three gates, in order, and the order matters:
 //!
 //! 1. **Capability.** [`Capability::RoomPresent`], registered upstream as `roomPresent`.
-//!    Deliberately not [`Capability::Sign`]: an agent that may ask for a scoped,
-//!    audience-bound presentation is not thereby an agent that may sign *anything at all*
+//!    Deliberately not [`Capability::Sign`]: an agent that may ask for a scoped
+//!    presentation granted to itself is not thereby an agent that may sign *anything at all*
 //!    with its principal's key. Gating an oracle on the generic signing oracle would grant
 //!    strictly more than the task needs, which is the opposite of what an oracle is for.
 //! 2. **Context**, inside `resolve_holder_keys` — the caller must be permitted to act in the
@@ -71,17 +71,7 @@ pub(super) async fn handle_present(
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_default();
 
-    let minted = match room_oracle::present(
-        state,
-        auth,
-        &auth.did,
-        &req.room_id,
-        &action,
-        req.audience.as_deref(),
-        req.nonce.as_ref().map(|n| n.as_ref()),
-    )
-    .await
-    {
+    let minted = match room_oracle::present(state, auth, &auth.did, &req.room_id, &action).await {
         Ok(m) => m,
         Err(e) => return app_error_to_reject(&doc, e),
     };

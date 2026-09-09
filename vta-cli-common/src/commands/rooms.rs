@@ -35,11 +35,11 @@ use vtc_client::rooms::{CleartextContent, RoomSession, Visibility};
 
 /// Everything a room command needs to reach both parties.
 ///
-/// The host DID is optional because an operator may not know it, and the cost
-/// of not knowing is stated rather than hidden: without it the minted
-/// presentation carries no audience, so it is bearer-shaped against that room
-/// for its four-hour life. With it, a captured presentation is worthless to
-/// anyone else.
+/// The host DID is optional because an operator may not know it, and it names the
+/// **recipient** of the document — nothing more. It used to be passed as the presentation's
+/// `audience` as well, on the reading that this bound the presentation to one host. It never
+/// could: see [`present`]. A presentation is bound to whoever will sign the request, always,
+/// so there is no unbound case for an operator to be warned about.
 pub struct RoomTarget<'a> {
     pub host_url: &'a str,
     pub host_did: Option<&'a str>,
@@ -56,22 +56,31 @@ impl RoomTarget<'_> {
     }
 }
 
-/// Mint a presentation for one action, and warn when it will be unbound.
+/// Mint a presentation for one action.
+///
+/// # There is no party to name here, and there used to be two
+///
+/// This passed `target.host_did` as the presentation's `audience` until that was found
+/// never to work: `audience` named the party that had to *present* the credential, not the
+/// one it was addressed to, so filling it with a host's DID named somebody no presenter can
+/// ever be, and every request was refused. Omitting `--host-did` "worked" only because an
+/// absent audience skipped the check — so the flag's two states were *broken* and
+/// *unprotected*, with nothing in between.
+///
+/// Neither the field nor this parameter survives. A presentation is granted to the caller
+/// the VTA authenticated and a host refuses a chain granting to anyone else, so who may
+/// present is established rather than declared; and it is bound to a *room* rather than a
+/// host, so there is no destination to name either. `--host-did` keeps its real job:
+/// naming the document's `recipient`.
+///
+/// See `rooms/keys/present/0.2`, which removed both members, and
+/// trustoverip/dtgwg-trust-tasks-tf#414.
 async fn present(
     client: &VtaClient,
     target: &RoomTarget<'_>,
     action: &str,
 ) -> Result<RoomSession, Box<dyn std::error::Error>> {
-    if target.host_did.is_none() {
-        eprintln!(
-            "note: no --host-did given, so this presentation is not bound to a host. \
-             Anyone who observes it can use it against this room until it expires."
-        );
-    }
-
-    let minted = client
-        .room_present(target.room_id, action, target.host_did, None)
-        .await?;
+    let minted = client.room_present(target.room_id, action).await?;
     session_from_minted(target.room_id, &minted)
 }
 

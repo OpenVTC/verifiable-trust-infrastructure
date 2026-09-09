@@ -3495,9 +3495,9 @@ dependencies = [
 
 [[package]]
 name = "dtg-credentials"
-version = "0.6.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f292eb5ba50d7f69dd9671e87b4d6ceddbeb973cbf0c05715220bee8446ff90"
+checksum = "fa51b03528a22ad07cd0f812a99fae834b7867c205943a40ad90bb8eb62edb08"
 dependencies = [
  "affinidi-data-integrity",
  "affinidi-secrets-resolver",
@@ -3506,7 +3506,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror 2.0.20",
  "tracing",
 ]

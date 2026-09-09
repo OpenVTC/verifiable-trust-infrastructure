@@ -27,10 +27,25 @@
 //! have handed the caller its principal's whole standing in the room, which is precisely the
 //! outcome attenuation exists to prevent.
 //!
-//! **A presentation reusable elsewhere.** Where the caller names an `audience`, the leaf is
-//! bound to it, and `verify_chain` refuses a chain link presented by anyone else. Without an
-//! audience the presentation is bearer-shaped against that room, which is why callers that
-//! know their host should always name it.
+//! **A presentation somebody else can use.** The leaf grants to the DID this VTA
+//! authenticated for the request, and a host refuses a chain whose leaf grants to anyone but
+//! the party that signed what it received. So a presentation minted here is usable by the
+//! caller and by nobody else — and the caller cannot ask for one made out to a third party,
+//! because it never gets to name the subject.
+//!
+//! **A presentation bound to a host.** Deliberately not offered, because it would not mean
+//! anything. The chain is scoped to the *room*; a chain rooted in one room confers nothing
+//! anywhere else, and any host serving that room would honour it — a room may have more than
+//! one host, and moving between them without reissuing credentials is the point. Binding a
+//! *request* to its destination is the job of the `recipient` member on the document that
+//! carries the presentation, which its `proof` covers (SPEC.md §4.8.2).
+//!
+//! Both of those are the library's rules now rather than this module's hopes:
+//! dtg-credentials 0.8 requires the presenter to be the leaf's subject, refusing anyone else
+//! with `NotThePresenter`, and removes the `audience` field that used to stand in for it
+//! badly — optional, so a leaf without one was accepted from anybody, and read as the
+//! *destination* by the Trust Tasks registry while the library compared it to the presenter
+//! (`trustoverip/dtgwg-cred-spec#41`, `trustoverip/dtgwg-trust-tasks-tf#414`).
 //!
 //! **The keys.** Nothing in the response carries key material in either direction. An oracle
 //! that returned the principal's VAC itself would be a credential-release call wearing a
@@ -88,8 +103,6 @@ pub async fn present(
     agent_did: &str,
     room_id: &str,
     action: &str,
-    audience: Option<&str>,
-    nonce: Option<&str>,
 ) -> Result<MintedPresentation, AppError> {
     let scope = auth.act_scope();
 
@@ -108,13 +121,16 @@ pub async fn present(
     // that somebody could forget to write.
     let now = Utc::now();
     let expires = now + PRESENTATION_LIFETIME;
+    // There is no audience argument any more. The leaf is bound to its subject —
+    // `agent_did`, the caller this VTA authenticated — and a verifier requires the presenter
+    // to be that subject. A second field naming who may present could only repeat the
+    // subject or contradict it, which is why dtg-credentials 0.8 removed it.
     let mut leaf = root
         .attenuate(
             agent_did.to_string(),
             vec![action.to_string()],
             now,
-            Some(expires),
-            audience.map(str::to_string),
+            expires,
         )
         .map_err(|e| {
             // The common case is asking for an action the principal does not hold, and
@@ -143,15 +159,16 @@ pub async fn present(
 
     // Leaf first, then the credential the room issued. Every link the host will rely on is
     // present, because the host will not fetch one.
-    let mut presentation = serde_json::json!({
+    // No nonce. A presentation is a bundle of credentials signed by their *issuers*, never
+    // by the party presenting it, so a challenge placed inside it is unauthenticated — an
+    // attacker replaying a captured presentation copies the challenge with everything else.
+    // Freshness belongs to the request: the room task document carrying this is signed by
+    // the presenter and carries `id` and `issuedAt`, which is what SPEC.md §7.2 item 11
+    // keys duplicate-execution protection on.
+    let presentation = serde_json::json!({
         "membership": vmc,
         "authority": [leaf_json, vac],
     });
-    // Echoed rather than interpreted: the verifier chose it, and its value to them is that
-    // it came back unchanged.
-    if let Some(nonce) = nonce {
-        presentation["nonce"] = Value::String(nonce.to_string());
-    }
 
     Ok(MintedPresentation {
         presentation,

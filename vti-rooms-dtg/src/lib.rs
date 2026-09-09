@@ -287,22 +287,20 @@ impl ChainVerifier for DtgChainVerifier {
         )
         .map_err(|e| chain_refusal(&room.room_id, e))?;
 
-        // `verify_chain` takes `presenter` but uses it for **one** thing: the `audience`
-        // check, where a link that names an audience must be presented by that audience. It
-        // does not require the leaf to grant to the presenter, and that is deliberate on
-        // its side — the leaf's subject is "who may act", and binding that to the party the
-        // *transport* authenticated is a question about this request, not about the chain.
+        // The check that used to live here — "the leaf must grant to the presenter" — is now
+        // `verify_chain`'s own. dtg-credentials 0.8 requires it and refuses otherwise with
+        // `NotThePresenter`; before that, `verify_chain` used `presenter` for one thing, the
+        // optional `audience` comparison, so a leaf without an audience was accepted from
+        // anybody and a presentation was a bearer token.
         //
-        // Which makes it ours, and it is not optional: without it a presentation is a
-        // bearer token, and anyone who observes one inherits everything it confers. A test
-        // above presents an agent's chain as the agent's human and expects a refusal.
-        if verified.subject != presenter {
-            return Err(AppError::Forbidden(format!(
-                "the chain's leaf grants to `{}`, not to the party that signed this \
-                 request; a presentation is bound to its presenter, not bearer",
-                verified.subject
-            )));
-        }
+        // This copy and the one in `nomination` were written independently, each after
+        // hitting the same gap, which is why the rule moved into the library. Both are
+        // deleted rather than kept as a second opinion: two copies of a rule is one place
+        // for it to be forgotten, and the duplicate is the one nobody updates.
+        //
+        // The tests that pinned it stay exactly as they were — a chain presented by the
+        // wrong party must still be refused, and it is not this crate's business any more
+        // *which layer* refuses it.
 
         // The pooling defence: membership and authority must describe one subject.
         match room.visibility {
@@ -422,7 +420,7 @@ mod tests {
             scope.into(),
             actions.iter().map(|s| s.to_string()).collect(),
             chrono::Utc::now() - chrono::Duration::hours(1),
-            Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            chrono::Utc::now() + chrono::Duration::hours(1),
         )
         .expect("build a VAC");
 
@@ -608,7 +606,7 @@ mod signed {
             room_did.clone(),
             vec!["read".into(), "write".into()],
             now - Duration::minutes(1),
-            Some(now + Duration::days(30)),
+            now + Duration::days(30),
         )
         .expect("owner VAC")
         .with_id("urn:uuid:vac-owner");
@@ -621,8 +619,7 @@ mod signed {
                 agent_did.clone(),
                 vec!["read".into()],
                 now - Duration::minutes(1),
-                Some(now + Duration::hours(4)),
-                None,
+                now + Duration::hours(4),
             )
             .expect("attenuate")
             .with_id("urn:uuid:vac-agent");
@@ -739,9 +736,13 @@ mod signed {
             )
             .await
             .unwrap_err();
+        // Refused by `verify_chain` now rather than by a re-check in this crate: 0.8
+        // requires the presenter to be the leaf's subject. The test is deliberately kept
+        // exactly where it was — it asserts the property, and which layer enforces it is
+        // not this crate's business.
         assert!(
-            format!("{err}").contains("not to the party that signed this request"),
-            "{err}"
+            format!("{err}").contains("but it was presented by"),
+            "the refusal should name both parties: {err}"
         );
     }
 
@@ -946,7 +947,7 @@ pub mod test_support {
                     "admin".into(),
                 ],
                 now - Duration::minutes(1),
-                Some(now + Duration::days(30)),
+                now + Duration::days(30),
             )
             .expect("owner VAC")
             .with_id("urn:uuid:vac-owner");
@@ -962,8 +963,7 @@ pub mod test_support {
                     agent.did.clone(),
                     vec!["read".into()],
                     now - Duration::minutes(1),
-                    Some(now + Duration::hours(4)),
-                    None,
+                    now + Duration::hours(4),
                 )
                 .expect("attenuate to the agent")
                 .with_id("urn:uuid:vac-agent");
@@ -989,7 +989,7 @@ pub mod test_support {
                 room_key.did.clone(),
                 vec!["read".into()],
                 now - Duration::minutes(1),
-                Some(now + Duration::days(30)),
+                now + Duration::days(30),
             )
             .expect("successor VAC")
             .with_id("urn:uuid:vac-successor");
@@ -1070,7 +1070,15 @@ pub mod test_support {
         /// Signed by the **room**, because that is the only issuer a nomination can have —
         /// an owner nominating in their own name would be a chain rooted at a person, and
         /// the whole point is that it is rooted at the room they are stepping away from.
-        pub async fn nominate(&self, successor: &str, valid_until: Option<i64>) -> String {
+        /// A nomination valid for `hours`.
+        ///
+        /// Not optional any more, and it could not be: since dtg-credentials 0.7 a VAC's
+        /// `validUntil` is required by the constructor, so "a nomination that never
+        /// expires" is a state this fixture can no longer build — which is the point.
+        /// Nothing about a subject's standing is consulted when a chain is verified, so a
+        /// nomination without an expiry is one nobody can withdraw by waiting. Every caller
+        /// already passed `Some(24)`.
+        pub async fn nominate(&self, successor: &str, hours: i64) -> String {
             let now = Utc::now();
             let mut vac = DTGCredential::new_vac(
                 self.room_key.did.clone(),
@@ -1078,7 +1086,7 @@ pub mod test_support {
                 self.room_key.did.clone(),
                 vec![crate::ACTION_SUCCEED.into()],
                 now - Duration::minutes(1),
-                valid_until.map(|h| now + Duration::hours(h)),
+                now + Duration::hours(hours),
             )
             .expect("nomination VAC")
             .with_id("urn:uuid:vac-nomination");

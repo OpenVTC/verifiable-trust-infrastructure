@@ -799,7 +799,8 @@ pub const TASK_VTA_MEMORY_LIST_0_1: &str = "https://trusttasks.org/spec/vta/memo
 /// `spec/rooms/keys/present/0.1` — an agent asks the VTA holding its
 /// principal's room credentials to mint a presentation for **one** room
 /// operation. The credentials never cross to the agent; only the presentation
-/// does, and it is scoped to the action and audience it was asked for.
+/// does, it is scoped to the action it was asked for, and it is granted to the
+/// caller — so it is worthless to anybody who captures it.
 /// Auth: `roomPresent` capability, plus context access for the principal's key.
 pub const TASK_ROOMS_KEYS_PRESENT_0_1: &str = "https://trusttasks.org/spec/rooms/keys/present/0.1";
 

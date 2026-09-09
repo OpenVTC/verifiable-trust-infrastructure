@@ -603,7 +603,7 @@ mod tests {
             room.clone(),
             vec!["read".into(), "curate".into()],
             now - chrono::Duration::minutes(1),
-            Some(now + chrono::Duration::days(30)),
+            now + chrono::Duration::days(30),
         )
         .expect("mint the room's authority credential")
         .with_id("urn:uuid:vac-1");
@@ -677,7 +677,7 @@ mod tests {
             room.clone(),
             vec!["read".into()],
             now - chrono::Duration::minutes(1),
-            Some(now + chrono::Duration::days(30)),
+            now + chrono::Duration::days(30),
         )
         .unwrap()
         .with_id("urn:uuid:vac-3");
@@ -703,8 +703,13 @@ mod tests {
         // The rightful member: accepted.
         verify_chain(&chain, &room, &room, "read", me.did(), chrono::Utc::now()).unwrap();
 
-        // Whoever lifted it off the wire: refused, and refused as a wrong audience rather
-        // than as a bad signature — the chain is perfectly valid, it is just not theirs.
+        // Whoever lifted it off the wire: refused, and refused for the right reason — the
+        // chain is perfectly valid, it is just not theirs.
+        //
+        // The refusal used to be `WrongAudience`, from a leaf this method bound to its own
+        // subject. dtg-credentials 0.8 removed `audience` and made the subject rule the
+        // library's own, so the same property is now enforced without a field to fill in:
+        // `NotThePresenter`.
         let err = verify_chain(
             &chain,
             &room,
@@ -717,9 +722,9 @@ mod tests {
         assert!(
             matches!(
                 err,
-                dtg_credentials::authority::AuthorityError::WrongAudience { .. }
+                dtg_credentials::authority::AuthorityError::NotThePresenter { .. }
             ),
-            "expected a WrongAudience refusal, got {err:?}"
+            "expected a NotThePresenter refusal, got {err:?}"
         );
     }
 
@@ -740,7 +745,7 @@ mod tests {
             room.clone(),
             vec!["read".into()],
             now - chrono::Duration::minutes(1),
-            Some(now + chrono::Duration::days(30)),
+            now + chrono::Duration::days(30),
         )
         .unwrap()
         .with_id("urn:uuid:vac-2");
@@ -824,7 +829,7 @@ mod tests {
             "room".into(),
             vec!["read".into()],
             now,
-            Some(now + chrono::Duration::hours(1)),
+            now + chrono::Duration::hours(1),
         )
         .expect("build an authority credential")
         .with_id("urn:uuid:i-2");
