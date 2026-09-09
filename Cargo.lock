@@ -10499,6 +10499,7 @@ dependencies = [
  "affinidi-data-integrity",
  "affinidi-did-common",
  "affinidi-did-resolver-cache-sdk",
+ "affinidi-did-resolver-traits",
  "affinidi-messaging-core",
  "affinidi-messaging-delivery",
  "affinidi-messaging-didcomm",

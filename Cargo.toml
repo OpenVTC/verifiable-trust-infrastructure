@@ -393,6 +393,10 @@ k8s-openapi = { version = "0.28", features = ["latest"] }
 # omit the `network` feature. The default here turns it on; dependents
 # that want the offline-only cache can opt out via `default-features = false`.
 affinidi-did-resolver-cache-sdk = { version = "0.8", features = ["network"] }
+# The local-only resolvers, for methods that carry their keys in the identifier. Not a
+# second resolver: the cache SDK already depends on this and uses the same types, but does
+# not re-export them, and a verifier promising "no I/O" needs to reach them directly.
+affinidi-did-resolver-traits = { version = "0.1" }
 
 # Agent names — human-memorable `example.com/@alice` shortcuts that resolve to
 # DIDs. Consumed by `vta_sdk::display_name` (feature `agent-names`) for the
