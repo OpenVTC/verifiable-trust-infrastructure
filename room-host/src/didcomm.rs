@@ -50,6 +50,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::HostState;
 
+/// The largest DID any `DIDCacheClient` will parse (`max_did_size_in_bytes`, default 1000).
+///
+/// Checked at mint because **neither end says so** when it is exceeded. The caller fails its
+/// websocket connect as `isActive? command timed out`, which reads as a hang; the mediator
+/// answers `403 authcrypt requires sender public key`, which reads as a key problem. Only
+/// `affinidi_did_authentication` logs the real reason, and only on one side.
+///
+/// A `did:peer:2` carries its services *inside* the identifier, so each one costs roughly the
+/// base64 of the mediator DID it names. Two of them against a `did:webvh` mediator is about
+/// 460 bytes and fine; against a `did:peer` mediator it is about 1685, and every caller that
+/// tries to resolve it fails. The same trap the transport harness hit — see CHANGELOG,
+/// "Watch the DID size" — and it was closed there the same way.
+const MAX_DID_BYTES: usize = 1000;
+
 /// The DIDComm `type` a Trust-Task envelope rides under.
 ///
 /// From the crate that defines the binding rather than written out here. Four hand-written
@@ -59,9 +73,26 @@ use crate::HostState;
 use trust_tasks_didcomm::ENVELOPE_TYPE;
 
 /// The host's own identity: the key it is reached by, and the `did:peer:2` naming it.
+///
+/// `Debug` is hand-written rather than derived, and deliberately: a derived one prints the
+/// secrets, and the places a `Debug` reaches — a log line, a panic message, a test failure —
+/// are exactly the places key material must not turn up. The identifier is public and is the
+/// only part worth seeing.
 pub struct HostIdentity {
     pub did: String,
     secrets: Vec<Secret>,
+}
+
+impl std::fmt::Debug for HostIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostIdentity")
+            .field("did", &self.did)
+            .field(
+                "secrets",
+                &format_args!("<{} redacted>", self.secrets.len()),
+            )
+            .finish()
+    }
 }
 
 /// The stored form. **Key material** — see the module docs.
@@ -130,6 +161,22 @@ impl HostIdentity {
             Some(services(mediator_did)),
         )
         .map_err(|e| anyhow::anyhow!("mint the host identity: {e}"))?;
+
+        // Refused here, where it can be explained, rather than at every caller that tries to
+        // resolve it. A host that minted an over-long identity would come up, log that it was
+        // reachable, and be unreachable — with the failure appearing at the other end as a
+        // timeout.
+        if did.len() > MAX_DID_BYTES {
+            anyhow::bail!(
+                "the identity this host would mint is {} bytes, past the {MAX_DID_BYTES}-byte \
+                 limit every DID resolver enforces — so no member could resolve it, and the \
+                 failure would surface at them as a websocket timeout rather than here. A \
+                 `did:peer:2` carries its services inside the identifier, so each one costs \
+                 about the length of `{mediator_did}` again. Use a mediator with a short DID: \
+                 a `did:webvh` leaves this around 460 bytes, which is what production mints.",
+                did.len()
+            );
+        }
 
         std::fs::create_dir_all(data_dir)?;
         std::fs::write(

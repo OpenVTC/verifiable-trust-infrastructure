@@ -77,6 +77,11 @@ didcomm = [
 ]
 
 [dev-dependencies]
+# A mediator in-process, so the carrier round trip is tested against a real one
+# rather than a simulator. Everything `tests/carrier.rs` covers is packing,
+# routing, threading and acking — a simulator would be a second opinion about
+# exactly the parts that were wrong.
+affinidi-messaging-test-mediator = { version = "0.6", features = ["tsp"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", features = ["test-support"] }

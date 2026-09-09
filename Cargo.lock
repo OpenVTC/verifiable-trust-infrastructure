@@ -7942,6 +7942,7 @@ dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-core",
  "affinidi-messaging-sdk",
+ "affinidi-messaging-test-mediator",
  "affinidi-secrets-resolver",
  "affinidi-tdk",
  "anyhow",
