@@ -49,6 +49,28 @@ fn did_key_from_seed(seed_byte: u8) -> (String, String) {
     (did, priv_mb)
 }
 
+/// A `config/show` `#response` signed as `vta_did`, the way a real VTA answers.
+///
+/// The three token-refresh tests below care about the *order* of the auth calls
+/// and not about the reply, so their fixture used to be a placeholder:
+/// `urn:test:response`, unsigned. Since #1341 that is two separate refusals —
+/// `urn:` is not a Trust-Task type URI, and an unsigned reply from a client that
+/// holds an identity is rejected on principle. Both are the client being right,
+/// so the mock has to answer the way the thing it is standing in for does.
+async fn signed_config_reply(vta_did: &str, vta_priv: &str) -> serde_json::Value {
+    let mut doc: trust_tasks_rs::TrustTask<serde_json::Value> = serde_json::from_value(json!({
+        "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
+        "type": "https://trusttasks.org/spec/config/show/0.1#response",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "payload": {"fields": []}
+    }))
+    .expect("a well-formed Trust-Task document");
+    vta_sdk::trust_task_sign::sign_in_place(&mut doc, vta_did, vta_priv)
+        .await
+        .expect("sign the mock VTA's reply");
+    serde_json::to_value(doc).expect("serialise the signed reply")
+}
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -491,6 +513,10 @@ async fn from_credential_url_override_wins_over_bundle() {
 #[tokio::test]
 async fn ensure_token_valid_refreshes_expired_access_token() {
     let server = MockServer::start().await;
+    // Hoisted above the mocks: one of them now signs as this VTA, so the key has
+    // to exist before it is mounted — and its private half is no longer discarded.
+    let (client_did, client_priv) = did_key_from_seed(0x11);
+    let (vta_did, vta_priv) = did_key_from_seed(0x22);
     mount_challenge(&server).await;
 
     // Initial auth: access already expired, refresh still good.
@@ -552,18 +578,14 @@ async fn ensure_token_valid_refreshes_expired_access_token() {
             "authorization",
             "Bearer fresh-access",
         ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
-            "type": "urn:test:response",
-            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": {"fields": []}
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(signed_config_reply(&vta_did, &vta_priv).await),
+        )
         .expect(1)
         .mount(&server)
         .await;
 
-    let (client_did, client_priv) = did_key_from_seed(0x11);
-    let (vta_did, _) = did_key_from_seed(0x22);
     let cred = CredentialBundle::new(client_did, client_priv, vta_did).vta_url(server.uri());
     let client = VtaClient::from_credential(&cred, None).await.unwrap();
 
@@ -579,6 +601,10 @@ async fn ensure_token_valid_refreshes_expired_access_token() {
 #[tokio::test]
 async fn ensure_token_valid_full_reauth_when_refresh_expired() {
     let server = MockServer::start().await;
+    // Hoisted above the mocks: one of them now signs as this VTA, so the key has
+    // to exist before it is mounted — and its private half is no longer discarded.
+    let (client_did, client_priv) = did_key_from_seed(0x11);
+    let (vta_did, vta_priv) = did_key_from_seed(0x22);
 
     // Two sequential challenge calls expected (initial + re-auth).
     Mock::given(method("POST"))
@@ -650,18 +676,14 @@ async fn ensure_token_valid_full_reauth_when_refresh_expired() {
             "authorization",
             "Bearer reauth-access",
         ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
-            "type": "urn:test:response",
-            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": {"fields": []}
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(signed_config_reply(&vta_did, &vta_priv).await),
+        )
         .expect(1)
         .mount(&server)
         .await;
 
-    let (client_did, client_priv) = did_key_from_seed(0x11);
-    let (vta_did, _) = did_key_from_seed(0x22);
     let cred = CredentialBundle::new(client_did, client_priv, vta_did).vta_url(server.uri());
     let client = VtaClient::from_credential(&cred, None).await.unwrap();
     client.get_config().await.unwrap();
@@ -672,6 +694,10 @@ async fn ensure_token_valid_full_reauth_when_refresh_expired() {
 #[tokio::test]
 async fn ensure_token_valid_falls_through_when_refresh_fails() {
     let server = MockServer::start().await;
+    // Hoisted above the mocks: one of them now signs as this VTA, so the key has
+    // to exist before it is mounted — and its private half is no longer discarded.
+    let (client_did, client_priv) = did_key_from_seed(0x11);
+    let (vta_did, vta_priv) = did_key_from_seed(0x22);
 
     Mock::given(method("POST"))
         .and(path("/auth/challenge"))
@@ -747,18 +773,14 @@ async fn ensure_token_valid_falls_through_when_refresh_fails() {
             "authorization",
             "Bearer fallback-access",
         ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
-            "type": "urn:test:response",
-            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "payload": {"fields": []}
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(signed_config_reply(&vta_did, &vta_priv).await),
+        )
         .expect(1)
         .mount(&server)
         .await;
 
-    let (client_did, client_priv) = did_key_from_seed(0x11);
-    let (vta_did, _) = did_key_from_seed(0x22);
     let cred = CredentialBundle::new(client_did, client_priv, vta_did).vta_url(server.uri());
     let client = VtaClient::from_credential(&cred, None).await.unwrap();
     client.get_config().await.unwrap();

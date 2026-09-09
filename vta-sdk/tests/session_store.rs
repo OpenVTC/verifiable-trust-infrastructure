@@ -60,6 +60,28 @@ fn did_key_from_seed(seed_byte: u8) -> (String, String) {
     (did, priv_mb)
 }
 
+/// A `#response` document signed as the VTA these tests talk to.
+///
+/// Every test in this file points its client at `did_key_from_seed(0x20)`, and
+/// since #1341 the client verifies the proof on each reply and binds its signer
+/// to that DID. So the stub has to sign as the VTA it is standing in for — which
+/// is what a real one does, and what makes these tests exercise the check rather
+/// than sidestep it.
+async fn signed_reply(type_uri: &str, payload: serde_json::Value) -> serde_json::Value {
+    let (vta_did, vta_priv) = did_key_from_seed(0x20);
+    let mut doc: trust_tasks_rs::TrustTask<serde_json::Value> = serde_json::from_value(json!({
+        "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
+        "type": type_uri,
+        "issuedAt": "2026-01-01T00:00:00Z",
+        "payload": payload,
+    }))
+    .expect("a well-formed Trust-Task document");
+    vta_sdk::trust_task_sign::sign_in_place(&mut doc, &vta_did, &vta_priv)
+        .await
+        .expect("sign the mock VTA's reply");
+    serde_json::to_value(doc).expect("serialise the signed reply")
+}
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -469,27 +491,31 @@ async fn ensure_authenticated_runs_full_rotation_flow() {
             "type": "https://trusttasks.org/spec/acl/swap-key/0.1",
             "payload": { "currentSubject": temp_did.clone() },
         })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "urn:uuid:stub-swap-response",
-            "type": "https://trusttasks.org/spec/acl/swap-key/0.1#response",
-            "issuedAt": "2026-01-01T00:00:00Z",
-            // The canonical wire spelling, which is NOT the old REST body:
-            // `subject`/`scopes`, not `did`/`allowed_contexts`.
-            // `AclEntryResponse` renames both, so a stub written from the field
-            // names decodes to "missing field `subject`" — which is the second
-            // half of the same migration, and the reason a mock matched only on
-            // the path would have been worse than the red it replaced.
-            "payload": {
-                "entry": {
-                    "subject": "did:key:zNew",
-                    "role": "admin",
-                    "label": "ops",
-                    "scopes": ["primary"],
-                    "created_at": 1_700_000_000_u64,
-                    "created_by": "did:web:vta",
-                }
-            },
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                signed_reply(
+                    "https://trusttasks.org/spec/acl/swap-key/0.1#response",
+                    // The canonical wire spelling, which is NOT the old REST body:
+                    // `subject`/`scopes`, not `did`/`allowed_contexts`.
+                    // `AclEntryResponse` renames both, so a stub written from the
+                    // field names decodes to "missing field `subject`" — which is
+                    // the second half of the same migration, and the reason a mock
+                    // matched only on the path would have been worse than the red
+                    // it replaced.
+                    json!({
+                        "entry": {
+                            "subject": "did:key:zNew",
+                            "role": "admin",
+                            "label": "ops",
+                            "scopes": ["primary"],
+                            "created_at": 1_700_000_000_u64,
+                            "created_by": "did:web:vta",
+                        }
+                    }),
+                )
+                .await,
+            ),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -593,12 +619,15 @@ async fn connect_with_url_override_uses_rest_and_attaches_token() {
             "authorization",
             "Bearer connect-token",
         ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "urn:uuid:stub-response",
-            "type": "https://trusttasks.org/spec/config/show/0.1#response",
-            "issuedAt": "2026-01-01T00:00:00Z",
-            "payload": { "fields": [] },
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                signed_reply(
+                    "https://trusttasks.org/spec/config/show/0.1#response",
+                    json!({ "fields": [] }),
+                )
+                .await,
+            ),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -701,12 +730,15 @@ async fn connect_url_override_falls_back_to_rest() {
         .and(wiremock::matchers::body_partial_json(json!({
             "type": "https://trusttasks.org/spec/config/show/0.1"
         })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "urn:uuid:stub-response",
-            "type": "https://trusttasks.org/spec/config/show/0.1#response",
-            "issuedAt": "2026-01-01T00:00:00Z",
-            "payload": { "fields": [] },
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                signed_reply(
+                    "https://trusttasks.org/spec/config/show/0.1#response",
+                    json!({ "fields": [] }),
+                )
+                .await,
+            ),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -755,12 +787,15 @@ async fn connect_auto_rest_authenticates_and_returns_token() {
             "authorization",
             "Bearer access-jwt",
         ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "urn:uuid:stub-response",
-            "type": "https://trusttasks.org/spec/config/show/0.1#response",
-            "issuedAt": "2026-01-01T00:00:00Z",
-            "payload": { "fields": [] },
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                signed_reply(
+                    "https://trusttasks.org/spec/config/show/0.1#response",
+                    json!({ "fields": [] }),
+                )
+                .await,
+            ),
+        )
         .expect(1)
         .mount(&server)
         .await;
