@@ -2,6 +2,227 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.2.0...vta-persona-v0.3.0) — 2026-09-08
+
+
+### Added
+
+- **persona**: Let a deployment declare its own claim types ([#1327](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1327))
+
+Teaching an agent one word cost five steps across two repositories: a pull
+  request against the specification, a publish, a hand-transcription into
+  `vta-persona`'s table, a release, a deploy. So nobody did it, every local token
+  — `profile.github`, `employer`, whatever an ecosystem actually keeps about its
+  people — resolved to the unregistered floor, and holders were shown their own
+  values masked as though each were a passport number.
+
+  `CLAIM-TYPES.md` §6 anticipated exactly this: the served-table task was "worth
+  doing when the first extension type ships, not before". It ships now.
+
+  `VTA_CLAIM_TYPE_EXTENSIONS` names a JSON file of rows in the shape the agent
+  already serves, so an operator can copy a row out of
+  `persona/claim-types/list`, change it, and put it back.
+
+  **Extensions feed the same lookup the resolution uses.** `declared()` is one
+  iterator over core plus extensions, and `defaults_for`, the family walk and
+  `registry_listing` all read it. That is the task's central MUST — what is served
+  and what is enforced cannot disagree — and two tables walked separately are two
+  tables that resolve differently. The family step is where it would have shown:
+  an extension family the exact lookup knew about and the walk did not.
+
+  **What an operator may declare, and why the line falls there:**
+
+  - Anything core does not cover. A token core has never heard of resolves to the
+    floor *because nobody has reasoned about it* — §4 rule 3 says so — and an
+    operator declaring it is that reasoning arriving.
+  - Tightenings of anything core does cover. That direction takes nothing from
+    anyone.
+  - Not loosenings, compared against what core resolves — exactly (`email.work`)
+    or through a family (`payment.giftCard` under `payment`). Otherwise a
+    deployment could declare a passport unremarkable, or escape a gated family by
+    inventing a member of it, which is the hole rule 3 exists to close.
+  - Never an `x:` token. §4's last rule makes that namespace unregistered by
+    construction; a row declaring one is a row no conforming client would honour.
+
+  **A bad file stops the agent starting**, rather than dropping the offending row.
+  Serving a table the operator did not write means a tightening they believe is in
+  force is not, and the values it was meant to protect are the ones they would
+  hear about last. An unknown axis value is refused rather than defaulted for the
+  same reason — `"hgih"` reading as `normal` looks exactly like a rule that works.
+  Loaded rows are logged with the path and the count, because "why is this masked"
+  is the question an operator will actually have.
+
+  Configured rather than administered, and the reason is upstream: serving an
+  admin task to edit the registry live needs a published task specification first,
+  since the dispatcher refuses a URI the registry does not declare. A file is
+  diffable, reviewable, and belongs to whoever owns the deployment.
+
+  Nine new tests over the rules, plus `docs/02-vta/claim-type-registry.md` for the
+  operator. 99 vta-persona and 1047 vta-service unit tests pass; `cargo fmt
+  --check` and `cargo clippy --all-features` clean.
+
+- **persona**: Serve the claim-type registry ([#1315](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1315))
+
+* feat(persona): serve the claim-type registry
+
+  The agent side of trust-tasks #390, now that trust-tasks-rs 0.18.5 is
+  published. Bumps the pin and implements `persona/claim-types/list/1.0`.
+
+  Served from `vta_persona::claim_types` — the same REGISTRY and UNREGISTERED
+  that `defaults_for` resolves through — because the task's central MUST is that
+  a maintainer serves the table it actually applies. A served table that differs
+  from the enforced one is worse than serving nothing: a client would mask and
+  gate by one rule while the agent disclosed by another, and nothing would report
+  it. The end-to-end test asserts that behaviourally, not by comparison: the
+  agent serves `payment.card: stepUp` and then refuses a `payment.card`
+  disclosure for want of one.
+
+  `strictness` is carried because §4 rule 3 is not computable without it. The
+  orderings come from new MOST_PROTECTIVE_FIRST constants, which are hand-written
+  — Rust cannot enumerate variants — so a unit test asserts each agrees with
+  `Ord`, the ordering the module actually resolves by. A disagreement would be
+  silent and served to every client as the rule.
+
+  `minimumSet` and `oidc` are omitted: both optional, and this agent's table does
+  not carry them. Transcribing them at the serving layer would be a second copy
+  of data nothing here resolves against.
+
+- **persona**: Honour a holder's release override at disclosure ([#1310](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1310))
+
+#1304 enforced `release: stepUp` from the claim-type registry only; a holder's
+  per-attribute override was ignored. `Attribute` carried a comment explaining
+  why the field had been withheld — "a stored override for a gate that does not
+  exist is a promise the holder would be entitled to rely on". The gate now
+  exists, so the field can be stored honestly.
+
+  The override is set above the boundary and enforced below it, so it travels
+  with the projection: Attribute.release → ResolvedClaim → MaterialisedClaim →
+  the gate. Nothing reads up. Re-materialisation on an attribute edit already
+  propagates, so changing the override changes what every bound context enforces.
+
+  Resolved once at preview creation onto `Preview.step_up_required` rather than
+  derived at read like `sensitivity`, because `PreviewClaim` is serialised
+  straight into the preview response and that schema declares
+  `additionalProperties: false` — this is an at-rest decision, not something a
+  verifier is owed. A preview is a single-use snapshot expiring in minutes, so
+  freezing it for that window is also the honest reading.
+
+  An override wins in both directions, per CLAIM-TYPES §4 rule 1. Loosening is
+  not a hole because `attribute/put` is holder-scoped: no verifier and no
+  context-scoped caller can reach it. The audit row records the decision either
+  way, since relaxing a card from stepUp to consent is the most consequential
+  thing this task can do.
+
+
+
+### Changed
+
+- **persona**: Attribute is not exhaustively constructible from outside ([#1328](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1328))
+
+`Attribute` grew `sensitivity` in #1299 and `release` in #1310. Each was a
+  `pub` field added to a struct any consumer could write as a literal, so each
+  was a compatibility break — the informational semver report has been carrying
+  `constructible_struct_adds_field` for the second one since it landed, which is
+  how this was noticed.
+
+  The record is not finished growing. The persona specification keeps adding
+  members and this crate keeps following it, so without `#[non_exhaustive]` every
+  one of those is another break for the same reason. Marked now, in a release that
+  already carries a break, so the next member is an addition instead.
+
+  `release-plz` has `semver_check = true` for this crate, so the bump was never
+  going to be missed — this is about how many breaks get paid, not whether one is
+  noticed. `cargo semver-checks` now reports two majors where it reported one, and
+  both belong to the same release.
+
+  Nothing outside this crate constructs an `Attribute`: it arrives from the store
+  or from a deserialised document. Inside the crate, literal construction is
+  unaffected, so the eight construction sites are untouched.
+
+  Also corrects `claim_types`'s module header, which said "nothing consults
+  `ReleaseRequirement`: `persona/disclosure/present` does not yet demand a fresh
+  authentication for a `stepUp` attribute, and a holder **cannot** record a
+  `release` override". Both halves stopped being true in #1310. The paragraph is
+  "what this module decides, and what it does not" — the first thing a reader
+  looks at, and the easiest to leave describing a version of the crate that no
+  longer exists.
+
+  99 vta-persona tests pass; `cargo fmt --check` and `cargo clippy --all-targets
+  --all-features` clean.
+
+
+
+### Documentation
+
+- **persona**: Say "attribute" on screen, not "fact" ([#1319](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1319))
+
+`design-docs/persona-vocabulary.md` translated `attribute` to **fact** for
+  everything a person reads. That was wrong in two independent ways.
+
+  It asserts what the model cannot promise. What a holder keeps in the pool is
+  self-asserted until a credential backs it, and a face exists so a person can
+  choose what to show — an old value, a pinned version, a value overridden for one
+  context, or a value that is simply not true. The step-up card said "Approve
+  disclosing 1 fact" about exactly that.
+
+  And the word was already spent: `fact` is the VTC ceremony engine's term for a
+  *verified* policy input (`vtc-service/src/ceremony/facts.rs`, `Facts` assembly,
+  every `.rego`) — very nearly the opposite meaning, in the same product.
+
+  `detail` is the persona audit envelope's own field, `trait` is a keyword,
+  `entry` names an entry in a face and `value` is the field inside an attribute,
+  so the spec word comes to the screen instead and that row stops translating.
+  Truth is carried by the provenance beneath the value, never by the noun.
+
+  - step-up approval card: "1 fact" → "1 attribute" (the string an approver reads
+    on their phone)
+  - `pnm persona …` help text and `vta-cli-common` printed output: "Your facts:"
+    → "Your attributes:", "Fact:" → "Attribute:", and the surrounding guidance
+  - `vta-persona` doc comments that define the model in the old word
+
+  Commands, flags, task URIs and wire records are untouched — they always said
+  `attribute`. Nothing in `vtc-service/src/ceremony/` is touched; that `Facts` is
+  the other meaning.
+
+  vta-persona 88 tests and vta-service persona_trust_task 23 tests pass.
+
+
+
+### Fixed
+
+- **persona**: A bad claim-type row is refused, not fatal ([#1331](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1331))
+
+The first version exited on a bad extension file, on the reasoning that serving
+  a table the operator did not write is worse than not serving at all. That is
+  right for a laptop and wrong for a hosted agent: refusing to boot takes out
+  sessions, credentials and mediation over a mis-typed claim type, and in a hosted
+  deployment nobody is reading stderr.
+
+  Rejection is per row now. The good rows apply, the agent starts, and every
+  refusal is reported — an ERROR log line each, and carried on
+  `persona/claim-types/list` under `ext["org.openvtc.claim-types"]` as
+  `rejected: [{type, reason}]`, with `fileError` beside it when the file itself
+  could not be read. `ext` is the specification's vendor-namespaced member, so
+  this needs no spec change and a client that does not know the key ignores it.
+
+  **The direction it fails in is stated rather than assumed.** A refused row is
+  not applied, so its token resolves as if the file had never mentioned it. For a
+  word core has never heard of that is the most protective answer. For a row that
+  meant to *tighten* a core type it is not — the looser answer stays in force,
+  which is the case the old behaviour existed to prevent. Nothing makes that safe
+  except somebody seeing it, which is why the reasons travel to a screen instead
+  of stopping at a log line, and why a test pins the resolution rather than only
+  the refusal.
+
+  A duplicated token disqualifies **every** row naming it rather than letting the
+  first win: applying one of two conflicting declarations is a guess at what the
+  operator meant, and an invisible one.
+
+  102 vta-persona tests pass (3 new), `cargo fmt --check` and `cargo clippy
+  --all-features` clean.
+
+
+
 ## [0.2.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.1.0...vta-persona-v0.2.0) — 2026-09-07
 
 

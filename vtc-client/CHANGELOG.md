@@ -2,6 +2,51 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.5.5](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.5.4...vtc-client-v0.5.5) — 2026-09-08
+
+
+### Added
+
+- **rooms**: Serve the epoch key chain, so a joining member can read the room ([#1314](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1314))
+
+* feat(rooms): serve the epoch key chain, so a joining member can read the room
+
+  Completes the mechanism #1300 built and #1305 made conformant. Wires the two
+  Trust Tasks published in dtgwg-trust-tasks-tf#387.
+
+  `rooms/epoch/mint` now carries the rung the advance produced. Minting is the
+  only moment one party holds both the outgoing and incoming epoch keys, so it is
+  the only call that can carry it — and a room that advances without one keeps
+  working while silently losing the ability to read everything written before.
+
+  `rooms/epoch/chain` serves the accumulated rungs, gated on `read`: reading the
+  room and reading the parts written earlier are the same act. What leaves is
+  ciphertext, since the key that opens a rung is a storage key no host holds — a
+  caller with the whole chain and no epoch key learns only how many epochs the
+  room has had, which its epoch number told them. That property is what lets a
+  *host* answer this at all, rather than requiring the owner to be online whenever
+  somebody joins.
+
+  Both hosts implement both. Two MUSTs from the spec are enforced: a rung whose
+  epoch does not match the advance is refused outright, and a rung already held
+  for an epoch is never replaced — a second one is either a replay or a
+  re-pointing of the room's history at key material of somebody else's choosing.
+
+  The keyspace is BACKED_UP, and not optionally: a restore that brings back a
+  room's records without its chain hands the members a room they can see the shape
+  of and cannot read.
+
+  ## What this does not finish
+
+  A joined member's *agent* still cannot read history. `rooms/keys/open` resolves
+  from the chain the member's VTA accrued by applying commits, and a joiner's is
+  empty; no task delivers rungs into a VTA. The mechanism, the storage and the
+  wire all exist — what is missing is the leg from a member's client into their
+  own VTA, which needs another spec round. Recorded in the design note §12.2 and
+  the operator guide rather than left implied by a passing demo.
+
+
+
 ## [0.5.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.5.3...vtc-client-v0.5.4) — 2026-09-07
 
 
