@@ -33,7 +33,7 @@
 use serde_json::{Value, json};
 use trust_tasks_rs::validate::ValidatedPayload;
 use vti_rooms::wire::*;
-use vti_rooms::{Record, RecordStatus, Visibility};
+use vti_rooms::{Record, RecordStatus, Visibility, merkle};
 
 /// Validate `value` against the schema published for `T`.
 fn check<T: ValidatedPayload>(what: &str, value: &Value) {
@@ -357,6 +357,295 @@ fn responses_conform() {
     );
 
     check::<ListResponse>("ListRecordsResponse", &json!({ "records": records }));
+}
+
+/// The single-record read, on every tier and on a tombstone.
+///
+/// This is the test that was missing, and its absence is why the read shipped
+/// non-conforming: the rule in `wire`'s header — every wire type appears here —
+/// could not reach a response that was never a type. Both hosts serialised
+/// `Record` itself, which puts a bare `sealed` string where the schema types an
+/// object and adds six members `additionalProperties: false` forbids.
+///
+/// It builds through `GetRecordResponse::of` rather than a literal for the same
+/// reason the listing runs `Record::metadata()`: the conversion is the thing
+/// that has to conform, and a literal written beside it would only ever agree
+/// with itself.
+#[test]
+fn get_record_response_conforms() {
+    use trust_tasks_rs::specs::rooms::records::get::v0_1::Response as GetResponse;
+
+    // A sealed record, as `attributed` and `private` store one, answered with
+    // both verification members.
+    let sealed = Record {
+        key: "giXFLTGBdnnQJRoIsktuIg".into(),
+        version: 3,
+        epoch: Some(2),
+        status: RecordStatus::Active,
+        pinned: true,
+        sealed: Some("c2VhbGVkLWJvZHk".into()),
+        nonce: Some("bm9uY2UtMTI".into()),
+        cleartext: None,
+        author: None,
+        updated_at: 1_756_000_000,
+    };
+    let mut records = vec![
+        sealed.clone(),
+        Record {
+            key: "aaa".into(),
+            ..sealed.clone()
+        },
+    ];
+    let root = merkle::commit_records(&mut records).expect("commits");
+    let leaves: Vec<merkle::Hash> = records
+        .iter()
+        .map(|r| merkle::leaf_hash(&r.committed()).expect("hashes"))
+        .collect();
+    let index = records
+        .iter()
+        .position(|r| r.key == sealed.key)
+        .expect("the record is in its own room");
+    let trace = merkle::inclusion_proof(&leaves, index).expect("a trace for a record that exists");
+
+    let response = GetRecordResponse::of(
+        &sealed,
+        Some(merkle::to_multibase(&root)),
+        Some(trace.clone()),
+    );
+    let value = serde_json::to_value(&response).expect("serialise");
+    assert_eq!(
+        value["sealed"]["ciphertext"], "c2VhbGVkLWJvZHk",
+        "the wire carries one SealedRecord object, not three flat members: {value}"
+    );
+    assert_eq!(
+        value["sealed"]["epoch"], 2,
+        "the epoch travels inside the sealed body, where the AEAD binds it: {value}"
+    );
+    assert_eq!(
+        value["updatedAt"], "2025-08-24T01:46:40Z",
+        "the committed form renders RFC 3339, not the unix seconds it stores: {value}"
+    );
+    assert_eq!(value["pinned"], true, "pinned is committed: {value}");
+    assert!(
+        value["trace"][0]["sibling"]
+            .as_str()
+            .expect("a sibling is a string")
+            .starts_with('z'),
+        "a sibling is a DigestMultibase, spelled as the root beside it is: {value}"
+    );
+    check::<GetResponse>("GetRecordResponse (sealed, with a trace)", &value);
+
+    // An open record: a cleartext body, no epoch, and no commitment because
+    // this host does not maintain a tree.
+    let open = Record {
+        key: "decision/pricing-2026".into(),
+        version: 1,
+        epoch: None,
+        status: RecordStatus::Active,
+        pinned: false,
+        sealed: None,
+        nonce: None,
+        cleartext: Some(json!({ "body": "Agreed not to reprice before the renewal closes." })),
+        author: Some("did:key:z6MkAlice".into()),
+        updated_at: 1_756_000_100,
+    };
+    let value = serde_json::to_value(GetRecordResponse::of(&open, None, None)).expect("serialise");
+    assert!(
+        value.get("dataCommitment").is_none()
+            && value.get("sealed").is_none()
+            && value.get("pinned").is_none(),
+        "an absent optional must be absent, and `pinned: false` is spelled by absence: {value}"
+    );
+    check::<GetResponse>("GetRecordResponse (open)", &value);
+
+    // A tombstone: no body at all, and it still has to conform.
+    let tombstone = Record {
+        key: "giXFLTGBdnnQJRoIsktuIg".into(),
+        version: 5,
+        epoch: Some(2),
+        status: RecordStatus::Retracted,
+        pinned: false,
+        sealed: None,
+        nonce: None,
+        cleartext: None,
+        author: None,
+        updated_at: 1_756_000_200,
+    };
+    let value =
+        serde_json::to_value(GetRecordResponse::of(&tombstone, None, None)).expect("serialise");
+    check::<GetResponse>("GetRecordResponse (tombstone)", &value);
+}
+
+/// A reader reassembles the leaf preimage by DELETING three members, and the
+/// trace it was handed reaches the root it was handed.
+///
+/// This is the whole property, run the way a consumer runs it: from the bytes
+/// of a response, with no access to the host's tree. Every earlier test in this
+/// family checks a host against itself.
+#[test]
+fn a_reader_verifies_a_trace_from_the_response_alone() {
+    let room: Vec<Record> = ["a", "b", "c", "d", "e"]
+        .iter()
+        .enumerate()
+        .map(|(i, key)| Record {
+            key: (*key).into(),
+            version: i as u64 + 1,
+            epoch: Some(2),
+            status: RecordStatus::Active,
+            pinned: false,
+            sealed: Some("c2VhbGVkLWJvZHk".into()),
+            nonce: Some("bm9uY2UtMTI".into()),
+            cleartext: None,
+            author: None,
+            updated_at: 1_756_000_000,
+        })
+        .collect();
+
+    let mut ordered = room.clone();
+    let root = merkle::commit_records(&mut ordered).expect("commits");
+    let leaves: Vec<merkle::Hash> = ordered
+        .iter()
+        .map(|r| merkle::leaf_hash(&r.committed()).expect("hashes"))
+        .collect();
+
+    for (index, record) in ordered.iter().enumerate() {
+        let response = GetRecordResponse::of(
+            record,
+            Some(merkle::to_multibase(&root)),
+            Some(merkle::inclusion_proof(&leaves, index).expect("a trace")),
+        );
+        // Everything past this line is what a *reader* does: it has bytes.
+        let bytes = serde_json::to_value(&response).expect("serialise");
+        let mut preimage = bytes.as_object().expect("an object").clone();
+        for member in ["dataCommitment", "trace", "ext"] {
+            preimage.remove(member);
+        }
+        let committed: vti_rooms::wire::CommittedRecord =
+            serde_json::from_value(Value::Object(preimage)).expect("the preimage is a record");
+
+        let leaf = merkle::leaf_hash(&committed).expect("hashes");
+        let served_root =
+            merkle::from_multibase(bytes["dataCommitment"].as_str().expect("a commitment"))
+                .expect("the root decodes");
+        let served_trace: merkle::InclusionProof =
+            serde_json::from_value(bytes["trace"].clone()).expect("the trace decodes");
+
+        assert!(
+            merkle::verify_inclusion(&served_root, &leaf, &served_trace),
+            "record `{}` does not verify against the root served beside it",
+            record.key
+        );
+    }
+}
+
+/// The two conversions are inverses, which is what lets a mirror stop treating
+/// the wire as its storage format.
+#[test]
+fn a_record_round_trips_through_its_committed_form() {
+    let sealed = Record {
+        key: "giXFLTGBdnnQJRoIsktuIg".into(),
+        version: 7,
+        epoch: Some(4),
+        status: RecordStatus::Deprecated,
+        pinned: true,
+        sealed: Some("c2VhbGVkLWJvZHk".into()),
+        nonce: Some("bm9uY2UtMTI".into()),
+        cleartext: None,
+        author: Some("did:key:z6MkAlice".into()),
+        updated_at: 1_756_000_000,
+    };
+    let back = Record::from_wire(&sealed.committed()).expect("reads back");
+    assert_eq!(
+        serde_json::to_value(&back).expect("serialise"),
+        serde_json::to_value(&sealed).expect("serialise"),
+        "a sealed record must survive the wire form unchanged"
+    );
+
+    // The one documented loss: a tombstone's epoch has nowhere to live on the
+    // wire, because the epoch travels inside `sealed` and a tombstone has none.
+    let tombstone = Record {
+        status: RecordStatus::Retracted,
+        sealed: None,
+        nonce: None,
+        ..sealed.clone()
+    };
+    let back = Record::from_wire(&tombstone.committed()).expect("reads back");
+    assert_eq!(
+        back.epoch, None,
+        "a tombstone's epoch is not carried, and that is stated rather than discovered"
+    );
+    assert_eq!(back.status, RecordStatus::Retracted);
+    assert_eq!(back.version, tombstone.version);
+}
+
+/// A trace without the root it reaches is refused by the schema, which is what
+/// makes the test above mean something.
+///
+/// `GetRecordResponse::of` cannot produce this state — it takes both or
+/// neither — so this is deliberately a hand-built document. What it pins is not
+/// our code but the *validator*: `dependentRequired` is the only thing standing
+/// between a host serving a path to a root it withheld and a reader with no way
+/// to say so, and a constraint no test exercises is one that can be dropped from
+/// a schema without anything going red.
+#[test]
+fn a_trace_without_a_commitment_is_refused() {
+    use trust_tasks_rs::specs::rooms::records::get::v0_1::Response as GetResponse;
+
+    let orphan = json!({
+        "key": "giXFLTGBdnnQJRoIsktuIg",
+        "version": 3,
+        "status": "active",
+        "updatedAt": "2025-08-24T01:46:40Z",
+        "trace": [{
+            "sibling": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+            "siblingIsLeft": true
+        }]
+    });
+    assert!(
+        GetResponse::validate_value(&orphan).is_err(),
+        "a trace served without its dataCommitment must not validate"
+    );
+
+    // And the same document with the root put back does validate — otherwise
+    // the assertion above would pass for any reason at all.
+    let mut whole = orphan.as_object().expect("an object").clone();
+    whole.insert(
+        "dataCommitment".into(),
+        json!("zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR"),
+    );
+    check::<GetResponse>(
+        "GetRecordResponse (trace with its commitment)",
+        &Value::Object(whole),
+    );
+}
+
+/// A ciphertext with no nonce is a corrupt store, and loses its body rather
+/// than gaining a fabricated half of one.
+///
+/// `rooms/records/put` writes the three parts together or writes nothing, so
+/// this is unreachable by construction. It is pinned anyway because the
+/// alternative — defaulting the epoch to zero to make the object well-formed —
+/// hands a reader a body whose AEAD open fails for a reason that points at the
+/// wrong thing, and that is the kind of convenience someone adds later while
+/// tidying a `match`.
+#[test]
+fn a_half_sealed_record_loses_its_body() {
+    let half = Record {
+        key: "giXFLTGBdnnQJRoIsktuIg".into(),
+        version: 3,
+        epoch: None,
+        status: RecordStatus::Active,
+        pinned: false,
+        sealed: Some("c2VhbGVkLWJvZHk".into()),
+        nonce: Some("bm9uY2UtMTI".into()),
+        cleartext: None,
+        author: None,
+        updated_at: 1_756_000_000,
+    };
+    assert!(
+        half.committed().sealed.is_none(),
+        "a sealed body with no epoch must not be assembled with a substitute one"
+    );
 }
 
 /// Curate shipped without an entry here — the same omission as its missing dispatch-census

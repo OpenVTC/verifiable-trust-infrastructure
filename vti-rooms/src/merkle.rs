@@ -20,7 +20,7 @@
 //! unsorted leaves can prove everything it contains and nothing about what it
 //! omits — which is the property being bought.
 //!
-//! # A leaf commits to the whole record
+//! # A leaf commits to the whole record, in its WIRE form
 //!
 //! Not to the body, and not to a chosen subset. A host that could flip `status`
 //! from active to retracted, or move `pinned`, or rewrite `author` on an
@@ -28,6 +28,17 @@
 //! touching a byte of ciphertext. Picking fields invites picking wrongly, so the
 //! leaf commits to the record's canonical JSON (RFC 8785) — every member,
 //! present or absent, in an order no refactor can change.
+//!
+//! **The record it hashes is [`CommittedRecord`], not [`Record`].** This is the
+//! difference between a commitment two implementations can compare and one only
+//! another copy of this crate can reproduce, and it is not a detail: `updatedAt`
+//! is unix seconds in storage and RFC 3339 on the wire, `epoch` and `nonce` are
+//! flat in storage and inside `sealed` on the wire, and `epoch` serialises as
+//! `null` on an open room where the wire has it absent. An earlier version of
+//! this module hashed the storage record, so every root it produced was
+//! unreachable by any reader — survivable while the only use was comparing two
+//! roots from the same build, and not survivable once a trace has to be
+//! *computable by someone else*.
 //!
 //! **The plaintext is never involved.** On the sealed tiers the host holds
 //! ciphertext and could not commit to a body if it wanted to; the leaf commits
@@ -44,6 +55,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::Record;
+use crate::wire::CommittedRecord;
 
 /// Prefix for a leaf hash (RFC 6962 §2.1).
 const LEAF_PREFIX: u8 = 0x00;
@@ -71,9 +83,16 @@ pub enum MerkleError {
 /// Hash one record into a leaf.
 ///
 /// Canonical JSON per RFC 8785, so the leaf commits to what the record *means*
-/// rather than to one serialiser's field order. A field added to [`Record`]
-/// later is committed automatically, which is the point of not enumerating.
-pub fn leaf_hash(record: &Record) -> Result<Hash, MerkleError> {
+/// rather than to one serialiser's field order. A member added to
+/// [`CommittedRecord`] later is committed automatically, which is the point of
+/// not enumerating.
+///
+/// It takes the **committed** form rather than the stored one because that is
+/// what a reader has: a consumer verifying a trace holds a
+/// `rooms/records/get` response, strips `dataCommitment`, `trace` and `ext`,
+/// and hashes what is left. Anything this function could not be handed by a
+/// reader is a root the reader cannot check.
+pub fn leaf_hash(record: &CommittedRecord) -> Result<Hash, MerkleError> {
     let canonical =
         serde_json_canonicalizer::to_vec(record).map_err(|source| MerkleError::Canonicalise {
             key: record.key.clone(),
@@ -145,7 +164,7 @@ pub fn commit_records(records: &mut [Record]) -> Result<Hash, MerkleError> {
     records.sort_by(|a, b| a.key.cmp(&b.key));
     let leaves = records
         .iter()
-        .map(leaf_hash)
+        .map(|r| leaf_hash(&r.committed()))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(root_of(&leaves))
 }
@@ -154,8 +173,13 @@ pub fn commit_records(records: &mut [Record]) -> Result<Hash, MerkleError> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProofStep {
-    /// The sibling hash, hex-encoded on the wire.
-    #[serde(with = "hex_hash")]
+    /// The sibling hash, a `DigestMultibase` on the wire.
+    ///
+    /// The same encoding `dataCommitment` uses, and for the same reason: a bare
+    /// hex string hard-codes SHA-256 into the wire contract, where a multihash
+    /// names the algorithm in-band. A trace and the root it reaches would
+    /// otherwise be spelled two ways in one document.
+    #[serde(with = "multibase_hash")]
     pub sibling: Hash,
     /// Whether the sibling is the **left** child; the proven node is the other.
     pub sibling_is_left: bool,
@@ -222,34 +246,19 @@ pub fn verify_inclusion(root: &Hash, leaf: &Hash, proof: &InclusionProof) -> boo
     &current == root
 }
 
-/// Hex for the wire, because a commitment travels in JSON and bytes do not.
-mod hex_hash {
-    use super::Hash;
+/// `DigestMultibase` for the wire, because a digest travels in JSON and bytes
+/// do not — and because the root beside it is spelled the same way.
+mod multibase_hash {
+    use super::{Hash, from_multibase, to_multibase};
     use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
 
     pub fn serialize<S: Serializer>(value: &Hash, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&hex(value))
+        s.serialize_str(&to_multibase(value))
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Hash, D::Error> {
         let text = String::deserialize(d)?;
-        let bytes = unhex(&text).ok_or_else(|| D::Error::custom("not a 32-byte hex digest"))?;
-        Ok(bytes)
-    }
-
-    fn hex(bytes: &Hash) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
-    fn unhex(text: &str) -> Option<Hash> {
-        if text.len() != 64 {
-            return None;
-        }
-        let mut out = [0u8; 32];
-        for (i, byte) in out.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(text.get(i * 2..i * 2 + 2)?, 16).ok()?;
-        }
-        Some(out)
+        from_multibase(&text).map_err(D::Error::custom)
     }
 }
 
@@ -393,10 +402,10 @@ mod tests {
                 },
             ),
         ];
-        let original = leaf_hash(&base).expect("hashes");
+        let original = leaf_hash(&base.committed()).expect("hashes");
         for (what, altered) in &mut cases {
             assert_ne!(
-                leaf_hash(altered).expect("hashes"),
+                leaf_hash(&altered.committed()).expect("hashes"),
                 original,
                 "a host could change `{what}` without moving the leaf"
             );
@@ -419,8 +428,8 @@ mod tests {
     /// node's preimage can be offered as a leaf.
     #[test]
     fn a_leaf_and_a_node_over_the_same_bytes_differ() {
-        let a = leaf_hash(&record("a", 1)).expect("hashes");
-        let b = leaf_hash(&record("b", 2)).expect("hashes");
+        let a = leaf_hash(&record("a", 1).committed()).expect("hashes");
+        let b = leaf_hash(&record("b", 2).committed()).expect("hashes");
         let parent = node_hash(&a, &b);
 
         let mut undomained = Sha256::new();
@@ -439,7 +448,7 @@ mod tests {
             let root = commit_records(&mut records).expect("commits");
             let leaves: Vec<Hash> = records
                 .iter()
-                .map(|r| leaf_hash(r).expect("hashes"))
+                .map(|r| leaf_hash(&r.committed()).expect("hashes"))
                 .collect();
 
             for (i, leaf) in leaves.iter().enumerate() {
@@ -462,11 +471,11 @@ mod tests {
         let root = commit_records(&mut records).expect("commits");
         let leaves: Vec<Hash> = records
             .iter()
-            .map(|r| leaf_hash(r).expect("hashes"))
+            .map(|r| leaf_hash(&r.committed()).expect("hashes"))
             .collect();
         let proof = inclusion_proof(&leaves, 0).expect("proof");
 
-        let outsider = leaf_hash(&record("zzz", 99)).expect("hashes");
+        let outsider = leaf_hash(&record("zzz", 99).committed()).expect("hashes");
         assert!(
             !verify_inclusion(&root, &outsider, &proof),
             "a record the room does not hold proved against its root"
@@ -484,7 +493,7 @@ mod tests {
         let root = commit_records(&mut records).expect("commits");
         let leaves: Vec<Hash> = records
             .iter()
-            .map(|r| leaf_hash(r).expect("hashes"))
+            .map(|r| leaf_hash(&r.committed()).expect("hashes"))
             .collect();
         let mut proof = inclusion_proof(&leaves, 1).expect("proof");
 
@@ -501,7 +510,7 @@ mod tests {
 
     #[test]
     fn an_index_outside_the_tree_has_no_proof() {
-        let leaves = [leaf_hash(&record("a", 1)).expect("hashes")];
+        let leaves = [leaf_hash(&record("a", 1).committed()).expect("hashes")];
         assert!(inclusion_proof(&leaves, 1).is_none());
         assert!(inclusion_proof(&[], 0).is_none());
     }
@@ -552,7 +561,7 @@ mod tests {
     fn a_step_round_trips_through_json() {
         let leaves: Vec<Hash> = ["a", "b", "c"]
             .iter()
-            .map(|k| leaf_hash(&record(k, 1)).expect("hashes"))
+            .map(|k| leaf_hash(&record(k, 1).committed()).expect("hashes"))
             .collect();
         let proof = inclusion_proof(&leaves, 0).expect("proof");
         let json = serde_json::to_string(&proof).expect("serialises");

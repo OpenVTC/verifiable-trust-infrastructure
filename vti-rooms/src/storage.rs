@@ -514,6 +514,47 @@ pub async fn data_commitment(
         .map_err(|e| AppError::Internal(format!("commit the records of `{room_id}`: {e}")))
 }
 
+/// The room's data commitment **and** the trace for one record, from one scan.
+///
+/// # Why they are computed together and not separately
+///
+/// A trace is a statement about the tree it was cut from, and a room moves. Two
+/// calls — one for the root, one for the path — can straddle a write, and the
+/// pair a host then serves is *individually* correct and *jointly* false: the
+/// trace does not reach the root, the reader concludes the host is equivocating,
+/// and the host has done nothing wrong. That is the worst available failure,
+/// because it discredits the mechanism rather than the host.
+///
+/// The specification requires the same snapshot for both. One function is how
+/// that requirement is held rather than remembered.
+///
+/// `None` for the trace means the key is not in the room, which a caller that
+/// has just read the record can only see as a race with a retraction — the root
+/// is still honest and is still returned, so the read answers with a
+/// commitment and no path rather than failing.
+pub async fn data_commitment_with_trace(
+    records: &KeyspaceHandle,
+    room_id: &str,
+    key: &str,
+) -> Result<(crate::merkle::Hash, Option<crate::merkle::InclusionProof>), AppError> {
+    let mut all = list_records(records, room_id, None, None).await?;
+    // Ordering is the commitment's, so the index has to come from the sorted
+    // set — `commit_records` sorts in place, which is why this reads the
+    // position afterwards rather than before.
+    all.sort_by(|a, b| a.key.cmp(&b.key));
+    let leaves = all
+        .iter()
+        .map(|r| crate::merkle::leaf_hash(&r.committed()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| AppError::Internal(format!("commit the records of `{room_id}`: {e}")))?;
+    let root = crate::merkle::root_of(&leaves);
+    let trace = all
+        .iter()
+        .position(|r| r.key == key)
+        .and_then(|index| crate::merkle::inclusion_proof(&leaves, index));
+    Ok((root, trace))
+}
+
 /// What one curation changes.
 ///
 /// A struct rather than three parameters because they are one *decision* — a curator

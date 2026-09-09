@@ -33,8 +33,9 @@ use vti_rooms::authz::{self, Action};
 use vti_rooms::storage;
 use vti_rooms::wire::{
     ChainBody, ChainResponse, ClaimOwnerBody, CreateRoomBody, CreateRoomResponse, CurateRecordBody,
-    CurateRecordResponse, GetRecordBody, ListRecordsBody, ListRecordsResponse, MintEpochBody,
-    MintEpochResponse, OwnerResponse, PutRecordBody, PutRecordResponse, TransferOwnerBody,
+    CurateRecordResponse, GetRecordBody, GetRecordResponse, ListRecordsBody, ListRecordsResponse,
+    MintEpochBody, MintEpochResponse, OwnerResponse, PutRecordBody, PutRecordResponse,
+    TransferOwnerBody,
 };
 use vti_rooms::{Record, RecordStatus, Room};
 use vti_rooms_dtg::{DataIntegrityKeys, DtgChainVerifier, nomination};
@@ -393,28 +394,11 @@ pub(crate) async fn handle_get_record(state: &AppState, doc: TrustTask<Value>) -
                 Some(&req.key),
             )
             .await;
-            // Serialised then extended rather than wrapped in a new type: the
-            // shape this has always returned is what consumers parse, and the
-            // commitment is one more member on it.
-            let mut payload = match serde_json::to_value(&record) {
-                Ok(v) => v,
-                Err(e) => {
-                    return app_error_to_reject(
-                        &doc,
-                        &vti_common::error::AppError::Internal(format!(
-                            "serialise record `{}`: {e}",
-                            req.key
-                        )),
-                    );
-                }
-            };
-            if let (Some(obj), Some(root)) = (
-                payload.as_object_mut(),
-                room_commitment(state, &req.room_id).await,
-            ) {
-                obj.insert("dataCommitment".into(), Value::String(root));
-            }
-            success_response(&doc, payload)
+            // The response is a type, not the stored record with a member bolted
+            // on. Serialising `Record` was what put a bare `sealed` string and
+            // six undeclared members on the wire — see `GetRecordResponse`.
+            let (commitment, trace) = record_verification(state, &req.room_id, &req.key).await;
+            success_response(&doc, GetRecordResponse::of(&record, commitment, trace))
         }
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -478,6 +462,35 @@ pub(crate) async fn handle_list_records(
             data_commitment: room_commitment(state, &req.room_id).await,
         },
     )
+}
+
+/// The room's commitment and this record's trace, from one snapshot.
+///
+/// Both or neither. A trace with no commitment is a path to a root the reader
+/// was not given — the specification forbids it with `dependentRequired`, and
+/// serving one would be a host offering evidence it withheld the subject of.
+///
+/// A failure is answered with neither rather than with an error: these are
+/// additional guarantees the specification makes OPTIONAL precisely so a host
+/// that cannot assert one says nothing instead of something false. A member who
+/// asked for a record and got an error because the *tree* was unhappy has lost
+/// a working operation to an advisory one.
+async fn record_verification(
+    state: &AppState,
+    room_id: &str,
+    key: &str,
+) -> (Option<String>, Option<vti_rooms::merkle::InclusionProof>) {
+    match storage::data_commitment_with_trace(&state.room_records_ks, room_id, key).await {
+        Ok((root, trace)) => (Some(vti_rooms::merkle::to_multibase(&root)), trace),
+        Err(e) => {
+            tracing::error!(
+                room = %room_id,
+                error = %e,
+                "could not commit the room; answering the read without a commitment or a trace"
+            );
+            (None, None)
+        }
+    }
 }
 
 /// The room's data commitment, or `None` if it could not be computed.

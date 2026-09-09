@@ -63,9 +63,9 @@ use vti_common::store::{KeyspaceHandle, Store};
 use vti_rooms::audit::{self as rooms_audit, RoomOperation};
 use vti_rooms::wire::{
     ChainBody, ChainResponse, ClaimOwnerBody, CreateRoomBody, CreateRoomResponse, CurateRecordBody,
-    CurateRecordResponse, GetRecordBody, ListRecordsBody, ListRecordsResponse, MintEpochBody,
-    MintEpochResponse, OwnerResponse, PutRecordBody, PutRecordResponse, ROOMS_CREATE_TYPE,
-    ROOMS_EPOCH_CHAIN_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_OWNER_CLAIM_TYPE,
+    CurateRecordResponse, GetRecordBody, GetRecordResponse, ListRecordsBody, ListRecordsResponse,
+    MintEpochBody, MintEpochResponse, OwnerResponse, PutRecordBody, PutRecordResponse,
+    ROOMS_CREATE_TYPE, ROOMS_EPOCH_CHAIN_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_OWNER_CLAIM_TYPE,
     ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_TYPE,
     ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, TransferOwnerBody,
 };
@@ -479,7 +479,10 @@ async fn get(
     match storage::get_record(&state.records, &req.room_id, &req.key).await {
         Ok(record) => {
             audit_room(&room, &authorized, RoomOperation::GetRecord, Some(&req.key));
-            respond(doc, record)
+            // Answered through the response type for the same reason the VTC is:
+            // `respond(doc, record)` put the *storage* record on the wire.
+            let (commitment, trace) = record_verification(state, &req.room_id, &req.key).await;
+            respond(doc, GetRecordResponse::of(&record, commitment, trace))
         }
         Err(e) => from_app_error(doc, &e),
     }
@@ -543,26 +546,68 @@ async fn list(
                     // The reference host commits too. A host that served
                     // listings without one would be a working example of the
                     // thing the commitment exists to make detectable.
-                    data_commitment: match storage::data_commitment(&state.records, &req.room_id)
-                        .await
-                    {
-                        Ok(root) => Some(vti_rooms::merkle::to_multibase(&root)),
-                        Err(e) => {
-                            // Advisory, so it must not fail the read — a member
-                            // who asked for records and got an error because the
-                            // tree was unhappy has lost a working operation.
-                            tracing::error!(
-                                room = %req.room_id,
-                                error = %e,
-                                "could not compute the data commitment; answering without one"
-                            );
-                            None
-                        }
-                    },
+                    data_commitment: room_commitment(state, &req.room_id).await,
                 },
             )
         }
         Err(e) => from_app_error(doc, &e),
+    }
+}
+
+/// The room's commitment and this record's trace, from one snapshot.
+///
+/// Both or neither. A trace with no commitment is a path to a root the reader
+/// was not given — the specification forbids it with `dependentRequired`, and
+/// serving one would be a host offering evidence it withheld the subject of.
+///
+/// A failure is answered with neither rather than with an error: these are
+/// additional guarantees the specification makes OPTIONAL precisely so a host
+/// that cannot assert one says nothing instead of something false. A member who
+/// asked for a record and got an error because the *tree* was unhappy has lost
+/// a working operation to an advisory one.
+async fn record_verification(
+    state: &HostState,
+    room_id: &str,
+    key: &str,
+) -> (Option<String>, Option<vti_rooms::merkle::InclusionProof>) {
+    match storage::data_commitment_with_trace(&state.records, room_id, key).await {
+        Ok((root, trace)) => (Some(vti_rooms::merkle::to_multibase(&root)), trace),
+        Err(e) => {
+            tracing::error!(
+                room = %room_id,
+                error = %e,
+                "could not commit the room; answering the read without a commitment or a trace"
+            );
+            (None, None)
+        }
+    }
+}
+
+/// The room's data commitment, or `None` if it could not be computed.
+///
+/// **A failure here must not fail the read.** The commitment is an additional
+/// guarantee and the specification makes it OPTIONAL precisely so a host that
+/// cannot assert one says nothing rather than something false — a member who
+/// asked for records and got an error because the *tree* was unhappy has lost a
+/// working operation to an advisory one.
+///
+/// Logged rather than swallowed: a host that has quietly stopped committing
+/// looks, to a member, exactly like one that never did.
+///
+/// One function for both reads, mirroring the VTC's, because a listing and a
+/// read that disagreed about the room's root would be this host equivocating
+/// with itself.
+async fn room_commitment(state: &HostState, room_id: &str) -> Option<String> {
+    match storage::data_commitment(&state.records, room_id).await {
+        Ok(root) => Some(vti_rooms::merkle::to_multibase(&root)),
+        Err(e) => {
+            tracing::error!(
+                room = %room_id,
+                error = %e,
+                "could not compute the room's data commitment; answering without one"
+            );
+            None
+        }
     }
 }
 
