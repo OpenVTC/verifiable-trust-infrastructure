@@ -964,6 +964,36 @@ check if the functionality already exists. Prefer existing SDKs over custom
 implementations. Before writing any fix, analyze the root cause and explain
 the diagnosis. Fix the cause, not the symptom — no workarounds.
 
+## Running the tests: two ways to be green and wrong
+
+Both of these cost a day in September 2026 — #1341 merged green and broke main
+in 68 places, and the fix went three rounds because each round only revealed
+the next failure.
+
+**A per-crate run compiles a fraction of the tests.** `cargo test -p vta-sdk`
+runs **306**; the workspace run runs **742**, because feature unification from
+sibling crates compiles code the crate alone does not. Three of `vta-sdk`'s
+integration binaries have **no tests at all** under default features. So "the
+crate's suite is green" can be true and mean almost nothing — and it is the
+natural thing to run while working on one crate.
+
+**`cargo test` stops at the first failing target.** One reported failure was
+hiding sixty-seven. Fix the first and the second appears; fix that and sixty
+more do. Use `--no-fail-fast` before concluding anything about scope, and
+before believing a fix is complete.
+
+**Reproduce what CI runs, not what seems equivalent.** CI's workspace job is
+`cargo test --workspace --exclude vtc-service --exclude vtc-client` — default
+features. Chasing the same failure under `--all-features` finds real but
+unrelated breakage (a stack overflow in `mock_vta`, nine failures elsewhere)
+that CI never sees, and none of it is the thing that is red.
+
+So, before pushing a change that could touch another crate's tests:
+
+```sh
+cargo test --workspace --exclude vtc-service --exclude vtc-client --no-fail-fast
+```
+
 ## Cross-service networking & integration discipline
 
 This workspace is the center of a multi-repo mesh (mediator, webvh host, push
