@@ -603,7 +603,7 @@ mod tests {
             room.clone(),
             vec!["read".into(), "curate".into()],
             now - chrono::Duration::minutes(1),
-            now + chrono::Duration::days(30),
+            Some(now + chrono::Duration::days(30)),
         )
         .expect("mint the room's authority credential")
         .with_id("urn:uuid:vac-1");
@@ -677,7 +677,7 @@ mod tests {
             room.clone(),
             vec!["read".into()],
             now - chrono::Duration::minutes(1),
-            now + chrono::Duration::days(30),
+            Some(now + chrono::Duration::days(30)),
         )
         .unwrap()
         .with_id("urn:uuid:vac-3");
@@ -740,7 +740,7 @@ mod tests {
             room.clone(),
             vec!["read".into()],
             now - chrono::Duration::minutes(1),
-            now + chrono::Duration::days(30),
+            Some(now + chrono::Duration::days(30)),
         )
         .unwrap()
         .with_id("urn:uuid:vac-2");
@@ -824,7 +824,7 @@ mod tests {
             "room".into(),
             vec!["read".into()],
             now,
-            now + chrono::Duration::hours(1),
+            Some(now + chrono::Duration::hours(1)),
         )
         .expect("build an authority credential")
         .with_id("urn:uuid:i-2");

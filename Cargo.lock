@@ -3512,24 +3512,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dtg-credentials"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "249ac520c8e0ebe2616af85ecb9377c9be49541267060c3157f906e4ce214445"
-dependencies = [
- "affinidi-data-integrity",
- "affinidi-secrets-resolver",
- "chrono",
- "multibase",
- "serde",
- "serde_json",
- "serde_json_canonicalizer",
- "sha2 0.11.0",
- "thiserror 2.0.20",
- "tracing",
-]
-
-[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10609,7 +10591,7 @@ dependencies = [
  "dialoguer",
  "didwebvh-rs",
  "dirs",
- "dtg-credentials 0.6.0",
+ "dtg-credentials",
  "ed25519-dalek 3.0.0",
  "fjall",
  "futures-util",
@@ -10851,7 +10833,7 @@ dependencies = [
  "clap",
  "dialoguer",
  "didwebvh-rs",
- "dtg-credentials 0.6.0",
+ "dtg-credentials",
  "ed25519-dalek 3.0.0",
  "fjall",
  "flate2",
@@ -11016,7 +10998,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "chrono",
- "dtg-credentials 0.6.0",
+ "dtg-credentials",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "multibase",
@@ -11037,7 +11019,7 @@ dependencies = [
  "affinidi-secrets-resolver",
  "base64 0.23.1",
  "chrono",
- "dtg-credentials 0.7.0",
+ "dtg-credentials",
  "ed25519-dalek 3.0.0",
  "futures-lite",
  "getrandom 0.4.3",

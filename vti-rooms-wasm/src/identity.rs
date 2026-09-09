@@ -213,7 +213,10 @@ impl MemberIdentity {
                 self.did.clone(),
                 vec![action.to_string()],
                 now,
-                expires,
+                // 0.6 takes an `Option` here; 0.7 made it required. Always `Some`: a
+                // presentation that does not expire is a standing grant, which is the one
+                // thing a presentation exists not to be.
+                Some(expires),
                 // Bound to us: the leaf may be presented by this member and nobody else.
                 Some(self.did.clone()),
             )

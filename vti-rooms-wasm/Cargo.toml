@@ -32,7 +32,17 @@ vti-rooms = { path = "../vti-rooms", version = "0.1", default-features = false, 
 # behind `affinidi-signing`. Dropping the feature to avoid the signing side takes
 # the verifying side with it. `affinidi-secrets-resolver` comes along and builds
 # for wasm regardless, since `affinidi-data-integrity` depends on it anyway.
-dtg-credentials = "0.7"
+# **The workspace's pin, not one of this crate's own.**
+#
+# A browser member and the hosts it talks to must agree about how an authority chain
+# links, and they have already disagreed once: 0.7 changed a link's `parent` from the
+# parent's `id` to a digest of its claims, so a 0.7 `attenuate` against a 0.6
+# `verify_chain` is refused — worded as a broken chain rather than a version skew
+# ("names parent `zQm…`, but was presented after `urn:uuid:…`"). Taking the workspace
+# dependency makes that drift impossible to reintroduce: this crate cannot fall out of
+# step with `vtc-service`, `room-host` or `vti-rooms-dtg` without the workspace moving
+# too. See OpenVTC/dtg-credentials#22.
+dtg-credentials = { workspace = true }
 # The member's own signing key lives here rather than in JavaScript, so the
 # private half never crosses the boundary. Both already arrive through OpenMLS
 # and data-integrity respectively; naming them is honesty about what is used.
