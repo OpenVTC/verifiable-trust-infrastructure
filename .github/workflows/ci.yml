@@ -601,6 +601,12 @@ jobs:
       - uses: actions/checkout@v7
       - name: Lockfile self-pin guard
         run: bash scripts/check-lockfile-self-pins.sh
+      # Same shape of invariant, same reason to check it early: a whole-tree property
+      # whose only other alarm is at the end of a multi-minute image build, worded as a
+      # version-resolution error about a placeholder version that exists nowhere in the
+      # tree. See the script header.
+      - name: Nitro image copies every workspace member
+        run: python3 scripts/check-nitro-copies-every-member.py
 
   authz-context-types:
     # An approver's device chooses which approval card to render by
