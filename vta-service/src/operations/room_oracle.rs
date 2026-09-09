@@ -40,6 +40,13 @@
 //! *request* to its destination is the job of the `recipient` member on the document that
 //! carries the presentation, which its `proof` covers (SPEC.md §4.8.2).
 //!
+//! Both of those are the library's rules now rather than this module's hopes:
+//! dtg-credentials 0.8 requires the presenter to be the leaf's subject, refusing anyone else
+//! with `NotThePresenter`, and removes the `audience` field that used to stand in for it
+//! badly — optional, so a leaf without one was accepted from anybody, and read as the
+//! *destination* by the Trust Tasks registry while the library compared it to the presenter
+//! (`trustoverip/dtgwg-cred-spec#41`, `trustoverip/dtgwg-trust-tasks-tf#414`).
+//!
 //! **The keys.** Nothing in the response carries key material in either direction. An oracle
 //! that returned the principal's VAC itself would be a credential-release call wearing a
 //! different name.
@@ -114,17 +121,16 @@ pub async fn present(
     // that somebody could forget to write.
     let now = Utc::now();
     let expires = now + PRESENTATION_LIFETIME;
+    // There is no audience argument any more. The leaf is bound to its subject —
+    // `agent_did`, the caller this VTA authenticated — and a verifier requires the presenter
+    // to be that subject. A second field naming who may present could only repeat the
+    // subject or contradict it, which is why dtg-credentials 0.8 removed it.
     let mut leaf = root
         .attenuate(
             agent_did.to_string(),
             vec![action.to_string()],
             now,
-            Some(expires),
-            // No audience. The leaf is bound to its subject — `agent_did`, the caller this
-            // VTA authenticated — and a verifier requires the presenter to be that subject.
-            // A second field naming who may present could only repeat the subject or
-            // contradict it, which is why dtg-credentials removed it.
-            None,
+            expires,
         )
         .map_err(|e| {
             // The common case is asking for an action the principal does not hold, and

@@ -177,20 +177,18 @@ impl MemberIdentity {
     /// chain's **root** subject rather than its leaf, so it holds either way; it is
     /// asserted in the tests rather than assumed.
     ///
-    /// # There is no `audience` parameter, and that is deliberate
+    /// # There is no `audience` parameter, and there is no longer a field either
     ///
-    /// `audience` is not "who this is addressed to". `verify_chain` compares it to the
-    /// **presenter** — "the leaf must be presentable by whoever is presenting it" — so it is
-    /// holder binding, and its whole job is to make a captured presentation worthless to
-    /// anyone else. A browser member always presents its own, so the only correct value is
-    /// this member's DID, and offering the choice is offering a way to get it wrong.
+    /// This method took none on the reasoning that `audience` was compared to the
+    /// **presenter**, so a browser member could only ever correctly name itself — and
+    /// offering the choice was offering a way to get it wrong. That reasoning held: filled
+    /// with a *host's* DID, as `vta-cli-common` did, it named a party no presenter can match
+    /// and the host refused every request.
     ///
-    /// Which is not hypothetical. `vta-cli-common`'s `RoomTarget` passes the **host's** DID
-    /// as the audience, so `pnm-cli rooms --host-did …` mints a leaf bound to an audience
-    /// no presenter can ever match: the host refuses it as `WrongAudience` every time, while
-    /// omitting the flag leaves the presentation bearer-shaped for its four-hour life. Its
-    /// doc comment states the intent exactly — "with it, a captured presentation is
-    /// worthless to anyone else" — and names the wrong party to bind to.
+    /// dtg-credentials 0.8 settled it by removing the field outright and requiring the
+    /// presenter to be the leaf's subject instead (`NotThePresenter`). So the binding this
+    /// method relies on is now the library's rule rather than a value it declines to expose:
+    /// the leaf grants to `self.did`, and a verifier accepts it from nobody else.
     ///
     /// The `nonce` is the verifier's, echoed rather than interpreted: its value to them is
     /// that it came back unchanged.
@@ -213,12 +211,9 @@ impl MemberIdentity {
                 self.did.clone(),
                 vec![action.to_string()],
                 now,
-                // 0.6 takes an `Option` here; 0.7 made it required. Always `Some`: a
-                // presentation that does not expire is a standing grant, which is the one
-                // thing a presentation exists not to be.
-                Some(expires),
-                // Bound to us: the leaf may be presented by this member and nobody else.
-                Some(self.did.clone()),
+                // Required since 0.7, and rightly: a presentation that does not expire is a
+                // standing grant, which is the one thing a presentation exists not to be.
+                expires,
             )
             .map_err(|e| {
                 format!("cannot narrow your authority for this room to `{action}`: {e}")

@@ -207,13 +207,32 @@ pub(super) async fn handle_issue_authority(
     // action list rather than reading it as "everything", and the schema refuses it before
     // that — two layers, because "confers nothing" and "confers everything" are exactly the
     // two readings a careless consumer might choose between.
+    // An authority credential must expire, and since dtg-credentials 0.7 the constructor
+    // says so in its type. Nothing about a subject's current standing is consulted when a
+    // chain is verified, so a grant that does not expire is a grant nobody can withdraw by
+    // waiting — the only way back is revocation, which this stack does not yet have.
+    //
+    // Refused rather than defaulted. Picking a lifetime here would put the room's most
+    // consequential number in a place its owner never looks.
+    let Some(valid_until) = req.valid_until else {
+        return app_error_to_reject(
+            &doc,
+            vti_common::error::AppError::Validation(
+                "an authority credential must name `validUntil`: nothing about a subject's \
+                 standing is checked when a chain is verified, so authority that does not \
+                 expire is authority nobody can withdraw"
+                    .into(),
+            ),
+        );
+    };
+
     let vac = match dtg_credentials::DTGCredential::new_vac(
         req.room_id.clone(),
         req.subject.clone(),
         req.room_id.clone(),
         actions,
         chrono::Utc::now(),
-        req.valid_until,
+        valid_until,
     ) {
         Ok(v) => v,
         Err(e) => {
