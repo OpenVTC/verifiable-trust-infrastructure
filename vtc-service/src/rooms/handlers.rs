@@ -393,7 +393,28 @@ pub(crate) async fn handle_get_record(state: &AppState, doc: TrustTask<Value>) -
                 Some(&req.key),
             )
             .await;
-            success_response(&doc, record)
+            // Serialised then extended rather than wrapped in a new type: the
+            // shape this has always returned is what consumers parse, and the
+            // commitment is one more member on it.
+            let mut payload = match serde_json::to_value(&record) {
+                Ok(v) => v,
+                Err(e) => {
+                    return app_error_to_reject(
+                        &doc,
+                        &vti_common::error::AppError::Internal(format!(
+                            "serialise record `{}`: {e}",
+                            req.key
+                        )),
+                    );
+                }
+            };
+            if let (Some(obj), Some(root)) = (
+                payload.as_object_mut(),
+                room_commitment(state, &req.room_id).await,
+            ) {
+                obj.insert("dataCommitment".into(), Value::String(root));
+            }
+            success_response(&doc, payload)
         }
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -454,8 +475,33 @@ pub(crate) async fn handle_list_records(
         &doc,
         ListRecordsResponse {
             records: records.iter().take(limit).map(|r| r.metadata()).collect(),
+            data_commitment: room_commitment(state, &req.room_id).await,
         },
     )
+}
+
+/// The room's data commitment, or `None` if it could not be computed.
+///
+/// **A failure here must not fail the read.** The commitment is an additional
+/// guarantee, and the specification makes it OPTIONAL precisely so a host that
+/// cannot assert one says nothing rather than something false — a member who
+/// asked for records and got an error because the *tree* was unhappy has lost a
+/// working operation to an advisory one.
+///
+/// Logged rather than swallowed silently: a host that has quietly stopped
+/// committing looks, to a member, exactly like a host that never did.
+async fn room_commitment(state: &AppState, room_id: &str) -> Option<String> {
+    match storage::data_commitment(&state.room_records_ks, room_id).await {
+        Ok(root) => Some(vti_rooms::merkle::to_multibase(&root)),
+        Err(e) => {
+            tracing::error!(
+                room = %room_id,
+                error = %e,
+                "could not compute the room's data commitment; answering without one"
+            );
+            None
+        }
+    }
 }
 
 /// `rooms/epoch/mint/0.1`.

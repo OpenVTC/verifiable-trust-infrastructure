@@ -488,6 +488,32 @@ pub async fn list_records(
     Ok(out)
 }
 
+/// The room's data commitment — the root of its record tree.
+///
+/// Over **every** record the room holds, never the page being returned: a
+/// page-scoped root is one a host satisfies by construction and could never
+/// fail, which would let a member feel checked while checking nothing.
+///
+/// # Why this is not cached
+///
+/// It scans and hashes the room on every call, which is real work a cache would
+/// avoid. A cache would also have to be invalidated by every put, curate and
+/// prune, and **a stale root is worse than a slow one**: it is a *wrong*
+/// commitment, and the failure it produces is an honest host appearing to
+/// equivocate — the exact accusation this machinery exists to make credible.
+///
+/// So: correct first, and cache when there is a measurement saying where. The
+/// natural shape is a root kept beside the room row and updated on write, which
+/// is a different change with its own invariant to hold.
+pub async fn data_commitment(
+    records: &KeyspaceHandle,
+    room_id: &str,
+) -> Result<crate::merkle::Hash, AppError> {
+    let mut all = list_records(records, room_id, None, None).await?;
+    crate::merkle::commit_records(&mut all)
+        .map_err(|e| AppError::Internal(format!("commit the records of `{room_id}`: {e}")))
+}
+
 /// What one curation changes.
 ///
 /// A struct rather than three parameters because they are one *decision* — a curator
@@ -700,6 +726,70 @@ mod tests {
         assert!(
             matches!(err, AppError::Conflict(_)),
             "re-registering would reset the epoch and version counter: {err:?}"
+        );
+    }
+
+    /// The property the commitment exists for, at the storage layer: a host that
+    /// serves a listing missing a record commits to a different room than the
+    /// one it holds. Without this the value is decoration.
+    #[tokio::test]
+    async fn a_missing_record_changes_the_rooms_commitment() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        for (i, key) in ["a", "b", "c"].iter().enumerate() {
+            put_record(&rooms, &rec, "r1", open_record(key), None, i as u64 + 1)
+                .await
+                .unwrap();
+        }
+
+        let whole_room = data_commitment(&rec, "r1").await.unwrap();
+
+        // What a host serving two of the three records would be committing to.
+        let mut short = list_records(&rec, "r1", None, None).await.unwrap();
+        short.retain(|r| r.key != "b");
+        let partial = crate::merkle::commit_records(&mut short).unwrap();
+
+        assert_ne!(
+            whole_room, partial,
+            "dropping a record left the commitment unchanged"
+        );
+    }
+
+    /// The commitment covers the room, not a query. A prefix or `sinceVersion`
+    /// narrows what a caller *sees*; a root that narrowed with it would be one
+    /// the host satisfies by construction.
+    #[tokio::test]
+    async fn the_commitment_ignores_the_filters_a_listing_applies() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        for (i, key) in ["alpha", "beta", "gamma"].iter().enumerate() {
+            put_record(&rooms, &rec, "r1", open_record(key), None, i as u64 + 1)
+                .await
+                .unwrap();
+        }
+
+        let root = data_commitment(&rec, "r1").await.unwrap();
+        // A filtered listing returns fewer records; the room is unchanged, so
+        // the commitment must be too.
+        let filtered = list_records(&rec, "r1", Some("a"), None).await.unwrap();
+        assert!(filtered.len() < 3, "the fixture must actually filter");
+        assert_eq!(data_commitment(&rec, "r1").await.unwrap(), root);
+    }
+
+    /// An empty room has an honest commitment rather than no commitment.
+    #[tokio::test]
+    async fn an_empty_room_commits_to_the_empty_root() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        assert_eq!(
+            data_commitment(&rec, "r1").await.unwrap(),
+            crate::merkle::empty_root()
         );
     }
 
