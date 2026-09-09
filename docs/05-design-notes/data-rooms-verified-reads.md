@@ -135,22 +135,34 @@ anchor is witnessed and singular.
 - **It says nothing about deletion a host admits to.** Retention and curation are
   separate questions with their own answers.
 
-### 4.1 The prerequisite: a writer holds no receipt today
+### 4.1 The prerequisite: a writer now holds a receipt
 
-The bullet above only works if a writer can contradict the commitment, and right
-now they cannot. `PutRecordResponse` is `{key, version, epoch?}` — **unsigned**.
-A member who wrote a record and later finds it absent from a witnessed
-commitment has the host's word that the write happened, and the host's word is
-the thing in dispute.
+**Done, and it was not a rooms problem.** This section originally read "a writer
+holds no receipt today", because `PutRecordResponse` is `{key, version, epoch?}`
+and nothing signed it — so a member who wrote a record and later found it absent
+from a witnessed commitment had only the host's word that the write happened,
+and the host's word is the thing in dispute.
 
-So this design has a cheap prerequisite that is worth doing on its own merits:
-**sign the put acknowledgement**. A writer then holds a host-signed statement
-that record `K` reached version `V`, which a commitment omitting `K` directly
-contradicts. Without it, verified reads detect an inconsistency and cannot
-attribute it.
+Chasing that turned up the general form. SPEC §7.3 item 7 makes a single
+`proofRequirement: REQUIRED` bind the *response* as well as the request, **265
+published specifications declare one**, and neither service signed any response
+at all. Nothing had noticed because no consumer verified one either — producers
+not signing and consumers not checking is a mutually consistent silence.
 
-This is the part of the proposal most likely to be worth building first, because
-it is small, it stands alone, and every later layer depends on it.
+Fixed at the dispatch spine in both services (vti #1334, #1335), so a put
+acknowledgement is signed for the same reason every other answer is, rather than
+by a rooms-specific receipt this note would otherwise have had to invent. The
+first consumer to verify — the VTA reading a room host's reply — is vti #1337,
+which also pins the check that is easy to omit: the proof must verify **and** its
+proven signer must be the host that was addressed.
+
+A writer now holds a host-signed statement that record `K` reached version `V`,
+which a commitment omitting `K` directly contradicts. That is what turns an
+inconsistency into an **attributable** one, and it is the property every layer
+above depends on.
+
+What remains unbuilt is the commitment itself — §3 — against which such a
+receipt would be checked. The receipt is evidence with nothing yet to contradict.
 
 ---
 
@@ -161,7 +173,7 @@ it is small, it stands alone, and every later layer depends on it.
 | Ordered Merkle KV over `rec:<roomId>:` | `vti_rooms::storage` | The real work. Tree maintenance on every put and curate. |
 | `dataCommitment` in the anchor | wherever the epoch authenticator lands | One field — but it inherits the anchor, which is itself unbuilt |
 | Traces on `get` / `list` responses | `vti-rooms` wire + both hosts | Additive response members |
-| Signed put acknowledgement | `vti-rooms` wire + both hosts | Small, and independently useful |
+| ~~Signed put acknowledgement~~ | ~~`vti-rooms` wire + both hosts~~ | **Done** — as the general response-proof fix, vti #1334/#1335 |
 | Client verification | `vti-rooms` (shared) + the agent | Hashing; no new dependency |
 
 No zkVM, no new cryptographic assumption, no change to the credential model, and
@@ -188,10 +200,16 @@ nothing that touches how a record is sealed.
 
 ## 7. Recommendation
 
-Take §4.1 now, independently: **sign the put acknowledgement**. It is small, it
-is useful without any of the rest — a writer holding a receipt is better than a
-writer holding nothing — and it is load-bearing for everything above.
+§4.1 is **done** — and it turned out to be the general conformance fix rather
+than the rooms-specific receipt this note first proposed, which is the better
+outcome: every task's answer is attributable now, not just a room write.
 
-Treat the Merkle store as a genuine piece of work to schedule rather than slip
-in, and settle question 2 before starting it, because the answer decides whether
-the tree is maintained per-write or per-renewal.
+What is left is the commitment. Treat the Merkle store as a genuine piece of work
+to schedule rather than slip in, and **settle question 2 before starting it** —
+the answer decides whether the tree is maintained per-write or per-renewal, and
+that is expensive to change afterwards.
+
+Also still owed, and not a rooms question: `vta-sdk`'s `VtaClient` does not
+verify the responses it receives, and it is the surface the CLI, cierge and the
+services all go through. Its verification is what makes the signing above worth
+anything to them.
