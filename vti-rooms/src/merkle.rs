@@ -120,12 +120,12 @@ pub fn root_of(leaves: &[Hash]) -> Hash {
     let mut level: Vec<Hash> = leaves.to_vec();
     while level.len() > 1 {
         let mut next = Vec::with_capacity(level.len().div_ceil(2));
-        let mut pairs = level.chunks_exact(2);
-        for pair in &mut pairs {
-            next.push(node_hash(&pair[0], &pair[1]));
+        let (pairs, remainder) = level.as_chunks::<2>();
+        for [left, right] in pairs {
+            next.push(node_hash(left, right));
         }
         // The promoted odd node — never duplicated, see above.
-        if let [odd] = pairs.remainder() {
+        if let [odd] = remainder {
             next.push(*odd);
         }
         level = next;
@@ -189,11 +189,11 @@ pub fn inclusion_proof(leaves: &[Hash], index: usize) -> Option<InclusionProof> 
         }
 
         let mut next = Vec::with_capacity(level.len().div_ceil(2));
-        let mut pairs = level.chunks_exact(2);
-        for pair in &mut pairs {
-            next.push(node_hash(&pair[0], &pair[1]));
+        let (pairs, remainder) = level.as_chunks::<2>();
+        for [left, right] in pairs {
+            next.push(node_hash(left, right));
         }
-        if let [odd] = pairs.remainder() {
+        if let [odd] = remainder {
             next.push(*odd);
         }
         level = next;
