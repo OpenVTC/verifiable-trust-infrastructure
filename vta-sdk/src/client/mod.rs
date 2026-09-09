@@ -259,6 +259,14 @@ pub struct VtaClient {
     /// identity yet fails at the VTA with a message naming the missing member,
     /// rather than at construction with one that does not.
     pub(super) identity: Option<std::sync::Arc<ClientIdentity>>,
+    /// Resolver for verifying reply proofs, built on first use and shared by
+    /// clones — a `DIDCacheClient` *is* a cache, so one per client is right and
+    /// one per call would defeat it.
+    pub(super) reply_resolver: std::sync::Arc<
+        tokio::sync::OnceCell<Option<affinidi_did_resolver_cache_sdk::DIDCacheClient>>,
+    >,
+    /// Whether an unsigned reply is refused. See [`VtaClient::trusting_unsigned_replies`].
+    pub(super) require_signed_replies: bool,
 }
 
 // ── Protocol response aliases ──────────────────────────────────────
@@ -426,6 +434,10 @@ impl VtaClient {
         Self {
             #[cfg(feature = "test-loopback")]
             loopback: None,
+            reply_resolver: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+            // Refusing an unsigned reply is the default because a reply that
+            // attests to nothing is what this exists to stop being acceptable.
+            require_signed_replies: true,
             identity: None,
             transport: Transport::Rest {
                 client: crate::http::rest_client(),
@@ -472,6 +484,10 @@ impl VtaClient {
         Ok(Self {
             #[cfg(feature = "test-loopback")]
             loopback: None,
+            reply_resolver: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+            // Refusing an unsigned reply is the default because a reply that
+            // attests to nothing is what this exists to stop being acceptable.
+            require_signed_replies: true,
             identity: Some(std::sync::Arc::new(identity)),
             transport: Transport::Rest {
                 client: http,
@@ -573,6 +589,10 @@ impl VtaClient {
         Self {
             #[cfg(feature = "test-loopback")]
             loopback: None,
+            reply_resolver: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+            // Refusing an unsigned reply is the default because a reply that
+            // attests to nothing is what this exists to stop being acceptable.
+            require_signed_replies: true,
             identity: identity.map(std::sync::Arc::new),
             transport: Transport::DIDComm {
                 session,
@@ -843,6 +863,10 @@ impl VtaClient {
         Self {
             #[cfg(feature = "test-loopback")]
             loopback: None,
+            reply_resolver: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+            // Refusing an unsigned reply is the default because a reply that
+            // attests to nothing is what this exists to stop being acceptable.
+            require_signed_replies: true,
             identity: identity.map(std::sync::Arc::new),
             transport: Transport::Tsp {
                 session: std::sync::Arc::new(session),
@@ -1772,7 +1796,7 @@ impl VtaClient {
                     ));
                 }
                 let response_doc: serde_json::Value = resp.json().await?;
-                Self::extract_trust_task_payload(response_doc)
+                self.finish_reply(response_doc).await
             }
             // The whole typed VTA surface over TSP. The VTA's inbound
             // dispatcher hands the unpacked payload straight to
@@ -1797,7 +1821,8 @@ impl VtaClient {
                     )
                     .await
                     .map_err(|e| VtaError::TspTransport(e.to_string()))?;
-                Self::extract_trust_task_payload(Self::decode_trust_task_reply(&reply)?)
+                self.finish_reply(Self::decode_trust_task_reply(&reply)?)
+                    .await
             }
             #[cfg(feature = "session")]
             Transport::DIDComm {
@@ -1832,9 +1857,9 @@ impl VtaClient {
                             .await
                             .map_err(|e| VtaError::TspTransport(e.to_string()))?,
                     };
-                    return Self::extract_trust_task_payload(Self::decode_trust_task_reply(
-                        &reply,
-                    )?);
+                    return self
+                        .finish_reply(Self::decode_trust_task_reply(&reply)?)
+                        .await;
                 }
 
                 const TRUST_TASK_ENVELOPE_TYPE: &str =
@@ -1847,7 +1872,7 @@ impl VtaClient {
                         timeout,
                     )
                     .await?;
-                Self::extract_trust_task_payload(response_doc)
+                self.finish_reply(response_doc).await
             }
         }
     }
@@ -1901,6 +1926,125 @@ impl VtaClient {
     fn decode_trust_task_reply(reply: &str) -> Result<serde_json::Value, VtaError> {
         serde_json::from_str(reply)
             .map_err(|e| VtaError::Protocol(format!("trust-task reply decode: {e}")))
+    }
+
+    /// Accept replies that carry no proof.
+    ///
+    /// **A staging control, not a preference.** 265 published specifications
+    /// require a proof on their response, and an agent that predates
+    /// OpenVTC/verifiable-trust-infrastructure#1334 and #1335 sends none — so a
+    /// client upgraded ahead of the agent it talks to would refuse every answer
+    /// it got. This exists so that ordering can be chosen rather than endured.
+    ///
+    /// It weakens the check to almost nothing while set: an attacker who can
+    /// rewrite a reply can also remove its proof, so this catches accidental
+    /// corruption and a wrong-signer reply and stops nobody. A *present* proof
+    /// is still verified and still bound to the expected agent.
+    ///
+    /// Turn it off again as soon as the agent is upgraded.
+    #[must_use]
+    pub fn trusting_unsigned_replies(mut self) -> Self {
+        self.require_signed_replies = false;
+        self
+    }
+
+    /// Verify the reply, then read it.
+    ///
+    /// # Why a client verifies at all
+    ///
+    /// A reply is bytes off a socket. Nothing else in this path establishes who
+    /// produced them: the transport proves a *connection*, and on REST it does
+    /// not even prove that much beyond TLS to a host name. Without the proof, an
+    /// intermediary can rewrite an ACL listing, flip a policy decision, or
+    /// answer for an agent that never spoke — and every check downstream passes,
+    /// because the checks downstream are about shape.
+    ///
+    /// SPEC §7.3 item 7 makes this the agent's obligation and this client's
+    /// business: a specification declaring a single `proofRequirement: REQUIRED`
+    /// binds its *response* as well as its request, and 265 of them do.
+    ///
+    /// # Two checks, and the second is the one easy to omit
+    ///
+    /// The proof must verify, **and its proven signer must be the agent this
+    /// client is talking to**. A proof by somebody else's key verifies perfectly
+    /// well; that it is not the party you expected is a separate comparison, and
+    /// skipping it turns "signed by somebody" into "signed by the agent".
+    ///
+    /// The expected signer is `ClientIdentity::vta_did`. A client with no
+    /// identity cannot produce conforming documents in the first place — it is
+    /// refused at the agent for a missing `recipient` — so there is nothing to
+    /// verify against and nothing worth verifying.
+    ///
+    /// # What is exempt
+    ///
+    /// An error document. Its `type` resolves to the framework's
+    /// `trust-task-error` specification, whose own proof requirement is
+    /// RECOMMENDED rather than REQUIRED (SPEC §8.1), so demanding one would make
+    /// every conforming refusal unreadable. A refusal confers nothing, which is
+    /// why the framework asks less of it.
+    async fn finish_reply(&self, doc: serde_json::Value) -> Result<serde_json::Value, VtaError> {
+        self.verify_reply(&doc).await?;
+        Self::extract_trust_task_payload(doc)
+    }
+
+    async fn verify_reply(&self, doc: &serde_json::Value) -> Result<(), VtaError> {
+        let Some(identity) = self.identity.as_ref() else {
+            return Ok(());
+        };
+        let doc_type = doc
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if doc_type.starts_with("https://trusttasks.org/spec/trust-task-error/") {
+            return Ok(());
+        }
+
+        let parsed: trust_tasks_rs::TrustTask<serde_json::Value> =
+            serde_json::from_value(doc.clone()).map_err(|e| {
+                VtaError::Protocol(format!("reply is not a Trust-Task document: {e}"))
+            })?;
+
+        if parsed.proof.is_none() && !self.require_signed_replies {
+            return Ok(());
+        }
+
+        let resolver = self
+            .reply_resolver
+            .get_or_init(|| async {
+                affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+                    affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default()
+                        .build(),
+                )
+                .await
+                .ok()
+            })
+            .await;
+
+        // `None` means the resolver could not be built at all, which leaves a
+        // `did:key` signer verifiable and a `did:webvh` one refused by the
+        // resolver's own error — the honest outcome, and a legible one.
+        let vm_resolver =
+            crate::trust_task_proof::TrustTaskVmResolver::from_optional(resolver.clone());
+        let signer = crate::trust_task_proof::verify_trust_task_proof_with(&parsed, &vm_resolver)
+            .await
+            .map_err(|e| {
+                VtaError::Protocol(format!(
+                    "the reply from `{}` is unsigned or its proof does not verify ({e}). An \
+                     unsigned answer is bytes, not evidence — every specification that requires \
+                     a proof on its request requires one on its response too (SPEC §7.3 item 7)",
+                    identity.vta_did
+                ))
+            })?;
+
+        if signer != identity.vta_did {
+            return Err(VtaError::Protocol(format!(
+                "the reply claiming to come from `{}` is signed by `{signer}`. The proof \
+                 verifies, which means somebody really signed it — just not the agent this \
+                 client is talking to",
+                identity.vta_did
+            )));
+        }
+        Ok(())
     }
 
     /// Pull `payload` out of a framework trust-task response document. A success
@@ -2556,6 +2700,92 @@ mod tests {
             Some(VtaError::Forbidden(detail)) => assert!(detail.contains("did:key:zAlice")),
             other => panic!("expected Forbidden, got {other:?}"),
         }
+    }
+
+    // ── reply verification ──────────────────────────────────────────
+
+    /// A client with no identity has nothing to verify against — it cannot
+    /// produce a conforming request either, and is refused at the agent for a
+    /// missing `recipient`. Verifying would be checking a signature against an
+    /// expectation nobody holds.
+    #[tokio::test]
+    async fn a_client_with_no_identity_does_not_verify() {
+        let client = VtaClient::new("https://vta.example");
+        let doc = serde_json::json!({ "type": "https://trusttasks.org/spec/vta/contexts/list/1.0#response", "payload": {} });
+        client
+            .verify_reply(&doc)
+            .await
+            .expect("no identity, nothing to bind a signature to");
+    }
+
+    /// An unsigned success reply is refused by default, and the message says why
+    /// an unsigned answer is worthless rather than merely reporting a missing
+    /// field.
+    #[tokio::test]
+    async fn an_unsigned_reply_is_refused_by_default() {
+        let client = signed_reply_client();
+        let doc = serde_json::json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
+            "type": "https://trusttasks.org/spec/vta/contexts/list/1.0#response",
+            "issuer": "did:key:zAgent",
+            "recipient": "did:key:zClient",
+            "issuedAt": "2026-01-01T00:00:00Z",
+            "payload": {}
+        });
+        let err = client
+            .verify_reply(&doc)
+            .await
+            .expect_err("an unsigned reply must not be believed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("bytes, not evidence"),
+            "the refusal must say why, got: {msg}"
+        );
+    }
+
+    /// The staging control, which exists so an upgrade order can be chosen.
+    #[tokio::test]
+    async fn an_unsigned_reply_is_accepted_when_staging() {
+        let client = signed_reply_client().trusting_unsigned_replies();
+        let doc = serde_json::json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
+            "type": "https://trusttasks.org/spec/vta/contexts/list/1.0#response",
+            "issuer": "did:key:zAgent",
+            "recipient": "did:key:zClient",
+            "issuedAt": "2026-01-01T00:00:00Z",
+            "payload": {}
+        });
+        client
+            .verify_reply(&doc)
+            .await
+            .expect("staging accepts an unsigned reply");
+    }
+
+    /// A refusal is exempt whatever the setting: `trust-task-error` declares its
+    /// proof RECOMMENDED, so requiring one would make every conforming refusal
+    /// unreadable — including the ones carrying the reason a caller needs.
+    #[tokio::test]
+    async fn an_error_document_needs_no_proof() {
+        let client = signed_reply_client();
+        let doc = serde_json::json!({
+            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+            "payload": { "code": "taskFailed", "message": "no" }
+        });
+        client
+            .verify_reply(&doc)
+            .await
+            .expect("a refusal needs no proof");
+    }
+
+    /// A client whose identity names the agent it talks to, so a reply has
+    /// something to be bound against.
+    fn signed_reply_client() -> VtaClient {
+        VtaClient::new("https://vta.example").with_identity(ClientIdentity {
+            client_did: "did:key:zClient".into(),
+            private_key_multibase: "z0".into(),
+            vta_did: "did:key:zAgent".into(),
+            verification_method: None,
+        })
     }
 
     // ── extract_trust_task_payload ──────────────────────────────────

@@ -111,8 +111,13 @@ impl super::VtaClient {
     pub fn loopback(sink: Arc<dyn LoopbackSink>) -> Self {
         Self {
             // A loopback client never reaches a conforming consumer — the sink
-            // answers ahead of the transport — so there is nothing to sign for.
+            // answers ahead of the transport — so there is nothing to sign for,
+            // and by the same token nothing to verify: the sink returns a value,
+            // not a signed document, and it is intercepted before any reply
+            // verification could run.
             identity: None,
+            reply_resolver: Arc::new(tokio::sync::OnceCell::new()),
+            require_signed_replies: false,
             transport: super::Transport::Rest {
                 client: crate::http::rest_client(),
                 base_url: "http://loopback.invalid".to_string(),
