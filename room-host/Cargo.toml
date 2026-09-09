@@ -42,6 +42,39 @@ trust-tasks-rs = { workspace = true }
 trust-tasks-https = { workspace = true }
 uuid = { workspace = true }
 
+# ── Being reachable at a mediator. Off by default — see `src/didcomm.rs`. ──
+#
+# A host that is not told to be reachable opens no socket and needs no identity,
+# which is this crate's posture everywhere else too (network DID resolution off,
+# browser origins off). Opening a standing outbound connection to a third party
+# is a larger decision than either, so it is one an operator makes.
+affinidi-tdk = { workspace = true, optional = true }
+# `affinidi-messaging-sdk/tsp` is what compiles the real TSP unpack arm; without
+# it the transport drops every TSP frame with a log line and nothing else. The
+# facade forwards it since affinidi-tdk-rs#785, and this names the SDK anyway
+# because it needs `DidCommTransport` and `affinidi-messaging-core`'s shapes.
+affinidi-messaging-sdk = { version = "0.23", optional = true, default-features = false, features = ["tsp"] }
+affinidi-messaging-core = { workspace = true, optional = true }
+affinidi-secrets-resolver = { workspace = true, optional = true }
+# `ENVELOPE_TYPE`, from the crate that defines the binding rather than a fourth
+# hand-written copy of the URI.
+trust-tasks-didcomm = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+
+
+[features]
+default = []
+## Serve Trust Tasks over DIDComm and TSP at a mediator, as well as over HTTP.
+didcomm = [
+    "dep:affinidi-tdk",
+    "dep:affinidi-messaging-sdk",
+    "dep:affinidi-messaging-core",
+    "dep:affinidi-secrets-resolver",
+    "dep:trust-tasks-didcomm",
+    "dep:futures-util",
+
+]
+
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

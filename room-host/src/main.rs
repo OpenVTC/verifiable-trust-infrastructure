@@ -40,6 +40,20 @@ struct Args {
     /// owner-only on load.
     #[arg(long)]
     mirror_config: Option<std::path::PathBuf>,
+    /// Be reachable at this mediator, as well as at `--listen`.
+    ///
+    /// The host connects as its own `did:peer:2` — minted into the data directory on first
+    /// use and stable thereafter, because a member's saved address names it — and serves the
+    /// same Trust Tasks over DIDComm and TSP that it serves over HTTP. What authorizes a
+    /// request does not change: the presenter is the document's own proof either way.
+    ///
+    /// Off by default. A host that is not asked to be reachable opens no socket and mints no
+    /// identity, which is the same posture `--resolve-dids` and `--allow-origin` take: a
+    /// capability is a decision an operator makes rather than one they inherit.
+    #[cfg(feature = "didcomm")]
+    #[arg(long)]
+    mediator_did: Option<String>,
+
     /// Seconds between mirror pulls.
     ///
     /// A mirror is not latency-critical — it serves a copy, and a client that
@@ -84,6 +98,25 @@ async fn main() -> anyhow::Result<()> {
             config,
             args.mirror_interval_secs,
         ));
+    }
+
+    // Before the listener, for the same reason mirrors start first: a host that is going to
+    // be reachable at a mediator should be reachable *by the time* it starts answering, and
+    // an identity that will not load is a startup failure rather than something discovered
+    // by the first member who cannot reach it.
+    #[cfg(feature = "didcomm")]
+    if let Some(mediator_did) = args.mediator_did.clone() {
+        let identity =
+            room_host::didcomm::HostIdentity::load_or_mint(&args.data_dir, &mediator_did)?;
+        // Printed, not only logged. It is this host's *address* — the thing a member puts
+        // after `?at=` — and an operator has to be able to copy it out of a terminal.
+        println!("host DID: {}", identity.did);
+        let state = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = room_host::didcomm::serve(state, identity, mediator_did).await {
+                tracing::error!(error = %e, "the mediator connection ended");
+            }
+        });
     }
 
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
