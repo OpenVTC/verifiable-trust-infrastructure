@@ -73,16 +73,15 @@ pub async fn verify(
     )
     .map_err(|e| chain_refusal(room_id, e))?;
 
-    // `verify_chain` uses `claimant` only for the audience check; it does not require the
-    // grant to name them. Without this a nomination would be a bearer token, and anyone who
-    // ever observed one could take the room the moment it went dormant.
-    if verified.subject != claimant {
-        return Err(AppError::Forbidden(format!(
-            "the nomination names `{}`, not the party claiming; a nomination is not \
-             transferable",
-            verified.subject
-        )));
-    }
+    // The check that used to live here — "the grant must name the claimant" — is now
+    // `verify_chain`'s own, since dtg-credentials 0.8 requires the presenter to be the
+    // leaf's subject and refuses otherwise with `NotThePresenter`. It was written here
+    // because `verify_chain` used `claimant` only for the optional `audience` comparison,
+    // so a nomination without one was a bearer token: anyone who ever observed one could
+    // take the room the moment it went dormant.
+    //
+    // Deleted rather than kept as a second opinion. Two copies of a rule is one place for
+    // it to be forgotten, and the one that is a duplicate is the one nobody updates.
 
     Ok(VerifiedNomination {
         successor: verified.subject,
@@ -121,7 +120,10 @@ mod tests {
         subject: &str,
         scope: &str,
         actions: Vec<String>,
-        valid_until: Option<chrono::DateTime<Utc>>,
+        // Required, and not by this helper's choice: since dtg-credentials 0.7 a VAC's
+        // `validUntil` is required by the constructor, so a nomination with no expiry is a
+        // state no test can build any more. Every call already passed one.
+        valid_until: chrono::DateTime<Utc>,
     ) -> String {
         let now = Utc::now();
         let mut vac = DTGCredential::new_vac(
@@ -145,7 +147,7 @@ mod tests {
             &f.successor_did,
             &f.room_did,
             vec![ACTION_SUCCEED.into()],
-            Some(Utc::now() + Duration::days(365)),
+            Utc::now() + Duration::days(365),
         )
         .await
     }
@@ -182,7 +184,7 @@ mod tests {
             &f.successor_did,
             &f.room_did,
             vec![ACTION_SUCCEED.into()],
-            Some(Utc::now() + Duration::days(365)),
+            Utc::now() + Duration::days(365),
         )
         .await;
 
@@ -201,9 +203,13 @@ mod tests {
         let err = verify(&good(&f).await, &f.room_did, &opportunist, &DidKeyResolver)
             .await
             .expect_err("presenting someone else's nomination confers nothing");
+        // The refusal now comes from `verify_chain` itself rather than from a re-check
+        // here — dtg-credentials 0.8 requires the presenter to be the leaf's subject. The
+        // property is unchanged and the wording is the library's, which names both parties
+        // rather than only the rule.
         assert!(
-            format!("{err}").contains("not transferable"),
-            "the refusal should say why: {err}"
+            format!("{err}").contains("but it was presented by"),
+            "the refusal should name who it was granted to and who presented it: {err}"
         );
     }
 
@@ -220,7 +226,7 @@ mod tests {
             &f.successor_did,
             &other_room,
             vec![ACTION_SUCCEED.into()],
-            Some(Utc::now() + Duration::days(365)),
+            Utc::now() + Duration::days(365),
         )
         .await;
 
@@ -240,7 +246,7 @@ mod tests {
             &f.successor_did,
             &f.room_did,
             vec![ACTION_SUCCEED.into()],
-            Some(Utc::now() - Duration::days(1)),
+            Utc::now() - Duration::days(1),
         )
         .await;
 
@@ -266,7 +272,7 @@ mod tests {
                 "curate".into(),
                 "admin".into(),
             ],
-            Some(Utc::now() + Duration::days(365)),
+            Utc::now() + Duration::days(365),
         )
         .await;
 

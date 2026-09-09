@@ -118,7 +118,7 @@ pub struct VerifiedChain {
 /// 2. the chain's root was issued by the room — a chain reaching any other party confers
 ///    nothing here, however well-formed;
 /// 3. no link widens the actions or scope of its parent;
-/// 4. every link is within its validity window, and any audience is honoured;
+/// 4. every link is within its validity window;
 /// 5. the membership credential and the chain describe the same subject;
 /// 6. the chain's leaf grants to `presenter` — the party the *transport* authenticated,
 ///    not one named in the payload.

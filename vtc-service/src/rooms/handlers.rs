@@ -1821,7 +1821,7 @@ mod tests {
             &f,
             json!({
                 "roomId": f.room.room_id,
-                "nomination": f.nominate(&f.successor.did, Some(24)).await,
+                "nomination": f.nominate(&f.successor.did, 24).await,
                 "presentation": f.as_successor(),
                 "reason": "unreachable since March",
             }),
@@ -1847,7 +1847,7 @@ mod tests {
         let f = RoomFixture::new(Visibility::Open).await;
         create_expiring(state, &f, days_ago(60)).await;
 
-        let nomination = f.nominate(&f.successor.did, Some(24)).await;
+        let nomination = f.nominate(&f.successor.did, 24).await;
 
         // The owner returns and mints an epoch — ordinary use, nothing succession-specific.
         let out = handle_mint_epoch(
@@ -1900,7 +1900,7 @@ mod tests {
             &f,
             json!({
                 "roomId": f.room.room_id,
-                "nomination": f.nominate(&f.agent.did, Some(24)).await,
+                "nomination": f.nominate(&f.agent.did, 24).await,
                 "presentation": f.as_successor(),
             }),
         )
@@ -1926,7 +1926,7 @@ mod tests {
             &f,
             json!({
                 "roomId": f.room.room_id,
-                "nomination": f.nominate(&f.agent.did, Some(24)).await,
+                "nomination": f.nominate(&f.agent.did, 24).await,
                 "presentation": f.as_successor(),
             }),
         )

@@ -27,10 +27,19 @@
 //! have handed the caller its principal's whole standing in the room, which is precisely the
 //! outcome attenuation exists to prevent.
 //!
-//! **A presentation reusable elsewhere.** Where the caller names an `audience`, the leaf is
-//! bound to it, and `verify_chain` refuses a chain link presented by anyone else. Without an
-//! audience the presentation is bearer-shaped against that room, which is why callers that
-//! know their host should always name it.
+//! **A presentation usable by whoever captured it.** The leaf grants to `agent_did` — the
+//! party the transport authenticated — and since dtg-credentials 0.8 `verify_chain` REQUIRES
+//! the presenter to be the leaf's subject, refusing anyone else with `NotThePresenter`. So a
+//! presentation lifted off the wire authorises nothing for the party that lifted it.
+//!
+//! That used to be `audience`'s job and it did it badly: the field was optional, so a leaf
+//! without one was accepted from anybody, and the Trust Tasks registry described it as the
+//! party a presentation is *for* while the library compared it to the presenter — so an
+//! implementation following the registry minted leaves the verifier refused every time.
+//! 0.8 removes it and makes the subject rule normative
+//! (`trustoverip/dtgwg-cred-spec#41`, `trustoverip/dtgwg-trust-tasks-tf#414`). The
+//! destination question it was reaching for is answered a layer up, by the Trust Task
+//! document's `recipient`, which its `proof` covers.
 //!
 //! **The keys.** Nothing in the response carries key material in either direction. An oracle
 //! that returned the principal's VAC itself would be a credential-release call wearing a
@@ -88,7 +97,13 @@ pub async fn present(
     agent_did: &str,
     room_id: &str,
     action: &str,
-    audience: Option<&str>,
+    // Accepted and ignored. `rooms/keys/present/0.1` still carries an `audience` member and
+    // dtg-credentials 0.8 removed the field it fed. Taking it and doing nothing keeps every
+    // existing caller working — the CLI names its host here — while the binding comes from
+    // the subject rule instead. Removing it from the schema is proposed in
+    // `trustoverip/dtgwg-trust-tasks-tf#414`; until that lands, accepting it is better than
+    // refusing a request that is not wrong, and far better than pretending it still binds.
+    _audience: Option<&str>,
     nonce: Option<&str>,
 ) -> Result<MintedPresentation, AppError> {
     let scope = auth.act_scope();
@@ -113,8 +128,7 @@ pub async fn present(
             agent_did.to_string(),
             vec![action.to_string()],
             now,
-            Some(expires),
-            audience.map(str::to_string),
+            expires,
         )
         .map_err(|e| {
             // The common case is asking for an action the principal does not hold, and

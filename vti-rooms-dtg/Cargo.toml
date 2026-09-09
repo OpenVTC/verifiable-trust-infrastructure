@@ -9,7 +9,7 @@ repository.workspace = true
 
 # Published, now that it can be. This crate was `publish = false` for exactly
 # one reason — a published crate cannot depend on a git source, and
-# dtg-credentials 0.6 was merged but unreleased — and that reason is gone.
+# dtg-credentials was merged but unreleased — and that reason is gone.
 #
 # It should not stay unpublished by inertia. `vti-rooms` publishes so that a
 # room host can reuse a room's storage, wire types and authorization; but
@@ -29,7 +29,7 @@ vti-common = { path = "../vti-common", version = "0.18" }
 
 # `authority::verify_chain` and the VAC/VDC types. Was a pinned git rev while
 # 0.6.0 sat merged and unreleased; released 2026-09-03.
-dtg-credentials = "0.6"
+dtg-credentials = "0.8"
 
 async-trait = "0.1"
 # Both hosts already carry a `VerificationMethodResolver`, so the key adapter wraps
