@@ -9,7 +9,23 @@ repository.workspace = true
 publish.workspace = true
 
 [features]
-default = []
+default = ["host"]
+# Everything a room's **host** needs, and the only reason this crate depends on
+# `vti-common`. On by default, because a host is what this crate was extracted
+# for; off, what remains is the member half — the group keys, sealing, the epoch
+# chain and the wire types — which needs no store, no `AppError`, and no server.
+#
+# The split is not new here, it was only unnamed: `vta-service` already uses
+# `mls`/`sealed`/`wire` and nothing else, while `vtc-service`, `room-host` and
+# `vti-rooms-dtg` use `storage`/`authz`/`audit`. Naming it is what lets the member
+# half build for `wasm32-unknown-unknown`, and so lets a browser be a real member
+# rather than a client of one. See `docs/05-design-notes/data-rooms-demo-site.md`.
+#
+# `lifecycle` is deliberately **not** gated. Only hosts consume it today, but it
+# needs nothing from `vti-common`, and a member computing a room's lifecycle
+# state to explain it on screen is a thing that should not require a host's
+# dependencies.
+host = ["dep:vti-common"]
 # The room's group-key layer (`mls`) and record sealing (`sealed`). Off by
 # default: a host that only stores ciphertext needs none of it, and OpenMLS is a
 # substantial dependency to make such a host carry. Mirrors how `vtc-service`
@@ -23,13 +39,18 @@ mls = [
   "dep:chacha20poly1305",
   "dep:base64",
   "dep:getrandom",
+  "dep:getrandom_02",
 ]
 
 [dependencies]
 # The store abstraction and AppError. This crate's only internal dependency:
 # a room's storage and authorization need nothing from a community service,
 # which is the whole reason they are extractable.
-vti-common = { path = "../vti-common", version = "0.18" }
+#
+# Optional, and load-bearing that it is: `vti-common` is server-side by its own
+# description and pulls axum, fjall and tokio, none of which build for wasm. It
+# is the `host` feature's whole content.
+vti-common = { path = "../vti-common", version = "0.18", optional = true }
 
 serde = { workspace = true }
 thiserror = { workspace = true }
@@ -51,6 +72,32 @@ getrandom = { version = "0.4", optional = true }
 # Verification may resolve a DID, so ChainVerifier is async; async-trait keeps it
 # dyn-compatible, as it does for vti_common::auth::backend.
 async-trait = "0.1"
+
+# On wasm, OpenMLS needs its `js` feature: it swaps `std::time` for `web-time`
+# (there is no `SystemTime` on `wasm32-unknown-unknown`) and routes randomness
+# through `getrandom`'s JS backend. Declared per-target rather than as a feature
+# of this crate so that building for wasm simply works, with nothing for a
+# consumer to remember — cargo unions these onto the general declaration above.
+#
+# **This is not sufficient on its own.** Two things the artifact crate must also
+# do, because neither can be set from here:
+#
+# `getrandom_02` is a **feature shim, not a dependency this crate calls**. There
+# are two getrandom majors in the graph: the 0.4 above, which `mls` uses
+# directly, and an 0.2 that RustCrypto's elliptic-curve stack pulls in under
+# `openmls_rust_crypto`. The second is transitive, so no feature declared for the
+# first can reach it — and without `js` it fails with a `compile_error!` saying
+# wasm "is not supported by default", which reads like an unsupported target and
+# is not. Naming it here turns the feature on for the whole graph.
+#
+# Doing it in this crate rather than leaving it to each artifact crate is
+# deliberate. The choice is target-specific and, on wasm32, there is only one
+# correct answer; the `cfg` means no native build can see it. The alternative is
+# a footgun in a doc comment, paid for once per consumer.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+openmls = { version = "0.9", features = ["js"], optional = true }
+getrandom = { version = "0.4", features = ["wasm_js"], optional = true }
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

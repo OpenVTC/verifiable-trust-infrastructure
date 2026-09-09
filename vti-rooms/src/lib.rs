@@ -49,17 +49,41 @@
 //!
 //! Three layers:
 //!
-//! - [`storage`] — the keyspaces and their invariants.
+//! - `storage` — the keyspaces and their invariants.
 //! - [`wire`] — the Trust-Task payload types, hand-written against the schemas in
 //!   `trustoverip/dtgwg-trust-tasks-tf#346` until the generated bindings publish.
-//! - [`authz`] — deciding whether an operation is allowed, **without reading any host's ACL
+//! - `authz` — deciding whether an operation is allowed, **without reading any host's ACL
 //!   or roster**. The invariant the whole design rests on.
+//!
+//! # Two halves, and the feature that names them
+//!
+//! A room has a host and it has members, and they need disjoint code. The `host` feature
+//! (on by default) carries `storage`, `authz` and `audit`; the `mls` feature carries the
+//! member's group keys, sealing and the epoch chain. `wire`, `error` and `lifecycle` are
+//! common to both.
+//!
+//! The division already existed and was simply unnamed — `vta-service` imports
+//! `mls`/`sealed`/`wire` and nothing else, while `vtc-service`, `room-host` and
+//! `vti-rooms-dtg` import `storage`/`authz`/`audit`. What naming it buys is that
+//! **`vti-common` becomes optional**, and with it every server dependency it carries:
+//! axum, fjall, tokio. `--no-default-features --features mls` therefore builds for
+//! `wasm32-unknown-unknown`, which is what lets a browser hold a room's keys itself
+//! instead of asking an agent to. See `docs/05-design-notes/data-rooms-demo-site.md`.
+//!
+//! That the member half needed **no source changes** to get there is a property of
+//! [`error`], which deliberately does not use `vti_common::error::AppError`: key material
+//! is not a service's concern, and a record that fails to open is an outcome rather than a
+//! fault. That decision was made for its own reasons and paid for itself here.
 //!
 //! The Trust-Task **handlers** are deliberately *not* here. Dispatch is a service's spine,
 //! and a spine is not extractable — see `docs/05-design-notes/vta-service-decomposition.md`.
 //! Each host writes its own thin handlers over these three layers.
 
+/// A room's audit trail, behind the `host` feature.
+#[cfg(feature = "host")]
 pub mod audit;
+/// Deciding whether a room operation is allowed, behind the `host` feature.
+#[cfg(feature = "host")]
 pub mod authz;
 pub mod error;
 pub mod lifecycle;
@@ -74,6 +98,8 @@ pub mod mls;
 pub mod retention;
 #[cfg(feature = "mls")]
 pub mod sealed;
+/// The room and record keyspaces, behind the `host` feature.
+#[cfg(feature = "host")]
 pub mod storage;
 pub mod wire;
 
