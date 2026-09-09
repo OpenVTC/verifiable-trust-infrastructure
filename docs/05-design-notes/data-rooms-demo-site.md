@@ -194,6 +194,13 @@ because the mistake is instructive and a reader will make it too. The other two
 are real, and neither is demo scaffolding: each is a hole the demo is simply the
 first thing to fall into.
 
+> **Read §10 alongside this.** The site has since been built and run, and two of
+> the conclusions below did not survive it: §4.2's premise that a browser cannot
+> be addressed at all (it can, but only within a session), and §4.3's plan to
+> close its gap as a Trust Task family (the wrong shape — see §10.3). Both are
+> left standing here, with the corrections kept separate, because the reasoning
+> is where the value is.
+
 ### 4.1 Host addressing is out-of-band, and that is deliberate
 
 *This section began as a claimed gap. It is not one, and the correction matters
@@ -411,3 +418,152 @@ worth making explicitly rather than by whoever runs `cargo new` first.
   the grant the room made. A browser member's root and leaf subject are the same
   DID, which is a case the server-side path never produces. Worth a test, not a
   redesign.
+
+---
+
+## 10. What building it changed
+
+*Written after the site was built and run against a live mediator. Kept as an
+addition rather than an edit, for the same reason §4.1 is: the reasoning that
+turned out wrong is the useful part, and a reader arriving at this design fresh
+will make the same two mistakes.*
+
+### 10.1 §4.2's premise was wrong: a browser tab **can** have a DIDComm address
+
+The note says a browser tab "has no DIDComm address and no inbox", and builds
+the pull-shaped ceremony on that. The first half is false. A tab can mint a
+`did:peer:2`, connect to a mediator, and be addressed at it for as long as it is
+open — which is exactly what the site does now, over both DIDComm and TSP.
+
+The conclusion survives, and that is the interesting part: the ceremony still
+has to invert. But not because a browser cannot be addressed — because it cannot
+be addressed **between sessions**. An owner that pushed a Welcome to a tab that
+has since closed has pushed it nowhere, and the address it used will never exist
+again. The pull is right; the reason given for it was not.
+
+That distinction matters beyond the demo. "Cannot be reached" would mean a
+browser member needs a permanent agent somewhere. "Cannot be reached between
+sessions" means it needs a way to *ask for what it missed*, which is a much
+smaller thing and is what §10.4 turned out to be.
+
+### 10.2 A member holds two identities, and the split is forced
+
+Not a demo convenience — neither key can do the other's job.
+
+- The **room identity** (`did:key`, in wasm) is what credentials name and what
+  signs every document a room or a host authenticates. Its whole reason for
+  living in wasm is that its secret never enters a JavaScript heap or a
+  `localStorage` string.
+- The **transport identity** (`did:peer:2`, in JavaScript) is what a mediator
+  addresses. DIDComm's authcrypt and TSP both need an X25519 secret *in the
+  caller's hands* — which means in the page.
+
+One key cannot satisfy both without giving up one of the properties. So the
+transport identity is deliberately disposable: minted per session, nothing
+issued to it, losing it costs a reconnect.
+
+The consequence is that a request has to prove two different things about two
+different keys, and **bind them together**:
+
+1. the envelope proves the transport DID sent it;
+2. an `eddsa-jcs-2022` proof inside the body proves the room DID authored it;
+3. the body names the transport DID, so the two are one request.
+
+Drop (3) and a signed request becomes a bearer artefact: anybody who saw one
+could send it from their own connection and have the reply — the invitation —
+delivered to them. The signature still verifies; it simply stops being about the
+connection carrying it. This is not a hypothetical the way most such notes are:
+it is one clause, it is easy to leave out, and nothing else in the exchange
+catches its absence.
+
+### 10.3 §4.3 and §8's item 8 point the wrong way: admission is **not** a Trust Task
+
+§4.3 correctly identifies that `rooms/*` has no join request, and proposes
+closing it as a `rooms/join/*` Trust Task family. Building it showed that is the
+wrong shape.
+
+A Trust Task is an instruction you give **your own agent**, authorised by your
+control of it. `vta-service` gates `rooms/owner/{invite,issue-membership,
+issue-authority}` on `CredentialWrite` and never asks who the subject is —
+because the caller is the principal, and the subject is just a field. What a
+would-be member sends is the opposite: a stranger asking an owner to *decide*
+something about them. Expressed as a Trust Task, that says the stranger may
+instruct the room's agent, which is exactly what must not be true.
+
+The gap in §4.3 is real. It is a **request protocol** between two parties, not a
+task family — closer to a VTC's `join-requests/*` than to `rooms/owner/*`, and
+the resemblance is not a coincidence: a VTC has one for the same reason.
+
+The demo implements it as a plain DIDComm/TSP protocol in its own namespace
+(`https://dataroom.demo/admission/0.1`), with the two-proof binding of §10.2. It
+is deliberately *not* dressed up as a Trust Task, and that is the finding to take
+upstream rather than the endpoint shape.
+
+### 10.4 Records needed no new protocol at all, and that is the contrast
+
+The record path is the other half, and it went the other way with no design work
+whatsoever — because a record operation genuinely *is* a Trust Task. It is a
+member asking a host to act on something it holds, which is what the family is
+for, and the framework already binds it to every carrier: DIDComm wraps the
+document under one reserved envelope type, and TSP sends the document with **no
+wrapper at all**, byte-identical to the HTTP body.
+
+So `room-host` gained a carrier, not a protocol (`--mediator-did`, #1369). The
+useful test is that one `dispatch` answers identically whichever wire brought the
+bytes — which holds because nothing about *who is asking* comes from the carrier:
+the presenter is the document's own proof, the authority is the chain the room
+issued, and a transport that authenticates its sender confers nothing extra.
+
+The contrast between §10.3 and this section is the whole lesson. **Asking a
+service to act is a Trust Task; asking a person to decide is not.** Both travel
+the same wires.
+
+### 10.5 §9's open questions, answered
+
+- **Does the epoch key chain reach a browser member?** Yes. `rooms/epoch/chain`
+  is host-served and a member presenting `read` gets it with no VTA anywhere in
+  the path. `rooms/keys/chain` has no counterpart in a browser and needs none —
+  the member *is* the key holder. Watch `earliest readable` fall to 1 as the
+  rungs arrive.
+- **Commit delivery.** Answered by §10.1: the member asks the **owner** for what
+  it missed since its own epoch, over the same mediator it was admitted through.
+  Not the host — a host stores ciphertext and has no opinion about who is in a
+  room, so it has no commits to give. The owner serves them only to DIDs it
+  admitted: a commit confers nothing on a non-member, but how often a room's
+  membership changes is the room's business.
+  The first cut routed this on the demo's own room slug, which addressed rooms do
+  not have — so a room you were handed a link to could join, fall behind at the
+  next admission, and find records refusing to open with nothing to say why. That
+  failure reads as corruption, which is what makes this the sharpest edge in the
+  whole design.
+- **Bundle size.** 874 KB gzipped for the wasm, plus 172 KB minified for the
+  DIDComm/TSP bundle. Both are vendored build artifacts, neither is on the first
+  paint's critical path.
+- **Pooling defence.** Unweakened, and asserted rather than assumed: the chain's
+  *root* subject is what a host compares, and a browser member's root and leaf
+  being the same DID is a case the server-side path never produces but the
+  comparison does not care about.
+- **Non-extractable keys and export.** Still open, and still two modes.
+
+### 10.6 The broker got smaller than §5 predicted
+
+§5 gives the broker a catalogue and a `POST /join`. It now serves the catalogue
+and the page, and nothing else: admission and commit delivery go over the
+mediator, and records go to the host directly. There is no longer any path in the
+demo where a backend stands in for something rather than being it.
+
+One asymmetry is deliberate and worth keeping. The owner reaches the host by URL
+while telling members its DID — because the owner is a server and can open a URL,
+and a browser frequently cannot. One host serves both carriers at once and the
+client picks, which is the shape a real deployment has.
+
+### 10.7 A room says which carriers it serves
+
+TSP is the higher-preference transport and a mediator multiplexes both onto the
+one socket it permits per DID — so a client that always spoke TSP would usually
+be right. It would also break against the first owner that served only DIDComm,
+with nothing in that owner's document having changed to warn it.
+
+So a room (and a host) advertises `DIDCommMessaging` **and** `TSPTransport` at its
+mediator, and a member takes the better of what it is offered. What a party serves
+is a thing it says, not a thing a client discovers by succeeding.
