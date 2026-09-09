@@ -787,6 +787,13 @@ jobs:
         run: cargo check -p vta-service --no-default-features --features azure-secrets,keyring,rest
       - name: vta-service tsp transport
         run: cargo check -p vta-service --features tsp
+      # `room-host`'s mediator listener is behind a non-default feature, so
+      # `cargo test --workspace` never compiles it — the same hole the transport
+      # harness sat in (CHANGELOG, "CI now runs the harness"). Tested rather than
+      # only checked: the bug it has already had was a reply threaded on the
+      # wrong id, which compiles perfectly.
+      - name: room-host didcomm + tsp
+        run: cargo test -p room-host --features didcomm
       # A room's member half must not need a server. `vti-common` is optional
       # behind `host`, and it is what pulls axum, fjall and tokio — so this is
       # the check that `mls`/`sealed`/`retention` have not quietly acquired a
