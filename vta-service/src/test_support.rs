@@ -1233,7 +1233,8 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         did_resolver,
         status_list_resolver: None,
         secrets_resolver: transport.secrets_resolver,
-        #[cfg(feature = "didcomm")]
+        // Un-gated with the field: the spine signs every success response with
+        // it, so a build without didcomm still needs it populated.
         signing_vm_id: transport.signing_vm_id,
         #[cfg(feature = "didcomm")]
         ka_vm_id: transport.ka_vm_id,

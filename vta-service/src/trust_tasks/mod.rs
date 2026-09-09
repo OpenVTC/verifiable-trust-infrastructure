@@ -474,6 +474,112 @@ async fn validate_payload(
     }
 }
 
+/// Attach this agent's Data-Integrity proof to a success response.
+///
+/// # Why this was missing
+///
+/// SPEC §7.3 item 7: where a specification declares no separate requirement for
+/// the *response*, the request's applies to it — "an omission can never weaken a
+/// variant". 265 published specifications declare a single
+/// `proofRequirement: REQUIRED`, and this agent attached a proof to none of
+/// their responses. Nothing went red because no consumer verifies one either;
+/// producers not signing and consumers not checking is a mutually consistent
+/// silence.
+///
+/// # Why the resident secret and not `load_vta_issuer_secret`
+///
+/// That helper reads the keystore, derives, and **writes an audit entry per
+/// access**. Signing every response through it would turn the record of "the
+/// agent's issuer key was used" into one line per request — drowning a security
+/// control in its own noise, which is a worse outcome than the gap being fixed.
+///
+/// `secrets_resolver` already holds the signing secret for the messaging layer,
+/// keyed by [`AppState::signing_vm_id`]. Reading it costs nothing and audits
+/// nothing, which is the right shape for something that happens on every
+/// answer: the agent signing its own words is not a key *access* worth a line,
+/// it is the agent speaking.
+///
+/// # Scope
+///
+/// Success responses only. An error response's `type` resolves to the
+/// framework's `trust-task-error` specification, whose requirement is
+/// RECOMMENDED rather than REQUIRED and whose variant §7.3 makes undeclarable
+/// by a task.
+///
+/// An agent with no signing identity yet (before setup) answers unsigned rather
+/// than failing — it has nothing to sign with, and refusing would make an
+/// unprovisioned VTA unusable rather than merely unattributable.
+async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> TrustTaskOutcome {
+    if !outcome.status.is_success() {
+        return outcome;
+    }
+    let (Some(resolver), Some(vm_id)) = (
+        state.secrets_resolver.as_ref(),
+        state.signing_vm_id.as_ref(),
+    ) else {
+        return outcome;
+    };
+    use affinidi_tdk::secrets_resolver::SecretsResolver as _;
+    let Some(secret) = resolver.get_secret(vm_id).await else {
+        tracing::error!(%vm_id, "no resident secret for the signing key; answering unsigned");
+        return outcome;
+    };
+
+    match attach_proof(&secret, &outcome.body).await {
+        Some(body) => TrustTaskOutcome {
+            status: outcome.status,
+            body,
+        },
+        // Every failure inside answers unsigned rather than turning a successful
+        // operation into a failure over its envelope: the work is done and the
+        // caller is entitled to the result, attributable or not.
+        None => outcome,
+    }
+}
+
+/// Sign `body` with `secret` and return the document with its `proof` attached.
+///
+/// Separated from the state plumbing so the cryptographic path is testable
+/// without an `AppState` — the wiring above needs a booted agent, this needs a
+/// key and some bytes.
+async fn attach_proof(
+    secret: &affinidi_secrets_resolver::secrets::Secret,
+    body: &[u8],
+) -> Option<Vec<u8>> {
+    let mut doc: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(d) => d,
+        Err(e) => {
+            // The spine built this a moment ago, so this cannot happen without a
+            // bug above.
+            tracing::error!(error = %e, "success response is not JSON; returning it unsigned");
+            return None;
+        }
+    };
+    // A proof never covers itself.
+    doc.as_object_mut()?.remove("proof");
+
+    let proof = match affinidi_data_integrity::DataIntegrityProof::sign(
+        &doc,
+        secret,
+        affinidi_data_integrity::SignOptions::new(),
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "could not sign the success response; answering unsigned");
+            return None;
+        }
+    };
+    let proof_value = serde_json::to_value(&proof)
+        .inspect_err(|e| tracing::error!(error = %e, "could not serialise the response proof"))
+        .ok()?;
+    doc.as_object_mut()?.insert("proof".into(), proof_value);
+    serde_json::to_vec(&doc)
+        .inspect_err(|e| tracing::error!(error = %e, "could not serialise the signed response"))
+        .ok()
+}
+
 pub(crate) async fn dispatch_trust_task_core(
     state: &AppState,
     auth: &AuthClaims,
@@ -484,6 +590,9 @@ pub(crate) async fn dispatch_trust_task_core(
         dispatch_trust_task_inner(state, auth, body).await
     })
     .await;
+    // Before the conformance observation below, so what that layer sees is what
+    // ships rather than a document one proof short of it.
+    let outcome = sign_success_response(state, outcome).await;
     // Observe the real response against the schema its own `type` names. Here
     // rather than in the REST route because REST is one of three transports
     // through this function — DIDComm and TSP read `outcome.body` directly, and
@@ -1920,6 +2029,172 @@ mod tests {
     use trust_tasks_rs::TrustTask;
 
     use super::*;
+
+    /// **A success response carries this agent's proof.**
+    ///
+    /// SPEC §7.3 item 7: a specification declaring a single
+    /// `proofRequirement: REQUIRED` binds its *response* as well as its request
+    /// — "an omission can never weaken a variant" — and 265 published
+    /// specifications declare exactly that. This agent attached a proof to none
+    /// of them until the spine started signing, and nothing caught it because no
+    /// consumer verifies one either.
+    ///
+    /// Tests the cryptographic path rather than the plumbing: a booted agent is
+    /// not needed to answer "does this produce a verifiable proof", and the
+    /// question that needs answering is that one.
+    #[tokio::test]
+    async fn a_success_response_is_signed() {
+        let secret = test_secret();
+        let body =
+            br#"{"id":"urn:uuid:x","type":"https://example.org/t#response","payload":{"ok":true}}"#;
+
+        let signed = super::attach_proof(&secret, body)
+            .await
+            .expect("a well-formed response signs");
+        let doc: Value = serde_json::from_slice(&signed).expect("signed document parses");
+
+        let proof = doc
+            .get("proof")
+            .expect("a success response with no proof is unattributable");
+        assert_eq!(
+            proof.get("cryptosuite").and_then(Value::as_str),
+            Some("eddsa-jcs-2022")
+        );
+        assert!(proof.get("proofValue").and_then(Value::as_str).is_some());
+        assert_eq!(
+            proof.get("verificationMethod").and_then(Value::as_str),
+            Some(secret.id.as_str()),
+            "the proof must name the key that signed it"
+        );
+        // The payload is untouched — signing attests to the answer, it does not
+        // change it.
+        assert_eq!(doc["payload"]["ok"], Value::Bool(true));
+    }
+
+    /// A proof never covers itself. Re-signing a document that already carries
+    /// one must replace it, not sign over it — otherwise the second proof
+    /// attests to a document containing the first, and neither verifies against
+    /// what a consumer canonicalises.
+    #[tokio::test]
+    async fn an_existing_proof_is_replaced_not_nested() {
+        let secret = test_secret();
+        let body = br#"{"id":"urn:uuid:x","type":"https://example.org/t#response","proof":{"stale":true},"payload":{}}"#;
+
+        let signed = super::attach_proof(&secret, body).await.expect("signs");
+        let doc: Value = serde_json::from_slice(&signed).expect("parses");
+        assert!(
+            doc["proof"].get("stale").is_none(),
+            "the stale proof survived: {}",
+            doc["proof"]
+        );
+    }
+
+    /// A body that is not a JSON object cannot be signed, and that must degrade
+    /// to an unsigned answer rather than a panic — the operation already
+    /// succeeded.
+    #[tokio::test]
+    async fn an_unsignable_body_degrades_rather_than_panicking() {
+        assert!(
+            super::attach_proof(&test_secret(), b"not json")
+                .await
+                .is_none()
+        );
+        assert!(
+            super::attach_proof(&test_secret(), b"[1,2,3]")
+                .await
+                .is_none()
+        );
+    }
+
+    /// **The spine calls the signer.**
+    ///
+    /// The behavioural tests above cover the cryptographic path and pass
+    /// perfectly well with the call deleted from `dispatch_trust_task_core` —
+    /// which is precisely the shape of the bug they exist to prevent, so on its
+    /// own that coverage is a comfort rather than a guard. This reads the source
+    /// of the spine and asserts the call is there, in the same spirit as
+    /// `vta-sdk`'s `connect_with_transport` body check.
+    ///
+    /// A source assertion rather than a behavioural one because the alternative
+    /// needs a booted agent with a resident signing secret, and the property is
+    /// one line: does every answer pass through the signer on its way out.
+    #[test]
+    fn the_spine_signs_every_response_it_returns() {
+        let src = include_str!("mod.rs");
+        let start = src
+            .find("pub(crate) async fn dispatch_trust_task_core(")
+            .expect("the spine is still named that");
+        let body = &src[start..];
+        let end = body.find("\n}\n").expect("the spine has an end");
+
+        assert!(
+            body[..end].contains("sign_success_response("),
+            "the dispatch spine no longer signs its responses. 265 published \
+             specifications require a proof on the response (SPEC §7.3 item 7), \
+             and no consumer verifies one — so nothing else in this workspace \
+             would notice."
+        );
+    }
+
+    /// The wiring from state to signature: a configured agent signs, and one
+    /// with no resident secret answers unsigned rather than failing.
+    #[tokio::test]
+    async fn the_signer_reads_the_agents_resident_key() {
+        use affinidi_secrets_resolver::ThreadedSecretsResolver;
+        use affinidi_tdk::secrets_resolver::SecretsResolver as _;
+
+        let (mut state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let outcome = || TrustTaskOutcome {
+            status: axum::http::StatusCode::OK,
+            body: br#"{"id":"urn:uuid:x","type":"https://example.org/t#response","payload":{}}"#
+                .to_vec(),
+        };
+
+        // No resident secret: the answer still goes out, unsigned. Cleared
+        // explicitly — this fixture ships one, which is worth knowing rather
+        // than relying on.
+        state.secrets_resolver = None;
+        state.signing_vm_id = None;
+        let unsigned = super::sign_success_response(&state, outcome()).await;
+        let doc: Value = serde_json::from_slice(&unsigned.body).expect("parses");
+        assert!(doc.get("proof").is_none());
+        assert!(
+            unsigned.status.is_success(),
+            "an unsigned answer is still an answer"
+        );
+
+        // Configured: the same answer, signed by the named key.
+        let secret = test_secret();
+        let vm_id = secret.id.clone();
+        let (resolver, _task) = ThreadedSecretsResolver::new(None).await;
+        resolver.insert(secret).await;
+        state.secrets_resolver = Some(std::sync::Arc::new(resolver));
+        state.signing_vm_id = Some(vm_id.clone());
+
+        let signed = super::sign_success_response(&state, outcome()).await;
+        let doc: Value = serde_json::from_slice(&signed.body).expect("parses");
+        assert_eq!(
+            doc["proof"]["verificationMethod"].as_str(),
+            Some(vm_id.as_str()),
+            "signed by the wrong key, or not at all: {doc}"
+        );
+    }
+
+    /// An Ed25519 `did:key` secret, which is what the agent's own signing key is
+    /// on a `did:key` deployment and shaped the same everywhere else.
+    fn test_secret() -> affinidi_secrets_resolver::secrets::Secret {
+        use ed25519_dalek::SigningKey;
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let mut mc = vec![0xed, 0x01];
+        mc.extend_from_slice(sk.verifying_key().as_bytes());
+        let did = format!(
+            "did:key:{}",
+            multibase::encode(multibase::Base::Base58Btc, mc)
+        );
+        let secrets =
+            vta_sdk::did_key::secrets_from_did_key(&did, &sk.to_bytes()).expect("did:key secrets");
+        secrets.signing
+    }
 
     /// The macro-generated `class_for` returns the authoritative §7.3
     /// classification declared inline next to each handler — the value the PDP

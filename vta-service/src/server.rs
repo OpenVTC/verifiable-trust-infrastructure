@@ -262,7 +262,13 @@ pub struct AppState {
     /// `{did}#key-0`). Populated by `init_auth`. Needed by the
     /// live mediator-handshake prover to fetch the corresponding
     /// secret out of [`Self::secrets_resolver`].
-    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    ///
+    /// **Not feature-gated**, unlike its key-agreement sibling below, because
+    /// the Trust-Task spine signs every success response with it and
+    /// conformance must not depend on which transports were compiled in. A
+    /// `--no-default-features --features rest` build answers the same
+    /// specifications as a full one, and those specifications require a proof
+    /// on the response (SPEC §7.3 item 7).
     pub signing_vm_id: Option<String>,
     /// Verification-method id for the VTA's key-agreement key
     /// (e.g. `{did}#key-1`). Populated by `init_auth`.
@@ -566,7 +572,6 @@ pub async fn build_app_state(
         did_resolver: auth.did_resolver.clone(),
         status_list_resolver: crate::vault::status::default_status_resolver(auth.did_resolver),
         secrets_resolver: auth.secrets_resolver,
-        #[cfg(any(feature = "didcomm", feature = "tsp"))]
         signing_vm_id: auth.signing_vm_id,
         #[cfg(any(feature = "didcomm", feature = "tsp"))]
         ka_vm_id: auth.ka_vm_id,
