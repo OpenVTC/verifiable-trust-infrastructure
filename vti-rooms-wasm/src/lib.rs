@@ -54,6 +54,8 @@
 //! whose leaf nobody added, which fails at the first read looking like a bad Welcome rather
 //! than a wrong identity.
 
+pub mod invitation;
+
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde::{Deserialize, Serialize};
@@ -114,7 +116,18 @@ fn js(e: String) -> JsError {
 /// the same one to two rooms tells anybody who sees both that one party is in both — the
 /// correlation a `private` room exists to deny, arriving through the door rather than
 /// through the wall.
-pub fn mint_key_package(member_did: &str) -> Result<String, String> {
+pub fn mint_key_package(
+    member_did: &str,
+    room_id: &str,
+    invitation: &str,
+    spent: &str,
+) -> Result<String, String> {
+    // Gated, and gated *here* rather than only at the Welcome, because minting is
+    // not free: it retains a private key against a Welcome that may never come. A
+    // key holder that minted for anyone is one anyone can fill.
+    let spent: Vec<String> = serde_json::from_str(spent).map_err(err)?;
+    invitation::verify(invitation, room_id, member_did, &spent)?;
+
     let (identity, key_package) = IdentitySnapshot::mint(member_did).map_err(err)?;
     serde_json::to_string(&MintedIdentity {
         identity,
@@ -125,8 +138,30 @@ pub fn mint_key_package(member_did: &str) -> Result<String, String> {
 
 /// See [`mint_key_package`].
 #[wasm_bindgen(js_name = mintKeyPackage)]
-pub fn mint_key_package_js(member_did: &str) -> Result<String, JsError> {
-    mint_key_package(member_did).map_err(js)
+pub fn mint_key_package_js(
+    member_did: &str,
+    room_id: &str,
+    invitation: &str,
+    spent: &str,
+) -> Result<String, JsError> {
+    mint_key_package(member_did, room_id, invitation, spent).map_err(js)
+}
+
+/// Run the five invitation checks and return the credential id to record as spent.
+///
+/// Exposed separately from [`mint_key_package`] so a surface can *show* the checks — which
+/// is most of what a person needs to understand about a room they are being let into.
+#[wasm_bindgen(js_name = verifyInvitation)]
+pub fn verify_invitation_js(
+    invitation: &str,
+    room_id: &str,
+    member_did: &str,
+    spent: &str,
+) -> Result<String, JsError> {
+    let spent: Vec<String> = serde_json::from_str(spent).map_err(|e| js(e.to_string()))?;
+    invitation::verify(invitation, room_id, member_did, &spent)
+        .map(|v| v.credential_id)
+        .map_err(js)
 }
 
 /// One room this browser can open.
@@ -146,8 +181,22 @@ impl RoomMember {
     /// owner sent. The identity is consumed here and should be discarded afterwards.
     ///
     /// Fails rather than half-joining if the Welcome was not sealed to this identity.
-    pub fn join(room_id: &str, minted: &str, welcome: &[u8]) -> Result<RoomMember, String> {
+    pub fn join(
+        room_id: &str,
+        minted: &str,
+        welcome: &[u8],
+        invitation: &str,
+        spent: &str,
+    ) -> Result<RoomMember, String> {
         let minted: MintedIdentity = serde_json::from_str(minted).map_err(err)?;
+
+        // The same invitation, checked again and consumed by the caller after this
+        // returns. A Welcome carries a group's secrets, so a key holder that
+        // accepted an uninvited one would hold keys for a room nobody agreed to
+        // join — and would have made the invitation decorative.
+        let spent: Vec<String> = serde_json::from_str(spent).map_err(err)?;
+        invitation::verify(invitation, room_id, minted.identity.member_did(), &spent)?;
+
         let group = RoomGroup::join_from_identity(&minted.identity, welcome).map_err(err)?;
         Ok(RoomMember {
             inner: SealedRoom::new(room_id, group),
@@ -274,8 +323,14 @@ impl RoomMember {
 impl RoomMember {
     /// See [`RoomMember::join`].
     #[wasm_bindgen(js_name = join)]
-    pub fn join_js(room_id: &str, minted: &str, welcome: &[u8]) -> Result<RoomMember, JsError> {
-        Self::join(room_id, minted, welcome).map_err(js)
+    pub fn join_js(
+        room_id: &str,
+        minted: &str,
+        welcome: &[u8],
+        invitation: &str,
+        spent: &str,
+    ) -> Result<RoomMember, JsError> {
+        Self::join(room_id, minted, welcome, invitation, spent).map_err(js)
     }
 
     /// See [`RoomMember::restore`].
@@ -346,6 +401,57 @@ impl RoomMember {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::invitation::verify;
+    /// A room with a real `did:key` identity, and the secret it signs invitations with.
+    ///
+    /// `did:key` because the whole invitation check has to be lexical here: a browser
+    /// verifying a proof cannot go and resolve something, and a room that carries its key
+    /// in its own name means it does not have to.
+    fn a_room(seed: u8) -> (String, affinidi_secrets_resolver::secrets::Secret) {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64U;
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let pk = sk.verifying_key().to_bytes();
+        let mut mc = vec![0xed, 0x01];
+        mc.extend_from_slice(&pk);
+        let did = format!(
+            "did:key:{}",
+            multibase::encode(multibase::Base::Base58Btc, &mc)
+        );
+        let secret = affinidi_secrets_resolver::secrets::Secret::from_str(
+            // The `did:key` convention: the multibase tag IS the fragment.
+            &format!("{did}#{}", did.trim_start_matches("did:key:")),
+            &serde_json::json!({
+                "crv": "Ed25519",
+                "d": B64U.encode(sk.to_bytes()),
+                "kty": "OKP",
+                "x": B64U.encode(pk),
+            }),
+        )
+        .expect("build the room's signing secret");
+        (did, secret)
+    }
+
+    /// An invitation from `room` to `subject`, signed.
+    fn an_invitation(
+        room: &str,
+        secret: &affinidi_secrets_resolver::secrets::Secret,
+        subject: &str,
+        id: &str,
+    ) -> String {
+        let now = chrono::Utc::now();
+        let mut vic = dtg_credentials::DTGCredential::new_vic(
+            room.to_string(),
+            subject.to_string(),
+            now - chrono::Duration::minutes(1),
+            Some(now + chrono::Duration::hours(1)),
+        )
+        .with_id(id);
+        futures_lite::future::block_on(vic.sign(secret, None)).expect("sign the invitation");
+        serde_json::to_string(vic.credential()).expect("serialise the invitation")
+    }
+
+    const NONE_SPENT: &str = "[]";
+
     use vti_rooms::mls::RoomGroup;
 
     /// The whole member story in one test, because the failures worth catching are all
@@ -356,9 +462,11 @@ mod tests {
         // The owner's side. Not part of this crate's API — a browser member is never an
         // owner — but a Welcome has to come from somewhere.
         let mut owner = RoomGroup::create("did:key:zOwner").unwrap();
-        let owner_room_id = "did:webvh:example.com:room";
 
-        let minted = mint_key_package("did:key:zJoiner").unwrap();
+        let (room_did, room_secret) = a_room(0x11);
+        let joiner = "did:key:zJoiner";
+        let vic = an_invitation(&room_did, &room_secret, joiner, "urn:uuid:invite-1");
+        let minted = mint_key_package(joiner, &room_did, &vic, NONE_SPENT).unwrap();
         let parsed: MintedIdentity = serde_json::from_str(&minted).unwrap();
         let key_package = B64.decode(&parsed.key_package).unwrap();
 
@@ -368,8 +476,8 @@ mod tests {
             .clone()
             .expect("adding a member makes a Welcome");
 
-        let mut member = RoomMember::join(owner_room_id, &minted, &welcome).unwrap();
-        assert_eq!(member.room_id(), owner_room_id);
+        let mut member = RoomMember::join(&room_did, &minted, &welcome, &vic, NONE_SPENT).unwrap();
+        assert_eq!(member.room_id(), room_did);
 
         // A record the member writes and reads back.
         let sealed = member.seal_record("rec-1", 7, b"hello").unwrap();
@@ -406,27 +514,113 @@ mod tests {
         );
     }
 
+    /// Each of the five checks, made to bite.
+    ///
+    /// A gate is only worth having if every clause of it refuses something, and a five-check
+    /// gate is exactly the shape that quietly becomes a four-check one. So each is asserted
+    /// separately rather than through one "a bad invitation is refused" case, which would
+    /// still pass with any four of them.
+    #[test]
+    fn every_invitation_check_refuses_something() {
+        let (room, secret) = a_room(0x21);
+        let (other_room, other_secret) = a_room(0x22);
+        let me = "did:key:zMe";
+
+        let good = an_invitation(&room, &secret, me, "urn:uuid:i-1");
+        assert!(
+            verify(&good, &room, me, &[]).is_ok(),
+            "the control must pass"
+        );
+
+        // 1. Not an invitation at all.
+        let now = chrono::Utc::now();
+        let mut vrc = dtg_credentials::DTGCredential::new_vac(
+            room.clone(),
+            me.to_string(),
+            "room".into(),
+            vec!["read".into()],
+            now,
+            now + chrono::Duration::hours(1),
+        )
+        .expect("build an authority credential")
+        .with_id("urn:uuid:i-2");
+        futures_lite::future::block_on(vrc.sign(&secret, None)).unwrap();
+        let as_json = serde_json::to_string(vrc.credential()).unwrap();
+        assert!(
+            verify(&as_json, &room, me, &[])
+                .unwrap_err()
+                .contains("not an invitation")
+        );
+
+        // 2. Issued by a different room. Valid, and not an invitation to *this* one.
+        let elsewhere = an_invitation(&other_room, &other_secret, me, "urn:uuid:i-3");
+        assert!(
+            verify(&elsewhere, &room, me, &[])
+                .unwrap_err()
+                .contains("issued by")
+        );
+
+        // 3. Issued to somebody else. An invitation is not transferable — without this a
+        //    third party could place a member into a room they were invited to.
+        let theirs = an_invitation(&room, &secret, "did:key:zSomeoneElse", "urn:uuid:i-4");
+        assert!(
+            verify(&theirs, &room, me, &[])
+                .unwrap_err()
+                .contains("not transferable")
+        );
+
+        // 4. Signed by the wrong key. Everything above is a claim until the proof holds: a
+        //    well-formed invitation naming anyone is trivial to write, and this is the one
+        //    check that makes the other four mean anything.
+        let forged = an_invitation(&room, &other_secret, me, "urn:uuid:i-5");
+        assert!(
+            verify(&forged, &room, me, &[])
+                .unwrap_err()
+                .contains("is signed by")
+        );
+
+        // 5. Already spent. Single-use is what stops an invitation being a standing
+        //    entitlement to rejoin a room you were removed from.
+        let spent = vec!["urn:uuid:i-1".to_string()];
+        assert!(
+            verify(&good, &room, me, &spent)
+                .unwrap_err()
+                .contains("already been used")
+        );
+    }
+
     /// The failure this crate exists to make impossible to hit silently: a snapshot taken
     /// before a commit restores to a member who cannot read what came after it.
     #[test]
     fn a_snapshot_taken_before_a_commit_is_stale() {
         let mut owner = RoomGroup::create("did:key:zOwner").unwrap();
-        let minted = mint_key_package("did:key:zJoiner").unwrap();
+        let (room_did, room_secret) = a_room(0x11);
+        let joiner = "did:key:zJoiner";
+        let vic = an_invitation(&room_did, &room_secret, joiner, "urn:uuid:invite-1");
+        let minted = mint_key_package(joiner, &room_did, &vic, NONE_SPENT).unwrap();
         let parsed: MintedIdentity = serde_json::from_str(&minted).unwrap();
         let change = owner
             .add_member_from_bytes(&B64.decode(&parsed.key_package).unwrap())
             .unwrap();
         let mut member = RoomMember::join(
-            "did:webvh:example.com:room",
+            &room_did,
             &minted,
             &change.welcome.unwrap(),
+            &vic,
+            NONE_SPENT,
         )
         .unwrap();
 
         let stale = member.snapshot().unwrap();
 
         // Somebody else joins; the commit advances everyone's epoch.
-        let other = mint_key_package("did:key:zOther").unwrap();
+        let other_vic = an_invitation(
+            &room_did,
+            &room_secret,
+            "did:key:zOther",
+            "urn:uuid:invite-2",
+        );
+        let other = mint_key_package("did:key:zOther", &room_did, &other_vic, NONE_SPENT).unwrap();
         let other_parsed: MintedIdentity = serde_json::from_str(&other).unwrap();
         let change = owner
             .add_member_from_bytes(&B64.decode(&other_parsed.key_package).unwrap())

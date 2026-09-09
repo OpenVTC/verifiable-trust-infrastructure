@@ -27,7 +27,21 @@ vti-rooms = { path = "../vti-rooms", version = "0.1", default-features = false, 
   "mls",
 ] }
 
+# The invitation gate. Default features on, which is not what it looks like:
+# `verify_proof_with_public_key` — the whole of what a member needs — is itself
+# behind `affinidi-signing`. Dropping the feature to avoid the signing side takes
+# the verifying side with it. `affinidi-secrets-resolver` comes along and builds
+# for wasm regardless, since `affinidi-data-integrity` depends on it anyway.
+dtg-credentials = "0.7"
+chrono = { workspace = true }
+multibase = { workspace = true }
+
 base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 wasm-bindgen = "0.2"
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+affinidi-secrets-resolver = { workspace = true }
+futures-lite = "2"

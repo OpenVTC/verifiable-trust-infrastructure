@@ -3512,6 +3512,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "dtg-credentials"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "249ac520c8e0ebe2616af85ecb9377c9be49541267060c3157f906e4ce214445"
+dependencies = [
+ "affinidi-data-integrity",
+ "affinidi-secrets-resolver",
+ "chrono",
+ "multibase",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.11.0",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4046,6 +4064,19 @@ name = "futures-io"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "53c0fa8157de1303bfffdaa1cc2a673bfffb60102f76b0ef4441659124373fed"
+
+[[package]]
+name = "futures-lite"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f78e10609fe0e0b3f4157ffab1876319b5b0db102a2c60dc4626306dc46b44ad"
+dependencies = [
+ "fastrand",
+ "futures-core",
+ "futures-io",
+ "parking",
+ "pin-project-lite",
+]
 
 [[package]]
 name = "futures-macro"
@@ -10578,7 +10609,7 @@ dependencies = [
  "dialoguer",
  "didwebvh-rs",
  "dirs",
- "dtg-credentials",
+ "dtg-credentials 0.6.0",
  "ed25519-dalek 3.0.0",
  "fjall",
  "futures-util",
@@ -10820,7 +10851,7 @@ dependencies = [
  "clap",
  "dialoguer",
  "didwebvh-rs",
- "dtg-credentials",
+ "dtg-credentials 0.6.0",
  "ed25519-dalek 3.0.0",
  "fjall",
  "flate2",
@@ -10985,7 +11016,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "chrono",
- "dtg-credentials",
+ "dtg-credentials 0.6.0",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "multibase",
@@ -11002,7 +11033,13 @@ dependencies = [
 name = "vti-rooms-wasm"
 version = "0.1.0"
 dependencies = [
+ "affinidi-secrets-resolver",
  "base64 0.23.1",
+ "chrono",
+ "dtg-credentials 0.7.0",
+ "ed25519-dalek 3.0.0",
+ "futures-lite",
+ "multibase",
  "serde",
  "serde_json",
  "vti-rooms",
