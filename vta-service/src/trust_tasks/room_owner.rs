@@ -195,7 +195,7 @@ pub(super) async fn handle_issue_authority(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::owner::issue_authority::v0_1::Payload =
+    let req: trust_tasks_rs::specs::rooms::owner::issue_authority::v0_2::Payload =
         match parse_payload(&doc) {
             Ok(r) => r,
             Err(resp) => return resp,
@@ -207,32 +207,20 @@ pub(super) async fn handle_issue_authority(
     // action list rather than reading it as "everything", and the schema refuses it before
     // that — two layers, because "confers nothing" and "confers everything" are exactly the
     // two readings a careless consumer might choose between.
-    // An authority credential must expire, and since dtg-credentials 0.7 the constructor
-    // says so in its type. Nothing about a subject's current standing is consulted when a
-    // chain is verified, so a grant that does not expire is a grant nobody can withdraw by
-    // waiting — the only way back is revocation, which this stack does not yet have.
-    //
-    // Refused rather than defaulted. Picking a lifetime here would put the room's most
-    // consequential number in a place its owner never looks.
-    let Some(valid_until) = req.valid_until else {
-        return app_error_to_reject(
-            &doc,
-            vti_common::error::AppError::Validation(
-                "an authority credential must name `validUntil`: nothing about a subject's \
-                 standing is checked when a chain is verified, so authority that does not \
-                 expire is authority nobody can withdraw"
-                    .into(),
-            ),
-        );
-    };
-
+    // `validUntil` is not checked here any more, and its absence is not a case this
+    // function can reach: `issue-authority/0.2` makes the member REQUIRED, so the generated
+    // payload types it as a `DateTime` and the envelope schema rejects a request without one
+    // before dispatch. The rule is unchanged — nothing about a subject's standing is
+    // consulted when a chain is verified, so a root that does not expire is authority nobody
+    // can withdraw by waiting — it is simply enforced a layer up now, which is where a
+    // shape constraint belongs.
     let vac = match dtg_credentials::DTGCredential::new_vac(
         req.room_id.clone(),
         req.subject.clone(),
         req.room_id.clone(),
         actions,
         chrono::Utc::now(),
-        valid_until,
+        req.valid_until,
     ) {
         Ok(v) => v,
         Err(e) => {

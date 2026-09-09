@@ -165,9 +165,23 @@ pub async fn present(
     // Freshness belongs to the request: the room task document carrying this is signed by
     // the presenter and carries `id` and `issuedAt`, which is what SPEC.md §7.2 item 11
     // keys duplicate-execution protection on.
+    // Credentials cross as JSON **strings**, not as objects. `AuthorityPresentation` types
+    // both members as strings — the host's opener accepts base64url or bare JSON text and
+    // selects on a leading `{` — so an object here is not a presentation a host can even
+    // deserialize, let alone verify. It emitted objects until this task moved to `0.2`,
+    // whose response schema names the shared component and made the disagreement a type
+    // error instead of a runtime refusal nothing in this workspace exercised.
+    let as_text = |v: &Value, what: &str| -> Result<Value, AppError> {
+        serde_json::to_string(v)
+            .map(Value::String)
+            .map_err(|e| AppError::Internal(format!("serialise the {what}: {e}")))
+    };
     let presentation = serde_json::json!({
-        "membership": vmc,
-        "authority": [leaf_json, vac],
+        "membership": as_text(&vmc, "membership credential")?,
+        "authority": [
+            as_text(&leaf_json, "attenuated credential")?,
+            as_text(&vac, "room-issued credential")?,
+        ],
     });
 
     Ok(MintedPresentation {

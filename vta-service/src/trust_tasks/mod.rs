@@ -1804,7 +1804,7 @@ dispatch_table! {
     // An agent asks for a scoped presentation over its principal's room
     // credentials. Gated on the `roomPresent` capability plus context access
     // for the principal's key — NOT on `Sign`, which would grant far more.
-    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_PRESENT_0_1 => room_keys::handle_present
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_PRESENT_0_2 => room_keys::handle_present
         [ None Metadata false ],
     // Group custody: how a group reaches this VTA, and what it does with one.
     // Three inbound (a room's owner reaching us) and one outbound-facing; only
@@ -1837,7 +1837,7 @@ dispatch_table! {
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1 => room_owner::handle_issue_membership
         [ Mutating Metadata false ],
-    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_1 => room_owner::handle_issue_authority
+    vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2 => room_owner::handle_issue_authority
         [ Mutating Metadata false ],
     // ─── Application-state slice (spec/vta/app-state/*) ──────────
     // Versioned, namespaced per-context JSON the VTA stores but never

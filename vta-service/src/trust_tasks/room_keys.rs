@@ -1,4 +1,4 @@
-//! The room-oracle slice — `spec/rooms/keys/present/0.1`.
+//! The room-oracle slice — `spec/rooms/keys/present/0.2`.
 //!
 //! An agent asks its principal's VTA to mint a presentation for one room operation. The
 //! orchestration is [`crate::operations::room_oracle`]; this is the dispatch surface.
@@ -48,7 +48,7 @@ async fn require_cap(
     super::helpers::require_capability(state, auth, doc, cap, "minting a room presentation").await
 }
 
-/// `rooms/keys/present/0.1`.
+/// `rooms/keys/present/0.2`.
 pub(super) async fn handle_present(
     state: &AppState,
     auth: &AuthClaims,
@@ -58,7 +58,7 @@ pub(super) async fn handle_present(
         return r;
     }
 
-    let req: trust_tasks_rs::specs::rooms::keys::present::v0_1::Payload = match parse_payload(&doc)
+    let req: trust_tasks_rs::specs::rooms::keys::present::v0_2::Payload = match parse_payload(&doc)
     {
         Ok(r) => r,
         Err(resp) => return resp,

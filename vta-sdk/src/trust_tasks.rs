@@ -796,13 +796,13 @@ pub const TASK_VTA_MEMORY_PUT_0_1: &str = "https://trusttasks.org/spec/vta/memor
 /// access. Payload: [`crate::protocols::memory::MemoryListBody`].
 pub const TASK_VTA_MEMORY_LIST_0_1: &str = "https://trusttasks.org/spec/vta/memory/list/0.1";
 
-/// `spec/rooms/keys/present/0.1` — an agent asks the VTA holding its
+/// `spec/rooms/keys/present/0.2` — an agent asks the VTA holding its
 /// principal's room credentials to mint a presentation for **one** room
 /// operation. The credentials never cross to the agent; only the presentation
 /// does, it is scoped to the action it was asked for, and it is granted to the
 /// caller — so it is worthless to anybody who captures it.
 /// Auth: `roomPresent` capability, plus context access for the principal's key.
-pub const TASK_ROOMS_KEYS_PRESENT_0_1: &str = "https://trusttasks.org/spec/rooms/keys/present/0.1";
+pub const TASK_ROOMS_KEYS_PRESENT_0_2: &str = "https://trusttasks.org/spec/rooms/keys/present/0.2";
 
 /// `spec/rooms/keys/open/0.1` — an agent sends a sealed record and gets its
 /// plaintext. The key never crosses. Auth: `roomOpen` capability.
@@ -868,12 +868,14 @@ pub const TASK_ROOMS_OWNER_REGISTER_0_1: &str =
 pub const TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1: &str =
     "https://trusttasks.org/spec/rooms/owner/issue-membership/0.1";
 
-/// `spec/rooms/owner/issue-authority/0.1` — mint a Verifiable Authority Credential — a
-/// chain root at the room's scope, conferring read/write/curate/admin.
+/// `spec/rooms/owner/issue-authority/0.2` — mint a Verifiable Authority Credential — a
+/// chain root at the room's scope, conferring read/write/curate/admin. `validUntil` is
+/// REQUIRED: a root is the grant nothing else can withdraw, so expiry is the only way it
+/// ends short of revocation.
 /// Auth: `credentialWrite` capability, plus whatever the key oracle says about
 /// naming the room's signing key.
-pub const TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_1: &str =
-    "https://trusttasks.org/spec/rooms/owner/issue-authority/0.1";
+pub const TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2: &str =
+    "https://trusttasks.org/spec/rooms/owner/issue-authority/0.2";
 
 /// `spec/vta/memory/delete/0.1` — remove one entry by key (`not_found` if
 /// absent). Auth: context access. Payload:
@@ -1941,7 +1943,7 @@ pub const ALL_URIS: &[&str] = &[
     // Agent-memory slice (spec/vta/memory/*)
     TASK_VTA_MEMORY_PUT_0_1,
     TASK_VTA_MEMORY_LIST_0_1,
-    TASK_ROOMS_KEYS_PRESENT_0_1,
+    TASK_ROOMS_KEYS_PRESENT_0_2,
     TASK_ROOMS_KEYS_OPEN_0_1,
     TASK_ROOMS_KEYS_KEY_PACKAGE_0_1,
     TASK_ROOMS_KEYS_WELCOME_0_1,
@@ -1953,7 +1955,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_OWNER_INVITE_0_1,
     TASK_ROOMS_OWNER_REGISTER_0_1,
     TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
-    TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_1,
+    TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
     TASK_VTA_MEMORY_DELETE_0_1,
     // Application-state slice (spec/vta/app-state/*)
     TASK_VTA_APP_STATE_GET_1_0,
