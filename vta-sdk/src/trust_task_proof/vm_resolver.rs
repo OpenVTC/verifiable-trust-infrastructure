@@ -74,10 +74,13 @@ impl TrustTaskVmResolver {
         }
     }
 
-    /// A resolver that will only ever resolve `did:key`, with no I/O.
+    /// A resolver that performs **no I/O**: `did:key` and `did:peer`, both of which carry
+    /// their keys in the identifier.
     ///
-    /// The pre-existing behaviour, kept nameable so a caller that wants it says
-    /// so rather than getting it by omission.
+    /// The guarantee is about the network, not about the method — a caller choosing this is
+    /// saying no unauthenticated request may make it fetch. `did:peer` satisfies that as
+    /// fully as `did:key` does, and excluding it only refused credentials this could have
+    /// checked.
     #[must_use]
     pub fn did_key_only() -> Self {
         Self { resolver: None }
@@ -102,6 +105,23 @@ impl TrustTaskVmResolver {
         // First, and unconditionally: the key is in the identifier.
         if base_did.starts_with("did:key:") {
             return resolve_did_key(vm);
+        }
+
+        // So is a `did:peer`'s, and that matters more than it looks.
+        //
+        // A `did:peer:2` encodes its keys and its services inline, so resolving one is —
+        // in `PeerResolver`'s own words — "pure computation (no IO)". Treating it as
+        // needing a network resolver made `did_key_only()` mean "did:key only" when what
+        // it exists to promise is that **no unauthenticated request can make this verifier
+        // fetch**. Those are different guarantees, and the narrower one refuses credentials
+        // it could have checked without touching the network.
+        //
+        // Concretely: a room identified by `did:peer:2` can advertise a mediator, which is
+        // how a member reaches its owner — a `did:key` cannot, having no service block. So
+        // a host wanting to serve such a room had to enable network resolution it does not
+        // need, and accept the exposure that flag exists to gate.
+        if base_did.starts_with("did:peer:") {
+            return resolve_did_peer(vm, base_did);
         }
 
         let resolver = self.resolver.as_ref().ok_or_else(|| {
@@ -142,6 +162,50 @@ impl TrustTaskVmResolver {
     }
 }
 
+/// Resolve a `did:peer` verification method with no I/O.
+///
+/// The document is derived from the identifier and its keys expanded, then the method is
+/// looked up exactly as the network path looks one up — including accepting both the
+/// absolute and relative spellings of the same id, because a proof always names a method
+/// absolutely while a document may not.
+fn resolve_did_peer(vm: &str, base_did: &str) -> Result<ResolvedKey, DataIntegrityError> {
+    use affinidi_did_common::DID;
+    use affinidi_did_resolver_traits::{PeerResolver, Resolver};
+
+    let did = DID::try_from(base_did).map_err(|e| {
+        DataIntegrityError::Resolver(format!("`{base_did}` is not a well-formed DID: {e}"))
+    })?;
+    let doc = PeerResolver
+        .resolve(&did)
+        .ok_or_else(|| {
+            DataIntegrityError::Resolver(format!(
+                "`{base_did}` is not a did:peer this build resolves"
+            ))
+        })?
+        .map_err(|e| DataIntegrityError::Resolver(format!("`{base_did}` did not resolve: {e}")))?;
+
+    let relative = vm
+        .split_once('#')
+        .map(|(_, fragment)| format!("#{fragment}"))
+        .unwrap_or_default();
+    let entry = doc
+        .verification_method
+        .iter()
+        .find(|m| m.id.as_str() == vm || m.id.as_str() == relative)
+        .ok_or_else(|| {
+            DataIntegrityError::Resolver(format!(
+                "verificationMethod `{vm}` is not in the DID document for `{base_did}`"
+            ))
+        })?;
+
+    let bytes = entry.get_public_key_bytes().map_err(|e| {
+        DataIntegrityError::Resolver(format!(
+            "verificationMethod `{vm}` public key could not be extracted: {e}"
+        ))
+    })?;
+    Ok(ResolvedKey::new(KeyType::Ed25519, bytes))
+}
+
 #[async_trait::async_trait]
 impl VerificationMethodResolver for TrustTaskVmResolver {
     async fn resolve_vm(&self, vm: &str) -> Result<ResolvedKey, DataIntegrityError> {
@@ -171,6 +235,50 @@ mod tests {
             .await
             .expect("did:key resolves with no cache client");
         assert_eq!(key.public_key_bytes, sk.verifying_key().to_bytes().to_vec());
+    }
+
+    /// A `did:peer` resolves with **no resolver configured**, which is the point.
+    ///
+    /// Its keys are in its identifier, so this needs no network — and a verifier configured
+    /// to do no I/O should therefore accept it. Before this it did not, and a host wanting
+    /// to serve a `did:peer` room had to turn on network resolution it never used.
+    ///
+    /// A `did:peer:2` is used rather than a `did:peer:0` because that is the shape a room
+    /// needs: only numalgo 2 carries a service block, which is how a room advertises the
+    /// mediator its members reach its owner through.
+    #[tokio::test]
+    async fn did_peer_resolves_with_no_resolver_configured() {
+        use affinidi_tdk::dids::{DID, KeyType};
+
+        let (did, secrets) = DID::generate_did_peer(
+            vec![
+                (
+                    affinidi_tdk::dids::PeerKeyRole::Verification,
+                    KeyType::Ed25519,
+                ),
+                (affinidi_tdk::dids::PeerKeyRole::Encryption, KeyType::X25519),
+            ],
+            None,
+        )
+        .expect("mint a did:peer");
+
+        let vm = format!("{did}#key-1");
+        let resolved = TrustTaskVmResolver::did_key_only()
+            .resolve_vm(&vm)
+            .await
+            .expect("a did:peer carries its keys in its identifier, so this needs no network");
+
+        // The same key the minting side holds — resolution is not merely succeeding, it is
+        // returning the right bytes.
+        let expected = secrets
+            .iter()
+            .find(|s| s.id.ends_with("#key-1"))
+            .expect("the verification secret");
+        assert_eq!(
+            resolved.public_key_bytes,
+            expected.get_public_bytes(),
+            "the resolved key must be the one the DID names"
+        );
     }
 
     /// The refusal has to say *why* it refused, because "did not resolve" and

@@ -29,12 +29,16 @@ proof-verify = [
   "dep:async-trait",
   "dep:affinidi-data-integrity",
   "dep:affinidi-did-resolver-cache-sdk",
+  "dep:affinidi-did-resolver-traits",
+  "dep:affinidi-did-common",
   "dep:affinidi-secrets-resolver",
   "dep:trust-tasks-rs",
 ]
 didcomm = [
   "dep:affinidi-tdk",
   "dep:affinidi-did-resolver-cache-sdk",
+  "dep:affinidi-did-resolver-traits",
+  "dep:affinidi-did-common",
   "dep:tracing",
   "dep:uuid",
   "dep:tokio",
@@ -64,6 +68,8 @@ tsp = [
   # `TspPingSession` builds a `trust_tasks_rs::TrustTask` envelope.
   "dep:trust-tasks-rs",
   "dep:affinidi-did-resolver-cache-sdk",
+  "dep:affinidi-did-resolver-traits",
+  "dep:affinidi-did-common",
   "dep:tracing",
   "dep:uuid",
   "dep:tokio",
@@ -83,6 +89,8 @@ agent-names = [
   "dep:agent-names",
   "dep:affinidi-did-common",
   "dep:affinidi-did-resolver-cache-sdk",
+  "dep:affinidi-did-resolver-traits",
+  "dep:affinidi-did-common",
   "affinidi-did-resolver-cache-sdk/agent-names",
 ]
 client = [
@@ -118,6 +126,8 @@ session = [
   # is `dirs::config_dir()` — not the XDG path on macOS or Windows.
   "dep:dirs",
   "dep:affinidi-did-resolver-cache-sdk",
+  "dep:affinidi-did-resolver-traits",
+  "dep:affinidi-did-common",
   "dep:tokio",
   # Rotation of a temp-provisioned did:key on first successful auth needs
   # a CSPRNG seed for the replacement Ed25519 key.
@@ -272,6 +282,7 @@ rustls = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 affinidi-did-resolver-cache-sdk = { workspace = true, optional = true }
+affinidi-did-resolver-traits = { workspace = true, optional = true }
 # `VerificationMethodResolver` is an async trait object; the resolver impl in
 # `trust_task_proof::vm_resolver` implements it.
 async-trait = { version = "0.1", optional = true }
