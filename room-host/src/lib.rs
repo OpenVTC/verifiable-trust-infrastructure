@@ -135,7 +135,7 @@ impl HostState {
     /// and only this half: a room that does not exist yet has issued no credentials, so there
     /// is no chain to judge and nothing for a verifier to do.
     async fn presenter(&self, doc: &TrustTask<Value>) -> Result<String, AppError> {
-        vti_common::auth::di_proof::verify_trust_task_proof_with(doc, &self.resolver)
+        vti_common::auth::verify_trust_task_proof_with(doc, &self.resolver)
             .await
             .map_err(|e| AppError::Forbidden(format!("request proof: {e}")))
     }

@@ -1043,7 +1043,7 @@ mod envelope_push_tests {
         // this one. So this runs the real verifier, and it also pins the two
         // members that make the proof non-replayable — without `recipient`,
         // the same signed prompt is valid at any approver.
-        let signer = crate::auth::di_proof::verify_trust_task_proof(
+        let signer = crate::auth::verify_trust_task_proof(
             &serde_json::from_value(pushed[0].body.clone())
                 .expect("the pushed document parses as a Trust Task"),
         )

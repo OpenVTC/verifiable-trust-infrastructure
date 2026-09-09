@@ -560,7 +560,7 @@ async fn v0_2_minted_request_completes_with_a_0_1_flavored_response() {
     // 3. …and it verifies end-to-end: the VTA's eddsa-jcs-2022 proof checks
     //    out over the served 0.2 bytes, attributable to the issuing VTA.
     let minted: TrustTask<Value> = serde_json::from_value(ar.clone()).unwrap();
-    let signer = vta_service::auth::di_proof::verify_trust_task_proof(&minted)
+    let signer = vta_service::auth::verify_trust_task_proof(&minted)
         .await
         .expect("minted 0.2 approve-request proof verifies");
     assert_eq!(signer, ctx.vta_did, "proof VM DID == issuing VTA");

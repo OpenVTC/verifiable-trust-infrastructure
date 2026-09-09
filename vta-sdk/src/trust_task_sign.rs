@@ -4,7 +4,7 @@
 //!
 //! Both VTI services authenticate holder-submitted Trust Tasks the same way:
 //! verify the document's Data-Integrity proof with a **`did:key`-only** resolver
-//! (`vti_common::auth::di_proof`) and take the proof's `verificationMethod` DID
+//! (`crate::trust_task_proof`) and take the proof's `verificationMethod` DID
 //! as the proven signer, cross-checked against the document `issuer` where one
 //! is present. That is the whole authentication for the VTC's `POST
 //! /trust-tasks` holder surface (join submit / manifest / status) and for both
