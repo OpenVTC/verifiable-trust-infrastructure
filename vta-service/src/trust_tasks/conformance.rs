@@ -3150,9 +3150,16 @@ fn persona_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                 validates::<specs::persona::correlation::analyze::v1_0::Payload>,
             ),
             (
+                // The crossing members are exercised, not merely allowed: they
+                // are the ones added last and the dispatch spine validates
+                // OUTGOING responses, so a member the schema has not caught up
+                // with is a 500 on a call that fully succeeded.
                 json!({ "findings": [{
                     "attributeId": ATTR, "severity": "high",
                     "why": "this value is already presented by another profile",
+                    "crossesFacets": true,
+                    "facetIds": [FACET],
+                    "sharedWith": [{ "profileId": PROFILE, "facetId": FACET }],
                     "remedies": ["useDifferentValue", "reissueCredentialToThisDid",
                                  "correlateDeliberately", "proceedAndRecord"]
                 }]}),
