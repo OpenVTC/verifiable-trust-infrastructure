@@ -141,6 +141,9 @@ sealed.
 
 ## 5. Decided: serve reads, refuse writes
 
+Both questions this section opened are now answered. The first was the one that
+mattered.
+
 **What does the agent do when it catches a host?** Answered 2026-09-09:
 **it keeps serving reads and refuses to write.**
 
@@ -186,13 +189,49 @@ happily writes, has a detection and no consequence. So the durable
 refuses anything — the tasks may ship verifying-and-reporting before it, but
 they may not ship *refusing* before it.
 
-### How much history to keep
+### What the memory holds, and how much
 
-Still open, and genuinely smaller. Retaining every `(headVersion, root)` grows
-without bound; retaining only the latest catches a host that answers two reads
-inconsistently and misses one that alternates. The obvious middle — the last N,
-plus the highest `headVersion` ever seen — is probably right, and "probably" is
-why it stays written down. Nothing is blocked on it: the first N can be one.
+Working this out changed it from a storage question into a design one, so it is
+here rather than left to an implementation.
+
+**Key it by room, not by host.** This is the part worth not getting wrong. A
+room's tree at version `V` is a fact about the *room*; who served it is not part
+of that fact. Keying by `(room, host)` would file two hosts of one room in two
+drawers and never compare them — and a room may deliberately have several, a
+mirror serving reads while its primary takes writes.
+
+Keyed by room, a member who reads the same room from two of its hosts gets the
+comparison for free. Two hosts that report **different roots at one
+`headVersion`** is exactly as damning as one host disagreeing with itself: one of
+them is wrong, and the member should be told. A mirror that merely *lags* reports
+a lower `headVersion` and is correctly not compared at all.
+
+That is a **fourth comparison**, and it is not in the three the specification
+lists. `rooms/records/list` offers another member's root, the same member's
+earlier root, and the witnessed anchor. *Another host of the same room* needs no
+gossip channel, no anchor, and no second member — only a caller who names a
+different `host`, which `rooms/keys/read` already lets them do.
+
+**Hold a small map from `headVersion` to root**, most-recent-N by version, plus
+the highest `headVersion` ever seen.
+
+Keeping only the latest is weaker than it looks in one specific way, and stronger
+than it looks in another. It *does* catch a host that alternates: read `(V, A)`,
+then `(V, B)` — same version, different root, caught, and caught again when it
+goes back to `A`. What it misses is a head that **advances and then goes
+backwards**: `(V, A)`, `(V+1, X)`, then `(V, B)` — with one slot the agent is
+holding `V+1` and has nothing to compare `V` against. That is the mirror case and
+the rollback case, which are the two this is for, so one slot is not enough.
+
+N does not need to be large: 16 versions is more history than a member reads
+across in a session and is a few hundred bytes. The highest-ever value is
+separate because it answers a different question — *has this room gone
+backwards?* — which no single pair can.
+
+**Bounded by membership, not by time.** The map is dropped when the member leaves
+the room. It carries no record content, but it is a record of when this member
+read this room, and an agent that keeps that after the membership ends is keeping
+a diary of a room its principal can no longer open.
 
 ---
 
