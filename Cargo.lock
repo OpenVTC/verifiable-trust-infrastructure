@@ -4048,6 +4048,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "53c0fa8157de1303bfffdaa1cc2a673bfffb60102f76b0ef4441659124373fed"
 
 [[package]]
+name = "futures-lite"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f78e10609fe0e0b3f4157ffab1876319b5b0db102a2c60dc4626306dc46b44ad"
+dependencies = [
+ "fastrand",
+ "futures-core",
+ "futures-io",
+ "parking",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "futures-macro"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6484,6 +6497,7 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6b08d90fc020cb5354d5f08ca17711b84c82e2bcc7331753fd94f000d99a8c8"
 dependencies = [
+ "getrandom 0.4.3",
  "log",
  "openmls_serialization_helpers",
  "openmls_traits",
@@ -6492,6 +6506,7 @@ dependencies = [
  "serde_bytes",
  "thiserror 2.0.20",
  "tls_codec",
+ "web-time",
  "zeroize",
 ]
 
@@ -10957,6 +10972,7 @@ dependencies = [
  "base64 0.23.1",
  "chacha20poly1305 0.10.1",
  "chrono",
+ "getrandom 0.2.17",
  "getrandom 0.4.3",
  "openmls",
  "openmls_basic_credential",
@@ -10995,6 +11011,25 @@ dependencies = [
  "vti-common",
  "vti-rooms",
  "vti-rooms-dtg",
+]
+
+[[package]]
+name = "vti-rooms-wasm"
+version = "0.1.0"
+dependencies = [
+ "affinidi-data-integrity",
+ "affinidi-secrets-resolver",
+ "base64 0.23.1",
+ "chrono",
+ "dtg-credentials",
+ "ed25519-dalek 3.0.0",
+ "futures-lite",
+ "getrandom 0.4.3",
+ "multibase",
+ "serde",
+ "serde_json",
+ "vti-rooms",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -11184,6 +11219,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
+ "serde",
  "wasm-bindgen",
 ]
 

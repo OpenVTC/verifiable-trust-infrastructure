@@ -781,6 +781,34 @@ jobs:
         run: cargo check -p vta-service --no-default-features --features azure-secrets,keyring,rest
       - name: vta-service tsp transport
         run: cargo check -p vta-service --features tsp
+      # A room's member half must not need a server. `vti-common` is optional
+      # behind `host`, and it is what pulls axum, fjall and tokio — so this is
+      # the check that `mls`/`sealed`/`retention` have not quietly acquired a
+      # dependency on one. It is also the *whole* precondition for the browser
+      # member: no store, no `AppError`, no runtime.
+      - name: vti-rooms member half (no host)
+        run: cargo clippy -p vti-rooms --no-default-features --features mls --all-targets -- -D warnings
+      # …and that the member half still reaches wasm, which is the property the
+      # feature exists for. `--lib` because the dev-dependencies (tokio) are
+      # native and do not need to reach wasm for this to hold.
+      - name: vti-rooms member half on wasm32
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check -p vti-rooms --lib --no-default-features --features mls \
+            --target wasm32-unknown-unknown
+      # The artifact itself, and its size. The size is reported rather than
+      # gated: a threshold picked today would either be slack enough to be
+      # meaningless or tight enough to fail on a dependency's patch release, and
+      # what a reviewer needs is the number in the log next to the diff that
+      # moved it.
+      - name: vti-rooms-wasm artifact
+        run: |
+          cargo build -p vti-rooms-wasm --profile wasm-release \
+            --target wasm32-unknown-unknown
+          f=target/wasm32-unknown-unknown/wasm-release/vti_rooms_wasm.wasm
+          echo "raw:      $(( $(wc -c < "$f") / 1024 )) KB"
+          echo "gzipped:  $(( $(gzip -9 -c "$f" | wc -c) / 1024 )) KB"
+
       - name: vta-sdk attest-verify
         run: cargo check -p vta-sdk --features attest-verify
       - name: vta-sdk client + sealed-transfer + provision-integration

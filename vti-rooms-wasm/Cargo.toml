@@ -1,0 +1,68 @@
+[package]
+name = "vti-rooms-wasm"
+description = "A data room's member half, for the browser — MLS group custody, record sealing, and the epoch key chain, compiled to WebAssembly"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Not published to crates.io. This crate's artifact is a `.wasm` module and the
+# JS glue beside it; its distribution channel is npm, via `wasm-pack`, and a
+# crates.io release would ship source nobody consumes from there. `vti-rooms`
+# stays published — that is the reusable half.
+publish = false
+
+[lib]
+# `cdylib` is the wasm artifact; `rlib` keeps the crate testable natively, which
+# matters more than it looks: the round-trip tests below are the only place the
+# member half is exercised end to end outside a browser.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The member half, and nothing else from the workspace. `default-features =
+# false` is the whole point: with `host` on, this would pull `vti-common` and
+# with it axum, fjall and tokio, none of which reach wasm.
+vti-rooms = { path = "../vti-rooms", version = "0.1", default-features = false, features = [
+  "mls",
+] }
+
+# The invitation gate. Default features on, which is not what it looks like:
+# `verify_proof_with_public_key` — the whole of what a member needs — is itself
+# behind `affinidi-signing`. Dropping the feature to avoid the signing side takes
+# the verifying side with it. `affinidi-secrets-resolver` comes along and builds
+# for wasm regardless, since `affinidi-data-integrity` depends on it anyway.
+# **The workspace's pin, not one of this crate's own.**
+#
+# A browser member and the hosts it talks to must agree about how an authority chain
+# links, and they have already disagreed once: 0.7 changed a link's `parent` from the
+# parent's `id` to a digest of its claims, so a 0.7 `attenuate` against a 0.6
+# `verify_chain` is refused — worded as a broken chain rather than a version skew
+# ("names parent `zQm…`, but was presented after `urn:uuid:…`"). Taking the workspace
+# dependency makes that drift impossible to reintroduce: this crate cannot fall out of
+# step with `vtc-service`, `room-host` or `vti-rooms-dtg` without the workspace moving
+# too. See OpenVTC/dtg-credentials#22.
+dtg-credentials = { workspace = true }
+# The member's own signing key lives here rather than in JavaScript, so the
+# private half never crosses the boundary. Both already arrive through OpenMLS
+# and data-integrity respectively; naming them is honesty about what is used.
+ed25519-dalek = { workspace = true }
+affinidi-secrets-resolver = { workspace = true }
+affinidi-data-integrity = { workspace = true }
+getrandom = { version = "0.4", features = ["wasm_js"] }
+# `sign` is async and this boundary is not; the future is CPU-bound with no I/O
+# in it, so blocking on it is exact rather than a workaround.
+futures-lite = "2"
+
+chrono = { workspace = true }
+multibase = { workspace = true }
+
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen = "0.2"
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+affinidi-secrets-resolver = { workspace = true }
+futures-lite = "2"
