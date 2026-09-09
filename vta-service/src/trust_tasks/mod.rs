@@ -506,9 +506,26 @@ async fn validate_payload(
 /// RECOMMENDED rather than REQUIRED and whose variant §7.3 makes undeclarable
 /// by a task.
 ///
-/// An agent with no signing identity yet (before setup) answers unsigned rather
-/// than failing — it has nothing to sign with, and refusing would make an
-/// unprovisioned VTA unusable rather than merely unattributable.
+/// # Two failures that look alike and mean opposite things
+///
+/// **No signing identity configured at all** — an agent before setup. It
+/// answers unsigned, because it has nothing to sign with and refusing would
+/// make an unprovisioned VTA unusable rather than merely unattributable. That
+/// is unchanged and deliberate.
+///
+/// **Configured to sign, and cannot** — a resident secret that is missing, or a
+/// signature that fails to attach. This used to answer unsigned too, on the
+/// reasoning that "the work is done and the caller is entitled to the result,
+/// attributable or not". That reasoning had a premise: that nobody checked. It
+/// stopped being true when the client began verifying replies
+/// (OpenVTC/verifiable-trust-infrastructure#1341), and the two halves compose
+/// badly — this agent logs an error and answers 200, the caller refuses the
+/// reply, and the message the operator reads blames *the reply* for something
+/// that is wrong with *this agent's key*. The caller is not entitled to a
+/// result they will discard; they are entitled to know why.
+///
+/// So a misconfiguration is now an error naming itself. It is a 500 because it
+/// is this agent's fault and retrying the same call will not fix it.
 async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> TrustTaskOutcome {
     if !outcome.status.is_success() {
         return outcome;
@@ -521,8 +538,8 @@ async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> T
     };
     use affinidi_tdk::secrets_resolver::SecretsResolver as _;
     let Some(secret) = resolver.get_secret(vm_id).await else {
-        tracing::error!(%vm_id, "no resident secret for the signing key; answering unsigned");
-        return outcome;
+        tracing::error!(%vm_id, "no resident secret for the signing key");
+        return cannot_sign(vm_id, "its signing key is not resident");
     };
 
     match attach_proof(&secret, &outcome.body).await {
@@ -530,10 +547,32 @@ async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> T
             status: outcome.status,
             body,
         },
-        // Every failure inside answers unsigned rather than turning a successful
-        // operation into a failure over its envelope: the work is done and the
-        // caller is entitled to the result, attributable or not.
-        None => outcome,
+        None => {
+            tracing::error!(%vm_id, "the signature would not attach");
+            cannot_sign(vm_id, "its signature would not attach")
+        }
+    }
+}
+
+/// The answer when this agent is configured to sign and cannot.
+///
+/// Names the verification method, because that is the thing an operator can go
+/// and look at, and says the work was done — a caller that retries a mutating
+/// call on this error would repeat it.
+fn cannot_sign(vm_id: &str, why: &str) -> TrustTaskOutcome {
+    let body = serde_json::json!({
+        "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+        "payload": {
+            "code": "internalError",
+            "message": format!(
+                "this agent completed the request and could not sign its answer, because {why}                  ({vm_id}). The work is done — do not retry a change on this error. An unsigned                  answer is bytes rather than evidence, so it is withheld rather than sent."
+            ),
+            "retryable": false,
+        },
+    });
+    TrustTaskOutcome {
+        status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        body: serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec()),
     }
 }
 
@@ -2137,9 +2176,10 @@ mod tests {
         assert!(
             body[..end].contains("sign_success_response("),
             "the dispatch spine no longer signs its responses. 265 published \
-             specifications require a proof on the response (SPEC §7.3 item 7), \
-             and no consumer verifies one — so nothing else in this workspace \
-             would notice."
+             specifications require a proof on the response (SPEC §7.3 item 7). \
+             `VtaClient` verifies one since #1341, so dropping this would break \
+             every round-trip test — but it would break them by blaming the \
+             reply, which is a long way from the cause."
         );
     }
 

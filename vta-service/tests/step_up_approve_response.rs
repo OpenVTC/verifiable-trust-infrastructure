@@ -128,7 +128,7 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
         "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": {
             "subject": did,
             "sessionId": session_id,
@@ -289,7 +289,7 @@ async fn did_signed_approve_response_0_2_elevates_session_to_aal2() {
         "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.2",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": {
             "subject": did,
             "sessionId": session_id,
@@ -717,7 +717,7 @@ async fn delegated_approve_response_elevates_the_subjects_session() {
         "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": approver_did,
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": {
             "subject": subject,
             "sessionId": session_id,
@@ -860,7 +860,7 @@ async fn unauthorized_approver_cannot_elevate() {
         "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": rogue_did,
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": {
             "subject": subject,
             "sessionId": session_id,

@@ -85,7 +85,7 @@ async fn mock_vta_gates_authenticated_routes() {
 // ── Provisionable MockVta: the OpenVTC bootstrap→join e2e seams (issue #406) ──
 
 /// `start_provisionable` must serve a real, self-resolving `did:key` VTA DID —
-/// not the non-resolvable `z6MkTestVTA` sentinel the cheap app uses. This is the
+/// not merely the signing `did:key` the cheap app now derives. This is the
 /// VTA-identity half of Gap 1: only a real `did:key` lets the VTA sign the
 /// authorization VC and seal the provision bundle. A harness drives provisioning
 /// URL-direct with [`MockVta::base_url`] + [`MockVta::vta_did`] (no DID→URL
@@ -101,7 +101,7 @@ async fn provisionable_mock_exposes_a_real_vta_did() {
         "expected a real ed25519 did:key, got {did}"
     );
     assert_ne!(
-        did, "did:key:z6MkTestVTA",
+        did, "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "provisionable mock must not use the non-resolvable sentinel DID"
     );
     mock.shutdown().await;

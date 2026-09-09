@@ -92,7 +92,7 @@ fn create_doc_as(seed: u8, envelope_id: &str, label: &str, idempotency_key: Opti
         "type": KEYS_CREATE,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": vta_service::test_support::did_for_seed(seed).0,
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": {
             "keyType": "ed25519",
             "derivationPath": "",
@@ -136,7 +136,7 @@ async fn key_count(router: &axum::Router, token: &str) -> usize {
         "type": KEYS_LIST,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": caller(),
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": { "contextId": CONTEXT },
     });
     let (status, body) = post(router, token, &doc).await;
@@ -297,7 +297,7 @@ async fn the_same_key_on_a_different_task_is_refused() {
         "type": "https://trusttasks.org/spec/vta/webvh/dids/create/1.0",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": caller(),
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "idempotencyKey": "urn:uuid:idem-cross",
         "payload": { "contextId": CONTEXT, "portable": true },
     });
@@ -334,7 +334,7 @@ async fn a_key_on_a_retry_safe_task_is_ignored_not_rejected() {
         "type": KEYS_LIST,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": caller(),
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "idempotencyKey": "urn:uuid:idem-on-a-read",
         "payload": { "contextId": CONTEXT },
     });

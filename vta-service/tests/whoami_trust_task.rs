@@ -73,7 +73,7 @@ async fn whoami_reports_live_session_acr_not_stale_token() {
         "type": "https://trusttasks.org/spec/auth/whoami/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": {},
     }))
     .expect("envelope deserialises");
@@ -190,7 +190,7 @@ async fn whoami_reports_effective_capabilities_including_an_additive_grant() {
         "type": "https://trusttasks.org/spec/auth/whoami/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": {},
     }))
     .expect("envelope deserialises");
@@ -281,7 +281,7 @@ async fn whoami_does_not_invent_a_capability_nobody_granted() {
         "type": "https://trusttasks.org/spec/auth/whoami/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": {},
     }))
     .expect("envelope deserialises");
@@ -315,7 +315,7 @@ async fn whoami_without_bearer_is_unauthorized() {
         "type": "https://trusttasks.org/spec/auth/whoami/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": "did:key:z6MkAnon",
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": {},
     });
     let req = Request::builder()

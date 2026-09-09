@@ -80,7 +80,7 @@ async fn whoami_status(
             "type": "https://trusttasks.org/spec/auth/whoami/0.1",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "issuer": did,
-            "recipient": "did:key:z6MkTestVTA",
+            "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
             "payload": {},
         }))
         .expect("envelope deserialises");

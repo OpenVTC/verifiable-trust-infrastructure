@@ -77,7 +77,7 @@ async fn revoke(
         "type": "https://trusttasks.org/spec/auth/revoke-session/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": &caller(),
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": { "sessionId": target },
     }))
     .expect("envelope deserialises");

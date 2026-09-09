@@ -613,7 +613,10 @@ async fn admin_can_read_config() {
         .iter()
         .find(|f| f["key"] == "vta_did")
         .expect("vta_did is registered and readable");
-    assert_eq!(did["value"], "did:key:z6MkTestVTA");
+    assert_eq!(
+        did["value"],
+        "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD"
+    );
     assert_eq!(did["source"], "setup");
 }
 
@@ -679,7 +682,10 @@ async fn super_admin_cannot_rewrite_the_vta_identity() {
         .iter()
         .find(|f| f["key"] == "vta_did")
         .expect("vta_did registered");
-    assert_eq!(did["value"], "did:key:z6MkTestVTA", "{body}");
+    assert_eq!(
+        did["value"], "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
+        "{body}"
+    );
 }
 
 #[tokio::test]

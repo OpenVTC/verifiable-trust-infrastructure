@@ -64,7 +64,7 @@ fn refresh_doc(refresh_token: &str) -> Vec<u8> {
         "type": "https://trusttasks.org/spec/auth/refresh/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": "did:key:z6MkRefresher",
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": { "refreshToken": refresh_token },
     })
     .to_string()

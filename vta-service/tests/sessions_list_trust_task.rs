@@ -110,7 +110,7 @@ async fn sessions_list_returns_only_callers_active_sessions() {
         "type": "https://trusttasks.org/spec/auth/sessions/list/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": {},
     }))
     .expect("envelope deserialises");
@@ -172,7 +172,7 @@ async fn sessions_list_without_bearer_is_unauthorized() {
         "type": "https://trusttasks.org/spec/auth/sessions/list/0.1",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": "did:key:z6MkAnon",
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": {},
     });
     let req = Request::builder()

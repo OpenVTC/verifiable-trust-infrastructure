@@ -116,7 +116,7 @@ fn tt(id: &str, type_uri: &str, issuer: &str, payload: Value) -> Value {
         "type": type_uri,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": issuer,
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
         "payload": payload,
     }))
     .expect("envelope deserialises");
