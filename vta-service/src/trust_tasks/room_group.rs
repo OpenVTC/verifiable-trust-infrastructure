@@ -472,20 +472,23 @@ pub(super) async fn handle_backfill(
     // `read`, and only `read`. Reading the room and reading the parts of it
     // written earlier are the same act, so they take the same grant; asking for
     // more would hand the host authority the operation never needed.
-    let minted = match crate::operations::room_oracle::present(
-        state,
-        auth,
-        &vta_did,
-        &req.room_id,
-        "read",
-        Some(req.host.as_str()),
-        None,
-    )
-    .await
-    {
-        Ok(m) => m,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
+    //
+    // The caller-named `host` is NOT bound into the presentation, and used to be
+    // — passed as the leaf's `audience`, which named the party that had to
+    // present the credential rather than the one it was sent to, so every
+    // backfill this VTA attempted was refused. What makes a caller-named host
+    // safe is that the leaf grants to `vta_did`: a host of the caller's
+    // choosing receives something only this agent can act with, so naming one
+    // transfers no standing. What it does gain is sight of the principal's
+    // credentials, which is a disclosure rather than an escalation — see
+    // `rooms/keys/backfill/0.1`.
+    let minted =
+        match crate::operations::room_oracle::present(state, auth, &vta_did, &req.room_id, "read")
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
 
     let mut payload = serde_json::json!({
         "roomId": req.room_id,

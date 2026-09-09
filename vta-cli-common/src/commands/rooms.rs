@@ -37,10 +37,9 @@ use vtc_client::rooms::{CleartextContent, RoomSession, Visibility};
 ///
 /// The host DID is optional because an operator may not know it, and it names the
 /// **recipient** of the document — nothing more. It used to be passed as the presentation's
-/// `audience` as well, on the reading that this bound the presentation to one host; it does
-/// not, and could not, because the verifier compares `audience` to the presenter. See
-/// [`present`]. A presentation is bound to whoever will sign the request, always, so there
-/// is no longer an unbound case for an operator to be warned about.
+/// `audience` as well, on the reading that this bound the presentation to one host. It never
+/// could: see [`present`]. A presentation is bound to whoever will sign the request, always,
+/// so there is no unbound case for an operator to be warned about.
 pub struct RoomTarget<'a> {
     pub host_url: &'a str,
     pub host_did: Option<&'a str>,
@@ -57,38 +56,31 @@ impl RoomTarget<'_> {
     }
 }
 
-/// Mint a presentation for one action, bound to the party that will present it.
+/// Mint a presentation for one action.
 ///
-/// # `audience` is the presenter, not the host
+/// # There is no party to name here, and there used to be two
 ///
-/// This passed `target.host_did` until it was found never to work. `audience` is not who
-/// the presentation is addressed to: `dtg_credentials::authority::verify_chain` compares it
-/// to the **presenter** — "the leaf must be presentable by whoever is presenting it" — so
-/// it is holder binding, and its job is to make a captured presentation worthless to
-/// whoever captured it.
+/// This passed `target.host_did` as the presentation's `audience` until that was found
+/// never to work: `audience` named the party that had to *present* the credential, not the
+/// one it was addressed to, so filling it with a host's DID named somebody no presenter can
+/// ever be, and every request was refused. Omitting `--host-did` "worked" only because an
+/// absent audience skipped the check — so the flag's two states were *broken* and
+/// *unprotected*, with nothing in between.
 ///
-/// Filled with the host's DID, it named a party no presenter can ever match, and the host
-/// refused every request as `WrongAudience`. Omitting `--host-did` "worked" only because an
-/// absent audience skips the check, leaving the presentation bearer-shaped for its whole
-/// four-hour life — so the flag's two states were *broken* and *unprotected*.
+/// Neither the field nor this parameter survives. A presentation is granted to the caller
+/// the VTA authenticated and a host refuses a chain granting to anyone else, so who may
+/// present is established rather than declared; and it is bound to a *room* rather than a
+/// host, so there is no destination to name either. `--host-did` keeps its real job:
+/// naming the document's `recipient`.
 ///
-/// `presenter` is [`RoomSigner::did`], which already documents the rule this restores: a
-/// room request is signed by the party the presentation was minted for.
-///
-/// The **published spec disagrees** — `rooms/keys/present/0.1` calls `audience` "the party
-/// the presentation is for … a host's identifier, normally" — and that conflict is real and
-/// filed upstream. This binds to the presenter because that is what the verifier does
-/// today, and a presentation that cannot verify protects nobody while it is being wrong in
-/// the other direction.
+/// See `rooms/keys/present/0.2`, which removed both members, and
+/// trustoverip/dtgwg-trust-tasks-tf#414.
 async fn present(
     client: &VtaClient,
     target: &RoomTarget<'_>,
     action: &str,
-    presenter: &str,
 ) -> Result<RoomSession, Box<dyn std::error::Error>> {
-    let minted = client
-        .room_present(target.room_id, action, Some(presenter), None)
-        .await?;
+    let minted = client.room_present(target.room_id, action).await?;
     session_from_minted(target.room_id, &minted)
 }
 
@@ -170,7 +162,7 @@ pub async fn cmd_rooms_list(
     since_version: Option<u64>,
     limit: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let session = present(client, &target, "read", signer.did).await?;
+    let session = present(client, &target, "read").await?;
     let listing = target
         .client()
         .list_records(
@@ -218,7 +210,7 @@ pub async fn cmd_rooms_get(
     signer: RoomSigner<'_>,
     key: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let session = present(client, &target, "read", signer.did).await?;
+    let session = present(client, &target, "read").await?;
     let record = target
         .client()
         .get_record(&session, key, signer.did, signer.key_multibase)
@@ -291,7 +283,7 @@ pub async fn cmd_rooms_put(
     body: String,
     expected_version: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let session = present(client, &target, "write", signer.did).await?;
+    let session = present(client, &target, "write").await?;
     let put = target
         .client()
         .put_record(
@@ -336,7 +328,7 @@ pub async fn cmd_rooms_curate(
     // what a room's shared knowledge is worth is a different act from adding to
     // it. So the presentation is minted for `curate`, and a member who only
     // writes is refused here rather than at the host.
-    let session = present(client, &target, "curate", signer.did).await?;
+    let session = present(client, &target, "curate").await?;
 
     let out = target
         .client()
@@ -375,7 +367,7 @@ pub async fn cmd_rooms_renew(
     epoch: u32,
     reason: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let session = present(client, &target, "admin", signer.did).await?;
+    let session = present(client, &target, "admin").await?;
     let minted = target
         .client()
         .mint_epoch(
