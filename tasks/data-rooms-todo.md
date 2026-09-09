@@ -129,8 +129,16 @@ gossip channel rooms deliberately lack nor durable state in an agent.
   a stale root is worse than a slow one, because the failure it produces is an
   honest host appearing to equivocate. Do this only with a measurement saying
   where, and with an invariant for the cache.
-- `[ ]` **X4.7** (M) A **join ceremony**. Twenty-two room tasks and not one is a
-  join request; admission is push-shaped (the owner calls
-  `rooms/keys/key-package` on the member's VTA), which a browser tab cannot
-  receive. The demo site's `POST /join` is an unspecified `rooms/join/*` worth
-  upstreaming — see `data-rooms-demo-site.md`.
+- `[!]` **X4.7** (M) A **join ceremony**, blocked on the demo rather than on us.
+  Twenty-two room tasks and not one is a join request; admission is push-shaped
+  (the owner calls `rooms/keys/key-package` on the member's VTA), which a browser
+  tab cannot receive. Worked out in
+  [`data-rooms-joining.md`](../docs/05-design-notes/data-rooms-joining.md): the
+  mechanism is smaller than it looks, because the room is **already addressable**
+  and `room.json` says so, and it must not route through the host — a join
+  through a `private` room's host tells it exactly who wants in, which is better
+  intelligence than the membership it was denied. What is genuinely open is
+  **what makes an applicant admissible**: policy, differing per tier, and the one
+  thing a spec written now would freeze wrongly. `data-rooms-demo-site.md` §4.3
+  already says to upstream this *after* the demo shows its shape; this records
+  that as a block.
