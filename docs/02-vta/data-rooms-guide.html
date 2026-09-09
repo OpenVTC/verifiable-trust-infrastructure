@@ -190,8 +190,9 @@
             shared code so a VTC and a room host cannot disagree about what is safe</td></tr>
         <tr><td class="hd">MLS group layer, record sealing</td>
             <td>Work — create, add, remove, commit, exporter-derived storage keys</td></tr>
-        <tr><td class="hd">Member-side custody<br><span class="mono">rooms/keys/{key-package,welcome,commit,open}</span></td>
-            <td>Work. A member's VTA holds the group and opens records for their agents</td></tr>
+        <tr><td class="hd">Member-side custody<br><span class="mono">rooms/keys/{key-package,welcome,commit,open,seal,chain,backfill,list}</span></td>
+            <td>Work. A member's VTA holds the group, seals and opens records for their agents, and
+            can fetch a room's epoch chain from the host itself</td></tr>
         <tr><td class="hd">Presentation oracle<br><span class="mono">rooms/keys/present</span></td>
             <td>Works. Attenuates the member's own authority for an agent — one action, bound
             audience, four hours</td></tr>
@@ -200,12 +201,25 @@
         <tr><td class="hd">A CLI</td>
             <td><span class="yes">The member's half.</span>
             <code>pnm rooms {create,list,get,put,curate,renew}</code>, driven through the oracle
-            so the CLI never holds a room credential or a group key. Issuing a room's
-            credentials is the owner's job and needs the room's own signing key — not there
-            yet</td></tr>
+            so the CLI never holds a room credential or a group key. It carries no owner verbs,
+            and <code>put</code> still refuses a sealed room even though
+            <span class="mono">rooms/keys/seal</span> now seals one</td></tr>
         <tr><td class="hd">Credential issuance</td>
-            <td><span class="no">Library only.</span> Nothing serves “issue this member a VMC and a
-            VAC” — the owner mints them with <code>dtg-credentials</code> and delivers them out of band</td></tr>
+            <td><span class="yes">On the owner's own VTA.</span>
+            <span class="mono">rooms/owner/{invite,issue-membership,issue-authority}</span> mint the
+            invitation, membership and authority credentials in the <em>room's</em> name, signing
+            through the same gated oracle <span class="mono">keys/sign</span> uses — so the room's
+            key never materialises. No <code>pnm</code> verbs yet: a wallet drives them</td></tr>
+        <tr><td class="hd">The owner's MLS half</td>
+            <td><span class="no">Library only.</span> Forming the group and turning a joiner's
+            KeyPackage into a Welcome and a Commit has no trust task and no CLI, so admitting
+            someone to a <span class="mono">sealed</span> room is still Rust — every member-side
+            step is a task</td></tr>
+        <tr><td class="hd">A browser as a member</td>
+            <td><span class="yes">Built.</span> <code>vti-rooms-wasm</code> compiles the member
+            half — group custody, sealing, opening, the epoch chain — to WebAssembly, and
+            <code>room-host --allow-origin</code> is what lets a page reach a host at all. No key
+            crosses into JavaScript</td></tr>
         <tr><td class="hd">Governance (<code>rooms.rego</code>)</td>
             <td><span class="yes">On a VTC.</span> A community decides in Rego who may create a
             room on it; the shipped default hosts <span class="mono">open</span> /
@@ -392,9 +406,13 @@
         room's controller must be able to change — transferring ownership is a controller change,
         and <code>did:peer</code> encodes its keys in the identifier. Witness the log for any room
         whose host you do not fully trust.</p>
-        <p class="code">pnm bootstrap provision-request --template room \
-  --var WEBVH_SERVER=https://dids.example.org \
-  --var MEDIATOR_DID=did:web:mediator.example.org --out room-request.json</p>
+        <p class="code">pnm did-mgmt dids create --context personal --template room \
+  --server &lt;webvh-server-id&gt; --var WEBVH_SERVER=https://dids.example.org \
+  --var MEDIATOR_DID=did:web:mediator.example.org</p>
+        <p>Keep both halves of what that prints — the DID <em>and</em> the signing key id. Every
+        owner verb names the key rather than looking it up, because nothing maps a room's DID to
+        the key it was minted with, so a DID without its key id is a room that cannot invite
+        anyone.</p>
       </li>
       <li>
         <h3>Register it with a host</h3>
@@ -409,8 +427,13 @@
         <h3>Issue yourself membership and authority</h3>
         <p>A membership credential (you are in this room) and an authority credential (what you may
         do: <code>read</code>, <code>write</code>, <code>curate</code>, <code>admin</code>), both
-        signed by the room's key. Store them in your VTA's credential vault — the oracle finds them
-        by issuer, so a credential filed anywhere else is one it cannot use.</p>
+        signed by the room's key — two calls to the VTA that holds it,
+        <span class="mono">rooms/owner/issue-membership</span> and
+        <span class="mono">rooms/owner/issue-authority</span>. An authority credential must name
+        its expiry: nothing about a subject's standing is checked when a chain is verified, so a
+        grant that never expires is a grant nobody can withdraw by waiting. Store both in your
+        VTA's credential vault — the oracle finds them by issuer, so a credential filed anywhere
+        else is one it cannot use.</p>
       </li>
       <li>
         <h3>On a sealed tier, form the MLS group</h3>

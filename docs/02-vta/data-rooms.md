@@ -80,11 +80,13 @@ knowing which half you are standing on saves an afternoon.
 | `open` and `attributed` rooms | **Serve.** Create, records, curate, epoch mint, transfer, claim |
 | `private` rooms | **Store but refuse to serve.** The same-subject binding needs a ZK profile the DTG working group has not settled; `vti-rooms-dtg` refuses rather than guessing, so a VTC and a room host cannot disagree about it |
 | MLS group layer, record sealing | **Work** (`vti-rooms` `mls` feature) — create, add/remove, commit, exporter-derived storage keys |
-| VTA custody: `rooms/keys/{key-package,welcome,commit,open}` | **Work.** A member's VTA holds the group and opens records for their agents |
+| VTA custody: `rooms/keys/{key-package,welcome,commit,open,seal,chain,backfill,list}` | **Work.** A member's VTA holds the group, seals and opens records for their agents, and can fetch a room's epoch chain from the host itself |
 | The presentation oracle: `rooms/keys/present` | **Works.** Attenuates the member's own VAC for an agent |
 | Succession: nomination, transfer, claim | **Work**, including the "renewing defeats a pending claim" property |
-| **A CLI** | **`pnm rooms {create,list,get,put,curate,renew}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key. The **owner's** surface (issuing VIC/VMC/VAC) is not there: it needs the room's own signing key |
-| **Credential issuance** | **Library only.** Nothing serves "issue this member a VMC and a VAC"; the room's owner mints them with `dtg-credentials` and delivers them out of band |
+| **A CLI** | **`pnm rooms {create,list,get,put,curate,renew}`** — the member's surface, driven through the oracle so the CLI holds no room credentials and no group key. It carries **no owner verbs**, and `put` still refuses a sealed room even though `rooms/keys/seal/0.1` now seals one |
+| **Credential issuance** | **Works, on the owner's own VTA.** `rooms/owner/{invite,issue-membership,issue-authority}` mint the VIC, VMC and VAC in the *room's* name, signing through the gated key oracle so the room's key never materialises (§5.3). No `pnm` verbs and no `VtaClient` helpers yet: the operator surface is a wallet, or a Trust Task document you build yourself |
+| **The owner's MLS half** | **Library only.** `RoomGroup::{create,add_member}` — forming the group, and turning a joiner's KeyPackage into a Welcome + Commit — has no trust task and no CLI. Every *member*-side step is a task, so admitting someone to a **sealed** room is the one part of §6 that is still Rust |
+| **A browser as a member** | **Works.** `vti-rooms-wasm` compiles the member half — group custody, sealing, opening, the epoch chain — to WebAssembly; `room-host --allow-origin` is what lets a page reach a host at all. No key ever crosses into JavaScript |
 | **Governance (`rooms.rego`)** | **On a VTC.** A community decides who may create a room on it, in Rego, with the shipped default hosting `open`/`attributed` for its own members. A standalone `room-host` has no policy engine — T1's governance is its owner (§8.4) |
 | **Read mirrors** (T3) | **`room-host --mirror-config`** — a host serves a read-only copy fed by `sinceVersion` pulls and refuses every write, naming the primary. A mirror pulls **as a member**, presenting a room-issued `read` chain |
 | **Reading across a membership change** | **Works, including for a member who has just joined.** Records are sealed per epoch, and the *epoch key chain* carries a member back across every advance. The owner hands each rung to the host on `rooms/epoch/mint`; a joiner fetches the chain with `rooms/epoch/chain` and reads everything the room retains. Rungs are ciphertext — the key that opens one is a storage key no host holds |
@@ -155,23 +157,29 @@ Four steps. Steps 1 and 3 are the owner's own work; only step 2 touches a host.
 The room's DID is its identifier and its credential issuer, so it must be
 minted before anything else exists.
 
-**Production shape — `did:webvh` via the `room` DID template:**
+**Production shape — `did:webvh` via the `room` DID template, minted in a VTA:**
 
 ```bash
-pnm bootstrap provision-request \
+pnm did-mgmt dids create \
+  --context personal \
   --template room \
+  --server <webvh-server-id> \
   --var WEBVH_SERVER=https://dids.example.org \
   --var MEDIATOR_DID=did:web:mediator.example.org \
-  --var 'LABEL=Northwind deal room' \
-  --out room-request.json
-
-pnm bootstrap provision-integration \
-  --request room-request.json \
-  --context personal \
-  --out room-bundle.asc
-
-pnm bootstrap open --bundle room-bundle.asc --expect-digest <sha256-from-producer>
+  --var 'LABEL=Northwind deal room'
 ```
+
+**Keep both halves of what that prints — `DID:` and `Signing key:`.** Every
+`rooms/owner/*` call names the key rather than looking it up, because nothing
+maps a room's DID to the key it was minted with and a mapping invented for
+convenience is one that goes stale at the first rotation. A DID without its key
+id is a room that cannot invite anyone; `pnm keys list --context <id>` is the way
+back if you lose it.
+
+The template puts the signing key at `{DID}#key-1` and names it in
+`assertionMethod`, which is what the VTA's room signer assumes. A room whose
+document says otherwise still mints credentials — they simply verify nowhere, at
+first use, loudly.
 
 `did:webvh` rather than `did:peer` on purpose: a `did:peer` encodes its keys in
 the identifier, so its controller can never change — and transferring a room is
@@ -179,12 +187,11 @@ a controller change. Set `WITNESSES` for any room whose host you do not fully
 trust; witnessing is what makes a host serving a stale log *evident* rather than
 merely possible.
 
-> **Gap to know about:** no installer consumes a `room` bundle yet. `pnm
-> bootstrap open` prints the payload summary; extracting the room's signing key
-> to issue credentials with means opening the sealed payload yourself via
-> `vta_sdk::sealed_transfer`. Until that lands, most non-production rooms use a
-> locally-minted `did:key` (below), which also means the host needs no network
-> DID resolution at all.
+`pnm bootstrap provision-request --template room` renders the same template and
+is the shape to reach for when the room's keys must reach *another* party — it
+seals them to a holder DID. It is not the shape for a room you run yourself: no
+installer consumes a `room` bundle, and you do not need one, because the VTA that
+minted the key can sign as the room without the key ever materialising (§5.3).
 
 **Evaluation shape — a local `did:key`:** mint an Ed25519 key, form
 `did:key:z6Mk…`, and use that as both the room's identifier and its issuing key.
@@ -231,25 +238,54 @@ is not the `ownerDid` they name is refused (§8.4).
 ### 5.3 Issue the owner's own credentials
 
 The room is now registered and **nobody can do anything in it**, including you.
-Authority comes from credentials the room issued, so mint two with the room's
-key:
+Authority comes from credentials the room issued, so mint two in the room's name:
 
 - a **VMC** — the room's statement that this DID is a member;
 - a **VAC** granting `read`, `write`, `curate`, `admin`.
 
-```rust
-use dtg_credentials::DTGCredential;
+**The VTA holding the room's key mints both**, over two Trust Tasks — the same
+two an owner uses for every later member (§6):
 
-let mut vac = DTGCredential::new_vac(
-    room_did.to_string(),      // issuer: the room
-    owner_did.to_string(),     // subject: the member
-    room_did.to_string(),      // scope: the room governs itself
-    vec!["read".into(), "write".into(), "curate".into(), "admin".into()],
-    now - Duration::minutes(1),
-    Some(now + Duration::days(30)),
-)?;
-vac.sign(&room_secret, None).await?;
+```jsonc
+// rooms/owner/issue-membership/0.1
+{ "roomId": "did:webvh:…", "signingKeyId": "<from §5.1>",
+  "subject": "did:key:zOwner", "validUntil": "2027-01-01T00:00:00Z" }
+
+// rooms/owner/issue-authority/0.1
+{ "roomId": "did:webvh:…", "signingKeyId": "<from §5.1>",
+  "subject": "did:key:zOwner",
+  "actions": ["read", "write", "curate", "admin"],
+  "validUntil": "2026-10-09T00:00:00Z" }
 ```
+
+Each returns `{ credential, credentialId }` — the signed credential, and the id
+bound into its proof, which is what tells a re-send from a renewal.
+
+Three things about that pair are load-bearing:
+
+- **The key never materialises.** `operations::room_issuance` signs through
+  `operations::keys::sign_payload`, the same gated oracle `keys/sign` uses, so
+  the room's secret is loaded, used and zeroized without any caller seeing it.
+- **`validUntil` is required on a VAC, and refused rather than defaulted.** A
+  chain root is authority that nothing withdraws by waiting — nothing about a
+  subject's standing is consulted when a chain is verified, and this stack has no
+  revocation — so expiry is the whole of how a grant ends. Defaulting it would
+  put a room's most consequential number somewhere its owner never looks.
+- **What authorizes the call is the `credentialWrite` capability plus control of
+  the key**, never a check that you are the owner. "Owner" is a fact about the
+  room's DID controller and a VTA is not a DID resolver; where key and controller
+  have come apart, the credential simply fails to verify. Grant it the way §7
+  grants the room capabilities — `pnm acl create --did <did> … --capabilities
+  credential-write` — and note what it opens: a DID holding it can admit and
+  promote in any room whose signing key it can name. What narrows that is the
+  key oracle's own gates — the key's context, the entry's key scope, and the
+  context policy's signing limit — not the capability.
+
+No `pnm` verb reaches these yet and `VtaClient` has no helper — a wallet drives
+them, or you build the Trust Task document yourself with
+`vta_sdk::trust_task_sign::build_signed`. The library path
+(`DTGCredential::new_vmc` / `new_vac`, signed with a key you hold) still works
+and is what `RoomFixture` and the `data_room` example do.
 
 Then store both in the member's VTA credential vault:
 
@@ -319,15 +355,20 @@ sequenceDiagram
 
 Step by step:
 
-1. **The owner issues a VIC** naming the joiner, from the room's key, and
-   delivers it — DIDComm on a sealed room, because a server-side invitation
-   store would hand the host the membership at invite time.
+1. **The owner issues a VIC** naming the joiner, from the room's key
+   (`rooms/owner/invite/0.1` — `roomId`, `signingKeyId`, `subject`,
+   `validUntil`), and delivers it — DIDComm on a sealed room, because a
+   server-side invitation store would hand the host the membership at invite
+   time.
 2. **The joiner's VTA mints a KeyPackage** (`rooms/keys/key-package/0.1`,
    invitation required). Minting retains a private key against a Welcome that
    may never come, which is why it is not offered unconditionally; unused
    packages expire after 7 days.
 3. **The owner adds the leaf** — `RoomGroup::add_member(key_package)` produces a
-   Welcome and a Commit — and sends the Welcome to the joiner.
+   Welcome and a Commit — and sends the Welcome to the joiner. **This step is
+   library-only**: no trust task, no CLI. On a sealed room the owner's half of a
+   join is Rust against `vti-rooms`, even though every step the joiner performs
+   is a task.
 4. **The joiner's VTA processes it** (`rooms/keys/welcome/0.1`, same invitation).
    The invitation is consumed **after** the join succeeds, so a Welcome that
    failed to process does not strand the member with a spent invitation and no
@@ -591,10 +632,13 @@ ciphertext back to the VTA to open. A member who holds less than the action
 needs is refused by their own VTA rather than by the host, which is the earlier
 and clearer of the two.
 
-Two things it deliberately cannot do. **Write to a sealed room**: sealing needs
-the room's group key, which lives in the VTA, and no task seals on a caller's
-behalf. **Issue credentials**: minting a VIC, VMC or VAC needs the *room's*
-signing key, which is the owner's — a different party with different custody.
+Two things it cannot do. **Write to a sealed room** — sealing needs the room's
+group key, which lives in the VTA. That is now a gap in the CLI rather than in
+the model: `rooms/keys/seal/0.1` seals a body under the current epoch for a
+caller holding `roomOpen`, so a client that calls it can write to a sealed room.
+`pnm rooms put` does not yet, and its refusal still says no such task exists.
+**Issue credentials** — the owner's verbs (§5.3) are served by a VTA but reached
+from a wallet; the CLI has no `rooms owner …` surface.
 
 ### From Rust
 
@@ -785,6 +829,7 @@ recover but a fresh invitation from every owner.
 | `this VTA holds no AuthorityCredential issued by room …` | The member's VMC/VAC are not in the credential vault (§5.3) |
 | `this VTA holds N AuthorityCredentials issued by room …` | Two credentials of one kind for one room; the oracle will not guess which to attenuate |
 | record "does not open", VTA reports an older epoch | A missed commit (§6). Deliver it |
+| `an authority credential must name \`validUntil\`` | `rooms/owner/issue-authority` with no expiry. There is no default and no revocation — pick a window (§5.3) |
 | `no invitation presented for room …` | `key-package`/`welcome` without the VIC, or the VIC names someone else |
 | `invitation … has already been used` | Single use. Issue a fresh one |
 | a room "is live" / "not claimable" | The owner renewed. The claim is correctly dead |
@@ -807,6 +852,7 @@ and `vtc-service`:
 | `rooms/records/list/0.1` | `read` |
 | `rooms/records/curate/0.1` | `curate` |
 | `rooms/epoch/mint/0.1` | `admin` |
+| `rooms/epoch/chain/0.1` | `read` — reading the room and reading what was written before you joined are the same act |
 | `rooms/owner/transfer/0.1` | `admin` |
 | `rooms/owner/claim/0.1` | nomination + membership + dormancy |
 
@@ -819,7 +865,24 @@ and `vtc-service`:
 | `rooms/keys/welcome/0.1` | that invitation, consumed |
 | `rooms/keys/commit/0.1` | the MLS group itself |
 | `rooms/keys/open/0.1` | `roomOpen` capability |
+| `rooms/keys/seal/0.1` | `roomOpen` capability |
+| `rooms/keys/list/0.1` | `roomOpen` capability |
+| `rooms/keys/chain/0.1` | `roomOpen` capability |
+| `rooms/keys/backfill/0.1` | `roomOpen` capability |
 | `rooms/keys/present/0.1` | `roomPresent` capability + context access |
+
+**Owner tasks** (`https://trusttasks.org/spec/rooms/owner/…`), served by
+`vta-service` — the room's own key, used without it leaving the VTA. The family
+name is shared with `rooms/owner/{transfer,claim}` above and the server is not:
+those two change a row on a **host**, these four mint credentials on the VTA that
+holds the room's key:
+
+| URI | What it mints | Authorized by |
+|---|---|---|
+| `rooms/owner/invite/0.1` | a VIC — single-use consent to join | `credentialWrite` + control of the room's key |
+| `rooms/owner/issue-membership/0.1` | a VMC — the room's statement that a DID is a member | same |
+| `rooms/owner/issue-authority/0.1` | a VAC chain root; `validUntil` required | same |
+| `rooms/owner/register/0.1` | nothing — asks this VTA to call `rooms/create` on a host, signing **as the agent**, not as the room | same, plus a VTA DID and a resolver |
 
 **Constants**
 
