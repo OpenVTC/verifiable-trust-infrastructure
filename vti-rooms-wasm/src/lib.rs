@@ -493,7 +493,7 @@ mod tests {
         (did, secret)
     }
 
-    /// An invitation from `room` to `subject`, signed.
+    /// An invitation from `room` to `subject`, signed, open from a minute ago for an hour.
     fn an_invitation(
         room: &str,
         secret: &affinidi_secrets_resolver::secrets::Secret,
@@ -501,11 +501,33 @@ mod tests {
         id: &str,
     ) -> String {
         let now = chrono::Utc::now();
+        an_invitation_valid(
+            room,
+            secret,
+            subject,
+            id,
+            now - chrono::Duration::minutes(1),
+            Some(now + chrono::Duration::hours(1)),
+        )
+    }
+
+    /// The same, with the window said explicitly.
+    ///
+    /// Split out because a window cannot be tested by a helper that hardcodes a good one —
+    /// which is why it was not tested.
+    fn an_invitation_valid(
+        room: &str,
+        secret: &affinidi_secrets_resolver::secrets::Secret,
+        subject: &str,
+        id: &str,
+        from: chrono::DateTime<chrono::Utc>,
+        until: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> String {
         let mut vic = dtg_credentials::DTGCredential::new_vic(
             room.to_string(),
             subject.to_string(),
-            now - chrono::Duration::minutes(1),
-            Some(now + chrono::Duration::hours(1)),
+            from,
+            until,
         )
         .with_id(id);
         futures_lite::future::block_on(vic.sign(secret, None)).expect("sign the invitation");
@@ -923,6 +945,71 @@ mod tests {
             verify(&good, &room, me, &spent)
                 .unwrap_err()
                 .contains("already been used")
+        );
+    }
+
+    /// **An invitation's window is the other half of single-use, and nothing was testing it.**
+    ///
+    /// Both clauses were here and both were unexercised — on this side and in
+    /// `vta-service`'s copy of the same gate. Which is the failure mode worth naming: a
+    /// regression would not break anything visibly. Expired invitations would simply keep
+    /// working, and a room's owner would have no way to tell, because the artefact that
+    /// stopped meaning anything is the one they issued and forgot.
+    ///
+    /// An hour is chosen for a real invitation because it is an act somebody is about to
+    /// perform, not a standing entitlement. That reasoning is only true if the window is
+    /// enforced.
+    #[test]
+    fn an_invitation_outside_its_window_is_refused() {
+        let (room, secret) = a_room(0x24);
+        let me = "did:key:zMe";
+        let now = chrono::Utc::now();
+
+        let expired = an_invitation_valid(
+            &room,
+            &secret,
+            me,
+            "urn:uuid:w-1",
+            now - chrono::Duration::hours(2),
+            Some(now - chrono::Duration::hours(1)),
+        );
+        assert!(
+            verify(&expired, &room, me, &[])
+                .unwrap_err()
+                .contains("expired"),
+            "an invitation that has run out must not still admit"
+        );
+
+        let premature = an_invitation_valid(
+            &room,
+            &secret,
+            me,
+            "urn:uuid:w-2",
+            now + chrono::Duration::hours(1),
+            Some(now + chrono::Duration::hours(2)),
+        );
+        assert!(
+            verify(&premature, &room, me, &[])
+                .unwrap_err()
+                .contains("not valid yet"),
+            "nor one that has not started"
+        );
+
+        // No `validUntil` at all. The credential type permits it, so a room *can* issue one
+        // that never expires — and this asserts the gate treats that as the room's decision
+        // rather than quietly refusing it. An invitation with no end is a policy question for
+        // whoever issues it, not something a member's key holder overrules.
+        let forever = an_invitation_valid(
+            &room,
+            &secret,
+            me,
+            "urn:uuid:w-3",
+            now - chrono::Duration::minutes(1),
+            None,
+        );
+        assert!(
+            verify(&forever, &room, me, &[]).is_ok(),
+            "an open-ended invitation is the issuer's call, not this gate's"
         );
     }
 
