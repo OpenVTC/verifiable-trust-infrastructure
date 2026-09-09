@@ -969,9 +969,9 @@ pub struct VtaTransportIdentity {
 /// `signing_vm_id` for every DID method that is not `did:peer`. Carried out of
 /// [`provision_vta_signing_identity`] rather than re-derived, so the harness
 /// signs with the key it actually provisioned.
-struct VtaOwnSigner {
-    vm_id: String,
-    secret: affinidi_tdk::secrets_resolver::secrets::Secret,
+pub(crate) struct VtaOwnSigner {
+    pub(crate) vm_id: String,
+    pub(crate) secret: affinidi_tdk::secrets_resolver::secrets::Secret,
 }
 
 /// What [`build_transport_state`] hands back — a struct rather than a tuple so
