@@ -134,9 +134,90 @@ pub(crate) async fn dispatch_trust_task_core(
         return reject_with(&doc, reason);
     }
 
-    // 3. Dispatch by type URI.
+    // 3. Dispatch by type URI, then sign what comes back.
     let type_uri = doc.type_uri.to_string();
-    match type_uri.as_str() {
+    let outcome = dispatch_typed(state, ctx, doc, &type_uri).await;
+    sign_success_response(state, outcome).await
+}
+
+/// Attach this community's Data-Integrity proof to a success response.
+///
+/// # Why here and not at each `success_response`
+///
+/// Signing is the same decision taken once per handler, and there are twenty-one
+/// of them. Forgetting once is a task whose response is unattributable, and
+/// nothing downstream would notice — which is exactly how every response came to
+/// be unsigned in the first place. The spine is where the framework's inbound
+/// checks already live; the outbound one belongs beside them.
+///
+/// # Why this was missing, and what it cost
+///
+/// SPEC §7.3 item 7: where a specification declares no separate requirement for
+/// the *response*, the request's applies to it — "an omission can never weaken a
+/// variant". 265 published specifications declare a single
+/// `proofRequirement: REQUIRED`, so their responses require a proof, and this
+/// service attached none to any of them.
+///
+/// Nothing went red because no consumer verifies one either. Producers not
+/// signing and consumers not checking is a mutually consistent silence, and the
+/// cost is that **no answer this service has ever given is evidence of
+/// anything**: a member cannot show a third party what the host told them, and
+/// cannot be contradicted when they misreport it.
+///
+/// # Scope
+///
+/// Success responses only. An *error response*'s `type` resolves to the
+/// framework's `trust-task-error` specification, whose own requirement is
+/// RECOMMENDED rather than REQUIRED (SPEC §8.1, and §7.3's note that the error
+/// variant is deliberately not declarable by a task). Signing those is a
+/// separate decision with its own rationale — a retained compliance refusal is
+/// the case that argues for it — and is not smuggled in here.
+///
+/// A community with no signer configured (setup, before provisioning) returns
+/// the document unsigned rather than failing: it has nothing to sign with, and
+/// refusing to answer would make an unprovisioned VTC unusable rather than
+/// merely unattributable.
+async fn sign_success_response(state: &AppState, outcome: TrustTaskOutcome) -> TrustTaskOutcome {
+    if !outcome.status.is_success() {
+        return outcome;
+    }
+    let Some(signer) = state.credential_signer.clone() else {
+        return outcome;
+    };
+
+    let mut doc: Value = match serde_json::from_slice(&outcome.body) {
+        Ok(d) => d,
+        Err(e) => {
+            // The spine built this document a moment ago, so this cannot happen
+            // without a bug above. Answer unsigned rather than turning a
+            // successful operation into a failure over its envelope.
+            tracing::error!(error = %e, "success response is not JSON; returning it unsigned");
+            return outcome;
+        }
+    };
+    if let Err(e) = signer.sign_doc(&mut doc).await {
+        tracing::error!(error = %e, "could not sign the success response; returning it unsigned");
+        return outcome;
+    }
+    match serde_json::to_vec(&doc) {
+        Ok(body) => TrustTaskOutcome {
+            status: outcome.status,
+            body,
+        },
+        Err(e) => {
+            tracing::error!(error = %e, "could not serialise the signed response");
+            outcome
+        }
+    }
+}
+
+async fn dispatch_typed(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+    type_uri: &str,
+) -> TrustTaskOutcome {
+    match type_uri {
         jr::JOIN_REQUEST_SUBMIT_TYPE => handle_submit(state, ctx, doc).await,
         jr::JOIN_REQUEST_MANIFEST_TYPE => handle_manifest(state, doc).await,
         jr::JOIN_REQUEST_STATUS_TYPE => handle_status(state, ctx, doc).await,
@@ -980,6 +1061,89 @@ mod tests {
                 body.contains(crate::members::match_code::MATCH_CODE_EXT_KEY),
                 "the messaging reply must carry the match code the REST reply does, got: {body}"
             );
+        }
+
+        /// **Every success response carries this community's proof.**
+        ///
+        /// SPEC §7.3 item 7: a specification declaring a single
+        /// `proofRequirement: REQUIRED` binds its *response* as well as its
+        /// request — "an omission can never weaken a variant" — and 265
+        /// published specifications declare exactly that. This service attached
+        /// a proof to none of them until the spine started signing.
+        ///
+        /// Nothing caught it because no consumer verifies one either, which is
+        /// why the guard is here rather than left to a client: a mutually
+        /// consistent silence between producer and consumer stays silent.
+        #[tokio::test]
+        async fn a_success_response_is_signed() {
+            let vtc = fixture().await;
+            let out = dispatch_trust_task_core(
+                &vtc.state,
+                &JoinAuthCtx::didcomm(MEMBER.into()),
+                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+            )
+            .await;
+
+            let doc: serde_json::Value =
+                serde_json::from_slice(&out.body).expect("the reply is a JSON document");
+            let proof = doc.get("proof").unwrap_or_else(|| {
+                panic!(
+                    "a success response carries no proof, so nothing this community says is \
+                     attributable: {}",
+                    rendered(&out)
+                )
+            });
+            assert_eq!(
+                proof.get("cryptosuite").and_then(|v| v.as_str()),
+                Some("eddsa-jcs-2022"),
+                "unexpected cryptosuite: {proof}"
+            );
+            assert!(
+                proof.get("proofValue").and_then(|v| v.as_str()).is_some(),
+                "the proof carries no signature: {proof}"
+            );
+        }
+
+        /// A community with no signer answers **unsigned rather than failing**.
+        ///
+        /// It has nothing to sign with, and refusing would make an
+        /// unprovisioned VTC unusable rather than merely unattributable — the
+        /// wrong direction to err in, since the operation itself succeeded.
+        #[tokio::test]
+        async fn a_community_with_no_signer_still_answers() {
+            let vtc = TestVtc::builder().with_signers(false).build().await;
+            store_acl_entry(
+                &vtc.state.acl_ks,
+                &VtcAclEntry {
+                    did: MEMBER.into(),
+                    role: VtcRole::Member,
+                    label: None,
+                    allowed_contexts: vec![],
+                    created_at: 0,
+                    created_by: "did:key:vtc-install".into(),
+                    updated_at: None,
+                    updated_by: None,
+                    expires_at: None,
+                },
+            )
+            .await
+            .expect("seed the member");
+
+            let out = dispatch_trust_task_core(
+                &vtc.state,
+                &JoinAuthCtx::didcomm(MEMBER.into()),
+                &document(PERSONHOOD_CHALLENGE_TYPE, json!({ "did": MEMBER })),
+            )
+            .await;
+
+            assert!(
+                out.status.is_success(),
+                "an unsigned answer is still an answer: {}",
+                rendered(&out)
+            );
+            let doc: serde_json::Value =
+                serde_json::from_slice(&out.body).expect("the reply is a JSON document");
+            assert!(doc.get("proof").is_none(), "signed without a signer");
         }
 
         /// The membership check standing in for the REST route's session.
