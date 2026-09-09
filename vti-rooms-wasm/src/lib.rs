@@ -620,12 +620,26 @@ mod tests {
         // Echoed unchanged: its value to the verifier is that it came back as sent.
         assert_eq!(presentation["nonce"], "n-1");
 
-        let chain: Vec<dtg_credentials::DTGCredential> =
-            serde_json::from_value(presentation["authority"].clone()).unwrap();
+        // The wire form is strings, so a verifier parses each link before checking it.
+        // Asserted rather than assumed: a host handed objects instead refuses the whole
+        // request as "invalid type: map, expected a string", which reads as a malformed
+        // payload rather than as the shape mismatch it is.
+        let chain: Vec<dtg_credentials::DTGCredential> = presentation["authority"]
+            .as_array()
+            .expect("authority is an array")
+            .iter()
+            .map(|link| {
+                serde_json::from_str(link.as_str().expect("each link is a string")).unwrap()
+            })
+            .collect();
         assert_eq!(
             chain.len(),
             2,
             "leaf first, then the credential the room issued"
+        );
+        assert!(
+            presentation["membership"].is_string(),
+            "membership travels as a string too"
         );
 
         verify_chain(&chain, &room, &room, "read", me.did(), chrono::Utc::now())
@@ -679,8 +693,12 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let chain: Vec<dtg_credentials::DTGCredential> =
-            serde_json::from_value(presentation["authority"].clone()).unwrap();
+        let chain: Vec<dtg_credentials::DTGCredential> = presentation["authority"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|link| serde_json::from_str(link.as_str().unwrap()).unwrap())
+            .collect();
 
         // The rightful member: accepted.
         verify_chain(&chain, &room, &room, "read", me.did(), chrono::Utc::now()).unwrap();
@@ -755,6 +773,29 @@ mod tests {
             crate::identity::MemberIdentity::restore(&serde_json::to_string(&swapped).unwrap())
                 .unwrap_err();
         assert!(err.contains("does not match its key"), "{err}");
+    }
+
+    /// An invitation issued with `valid_from = now` — exactly what the demo's owner mints.
+    ///
+    /// Separate from the fixture above, which back-dates by a minute. A credential minted
+    /// and checked in the same instant is the normal case for an interactive join, and a
+    /// window check that is off by a rounding is a check that fails only in production.
+    #[test]
+    fn an_invitation_valid_from_this_instant_verifies() {
+        let (room, secret) = a_room(0x51);
+        let me = "did:key:zMe";
+        let now = chrono::Utc::now();
+        let mut vic = dtg_credentials::DTGCredential::new_vic(
+            room.clone(),
+            me.to_string(),
+            now,
+            Some(now + chrono::Duration::hours(1)),
+        )
+        .with_id("urn:uuid:now-1");
+        futures_lite::future::block_on(vic.sign(&secret, None)).unwrap();
+        let json = serde_json::to_string(vic.credential()).unwrap();
+
+        verify(&json, &room, me, &[]).expect("an invitation valid from now must verify now");
     }
 
     /// Each of the five checks, made to bite.

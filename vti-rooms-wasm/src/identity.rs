@@ -203,8 +203,8 @@ impl MemberIdentity {
     ) -> Result<String, String> {
         let root: DTGCredential =
             serde_json::from_str(vac).map_err(|e| format!("authority credential: {e}"))?;
-        let membership: Value =
-            serde_json::from_str(vmc).map_err(|e| format!("membership credential: {e}"))?;
+        // Parsed only to fail early on something malformed — the *string* is what travels.
+        serde_json::from_str::<Value>(vmc).map_err(|e| format!("membership credential: {e}"))?;
 
         let now = Utc::now();
         let expires = now + PRESENTATION_LIFETIME;
@@ -225,16 +225,22 @@ impl MemberIdentity {
         futures_lite::future::block_on(leaf.sign(&secret, None))
             .map_err(|e| format!("sign the attenuated credential: {e}"))?;
 
-        let leaf_json = serde_json::to_value(leaf.credential())
+        let leaf_json = serde_json::to_string(leaf.credential())
             .map_err(|e| format!("serialise the attenuated credential: {e}"))?;
-        let root_json = serde_json::to_value(root.credential())
-            .map_err(|e| format!("serialise the authority credential: {e}"))?;
 
-        // Leaf first, then the credential the room issued. Every link the host will rely on
-        // is present, because the host will not fetch one.
+        // **Strings, not objects.** `AuthorityPresentation` types `membership` as a
+        // `String` and `authority` as `Vec<String>`; a host handed objects refuses the
+        // whole request as "invalid type: map, expected a string", which reads as a
+        // malformed payload rather than as a shape mismatch. The credential text is the
+        // wire form — `vti-rooms-dtg` decodes base64url or bare JSON — and the root is
+        // passed through exactly as received rather than re-serialised, so nothing this
+        // side can do to its bytes can affect whether its proof still verifies.
+        //
+        // Leaf first, then the credential the room issued. Every link the host will rely
+        // on is present, because the host will not fetch one.
         let mut presentation = serde_json::json!({
-            "membership": membership,
-            "authority": [leaf_json, root_json],
+            "membership": vmc,
+            "authority": [leaf_json, vac],
         });
         if let Some(nonce) = nonce {
             presentation["nonce"] = Value::String(nonce.to_string());
