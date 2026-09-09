@@ -1051,7 +1051,24 @@ read an `open` room the same way an agent's recall marks one.
    their record. That turned out to be the general form — 265 specifications
    require a proof on their response and neither service sent one — and is fixed
    at both dispatch spines (#1334, #1335), with the first consumer verifying in
-   #1337. What remains unbuilt is the commitment itself.
+   #1337.
+
+   **Now largely built.** The Merkle store landed in #1346 (`DigestMultibase`
+   rather than hex in #1349), both hosts serve the root (#1351, spec tt#411),
+   and traces landed with the leaf preimage pinned exactly as `CommittedRecord`
+   (spec tt#419, implementation #1368) — a commitment only has to be comparable
+   between two of the same implementation, while a **trace has to be computable
+   by someone else**, which is what forced the preimage to be stated member by
+   member. Two things it flushed out: `rooms/records/get`'s response had never
+   conformed to its published schema (both hosts serialised the *storage*
+   record), and the shipped prose claimed a host showing two members different
+   roots "cannot claim a transient" — false while a room moves, and corrected in
+   tt#422 by carrying `headVersion` and `recordCount` beside the root.
+
+   What remains is the **witnessed anchor**, which is what turns a root from the
+   host's own assertion into evidence, and which is still blocked on
+   [`data-rooms-epoch-anchoring.md`](data-rooms-epoch-anchoring.md)'s open
+   question — and a party that *compares* roots, which is item 9.
 8. **Rooms created before the chain** (§5.5) — a room that has already advanced
    past epoch 1 has lost the keys to everything below its current epoch, and
    nothing can recover them: no member retained the old exporters and the host
@@ -1061,6 +1078,20 @@ read an `open` room the same way an agent's recall marks one.
    membership change — but *believed* is the right word, and an operator who
    finds otherwise should be told the truth rather than shown a repair that
    cannot work.
+
+9. **Reading a record through the agent** — the last unbuilt piece of the rooms
+   UI, and the same piece verified reads needs. The console cannot address a
+   host (`carrierParams` drops the recipient, deliberately), so `rooms/records/*`
+   is unreachable from it; and a `dataCommitment` is inert without somebody who
+   keeps the last root to compare against. Both are answered by the same party:
+   the member's own agent, which holds the epoch keys, can act outward in their
+   name, and is the only member-side party with durable per-room storage.
+   Worked out in
+   [`data-rooms-read-through.md`](data-rooms-read-through.md), which recommends
+   `rooms/keys/{read,browse}` with verification first and the root memory second,
+   and leaves one question open on purpose: **what an agent does when it catches
+   a host** — refusing the read locks a member out of their own room with their
+   own agent, and a flag that blocks nothing is a flag that gets dismissed.
 
 ---
 
