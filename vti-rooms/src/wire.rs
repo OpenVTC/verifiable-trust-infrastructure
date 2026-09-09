@@ -310,6 +310,23 @@ pub struct GetRecordResponse {
     /// no tree must not invent a root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_commitment: Option<String>,
+    /// How many records the room holds, as of `data_commitment`.
+    ///
+    /// A reader cannot recompute the root from a listing — a leaf commits to a
+    /// whole record and a listing returns a projection — but it can **count**.
+    /// Only against a complete listing, read to the end with no prefix and no
+    /// watermark; against a page it is a discrepancy the reader manufactured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_count: Option<u64>,
+    /// The highest record version the commitment covers, as of
+    /// `data_commitment`.
+    ///
+    /// What makes two roots comparable at all: same head and different roots is
+    /// a host caught, with no write to attribute the difference to. Without it,
+    /// two roots differing is a room that moved as readily as a host that
+    /// equivocated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_version: Option<u64>,
     /// The path from this record's leaf to `data_commitment`.
     ///
     /// Served only with the commitment it reaches, and computed from the same
@@ -329,12 +346,14 @@ impl GetRecordResponse {
     #[must_use]
     pub fn of(
         record: &Record,
-        data_commitment: Option<String>,
+        head: Option<&crate::merkle::TreeHead>,
         trace: Option<crate::merkle::InclusionProof>,
     ) -> Self {
         Self {
             record: record.committed(),
-            data_commitment,
+            data_commitment: head.map(|h| crate::merkle::to_multibase(&h.root)),
+            record_count: head.map(|h| h.record_count),
+            head_version: head.map(|h| h.head_version),
             trace,
         }
     }
@@ -353,6 +372,23 @@ pub struct ListRecordsResponse {
     /// here", and a fabricated one would say the opposite while meaning less.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_commitment: Option<String>,
+    /// How many records the room holds, as of `data_commitment`.
+    ///
+    /// A reader cannot recompute the root from a listing — a leaf commits to a
+    /// whole record and a listing returns a projection — but it can **count**.
+    /// Only against a complete listing, read to the end with no prefix and no
+    /// watermark; against a page it is a discrepancy the reader manufactured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_count: Option<u64>,
+    /// The highest record version the commitment covers, as of
+    /// `data_commitment`.
+    ///
+    /// What makes two roots comparable at all: same head and different roots is
+    /// a host caught, with no write to attribute the difference to. Without it,
+    /// two roots differing is a room that moved as readily as a host that
+    /// equivocated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_version: Option<u64>,
 }
 
 /// `rooms/records/curate/0.1` request.

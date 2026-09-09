@@ -396,7 +396,7 @@ fn get_record_response_conforms() {
             ..sealed.clone()
         },
     ];
-    let root = merkle::commit_records(&mut records).expect("commits");
+    let head = merkle::tree_head(&mut records).expect("commits");
     let leaves: Vec<merkle::Hash> = records
         .iter()
         .map(|r| merkle::leaf_hash(&r.committed()).expect("hashes"))
@@ -407,11 +407,7 @@ fn get_record_response_conforms() {
         .expect("the record is in its own room");
     let trace = merkle::inclusion_proof(&leaves, index).expect("a trace for a record that exists");
 
-    let response = GetRecordResponse::of(
-        &sealed,
-        Some(merkle::to_multibase(&root)),
-        Some(trace.clone()),
-    );
+    let response = GetRecordResponse::of(&sealed, Some(&head), Some(trace.clone()));
     let value = serde_json::to_value(&response).expect("serialise");
     assert_eq!(
         value["sealed"]["ciphertext"], "c2VhbGVkLWJvZHk",
@@ -426,6 +422,14 @@ fn get_record_response_conforms() {
         "the committed form renders RFC 3339, not the unix seconds it stores: {value}"
     );
     assert_eq!(value["pinned"], true, "pinned is committed: {value}");
+    assert_eq!(
+        value["recordCount"], 2,
+        "the count is the room's, not the page's: {value}"
+    );
+    assert_eq!(
+        value["headVersion"], 3,
+        "the head is the highest version the commitment covers: {value}"
+    );
     assert!(
         value["trace"][0]["sibling"]
             .as_str()
@@ -452,9 +456,12 @@ fn get_record_response_conforms() {
     let value = serde_json::to_value(GetRecordResponse::of(&open, None, None)).expect("serialise");
     assert!(
         value.get("dataCommitment").is_none()
+            && value.get("recordCount").is_none()
+            && value.get("headVersion").is_none()
             && value.get("sealed").is_none()
             && value.get("pinned").is_none(),
-        "an absent optional must be absent, and `pinned: false` is spelled by absence: {value}"
+        "an absent optional must be absent, `pinned: false` is spelled by absence, and a host \
+         with no tree asserts none of the head: {value}"
     );
     check::<GetResponse>("GetRecordResponse (open)", &value);
 
@@ -502,7 +509,7 @@ fn a_reader_verifies_a_trace_from_the_response_alone() {
         .collect();
 
     let mut ordered = room.clone();
-    let root = merkle::commit_records(&mut ordered).expect("commits");
+    let head = merkle::tree_head(&mut ordered).expect("commits");
     let leaves: Vec<merkle::Hash> = ordered
         .iter()
         .map(|r| merkle::leaf_hash(&r.committed()).expect("hashes"))
@@ -511,7 +518,7 @@ fn a_reader_verifies_a_trace_from_the_response_alone() {
     for (index, record) in ordered.iter().enumerate() {
         let response = GetRecordResponse::of(
             record,
-            Some(merkle::to_multibase(&root)),
+            Some(&head),
             Some(merkle::inclusion_proof(&leaves, index).expect("a trace")),
         );
         // Everything past this line is what a *reader* does: it has bytes.
