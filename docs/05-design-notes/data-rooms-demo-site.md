@@ -177,27 +177,53 @@ writes to sealed rooms without asking anyone.
 
 ---
 
-## 4. Three gaps that must be closed
+## 4. What the design actually runs into
 
-These are not demo scaffolding. Each is a hole the demo is simply the first
-thing to fall into.
+Three things looked like gaps. **One was not** (§4.1) — the correction is kept
+because the mistake is instructive and a reader will make it too. The other two
+are real, and neither is demo scaffolding: each is a hole the demo is simply the
+first thing to fall into.
 
-### 4.1 A room DID does not say where its room is
+### 4.1 Host addressing is out-of-band, and that is deliberate
 
-`vta-sdk/templates/room.json` gives a room exactly one service entry:
-DIDComm, pointing at a mediator. Nothing in `HeldRoom` carries a host either
-(`room_groups.rs:318` — `roomId`, `epoch`, `earliestReadableEpoch`), which is
-precisely why `pnm-cli` needs a separate `--host`.
+*This section began as a claimed gap. It is not one, and the correction matters
+enough to keep rather than delete.*
 
-The template's own description says a room is portable because you can
-"re-point its service endpoint and the room has moved". **There is no host
-service endpoint to re-point.** Portability is asserted by a document that
-cannot express it.
+A room's DID document names a mediator and nothing else
+(`vta-sdk/templates/room.json`), so resolving a room DID does not yield a host.
+That is **by design**, and the specification says so in as many words. From
+`rooms/keys/backfill/0.1`:
 
-- *Now*: the site takes both, in one link — `/#/room/<did>?host=<base-url>`.
-- *Right*: add a host service entry to the `room` template so resolving a room
-  DID yields its host, and the invite link degrades to a DID. This is worth
-  raising against the template regardless of whether the demo is built.
+> The host to fetch from, as a DID. **Named by the caller because nothing maps a
+> room to its host**: a room is portable — re-point it and it has moved — so a
+> remembered host is a value that goes stale […] A caller who names the wrong
+> host learns so as a refusal from a party that does not serve this room, which
+> is loud and immediate.
+
+And from `rooms/owner/register/0.1`, the stronger reason: **a room may be
+registered with more than one host** — "a mirror serves reads while its primary
+takes writes". A single host pointer in the DID document would not be merely
+stale; it would be *wrong*.
+
+Host **endpoint** discovery does exist and is the normal mechanism: a caller
+names the host by DID, and that DID resolves to a service endpoint
+(`operations/room_host.rs`'s `send_room_task`, over `vta-sdk`'s
+`ServiceCapabilities::from_did_document`). What is deliberately absent is only
+the room→host link.
+
+So `{roomDid, host}` in the site's URL is **not a workaround**. It is the same
+addressing `pnm-cli` takes as `--room` and `--host`, and it is what the spec
+asks a caller to supply. The demo carries the host in the invite link and in the
+broker's catalogue, and a visitor who types a room DID with the wrong host gets
+the refusal the spec designed for — which the site should render as "that host
+does not serve this room", because it is an answer.
+
+One genuine nit falls out of this. `room.json`'s description says a room is
+portable because you can "re-point its service endpoint and the room has moved".
+Given that nothing maps a room to its host, that sentence points at a mechanism
+the document does not have, and reads exactly the way it misled this design on
+its first pass. Worth rewording to say that portability comes from the room
+issuing its own credentials, so a member simply names a different host.
 
 ### 4.2 Admission assumes the member is addressable
 
@@ -271,7 +297,7 @@ A static SPA. One page per concern, nothing hardcoded per room.
 |---|---|
 | `/` | who you are — mint or import a `did:key`, export it, the honest warning |
 | `/rooms` | rooms this browser holds keys for, from local state + the catalogue |
-| `/room/<did>?host=…` | records: list, read, write, curate |
+| `/room/<did>?host=<hostDid>&at=<url>` | records: list, read, write, curate |
 | `/room/<did>/join` | the admission ceremony, step by step |
 | `/room/<did>/keys` | epochs, `earliestReadableEpoch`, the chain, what it means |
 
@@ -282,9 +308,21 @@ as one number, "less history than I expected" reads as loss rather than as a
 delivery that has not happened yet.
 
 **A room is addressed, never configured.** The room list comes from local group
-state; a room is `{roomDid, host}` off the URL. That is the whole of "one site,
-any number of rooms" — including a room the site has never seen, hosted by a VTC
-the site does not know, provided the visitor holds credentials for it.
+state; a room is `{roomDid, hostDid, endpoint}` off the URL. That is the whole
+of "one site, any number of rooms" — including a room the site has never seen,
+hosted by a VTC the site does not know, provided the visitor holds credentials
+for it.
+
+The host appears **twice** for the reason `pnm-cli` takes both `--host` and
+`--host-did`: the DID is what a presentation is bound to, and the URL is where
+the bytes go. Server-side, `send_room_task` derives the second from the first by
+resolving the host's DID. A browser could do the same — `did:webvh` resolution
+is plain HTTPS — and should, eventually, so a link carries one identifier rather
+than an identifier plus a location. Until then the catalogue supplies both, and
+`at=` is an override for a host the catalogue has never heard of. **A
+presentation bound to no host is usable by anyone who observes it until it
+expires**, so the site must never let `host` go unset merely because it only had
+a URL.
 
 **CORS is a deployment step, not a code change.** Both services already build a
 configurable allow-origin layer — `vta-service/src/routes/mod.rs:233`,
@@ -321,14 +359,15 @@ misrepresent it.
 |---|---|---|---|
 | 1 | vti | Gate `storage`/`authz`/`audit` behind a default-on `host` feature; `vti-common` becomes optional. `--no-default-features --features mls` builds for wasm32 | — |
 | 2 | vti | `vti-rooms-wasm`: wasm-bindgen bindings — identity, key package, welcome, commit, seal, open, chain, present | 1 |
-| 3 | vti | Host service entry on the `room` DID template (§4.1) | — |
+| 3 | vti | Reword `room.json`'s portability sentence (§4.1) — a doc fix, not a schema change | — |
 | 4 | plugin | `@openvtc/pnm-core/rooms` host calls usable against a host base URL (they are already shaped for it); publish | — |
-| 5 | new | The broker: catalogue + `POST /join` (§4.2), driving a demo-owner VTA | 3 |
+| 5 | new | The broker: catalogue + `POST /join` (§4.2), driving a demo-owner VTA | — |
 | 6 | new | The site: identity → catalogue → join → read | 2, 4, 5 |
 | 7 | new | Write, curate, and the keys/epoch pane | 6 |
 | 8 | spec | `rooms/join/*` as a Trust Task family, from what §4.2 turned out to need | 5 |
 
-1–3 are the ones with real risk and none of it is unknown. 6–7 are the demo.
+1–2 are the ones with real risk and none of it is unknown; 3 is a paragraph.
+6–7 are the demo.
 
 **Where the site lives** is undecided: a new repo under OpenVTC, or `demo/`
 inside vti. A new repo, on the grounds that it deploys on its own cadence and
