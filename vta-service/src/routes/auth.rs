@@ -295,7 +295,7 @@ async fn verify_authenticate_proof(
     state: &AppState,
     doc: &TrustTask<Value>,
 ) -> Result<String, AppError> {
-    crate::auth::di_proof::verify_trust_task_proof_with(doc, &state.trust_task_vm_resolver())
+    crate::auth::verify_trust_task_proof_with(doc, &state.trust_task_vm_resolver())
         .await
         .map_err(|e| AppError::Authentication(e.to_string()))
 }

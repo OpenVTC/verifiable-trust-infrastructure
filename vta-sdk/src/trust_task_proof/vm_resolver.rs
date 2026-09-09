@@ -214,7 +214,7 @@ mod tests {
         }))
         .expect("a well-formed Trust Task");
 
-        let err = crate::auth::di_proof::verify_trust_task_proof(&doc)
+        let err = crate::trust_task_proof::verify::verify_trust_task_proof(&doc)
             .await
             .expect_err("did:key-only cannot resolve a did:webvh key");
         let cause = err.cause().unwrap_or_default();

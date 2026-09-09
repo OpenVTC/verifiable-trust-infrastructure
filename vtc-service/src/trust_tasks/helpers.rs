@@ -16,7 +16,8 @@
 //!   Trust Task document at all.
 //! - `verify_trust_task_proof` — the holder's `eddsa-jcs-2022` DI proof
 //!   verifier for the REST path (an adapter over the shared
-//!   `vti_common::auth::di_proof`, which both services now use).
+//!   `vti_common::auth`, re-exported from `vta_sdk::trust_task_proof` so a client
+//!   verifies its replies with the same code a service verifies its requests).
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -299,7 +300,7 @@ pub(crate) fn body_parse_error_response(reason: &str) -> TrustTaskOutcome {
 /// return the proven signer DID — the base DID (before `#`) of the proof's
 /// `verificationMethod`.
 ///
-/// Thin adapter over [`vti_common::auth::di_proof::verify_trust_task_proof`],
+/// Thin adapter over [`vti_common::auth::verify_trust_task_proof`],
 /// the single implementation both services share. This used to be a *port* of
 /// the VTA's copy; a proof means the same thing at both ends of the mesh, so a
 /// second implementation was only ever a chance for the two to disagree. Only
@@ -313,7 +314,7 @@ pub(crate) async fn verify_trust_task_proof(
     state: &AppState,
     doc: &TrustTask<Value>,
 ) -> Result<String, AppError> {
-    vti_common::auth::di_proof::verify_trust_task_proof_with(doc, &state.trust_task_vm_resolver())
+    vti_common::auth::verify_trust_task_proof_with(doc, &state.trust_task_vm_resolver())
         .await
         .map_err(|e| AppError::Unauthorized(format!("Trust Task {e}")))
 }

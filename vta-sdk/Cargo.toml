@@ -18,6 +18,20 @@ repository.workspace = true
 # production rather than in CI. Carries no dependencies and no production code
 # path; `vta-sdk`'s own test suite turns it on.
 test-loopback = []
+# Verifying the Data-Integrity proof on a Trust-Task document. Moved down from
+# `vti-common` so a *client* can verify the responses it receives, not just a
+# service its requests — see `src/trust_task_proof/mod.rs`.
+#
+# Carries the DID resolver because verification is only as good as the party it
+# resolves: a `did:key` signer needs no I/O, and a `did:webvh` one — which is
+# what a real agent is — cannot be verified without resolving its document.
+proof-verify = [
+  "dep:async-trait",
+  "dep:affinidi-data-integrity",
+  "dep:affinidi-did-resolver-cache-sdk",
+  "dep:affinidi-secrets-resolver",
+  "dep:trust-tasks-rs",
+]
 didcomm = [
   "dep:affinidi-tdk",
   "dep:affinidi-did-resolver-cache-sdk",
@@ -72,6 +86,8 @@ agent-names = [
   "affinidi-did-resolver-cache-sdk/agent-names",
 ]
 client = [
+  # A client verifies the responses it receives; see `trust_task_proof`.
+  "proof-verify",
   "dep:reqwest",
   "dep:tracing",
   "dep:uuid",
@@ -256,6 +272,9 @@ rustls = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 affinidi-did-resolver-cache-sdk = { workspace = true, optional = true }
+# `VerificationMethodResolver` is an async trait object; the resolver impl in
+# `trust_task_proof::vm_resolver` implements it.
+async-trait = { version = "0.1", optional = true }
 # `display_name::agent_name` only — see the `agent-names` feature.
 agent-names = { workspace = true, optional = true }
 affinidi-did-common = { workspace = true, optional = true }

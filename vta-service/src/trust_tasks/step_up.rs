@@ -88,11 +88,11 @@ pub(super) async fn verify_did_signed_gate(
     doc: &TrustTask<Value>,
     expected_signer: &str,
 ) -> Result<(), GateError> {
-    use crate::auth::di_proof::DiProofError;
+    use crate::auth::DiProofError;
 
     // Verify the eddsa-jcs-2022 proof via the single shared verifier (P1.4),
     // which returns the cryptographically-proven signer DID.
-    let signer_did = crate::auth::di_proof::verify_trust_task_proof(doc)
+    let signer_did = crate::auth::verify_trust_task_proof(doc)
         .await
         .map_err(|e| match e {
             DiProofError::NoProof => GateError::NoGate,
@@ -1359,7 +1359,7 @@ mod tests {
         assert_eq!(proof["cryptosuite"], "eddsa-jcs-2022", "{v}");
         assert_eq!(proof["proofPurpose"], "assertionMethod", "{v}");
         let task: TrustTask<Value> = serde_json::from_value(v["approveRequest"].clone()).unwrap();
-        let signer = crate::auth::di_proof::verify_trust_task_proof(&task)
+        let signer = crate::auth::verify_trust_task_proof(&task)
             .await
             .expect("approve-request proof verifies");
         assert_eq!(
@@ -1452,7 +1452,7 @@ mod tests {
         // covers it (SPEC: "The optional `ext` extension is part of the signed
         // surface").
         let task: TrustTask<Value> = serde_json::from_value(v["approveRequest"].clone()).unwrap();
-        let signer = crate::auth::di_proof::verify_trust_task_proof(&task)
+        let signer = crate::auth::verify_trust_task_proof(&task)
             .await
             .expect("approve-request proof verifies over ext");
         assert_eq!(signer, vta_did);

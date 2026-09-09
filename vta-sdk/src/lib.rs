@@ -119,6 +119,10 @@ pub mod credentials;
 pub mod did_key;
 pub mod did_secrets;
 pub mod did_templates;
+/// Verifying a Trust-Task document's Data-Integrity proof. Moved down from
+/// `vti-common` when a *client* needed it too — see the module docs.
+#[cfg(feature = "proof-verify")]
+pub mod trust_task_proof;
 // DID → human-readable display name. The single seam every operator-facing
 // surface (PNM/CNM CLIs, VTC operator CLI, VTC admin UI) renders DIDs
 // through. Core is dependency-light and always compiled; the one source that
