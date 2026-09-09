@@ -338,8 +338,11 @@ pub(crate) enum RoomCommands {
         /// Base URL of the host storing the room.
         #[arg(long)]
         host: String,
-        /// The host's DID. Omit and the minted presentation is not bound to a
-        /// host — usable by anyone who observes it until it expires.
+        /// The host's DID — the recipient the request document names.
+        ///
+        /// It does not affect how the presentation is bound. That is always to
+        /// the DID you authenticate as, so a captured one is worthless to
+        /// whoever captured it whether this is given or not.
         #[arg(long)]
         host_did: Option<String>,
         /// Only records whose key starts with this.
