@@ -398,7 +398,10 @@ pub(crate) async fn handle_get_record(state: &AppState, doc: TrustTask<Value>) -
             // on. Serialising `Record` was what put a bare `sealed` string and
             // six undeclared members on the wire — see `GetRecordResponse`.
             let (commitment, trace) = record_verification(state, &req.room_id, &req.key).await;
-            success_response(&doc, GetRecordResponse::of(&record, commitment, trace))
+            success_response(
+                &doc,
+                GetRecordResponse::of(&record, commitment.as_ref(), trace),
+            )
         }
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -455,11 +458,18 @@ pub(crate) async fn handle_list_records(
     // A listing names no single record, so the entry records the room and the fact of a
     // listing — which is the event: who has seen what this room holds.
     audit_room(state, &room, &authorized, RoomOperation::ListRecords, None).await;
+    let head = room_head(state, &req.room_id).await;
     success_response(
         &doc,
         ListRecordsResponse {
             records: records.iter().take(limit).map(|r| r.metadata()).collect(),
-            data_commitment: room_commitment(state, &req.room_id).await,
+            // One head, so the three values a reader compares cannot come
+            // from three moments.
+            data_commitment: head
+                .as_ref()
+                .map(|h| vti_rooms::merkle::to_multibase(&h.root)),
+            record_count: head.as_ref().map(|h| h.record_count),
+            head_version: head.as_ref().map(|h| h.head_version),
         },
     )
 }
@@ -479,9 +489,12 @@ async fn record_verification(
     state: &AppState,
     room_id: &str,
     key: &str,
-) -> (Option<String>, Option<vti_rooms::merkle::InclusionProof>) {
-    match storage::data_commitment_with_trace(&state.room_records_ks, room_id, key).await {
-        Ok((root, trace)) => (Some(vti_rooms::merkle::to_multibase(&root)), trace),
+) -> (
+    Option<vti_rooms::merkle::TreeHead>,
+    Option<vti_rooms::merkle::InclusionProof>,
+) {
+    match storage::tree_head_with_trace(&state.room_records_ks, room_id, key).await {
+        Ok((head, trace)) => (Some(head), trace),
         Err(e) => {
             tracing::error!(
                 room = %room_id,
@@ -503,9 +516,9 @@ async fn record_verification(
 ///
 /// Logged rather than swallowed silently: a host that has quietly stopped
 /// committing looks, to a member, exactly like a host that never did.
-async fn room_commitment(state: &AppState, room_id: &str) -> Option<String> {
-    match storage::data_commitment(&state.room_records_ks, room_id).await {
-        Ok(root) => Some(vti_rooms::merkle::to_multibase(&root)),
+async fn room_head(state: &AppState, room_id: &str) -> Option<vti_rooms::merkle::TreeHead> {
+    match storage::tree_head(&state.room_records_ks, room_id).await {
+        Ok(head) => Some(head),
         Err(e) => {
             tracing::error!(
                 room = %room_id,

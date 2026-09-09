@@ -505,12 +505,12 @@ pub async fn list_records(
 /// So: correct first, and cache when there is a measurement saying where. The
 /// natural shape is a root kept beside the room row and updated on write, which
 /// is a different change with its own invariant to hold.
-pub async fn data_commitment(
+pub async fn tree_head(
     records: &KeyspaceHandle,
     room_id: &str,
-) -> Result<crate::merkle::Hash, AppError> {
+) -> Result<crate::merkle::TreeHead, AppError> {
     let mut all = list_records(records, room_id, None, None).await?;
-    crate::merkle::commit_records(&mut all)
+    crate::merkle::tree_head(&mut all)
         .map_err(|e| AppError::Internal(format!("commit the records of `{room_id}`: {e}")))
 }
 
@@ -532,27 +532,37 @@ pub async fn data_commitment(
 /// has just read the record can only see as a race with a retraction — the root
 /// is still honest and is still returned, so the read answers with a
 /// commitment and no path rather than failing.
-pub async fn data_commitment_with_trace(
+pub async fn tree_head_with_trace(
     records: &KeyspaceHandle,
     room_id: &str,
     key: &str,
-) -> Result<(crate::merkle::Hash, Option<crate::merkle::InclusionProof>), AppError> {
+) -> Result<
+    (
+        crate::merkle::TreeHead,
+        Option<crate::merkle::InclusionProof>,
+    ),
+    AppError,
+> {
     let mut all = list_records(records, room_id, None, None).await?;
     // Ordering is the commitment's, so the index has to come from the sorted
-    // set — `commit_records` sorts in place, which is why this reads the
-    // position afterwards rather than before.
+    // set — `tree_head` sorts in place, which is why this reads the position
+    // afterwards rather than before.
     all.sort_by(|a, b| a.key.cmp(&b.key));
     let leaves = all
         .iter()
         .map(|r| crate::merkle::leaf_hash(&r.committed()))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| AppError::Internal(format!("commit the records of `{room_id}`: {e}")))?;
-    let root = crate::merkle::root_of(&leaves);
+    let head = crate::merkle::TreeHead {
+        root: crate::merkle::root_of(&leaves),
+        record_count: leaves.len() as u64,
+        head_version: all.iter().map(|r| r.version).max().unwrap_or(0),
+    };
     let trace = all
         .iter()
         .position(|r| r.key == key)
         .and_then(|index| crate::merkle::inclusion_proof(&leaves, index));
-    Ok((root, trace))
+    Ok((head, trace))
 }
 
 /// What one curation changes.
@@ -785,7 +795,7 @@ mod tests {
                 .unwrap();
         }
 
-        let whole_room = data_commitment(&rec, "r1").await.unwrap();
+        let whole_room = tree_head(&rec, "r1").await.unwrap().root;
 
         // What a host serving two of the three records would be committing to.
         let mut short = list_records(&rec, "r1", None, None).await.unwrap();
@@ -813,12 +823,64 @@ mod tests {
                 .unwrap();
         }
 
-        let root = data_commitment(&rec, "r1").await.unwrap();
+        let root = tree_head(&rec, "r1").await.unwrap().root;
         // A filtered listing returns fewer records; the room is unchanged, so
         // the commitment must be too.
         let filtered = list_records(&rec, "r1", Some("a"), None).await.unwrap();
         assert!(filtered.len() < 3, "the fixture must actually filter");
-        assert_eq!(data_commitment(&rec, "r1").await.unwrap(), root);
+        assert_eq!(tree_head(&rec, "r1").await.unwrap().root, root);
+    }
+
+    /// The head's three values describe one set, and they are read from it.
+    ///
+    /// `head_version` is deliberately **not** the room's `next_version - 1`,
+    /// even though the two agree here. A counter is a second read, and a write
+    /// landing between the two labels a root with a version from another
+    /// moment — two honest members then hold roots over different trees under
+    /// one version, which reads as equivocation and is not. This test pins the
+    /// values; the doc on `merkle::TreeHead` pins the reason.
+    #[tokio::test]
+    async fn the_head_reports_the_set_it_committed_to() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        for (i, key) in ["a", "b", "c"].iter().enumerate() {
+            put_record(&rooms, &rec, "r1", open_record(key), None, i as u64 + 1)
+                .await
+                .unwrap();
+        }
+
+        let head = tree_head(&rec, "r1").await.unwrap();
+        assert_eq!(head.record_count, 3);
+        assert_eq!(
+            head.head_version,
+            get_room(&rooms, "r1").await.unwrap().next_version - 1,
+            "with no erasure the committed maximum is the room's last assigned version"
+        );
+
+        // A retraction is a mutation: it takes a version, keeps its tombstone,
+        // and so moves the head without changing the count.
+        curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "b",
+            Curation {
+                status: Some(RecordStatus::Retracted),
+                ..Curation::default()
+            },
+            4,
+        )
+        .await
+        .unwrap();
+        let after = tree_head(&rec, "r1").await.unwrap();
+        assert_eq!(after.record_count, 3, "a tombstone is still a record");
+        assert!(
+            after.head_version > head.head_version,
+            "a retraction advances the head"
+        );
+        assert_ne!(after.root, head.root, "and it moves the root");
     }
 
     /// An empty room has an honest commitment rather than no commitment.
@@ -829,7 +891,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            data_commitment(&rec, "r1").await.unwrap(),
+            tree_head(&rec, "r1").await.unwrap().root,
             crate::merkle::empty_root()
         );
     }

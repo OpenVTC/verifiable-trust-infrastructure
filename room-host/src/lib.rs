@@ -517,7 +517,10 @@ async fn get(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answe
             // Answered through the response type for the same reason the VTC is:
             // `respond(doc, record)` put the *storage* record on the wire.
             let (commitment, trace) = record_verification(state, &req.room_id, &req.key).await;
-            respond(doc, GetRecordResponse::of(&record, commitment, trace))
+            respond(
+                doc,
+                GetRecordResponse::of(&record, commitment.as_ref(), trace),
+            )
         }
         Err(e) => from_app_error(doc, &e),
     }
@@ -570,6 +573,7 @@ async fn list(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answ
             // property of the task rather than of any one host.
             // A listing names no single record; the event is that the room was surveyed.
             audit_room(&room, &authorized, RoomOperation::ListRecords, None);
+            let head = room_head(state, &req.room_id).await;
             respond(
                 doc,
                 ListRecordsResponse {
@@ -577,7 +581,13 @@ async fn list(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answ
                     // The reference host commits too. A host that served
                     // listings without one would be a working example of the
                     // thing the commitment exists to make detectable.
-                    data_commitment: room_commitment(state, &req.room_id).await,
+                    // One head, so the three values a reader compares cannot come
+                    // from three moments.
+                    data_commitment: head
+                        .as_ref()
+                        .map(|h| vti_rooms::merkle::to_multibase(&h.root)),
+                    record_count: head.as_ref().map(|h| h.record_count),
+                    head_version: head.as_ref().map(|h| h.head_version),
                 },
             )
         }
@@ -600,9 +610,12 @@ async fn record_verification(
     state: &HostState,
     room_id: &str,
     key: &str,
-) -> (Option<String>, Option<vti_rooms::merkle::InclusionProof>) {
-    match storage::data_commitment_with_trace(&state.records, room_id, key).await {
-        Ok((root, trace)) => (Some(vti_rooms::merkle::to_multibase(&root)), trace),
+) -> (
+    Option<vti_rooms::merkle::TreeHead>,
+    Option<vti_rooms::merkle::InclusionProof>,
+) {
+    match storage::tree_head_with_trace(&state.records, room_id, key).await {
+        Ok((head, trace)) => (Some(head), trace),
         Err(e) => {
             tracing::error!(
                 room = %room_id,
@@ -628,9 +641,9 @@ async fn record_verification(
 /// One function for both reads, mirroring the VTC's, because a listing and a
 /// read that disagreed about the room's root would be this host equivocating
 /// with itself.
-async fn room_commitment(state: &HostState, room_id: &str) -> Option<String> {
-    match storage::data_commitment(&state.records, room_id).await {
-        Ok(root) => Some(vti_rooms::merkle::to_multibase(&root)),
+async fn room_head(state: &HostState, room_id: &str) -> Option<vti_rooms::merkle::TreeHead> {
+    match storage::tree_head(&state.records, room_id).await {
+        Ok(head) => Some(head),
         Err(e) => {
             tracing::error!(
                 room = %room_id,

@@ -155,18 +155,74 @@ pub fn root_of(leaves: &[Hash]) -> Hash {
     level[0]
 }
 
+/// A room's **tree head**: the root, and the two values that say which state it
+/// covers.
+///
+/// # Why these travel together and are computed together
+///
+/// A root on its own is not comparable to another root. A room moves — every
+/// put, curate and retraction changes the tree — so two roots differing is the
+/// most ordinary observation there is, and a host shown to have served two
+/// different ones answers *there was a write between your reads*. Certificate
+/// Transparency does not have this problem because a signed tree head is a root
+/// **and a size**; this family shipped the root alone until
+/// `trust-tasks-tf#422`.
+///
+/// All three come out of **one** pass over one set, and that is a correctness
+/// requirement rather than a tidiness one. `head_version` read from the room's
+/// own `next_version` counter would be a *second* read, and two reads are not a
+/// snapshot: a write landing between them labels a root with a version from
+/// another moment, so two honest members end up holding roots over different
+/// trees under one version. That reads as equivocation and is not, and **a
+/// false accusation discredits the mechanism rather than the host** — the worst
+/// outcome available here. Ordering the two reads does not help in either
+/// direction; only taking both from one set closes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeHead {
+    /// The root of the record tree.
+    pub root: Hash,
+    /// How many records the tree covers — leaves, tombstones included.
+    pub record_count: u64,
+    /// The highest version among those records, `0` if there are none.
+    ///
+    /// Taken from the committed set, never from the room row. It equals the
+    /// room's last assigned version for any host that has not **erased** a
+    /// record: versions are assigned strictly increasing, and a retraction keeps
+    /// its tombstone. [`crate::storage::purge_record`] is the erasure path and
+    /// has no caller outside its own tests; a family that exposes one owes this
+    /// definition another look, because an erasure moves the root without
+    /// necessarily moving this.
+    pub head_version: u64,
+}
+
+/// Sort `records` by key, hash them, and return the whole [`TreeHead`].
+///
+/// The sort is here rather than assumed of the caller because the ordering *is*
+/// the completeness property — see [`commit_records`], which is this with the
+/// head discarded.
+pub fn tree_head(records: &mut [Record]) -> Result<TreeHead, MerkleError> {
+    records.sort_by(|a, b| a.key.cmp(&b.key));
+    let leaves = records
+        .iter()
+        .map(|r| leaf_hash(&r.committed()))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(TreeHead {
+        root: root_of(&leaves),
+        record_count: leaves.len() as u64,
+        // `max` over the same slice the leaves came from. An empty room has no
+        // version to report and answers 0, which is the state it is in rather
+        // than a missing value.
+        head_version: records.iter().map(|r| r.version).max().unwrap_or(0),
+    })
+}
+
 /// Sort `records` by key, hash them, and return the data commitment.
 ///
 /// The sort is here rather than assumed of the caller because the ordering *is*
 /// the completeness property: a root computed over records in storage order
 /// proves membership and nothing about absence.
 pub fn commit_records(records: &mut [Record]) -> Result<Hash, MerkleError> {
-    records.sort_by(|a, b| a.key.cmp(&b.key));
-    let leaves = records
-        .iter()
-        .map(|r| leaf_hash(&r.committed()))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(root_of(&leaves))
+    tree_head(records).map(|head| head.root)
 }
 
 /// One step of an inclusion proof: a sibling and which side it sits on.
