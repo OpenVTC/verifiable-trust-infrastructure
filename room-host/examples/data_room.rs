@@ -592,7 +592,7 @@ async fn act_four(
     )
     .await?;
 
-    let nomination = g.nominate(&g.successor.did, Some(24 * 365)).await;
+    let nomination = g.nominate(&g.successor.did, 24 * 365).await;
     note("the room issued this nomination to its successor long ago, granting `succeed` —");
     note("a word no room task accepts, so it confers nothing at all while Alice is present");
 
@@ -668,7 +668,7 @@ async fn act_four(
         .claim_owner(
             &successor_session(&h),
             // A nomination the room really did issue — naming somebody else.
-            &h.nominate(&h.agent.did, Some(24)).await,
+            &h.nominate(&h.agent.did, 24).await,
             None,
             &h.successor.did,
             &h.successor.secret_multibase,
@@ -687,7 +687,7 @@ async fn act_four(
     let claimed = client
         .claim_owner(
             &successor_session(&h),
-            &h.nominate(&h.successor.did, Some(24 * 365)).await,
+            &h.nominate(&h.successor.did, 24 * 365).await,
             Some("the owner has been unreachable since March"),
             &h.successor.did,
             &h.successor.secret_multibase,

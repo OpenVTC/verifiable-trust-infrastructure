@@ -115,16 +115,15 @@ pub async fn present(
     let now = Utc::now();
     let expires = now + PRESENTATION_LIFETIME;
     let mut leaf = root
+        // No audience parameter: the leaf is bound to its subject — `agent_did`, the caller
+        // this VTA authenticated — and `verify_chain` requires the presenter to BE that
+        // subject. A second field naming who may present could only repeat the subject or
+        // contradict it, which is why dtg-credentials 0.8.0 removed it.
         .attenuate(
             agent_did.to_string(),
             vec![action.to_string()],
             now,
-            Some(expires),
-            // No audience. The leaf is bound to its subject — `agent_did`, the caller this
-            // VTA authenticated — and a verifier requires the presenter to be that subject.
-            // A second field naming who may present could only repeat the subject or
-            // contradict it, which is why dtg-credentials removed it.
-            None,
+            expires,
         )
         .map_err(|e| {
             // The common case is asking for an action the principal does not hold, and

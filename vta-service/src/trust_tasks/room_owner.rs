@@ -207,13 +207,35 @@ pub(super) async fn handle_issue_authority(
     // action list rather than reading it as "everything", and the schema refuses it before
     // that — two layers, because "confers nothing" and "confers everything" are exactly the
     // two readings a careless consumer might choose between.
+    // `validUntil` is REQUIRED on an authority credential, and this task mints a chain
+    // ROOT — the grant nothing else can withdraw. Nothing about the subject's standing is
+    // consulted at verification, so a root that never expires is authority the room cannot
+    // take back at all; a verifier refuses a chain link carrying none, so one minted without
+    // it could not have been used anyway.
+    //
+    // `rooms/owner/issue-authority/0.2` makes the member REQUIRED and the generated payload
+    // non-optional, which retires this check. Until this task moves to 0.2 the 0.1 payload
+    // still admits an absent value, so it is refused here rather than defaulted: how long a
+    // room's authority lasts is the owner's judgement about their own room, and picking a
+    // lifetime for them would make that judgement silently.
+    let Some(valid_until) = req.valid_until else {
+        return app_error_to_reject(
+            &doc,
+            vti_common::error::AppError::Validation(
+                "validUntil is required: a chain root that never expires is authority the \
+                 room cannot withdraw, and a verifier refuses a grant carrying no expiry"
+                    .into(),
+            ),
+        );
+    };
+
     let vac = match dtg_credentials::DTGCredential::new_vac(
         req.room_id.clone(),
         req.subject.clone(),
         req.room_id.clone(),
         actions,
         chrono::Utc::now(),
-        req.valid_until,
+        valid_until,
     ) {
         Ok(v) => v,
         Err(e) => {

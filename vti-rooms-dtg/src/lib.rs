@@ -287,22 +287,14 @@ impl ChainVerifier for DtgChainVerifier {
         )
         .map_err(|e| chain_refusal(&room.room_id, e))?;
 
-        // `verify_chain` takes `presenter` but uses it for **one** thing: the `audience`
-        // check, where a link that names an audience must be presented by that audience. It
-        // does not require the leaf to grant to the presenter, and that is deliberate on
-        // its side — the leaf's subject is "who may act", and binding that to the party the
-        // *transport* authenticated is a question about this request, not about the chain.
-        //
-        // Which makes it ours, and it is not optional: without it a presentation is a
-        // bearer token, and anyone who observes one inherits everything it confers. A test
-        // above presents an agent's chain as the agent's human and expects a refusal.
-        if verified.subject != presenter {
-            return Err(AppError::Forbidden(format!(
-                "the chain's leaf grants to `{}`, not to the party that signed this \
-                 request; a presentation is bound to its presenter, not bearer",
-                verified.subject
-            )));
-        }
+        // The presenter check that used to live here is now `verify_chain`'s own: since
+        // dtg-credentials 0.8.0 it requires the leaf to grant to `presenter` and refuses
+        // with `NotThePresenter` otherwise. It was written here first, and independently in
+        // `nomination.rs`, because the library took a `presenter` and used it only for the
+        // `audience` comparison — so a leaf carrying no audience was accepted from anybody.
+        // Two copies of a rule is one place for it to be forgotten; it moved to the one
+        // place every verifier reaches. A test below presents an agent's chain as the
+        // agent's human and still expects a refusal, which is what pins it.
 
         // The pooling defence: membership and authority must describe one subject.
         match room.visibility {
@@ -422,7 +414,7 @@ mod tests {
             scope.into(),
             actions.iter().map(|s| s.to_string()).collect(),
             chrono::Utc::now() - chrono::Duration::hours(1),
-            Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            chrono::Utc::now() + chrono::Duration::hours(1),
         )
         .expect("build a VAC");
 
@@ -608,7 +600,7 @@ mod signed {
             room_did.clone(),
             vec!["read".into(), "write".into()],
             now - Duration::minutes(1),
-            Some(now + Duration::days(30)),
+            now + Duration::days(30),
         )
         .expect("owner VAC")
         .with_id("urn:uuid:vac-owner");
@@ -621,8 +613,7 @@ mod signed {
                 agent_did.clone(),
                 vec!["read".into()],
                 now - Duration::minutes(1),
-                Some(now + Duration::hours(4)),
-                None,
+                now + Duration::hours(4),
             )
             .expect("attenuate")
             .with_id("urn:uuid:vac-agent");
@@ -946,7 +937,7 @@ pub mod test_support {
                     "admin".into(),
                 ],
                 now - Duration::minutes(1),
-                Some(now + Duration::days(30)),
+                now + Duration::days(30),
             )
             .expect("owner VAC")
             .with_id("urn:uuid:vac-owner");
@@ -962,8 +953,7 @@ pub mod test_support {
                     agent.did.clone(),
                     vec!["read".into()],
                     now - Duration::minutes(1),
-                    Some(now + Duration::hours(4)),
-                    None,
+                    now + Duration::hours(4),
                 )
                 .expect("attenuate to the agent")
                 .with_id("urn:uuid:vac-agent");
@@ -989,7 +979,7 @@ pub mod test_support {
                 room_key.did.clone(),
                 vec!["read".into()],
                 now - Duration::minutes(1),
-                Some(now + Duration::days(30)),
+                now + Duration::days(30),
             )
             .expect("successor VAC")
             .with_id("urn:uuid:vac-successor");
@@ -1070,7 +1060,7 @@ pub mod test_support {
         /// Signed by the **room**, because that is the only issuer a nomination can have —
         /// an owner nominating in their own name would be a chain rooted at a person, and
         /// the whole point is that it is rooted at the room they are stepping away from.
-        pub async fn nominate(&self, successor: &str, valid_until: Option<i64>) -> String {
+        pub async fn nominate(&self, successor: &str, valid_until: i64) -> String {
             let now = Utc::now();
             let mut vac = DTGCredential::new_vac(
                 self.room_key.did.clone(),
@@ -1078,7 +1068,7 @@ pub mod test_support {
                 self.room_key.did.clone(),
                 vec![crate::ACTION_SUCCEED.into()],
                 now - Duration::minutes(1),
-                valid_until.map(|h| now + Duration::hours(h)),
+                now + Duration::hours(valid_until),
             )
             .expect("nomination VAC")
             .with_id("urn:uuid:vac-nomination");

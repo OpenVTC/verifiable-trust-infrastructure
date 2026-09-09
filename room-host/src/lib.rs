@@ -1684,7 +1684,7 @@ mod tests {
             ROOMS_OWNER_CLAIM_TYPE,
             serde_json::json!({
                 "roomId": f.room.room_id,
-                "nomination": f.nominate(&f.successor.did, Some(24)).await,
+                "nomination": f.nominate(&f.successor.did, 24).await,
                 "presentation": f.as_successor(),
                 "reason": "the owner has been unreachable since March",
             }),
@@ -1717,7 +1717,7 @@ mod tests {
             ROOMS_OWNER_CLAIM_TYPE,
             serde_json::json!({
                 "roomId": f.room.room_id,
-                "nomination": f.nominate(&f.successor.did, Some(24)).await,
+                "nomination": f.nominate(&f.successor.did, 24).await,
                 "presentation": f.as_successor(),
             }),
             &f.successor,
@@ -1740,7 +1740,7 @@ mod tests {
             ROOMS_OWNER_CLAIM_TYPE,
             serde_json::json!({
                 "roomId": f.room.room_id,
-                "nomination": f.nominate(&f.successor.did, Some(24)).await,
+                "nomination": f.nominate(&f.successor.did, 24).await,
                 "presentation": f.as_successor(),
             }),
             &f.successor,
@@ -1766,7 +1766,7 @@ mod tests {
             ROOMS_OWNER_CLAIM_TYPE,
             serde_json::json!({
                 "roomId": f.room.room_id,
-                "nomination": f.nominate(&f.agent.did, Some(24)).await,
+                "nomination": f.nominate(&f.agent.did, 24).await,
                 "presentation": f.as_successor(),
             }),
             &f.successor,

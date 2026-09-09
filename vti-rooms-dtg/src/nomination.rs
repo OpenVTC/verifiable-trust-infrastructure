@@ -73,16 +73,12 @@ pub async fn verify(
     )
     .map_err(|e| chain_refusal(room_id, e))?;
 
-    // `verify_chain` uses `claimant` only for the audience check; it does not require the
-    // grant to name them. Without this a nomination would be a bearer token, and anyone who
-    // ever observed one could take the room the moment it went dormant.
-    if verified.subject != claimant {
-        return Err(AppError::Forbidden(format!(
-            "the nomination names `{}`, not the party claiming; a nomination is not \
-             transferable",
-            verified.subject
-        )));
-    }
+    // That a nomination is not transferable is `verify_chain`'s rule now, not this
+    // function's: since dtg-credentials 0.8.0 it requires the leaf to grant to `claimant`.
+    // Before that it used the argument only for the `audience` comparison, so a nomination
+    // carrying none was a bearer token and anyone who had ever seen one could take the room
+    // the moment it went dormant. The test below still claims with the wrong party and
+    // expects a refusal.
 
     Ok(VerifiedNomination {
         successor: verified.subject,
@@ -121,7 +117,7 @@ mod tests {
         subject: &str,
         scope: &str,
         actions: Vec<String>,
-        valid_until: Option<chrono::DateTime<Utc>>,
+        valid_until: chrono::DateTime<Utc>,
     ) -> String {
         let now = Utc::now();
         let mut vac = DTGCredential::new_vac(
@@ -145,7 +141,7 @@ mod tests {
             &f.successor_did,
             &f.room_did,
             vec![ACTION_SUCCEED.into()],
-            Some(Utc::now() + Duration::days(365)),
+            Utc::now() + Duration::days(365),
         )
         .await
     }
@@ -182,7 +178,7 @@ mod tests {
             &f.successor_did,
             &f.room_did,
             vec![ACTION_SUCCEED.into()],
-            Some(Utc::now() + Duration::days(365)),
+            Utc::now() + Duration::days(365),
         )
         .await;
 
@@ -220,7 +216,7 @@ mod tests {
             &f.successor_did,
             &other_room,
             vec![ACTION_SUCCEED.into()],
-            Some(Utc::now() + Duration::days(365)),
+            Utc::now() + Duration::days(365),
         )
         .await;
 
@@ -240,7 +236,7 @@ mod tests {
             &f.successor_did,
             &f.room_did,
             vec![ACTION_SUCCEED.into()],
-            Some(Utc::now() - Duration::days(1)),
+            Utc::now() - Duration::days(1),
         )
         .await;
 
@@ -266,7 +262,7 @@ mod tests {
                 "curate".into(),
                 "admin".into(),
             ],
-            Some(Utc::now() + Duration::days(365)),
+            Utc::now() + Duration::days(365),
         )
         .await;
 

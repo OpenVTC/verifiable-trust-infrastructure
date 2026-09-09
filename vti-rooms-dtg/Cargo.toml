@@ -29,7 +29,7 @@ vti-common = { path = "../vti-common", version = "0.18" }
 
 # `authority::verify_chain` and the VAC/VDC types. Was a pinned git rev while
 # 0.6.0 sat merged and unreleased; released 2026-09-03.
-dtg-credentials = "0.6"
+dtg-credentials = "=0.9.1"
 
 async-trait = "0.1"
 # Both hosts already carry a `VerificationMethodResolver`, so the key adapter wraps
