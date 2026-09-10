@@ -1557,9 +1557,8 @@ mod tests {
 
             let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
             let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
-            let audit: vta_audit::SharedAuditSink = std::sync::Arc::new(
-                vta_audit::KeyspaceAuditSink::new(store.keyspace(crate::keyspaces::AUDIT).unwrap()),
-            );
+            let audit: vta_audit::SharedAuditSink =
+                vta_audit::shared_keyspace_sink(store.keyspace(crate::keyspaces::AUDIT).unwrap());
             let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
             let internal_ks = store.keyspace(crate::keyspaces::INTERNAL_KEYS).unwrap();
             let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();

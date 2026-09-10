@@ -2166,7 +2166,7 @@ mod tests {
     /// A real sink over a scratch keyspace — the sweeper audits each reap, and
     /// a sink that swallowed the call would leave that path untested.
     fn test_audit_sink(ks: &KeyspaceHandle) -> vta_audit::SharedAuditSink {
-        std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(ks.clone()))
+        vta_audit::shared_keyspace_sink(ks.clone())
     }
 
     #[tokio::test]

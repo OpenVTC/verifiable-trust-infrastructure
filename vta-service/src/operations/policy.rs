@@ -316,9 +316,7 @@ mod tests {
         .unwrap();
         (
             store.keyspace(vta_keyspaces::POLICY).unwrap(),
-            std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(
-                store.keyspace(vta_keyspaces::AUDIT).unwrap(),
-            )),
+            vta_audit::shared_keyspace_sink(store.keyspace(vta_keyspaces::AUDIT).unwrap()),
             dir,
         )
     }

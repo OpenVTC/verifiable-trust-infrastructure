@@ -102,6 +102,22 @@ impl AuditSink for KeyspaceAuditSink {
     }
 }
 
+/// Build the shared sink every caller should use.
+///
+/// One construction point, so that changing what a VTA's audit writes is one
+/// edit rather than a search. Before this existed the workspace built the same
+/// sink over the same keyspace in thirty-one places — including three times
+/// inside a single function — and each was a place a later change would have
+/// to find.
+///
+/// A server takes its sink from `AppState`; this is for the callers that have
+/// no `AppState` to take it from — offline CLI commands, setup, sweepers and
+/// tests.
+#[must_use]
+pub fn shared_keyspace_sink(keyspace: KeyspaceHandle) -> SharedAuditSink {
+    Arc::new(KeyspaceAuditSink::new(keyspace))
+}
+
 /// Write every entry to several sinks.
 ///
 /// The composition an operator adding tamper-evidence actually needs: keep the

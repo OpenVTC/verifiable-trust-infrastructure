@@ -166,9 +166,8 @@ async fn build_offline_deps(
     let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
     let imported_ks = cs.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
     let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
-    let audit_sink: vta_audit::SharedAuditSink = std::sync::Arc::new(
-        vta_audit::KeyspaceAuditSink::new(cs.keyspace(crate::keyspaces::AUDIT)?),
-    );
+    let audit_sink: vta_audit::SharedAuditSink =
+        vta_audit::shared_keyspace_sink(cs.keyspace(crate::keyspaces::AUDIT)?);
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
     let drains_ks = cs.keyspace(crate::keyspaces::DRAINS)?;
     let snapshot_ks = cs.keyspace(snapshot::KEYSPACE_NAME)?;

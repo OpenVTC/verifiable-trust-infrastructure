@@ -316,9 +316,8 @@ mod tests {
         })
         .unwrap();
         let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
-        let audit: vta_audit::SharedAuditSink = std::sync::Arc::new(
-            vta_audit::KeyspaceAuditSink::new(store.keyspace(crate::keyspaces::AUDIT).unwrap()),
-        );
+        let audit: vta_audit::SharedAuditSink =
+            vta_audit::shared_keyspace_sink(store.keyspace(crate::keyspaces::AUDIT).unwrap());
         // Force the test_app_config helper to be exercised so any
         // future field addition surfaces as a test failure.
         let _ = test_app_config(dir.path().into());

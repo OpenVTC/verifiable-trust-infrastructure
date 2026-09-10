@@ -44,8 +44,7 @@ pub async fn run_create_did_webvh(
     let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
     let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
     let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
-    let audit: vta_audit::SharedAuditSink =
-        std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
+    let audit: vta_audit::SharedAuditSink = vta_audit::shared_keyspace_sink(audit_ks.clone());
     let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES)?;
 
     // Resolve context
@@ -279,9 +278,7 @@ pub async fn run_create_did_webvh(
             &keys_ks,
             &imported_ks,
             &Arc::from(seed_store),
-            &(std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(
-                store.keyspace(crate::keyspaces::AUDIT)?,
-            )) as vta_audit::SharedAuditSink),
+            &audit,
             &auth,
             &result.signing_key_id,
             "cli",
@@ -300,9 +297,7 @@ pub async fn run_create_did_webvh(
                 &keys_ks,
                 &imported_ks,
                 &Arc::from(create_seed_store(&config)?),
-                &(std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(
-                    store.keyspace(crate::keyspaces::AUDIT)?,
-                )) as vta_audit::SharedAuditSink),
+                &audit,
                 &auth,
                 &result.ka_key_id,
                 "cli",
@@ -770,8 +765,7 @@ mod tests {
         let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
         let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
         let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
-        let audit: vta_audit::SharedAuditSink =
-            std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
+        let audit: vta_audit::SharedAuditSink = vta_audit::shared_keyspace_sink(audit_ks.clone());
         let seed_store = Arc::from(create_seed_store(&config).unwrap());
         let auth = cli_super_admin();
 
@@ -867,8 +861,7 @@ mod tests {
         let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
         let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
         let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
-        let audit: vta_audit::SharedAuditSink =
-            std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
+        let audit: vta_audit::SharedAuditSink = vta_audit::shared_keyspace_sink(audit_ks.clone());
         let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES).unwrap();
         let seed_store = create_seed_store(&config).unwrap();
 

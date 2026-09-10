@@ -754,8 +754,7 @@ pub async fn apply_inputs(
     let contexts_ks = maybe_encrypt(store.keyspace(crate::keyspaces::CONTEXTS)?);
     let webvh_ks = maybe_encrypt(store.keyspace(crate::keyspaces::WEBVH)?);
     let audit_ks = maybe_encrypt(store.keyspace(crate::keyspaces::AUDIT)?);
-    let audit: vta_audit::SharedAuditSink =
-        std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
+    let audit: vta_audit::SharedAuditSink = vta_audit::shared_keyspace_sink(audit_ks.clone());
     let did_templates_ks = maybe_encrypt(store.keyspace(crate::keyspaces::DID_TEMPLATES)?);
 
     let mut vta_ctx = create_seed_context(&contexts_ks, "vta", "Verifiable Trust Agent").await?;
