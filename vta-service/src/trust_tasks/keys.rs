@@ -19,6 +19,7 @@ use vta_sdk::protocols::key_management::rename::RenameKeyBody;
 use vta_sdk::protocols::key_management::revoke::RevokeKeyBody;
 use vta_sdk::protocols::key_management::secret::GetKeySecretBody;
 use vta_sdk::protocols::key_management::sign::SignRequestBody;
+use vta_sdk::protocols::key_management::sign::SigningDomain;
 
 use crate::auth::AuthClaims;
 use crate::operations;
@@ -306,6 +307,8 @@ pub(super) async fn handle_sign(
         &req.key_id,
         &payload_bytes,
         &req.algorithm,
+        // A payload from a task caller: the VTA cannot parse it.
+        SigningDomain::Opaque,
         TRANSPORT_TRUST_TASK,
     )
     .await

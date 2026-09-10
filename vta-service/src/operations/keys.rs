@@ -17,7 +17,7 @@ use vta_sdk::protocols::key_management::{
     rename::RenameKeyResultBody,
     revoke::RevokeKeyResultBody,
     secret::GetKeySecretResultBody,
-    sign::{SignAlgorithm, SignResultBody},
+    sign::{SignAlgorithm, SignResultBody, SigningDomain},
 };
 
 use crate::audit::{self, audit};
@@ -1139,6 +1139,7 @@ pub async fn sign_payload(
     key_id: &str,
     payload: &[u8],
     algorithm: &SignAlgorithm,
+    domain: SigningDomain,
     channel: &str,
 ) -> Result<SignResultBody, AppError> {
     let record: KeyRecord = keys_ks
@@ -1189,6 +1190,14 @@ pub async fn sign_payload(
         // whose entry names specific keys asked to be bound to them.
         require_key_in_caller_scope(acl_ks, auth, key_id).await?;
     }
+
+    // What gets signed, which is not always what was handed in: an opaque
+
+    // payload is framed under its domain tag first. See `SigningDomain`.
+
+    let to_sign = domain.signing_input(payload);
+
+    let payload = to_sign.as_ref();
 
     let signature_bytes = match record.origin {
         // The one place internal key material is used. It never leaves this
@@ -1949,6 +1958,7 @@ mod tests {
             &key.key_id,
             payload,
             &SignAlgorithm::EdDSA,
+            SigningDomain::Opaque,
             "test",
         )
         .await
@@ -2195,6 +2205,7 @@ mod tests {
             &key.key_id,
             b"payload",
             &SignAlgorithm::EdDSA,
+            SigningDomain::Opaque,
             "test",
         )
         .await;
@@ -2216,6 +2227,7 @@ mod tests {
             &key.key_id,
             b"payload",
             &SignAlgorithm::EdDSA,
+            SigningDomain::Opaque,
             "test",
         )
         .await;
@@ -2256,6 +2268,7 @@ mod tests {
             &allowed.key_id,
             b"payload",
             &SignAlgorithm::EdDSA,
+            SigningDomain::Opaque,
             "test",
         )
         .await
@@ -2322,6 +2335,7 @@ mod tests {
                     key_id,
                     b"payload",
                     &SignAlgorithm::EdDSA,
+                    SigningDomain::Opaque,
                     "test",
                 )
                 .await
@@ -2458,6 +2472,7 @@ mod tests {
             &foreign.key_id,
             b"payload",
             &SignAlgorithm::EdDSA,
+            SigningDomain::Opaque,
             "test",
         )
         .await;
@@ -2506,6 +2521,7 @@ mod tests {
             &unscoped.key_id,
             b"payload",
             &SignAlgorithm::EdDSA,
+            SigningDomain::Opaque,
             "test",
         )
         .await;
@@ -2607,6 +2623,7 @@ mod tests {
             &key.key_id,
             b"payload",
             &SignAlgorithm::EdDSA,
+            SigningDomain::Opaque,
             "test",
         )
         .await;
@@ -2648,6 +2665,7 @@ mod tests {
             &own.key_id,
             b"payload",
             &SignAlgorithm::EdDSA,
+            SigningDomain::Opaque,
             "test",
         )
         .await
@@ -2714,6 +2732,7 @@ mod tests {
             &key.key_id,
             b"payload",
             &SignAlgorithm::EdDSA,
+            SigningDomain::Opaque,
             "test",
         )
         .await;
@@ -2733,6 +2752,7 @@ mod tests {
             &key.key_id,
             b"payload",
             &SignAlgorithm::EdDSA,
+            SigningDomain::Opaque,
             "test",
         )
         .await
@@ -3204,6 +3224,7 @@ mod tests {
             "k-sign",
             b"payload",
             &SignAlgorithm::EdDSA,
+            SigningDomain::Opaque,
             "test",
         )
         .await

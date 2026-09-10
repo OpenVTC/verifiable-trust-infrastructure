@@ -2,6 +2,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
+use vta_sdk::protocols::key_management::sign::SigningDomain;
 
 use vta_sdk::protocols::key_management::{
     create::CreateKeyResponseBody,
@@ -332,6 +333,8 @@ pub async fn sign_with_key(
         &key_id,
         &payload,
         &req.algorithm,
+        // A payload from a REST caller: the VTA cannot parse it.
+        SigningDomain::Opaque,
         "rest",
     )
     .await?;
