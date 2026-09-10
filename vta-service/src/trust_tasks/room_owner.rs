@@ -321,6 +321,8 @@ pub(super) async fn handle_register(
     let key = format!("{vta_did}#key-0");
     let reply = match crate::operations::room_host::send_room_task(
         signing_context(state, auth),
+        &state.room_groups_ks,
+        &req.room_id,
         &resolver,
         &req.host,
         &key,

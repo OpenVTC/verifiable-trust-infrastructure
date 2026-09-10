@@ -488,6 +488,8 @@ pub(super) async fn handle_backfill(
     let key = format!("{vta_did}#key-0");
     let reply = match crate::operations::room_host::send_room_task(
         signing_context(state, auth),
+        &state.room_groups_ks,
+        &req.room_id,
         &resolver,
         &req.host,
         &key,
@@ -590,6 +592,48 @@ fn head_of(
     }
 }
 
+/// Record what a host asserted about a room, and say what comparing it came to.
+///
+/// **This is the comparison no other party on the member's side can make.** A
+/// tab does not outlive itself and a CLI keeps nothing; the agent is the only
+/// one that saw both reads.
+///
+/// It is keyed by **room, not host**, which buys a comparison the specification
+/// does not list: two hosts of one room reporting different roots at one
+/// `headVersion` is exactly as damning as one host disagreeing with itself, and
+/// a room may deliberately have several — a mirror serving reads while its
+/// primary takes writes. A mirror that merely *lags* reports a lower
+/// `headVersion` and is correctly not compared at all.
+///
+/// A host that asserted nothing is `notChecked` rather than `noneHeld`: one says
+/// nothing was found, the other says nothing was looked for.
+async fn compare_head(state: &AppState, room_id: &str, head: Option<&Value>) -> &'static str {
+    let Some(head) = head else {
+        return "notChecked";
+    };
+    let (Some(version), Some(root)) = (
+        head["headVersion"].as_u64(),
+        head["dataCommitment"].as_str(),
+    ) else {
+        return "notChecked";
+    };
+    match room_groups::observe_head(&state.room_groups_ks, room_id, version, root).await {
+        Ok(room_groups::RootVerdict::Agree) => "agree",
+        Ok(room_groups::RootVerdict::Conflict) => "conflict",
+        Ok(room_groups::RootVerdict::NoneHeld) => "noneHeld",
+        Err(e) => {
+            // A memory this agent could not read is not a host that behaved. It
+            // says so rather than reporting a comparison it did not make.
+            tracing::error!(
+                room = %room_id,
+                error = %e,
+                "could not read this agent's root history; answering without a comparison"
+            );
+            "notChecked"
+        }
+    }
+}
+
 /// Replay a record's trace against the commitment served **beside it**.
 ///
 /// The leaf preimage is the response payload with its verification members
@@ -667,6 +711,8 @@ pub(super) async fn handle_read(
     let key = format!("{vta_did}#key-0");
     let reply = match crate::operations::room_host::send_room_task(
         signing_context(state, auth),
+        &state.room_groups_ks,
+        &req.room_id,
         &resolver,
         &req.host,
         &key,
@@ -712,22 +758,19 @@ pub(super) async fn handle_read(
         "version": served.record.version,
         "status": served.record.status,
         "updatedAt": served.record.updated_at,
-        "verification": {
-            "trace": trace,
-            // Until this agent keeps a root history there is nothing to compare
-            // against, and saying so is not the same as saying nothing was
-            // found. `notChecked` is the honest answer.
-            "priorRoots": "notChecked",
-        },
+        "verification": { "trace": trace },
     });
     if let Some(author) = &served.record.author {
         payload["author"] = serde_json::json!(author);
     }
-    if let Some(head) = head_of(
+    let head = head_of(
         served.data_commitment.as_ref(),
         served.record_count,
         served.head_version,
-    ) {
+    );
+    payload["verification"]["priorRoots"] =
+        serde_json::json!(compare_head(state, &req.room_id, head.as_ref()).await);
+    if let Some(head) = head {
         payload["verification"]["head"] = head;
     }
 
@@ -824,6 +867,8 @@ pub(super) async fn handle_browse(
 
         let reply = match crate::operations::room_host::send_room_task(
             signing_context(state, auth),
+            &state.room_groups_ks,
+            &req.room_id,
             &resolver,
             &req.host,
             &key,
@@ -895,7 +940,7 @@ pub(super) async fn handle_browse(
     };
 
     let mut verification = serde_json::json!({
-        "priorRoots": "notChecked",
+        "priorRoots": compare_head(state, &req.room_id, head.as_ref()).await,
         "count": count,
     });
     if let Some(h) = head {
