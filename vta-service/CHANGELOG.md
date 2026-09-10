@@ -2,6 +2,97 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.25.1...vta-service-v0.26.0) — 2026-09-10
+
+
+### Added
+
+- **audit**: Write the VTA's audit log as a hash chain ([#1420](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1420))
+
+* feat(audit): write the VTA's audit log as a hash chain
+
+  The sink writes envelopes through the shared writer rather than flat
+  rows: each entry commits to its predecessor, and the actor and any
+  DID-shaped target are committed under a keyed hash with the plaintext
+  beside them, so an erasure can null the plaintext while the row stays
+  correlatable and the chain still verifies.
+
+  The chain opens with the creation of the key that chains it. The key is
+  established on the first write — there is nothing to audit before a
+  node can act, and a node cannot act before it has somewhere to record
+  what it did — so the first entry is the record of that key coming into
+  existence, committing to its id. A verifier reading from the start
+  learns which key the entries after it are hashed under, from an entry
+  hashed under that same key.
+
+  The keyspace and the storage-key format are unchanged except for one
+  addition. The seconds stay the leading field, because the retention
+  sweep compares keys against a cutoff in that shape and a different
+  leading field would make every chained row sort past every cutoff and
+  never expire. The nanoseconds are new and are not optional: whole
+  seconds put two entries written in the same second in uuid order, so a
+  verifier reading in key order sees them out of chain order and reports
+  a break in a chain that is intact — a false alarm indistinguishable
+  from the thing it exists to detect. The tests found this rather than
+  review.
+
+  The read path now accepts both shapes. A reader that knows only one
+  does not fail loudly; it skips what it cannot parse, so a reader that
+  knew only the older shape would have reported a log that stops at the
+  moment chaining began.
+
+
+
+### Changed
+
+- **audit**: One construction point for the audit sink, and the prerequisites for chaining it ([#1412](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1412))
+
+* refactor(audit): build the keyspace audit sink in one place
+
+  The workspace built the same sink over the same keyspace in
+  thirty-one places, including three times inside one function
+  (run_create_did_webvh, which already had one in scope two hundred
+  lines above the other two). Each was somewhere a later change to what
+  a VTA's audit writes would have to be found and repeated.
+
+  There is now one constructor, vta_audit::shared_keyspace_sink, and
+  every caller goes through it. A server still takes its sink from
+  AppState — that path was already correct, and its comment already said
+  why. The factory is for the callers with no AppState to take one from:
+  offline CLI commands, setup, sweepers and tests.
+
+  No behaviour change. The next change to this subsystem — writing
+  chained envelopes rather than flat rows — is now one edit instead of a
+  search.
+
+
+
+### Security
+
+- **keys**: Domain-separate the opaque signing oracle ([#1417](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1417))
+
+The generic signing operation signs an octet string a caller supplies,
+  under a key the caller names. Authorization bounds which key signs — by
+  context, by the context's signable-keys policy, by the entry's own key
+  narrowing — and says nothing about what the bytes will be taken to
+  mean. A caller authorized to sign for one purpose could obtain a
+  signature that verifies as something else: an assertion in another
+  protocol, a token, a proof over a document the principal never saw.
+
+  Payloads the VTA cannot parse are now framed under a domain tag before
+  signing, so the signature verifies as a VTA opaque-signing payload and
+  as nothing else. This does not make signing arbitrary bytes safe; it
+  makes the result unusable outside the domain it was requested in.
+
+  The domain is an argument rather than a blanket prefix because one
+  caller must not be framed: the data-integrity proof signer builds bytes
+  whose meaning its own specification has already established, and
+  framing those again would produce a proof a conforming verifier
+  rejects. Each call site now states which case it is in, and the two are
+  not interchangeable.
+
+
+
 ## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.24.1...vta-service-v0.25.0) — 2026-09-09
 
 

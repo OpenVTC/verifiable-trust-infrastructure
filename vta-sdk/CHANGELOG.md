@@ -2,6 +2,35 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.36.0...vta-sdk-v0.37.0) — 2026-09-10
+
+
+### Security
+
+- **keys**: Domain-separate the opaque signing oracle ([#1417](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1417))
+
+The generic signing operation signs an octet string a caller supplies,
+  under a key the caller names. Authorization bounds which key signs — by
+  context, by the context's signable-keys policy, by the entry's own key
+  narrowing — and says nothing about what the bytes will be taken to
+  mean. A caller authorized to sign for one purpose could obtain a
+  signature that verifies as something else: an assertion in another
+  protocol, a token, a proof over a document the principal never saw.
+
+  Payloads the VTA cannot parse are now framed under a domain tag before
+  signing, so the signature verifies as a VTA opaque-signing payload and
+  as nothing else. This does not make signing arbitrary bytes safe; it
+  makes the result unusable outside the domain it was requested in.
+
+  The domain is an argument rather than a blanket prefix because one
+  caller must not be framed: the data-integrity proof signer builds bytes
+  whose meaning its own specification has already established, and
+  framing those again would produce a proof a conforming verifier
+  rejects. Each call site now states which case it is in, and the two are
+  not interchangeable.
+
+
+
 ## [0.35.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.34.1...vta-sdk-v0.35.0) — 2026-09-09
 
 

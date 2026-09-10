@@ -2,6 +2,119 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.18.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.18.3...vti-common-v0.18.4) — 2026-09-10
+
+
+### Added
+
+- **audit**: Write the VTA's audit log as a hash chain ([#1420](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1420))
+
+* feat(audit): write the VTA's audit log as a hash chain
+
+  The sink writes envelopes through the shared writer rather than flat
+  rows: each entry commits to its predecessor, and the actor and any
+  DID-shaped target are committed under a keyed hash with the plaintext
+  beside them, so an erasure can null the plaintext while the row stays
+  correlatable and the chain still verifies.
+
+  The chain opens with the creation of the key that chains it. The key is
+  established on the first write — there is nothing to audit before a
+  node can act, and a node cannot act before it has somewhere to record
+  what it did — so the first entry is the record of that key coming into
+  existence, committing to its id. A verifier reading from the start
+  learns which key the entries after it are hashed under, from an entry
+  hashed under that same key.
+
+  The keyspace and the storage-key format are unchanged except for one
+  addition. The seconds stay the leading field, because the retention
+  sweep compares keys against a cutoff in that shape and a different
+  leading field would make every chained row sort past every cutoff and
+  never expire. The nanoseconds are new and are not optional: whole
+  seconds put two entries written in the same second in uuid order, so a
+  verifier reading in key order sees them out of chain order and reports
+  a break in a chain that is intact — a false alarm indistinguishable
+  from the thing it exists to detect. The tests found this rather than
+  review.
+
+  The read path now accepts both shapes. A reader that knows only one
+  does not fail loudly; it skips what it cannot parse, so a reader that
+  knew only the older shape would have reported a log that stops at the
+  moment chaining began.
+
+- **audit**: Give the VTA an audit key of its own ([#1419](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1419))
+
+Two pieces, both inert until the sink uses them.
+
+  ensure_initial_random establishes a key from the OS random source
+  rather than from a seed. The key's job is to be a stable handle for
+  actor and target identifiers — exist before the first write, stay
+  retrievable while any envelope references it, be rotatable — and
+  nothing about that requires it to be derivable. What derivation adds is
+  a second copy of the key wherever the seed is, so a node whose recovery
+  story is a mnemonic has an audit key that anyone holding the mnemonic
+  can recompute. Since the commitment exists so an erasure can null the
+  plaintext while the row stays correlatable, that makes the erasure
+  reversible by brute force over the identifiers the node has seen.
+
+  The cost is that the key is not regenerable, so the keyspace holding it
+  joins the backed-up set. Without it a restored log still verifies as a
+  chain and still says what happened, but no entry can be checked against
+  a candidate identifier again.
+
+  The keyspace is separate from the audit log because the two have
+  opposite lifetimes: entries are erased when their retention expires,
+  and a key must outlive every entry that references it. Neither cascades
+  on a DID deletion, for the reason the audit log already does not.
+
+- **audit**: Let the writer serve a keyspace that predates chaining ([#1413](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1413))
+
+Two changes to AuditWriter, both needed before a VTA can use it and
+  neither altering what a VTC does.
+
+  The storage key becomes configurable. A keyspace that already holds
+  rows has an ordering, and a writer that ignores it produces a log whose
+  newest entry is not its last key — which breaks chain-head recovery and
+  every reader that pages in key order. A VTA's audit keyspace is exactly
+  that: it holds log:<zero-padded-epoch>:<uuid> rows, and those sort
+  after an RFC 3339 timestamp. The default is unchanged, so a fresh
+  keyspace needs nothing.
+
+  Chain-head recovery walks back to the newest row that is an envelope
+  rather than assuming the last row is one. Without it the first chained
+  write against a VTA's keyspace fails, because the row beside it was
+  written before the scheme existed. Deserialization is the test rather
+  than the key, since the key format now belongs to the caller.
+
+  Tests cover both: a pre-chain row does not stop the first chained write
+  and the entry anchors at genesis, and a custom key still recovers the
+  head across a restart so the second entry chains to the first.
+
+
+
+### Changed
+
+- **audit**: One construction point for the audit sink, and the prerequisites for chaining it ([#1412](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1412))
+
+* refactor(audit): build the keyspace audit sink in one place
+
+  The workspace built the same sink over the same keyspace in
+  thirty-one places, including three times inside one function
+  (run_create_did_webvh, which already had one in scope two hundred
+  lines above the other two). Each was somewhere a later change to what
+  a VTA's audit writes would have to be found and repeated.
+
+  There is now one constructor, vta_audit::shared_keyspace_sink, and
+  every caller goes through it. A server still takes its sink from
+  AppState — that path was already correct, and its comment already said
+  why. The factory is for the callers with no AppState to take one from:
+  offline CLI commands, setup, sweepers and tests.
+
+  No behaviour change. The next change to this subsystem — writing
+  chained envelopes rather than flat rows — is now one edit instead of a
+  search.
+
+
+
 ## [0.18.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.18.1...vti-common-v0.18.2) — 2026-09-09
 
 

@@ -2,6 +2,33 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.5](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sweepers-v0.3.4...vta-sweepers-v0.3.5) — 2026-09-10
+
+
+### Changed
+
+- **audit**: One construction point for the audit sink, and the prerequisites for chaining it ([#1412](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1412))
+
+* refactor(audit): build the keyspace audit sink in one place
+
+  The workspace built the same sink over the same keyspace in
+  thirty-one places, including three times inside one function
+  (run_create_did_webvh, which already had one in scope two hundred
+  lines above the other two). Each was somewhere a later change to what
+  a VTA's audit writes would have to be found and repeated.
+
+  There is now one constructor, vta_audit::shared_keyspace_sink, and
+  every caller goes through it. A server still takes its sink from
+  AppState — that path was already correct, and its comment already said
+  why. The factory is for the callers with no AppState to take one from:
+  offline CLI commands, setup, sweepers and tests.
+
+  No behaviour change. The next change to this subsystem — writing
+  chained envelopes rather than flat rows — is now one edit instead of a
+  search.
+
+
+
 ## [0.3.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sweepers-v0.3.3...vta-sweepers-v0.3.4) — 2026-09-07
 
 

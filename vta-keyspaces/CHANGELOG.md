@@ -2,6 +2,38 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.2.8](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.2.7...vta-keyspaces-v0.2.8) — 2026-09-10
+
+
+### Added
+
+- **audit**: Give the VTA an audit key of its own ([#1419](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1419))
+
+Two pieces, both inert until the sink uses them.
+
+  ensure_initial_random establishes a key from the OS random source
+  rather than from a seed. The key's job is to be a stable handle for
+  actor and target identifiers — exist before the first write, stay
+  retrievable while any envelope references it, be rotatable — and
+  nothing about that requires it to be derivable. What derivation adds is
+  a second copy of the key wherever the seed is, so a node whose recovery
+  story is a mnemonic has an audit key that anyone holding the mnemonic
+  can recompute. Since the commitment exists so an erasure can null the
+  plaintext while the row stays correlatable, that makes the erasure
+  reversible by brute force over the identifiers the node has seen.
+
+  The cost is that the key is not regenerable, so the keyspace holding it
+  joins the backed-up set. Without it a restored log still verifies as a
+  chain and still says what happened, but no entry can be checked against
+  a candidate identifier again.
+
+  The keyspace is separate from the audit log because the two have
+  opposite lifetimes: entries are erased when their retention expires,
+  and a key must outlive every entry that references it. Neither cascades
+  on a DID deletion, for the reason the audit log already does not.
+
+
+
 ## [0.2.7](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.2.6...vta-keyspaces-v0.2.7) — 2026-09-07
 
 
