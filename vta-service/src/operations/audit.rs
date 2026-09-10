@@ -128,6 +128,129 @@ fn authorize(auth: &AuthClaims, params: &ListAuditLogsBody) -> Result<(), AppErr
 
 /// List audit logs, newest first, with optional filters and opaque
 /// cursor pagination — canonical `audit/list/0.1`.
+/// What verifying the audit chain found.
+///
+/// The counts are not decoration. Every row this reports as skipped is a row
+/// the chain does not cover, and a reader who sees only `verified: true` has
+/// been told less than they think.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditChainReport {
+    /// Whether every chainable envelope verified.
+    pub verified: bool,
+    /// Rows examined, of any shape.
+    pub rows_examined: usize,
+    /// Envelopes that carried a chain link and verified.
+    pub entries_verified: usize,
+    /// Rows written before the chain opened.
+    ///
+    /// **Expected on a VTA**, which audited to this keyspace before its log
+    /// was chained. They are not covered by the chain and cannot be: nothing
+    /// committed to them at the time.
+    pub pre_chain_rows: usize,
+    /// Rows after the chain opened that are not chainable envelopes.
+    ///
+    /// **A finding.** Once the chain has opened, every row this sink writes is
+    /// an envelope, so a row that is not one arrived by some other route —
+    /// which is exactly what an insertion looks like. Reported separately from
+    /// `preChainRows` because the two mean opposite things.
+    pub unchained_after_open: usize,
+    /// Envelopes skipped as unchainable by their own schema version.
+    ///
+    /// **A finding wherever the chain has opened.** The verifier passes over
+    /// these rather than checking them, so an envelope forged with an older
+    /// schema version passes untouched.
+    pub legacy_envelopes_skipped: usize,
+    /// Head of the verified chain, hex-encoded. `None` when nothing chainable
+    /// was found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// Where the chain broke, when it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain_break: Option<AuditChainBreak>,
+}
+
+/// Where a chain stopped verifying, in the shape a caller can act on.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditChainBreak {
+    /// `tamperedEntry` — the envelope's content was altered after it was
+    /// written; or `brokenLink` — an entry was reordered, dropped or inserted.
+    pub kind: String,
+    /// Position among the chainable envelopes, counting from the start.
+    pub index: usize,
+    /// The envelope the break was found at.
+    pub event_id: String,
+}
+
+/// Verify the audit log's chain, in storage order.
+///
+/// Reads ascending by key, which is write order, because the chain is a strict
+/// left fold and verifying it in any other order reports breaks that are not
+/// there.
+pub async fn verify_audit_chain(
+    audit_ks: &vti_common::store::KeyspaceHandle,
+) -> Result<AuditChainReport, AppError> {
+    use vti_common::audit::envelope::{ChainBreak, ChainVerifier};
+
+    let mut pairs = audit_ks.prefix_iter_raw("log:").await?;
+    pairs.sort_by(|(a, _), (b, _)| a.cmp(b)); // ascending: write order
+
+    let mut verifier = ChainVerifier::new();
+    let mut report = AuditChainReport {
+        verified: true,
+        rows_examined: pairs.len(),
+        entries_verified: 0,
+        pre_chain_rows: 0,
+        unchained_after_open: 0,
+        legacy_envelopes_skipped: 0,
+        head: None,
+        chain_break: None,
+    };
+    let mut chain_opened = false;
+
+    for (key, value) in &pairs {
+        let env = match serde_json::from_slice::<vti_common::audit::AuditEnvelope>(value) {
+            Ok(env) => env,
+            Err(_) => {
+                // Before the first envelope this is a row from before the
+                // chain existed. After it, nothing this sink writes looks like
+                // this, so something else put it there.
+                if chain_opened {
+                    report.unchained_after_open += 1;
+                    tracing::warn!(
+                        key = %String::from_utf8_lossy(key),
+                        "audit row after the chain opened is not an envelope",
+                    );
+                } else {
+                    report.pre_chain_rows += 1;
+                }
+                continue;
+            }
+        };
+        chain_opened = true;
+
+        if let Err(brk) = verifier.push(&env) {
+            let (kind, index, event_id) = match brk {
+                ChainBreak::TamperedEntry { index, event_id } => ("tamperedEntry", index, event_id),
+                ChainBreak::BrokenLink { index, event_id } => ("brokenLink", index, event_id),
+            };
+            report.verified = false;
+            report.chain_break = Some(AuditChainBreak {
+                kind: kind.to_string(),
+                index,
+                event_id: event_id.to_string(),
+            });
+            break;
+        }
+    }
+
+    report.entries_verified = verifier.verified();
+    report.legacy_envelopes_skipped = verifier.skipped_legacy();
+    report.head = verifier.head().map(hex::encode);
+    Ok(report)
+}
+
 /// Read one stored row, in either shape the audit keyspace holds.
 ///
 /// A VTA's audit keyspace holds rows written before the log was chained and
@@ -344,4 +467,140 @@ pub async fn update_retention(
     )
     .await;
     Ok(result)
+}
+
+#[cfg(test)]
+mod verify_tests {
+    use super::*;
+    use vta_audit::{AuditSink, ChainedKeyspaceAuditSink};
+    use vta_sdk::protocols::audit_management::list::AuditLogEntry;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::{KeyspaceHandle, Store};
+
+    fn keyspaces() -> (KeyspaceHandle, KeyspaceHandle, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("store");
+        (
+            store.keyspace("audit").expect("audit"),
+            store.keyspace("audit_key").expect("audit_key"),
+            dir,
+        )
+    }
+
+    fn entry(action: &str) -> AuditLogEntry {
+        AuditLogEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            timestamp: 1_700_000_000,
+            action: action.to_string(),
+            actor: "did:key:z6MkA".to_string(),
+            resource: None,
+            outcome: "success".to_string(),
+            channel: None,
+            context_id: None,
+            detail: None,
+        }
+    }
+
+    /// A pre-chain row is expected and is not a finding: the VTA audited to
+    /// this keyspace before its log was chained, and nothing committed to
+    /// those rows at the time.
+    #[tokio::test]
+    async fn rows_written_before_the_chain_are_counted_not_faulted() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+
+        audit_ks
+            .insert(
+                format!(
+                    "log:{:020}:11111111-1111-1111-1111-111111111111",
+                    1_699_999_999u64
+                ),
+                &entry("auth.challenge"),
+            )
+            .await
+            .expect("seed a pre-chain row");
+
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks);
+        sink.record(&entry("acl.create")).await.expect("record");
+
+        let report = verify_audit_chain(&audit_ks).await.expect("verify");
+
+        assert!(report.verified, "the chain itself is intact");
+        assert_eq!(report.pre_chain_rows, 1);
+        assert_eq!(
+            report.unchained_after_open, 0,
+            "a row before the chain opened is not an insertion"
+        );
+        assert_eq!(
+            report.entries_verified, 2,
+            "the opening entry and the event"
+        );
+        assert!(report.head.is_some());
+    }
+
+    /// The same row after the chain has opened is a different fact. Nothing
+    /// this sink writes looks like that, so something else put it there.
+    #[tokio::test]
+    async fn an_unchained_row_after_the_chain_opened_is_a_finding() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks);
+        sink.record(&entry("acl.create")).await.expect("record");
+
+        // Far in the future, so it sorts after everything the sink wrote.
+        audit_ks
+            .insert(
+                format!(
+                    "log:{:020}:22222222-2222-2222-2222-222222222222",
+                    2_000_000_000u64
+                ),
+                &entry("acl.grant"),
+            )
+            .await
+            .expect("insert a row the sink did not write");
+
+        let report = verify_audit_chain(&audit_ks).await.expect("verify");
+
+        assert_eq!(
+            report.unchained_after_open, 1,
+            "a non-envelope row after the chain opened is reported as a finding"
+        );
+        assert_eq!(report.pre_chain_rows, 0);
+    }
+
+    #[tokio::test]
+    async fn a_tampered_entry_is_reported_with_where_it_broke() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks);
+        for i in 0..3 {
+            sink.record(&entry(&format!("op.{i}")))
+                .await
+                .expect("record");
+        }
+
+        // Rewrite one entry's outcome in place, leaving its hashes alone.
+        let pairs = audit_ks.prefix_iter_raw("log:").await.expect("scan");
+        let (key, raw) = pairs
+            .iter()
+            .max_by(|(a, _), (b, _)| a.cmp(b))
+            .expect("a row");
+        let mut env: vti_common::audit::AuditEnvelope =
+            serde_json::from_slice(raw).expect("envelope");
+        if let vti_common::audit::event::AuditEvent::VtaOperation(op) = &mut env.event {
+            op.outcome = "failure".to_string();
+        }
+        audit_ks
+            .insert(String::from_utf8(key.clone()).expect("utf8 key"), &env)
+            .await
+            .expect("rewrite the row");
+
+        let report = verify_audit_chain(&audit_ks).await.expect("verify");
+
+        assert!(!report.verified);
+        let brk = report.chain_break.expect("a break is reported");
+        assert_eq!(brk.kind, "tamperedEntry");
+        assert_eq!(brk.event_id, env.event_id.to_string());
+    }
 }
