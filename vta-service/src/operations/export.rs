@@ -48,7 +48,6 @@ pub struct ExportDeps<'a> {
     pub seed_store: &'a Arc<dyn SeedStore>,
 }
 
-
 /// Every private key of `context_id`'s own DID, for the service that operates it.
 ///
 /// # Why this exists as one operation
@@ -612,7 +611,10 @@ mod tests {
              did:key minted into the context must be excluded"
         );
         assert!(
-            !bundle.secrets.iter().any(|s| s.key_id.contains(ADMIN_DID_KEY)),
+            !bundle
+                .secrets
+                .iter()
+                .any(|s| s.key_id.contains(ADMIN_DID_KEY)),
             "admin did:key must not appear in the operating-secret bundle"
         );
     }

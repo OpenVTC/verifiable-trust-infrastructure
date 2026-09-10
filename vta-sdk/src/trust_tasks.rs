@@ -316,8 +316,7 @@ pub const TASK_CONTEXTS_GET_1_0: &str = "https://trusttasks.org/spec/vta/context
 /// Replaces the use of `seeds/export-mnemonic/1.0` for this, which was never a
 /// mnemonic export: it took a `key_id` and returned one key, and a caller
 /// assembling a bundle made one Admin-gated call per key.
-pub const TASK_CONTEXTS_SECRETS_1_0: &str =
-    "https://trusttasks.org/spec/vta/contexts/secrets/1.0";
+pub const TASK_CONTEXTS_SECRETS_1_0: &str = "https://trusttasks.org/spec/vta/contexts/secrets/1.0";
 
 /// `spec/vta/contexts/update/1.0` — update name/did/description.
 /// Payload: [`crate::protocols::context_management::update::UpdateContextBody`].

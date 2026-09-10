@@ -3550,6 +3550,38 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             (context_record(), parses::<ctx::update_did::v1_0::Response>),
         ),
         (
+            uris::TASK_CONTEXTS_SECRETS_1_0,
+            (
+                json!({ "id": "rooms/host-1" }),
+                parses::<ctx::secrets::v1_0::Payload>,
+                validates::<ctx::secrets::v1_0::Payload>,
+            ),
+            (
+                // Built by SERIALISING the type the service actually answers with,
+                // not hand-written to match. The whole risk this witness covers is
+                // that `ContextSecretsResultBody` and the published schema disagree
+                // about member casing — the service sends lowerCamelCase because the
+                // spec says so, while the internal `DidSecretsBundle` it converts
+                // from is snake_case. A literal here would be written to match the
+                // spec and would still pass if the service drifted; this cannot.
+                serde_json::to_value(
+                    vta_sdk::protocols::context_management::secrets::ContextSecretsResultBody {
+                        did: "did:webvh:QmExample:example.com:rooms:host-1".into(),
+                        secrets: vec![
+                            vta_sdk::protocols::context_management::secrets::ContextSecretEntry {
+                                key_id: "did:webvh:QmExample:example.com:rooms:host-1#key-0".into(),
+                                key_type: vta_sdk::keys::KeyType::Ed25519,
+                                private_key_multibase:
+                                    "z3u2en7t5LR2WtQH5PfFqMqtVcSdd7ELrcFtnP63HKq4KLg".into(),
+                            },
+                        ],
+                    },
+                )
+                .expect("the response body serialises"),
+                parses::<ctx::secrets::v1_0::Response>,
+            ),
+        ),
+        (
             uris::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
             (
                 json!({ "id": "personal" }),
