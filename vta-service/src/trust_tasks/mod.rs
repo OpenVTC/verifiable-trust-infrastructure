@@ -3367,10 +3367,38 @@ mod replay_guard {
         // where it is unavoidable, and it is harmless — every proof in this
         // framework is computed over JCS, which is itself key-ordered, so a
         // re-ordered document verifies identically.
-        let (a, b): (Value, Value) = (
+        //
+        // And compared **without the proof**, which is the part that made this
+        // test flaky: `record_response` is called inside
+        // `dispatch_trust_task_inner`, while `sign_success_response` runs in the
+        // outer `dispatch_trust_task` — so the guard caches the *unsigned*
+        // response and every delivery, first or duplicate, is signed afresh on
+        // the way out. `proof.created` has one-second resolution, so two
+        // signings that straddle a second produce two different proofs over the
+        // same document and this assertion failed for a reason that had nothing
+        // to do with the guard.
+        //
+        // Re-signing per delivery is the right behaviour, not a defect to work
+        // around here: a replayed proof would carry a `created` drifting further
+        // into the past on every retry, and §7.2 item 11 asks for the prior
+        // *response*, which is the payload. So the payload is what is compared,
+        // and that both answers are signed at all is asserted separately —
+        // dropping the proof from the comparison must not quietly become
+        // "nobody checks there is one".
+        let (mut a, mut b): (Value, Value) = (
             serde_json::from_slice(&first.body).expect("first body"),
             serde_json::from_slice(&second.body).expect("second body"),
         );
+        for doc in [&mut a, &mut b] {
+            let proof = doc
+                .as_object_mut()
+                .expect("a response is an object")
+                .remove("proof");
+            assert!(
+                proof.is_some(),
+                "every response this spine returns carries a proof, duplicate or not"
+            );
+        }
         assert_eq!(
             a, b,
             "the duplicate must be answered with the prior response"
