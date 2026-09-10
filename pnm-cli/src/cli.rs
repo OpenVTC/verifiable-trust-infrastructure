@@ -2792,6 +2792,30 @@ pub(crate) enum KeyCommands {
         /// Key ID
         key_id: String,
     },
+    /// Set whether a key's private half may ever be released.
+    ///
+    /// `--exportable false` tells the VTA to refuse every future export of the
+    /// key. It can still be *used* — signing, key agreement — so anything that
+    /// asks the VTA to act with the key keeps working; only handing the
+    /// material out stops.
+    ///
+    /// The two directions do not cost the same. Restricting a key needs admin
+    /// of its context; releasing one that is restricted needs strictly more:
+    /// super-admin, or a fresh step-up on your session. That asymmetry is the
+    /// point — a restriction the party who imposed it can lift unilaterally
+    /// protects against accident but not against someone holding that party's
+    /// credentials.
+    ///
+    /// The value is required and there is no toggle: the state is absolute, so
+    /// re-running a command whose output you did not see lands where you asked
+    /// rather than undoing it.
+    SetExportability {
+        /// Key ID
+        key_id: String,
+        /// Whether the private half may be released.
+        #[arg(long)]
+        exportable: bool,
+    },
     /// Rename a key
     Rename {
         /// Current key ID

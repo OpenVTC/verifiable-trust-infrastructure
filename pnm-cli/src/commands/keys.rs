@@ -51,6 +51,9 @@ pub(crate) async fn run(
         }
         KeyCommands::Get { key_id, secret } => keys::cmd_key_get(client, &key_id, secret).await,
         KeyCommands::Revoke { key_id } => keys::cmd_key_revoke(client, &key_id).await,
+        KeyCommands::SetExportability { key_id, exportable } => {
+            keys::cmd_key_set_exportability(client, &key_id, exportable).await
+        }
         KeyCommands::Rename { key_id, new_key_id } => {
             keys::cmd_key_rename(client, &key_id, &new_key_id).await
         }

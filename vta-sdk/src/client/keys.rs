@@ -275,6 +275,33 @@ impl VtaClient {
         .await
     }
 
+    /// Set whether a key's private half may be released.
+    ///
+    /// `exportable` is the state the key should be in afterwards, **not a
+    /// delta**, so a retry of a lost `false` lands on `false` rather than
+    /// toggling back. There is deliberately no toggle form.
+    ///
+    /// The two directions do not cost the same. Imposing the restriction needs
+    /// admin of the key's context; lifting it needs strictly more — super-admin
+    /// or a live step-up. A restriction the party who imposed it can lift
+    /// unilaterally protects against accident but not against a compromised
+    /// caller holding that party's credentials, which is the case it exists for.
+    pub async fn set_key_exportability(
+        &self,
+        key_id: &str,
+        exportable: bool,
+    ) -> Result<
+        crate::protocols::key_management::set_exportability::SetKeyExportabilityResultBody,
+        VtaError,
+    > {
+        self.rpc_tt(
+            trust_tasks::TASK_KEYS_SET_EXPORTABILITY_0_1,
+            serde_json::json!({ "keyId": key_id, "exportable": exportable }),
+            30,
+        )
+        .await
+    }
+
     // ── Import key methods ──────────────────────────────────────────
 
     /// Fetch an ephemeral wrapping key for REST key import.
@@ -322,5 +349,55 @@ impl VtaClient {
             30,
         )
         .await
+    }
+}
+
+#[cfg(all(test, feature = "test-loopback", feature = "client"))]
+mod exportability_tests {
+    use crate::client::loopback::RecordingSink;
+    use std::sync::Arc;
+
+    /// The producer side of `keys/set-exportability`: the URI it dispatches and
+    /// the body it builds.
+    ///
+    /// Worth pinning because this method is the only way an operator can reach
+    /// the task — the VTA served it for a release with no client and no CLI, so
+    /// nothing would have noticed a wrong URI here.
+    #[tokio::test]
+    async fn it_sends_the_state_absolutely_under_the_right_uri() {
+        let sink = Arc::new(RecordingSink::new());
+        let client = crate::client::VtaClient::loopback(sink.clone());
+
+        // The response will not deserialize from `null`; the request was
+        // captured before that, which is what this test is asking about.
+        let _ = client.set_key_exportability("app-signing-key", false).await;
+
+        let (uri, payload) = sink.recorded().pop().expect("one task was dispatched");
+        assert_eq!(uri, crate::trust_tasks::TASK_KEYS_SET_EXPORTABILITY_0_1);
+        assert_eq!(payload["keyId"], "app-signing-key");
+        assert_eq!(
+            payload["exportable"], false,
+            "a boolean, not a string: `\"false\"` is truthy in several languages \
+             and would invert the request"
+        );
+        assert!(
+            payload.get("toggle").is_none(),
+            "the state is absolute — a toggle would make a retried request undo itself"
+        );
+    }
+
+    /// The other direction reaches the same task. It is the one the VTA gates
+    /// harder, and a client that spelled it differently would fail at the far
+    /// end rather than here.
+    #[tokio::test]
+    async fn releasing_uses_the_same_task() {
+        let sink = Arc::new(RecordingSink::new());
+        let client = crate::client::VtaClient::loopback(sink.clone());
+
+        let _ = client.set_key_exportability("app-signing-key", true).await;
+
+        let (uri, payload) = sink.recorded().pop().expect("one task was dispatched");
+        assert_eq!(uri, crate::trust_tasks::TASK_KEYS_SET_EXPORTABILITY_0_1);
+        assert_eq!(payload["exportable"], true);
     }
 }
