@@ -66,12 +66,14 @@ use vti_common::error::AppError;
 use vti_common::store::{KeyspaceHandle, Store};
 use vti_rooms::audit::{self as rooms_audit, RoomOperation};
 use vti_rooms::wire::{
-    ChainBody, ChainResponse, ClaimOwnerBody, CreateRoomBody, CreateRoomResponse, CurateRecordBody,
-    CurateRecordResponse, GetRecordBody, GetRecordResponse, ListRecordsBody, ListRecordsResponse,
-    MintEpochBody, MintEpochResponse, OwnerResponse, PutRecordBody, PutRecordResponse,
-    ROOMS_CREATE_TYPE, ROOMS_EPOCH_CHAIN_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_OWNER_CLAIM_TYPE,
-    ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_TYPE,
-    ROOMS_RECORDS_LIST_TYPE, ROOMS_RECORDS_PUT_TYPE, TransferOwnerBody,
+    ChainBody, ChainResponse, ClaimOwnerBody, CommitsBody, CommitsResponse, CreateRoomBody,
+    CreateRoomResponse, CurateRecordBody, CurateRecordResponse, GetRecordBody, GetRecordResponse,
+    ListRecordsBody, ListRecordsResponse, MintEpochBody, MintEpochResponse, OwnerResponse,
+    PruneBody, PruneResponse, PutRecordBody, PutRecordResponse, ROOMS_CREATE_TYPE,
+    ROOMS_EPOCH_CHAIN_TYPE, ROOMS_EPOCH_COMMITS_TYPE, ROOMS_EPOCH_MINT_TYPE,
+    ROOMS_EPOCH_PRUNE_TYPE, ROOMS_OWNER_CLAIM_TYPE, ROOMS_OWNER_TRANSFER_TYPE,
+    ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_TYPE, ROOMS_RECORDS_LIST_TYPE,
+    ROOMS_RECORDS_PUT_TYPE, TransferOwnerBody,
 };
 use vti_rooms::{
     ROOM_RECORDS_KEYSPACE, ROOMS_KEYSPACE, Record, RecordStatus, Room,
@@ -317,6 +319,8 @@ pub async fn dispatch(state: &Arc<HostState>, body: &[u8]) -> Answer {
         ROOMS_RECORDS_CURATE_TYPE => curate(state, &doc, payload).await,
         ROOMS_EPOCH_MINT_TYPE => mint(state, &doc, payload).await,
         ROOMS_EPOCH_CHAIN_TYPE => epoch_chain(state, &doc, payload).await,
+        ROOMS_EPOCH_PRUNE_TYPE => epoch_prune(state, &doc, payload).await,
+        ROOMS_EPOCH_COMMITS_TYPE => epoch_commits(state, &doc, payload).await,
         ROOMS_OWNER_TRANSFER_TYPE => transfer_owner(state, &doc, payload).await,
         ROOMS_OWNER_CLAIM_TYPE => claim_owner(state, &doc, payload).await,
         other => reject(
@@ -798,12 +802,149 @@ async fn mint(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answ
             {
                 return from_app_error(doc, &e);
             }
+            // And the commit, on the same terms: this is the moment the
+            // committer holds it, and a room that advances without leaving it
+            // somewhere fetchable forks every member who was not online.
+            if let Some(commit) = &req.commit
+                && let Err(e) =
+                    storage::put_commit(&state.epoch_links, &req.room_id, req.epoch, commit).await
+            {
+                return from_app_error(doc, &e);
+            }
             audit_room(&room, &authorized, RoomOperation::MintEpoch, None);
             respond(
                 doc,
                 MintEpochResponse {
                     room_id: updated.room_id,
                     epoch: updated.epoch,
+                },
+            )
+        }
+        Err(e) => from_app_error(doc, &e),
+    }
+}
+
+/// `rooms/epoch/prune/0.1` — drop the chain below an epoch.
+///
+/// The **rungs** go, not the records. A pruned room still holds every record and
+/// this host still serves them; what is gone is the ability to derive the keys
+/// they were sealed under, for anyone who has not already derived them.
+async fn epoch_prune(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    let req: PruneBody = match serde_json::from_value(payload) {
+        Ok(r) => r,
+        Err(e) => {
+            return reject(
+                doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            );
+        }
+    };
+    let room = match storage::get_room(&state.rooms, &req.room_id).await {
+        Ok(r) => r,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
+        Ok(p) => p,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    // `admin`, not `curate`: pruning makes no statement about any record, and
+    // every member who can write can curate.
+    let authorized = match authz::authorize(
+        &room,
+        &req.presentation,
+        Action::Admin,
+        &presenter,
+        now(),
+        &verifier,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    if req.before_epoch >= room.epoch {
+        return from_app_error(
+            doc,
+            &AppError::Validation(format!(
+                "`beforeEpoch` {} is at or above the current epoch {} of `{}`; pruning there \
+                 would drop the whole chain, not shorten it",
+                req.before_epoch, room.epoch, req.room_id
+            )),
+        );
+    }
+    match storage::prune_chain(&state.epoch_links, &req.room_id, req.before_epoch).await {
+        Ok((pruned, earliest_rung)) => {
+            audit_room(&room, &authorized, RoomOperation::MintEpoch, None);
+            respond(
+                doc,
+                PruneResponse {
+                    room_id: req.room_id,
+                    pruned: pruned as u32,
+                    earliest_rung,
+                },
+            )
+        }
+        Err(e) => from_app_error(doc, &e),
+    }
+}
+
+/// `rooms/epoch/commits/0.1` — serve the commits a member missed.
+///
+/// Safe on every tier: a commit is ciphertext plus a leaf index and **names
+/// nobody**, which is the difference from a Welcome and why the host is
+/// deliberately off that path and on this one.
+async fn epoch_commits(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    let req: CommitsBody = match serde_json::from_value(payload) {
+        Ok(r) => r,
+        Err(e) => {
+            return reject(
+                doc,
+                RejectReason::MalformedRequest {
+                    reason: e.to_string(),
+                },
+            );
+        }
+    };
+    let room = match storage::get_room(&state.rooms, &req.room_id).await {
+        Ok(r) => r,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
+        Ok(p) => p,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    let authorized = match authz::authorize(
+        &room,
+        &req.presentation,
+        Action::Read,
+        &presenter,
+        now(),
+        &verifier,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => return from_app_error(doc, &e),
+    };
+    match storage::commits_since(
+        &state.epoch_links,
+        &req.room_id,
+        req.since_epoch,
+        req.limit.unwrap_or(100).clamp(1, 100) as usize,
+    )
+    .await
+    {
+        Ok(commits) => {
+            audit_room(&room, &authorized, RoomOperation::ListRecords, None);
+            respond(
+                doc,
+                CommitsResponse {
+                    room_id: req.room_id,
+                    commits,
+                    // Read from the room, never computed from the answer.
+                    room_epoch: room.epoch,
                 },
             )
         }

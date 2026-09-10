@@ -56,6 +56,10 @@ pub const ROOMS_OWNER_TRANSFER_TYPE: &str = "https://trusttasks.org/spec/rooms/o
 pub const ROOMS_OWNER_CLAIM_TYPE: &str = "https://trusttasks.org/spec/rooms/owner/claim/0.1";
 /// `rooms/records/curate/0.1`.
 pub const ROOMS_RECORDS_CURATE_TYPE: &str = "https://trusttasks.org/spec/rooms/records/curate/0.1";
+/// `rooms/epoch/prune/0.1`.
+pub const ROOMS_EPOCH_PRUNE_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/prune/0.1";
+/// `rooms/epoch/commits/0.1`.
+pub const ROOMS_EPOCH_COMMITS_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/commits/0.1";
 
 /// Every `rooms/*` URI this service dispatches.
 pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
@@ -68,6 +72,8 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     ROOMS_RECORDS_CURATE_TYPE,
     ROOMS_OWNER_TRANSFER_TYPE,
     ROOMS_OWNER_CLAIM_TYPE,
+    ROOMS_EPOCH_PRUNE_TYPE,
+    ROOMS_EPOCH_COMMITS_TYPE,
 ];
 
 /// What a party presents to act on a room.
@@ -515,6 +521,19 @@ pub struct MintEpochBody {
     /// matches, and MUST NOT replace a rung it already holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<EpochLink>,
+    /// The MLS commit that produced this epoch, base64url, for the host to relay
+    /// to members who were not online to receive it.
+    ///
+    /// Carried here for the same reason `link` is: minting is the moment the
+    /// committer holds it, and a separate publish task would be a second chance
+    /// to forget. A room that advances without leaving the commit somewhere
+    /// fetchable **forks**.
+    ///
+    /// A host MUST NOT replace a commit it already holds for an epoch: the first
+    /// one published is the one members may already have applied, and a second
+    /// would fork the very group it was meant to keep together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -543,6 +562,83 @@ pub struct ChainResponse {
     pub room_id: String,
     /// The rungs, highest epoch first and contiguous within the range returned.
     pub links: Vec<EpochLink>,
+}
+
+/// `rooms/epoch/prune/0.1` request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PruneBody {
+    pub room_id: String,
+    /// Drop every rung **below** this epoch. The chain walks backwards, so this
+    /// is a floor rather than a ceiling.
+    pub before_epoch: u32,
+    pub presentation: AuthorityPresentation,
+    /// Why, for the room's audit trail. A prune is irreversible and
+    /// unattributable after the fact — the rungs are simply gone — so the only
+    /// record of intent is the one made at the time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// `rooms/epoch/prune/0.1#response`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PruneResponse {
+    pub room_id: String,
+    /// How many rungs were dropped. `0` is a **success**: the chain already went
+    /// back no further, and a caller reading it as a failure would retry an
+    /// operation with nothing left to do.
+    pub pruned: u32,
+    /// How far back the chain still reaches.
+    ///
+    /// **Not a restatement of `before_epoch`.** A chain can already have a gap —
+    /// rungs are delivered per commit, and a delivery that never happened leaves
+    /// one — and a prune below that gap changes nothing about how far back a
+    /// member can actually walk. Echoing the request would tell an operator they
+    /// had achieved something they had not.
+    pub earliest_rung: u32,
+}
+
+/// One commit a room made, as the relay serves it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RelayedCommit {
+    pub epoch: u32,
+    /// The MLS commit, base64url, **exactly as it was published**. A host that
+    /// re-encoded it would produce something the group rejects.
+    pub commit: String,
+}
+
+/// `rooms/epoch/commits/0.1` request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CommitsBody {
+    pub room_id: String,
+    /// The epoch this member is at; the host returns what is **above** it.
+    pub since_epoch: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    pub presentation: AuthorityPresentation,
+}
+
+/// `rooms/epoch/commits/0.1#response`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitsResponse {
+    pub room_id: String,
+    /// The commits above `since_epoch`, **in ascending epoch order and with no
+    /// gaps**. MLS commits apply in sequence, so one served out of order or over
+    /// a gap is rejected by the group — a host missing one returns the run it
+    /// holds *up to* the gap and stops.
+    pub commits: Vec<RelayedCommit>,
+    /// Where the room is now.
+    ///
+    /// **Not `since_epoch` plus the number returned.** They differ exactly when a
+    /// commit is missing or the page ended early, and that difference is the
+    /// useful part: a member who applies everything served and is still behind
+    /// knows a delivery is missing rather than concluding their own state is
+    /// broken.
+    pub room_epoch: u32,
 }
 
 /// `rooms/epoch/mint/0.1#response`.

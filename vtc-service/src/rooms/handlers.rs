@@ -32,10 +32,10 @@ use vti_rooms::audit::{self as rooms_audit, RoomOperation};
 use vti_rooms::authz::{self, Action};
 use vti_rooms::storage;
 use vti_rooms::wire::{
-    ChainBody, ChainResponse, ClaimOwnerBody, CreateRoomBody, CreateRoomResponse, CurateRecordBody,
-    CurateRecordResponse, GetRecordBody, GetRecordResponse, ListRecordsBody, ListRecordsResponse,
-    MintEpochBody, MintEpochResponse, OwnerResponse, PutRecordBody, PutRecordResponse,
-    TransferOwnerBody,
+    ChainBody, ChainResponse, ClaimOwnerBody, CommitsBody, CommitsResponse, CreateRoomBody,
+    CreateRoomResponse, CurateRecordBody, CurateRecordResponse, GetRecordBody, GetRecordResponse,
+    ListRecordsBody, ListRecordsResponse, MintEpochBody, MintEpochResponse, OwnerResponse,
+    PruneBody, PruneResponse, PutRecordBody, PutRecordResponse, TransferOwnerBody,
 };
 use vti_rooms::{Record, RecordStatus, Room};
 use vti_rooms_dtg::{DataIntegrityKeys, DtgChainVerifier, nomination};
@@ -611,6 +611,18 @@ pub(crate) async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -
             {
                 return app_error_to_reject(&doc, &e);
             }
+            // The commit, on the same terms and for the same reason: this is the
+            // moment the committer holds it, and a room that advances without
+            // leaving it somewhere fetchable forks every member who was not
+            // online. `put_commit` refuses to replace one, because the first
+            // published is the one members may already have applied.
+            if let Some(commit) = &req.commit
+                && let Err(e) =
+                    storage::put_commit(&state.room_epoch_links_ks, &req.room_id, req.epoch, commit)
+                        .await
+            {
+                return app_error_to_reject(&doc, &e);
+            }
             audit_room(state, &room, &authorized, RoomOperation::MintEpoch, None).await;
             success_response(
                 &doc,
@@ -622,6 +634,147 @@ pub(crate) async fn handle_mint_epoch(state: &AppState, doc: TrustTask<Value>) -
         }
         Err(e) => app_error_to_reject(&doc, &e),
     }
+}
+
+/// `rooms/epoch/prune/0.1`.
+///
+/// Drop the epoch key chain below an epoch. The **rungs** go, not the records: a
+/// pruned room still holds every record and this host still serves them, and
+/// what is gone is the ability to derive the keys they were sealed under. Closer
+/// to losing a key than to shredding a document, and irreversible either way.
+pub(crate) async fn handle_epoch_prune(
+    state: &AppState,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: PruneBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
+        Ok(p) => p,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    // `admin`, not `curate`: pruning makes no statement about any record, and
+    // every member who can write can curate — which would put "end the room's
+    // readable history" within reach of every writer.
+    let authorized = match authz::authorize(
+        &room,
+        &req.presentation,
+        Action::Admin,
+        &presenter,
+        now(),
+        &verifier,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+
+    // Refused rather than performed. `beforeEpoch: currentEpoch` reads like
+    // "keep from here" and would drop every rung, leaving a member who restarts
+    // unable to derive anything below the epoch they are handed next — a
+    // plausible typo with a consequence nobody would choose.
+    if req.before_epoch >= room.epoch {
+        return app_error_to_reject(
+            &doc,
+            &vti_common::error::AppError::Validation(format!(
+                "`beforeEpoch` {} is at or above the current epoch {} of `{}`; pruning there \
+                 would drop the whole chain, not shorten it",
+                req.before_epoch, room.epoch, req.room_id
+            )),
+        );
+    }
+
+    let (pruned, earliest_rung) = match storage::prune_chain(
+        &state.room_epoch_links_ks,
+        &req.room_id,
+        req.before_epoch,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+
+    audit_room(state, &room, &authorized, RoomOperation::MintEpoch, None).await;
+    success_response(
+        &doc,
+        PruneResponse {
+            room_id: req.room_id,
+            pruned: pruned as u32,
+            earliest_rung,
+        },
+    )
+}
+
+/// `rooms/epoch/commits/0.1`.
+///
+/// Serve the commits a member missed. Relaying these is safe on every tier — a
+/// commit is ciphertext plus a leaf index and **names nobody**, which is the
+/// difference from a Welcome, and why the host is deliberately off that path and
+/// on this one.
+pub(crate) async fn handle_epoch_commits(
+    state: &AppState,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: CommitsBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let (presenter, verifier) = match presenter_and_verifier(state, &doc).await {
+        Ok(p) => p,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let authorized = match authz::authorize(
+        &room,
+        &req.presentation,
+        Action::Read,
+        &presenter,
+        now(),
+        &verifier,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+
+    let commits = match storage::commits_since(
+        &state.room_epoch_links_ks,
+        &req.room_id,
+        req.since_epoch,
+        req.limit.unwrap_or(100).clamp(1, 100) as usize,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+
+    audit_room(state, &room, &authorized, RoomOperation::ListRecords, None).await;
+    success_response(
+        &doc,
+        CommitsResponse {
+            room_id: req.room_id,
+            commits,
+            // Read from the room, never computed from the answer. They differ
+            // exactly when a commit is missing, and that difference is what
+            // tells a member a delivery is missing rather than their own state
+            // being broken.
+            room_epoch: room.epoch,
+        },
+    )
 }
 
 /// `rooms/epoch/chain/0.1`.
