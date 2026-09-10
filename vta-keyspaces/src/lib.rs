@@ -49,6 +49,14 @@ pub const CONTEXTS: &str = "contexts";
 pub const DID_TEMPLATES: &str = "did_templates";
 /// Audit log.
 pub const AUDIT: &str = "audit";
+/// The keyed-hash keys the audit log commits actor and target identifiers
+/// under, and their history.
+///
+/// Separate from [`AUDIT`] because the two have opposite lifetimes: entries
+/// are erased when their retention expires, and a key must outlive every entry
+/// that references it or those entries stop being checkable against a
+/// candidate identifier.
+pub const AUDIT_KEY: &str = "audit_key";
 /// Imported secret material (KEK-wrapped). Named `imported_secrets`, **not**
 /// `imported` — the latter was a long-standing test-only typo that operated on
 /// an empty keyspace disjoint from production. Always reference this const.
@@ -255,6 +263,7 @@ pub const ALL: &[&str] = &[
     CONTEXTS,
     DID_TEMPLATES,
     AUDIT,
+    AUDIT_KEY,
     IMPORTED_SECRETS,
     CACHE,
     VAULT,
@@ -287,6 +296,11 @@ pub const BACKED_UP: &[&str] = &[
     ACL,
     CONTEXTS,
     AUDIT,
+    // Without the keys, a restored audit log still verifies as a chain and
+    // still says what happened, but no entry can be checked against a
+    // candidate identifier again — the commitments become opaque. The key is
+    // generated rather than derived, so nothing else reproduces it.
+    AUDIT_KEY,
     IMPORTED_SECRETS,
     WEBVH,
     CONSENT,
@@ -489,7 +503,7 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         // ---- Not keyed to a DID ------------------------------------------
         // The audit log is deliberately here: it is append-only, and the record
         // that a DID was deleted is the one thing that must survive deleting it.
-        b"audit" => Unrelated,
+        b"audit" | b"audit_key" => Unrelated,
         b"did_templates" | b"sealed_nonces" | b"backup_bundles" => Unrelated,
         b"drains" | b"bootstrap" | b"idempotency" => Unrelated,
 
