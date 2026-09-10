@@ -1,7 +1,8 @@
 # VTA audit chaining and actor hashing
 
-**Status:** plan. No code yet — the middle of it cannot be landed alone, and
-one stage changes what an operator sees.
+**Status:** plan. No code yet — the middle of it cannot be landed alone.
+Nothing in it changes what an operator sees; an earlier revision said otherwise
+and was wrong, which the section on the operator surface records.
 
 **Closes:** VTI-AUD-004 (the audit trail is tamper-evident) and VTI-AUD-005 (an
 audit record refers to personal data rather than embedding it) of the
@@ -65,25 +66,34 @@ readable and the chain starts from the first new envelope.
 subcommand, matching the VTC's `/v1/audit/verify` and `cnm audit verify`.
 Chaining that nobody can check is not tamper-evidence; it is a hash column.
 
-## The decision this needs before stage 3
+## What happens to the operator surface: nothing
 
-**Today `pnm audit list` shows actor DIDs. Under the shared writer it cannot.**
+An earlier revision of this note claimed that stage 3 forces a choice between
+showing operators an actor DID and satisfying VTI-AUD-005, and recommended
+hashing with `--actor <did>` filtering. **That was wrong, and the mistake was
+reading `AuditWriter::write` without reading the envelope it writes.**
 
-`AuditWriter` HMACs the actor under the active audit key, which is precisely
-what makes VTI-AUD-005 work — the row commits to who acted without embedding an
-identifier that a later erasure would have to remove. The cost is that the list
-can no longer answer *who did this*; it can answer *was it this DID?* through
-`verify_actor`.
+The envelope carries both:
 
-| Option | Effect |
-|---|---|
-| **(a) Hash, and filter by `verify_actor`** | Operators query `pnm audit list --actor <did>` and get their answer. Browsing without a candidate DID shows hashes. Satisfies AUD-005. **Recommended.** |
-| (b) Hash, and keep a reversible mapping | The list looks unchanged and the property is gone: the mapping is the personal data, in the same deployment, one join away. |
-| (c) Hash only actors that are personal identifiers | Requires classifying every actor as personal or not, at write time, correctly, forever. The first misclassification is silent and permanent. |
+- `actor_did_hash` — always present, the durable correlation handle;
+- `actor_did_plain` — the plaintext, `None` only after a redaction.
 
-Option (a) is a real change to an operator surface and belongs to whoever owns
-that surface, not to the person doing the wiring. It is the only reason this
-note exists rather than a pull request.
+`AuditWriter::write` populates the plaintext on every write
+(`writer.rs`), and the VTC's audit list renders exactly that field
+(`vtc-service/src/routes/audit.rs`). So `pnm audit list` keeps showing actor
+DIDs, and no operator-facing decision is required.
+
+The property in VTI-AUD-005 comes from the third piece: **the chain digest
+excludes the plaintext members**. `envelope.rs` says so, and two tests pin it —
+`rtbf_redaction_preserves_hashes` and
+`rtbf_redaction_does_not_break_the_chain`. An erasure nulls
+`actor_did_plain`, the row keeps its hash, and the chain still verifies.
+
+That is a better answer than any of the three options this note previously
+offered, and it is what the design already does. `verify_actor` remains the way
+to ask "was this redacted row's actor this DID?", which is the question that
+survives an erasure — not a substitute for showing the actor while it is still
+there.
 
 ## Retention versus the chain
 
