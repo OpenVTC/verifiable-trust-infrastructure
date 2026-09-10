@@ -1449,6 +1449,48 @@ mod tests {
         }
     }
 
+    /// **A TSP reply is the document, with nothing around it.**
+    ///
+    /// This host used to wrap it as `{ thid, document }`, on the reasoning that TSP has no
+    /// headers so correlation had to be added. It does not: a routed response carries its own
+    /// `threadId`, set to the request's `id`. The wrapper said the same thing twice and made
+    /// this host's replies unreadable to a client written against `vtc-service`, which sends
+    /// the document bare — two hosts of one protocol disagreeing about the wire.
+    ///
+    /// Asserted as a property of `dispatch` rather than of a framing function, because there
+    /// is no longer a framing function and that is the point.
+    #[tokio::test]
+    async fn a_tsp_answer_is_the_document_and_threads_on_the_request() {
+        let (_dir, st) = state();
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+
+        let document = vta_sdk::trust_task_sign::build_signed(
+            ROOMS_RECORDS_LIST_TYPE,
+            serde_json::json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f.owner.did,
+            &f.owner.secret_multibase,
+            "did:key:zHost",
+        )
+        .await
+        .unwrap();
+        let request_id: Value = serde_json::from_str(&document).unwrap();
+        let request_id = request_id["id"].as_str().unwrap().to_string();
+
+        // What the TSP arm sends is exactly this — `send_tsp` serialises it unchanged.
+        let answer = dispatch(&st, document.as_bytes()).await.document;
+
+        assert_eq!(
+            answer["threadId"], request_id,
+            "the document threads itself, which is why nothing needs to wrap it"
+        );
+        assert!(
+            answer.get("thid").is_none(),
+            "and it carries no second, disagreeing copy of that: {answer}"
+        );
+    }
+
     /// Registration is the one verb no chain can authorize, so the proof on the request
     /// is the whole of its defence — and `ownerDid` is a payload field until something
     /// checks it against the signer.

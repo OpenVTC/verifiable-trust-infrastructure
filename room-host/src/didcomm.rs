@@ -288,17 +288,7 @@ pub async fn serve(
         let reply = answer.document;
 
         let sent = match frame.message.protocol {
-            Protocol::TSP => {
-                send_tsp(
-                    &atm,
-                    &profile,
-                    &mediator_did,
-                    &sender,
-                    &reply,
-                    &reply_thread,
-                )
-                .await
-            }
+            Protocol::TSP => send_tsp(&atm, &profile, &mediator_did, &sender, &reply).await,
             _ => {
                 send_didcomm(
                     &atm,
@@ -381,15 +371,6 @@ fn unwrap_request(protocol: Protocol, payload: &[u8]) -> Option<Request> {
     }
 }
 
-/// Frame an answer for TSP: `{ thid, document }`.
-///
-/// The document is unchanged inside it. TSP has no headers, so correlation has to ride in the
-/// payload — and it is the *reply* that needs it, not the request: a request's type is the
-/// document's own `type` field, but nothing in a document says which request it answers.
-fn tsp_reply(document: &serde_json::Value, thread: &str) -> serde_json::Value {
-    serde_json::json!({ "thid": thread, "document": document })
-}
-
 /// Return an answer over DIDComm: authcrypt to the caller, then forward through the mediator.
 ///
 /// Two hops, because a mediator refuses direct delivery of inner messages. It unwraps the
@@ -434,25 +415,24 @@ async fn send_didcomm(
 
 /// Return an answer over TSP: sealed end-to-end to the caller, routed through the mediator.
 ///
-/// # Why the reply is wrapped and the request was not
+/// # No wrapper, because the document already threads itself
 ///
-/// TSP has no headers — no `type`, no `thid` — so a caller with two requests outstanding has
-/// nothing to tell the answers apart by. A *request* needs none, because its type is the
-/// Trust-Task document's own `type` field; a *reply* does, because correlation is the one
-/// thing the document cannot carry about itself.
+/// TSP has no headers, so it is tempting to conclude correlation must be added around the
+/// document. It must not: a routed Trust-Task response carries its own `threadId`, set to the
+/// request's `id`, and that is what a caller matches on. Wrapping it says the same thing
+/// twice — and disagrees with the other host of this protocol.
 ///
-/// So the reply is `{ thid, document }` and the document is unchanged inside it. A caller
-/// that ignored the wrapper and read the document would still be reading the same bytes the
-/// HTTP and DIDComm carriers deliver.
+/// This did wrap it, as `{ thid, document }`, which made a `room-host` reply unreadable to a
+/// client written against `vtc-service` and the reverse. Both now send the document and
+/// nothing else, byte-identical to the HTTP body in either direction.
 async fn send_tsp(
     atm: &Arc<ATM>,
     profile: &Arc<ATMProfile>,
     mediator_did: &str,
     sender: &str,
     reply: &serde_json::Value,
-    thread: &str,
 ) -> anyhow::Result<()> {
-    let bytes = serde_json::to_vec(&tsp_reply(reply, thread))?;
+    let bytes = serde_json::to_vec(reply)?;
     atm.tsp()
         .send_routed(
             profile,
@@ -559,22 +539,5 @@ mod tests {
         // caller never sent, which is the same failure as threading on the wrong one.
         let no_id = serde_json::to_vec(&json!({ "type": "x", "payload": {} })).unwrap();
         assert_eq!(unwrap_request(Protocol::TSP, &no_id), None);
-    }
-
-    /// The TSP reply puts the thread where a caller looks, and leaves the document alone.
-    #[test]
-    fn a_tsp_reply_carries_the_thread_beside_an_untouched_document() {
-        let answer = json!({ "type": "…#response", "payload": { "records": [] } });
-        let framed = tsp_reply(&answer, "urn:uuid:33333333-3333-3333-3333-333333333333");
-
-        assert_eq!(
-            framed["thid"],
-            "urn:uuid:33333333-3333-3333-3333-333333333333"
-        );
-        assert_eq!(
-            framed["document"], answer,
-            "a caller that ignored the wrapper would read the same bytes the other two \
-             carriers deliver"
-        );
     }
 }
