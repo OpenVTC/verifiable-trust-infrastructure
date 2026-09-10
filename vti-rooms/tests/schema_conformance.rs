@@ -182,6 +182,7 @@ fn mint_epoch_conforms() {
         epoch: 2,
         presentation: presentation(),
         link: None,
+        commit: Some("AAECAwQFBgcICQoLDA0ODw".into()),
         reason: Some("membership change".into()),
     };
     check::<Payload>(
@@ -643,6 +644,73 @@ fn a_trace_without_a_commitment_is_refused() {
     );
 }
 
+/// The two host verbs that relay and forget.
+///
+/// `prune` reports **reach**, not the request — a chain can already have a gap,
+/// and echoing `beforeEpoch` would tell an operator they had achieved something
+/// they had not. `commits` reports the room's epoch read from the room, never
+/// `sinceEpoch` plus the count, because they differ exactly when a delivery is
+/// missing and that difference is what tells a member so.
+#[test]
+fn prune_and_commits_conform() {
+    use trust_tasks_rs::specs::rooms::epoch::commits::v0_1::{
+        Payload as CommitsPayload, Response as CommitsResp,
+    };
+    use trust_tasks_rs::specs::rooms::epoch::prune::v0_1::{
+        Payload as PrunePayload, Response as PruneResp,
+    };
+
+    check::<PrunePayload>(
+        "PruneBody",
+        &serde_json::to_value(PruneBody {
+            room_id: "did:webvh:example.com:rooms:northwind".into(),
+            before_epoch: 5,
+            presentation: presentation(),
+            reason: Some("retention: past the agreed window".into()),
+        })
+        .expect("serialise"),
+    );
+    check::<PruneResp>(
+        "PruneResponse",
+        &serde_json::to_value(PruneResponse {
+            room_id: "did:webvh:example.com:rooms:northwind".into(),
+            pruned: 4,
+            earliest_rung: 5,
+        })
+        .expect("serialise"),
+    );
+
+    check::<CommitsPayload>(
+        "CommitsBody",
+        &serde_json::to_value(CommitsBody {
+            room_id: "did:webvh:example.com:rooms:northwind".into(),
+            since_epoch: 5,
+            limit: Some(50),
+            presentation: presentation(),
+        })
+        .expect("serialise"),
+    );
+    let served = serde_json::to_value(CommitsResponse {
+        room_id: "did:webvh:example.com:rooms:northwind".into(),
+        commits: vec![
+            RelayedCommit {
+                epoch: 6,
+                commit: "AAECAwQFBgcICQoLDA0ODw".into(),
+            },
+            RelayedCommit {
+                epoch: 7,
+                commit: "EBESExQVFhcYGRobHB0eHw".into(),
+            },
+        ],
+        // Further ahead than the commits reach: a delivery is missing, and the
+        // member is told rather than left to infer it.
+        room_epoch: 9,
+    })
+    .expect("serialise");
+    assert_eq!(served["roomEpoch"], 9);
+    check::<CommitsResp>("CommitsResponse", &served);
+}
+
 /// A ciphertext with no nonce is a corrupt store, and loses its body rather
 /// than gaining a fabricated half of one.
 ///
@@ -845,6 +913,14 @@ fn every_dispatched_uri_is_the_published_one() {
         (
             ROOMS_OWNER_CLAIM_TYPE,
             <rooms::owner::claim::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_EPOCH_PRUNE_TYPE,
+            <rooms::epoch::prune::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_EPOCH_COMMITS_TYPE,
+            <rooms::epoch::commits::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
     ];
 

@@ -145,6 +145,118 @@ pub async fn prune_epoch_links_before(
     Ok(dropped)
 }
 
+/// Drop the chain below `before_epoch`, and report how far back it still reaches.
+///
+/// # Two numbers, because they are not the same question
+///
+/// `pruned` is what this call removed. `earliest_rung` is how far back a member
+/// can now actually walk — and those come apart, because **a chain can already
+/// have a gap**: rungs are delivered per commit and a delivery that never
+/// happened leaves one. A prune below an existing gap removes rungs and changes
+/// nothing about reach, and reporting `before_epoch` back would tell an operator
+/// they had achieved something they had not.
+///
+/// `earliest_rung` is read from what survives rather than computed from the
+/// request, which is the only way it can be true.
+pub async fn prune_chain(
+    links: &KeyspaceHandle,
+    room_id: &str,
+    before_epoch: u32,
+) -> Result<(usize, u32), AppError> {
+    // `prune_epoch_links_before` drops `epoch <= n`, and this drops *below*
+    // `before_epoch` — so the boundary is one lower. Off by one here would
+    // silently take the epoch the caller meant to keep.
+    let dropped = prune_epoch_links_before(links, room_id, before_epoch.saturating_sub(1)).await?;
+    let remaining = list_epoch_links(links, room_id).await?;
+    let earliest = remaining
+        .iter()
+        .map(|l| l.epoch)
+        .min()
+        .unwrap_or(before_epoch);
+    Ok((dropped, earliest))
+}
+
+/// Prefix for the commits a host relays.
+const COMMITS_PREFIX: &str = "room-commit:";
+
+/// Storage key for one relayed commit. Zero-padded so a prefix scan is ordered.
+fn commit_key(room_id: &str, epoch: u32) -> String {
+    format!("{COMMITS_PREFIX}{room_id}:{epoch:010}")
+}
+
+/// Store the commit that produced an epoch, for members who were not online.
+///
+/// **Refuses to replace an existing one**, for the same reason `put_epoch_link`
+/// does and with a sharper consequence: the first commit published is the one
+/// members may already have applied, and a second would fork the very group the
+/// relay exists to keep together.
+pub async fn put_commit(
+    commits: &KeyspaceHandle,
+    room_id: &str,
+    epoch: u32,
+    commit: &str,
+) -> Result<(), AppError> {
+    let key = commit_key(room_id, epoch);
+    if commits.get_raw(key.clone()).await?.is_some() {
+        return Err(AppError::Conflict(format!(
+            "a commit for epoch {epoch} of `{room_id}` is already held; replacing it would \
+             fork the members who have applied it"
+        )));
+    }
+    commits
+        .insert(key, &commit.to_string())
+        .await
+        .map_err(|e| AppError::Internal(format!("store the commit for `{room_id}`: {e}")))
+}
+
+/// The commits above `since_epoch`, in order and **stopping at the first gap**.
+///
+/// MLS commits apply in sequence: one applied out of order, or over a gap, is
+/// rejected by the group. So a host that is missing one returns the run it holds
+/// *up to* the gap rather than skipping past it — a short answer is recoverable,
+/// while a set with a hole in it is a member stuck at an epoch who cannot say
+/// why.
+pub async fn commits_since(
+    commits: &KeyspaceHandle,
+    room_id: &str,
+    since_epoch: u32,
+    limit: usize,
+) -> Result<Vec<crate::wire::RelayedCommit>, AppError> {
+    let pairs = commits
+        .prefix_iter_raw(format!("{COMMITS_PREFIX}{room_id}:"))
+        .await?;
+    let mut held: Vec<(u32, String)> = Vec::with_capacity(pairs.len());
+    for (k, v) in pairs {
+        let key = String::from_utf8(k)
+            .map_err(|e| AppError::Internal(format!("commit key is not utf-8: {e}")))?;
+        let Some(epoch) = key.rsplit(':').next().and_then(|e| e.parse::<u32>().ok()) else {
+            continue;
+        };
+        let commit: String = serde_json::from_slice(&v)
+            .map_err(|e| AppError::Internal(format!("decode a commit in `{room_id}`: {e}")))?;
+        held.push((epoch, commit));
+    }
+    held.sort_by_key(|(epoch, _)| *epoch);
+
+    let mut out = Vec::new();
+    let mut expected = since_epoch + 1;
+    for (epoch, commit) in held {
+        if epoch < expected {
+            continue;
+        }
+        // The gap. Stop rather than skip.
+        if epoch != expected {
+            break;
+        }
+        out.push(crate::wire::RelayedCommit { epoch, commit });
+        expected += 1;
+        if out.len() >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
+
 /// Register a room.
 ///
 /// Refuses to replace an existing one: re-registering would silently reset the epoch and
@@ -1778,5 +1890,125 @@ mod tests {
     async fn listing_rooms_is_empty_on_a_host_that_holds_none() {
         let (_d, rooms, _r) = open().await;
         assert!(list_rooms(&rooms).await.expect("list").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod relay_and_prune_tests {
+    use super::*;
+    use crate::wire::EpochLink;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    const ROOM: &str = "r1";
+
+    async fn open2() -> (tempfile::TempDir, KeyspaceHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace("rooms").unwrap();
+        (dir, ks)
+    }
+
+    fn link(epoch: u32) -> EpochLink {
+        EpochLink {
+            epoch,
+            wrapped: "d3JhcHBlZA".into(),
+            nonce: "bm9uY2U".into(),
+        }
+    }
+
+    /// The boundary. `before_epoch` means *below*, so the epoch named survives —
+    /// off by one here silently takes the rung the caller meant to keep.
+    #[tokio::test]
+    async fn pruning_below_an_epoch_keeps_that_epoch() {
+        let (_d, ks) = open2().await;
+        // From 2: a rung wraps the PREVIOUS epoch's key, so epoch 1 has no
+        // predecessor to link to and `put_epoch_link` refuses one. The chain
+        // ending at 2 is what a room that has always been chained looks like.
+        for e in 2..=5 {
+            put_epoch_link(&ks, ROOM, &link(e)).await.unwrap();
+        }
+        let (pruned, earliest) = prune_chain(&ks, ROOM, 4).await.unwrap();
+        assert_eq!(pruned, 2, "epochs 2 and 3 go");
+        assert_eq!(earliest, 4, "and 4 is what the caller asked to keep");
+    }
+
+    /// `earliest_rung` is read from what survives, not from the request — a
+    /// chain with a gap already stopped somewhere, and echoing the request would
+    /// tell an operator they had achieved something they had not.
+    #[tokio::test]
+    async fn a_prune_below_an_existing_gap_reports_the_gap() {
+        let (_d, ks) = open2().await;
+        // 2, 3, then nothing until 7: a delivery that never happened.
+        for e in [2u32, 3, 7, 8] {
+            put_epoch_link(&ks, ROOM, &link(e)).await.unwrap();
+        }
+        let (pruned, earliest) = prune_chain(&ks, ROOM, 4).await.unwrap();
+        assert_eq!(pruned, 2);
+        assert_eq!(
+            earliest, 7,
+            "reach is 7 whatever the request said, because the chain already stopped there"
+        );
+    }
+
+    /// Nothing to do is a success, not a failure to retry.
+    #[tokio::test]
+    async fn pruning_a_chain_that_is_already_short_is_a_success() {
+        let (_d, ks) = open2().await;
+        put_epoch_link(&ks, ROOM, &link(9)).await.unwrap();
+        let (pruned, earliest) = prune_chain(&ks, ROOM, 5).await.unwrap();
+        assert_eq!(pruned, 0);
+        assert_eq!(earliest, 9);
+    }
+
+    /// A commit is published once. The first is the one members may already have
+    /// applied, and a second would fork the group the relay exists to hold
+    /// together.
+    #[tokio::test]
+    async fn a_commit_is_never_replaced() {
+        let (_d, ks) = open2().await;
+        put_commit(&ks, ROOM, 3, "AAEC").await.unwrap();
+        assert!(
+            put_commit(&ks, ROOM, 3, "ZZZZ").await.is_err(),
+            "replacing a published commit must be refused"
+        );
+    }
+
+    /// The rule that keeps a catching-up member from being handed something the
+    /// group will reject: stop at the gap rather than skipping it.
+    #[tokio::test]
+    async fn the_relay_stops_at_a_gap_rather_than_skipping_it() {
+        let (_d, ks) = open2().await;
+        for e in [4u32, 5, 7] {
+            put_commit(&ks, ROOM, e, "AAEC").await.unwrap();
+        }
+        let served = commits_since(&ks, ROOM, 3, 100).await.unwrap();
+        assert_eq!(
+            served.iter().map(|c| c.epoch).collect::<Vec<_>>(),
+            vec![4, 5],
+            "7 is past a gap at 6, and serving it would produce a commit the group rejects"
+        );
+    }
+
+    /// Ordered and bounded, and a member asks again from where they reached.
+    #[tokio::test]
+    async fn the_relay_serves_in_order_and_honours_the_page() {
+        let (_d, ks) = open2().await;
+        for e in 1..=6u32 {
+            put_commit(&ks, ROOM, e, "AAEC").await.unwrap();
+        }
+        let first = commits_since(&ks, ROOM, 0, 3).await.unwrap();
+        assert_eq!(
+            first.iter().map(|c| c.epoch).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let next = commits_since(&ks, ROOM, 3, 3).await.unwrap();
+        assert_eq!(
+            next.iter().map(|c| c.epoch).collect::<Vec<_>>(),
+            vec![4, 5, 6]
+        );
     }
 }
