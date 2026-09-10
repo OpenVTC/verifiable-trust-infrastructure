@@ -177,6 +177,10 @@ pub struct CreateRoomBody {
     pub owner_did: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_days: Option<u32>,
+    /// What this room intends about anchoring. Absent reads as
+    /// [`crate::AnchorCadence::Manual`], which draws no expectation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_cadence: Option<crate::AnchorCadence>,
 }
 
 /// `rooms/create/0.1#response`.
@@ -185,6 +189,10 @@ pub struct CreateRoomBody {
 pub struct CreateRoomResponse {
     pub room_id: String,
     pub epoch: u32,
+    /// Echoed so a caller knows what was **recorded** rather than what was
+    /// asked — the two differ on a host that predates this member.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_cadence: Option<crate::AnchorCadence>,
 }
 
 /// `rooms/records/put/0.1` request.

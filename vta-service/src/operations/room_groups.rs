@@ -668,6 +668,29 @@ pub async fn forget(groups: &KeyspaceHandle, room_id: &str) -> Result<(), AppErr
         .map_err(|e| AppError::Internal(format!("discard the root history of `{room_id}`: {e}")))
 }
 
+/// The MLS epoch authenticator for a room this agent holds.
+///
+/// Every member of the group derives this independently and **no host can
+/// compute it**, which is the whole reason it is worth anchoring: a member whose
+/// own authenticator differs from the anchored one is in a *forked group*.
+pub async fn epoch_authenticator(
+    groups: &KeyspaceHandle,
+    room_id: &str,
+) -> Result<(u64, Vec<u8>), AppError> {
+    let record = load(groups, room_id).await?.ok_or_else(|| {
+        AppError::Validation(format!(
+            "this agent holds no group state for `{room_id}`, so it cannot say what epoch the \
+             room is at"
+        ))
+    })?;
+    let group = RoomGroup::restore(&record.snapshot)
+        .map_err(|e| AppError::Internal(format!("restore the group for `{room_id}`: {e}")))?;
+    // The epoch travels with it: an authenticator names the epoch it was
+    // derived at, and one published beside a different number is a statement
+    // about a group nobody is in.
+    Ok((group.epoch(), group.epoch_authenticator()))
+}
+
 #[cfg(test)]
 mod root_memory_tests {
     use super::*;

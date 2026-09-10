@@ -242,6 +242,173 @@ pub(super) async fn handle_issue_authority(
     .await
 }
 
+/// `rooms/owner/anchor/0.1`.
+///
+/// Write the room's current state into the room's own witnessed log, so that a
+/// host serving a stale, forked or partial view of it becomes **evident rather
+/// than merely possible**.
+///
+/// Everything else in this family produces values a host asserts. This is the
+/// one statement a host does not make, cannot forge, and cannot show two members
+/// two versions of — because witnesses co-sign the log entry it rides.
+#[cfg(feature = "webvh")]
+pub(super) async fn handle_anchor(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    // Boxed, for the reason `dispatch_trust_task` already documents at its own
+    // split: the dispatch table's state machine **inlines every handler's
+    // future**, so a large handler is paid for on the stack of every task that
+    // goes through the dispatcher — not just its own. This one is large (it
+    // presents, calls a host over the network, resolves a DID and publishes a
+    // webvh update), and adding it to the table overflowed the test thread in
+    // `tests/mock_vta.rs::webvh_family_response_shapes` — the same canary that
+    // caught it the last time, in a test that never calls this task.
+    //
+    // Boxing puts this machine on the heap and leaves a pointer in the table.
+    Box::pin(anchor_inner(state, auth, doc)).await
+}
+
+#[cfg(feature = "webvh")]
+async fn anchor_inner(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(r) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::CredentialWrite,
+        "anchoring a room's state in its own log",
+    )
+    .await
+    {
+        return r;
+    }
+
+    let req: trust_tasks_rs::specs::rooms::owner::anchor::v0_1::Payload = match parse_payload(&doc)
+    {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let (vta_did, resolver) = match super::room_group::outbound_identity(state, &doc).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+
+    // The authenticator this agent already holds. Every member derives it
+    // independently and no host can compute it, which is what makes an anchored
+    // one able to expose a forked group.
+    let (epoch, epoch_authenticator) = match crate::operations::room_groups::epoch_authenticator(
+        &state.room_groups_ks,
+        &req.room_id,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    // The two values the agent does NOT hold. `rooms/epoch/mint` answers
+    // `{roomId, epoch}` — the watermark and the commitment are facts about the
+    // room's RECORDS, which live at the host — so an anchor is assembled from a
+    // read, and all three head values come from ONE response.
+    let minted =
+        match crate::operations::room_oracle::present(state, auth, &vta_did, &req.room_id, "read")
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
+    let key = format!("{vta_did}#key-0");
+    let reply = match crate::operations::room_host::send_room_task(
+        signing_context(state, auth),
+        &state.room_groups_ks,
+        &req.room_id,
+        &resolver,
+        &req.host,
+        &key,
+        &vta_did,
+        &key,
+        vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
+        &format!("{}#response", vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE),
+        serde_json::json!({
+            "roomId": req.room_id,
+            "presentation": minted.presentation,
+            // One record is enough: the head travels with any page, and asking
+            // for the room would move a lot of metadata to learn three numbers.
+            "limit": 1,
+        }),
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+    let head: vti_rooms::wire::ListRecordsResponse = match serde_json::from_value(reply) {
+        Ok(h) => h,
+        Err(e) => {
+            return app_error_to_reject(
+                &doc,
+                vti_common::error::AppError::Validation(format!(
+                    "room host `{}` served a head this agent cannot read: {e}",
+                    req.host
+                )),
+            );
+        }
+    };
+    let Some(head_version) = head.head_version else {
+        return app_error_to_reject(
+            &doc,
+            vti_common::error::AppError::Validation(format!(
+                "room host `{}` served no `headVersion`, so there is no state to anchor. A \
+                 host that maintains no tree has nothing for this to pin.",
+                req.host
+            )),
+        );
+    };
+
+    match crate::operations::room_anchor::publish(
+        state,
+        auth,
+        &req.room_id,
+        &req.signing_key_id,
+        crate::operations::room_anchor::Anchor {
+            epoch,
+            epoch_authenticator,
+            head_version,
+            data_commitment: head.data_commitment.clone(),
+            record_count: head.record_count,
+        },
+    )
+    .await
+    {
+        Ok(published) => {
+            record(state, "rooms.owner.anchor", auth, &req.room_id).await;
+            success_response(
+                &doc,
+                serde_json::json!({
+                    "roomId": req.room_id,
+                    "anchored": published.anchored,
+                    "versionId": published.version_id,
+                    // A failed reconciliation does NOT stop the anchor. An owner
+                    // withholding one from a suspect room leaves it with no
+                    // witnessed statement at all, which is the position a
+                    // misbehaving host benefits from.
+                    "reconciled": head
+                        .record_count
+                        .is_none_or(|committed| committed == head.records.len() as u64
+                            || head.cursor.is_some()),
+                }),
+            )
+        }
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
 /// `rooms/owner/register/0.1` — tell a host about a room that already exists.
 ///
 /// `rooms/create` performed by the agent, for the same reason as

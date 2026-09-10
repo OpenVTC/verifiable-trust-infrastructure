@@ -549,7 +549,7 @@ pub(super) async fn handle_backfill(
 /// the third caller appeared — `backfill`, `read` and `browse` refusing in three
 /// slightly different sentences would be three chances for one of them to say
 /// something untrue about why.
-async fn outbound_identity(
+pub(super) async fn outbound_identity(
     state: &AppState,
     doc: &TrustTask<Value>,
 ) -> Result<(String, affinidi_did_resolver_cache_sdk::DIDCacheClient), TrustTaskOutcome> {
@@ -607,6 +607,37 @@ fn head_of(
 ///
 /// A host that asserted nothing is `notChecked` rather than `noneHeld`: one says
 /// nothing was found, the other says nothing was looked for.
+/// Compare a host's head against the room's **own witnessed anchor**.
+///
+/// The only one of this family's comparisons a first-time reader can make:
+/// `priorRoots` needs this agent to have read the room before, and `count` needs
+/// a complete unfiltered listing. This needs neither — every member resolves the
+/// same room DID and reads the same witness-co-signed entry.
+///
+/// A resolver failure answers `notChecked` rather than a verdict. An agent that
+/// could not resolve the room has learned nothing about the host, and saying
+/// otherwise would put a network failure in the same sentence as a finding.
+async fn compare_anchor(state: &AppState, room_id: &str, head: Option<&Value>) -> &'static str {
+    use crate::operations::room_anchor::{AnchorVerdict, compare_to_anchor};
+
+    let Some(head) = head else {
+        return AnchorVerdict::NotChecked.as_wire();
+    };
+    let Some(version) = head["headVersion"].as_u64() else {
+        return AnchorVerdict::NotChecked.as_wire();
+    };
+    let Some(resolver) = state.did_resolver.as_ref() else {
+        return AnchorVerdict::NotChecked.as_wire();
+    };
+    let Ok(resolved) = resolver.resolve(room_id).await else {
+        return AnchorVerdict::NotChecked.as_wire();
+    };
+    let Ok(document) = serde_json::to_value(&resolved.doc) else {
+        return AnchorVerdict::NotChecked.as_wire();
+    };
+    compare_to_anchor(&document, version, head["dataCommitment"].as_str()).as_wire()
+}
+
 async fn compare_head(state: &AppState, room_id: &str, head: Option<&Value>) -> &'static str {
     let Some(head) = head else {
         return "notChecked";
@@ -770,6 +801,8 @@ pub(super) async fn handle_read(
     );
     payload["verification"]["priorRoots"] =
         serde_json::json!(compare_head(state, &req.room_id, head.as_ref()).await);
+    payload["verification"]["anchor"] =
+        serde_json::json!(compare_anchor(state, &req.room_id, head.as_ref()).await);
     if let Some(head) = head {
         payload["verification"]["head"] = head;
     }
@@ -941,6 +974,7 @@ pub(super) async fn handle_browse(
 
     let mut verification = serde_json::json!({
         "priorRoots": compare_head(state, &req.room_id, head.as_ref()).await,
+        "anchor": compare_anchor(state, &req.room_id, head.as_ref()).await,
         "count": count,
     });
     if let Some(h) = head {
