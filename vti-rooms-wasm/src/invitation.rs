@@ -38,18 +38,31 @@
 //! `vta-service`, which is exactly how one of them ends up a check short — it belongs in
 //! `vti-rooms` where both can share it, and that is a follow-up rather than a demo concern.
 //!
-//! # Why no resolver
+//! # Why no resolver, and what happens when one is unavoidable
 //!
-//! The proof is checked against raw public-key bytes, and a room identified by a `did:key`
-//! or a `did:peer` carries its own key in its identifier. So verification needs no network,
-//! no cache, and nothing to be online for. The same guarantee `room-host` makes on the other
+//! The proof is checked against raw public-key bytes, and a room identified by a `did:key` or
+//! a `did:peer` carries its own key in its identifier. So verification needs no network, no
+//! cache, and nothing to be online for. The same guarantee `room-host` makes on the other
 //! side, and since `vta-sdk`'s verifier learned `did:peer` the two agree about which methods
 //! it covers.
 //!
 //! `did:peer` matters rather than being a bonus: only it can carry a **service block**, so
-//! only it lets a room advertise the mediator its members reach its owner through. A
-//! `did:webvh` room — what production mints — would need real resolution, and that is the
-//! one thing this module would grow.
+//! only it lets a room advertise the mediator its members reach its owner through.
+//!
+//! **A `did:webvh` room — what production mints, and what a VTC-hosted room is — cannot be
+//! resolved here.** Resolving one means fetching a log over HTTPS and verifying its history,
+//! which is I/O, and this crate compiles to a target where I/O belongs to the host page.
+//!
+//! So the caller may supply the issuer's key, and [`verify`] uses it instead of deriving one.
+//! The split is deliberate and worth stating precisely, because it moves where trust sits:
+//!
+//! - For `did:key` and `did:peer`, the key comes **out of the identifier**. Nothing the
+//!   caller says is trusted; a caller who supplied a key here would be ignored.
+//! - For anything else, the caller resolved it, and **the resolution is the trust**. This
+//!   module still checks that the proof names the issuer and that the signature holds under
+//!   the key it was given — so a wrong key fails — but it cannot tell a correctly-resolved
+//!   key from a convincingly-wrong one. That is the resolver's job, and it is why the
+//!   parameter exists rather than this module growing an HTTP client it could not use.
 
 use chrono::Utc;
 use dtg_credentials::{DTGCredential, DTGCredentialType};
@@ -79,11 +92,15 @@ pub struct VerifiedInvitation {
 ///
 /// A `did:webvh` room — what production mints — would need real resolution, and that is the
 /// one thing this module would have to grow.
-fn verification_key(verification_method: &str) -> Result<Vec<u8>, String> {
+fn verification_key(verification_method: &str, supplied: Option<&[u8]>) -> Result<Vec<u8>, String> {
     let did = verification_method
         .split('#')
         .next()
         .unwrap_or(verification_method);
+
+    // A method that carries its key in its own name is derived, never taken from the caller.
+    // Preferring a supplied key here would let a caller talk this module out of the one check
+    // it can make entirely on its own.
 
     if let Some(multibase) = did.strip_prefix("did:key:") {
         let (_base, bytes) =
@@ -126,10 +143,18 @@ fn verification_key(verification_method: &str) -> Result<Vec<u8>, String> {
             .map_err(|e| format!("`{verification_method}` public key: {e}"));
     }
 
-    Err(format!(
-        "`{did}` names a method this build cannot resolve without a network — only \
-         `did:key` and `did:peer` carry their keys in the identifier"
-    ))
+    match supplied {
+        Some(key) if key.len() == 32 => Ok(key.to_vec()),
+        Some(key) => Err(format!(
+            "the key supplied for `{did}` is {} bytes, not the 32 an Ed25519 key is",
+            key.len()
+        )),
+        None => Err(format!(
+            "`{did}` names a method this build cannot resolve without a network — only \
+             `did:key` and `did:peer` carry their keys in the identifier. Resolve it and pass \
+             the issuer's key in."
+        )),
+    }
 }
 
 /// Run the five checks. `spent` is the set of credential ids this key holder has already
@@ -140,6 +165,7 @@ pub fn verify(
     room_id: &str,
     expected_subject: &str,
     spent: &[String],
+    issuer_key: Option<&[u8]>,
 ) -> Result<VerifiedInvitation, String> {
     // 1. It parses, and it is an invitation.
     let credential: DTGCredential = decode(encoded)?;
@@ -207,7 +233,7 @@ pub fn verify(
         ));
     }
 
-    let key = verification_key(&proof.verification_method)?;
+    let key = verification_key(&proof.verification_method, issuer_key)?;
     credential
         .verify_proof_with_public_key(&key)
         .map_err(|e| format!("the invitation's proof did not verify: {e}"))?;
