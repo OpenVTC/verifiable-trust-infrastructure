@@ -72,6 +72,16 @@ struct Args {
     #[arg(long)]
     secrets: Option<std::path::PathBuf>,
 
+    /// Enrol with this VTA, so it can authorize this host to serve the rooms it governs.
+    ///
+    /// On first use the host mints a throwaway `did:key` and prints it for an operator to
+    /// grant; on the next start, once granted, it connects and rotates the throwaway away.
+    /// Off by default — a host serves rooms by the credentials they issued, and needs no VTA
+    /// of its own unless one is going to govern it.
+    #[cfg(feature = "onboarding")]
+    #[arg(long)]
+    vta_did: Option<String>,
+
     /// Seconds between mirror pulls.
     ///
     /// A mirror is not latency-critical — it serves a copy, and a client that
@@ -163,6 +173,28 @@ async fn main() -> anyhow::Result<()> {
                 tracing::error!(error = %e, "the mediator connection ended");
             }
         });
+    }
+
+    // Before the listener, and before anything is served: an operator who has to authorize
+    // this host should find that out from the first line of output, not after a page of
+    // startup that implies it is working.
+    #[cfg(feature = "onboarding")]
+    if let Some(vta_did) = args.vta_did.as_deref() {
+        match room_host::onboarding::enrol(&args.data_dir, vta_did)? {
+            room_host::onboarding::Enrolment::Enrolled => {
+                tracing::info!(vta = %vta_did, "enrolled with the VTA");
+            }
+            room_host::onboarding::Enrolment::AwaitingGrant { ephemeral_did } => {
+                // Printed and then stopped. Carrying on would serve a host that cannot be
+                // authorized for anything the VTA governs, which is a confusing kind of
+                // running — and the operator has a step to take before it can be otherwise.
+                println!(
+                    "{}",
+                    room_host::onboarding::grant_instructions(&ephemeral_did, vta_did)
+                );
+                return Ok(());
+            }
+        }
     }
 
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
