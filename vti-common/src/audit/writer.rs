@@ -40,6 +40,18 @@ pub fn envelope_storage_key(env: &AuditEnvelope) -> Vec<u8> {
 pub struct AuditWriter {
     audit_ks: KeyspaceHandle,
     key_store: AuditKeyStore,
+    /// How an envelope is keyed in the audit keyspace.
+    ///
+    /// Configurable because a keyspace that already holds rows has an
+    /// ordering, and a writer that ignores it produces a log whose newest
+    /// entry is not the last one — which breaks both chain-head recovery and
+    /// every reader that pages in key order. A VTA's audit keyspace is such a
+    /// keyspace: it holds `log:<zero-padded-epoch>:<uuid>` rows written before
+    /// chaining existed, and those sort after an RFC 3339 timestamp.
+    ///
+    /// [`envelope_storage_key`] is the default and the only one a fresh
+    /// keyspace needs.
+    storage_key: Arc<dyn Fn(&AuditEnvelope) -> Vec<u8> + Send + Sync>,
     /// Cached `entry_hash` of the last-written envelope (the chain
     /// head). `None` until the first write loads it from storage
     /// (restart recovery). Guarded by an async mutex so the
@@ -53,8 +65,24 @@ impl AuditWriter {
         Self {
             audit_ks,
             key_store,
+            storage_key: Arc::new(envelope_storage_key),
             chain_head: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Key envelopes with `f` rather than [`envelope_storage_key`].
+    ///
+    /// The function must order envelopes by write time, because chain-head
+    /// recovery reads the last key in ascending order and expects the most
+    /// recent envelope. A key that does not sort by time silently anchors new
+    /// writes to the wrong predecessor.
+    #[must_use]
+    pub fn with_storage_key(
+        mut self,
+        f: impl Fn(&AuditEnvelope) -> Vec<u8> + Send + Sync + 'static,
+    ) -> Self {
+        self.storage_key = Arc::new(f);
+        self
     }
 
     /// Return the currently-active audit key. Callers that need to
@@ -110,7 +138,7 @@ impl AuditWriter {
         envelope.entry_hash = envelope.chain_digest();
 
         self.audit_ks
-            .insert(envelope_storage_key(&envelope), &envelope)
+            .insert((self.storage_key)(&envelope), &envelope)
             .await?;
         *head = Some(envelope.entry_hash);
         Ok(envelope)
@@ -124,13 +152,21 @@ impl AuditWriter {
     /// [`GENESIS_HASH`].
     async fn load_chain_head(&self) -> Result<[u8; 32], AppError> {
         let pairs = self.audit_ks.prefix_iter_raw(Vec::new()).await?;
-        match pairs.last() {
-            Some((_, raw)) => {
-                let env: AuditEnvelope = serde_json::from_slice(raw)?;
-                Ok(env.entry_hash)
+
+        // Walk back to the newest row that is an envelope. Everything after
+        // it is a row written before this log was chained: a VTA's keyspace
+        // holds those, and the first chained write has to anchor at genesis
+        // rather than fail because the row next to it predates the scheme.
+        //
+        // Deserialization is the test rather than the key, because the key
+        // format is the caller's (see `with_storage_key`) and a value either
+        // is an envelope or is not.
+        for (_, raw) in pairs.iter().rev() {
+            if let Ok(env) = serde_json::from_slice::<AuditEnvelope>(raw) {
+                return Ok(env.entry_hash);
             }
-            None => Ok(GENESIS_HASH),
         }
+        Ok(GENESIS_HASH)
     }
 
     /// Verify that `candidate_did` matches the actor recorded on
@@ -196,6 +232,7 @@ fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
 mod tests {
     use super::*;
     use crate::audit::key_store::RotationReason;
+    use crate::audit::verify_chain;
     use crate::config::StoreConfig;
     use crate::store::Store;
 
@@ -227,6 +264,92 @@ mod tests {
             fields_changed: vec!["name".into()],
             ..Default::default()
         })
+    }
+
+    /// The VTA's audit keyspace holds rows written before this log was
+    /// chained. Chain-head recovery reads the last key in ascending order, and
+    /// those rows sort *after* an RFC 3339 timestamp, so the first chained
+    /// write would otherwise try to read a pre-chain row as an envelope.
+    #[tokio::test]
+    async fn a_pre_chain_row_does_not_break_the_first_write() {
+        let f = fixture();
+        f.key_store.ensure_initial(&[0x01; 32]).await.unwrap();
+
+        // A row in the shape a VTA wrote before chaining existed, keyed the
+        // way a VTA keys them — which sorts after any RFC 3339 timestamp.
+        f.writer
+            .audit_ks
+            .insert(
+                b"log:00000000001700000000:11111111-1111-1111-1111-111111111111".to_vec(),
+                &serde_json::json!({
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "timestamp": 1_700_000_000u64,
+                    "action": "auth.challenge",
+                    "actor": "did:key:z6MkLegacy",
+                    "outcome": "success",
+                }),
+            )
+            .await
+            .expect("seed a pre-chain row");
+
+        let env = f
+            .writer
+            .write("did:key:z6Mk", None, sample_event())
+            .await
+            .expect("a pre-chain row must not stop the first chained write");
+
+        assert_eq!(
+            env.prev_hash, GENESIS_HASH,
+            "the first chained entry anchors at genesis, not at a row that predates the chain"
+        );
+    }
+
+    /// A caller whose keyspace has an existing ordering supplies its own key
+    /// function, so that the newest envelope is still the last key — which is
+    /// what chain-head recovery depends on.
+    #[tokio::test]
+    async fn a_custom_storage_key_still_recovers_the_head() {
+        let f = fixture();
+        f.key_store.ensure_initial(&[0x01; 32]).await.unwrap();
+
+        let writer = f.writer.clone().with_storage_key(|env| {
+            format!(
+                "log:{:020}:{}",
+                env.timestamp.timestamp().max(0),
+                env.event_id
+            )
+            .into_bytes()
+        });
+
+        let first = writer
+            .write("did:key:z6MkA", None, sample_event())
+            .await
+            .unwrap();
+
+        // A fresh writer over the same keyspace has no cached head, so it
+        // recovers one from storage — the path a restart takes.
+        let restarted = AuditWriter::new(f.writer.audit_ks.clone(), f.key_store.clone())
+            .with_storage_key(|env| {
+                format!(
+                    "log:{:020}:{}",
+                    env.timestamp.timestamp().max(0),
+                    env.event_id
+                )
+                .into_bytes()
+            });
+        let second = restarted
+            .write("did:key:z6MkB", None, sample_event())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            second.prev_hash, first.entry_hash,
+            "the second entry chains to the first across a restart"
+        );
+        assert!(
+            verify_chain(&[first, second]).is_ok(),
+            "the pair verifies as a chain"
+        );
     }
 
     #[tokio::test]
