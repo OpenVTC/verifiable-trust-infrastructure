@@ -54,7 +54,7 @@ affinidi-tdk = { workspace = true, optional = true }
 # facade forwards it on `main` since affinidi-tdk-rs#785 but in no published
 # release yet, so this asks for it directly — and would anyway, because it needs
 # `DidCommTransport` and `affinidi-messaging-core`'s shapes.
-affinidi-messaging-sdk = { version = "0.23", optional = true, default-features = false, features = ["tsp"] }
+affinidi-messaging-sdk = { version = "0.24", optional = true, default-features = false, features = ["tsp"] }
 affinidi-messaging-core = { workspace = true, optional = true }
 # **The same secret storage every other service in this workspace uses.** The
 # host's identity is a private key; it belongs behind the same `[secrets]`
@@ -112,7 +112,7 @@ didcomm = [
 # rather than a simulator. Everything `tests/carrier.rs` covers is packing,
 # routing, threading and acking — a simulator would be a second opinion about
 # exactly the parts that were wrong.
-affinidi-messaging-test-mediator = { version = "0.6", features = ["tsp"] }
+affinidi-messaging-test-mediator = { version = "0.7", features = ["tsp"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", features = ["test-support"] }

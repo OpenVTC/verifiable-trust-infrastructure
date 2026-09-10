@@ -285,6 +285,39 @@ pub const TASK_CONTEXTS_CREATE_1_0: &str = "https://trusttasks.org/spec/vta/cont
 /// [`crate::protocols::context_management::get::GetContextBody`].
 pub const TASK_CONTEXTS_GET_1_0: &str = "https://trusttasks.org/spec/vta/contexts/get/1.0";
 
+/// `spec/vta/contexts/secrets/1.0` — the private keys of a context's own DID,
+/// for the service that operates it.
+///
+/// **What a service needs to be itself.** An integration whose identity the VTA
+/// manages — a mediator, a room-host, a did-hosting service — has to hold that
+/// DID's private keys to decrypt what is addressed to it. It cannot delegate
+/// that per-frame, so it fetches them once at startup and caches them.
+///
+/// Auth: **Application or higher**, and only for a context the caller may act
+/// in. That is deliberately not Admin: reading the keys of the DID you already
+/// operate is not an administrative act, and requiring Admin meant every
+/// integration was granted authority over everything else in the VTA in order
+/// to be itself.
+///
+/// The scoping is what makes the lower role safe, so it is asserted rather than
+/// described — see `contexts::handle_secrets`.
+///
+/// Payload:
+/// [`crate::protocols::context_management::secrets::GetContextSecretsBody`].
+/// Returns a
+/// [`crate::protocols::context_management::secrets::ContextSecretsResultBody`]
+/// — the spec's lowerCamelCase wire form of a
+/// [`crate::did_secrets::DidSecretsBundle`].
+///
+/// The response carries private keys in the clear, which is why the dispatch
+/// entry classifies it `Discloses::Secret` and why it must not be logged,
+/// cached in a shared store, or put in a diagnostic bundle.
+///
+/// Replaces the use of `seeds/export-mnemonic/1.0` for this, which was never a
+/// mnemonic export: it took a `key_id` and returned one key, and a caller
+/// assembling a bundle made one Admin-gated call per key.
+pub const TASK_CONTEXTS_SECRETS_1_0: &str = "https://trusttasks.org/spec/vta/contexts/secrets/1.0";
+
 /// `spec/vta/contexts/update/1.0` — update name/did/description.
 /// Payload: [`crate::protocols::context_management::update::UpdateContextBody`].
 /// Auth: Super Admin only.
@@ -1824,6 +1857,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONTEXTS_GET_1_0,
     TASK_CONTEXTS_UPDATE_1_0,
     TASK_CONTEXTS_UPDATE_DID_1_0,
+    TASK_CONTEXTS_SECRETS_1_0,
     TASK_CONTEXTS_PREVIEW_DELETE_1_0,
     TASK_CONTEXTS_DELETE_1_0,
     // Keys slice

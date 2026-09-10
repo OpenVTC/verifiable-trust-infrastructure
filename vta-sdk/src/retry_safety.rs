@@ -208,6 +208,18 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_SEEDS_ROTATE_1_0, Keyed),
     // Response is the mnemonic itself, and the export guard is one-shot.
     (trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0, KeyedSecret),
+    // `ReadOnly` even though the response carries private keys, and the
+    // distinction is worth stating because `export-mnemonic` above looks like
+    // the same task and is not. That one is `KeyedSecret` because its export
+    // guard is **one-shot** — a second call is not a second read, it is a
+    // second consumption of a guard — so it needs dedup, and `KeyedSecret` is
+    // how a task that needs dedup avoids parking a secret in the dedup store.
+    // This task has no guard: it is `sideEffects: none`, and a second call
+    // returns the same bundle. `ReadOnly` therefore takes the dedup path out
+    // altogether (`idempotency.rs` early-returns unless `needs_key()`), so no
+    // response body is stored at all — the same protection, reached by the
+    // classification actually being true rather than by a stronger one.
+    (trust_tasks::TASK_CONTEXTS_SECRETS_1_0, ReadOnly),
     // ── Audit ───────────────────────────────────────────────────────────
     (trust_tasks::TASK_AUDIT_LIST_0_1, ReadOnly),
     (trust_tasks::TASK_AUDIT_GET_RETENTION_1_0, ReadOnly),

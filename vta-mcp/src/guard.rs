@@ -105,6 +105,21 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     ("vault/release", Risk::Sensitive),
     ("vault/proxy-login", Risk::Sensitive),
     ("vta/seeds/export-mnemonic", Risk::Sensitive),
+    // Returns the private keys of a context's DID. The verb rule would read
+    // `secrets` as an ordinary mutation, and the task's own `sideEffects` are
+    // `none` — it reads and changes nothing — so neither the verb nor the side
+    // effect is what makes it risky. What comes back is the whole authority of
+    // that DID, which is `Sensitive` by the definition above: secret material,
+    // emitted. It belongs beside `export-mnemonic`, whose replacement it is.
+    //
+    // Deliberately NOT `ReadOnly` despite being a read. `ReadOnly` is the class
+    // `--read-only` permits and means "safe to call on a whim"; handing an MCP
+    // host a signing key on a blanket `vta_call` approval is the threat model
+    // this module exists for. Note this is the opposite call from the one in
+    // `vta-sdk`'s `retry_safety`, and correctly so: that asks what a SECOND
+    // execution costs (nothing — it is idempotent), this asks what ONE
+    // execution discloses.
+    ("vta/contexts/secrets", Risk::Sensitive),
     // Authority, moved.
     ("acl/grant", Risk::Sensitive),
     ("acl/update", Risk::Sensitive),
