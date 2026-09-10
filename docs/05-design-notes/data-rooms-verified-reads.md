@@ -179,6 +179,39 @@ receipt would be checked. The receipt is evidence with nothing yet to contradict
 No zkVM, no new cryptographic assumption, no change to the credential model, and
 nothing that touches how a record is sealed.
 
+### 5.1 What it actually costs, measured
+
+The store is deliberately **uncached**, and the standing rule was "correct first,
+and cache when there is a measurement saying where". Here is the measurement —
+`vti-rooms/tests/commitment_cost.rs`, release build, 2 KiB sealed bodies:
+
+| Records | `tree_head` |
+|---|---|
+| 100 | 0.46 ms |
+| 1,000 | 3.5 ms |
+| 10,000 | 34 ms |
+
+Linear, at roughly **3.4 µs per record**, dominated by hashing each 2 KiB body
+rather than by the tree. It excludes the store scan `storage::tree_head` also
+does, so a real read costs more than this.
+
+**The answer is still not to cache**, and now that is a decision from evidence
+rather than a deferral. A room under a thousand records pays about 3.5 ms per
+read, which is not the thing to fix first. And the obvious cache — a root kept
+beside the room row and recomputed on write — **moves** the cost to writes rather
+than removing it, which is a win for a read-heavy room and a loss for a
+write-heavy one. Removing it needs an *incremental* Merkle update, which is a
+different and much larger change.
+
+Two things to know before anyone does cache it:
+
+- **A stale root is worse than a slow one.** It is a *wrong* commitment, and the
+  failure it produces is an honest host appearing to equivocate — the exact
+  accusation this machinery exists to make credible.
+- **`storage::purge_record` does not touch the room row**, so a cache keyed to
+  the room's version counter would go stale there and nowhere else. It has no
+  caller outside its own tests today, which is why nothing has noticed.
+
 ---
 
 ## 6. What has to be decided first
