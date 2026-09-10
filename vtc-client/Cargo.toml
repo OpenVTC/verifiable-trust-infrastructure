@@ -17,6 +17,23 @@ default = []
 # that had `vtc-client` with `mls` keeps working unchanged.
 mls = ["vti-rooms/mls"]
 
+# Reach a VTC over DIDComm instead of HTTPS.
+#
+# Off by default because it is not free: it pulls the VTA SDK's client and the
+# TDK messaging stack behind it, which a REST-only operator tool has no use for.
+# On, the holder verbs — the ones addressed to the document endpoint — can go
+# over a mediated DIDComm session instead of a URL, which is what a `did:webvh`
+# persona behind a mediator actually has.
+#
+# The transports are **delegated, not reimplemented**: `vta_sdk::client::VtaClient`
+# already owns session setup, `thid` demultiplexing, retry and reply-proof
+# verification, and a second copy of that in this crate would be a second thing
+# to keep correct.
+didcomm = ["vta-sdk/client", "vta-sdk/didcomm"]
+# The same, over TSP. Additive to `didcomm`: a TSP leg rides an existing DIDComm
+# session rather than replacing it (VTI #803/#810).
+tsp = ["didcomm", "vta-sdk/tsp"]
+
 [dependencies]
 # Reuses the VTA SDK's challenge-response auth (audience-agnostic) and the
 # published join-request protocol types. `session` gates `auth_light` +

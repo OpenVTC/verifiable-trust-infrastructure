@@ -2,9 +2,40 @@
 //!
 //! The VTA SDK ([`vta_sdk`]) is the client for *VTAs*; this crate is the
 //! equivalent for *VTCs*. It lets an operator or an integration drive a VTC's
-//! member-facing and admin-facing surface over REST: authenticate, list members
+//! member-facing and admin-facing surface: authenticate, list members
 //! (the community roster), run the join ceremony, remove members, and manage
 //! community policy.
+//!
+//! ## Two surfaces, and only one of them is a URL
+//!
+//! The VTC answers **holder verbs** — the applicant side of the join ceremony —
+//! on a single document endpoint, routed by the document's own `type`. Those are
+//! addressed to a community, not to a URL, so they travel over HTTPS, a mediated
+//! DIDComm session or TSP without changing. Build the client with
+//! `VtcClient::connect_didcomm` or `VtcClient::connect_tsp` (features
+//! `didcomm` / `tsp`) and they go over the session; build it any other way and
+//! they go over HTTPS.
+//!
+//! The **admin verbs** cannot. Each is gated on a bearer token *and* a per-route
+//! `Trust-Task` header, which is a URL-shaped surface; a session-only client
+//! answers them with [`VtcError::NoRestTransport`] rather than failing obscurely.
+//!
+//! The session transports are **delegated to `vta_sdk::client::VtaClient`**,
+//! which already owns session setup, `thid` demultiplexing, retry under one
+//! idempotency key and reply-proof verification. A second copy of that here
+//! would be a second thing to keep correct.
+//!
+//! ## Any DID method can be the holder
+//!
+//! [`VtcClient::submit_join_as`] takes a [`HolderKey`] and so signs as any DID
+//! method; [`VtcClient::submit_join`] is the `did:key` convenience wrapper over
+//! it. Over a session the question does not arise at all — the envelope proves
+//! the sender and the VTC never reads a document proof.
+//!
+//! This matters because a persona minted by a VTA is a `did:webvh`. A client
+//! that could sign only as a `did:key` made every such holder borrow an identity
+//! it does not otherwise use, and the borrowed one is the DID that would have
+//! become the member.
 //!
 //! It is deliberately thin: authentication reuses
 //! [`vta_sdk::auth_light::challenge_response_light`] (the challenge-response
@@ -33,11 +64,26 @@
 //!
 //! Authentication, the member roster, the admin join queue, removal, policy,
 //! and the applicant side of the join ceremony
-//! ([`VtcClient::submit_join`], which signs its own document and needs no
-//! token).
+//! ([`VtcClient::submit_join`] / [`VtcClient::submit_join_as`], which sign
+//! their own document and need no token).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+/// Re-exported so a caller can name the holder key without also depending on
+/// `vta-sdk` directly. A VTC client that has to reach past this crate for the
+/// type its own method takes is a client with a seam in it.
+pub use vta_sdk::trust_task_sign::HolderKey;
+
+/// Round-trip budget for a holder verb sent over a session, in seconds.
+///
+/// A join submit is not a local read: the community evaluates its policy and,
+/// on auto-admit, issues a VMC and a role VEC before it answers. The HTTPS path
+/// inherits `reqwest`'s own timeout; this is the session path's equivalent, and
+/// it exists at all because a call with no finite bound turns a community that
+/// has stopped answering into a client that never returns.
+#[cfg(feature = "didcomm")]
+const SESSION_TIMEOUT_SECS: u64 = 60;
 
 /// The `Trust-Task` URL each route this client calls is gated on, as declared
 /// in `vtc-service/src/routes/mod.rs`.
@@ -89,10 +135,28 @@ pub enum VtcError {
     /// replacement for it. Carries what to use instead.
     #[error("unsupported by this client: {0}")]
     Unsupported(&'static str),
-    /// Building or signing a holder Trust Task failed — e.g. a non-`did:key`
-    /// applicant, or an undecodable private key.
+    /// Building or signing a holder Trust Task failed — e.g. an applicant DID
+    /// that is not a `did:key` passed to the `did:key` convenience wrapper, a
+    /// verification method with no fragment, or an undecodable private key.
     #[error("could not sign the request document: {0}")]
     Signing(String),
+    /// Opening or using a messaging session to the VTC failed.
+    ///
+    /// Distinct from [`Transport`](Self::Transport), which is HTTPS: a mediator
+    /// that will not route and a URL that will not resolve are different
+    /// faults with different fixes, and one error that covered both would send
+    /// the reader to the wrong half of the system.
+    #[error("session transport error: {0}")]
+    Session(String),
+    /// A verb that only exists on the HTTPS surface was called on a client
+    /// built with no REST base.
+    ///
+    /// The admin verbs are gated on a bearer token *and* a per-route
+    /// `Trust-Task` header, which is a URL-shaped surface — they cannot ride a
+    /// session. Rather than fail at the transport with something obscure, say
+    /// so: pass `rest_url` to the `connect_*` constructor.
+    #[error("this client has no REST base — {0} needs one; pass rest_url when connecting")]
+    NoRestTransport(&'static str),
 }
 
 /// A single member of the community, as returned by `GET /members`. Mirrors the
@@ -180,7 +244,7 @@ pub struct RemoveResult {
 
 /// A client bound to one VTC's API base, holding a bearer token once
 /// authenticated.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct VtcClient {
     http: reqwest::Client,
     /// The VTC API base, including the mount (e.g. `https://vtc.example.com/v1`),
@@ -190,6 +254,45 @@ pub struct VtcClient {
     vtc_did: String,
     /// Bearer access token, set after [`connect`](Self::connect).
     token: Option<String>,
+    /// A messaging session to the VTC, when this client has one.
+    ///
+    /// Present only on a client built by [`connect_didcomm`](Self::connect_didcomm)
+    /// or [`connect_tsp`](Self::connect_tsp). When it is set, the **holder
+    /// verbs** — the ones the VTC routes by document `type` rather than by URL —
+    /// go over it instead of to `POST {base}/trust-tasks`. The admin verbs keep
+    /// using HTTPS regardless: they are gated on a bearer token and a
+    /// `Trust-Task` header, which is a URL-shaped surface.
+    ///
+    /// A `VtaClient` rather than a session of our own, and the name is the only
+    /// awkward part: that type is the SDK's *Trust-Task* client and the peer it
+    /// addresses is whatever DID it was connected to. Pointing it at a VTC gets
+    /// session setup, `thid` demultiplexing, retry under one idempotency key and
+    /// reply-proof verification for free — four things this crate would
+    /// otherwise own a second, drifting copy of.
+    #[cfg(feature = "didcomm")]
+    documents: Option<vta_sdk::client::VtaClient>,
+}
+
+/// Written by hand rather than derived, for two reasons.
+///
+/// The first is required: [`vta_sdk::client::VtaClient`] is not `Debug`, so a
+/// derive stops compiling the moment a session is held.
+///
+/// The second is the one worth keeping. The derive printed `token` — the bearer
+/// token, in full, into anything that formatted this struct: a `tracing` field,
+/// a test failure, an `unwrap` on an enclosing type. A credential that reaches a
+/// log is a credential that has left, and nothing about the derive said so. The
+/// presence of a token is worth reporting; its value never is.
+impl std::fmt::Debug for VtcClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut out = f.debug_struct("VtcClient");
+        out.field("base_url", &self.base_url)
+            .field("vtc_did", &self.vtc_did)
+            .field("authenticated", &self.token.is_some());
+        #[cfg(feature = "didcomm")]
+        out.field("session", &self.documents.is_some());
+        out.finish()
+    }
 }
 
 impl VtcClient {
@@ -221,6 +324,8 @@ impl VtcClient {
             base_url,
             vtc_did: vtc_did.to_string(),
             token: Some(auth.access_token),
+            #[cfg(feature = "didcomm")]
+            documents: None,
         })
     }
 
@@ -232,6 +337,8 @@ impl VtcClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             vtc_did: vtc_did.to_string(),
             token: Some(token.into()),
+            #[cfg(feature = "didcomm")]
+            documents: None,
         }
     }
 
@@ -252,6 +359,90 @@ impl VtcClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             vtc_did: vtc_did.to_string(),
             token: None,
+            #[cfg(feature = "didcomm")]
+            documents: None,
+        }
+    }
+
+    /// Reach the VTC over a mediated **DIDComm** session rather than a URL.
+    ///
+    /// `client_did` is the identity the holder verbs will be attributed to —
+    /// for a persona minted by a VTA, its `did:webvh`. It may be any DID method:
+    /// over a session the VTC takes the *authcrypt sender* as the proven holder
+    /// and never looks at a document proof, so nothing here has to be a
+    /// `did:key` (`vtc-service/src/trust_tasks/mod.rs::resolve_holder` short-
+    /// circuits on `sender_did`).
+    ///
+    /// `rest_url` is the HTTPS base, and stays optional but useful: the admin
+    /// verbs are token-and-header gated on a URL surface and cannot ride a
+    /// session, so a client built with `None` here answers them with
+    /// [`VtcError::NoRestTransport`]. Passing the base gives one client that can
+    /// do both.
+    #[cfg(feature = "didcomm")]
+    pub async fn connect_didcomm(
+        client_did: &str,
+        private_key_multibase: &str,
+        vtc_did: &str,
+        mediator_did: &str,
+        rest_url: Option<&str>,
+    ) -> Result<Self, VtcError> {
+        let documents = vta_sdk::client::VtaClient::connect_didcomm(
+            client_did,
+            private_key_multibase,
+            vtc_did,
+            mediator_did,
+            None,
+        )
+        .await
+        .map_err(|e| VtcError::Session(e.to_string()))?;
+        Ok(Self::over_session(documents, vtc_did, rest_url))
+    }
+
+    /// The same, over **TSP**, for a community that advertises `#tsp`.
+    ///
+    /// A separate constructor rather than a flag because the choice is the
+    /// community's, not the caller's: a VTC that does not advertise `#tsp`
+    /// cannot answer here, and the caller is expected to have discovered that
+    /// before choosing. The ceremony is identical either way — the same Trust
+    /// Task document, addressed to the same audience — so this changes the wire
+    /// and nothing else.
+    #[cfg(feature = "tsp")]
+    pub async fn connect_tsp(
+        client_did: &str,
+        private_key_multibase: &str,
+        vtc_did: &str,
+        mediator_did: &str,
+        rest_url: Option<&str>,
+    ) -> Result<Self, VtcError> {
+        let documents = vta_sdk::client::VtaClient::connect_tsp(
+            client_did,
+            private_key_multibase,
+            vtc_did,
+            mediator_did,
+            None,
+        )
+        .await
+        .map_err(|e| VtcError::Session(e.to_string()))?;
+        Ok(Self::over_session(documents, vtc_did, rest_url))
+    }
+
+    /// Wrap a connected session. One place to build the pairing, so a further
+    /// `connect_*` variant cannot forget the REST half.
+    #[cfg(feature = "didcomm")]
+    fn over_session(
+        documents: vta_sdk::client::VtaClient,
+        vtc_did: &str,
+        rest_url: Option<&str>,
+    ) -> Self {
+        Self {
+            http: vta_sdk::http::rest_client(),
+            base_url: rest_url
+                .unwrap_or_default()
+                .trim_end_matches('/')
+                .to_string(),
+            vtc_did: vtc_did.to_string(),
+            token: None,
+            documents: Some(documents),
         }
     }
 
@@ -273,6 +464,14 @@ impl VtcClient {
         url: impl reqwest::IntoUrl,
         task: &str,
     ) -> Result<reqwest::RequestBuilder, VtcError> {
+        // Said here rather than at each call site, because every admin verb
+        // reaches the URL surface through this one helper. A client built for a
+        // session and given no REST base would otherwise request against an
+        // empty base and fail as a malformed URL — a fault that reads as a bug
+        // in this crate rather than as a missing argument at the constructor.
+        if self.base_url.is_empty() {
+            return Err(VtcError::NoRestTransport("this verb"));
+        }
         let token = self.token()?;
         Ok(self
             .http
@@ -474,11 +673,19 @@ impl VtcClient {
     /// [`connect`](Self::connect) nor [`with_token`](Self::with_token) — an
     /// applicant is by definition not yet a member.
     ///
-    /// `applicant_did` must be a `did:key` (the server's proof resolver accepts
-    /// no other method) whose seed is `private_key_multibase`. It is the DID
-    /// that becomes the member on admission, *not* whatever identity this client
-    /// may hold a token for — a fleet manager submitting on behalf of a VTA
-    /// signs with that VTA's key.
+    /// `applicant_did` is a `did:key` whose seed is `private_key_multibase`. It
+    /// is the DID that becomes the member on admission, *not* whatever identity
+    /// this client may hold a token for — a fleet manager submitting on behalf
+    /// of a VTA signs with that VTA's key.
+    ///
+    /// **A holder on any other DID method uses
+    /// [`submit_join_as`](Self::submit_join_as).** This method's `did:key`
+    /// restriction is a property of *this signature* — it derives the
+    /// verification method from the identifier — and not of the server, which
+    /// resolves the proof's `verificationMethod` through a DID resolver and has
+    /// accepted `did:webvh` since the vm-resolver work. A `did:webvh` persona is
+    /// the normal case for a holder minted by a VTA, so it must not have to
+    /// borrow a `did:key` to join.
     ///
     /// The document is addressed to [`vtc_did`](Self::vtc_did) (SPEC §4.8.2
     /// audience binding), so a signed submit captured from one community cannot
@@ -498,13 +705,57 @@ impl VtcClient {
         applicant_did: &str,
         private_key_multibase: &str,
     ) -> Result<join_requests::VerdictResponse, VtcError> {
+        let key = HolderKey::from_did_key(applicant_did, private_key_multibase)
+            .map_err(|e| VtcError::Signing(e.to_string()))?;
+        self.submit_join_as(body, &key).await
+    }
+
+    /// Submit a join request signed by a holder of **any** DID method.
+    ///
+    /// The general form of [`submit_join`](Self::submit_join), which is now a
+    /// `did:key` convenience wrapper over it. Everything that method's
+    /// documentation says about tokens, audience binding and which DID becomes
+    /// the member applies here unchanged; the only difference is that the
+    /// verification method is named rather than derived.
+    ///
+    /// A [`HolderKey`] names the verification method the proof will carry — for
+    /// a `did:webvh` persona, `did:webvh:<scid>:example.com:glenn#key-0`. The
+    /// server takes that method's DID as the applicant, so the key must be one
+    /// the holder's *published document* names: a proof this client signs
+    /// happily is still refused if the document does not carry the method.
+    pub async fn submit_join_as(
+        &self,
+        body: &join_requests::JoinRequestSubmitBody,
+        key: &HolderKey,
+    ) -> Result<join_requests::VerdictResponse, VtcError> {
         let payload = serde_json::to_value(body)
             .map_err(|e| VtcError::Url(format!("serialise submit payload: {e}")))?;
-        let doc = vta_sdk::trust_task_sign::build_signed(
+
+        // Over a session the envelope proves the sender, so the VTC never reads
+        // a document proof and the holder key is not needed at all — see
+        // `resolve_holder`, which short-circuits on `sender_did`. The document
+        // still carries its audience binding, which is what stops a submit
+        // captured from one community being replayed into another.
+        #[cfg(feature = "didcomm")]
+        if let Some(documents) = &self.documents {
+            let value = documents
+                .dispatch_trust_task(
+                    join_requests::JOIN_REQUEST_SUBMIT_TYPE,
+                    payload,
+                    SESSION_TIMEOUT_SECS,
+                )
+                .await
+                .map_err(|e| VtcError::Session(e.to_string()))?;
+            return serde_json::from_value(value).map_err(|e| VtcError::Http {
+                status: 200,
+                body: format!("unexpected submit verdict: {e}"),
+            });
+        }
+
+        let doc = vta_sdk::trust_task_sign::build_signed_with(
             join_requests::JOIN_REQUEST_SUBMIT_TYPE,
             payload,
-            applicant_did,
-            private_key_multibase,
+            key,
             &self.vtc_did,
         )
         .await
@@ -659,6 +910,84 @@ impl VtcClient {
 mod tests {
     use super::*;
 
+    /// A holder on any DID method can name its verification method, which is
+    /// the whole point of the general submit path.
+    ///
+    /// A `did:webvh` persona is what a VTA actually mints, so a client that
+    /// could only sign as a `did:key` forced every such holder to borrow an
+    /// identity it does not otherwise use — and the borrowed one is the DID
+    /// that would have become the member.
+    #[test]
+    fn a_holder_key_names_any_did_method() {
+        let webvh = HolderKey::new(
+            "did:webvh:QmScid:example.com:glenn#key-0",
+            "z3u2en7t5LR2WtQH5PfFqMqwVHBeXouLzo6haApm8XHqvjxq",
+        )
+        .expect("a did:webvh verification method is a verification method");
+        assert_eq!(webvh.holder_did(), "did:webvh:QmScid:example.com:glenn");
+
+        // …and the `did:key` wrapper still derives its own, so the common case
+        // keeps its shorter call.
+        let key = HolderKey::from_did_key(
+            "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG",
+            "z3u2en7t5LR2WtQH5PfFqMqwVHBeXouLzo6haApm8XHqvjxq",
+        )
+        .expect("a did:key derives its verification method");
+        assert!(key.verification_method().starts_with("did:key:"));
+    }
+
+    /// A verification method with no fragment names no key, and is refused at
+    /// construction rather than producing a proof nothing can resolve.
+    #[test]
+    fn a_did_without_a_fragment_is_not_a_verification_method() {
+        assert!(HolderKey::new("did:webvh:QmScid:example.com:glenn", "z3u2").is_err());
+    }
+
+    /// The admin verbs say which argument is missing rather than failing as a
+    /// malformed URL.
+    ///
+    /// A session-only client has no REST base, and every admin verb reaches the
+    /// URL surface through `tt`. Without this the request is built against an
+    /// empty base and the error reads as a bug in this crate rather than as a
+    /// constructor that was not given `rest_url`.
+    #[test]
+    fn an_admin_verb_without_a_rest_base_says_so() {
+        let client = VtcClient {
+            http: vta_sdk::http::rest_client(),
+            base_url: String::new(),
+            vtc_did: "did:webvh:QmScid:example.com:acme".to_string(),
+            token: Some("t".to_string()),
+            #[cfg(feature = "didcomm")]
+            documents: None,
+        };
+        let err = client
+            .tt(reqwest::Method::GET, "http://x/members", task::MEMBERS_LIST)
+            .expect_err("no REST base means no admin verb");
+        assert!(
+            matches!(err, VtcError::NoRestTransport(_)),
+            "expected a missing-transport error, got {err:?}"
+        );
+    }
+
+    /// `Debug` never prints the bearer token.
+    ///
+    /// The derive did. A credential that reaches a log has left, and the only
+    /// thing worth reporting is whether one is held.
+    #[test]
+    fn debug_does_not_leak_the_token() {
+        let client = VtcClient::with_token(
+            "https://vtc.example.com/v1",
+            "did:webvh:QmScid:example.com:acme",
+            "super-secret-bearer-token",
+        );
+        let rendered = format!("{client:?}");
+        assert!(
+            !rendered.contains("super-secret-bearer-token"),
+            "the token is in Debug output: {rendered}"
+        );
+        assert!(rendered.contains("authenticated: true"), "{rendered}");
+    }
+
     #[test]
     fn member_page_deserializes_from_vtc_shape() {
         // A `Paginated<MemberResponse>` as the VTC serialises it (extra fields
@@ -697,6 +1026,8 @@ mod tests {
             base_url: "https://vtc.example.com/v1".into(),
             vtc_did: "did:web:vtc.example.com".into(),
             token: None,
+            #[cfg(feature = "didcomm")]
+            documents: None,
         };
         // The token guard returns before any network I/O.
         let err = client.list_members(None).await;
@@ -747,6 +1078,8 @@ mod tests {
             base_url: "https://vtc.example.com/v1".into(),
             vtc_did: "did:web:vtc.example.com".into(),
             token: None,
+            #[cfg(feature = "didcomm")]
+            documents: None,
         };
         assert!(matches!(
             client.list_join_requests(Some("pending")).await,
@@ -784,6 +1117,8 @@ mod tests {
             base_url: "https://vtc.example.com/v1".into(),
             vtc_did: "did:web:vtc.example.com".into(),
             token: None,
+            #[cfg(feature = "didcomm")]
+            documents: None,
         };
         assert!(matches!(
             client.list_policies().await,
