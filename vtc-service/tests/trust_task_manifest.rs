@@ -463,7 +463,7 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        7,
+        6,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
@@ -501,10 +501,17 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
          dtgwg-trust-tasks-tf#347 and served here by the move to trust-tasks-rs 0.17.7 — the \
          same mechanism as the 22 above it, and the same move retired all six from \
          UNSPECCED_DISPATCHED_URIS into real conformance witnesses. What is left is the seeds \
-         and attestation families and the vault secrets lifecycle. `vta/seeds/*` is the one \
-         entry here that should never leave by the first route: it returns key material, the \
-         browser extension bans its URIs from every bundle it ships, and a spec would not \
-         change either fact",
+         and attestation families and the vault secrets lifecycle. 7 -> 6 is a third \
+         mechanism, and worth telling apart from the two above it. \
+         `vta/seeds/export-mnemonic/1.0` neither gained a spec at this authority nor was \
+         simply deleted: the operation MOVED to `keys/export-secret/0.1` on the canonical \
+         authority, specified upstream as dtgwg-trust-tasks-tf#446, and the `vta/` URI was \
+         retired behind it. That is the right route for this one precisely because the note \
+         below is right — a `vta/seeds/*` URI returning key material should never gain a spec \
+         under that name. It exported no seed and no mnemonic; it was a per-key secret export \
+         wearing the name of what it was migrated from, and moving it to the keys family is \
+         what let it be specified honestly. The `vta/seeds/*` entries that remain are \
+         list and rotate, and the note still holds for them",
     ),
 ];
 
