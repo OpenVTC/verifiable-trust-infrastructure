@@ -448,25 +448,9 @@ pub(super) async fn handle_backfill(
         Err(resp) => return resp,
     };
 
-    let vta_did = match state.config.read().await.vta_did.clone() {
-        Some(d) => d,
-        None => {
-            return app_error_to_reject(
-                &doc,
-                vti_common::error::AppError::Validation(
-                    "this agent has no DID of its own, so it cannot present to a host as itself"
-                        .into(),
-                ),
-            );
-        }
-    };
-    let Some(resolver) = state.did_resolver.clone() else {
-        return app_error_to_reject(
-            &doc,
-            vti_common::error::AppError::Validation(
-                "this agent has no DID resolver configured, so it cannot find the host".into(),
-            ),
-        );
+    let (vta_did, resolver) = match outbound_identity(state, &doc).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
     };
 
     // `read`, and only `read`. Reading the room and reading the parts of it
@@ -552,6 +536,380 @@ pub(super) async fn handle_backfill(
             "earliestReadableEpoch": earliest,
             "fetched": fetched,
             "stored": stored,
+        }),
+    )
+}
+
+/// This agent's own DID and a resolver, or the refusal that says which is missing.
+///
+/// Every task in this family that acts **outward** needs both: it presents as
+/// itself, and it has to find the host it was told to speak to. Extracted when
+/// the third caller appeared — `backfill`, `read` and `browse` refusing in three
+/// slightly different sentences would be three chances for one of them to say
+/// something untrue about why.
+async fn outbound_identity(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+) -> Result<(String, affinidi_did_resolver_cache_sdk::DIDCacheClient), TrustTaskOutcome> {
+    let Some(vta_did) = state.config.read().await.vta_did.clone() else {
+        return Err(app_error_to_reject(
+            doc,
+            vti_common::error::AppError::Validation(
+                "this agent has no DID of its own, so it cannot present to a host as itself".into(),
+            ),
+        ));
+    };
+    let Some(resolver) = state.did_resolver.clone() else {
+        return Err(app_error_to_reject(
+            doc,
+            vti_common::error::AppError::Validation(
+                "this agent has no DID resolver configured, so it cannot find the host".into(),
+            ),
+        ));
+    };
+    Ok((vta_did, resolver))
+}
+
+/// The three values a host asserts about a room, as this agent passes them on.
+///
+/// All three or none: a root without the state it describes is not comparable
+/// to another root, which is the whole of `headVersion` — see
+/// `trust-tasks-tf#422`.
+fn head_of(
+    commitment: Option<&String>,
+    record_count: Option<u64>,
+    head_version: Option<u64>,
+) -> Option<Value> {
+    match (commitment, record_count, head_version) {
+        (Some(c), Some(n), Some(v)) => Some(serde_json::json!({
+            "dataCommitment": c,
+            "recordCount": n,
+            "headVersion": v,
+        })),
+        _ => None,
+    }
+}
+
+/// Replay a record's trace against the commitment served **beside it**.
+///
+/// The leaf preimage is the response payload with its verification members
+/// removed, which is exactly `CommittedRecord` — so this hashes what it was
+/// given rather than reconstructing anything, and a reader that cannot reach the
+/// leaf has been served a record that does not match what the host committed to.
+///
+/// Never a root from an earlier read. A trace is a statement about the tree it
+/// was cut from, and a room moves.
+fn verify_trace(reply: &vti_rooms::wire::GetRecordResponse) -> &'static str {
+    let (Some(commitment), Some(trace)) = (&reply.data_commitment, &reply.trace) else {
+        // A host that maintains no tree must not invent a root, so its silence
+        // is legal and informative rather than a failure.
+        return "notOffered";
+    };
+    let Ok(root) = vti_rooms::merkle::from_multibase(commitment) else {
+        return "failed";
+    };
+    let Ok(leaf) = vti_rooms::merkle::leaf_hash(&reply.record) else {
+        return "failed";
+    };
+    if vti_rooms::merkle::verify_inclusion(&root, &leaf, trace) {
+        "verified"
+    } else {
+        "failed"
+    }
+}
+
+/// `rooms/keys/read/0.1`.
+///
+/// Mint the presentation, ask the host, check what came back, open it. The
+/// fourth act is why the other three are here: the epoch key never leaves this
+/// agent, so a surface that fetched the record itself would come back to open
+/// it anyway, holding a half-verified record in between.
+pub(super) async fn handle_read(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(r) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::RoomOpen,
+        "reading a room record",
+    )
+    .await
+    {
+        return r;
+    }
+
+    let req: trust_tasks_rs::specs::rooms::keys::read::v0_1::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let (vta_did, resolver) = match outbound_identity(state, &doc).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+
+    // `read`, and only `read`. The caller-named host is not bound into the
+    // presentation: what makes naming one safe is that the leaf grants to
+    // `vta_did`, so a host of the caller's choosing receives something only this
+    // agent can act with. What it gains is sight of the credentials, which is a
+    // disclosure rather than an escalation.
+    let minted =
+        match crate::operations::room_oracle::present(state, auth, &vta_did, &req.room_id, "read")
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
+
+    let key = format!("{vta_did}#key-0");
+    let reply = match crate::operations::room_host::send_room_task(
+        signing_context(state, auth),
+        &resolver,
+        &req.host,
+        &key,
+        &vta_did,
+        &key,
+        vti_rooms::wire::ROOMS_RECORDS_GET_TYPE,
+        &format!("{}#response", vti_rooms::wire::ROOMS_RECORDS_GET_TYPE),
+        serde_json::json!({
+            "roomId": req.room_id,
+            "key": req.key,
+            "presentation": minted.presentation,
+        }),
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    // `send_room_task` has already verified the reply's proof AND bound the
+    // proven signer to the host that was addressed — a proof that verifies
+    // against some other party is a reply from somebody else.
+    let served: vti_rooms::wire::GetRecordResponse = match serde_json::from_value(reply) {
+        Ok(r) => r,
+        Err(e) => {
+            return app_error_to_reject(
+                &doc,
+                vti_common::error::AppError::Internal(format!(
+                    "room host `{}` served a record this agent cannot read: {e}",
+                    req.host
+                )),
+            );
+        }
+    };
+
+    let trace = verify_trace(&served);
+
+    // Opened here or nowhere. A tombstone has no body and that is an answer
+    // rather than a failure: the record's standing is what the caller asked for.
+    let mut payload = serde_json::json!({
+        "roomId": req.room_id,
+        "key": served.record.key,
+        "version": served.record.version,
+        "status": served.record.status,
+        "updatedAt": served.record.updated_at,
+        "verification": {
+            "trace": trace,
+            // Until this agent keeps a root history there is nothing to compare
+            // against, and saying so is not the same as saying nothing was
+            // found. `notChecked` is the honest answer.
+            "priorRoots": "notChecked",
+        },
+    });
+    if let Some(author) = &served.record.author {
+        payload["author"] = serde_json::json!(author);
+    }
+    if let Some(head) = head_of(
+        served.data_commitment.as_ref(),
+        served.record_count,
+        served.head_version,
+    ) {
+        payload["verification"]["head"] = head;
+    }
+
+    if let Some(sealed) = &served.record.sealed {
+        let plaintext = match room_groups::open_record(
+            &state.room_groups_ks,
+            &req.room_id,
+            &served.record.key,
+            served.record.version,
+            &sealed.ciphertext,
+            &sealed.nonce,
+            sealed.epoch,
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
+        payload["plaintext"] = serde_json::json!(plaintext);
+    } else if let Some(cleartext) = &served.record.cleartext {
+        payload["cleartext"] = cleartext.clone();
+    }
+
+    record(state, "rooms.keys.read", auth, &req.room_id).await;
+    success_response(&doc, payload)
+}
+
+/// `rooms/keys/browse/0.1`.
+///
+/// Metadata, never bodies — a property of the task rather than of the tier, and
+/// why browsing and reading are two: looking at a room's shelf should not
+/// decrypt the room.
+pub(super) async fn handle_browse(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(r) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::RoomOpen,
+        "listing a room's records",
+    )
+    .await
+    {
+        return r;
+    }
+
+    let req: trust_tasks_rs::specs::rooms::keys::browse::v0_1::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let (vta_did, resolver) = match outbound_identity(state, &doc).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+
+    let minted =
+        match crate::operations::room_oracle::present(state, auth, &vta_did, &req.room_id, "read")
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
+
+    let key = format!("{vta_did}#key-0");
+    let mut records: Vec<Value> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut head: Option<Value> = None;
+    let mut complete = false;
+    // A listing is read to its END, and absence of the cursor is the only thing
+    // that says so. A short page says nothing — which is exactly why the count
+    // check below is conditioned on having reached the end.
+    const MAX_PAGES: usize = 64;
+    for page in 0..MAX_PAGES {
+        let mut payload = serde_json::json!({
+            "roomId": req.room_id,
+            "presentation": minted.presentation,
+        });
+        if let Some(p) = &req.prefix {
+            payload["prefix"] = serde_json::json!(p);
+        }
+        if let Some(v) = req.since_version {
+            payload["sinceVersion"] = serde_json::json!(v);
+        }
+        if let Some(l) = req.limit {
+            payload["limit"] = serde_json::json!(u64::from(l));
+        }
+        if let Some(c) = &cursor {
+            payload["cursor"] = serde_json::json!(c);
+        }
+
+        let reply = match crate::operations::room_host::send_room_task(
+            signing_context(state, auth),
+            &resolver,
+            &req.host,
+            &key,
+            &vta_did,
+            &key,
+            vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE,
+            &format!("{}#response", vti_rooms::wire::ROOMS_RECORDS_LIST_TYPE),
+            payload,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => return app_error_to_reject(&doc, e),
+        };
+
+        let listing: vti_rooms::wire::ListRecordsResponse = match serde_json::from_value(reply) {
+            Ok(l) => l,
+            Err(e) => {
+                return app_error_to_reject(
+                    &doc,
+                    vti_common::error::AppError::Internal(format!(
+                        "room host `{}` served a listing this agent cannot read: {e}",
+                        req.host
+                    )),
+                );
+            }
+        };
+
+        // The head is the LAST page's, because that is the snapshot the caller's
+        // view ends at. Taking the first page's would label a set the agent went
+        // on to extend.
+        head = head_of(
+            listing.data_commitment.as_ref(),
+            listing.record_count,
+            listing.head_version,
+        );
+        records.extend(listing.records);
+
+        match listing.cursor {
+            Some(next) => cursor = Some(next),
+            None => {
+                complete = true;
+                break;
+            }
+        }
+        // Stopping of this agent's own accord is not the end of the listing, and
+        // saying otherwise would turn a page bound into a withheld record.
+        if page + 1 == MAX_PAGES {
+            break;
+        }
+    }
+
+    // The one check a listing can make with no anchor and no second party — and
+    // it is only meaningful against a complete, unfiltered listing. Anything
+    // else legitimately holds fewer, and comparing it is a discrepancy the
+    // reader manufactured.
+    let filtered = req.prefix.is_some() || req.since_version.is_some();
+    let count = match (&head, complete, filtered) {
+        (None, _, _) => "notOffered",
+        (Some(_), false, _) | (Some(_), _, true) => "notComparable",
+        (Some(h), true, false) => {
+            let committed = h["recordCount"].as_u64().unwrap_or_default();
+            if records.len() as u64 == committed {
+                "agrees"
+            } else {
+                "short"
+            }
+        }
+    };
+
+    let mut verification = serde_json::json!({
+        "priorRoots": "notChecked",
+        "count": count,
+    });
+    if let Some(h) = head {
+        verification["head"] = h;
+    }
+
+    record(state, "rooms.keys.browse", auth, &req.room_id).await;
+    success_response(
+        &doc,
+        serde_json::json!({
+            "roomId": req.room_id,
+            "records": records,
+            "complete": complete,
+            "verification": verification,
         }),
     )
 }
@@ -672,5 +1030,88 @@ pub(super) async fn record(state: &AppState, action: &str, auth: &AuthClaims, ro
     .await
     {
         tracing::error!(error = %e, action, "failed to record a room-group audit entry");
+    }
+}
+
+#[cfg(test)]
+mod verification_tests {
+    use super::*;
+    use vti_rooms::{Record, RecordStatus};
+
+    fn room() -> Vec<Record> {
+        ["a", "b", "c"]
+            .iter()
+            .enumerate()
+            .map(|(i, key)| Record {
+                key: (*key).into(),
+                version: i as u64 + 1,
+                epoch: Some(2),
+                status: RecordStatus::Active,
+                pinned: false,
+                sealed: Some("c2VhbGVkLWJvZHk".into()),
+                nonce: Some("bm9uY2UtMTI".into()),
+                cleartext: None,
+                author: None,
+                updated_at: 1_756_000_000,
+            })
+            .collect()
+    }
+
+    /// A host that serves a real trace is believed, and one that serves a bad
+    /// one is not — checked from the response alone, which is all the agent has.
+    #[test]
+    fn a_trace_is_replayed_against_the_root_served_beside_it() {
+        let mut records = room();
+        let head = vti_rooms::merkle::tree_head(&mut records).expect("commits");
+        let leaves: Vec<_> = records
+            .iter()
+            .map(|r| vti_rooms::merkle::leaf_hash(&r.committed()).expect("hashes"))
+            .collect();
+        let trace = vti_rooms::merkle::inclusion_proof(&leaves, 1).expect("a trace");
+
+        let good = vti_rooms::wire::GetRecordResponse::of(&records[1], Some(&head), Some(trace));
+        assert_eq!(verify_trace(&good), "verified");
+
+        // The same trace against a different record. The arithmetic does not
+        // close, and this is the case a host that substitutes a record produces.
+        let wrong = vti_rooms::wire::GetRecordResponse {
+            record: records[0].committed(),
+            ..good.clone()
+        };
+        assert_eq!(verify_trace(&wrong), "failed");
+    }
+
+    /// A host that maintains no tree is legal, and its silence is not a failure.
+    ///
+    /// The distinction matters because the two would otherwise be rendered the
+    /// same: a member told "unverified" for a host that never claimed anything
+    /// learns nothing, while one told "notOffered" has learned that this host
+    /// offers no completeness guarantee — which is true, and theirs to act on.
+    #[test]
+    fn a_host_that_offers_no_tree_is_not_a_host_that_failed() {
+        let records = room();
+        let bare = vti_rooms::wire::GetRecordResponse::of(&records[0], None, None);
+        assert_eq!(verify_trace(&bare), "notOffered");
+
+        // A commitment with no trace is the same answer: there is nothing to
+        // replay, and calling that a failure would accuse a host of arithmetic
+        // it never did.
+        let mut records = room();
+        let head = vti_rooms::merkle::tree_head(&mut records).expect("commits");
+        let rootless = vti_rooms::wire::GetRecordResponse::of(&records[0], Some(&head), None);
+        assert_eq!(verify_trace(&rootless), "notOffered");
+    }
+
+    /// The head travels whole or not at all.
+    ///
+    /// A root without the state it describes is not comparable to another root,
+    /// so passing one on alone would hand a member a value that looks like
+    /// evidence and cannot be used as any.
+    #[test]
+    fn a_partial_head_is_no_head() {
+        assert!(head_of(Some(&"zQm…".to_string()), Some(118), Some(412)).is_some());
+        assert!(head_of(Some(&"zQm…".to_string()), None, Some(412)).is_none());
+        assert!(head_of(Some(&"zQm…".to_string()), Some(118), None).is_none());
+        assert!(head_of(None, Some(118), Some(412)).is_none());
     }
 }

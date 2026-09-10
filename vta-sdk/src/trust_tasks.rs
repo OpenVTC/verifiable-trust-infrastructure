@@ -837,6 +837,22 @@ pub const TASK_ROOMS_KEYS_CHAIN_0_1: &str = "https://trusttasks.org/spec/rooms/k
 pub const TASK_ROOMS_KEYS_BACKFILL_0_1: &str =
     "https://trusttasks.org/spec/rooms/keys/backfill/0.1";
 
+/// `spec/rooms/keys/read/0.1` — read one record from a room's host, check what
+/// the host asserted about it, and open it.
+///
+/// Four acts by the only party that can do the fourth: the epoch key never
+/// leaves the key holder, so a surface that fetched the record itself would
+/// still come back here to open it, holding a half-verified record in between.
+/// Auth: `roomOpen` capability.
+pub const TASK_ROOMS_KEYS_READ_0_1: &str = "https://trusttasks.org/spec/rooms/keys/read/0.1";
+
+/// `spec/rooms/keys/browse/0.1` — list a room's records at its host, and check
+/// the listing against what the host committed to.
+///
+/// Never returns bodies; that is a property of the task rather than of the tier,
+/// and is why browsing and reading are two. Auth: `roomOpen` capability.
+pub const TASK_ROOMS_KEYS_BROWSE_0_1: &str = "https://trusttasks.org/spec/rooms/keys/browse/0.1";
+
 /// `spec/rooms/keys/seal/0.1` — seal one record body with the room's current
 /// epoch key. The mirror of `open`: plaintext in, ciphertext out, key stays put.
 /// Auth: `roomOpen` capability. It does not write — the caller takes the result
@@ -1950,6 +1966,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_COMMIT_0_1,
     TASK_ROOMS_KEYS_CHAIN_0_1,
     TASK_ROOMS_KEYS_BACKFILL_0_1,
+    TASK_ROOMS_KEYS_READ_0_1,
+    TASK_ROOMS_KEYS_BROWSE_0_1,
     TASK_ROOMS_KEYS_SEAL_0_1,
     TASK_ROOMS_KEYS_LIST_0_1,
     TASK_ROOMS_OWNER_INVITE_0_1,

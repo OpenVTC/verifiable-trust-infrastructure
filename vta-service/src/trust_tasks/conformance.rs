@@ -2081,6 +2081,71 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_READ_0_1,
+            checked!(
+                specs::rooms::keys::read::v0_1::Payload,
+                specs::rooms::keys::read::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "key": "giXFLTGBdnnQJRoIsktuIg"
+                }),
+                // A verified trace beside a root, which is what a healthy read
+                // looks like — and `priorRoots` is present because an agent that
+                // keeps no history must say so rather than omit the question.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "key": "giXFLTGBdnnQJRoIsktuIg",
+                    "version": 412,
+                    "status": "active",
+                    "updatedAt": "2026-01-01T00:00:00Z",
+                    "plaintext": "eyJ0aXRsZSI6IlByaWNpbmcgaG9sZHMifQ",
+                    "verification": {
+                        "trace": "verified",
+                        "priorRoots": "notChecked",
+                        "head": {
+                            "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                            "recordCount": 118,
+                            "headVersion": 412
+                        }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_BROWSE_0_1,
+            checked!(
+                specs::rooms::keys::browse::v0_1::Payload,
+                specs::rooms::keys::browse::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community"
+                }),
+                // Complete, unfiltered, and the count reconciles — the only
+                // shape in which `count` means anything at all.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "records": [{
+                        "key": "giXFLTGBdnnQJRoIsktuIg",
+                        "version": 412,
+                        "epoch": 7,
+                        "status": "active",
+                        "updatedAt": "2026-01-01T00:00:00Z"
+                    }],
+                    "complete": true,
+                    "verification": {
+                        "priorRoots": "notChecked",
+                        "count": "agrees",
+                        "head": {
+                            "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                            "recordCount": 1,
+                            "headVersion": 412
+                        }
+                    }
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_SEAL_0_1,
             checked!(
                 specs::rooms::keys::seal::v0_1::Payload,

@@ -140,6 +140,14 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // same reason `chain` is — it extends what this agent can decrypt — with the
     // addition that it makes an outbound call to a party the caller names.
     ("rooms/keys/backfill", Risk::Sensitive),
+    // Returns a record's PLAINTEXT — on a sealed tier, material the room
+    // withholds from its own host — after an outbound call to a party the caller
+    // names. Both halves are why this is sensitive; either alone would be.
+    ("rooms/keys/read", Risk::Sensitive),
+    // Metadata only, and still sensitive: it presents the principal's room
+    // credentials to a caller-named host, which on a tier that discloses
+    // subjects names them to it.
+    ("rooms/keys/browse", Risk::Sensitive),
     // Secret material, accepted AND emitted. `seal` takes a record's plaintext and
     // returns it encrypted under the room's key — the one direction in this family
     // where cleartext room material travels INTO the oracle. It belongs beside

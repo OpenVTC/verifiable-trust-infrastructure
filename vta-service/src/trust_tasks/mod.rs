@@ -1824,6 +1824,15 @@ dispatch_table! {
     // only how far back the agent can now read.
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_1 => room_group::handle_backfill
         [ Mutating Metadata true ],
+    // Returns a record's plaintext — on a sealed tier, material the room
+    // withholds from its own host — after presenting the principal's
+    // credentials to a party the caller names.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_1 => room_group::handle_read
+        [ None Secret true ],
+    // Metadata only, and still `actsAsSubject`: the presentation names a member
+    // of the room to the host it is shown to.
+    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_1 => room_group::handle_browse
+        [ None Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_1 => room_group::handle_seal
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_LIST_0_1 => room_group::handle_list
