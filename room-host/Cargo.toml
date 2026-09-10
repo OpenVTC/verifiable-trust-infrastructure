@@ -61,6 +61,9 @@ affinidi-messaging-core = { workspace = true, optional = true }
 # config and the same backends the VTA and VTC take, not in a file this crate
 # invented. See `didcomm::HostIdentity`.
 vti-secrets = { path = "../vti-secrets", version = "0.3", optional = true }
+# The session store behind `onboarding` — which backend is an operator's choice,
+# exactly as `[secrets]` is.
+vta-sdk = { path = "../vta-sdk", version = "0.34", optional = true }
 # Reading the `[secrets]` table out of a config file.
 toml = { workspace = true, optional = true }
 affinidi-secrets-resolver = { workspace = true, optional = true }
@@ -79,6 +82,14 @@ gcp-secrets = ["vti-secrets/gcp-secrets"]
 azure-secrets = ["vti-secrets/azure-secrets"]
 vault-secrets = ["vti-secrets/vault-secrets"]
 k8s-secrets = ["vti-secrets/k8s-secrets"]
+## Enrol with a VTA: ephemeral `did:key` → operator grant → auto-rotate, the flow
+## the mediator, PNM and did-hosting already use. Separate from `didcomm` because
+## a host can be reachable without being governed by any VTA.
+onboarding = ["dep:vti-secrets", "dep:vta-sdk", "vti-secrets/onboarding"]
+## Session storage for the enrolled identity. One is required by `onboarding`, and
+## which one is an operator's decision — the same shape as `[secrets]`.
+config-session = ["vta-sdk/config-session"]
+session-keyring = ["vta-sdk/keyring"]
 ## Serve Trust Tasks over DIDComm and TSP at a mediator, as well as over HTTP.
 ##
 ## Secret backends are opt-in on top, exactly as they are for the VTA and VTC —

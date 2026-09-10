@@ -49,6 +49,10 @@ pub mod mirror;
 #[cfg(feature = "didcomm")]
 pub mod didcomm;
 
+/// Enrolling with a VTA, so a host can serve rooms that VTA governs.
+#[cfg(feature = "onboarding")]
+pub mod onboarding;
+
 use std::sync::Arc;
 
 use axum::body::Bytes;
