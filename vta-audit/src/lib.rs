@@ -19,7 +19,8 @@ use vti_common::store::KeyspaceHandle;
 
 pub mod sink;
 pub use sink::{
-    AuditSink, FanOutAuditSink, KeyspaceAuditSink, SharedAuditSink, shared_keyspace_sink,
+    AUDIT_KEY_CREATED, AuditSink, ChainedKeyspaceAuditSink, FanOutAuditSink, KeyspaceAuditSink,
+    SYSTEM_ACTOR, SharedAuditSink, shared_chained_sink, shared_keyspace_sink,
 };
 
 /// Emit a structured audit event to the tracing subsystem — **a log line, and

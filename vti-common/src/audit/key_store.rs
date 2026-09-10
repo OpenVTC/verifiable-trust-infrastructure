@@ -328,7 +328,10 @@ impl AuditKeyStore {
     }
 
     /// Look up the active marker without raising if it's absent.
-    async fn try_active(&self) -> Result<Option<AuditKey>, AppError> {
+    /// Public so a caller can ask whether a key has been established without
+    /// establishing one — the question a sink asks before deciding whether
+    /// this write is the one that opens the chain.
+    pub async fn try_active(&self) -> Result<Option<AuditKey>, AppError> {
         let id_bytes = match self.ks.get_raw(ACTIVE_MARKER_KEY.to_vec()).await? {
             Some(b) => b,
             None => return Ok(None),

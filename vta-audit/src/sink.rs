@@ -39,6 +39,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use vta_sdk::protocols::audit_management::list::AuditLogEntry;
+use vti_common::audit::event::{AuditEvent, VtaOperationData};
+use vti_common::audit::key_store::AuditKeyStore;
+use vti_common::audit::writer::AuditWriter;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -102,6 +105,140 @@ impl AuditSink for KeyspaceAuditSink {
     }
 }
 
+/// The actor recorded for events the node performs on its own behalf, where
+/// there is no caller to name.
+pub const SYSTEM_ACTOR: &str = "urn:vti:vta:system";
+
+/// The action recorded for the entry that opens a chain.
+pub const AUDIT_KEY_CREATED: &str = "audit.key.created";
+
+/// The `audit` keyspace, written as a hash chain.
+///
+/// Same keyspace and same storage-key format as [`KeyspaceAuditSink`], so the
+/// read and retention paths keep working and rows written before this existed
+/// keep their place in time order. What changes is the value: an envelope that
+/// commits to its predecessor, and that commits to the actor under a keyed
+/// hash so an erasure can remove the plaintext without breaking the chain.
+///
+/// # The first entry
+///
+/// A chain has to start somewhere, and the honest place is the creation of the
+/// key that chains it. The key is established on the first write — there is
+/// nothing to audit before a node can act, and a node cannot act before it has
+/// somewhere to record what it did — so the first entry this sink writes is
+/// the record of that key coming into existence, committing to its id. A
+/// verifier reading from the start learns which key the following entries are
+/// hashed under, from an entry hashed under that same key.
+#[derive(Clone)]
+pub struct ChainedKeyspaceAuditSink {
+    keyspace: KeyspaceHandle,
+    key_store: AuditKeyStore,
+    writer: AuditWriter,
+    /// Runs the establish-key-then-open-the-chain sequence once per process,
+    /// so concurrent first writes cannot both open it.
+    opened: Arc<tokio::sync::OnceCell<()>>,
+}
+
+impl ChainedKeyspaceAuditSink {
+    pub fn new(keyspace: KeyspaceHandle, key_keyspace: KeyspaceHandle) -> Self {
+        let key_store = AuditKeyStore::new(key_keyspace);
+        let writer = AuditWriter::new(keyspace.clone(), key_store.clone())
+            // The keyspace already has an ordering and rows that use it, so
+            // the seconds stay the leading field: the retention sweep compares
+            // keys against `log:{cutoff:020}:` and stops at the first row past
+            // it, and a different leading field would make every chained row
+            // sort past every cutoff and never expire.
+            //
+            // The nanoseconds are the tiebreaker, and they are not optional.
+            // Whole seconds put two entries written in the same second in
+            // uuid order, so a verifier reading the log in key order sees them
+            // out of chain order and reports a break in a chain that is
+            // intact. That is the worst kind of false alarm: it looks exactly
+            // like the thing it exists to detect.
+            .with_storage_key(|env| {
+                format!(
+                    "log:{:020}:{:09}:{}",
+                    env.timestamp.timestamp().max(0),
+                    env.timestamp.timestamp_subsec_nanos(),
+                    env.event_id
+                )
+                .into_bytes()
+            });
+        Self {
+            keyspace,
+            key_store,
+            writer,
+            opened: Arc::new(tokio::sync::OnceCell::new()),
+        }
+    }
+
+    /// The keyspace behind this sink, for the read and retention paths.
+    pub fn keyspace(&self) -> &KeyspaceHandle {
+        &self.keyspace
+    }
+
+    /// Establish the key if there is none, and open the chain with the record
+    /// of its creation. Idempotent within a process and across restarts: a key
+    /// that already exists was already recorded when it was created.
+    async fn ensure_open(&self) -> Result<(), AppError> {
+        let already_established = self.key_store.try_active().await?.is_some();
+        if already_established {
+            return Ok(());
+        }
+
+        let key = self.key_store.ensure_initial_random().await?;
+        self.writer
+            .write(
+                SYSTEM_ACTOR,
+                None,
+                AuditEvent::VtaOperation(VtaOperationData {
+                    action: AUDIT_KEY_CREATED.to_string(),
+                    resource: Some(key.key_id.as_uuid().to_string()),
+                    outcome: "success".to_string(),
+                    channel: None,
+                    context_id: None,
+                    detail: None,
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl AuditSink for ChainedKeyspaceAuditSink {
+    async fn record(&self, entry: &AuditLogEntry) -> Result<(), AppError> {
+        self.opened
+            .get_or_try_init(|| self.ensure_open())
+            .await
+            .map(|_| ())?;
+
+        // A resource that is a DID travels in the envelope's hashed members,
+        // where an erasure can reach it. Anything else — a key id, a session
+        // id, a context path — is not personal data and stays in the event.
+        let (target, resource) = match entry.resource.as_deref() {
+            Some(r) if r.starts_with("did:") => (Some(r), None),
+            other => (None, other),
+        };
+
+        self.writer
+            .write(
+                &entry.actor,
+                target,
+                AuditEvent::VtaOperation(VtaOperationData {
+                    action: entry.action.clone(),
+                    resource: resource.map(str::to_string),
+                    outcome: entry.outcome.clone(),
+                    channel: entry.channel.clone(),
+                    context_id: entry.context_id.clone(),
+                    detail: entry.detail.clone(),
+                }),
+            )
+            .await
+            .map(|_| ())
+    }
+}
+
 /// Build the shared sink every caller should use.
 ///
 /// One construction point, so that changing what a VTA's audit writes is one
@@ -116,6 +253,23 @@ impl AuditSink for KeyspaceAuditSink {
 #[must_use]
 pub fn shared_keyspace_sink(keyspace: KeyspaceHandle) -> SharedAuditSink {
     Arc::new(KeyspaceAuditSink::new(keyspace))
+}
+
+/// Build the shared sink for a caller that can reach the audit-key keyspace —
+/// which is every caller that has the store open, and therefore every caller
+/// that should be using this one.
+///
+/// [`shared_keyspace_sink`] remains for the paths that genuinely cannot: a
+/// test that has only the one keyspace, and any caller holding a handle rather
+/// than a store. What it writes is unchained, and a chain that resumes after
+/// it treats those rows the way it treats rows written before chaining
+/// existed.
+#[must_use]
+pub fn shared_chained_sink(
+    keyspace: KeyspaceHandle,
+    key_keyspace: KeyspaceHandle,
+) -> SharedAuditSink {
+    Arc::new(ChainedKeyspaceAuditSink::new(keyspace, key_keyspace))
 }
 
 /// Write every entry to several sinks.
@@ -253,5 +407,157 @@ mod tests {
         assert!(fan.record(&entry("acl.grant")).await.is_ok());
         assert_eq!(a.seen.lock().unwrap().len(), 1);
         assert_eq!(b.seen.lock().unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod chained_sink_tests {
+    use super::*;
+    use vti_common::audit::verify_chain;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    fn keyspaces() -> (KeyspaceHandle, KeyspaceHandle, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("store");
+        (
+            store.keyspace("audit").expect("audit"),
+            store.keyspace("audit_key").expect("audit_key"),
+            dir,
+        )
+    }
+
+    fn entry(action: &str, actor: &str, resource: Option<&str>) -> AuditLogEntry {
+        AuditLogEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            timestamp: 1_700_000_000,
+            action: action.to_string(),
+            actor: actor.to_string(),
+            resource: resource.map(str::to_string),
+            outcome: "success".to_string(),
+            channel: Some("rest".to_string()),
+            context_id: Some("acme/eng".to_string()),
+            detail: None,
+        }
+    }
+
+    async fn envelopes(ks: &KeyspaceHandle) -> Vec<vti_common::audit::AuditEnvelope> {
+        let pairs = ks.prefix_iter_raw("log:").await.expect("scan");
+        pairs
+            .iter()
+            .filter_map(|(_, v)| serde_json::from_slice(v).ok())
+            .collect()
+    }
+
+    /// The first entry is the creation of the key that chains it, so a
+    /// verifier reading from the start learns which key the entries after it
+    /// are hashed under.
+    #[tokio::test]
+    async fn the_chain_opens_with_the_creation_of_its_own_key() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks);
+
+        sink.record(&entry("auth.challenge", "did:key:z6MkA", None))
+            .await
+            .expect("record");
+
+        let found = envelopes(&audit_ks).await;
+        assert_eq!(
+            found.len(),
+            2,
+            "the key's creation, then the caller's event"
+        );
+
+        let opening = &found[0];
+        match &opening.event {
+            vti_common::audit::event::AuditEvent::VtaOperation(op) => {
+                assert_eq!(op.action, AUDIT_KEY_CREATED);
+                assert_eq!(
+                    op.resource.as_deref(),
+                    Some(opening.audit_key_id.as_uuid().to_string().as_str()),
+                    "the opening entry names the key it is hashed under"
+                );
+            }
+            other => panic!("unexpected opening event: {other:?}"),
+        }
+        assert_eq!(opening.actor_did_plain.as_deref(), Some(SYSTEM_ACTOR));
+    }
+
+    #[tokio::test]
+    async fn writes_chain_to_one_another() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks);
+
+        for action in ["auth.challenge", "acl.create", "keys.sign"] {
+            sink.record(&entry(action, "did:key:z6MkA", None))
+                .await
+                .expect("record");
+        }
+
+        let found = envelopes(&audit_ks).await;
+        assert_eq!(found.len(), 4, "three events plus the opening entry");
+        verify_chain(&found).expect("the log verifies as a chain");
+    }
+
+    /// The key is established once. A restart does not open a second chain.
+    #[tokio::test]
+    async fn a_second_sink_over_the_same_keyspace_continues_the_chain() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+
+        ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks.clone())
+            .record(&entry("auth.challenge", "did:key:z6MkA", None))
+            .await
+            .expect("first sink");
+
+        ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks)
+            .record(&entry("acl.create", "did:key:z6MkB", None))
+            .await
+            .expect("second sink");
+
+        let found = envelopes(&audit_ks).await;
+        assert_eq!(found.len(), 3, "one opening entry, not two");
+        verify_chain(&found).expect("the chain survives the restart");
+    }
+
+    /// A DID-shaped resource travels in the hashed members, where an erasure
+    /// can reach it. Anything else is not personal data and stays put.
+    #[tokio::test]
+    async fn a_did_resource_becomes_a_hashed_target() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks);
+
+        sink.record(&entry(
+            "acl.create",
+            "did:key:zAdmin",
+            Some("did:key:zSubject"),
+        ))
+        .await
+        .expect("did resource");
+        sink.record(&entry("keys.sign", "did:key:zAdmin", Some("key-3f2a")))
+            .await
+            .expect("opaque resource");
+
+        let found = envelopes(&audit_ks).await;
+        let did_row = &found[1];
+        assert_eq!(
+            did_row.target_did_plain.as_deref(),
+            Some("did:key:zSubject")
+        );
+        assert!(did_row.target_did_hash.is_some());
+
+        let key_row = &found[2];
+        assert!(
+            key_row.target_did_plain.is_none(),
+            "a key id is not an identifier to commit to"
+        );
+        match &key_row.event {
+            vti_common::audit::event::AuditEvent::VtaOperation(op) => {
+                assert_eq!(op.resource.as_deref(), Some("key-3f2a"));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }
