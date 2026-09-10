@@ -420,6 +420,7 @@ pub async fn build_app_state(
     let contexts_ks = apply_encryption(store.keyspace(crate::keyspaces::CONTEXTS)?);
     let did_templates_ks = apply_encryption(store.keyspace(crate::keyspaces::DID_TEMPLATES)?);
     let audit_ks = apply_encryption(store.keyspace(crate::keyspaces::AUDIT)?);
+    let audit_key_ks = apply_encryption(store.keyspace(crate::keyspaces::AUDIT_KEY)?);
     let imported_ks = apply_encryption(store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?);
     let internal_ks = apply_encryption(store.keyspace(crate::keyspaces::INTERNAL_KEYS)?);
     let cache_ks = apply_encryption(store.keyspace(crate::keyspaces::CACHE)?);
@@ -519,7 +520,7 @@ pub async fn build_app_state(
     // because reads and retention deliberately do not route through the sink.
     let audit_sink: vta_audit::SharedAuditSink = parts
         .audit_sink
-        .unwrap_or_else(|| vta_audit::shared_keyspace_sink(audit_ks.clone()));
+        .unwrap_or_else(|| vta_audit::shared_chained_sink(audit_ks.clone(), audit_key_ks.clone()));
 
     Ok(AppState {
         keys_ks,
@@ -845,6 +846,7 @@ pub async fn run(
         let sessions_ks = apply_encryption(store.keyspace(crate::keyspaces::SESSIONS)?);
         let acl_ks = apply_encryption(store.keyspace(crate::keyspaces::ACL)?);
         let audit_ks = apply_encryption(store.keyspace(crate::keyspaces::AUDIT)?);
+        let audit_key_ks = apply_encryption(store.keyspace(crate::keyspaces::AUDIT_KEY)?);
         let consent_ks = apply_encryption(store.keyspace(crate::keyspaces::CONSENT)?);
         let idempotency_ks = apply_encryption(store.keyspace(crate::keyspaces::IDEMPOTENCY)?);
         let task_consent_ks = apply_encryption(store.keyspace(crate::keyspaces::TASK_CONSENT)?);
@@ -933,7 +935,7 @@ pub async fn run(
         // `AppStateParts` below, so the sweepers and the request path share one
         // sink object rather than two that merely happen to agree today.
         let audit_sink: vta_audit::SharedAuditSink =
-            vta_audit::shared_keyspace_sink(audit_ks.clone());
+            vta_audit::shared_chained_sink(audit_ks.clone(), audit_key_ks.clone());
         let storage_audit_sink = Arc::clone(&audit_sink);
         let storage_acl_ks = acl_ks.clone();
         let storage_consent_ks = consent_ks.clone();

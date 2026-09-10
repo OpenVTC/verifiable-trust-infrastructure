@@ -23,8 +23,11 @@ repository.workspace = true
 vti-common = { path = "../vti-common", version = "0.18" }
 vta-sdk = { path = "../vta-sdk", version = "0.36" }
 async-trait = "0.1"
+tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
+tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt"] }

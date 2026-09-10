@@ -128,6 +128,65 @@ fn authorize(auth: &AuthClaims, params: &ListAuditLogsBody) -> Result<(), AppErr
 
 /// List audit logs, newest first, with optional filters and opaque
 /// cursor pagination — canonical `audit/list/0.1`.
+/// Read one stored row, in either shape the audit keyspace holds.
+///
+/// A VTA's audit keyspace holds rows written before the log was chained and
+/// envelopes written since, under the same key format and interleaved by time.
+/// A reader that knows only one shape does not fail loudly — it skips what it
+/// cannot parse — so a reader that knew only the older shape would report a
+/// log that stops at the moment chaining began.
+fn read_row(value: &[u8]) -> Option<AuditLogEntry> {
+    if let Ok(row) = serde_json::from_slice::<AuditLogEntry>(value) {
+        return Some(row);
+    }
+    serde_json::from_slice::<vti_common::audit::AuditEnvelope>(value)
+        .ok()
+        .map(|env| flatten(&env))
+}
+
+/// An envelope in the shape the query and the response speak.
+///
+/// The actor is the plaintext where it is still there. A redacted row has
+/// none, and the empty actor is the honest answer: the identifier was erased,
+/// and what survives is a commitment that answers *was it this DID?* rather
+/// than *who was it?* — which is what an erasure is supposed to leave behind.
+fn flatten(env: &vti_common::audit::AuditEnvelope) -> AuditLogEntry {
+    use vti_common::audit::event::AuditEvent;
+
+    let (action, resource, outcome, channel, context_id, detail) = match &env.event {
+        AuditEvent::VtaOperation(op) => (
+            op.action.clone(),
+            op.resource.clone(),
+            op.outcome.clone(),
+            op.channel.clone(),
+            op.context_id.clone(),
+            op.detail.clone(),
+        ),
+        other => (
+            other.variant_name().to_string(),
+            None,
+            String::new(),
+            None,
+            None,
+            None,
+        ),
+    };
+
+    AuditLogEntry {
+        id: env.event_id.to_string(),
+        timestamp: u64::try_from(env.timestamp.timestamp()).unwrap_or(0),
+        action,
+        actor: env.actor_did_plain.clone().unwrap_or_default(),
+        // A DID-shaped resource travels in the envelope's hashed members, so
+        // it comes back from there rather than from the event.
+        resource: resource.or_else(|| env.target_did_plain.clone()),
+        outcome,
+        channel,
+        context_id,
+        detail,
+    }
+}
+
 pub async fn list_audit_logs(
     audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,
@@ -177,16 +236,15 @@ pub async fn list_audit_logs(
     let mut idx = start;
     while entries.len() < limit && idx < pairs.len() {
         let (key, value) = &pairs[idx];
-        match serde_json::from_slice::<AuditLogEntry>(value) {
-            Ok(row) => {
+        match read_row(value) {
+            Some(row) => {
                 if matches(params, &row) {
                     entries.push(AuditEnvelope::from(&row));
                     last_seen_key = Some(key.clone());
                 }
             }
-            Err(err) => {
+            None => {
                 tracing::warn!(
-                    error = %err,
                     key = %String::from_utf8_lossy(key),
                     "skipping unparseable audit row",
                 );

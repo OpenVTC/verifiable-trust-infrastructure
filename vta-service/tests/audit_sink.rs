@@ -114,8 +114,13 @@ async fn an_installed_sink_receives_the_row_and_the_keyspace_does_not() {
 
 #[tokio::test]
 async fn the_default_sink_is_still_the_keyspace() {
-    // The other half of the contract: a deployment that installs nothing gets
-    // exactly the behaviour it had before this seam existed.
+    // The other half of the contract: a deployment that installs nothing still
+    // writes to the keyspace the retrieval and retention APIs read.
+    //
+    // It writes *two* rows for one call, and that is the default sink working:
+    // the log is a hash chain now, and the first entry in it is the creation
+    // of the key that chains it. Asserting a count of one would be asserting
+    // that the chain has no beginning.
     let (state, _dir) = state_with_sink(None).await;
 
     vta_audit::record(
@@ -132,9 +137,34 @@ async fn the_default_sink_is_still_the_keyspace() {
 
     assert_eq!(
         keyspace_rows(&state).await,
-        1,
+        2,
         "with no sink installed the row must land in the audit keyspace, which \
-         is what the retrieval and retention APIs read"
+         is what the retrieval and retention APIs read — beside the entry that \
+         opens the chain"
+    );
+
+    // The row that matters is the caller's, and it is stored as itself: the
+    // action it was recorded under, and the actor beside the commitment to it.
+    let rows = state
+        .audit_ks
+        .prefix_iter_raw("log:")
+        .await
+        .expect("scan audit keyspace");
+    let found = rows.iter().any(|(_, v)| {
+        serde_json::from_slice::<vti_common::audit::AuditEnvelope>(v)
+            .ok()
+            .is_some_and(|env| {
+                env.actor_did_plain.as_deref() == Some("did:key:zTestAdmin")
+                    && matches!(
+                        &env.event,
+                        vti_common::audit::event::AuditEvent::VtaOperation(op)
+                            if op.action == "acl.grant"
+                    )
+            })
+    });
+    assert!(
+        found,
+        "the caller's row must be stored as a readable envelope"
     );
 }
 
