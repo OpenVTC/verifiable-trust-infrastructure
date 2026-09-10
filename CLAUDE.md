@@ -4,6 +4,26 @@ Workspace-wide design principles, crate map, and integration-flow reference.
 Each crate also has its own CLAUDE.md for crate-specific guidance; consult
 those in addition to this file.
 
+## The specification comes first
+
+This workspace implements the VTI specification: <https://trustoverip.github.io/dtgwg-vti-spec/>
+
+Before changing the authority model (contexts, ACL entries, roles,
+capabilities, approvals), the client lifecycle, the operation surface,
+transports, sessions, credentials or the audit trail, **read what the
+specification requires**. It is normative; this code is an implementation of
+it. Where they disagree, the specification is correct and the code changes.
+
+- Cite requirement identifiers (`VTI-ACL-021`, `VTI-CLT-023`) in commit
+  messages, in comments explaining a constraint that would otherwise look
+  arbitrary, and in test names where a test holds a requirement.
+- Never diverge silently. A divergence goes in the specification's divergence
+  register (Appendix F) with the requirement, the behaviour and the intended
+  resolution; recording it is not an exemption from it.
+- "The existing code does it this way" is not an argument against a
+  requirement. Several requirements exist precisely because the obvious
+  implementation is wrong in a way that only appears adversarially.
+
 ## Workspace layout
 
 Rust workspace (edition 2024, resolver 3, MSRV 1.95.0). Dependencies flow

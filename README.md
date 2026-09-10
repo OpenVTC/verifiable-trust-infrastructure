@@ -14,6 +14,22 @@ A Rust workspace implementing the two service backends of the
 
 Plus the CLIs, SDKs, and shared crates that compose them.
 
+## Specification
+
+This workspace implements the **Verifiable Trust Infrastructure (VTI)
+specification**: <https://trustoverip.github.io/dtgwg-vti-spec/>
+(source: [trustoverip/dtgwg-vti-spec](https://github.com/trustoverip/dtgwg-vti-spec)).
+
+The specification is normative and this workspace is an implementation of it.
+Where the two disagree, the specification is what is correct and the code is
+what changes. Known differences are recorded in the specification's divergence
+register (Appendix F), with the requirement, the observed behaviour and the
+intended resolution.
+
+Read it before changing the authority model, the client lifecycle, the
+operation surface, transports, sessions, credentials or the audit trail — see
+[CONTRIBUTING.md](CONTRIBUTING.md#the-specification).
+
 ## Which service do you need?
 
 ```mermaid

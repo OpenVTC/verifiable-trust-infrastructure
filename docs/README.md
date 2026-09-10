@@ -4,6 +4,11 @@ A guided tour of the workspace: what the VTA and VTC are, how to
 operate each one, how to integrate with them, and where the design
 decisions live.
 
+These documents describe **what this workspace does**. What a conforming
+implementation **must** do is the VTI specification: <https://trustoverip.github.io/dtgwg-vti-spec/>. Where the two
+disagree, the specification is correct — see
+[CONTRIBUTING.md](../CONTRIBUTING.md#the-specification).
+
 ## How this tree is organised
 
 ```mermaid
@@ -41,6 +46,7 @@ VTA via the `vtc-host` DID template.
 
 | Task | Start here |
 |---|---|
+| Find out what is **required** rather than what is built | [The VTI specification](https://trustoverip.github.io/dtgwg-vti-spec/) — normative |
 | Understand VTI as a whole | [Overview](01-concepts/overview.md) |
 | Decide between VTA and VTC | [Root README — Which service do you need?](../README.md#which-service-do-you-need) |
 | Stand up a VTA from scratch | [VTA cold-start](02-vta/cold-start.md) |

@@ -5,6 +5,40 @@ Thank you for contributing! Before you contribute, we ask some things of you:
 - Please follow our Code of Conduct, the Contributor Covenant. You can find a copy [in this repository](CODE_OF_CONDUCT.md) or under https://www.contributor-covenant.org/
 - All Contributors must agree to [a CLA](.github/CLA/INDIVIDUAL.md). When opening a PR, the system will guide you through the process. However, if you contribute on behalf of a legal entity, we ask of you to agree to [a different CLA](.github/CLA/ENTITY.md). In that case, please contact us.
 
+## The specification
+
+This workspace implements the **Verifiable Trust Infrastructure (VTI)
+specification**: <https://trustoverip.github.io/dtgwg-vti-spec/>
+
+**Read it before you change anything it governs** — the authority model (trust
+contexts, access control entries, roles, capabilities, approvals), the client
+lifecycle, the operation surface, transports and delivery, sessions,
+credentials, or the audit trail.
+
+The specification is normative and this code is an implementation of it. Where
+the two disagree, the specification is what is correct and the code is what
+changes. That direction is deliberate: several of its requirements prohibit an
+encoding or a default that is easy to implement, widely used, and wrong in a
+way that only shows up under adversarial conditions.
+
+**Cite requirements by identifier.** Requirements carry stable identifiers such
+as `VTI-ACL-021` or `VTI-CLT-023`. Use them in PR descriptions, in comments
+explaining a constraint that would otherwise look arbitrary, and in the names of
+tests that exist to hold a requirement. A reviewer who can follow the identifier
+to the requirement can check the change against something other than your
+description of it.
+
+**Do not diverge silently.** If behaviour here cannot conform — or you believe
+it should not — record it in the specification's divergence register
+(Appendix F) with the requirement, the observed behaviour and the intended
+resolution. Recording a divergence is not an exemption from the requirement
+(VTI-CNF-015), and if you think the requirement itself is wrong, that is a
+change proposal against the specification, argued on its merits. The two are
+different and should not arrive as the same pull request.
+
+A divergence that is written down is one that can be planned against. One that
+is only known gets rediscovered by whoever composes the system next.
+
 ## Development Setup
 
 ### Prerequisites
@@ -61,6 +95,8 @@ Before submitting a pull request:
 - [ ] `cargo fmt --check` shows no formatting issues
 - [ ] New public functions have `///` doc comments
 - [ ] Security-sensitive changes include tests (auth, ACL, crypto)
+- [ ] Changes to the authority model, client lifecycle, operation surface, transports, sessions, credentials or audit conform to the [VTI specification](https://trustoverip.github.io/dtgwg-vti-spec/), and cite the requirement identifiers they implement
+- [ ] Any divergence from the specification is recorded in its divergence register (Appendix F), not left implicit
 - [ ] PR title is a conventional commit — it becomes the changelog entry (see [Changelog](#changelog))
 - [ ] No `version = ` edits in any `Cargo.toml` — the Release PR assigns versions (see [RELEASING.md](RELEASING.md))
 - [ ] Commits are signed off (DCO: `git commit -s`) — required for all outside contributions
