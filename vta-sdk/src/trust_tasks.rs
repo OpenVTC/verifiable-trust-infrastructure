@@ -434,6 +434,28 @@ pub const TASK_KEYS_REVOKE_0_1: &str = "https://trusttasks.org/spec/keys/revoke/
 pub const TASK_KEYS_SET_EXPORTABILITY_0_1: &str =
     "https://trusttasks.org/spec/keys/set-exportability/0.1";
 
+/// `spec/keys/export-secret/0.1` — release the private half of one named key.
+///
+/// The honest name for what `vta/seeds/export-mnemonic/1.0` actually did, in
+/// the family it belongs to. That URI exports no mnemonic and no seed: it is a
+/// per-key secret export that kept the name of the thing it was migrated from,
+/// and it had no published spec at all.
+///
+/// Auth: admin of the key's own scope — not the global Admin the old URI
+/// demanded, which gave a caller wanting one key authority over every other
+/// context in the VTA.
+///
+/// Two refusals hold regardless of authority, and are the reason this belongs
+/// in the `keys` family: an internal key is never released to anyone, and a key
+/// marked non-exportable ([`TASK_KEYS_SET_EXPORTABILITY_0_1`]) is refused about
+/// the *key* rather than the asker.
+///
+/// Payload: [`crate::protocols::key_management::secret::GetKeySecretBody`].
+/// Returns
+/// [`crate::protocols::key_management::secret::GetKeySecretResultBody`] —
+/// private key material in the clear, so never log or cache the response.
+pub const TASK_KEYS_EXPORT_SECRET_0_1: &str = "https://trusttasks.org/spec/keys/export-secret/0.1";
+
 /// `spec/vta/keys/sign/1.0` — sign a base64url-encoded payload with a
 /// stored key (raw-bytes signing oracle).
 /// Payload: [`crate::protocols::key_management::sign::SignRequestBody`].
@@ -470,15 +492,6 @@ pub const TASK_SEEDS_LIST_1_0: &str = "https://trusttasks.org/spec/vta/seeds/lis
 /// Payload: [`crate::protocols::seed_management::rotate::RotateSeedBody`].
 /// Auth: Admin.
 pub const TASK_SEEDS_ROTATE_1_0: &str = "https://trusttasks.org/spec/vta/seeds/rotate/1.0";
-
-/// `spec/vta/seeds/export-mnemonic/1.0` — one-shot BIP-39 mnemonic
-/// export under `MnemonicExportGuard`. Was `/keys/{id}/secret` in
-/// the legacy REST surface — relocated to the seeds slice because it
-/// operates on the seed identifier, not an individual key.
-/// Payload: [`crate::protocols::key_management::secret::GetKeySecretBody`].
-/// Auth: Admin only. Zeroized on drop.
-pub const TASK_SEEDS_EXPORT_MNEMONIC_1_0: &str =
-    "https://trusttasks.org/spec/vta/seeds/export-mnemonic/1.0";
 
 // ─── Services slice (spec/vta/services/*) ────────────────────────────────
 //
@@ -1887,13 +1900,13 @@ pub const ALL_URIS: &[&str] = &[
     TASK_KEYS_RENAME_0_1,
     TASK_KEYS_REVOKE_0_1,
     TASK_KEYS_SET_EXPORTABILITY_0_1,
+    TASK_KEYS_EXPORT_SECRET_0_1,
     TASK_KEYS_SIGN_0_1,
     TASK_KEYS_DERIVE_AND_SIGN_0_1,
     TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
     // Seeds slice
     TASK_SEEDS_LIST_1_0,
     TASK_SEEDS_ROTATE_1_0,
-    TASK_SEEDS_EXPORT_MNEMONIC_1_0,
     // Services slice
     TASK_SERVICES_LIST_1_0,
     TASK_SERVICES_GET_1_0,

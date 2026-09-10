@@ -17,6 +17,7 @@ use vta_sdk::protocols::key_management::import::{ImportKeyBody, ImportKeyRespons
 use vta_sdk::protocols::key_management::list::ListKeysBody;
 use vta_sdk::protocols::key_management::rename::RenameKeyBody;
 use vta_sdk::protocols::key_management::revoke::RevokeKeyBody;
+use vta_sdk::protocols::key_management::secret::GetKeySecretBody;
 use vta_sdk::protocols::key_management::sign::SignRequestBody;
 
 use crate::auth::AuthClaims;
@@ -218,6 +219,47 @@ pub(super) async fn handle_set_exportability(
                 key,
             },
         ),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for `keys/export-secret/0.1`.
+///
+/// Admin **of the key's own scope**: `require_admin` is the role floor and
+/// `get_key_secret`'s own `require_context` is the scope, so an admin of one
+/// context reaches no other context's keys. The URI this replaces
+/// (`vta/seeds/export-mnemonic/1.0`) demanded global Admin for the same act,
+/// which handed a caller wanting one key authority over everything else.
+///
+/// The two refusals the spec makes consumer requirements — an internal key is
+/// never released, and a non-exportable key is refused about the key rather
+/// than the asker — are both enforced inside `get_key_secret`, which is the one
+/// place a private key leaves. Re-checking them here would be a second set of
+/// rules to keep in step.
+pub(super) async fn handle_export_secret(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(e) = auth.require_admin() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: GetKeySecretBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    match operations::keys::get_key_secret(
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.seed_store,
+        &state.audit_sink,
+        auth,
+        &req.key_id,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
     }
 }

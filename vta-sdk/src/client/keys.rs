@@ -150,13 +150,20 @@ impl VtaClient {
             .ok_or_else(|| VtaError::NotFound(format!("no key record for `{key_id}`")))
     }
 
-    /// Export a key's secret material. The trust-task twin lives in the
-    /// seeds slice (`spec/vta/seeds/export-mnemonic/1.0`) — same
-    /// `{ key_id }` request and the same
-    /// `operations::keys::get_key_secret` spine as the legacy message.
+    /// Export one key's private half.
+    ///
+    /// `keys/export-secret/0.1`. This used to dispatch
+    /// `vta/seeds/export-mnemonic/1.0`, which exported no mnemonic and no seed
+    /// — a per-key secret export wearing the name of the thing it was migrated
+    /// from, in the wrong family, with no published spec, and gated on **global
+    /// Admin** so that wanting one key meant holding authority over every other
+    /// context in the VTA. The replacement is admin of the key's own scope.
+    ///
+    /// The response is private key material in the clear: never log it, never
+    /// cache it in a shared store, never put it in a diagnostic bundle.
     pub async fn get_key_secret(&self, key_id: &str) -> Result<GetKeySecretResponse, VtaError> {
         self.rpc_tt(
-            trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0,
+            trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1,
             serde_json::to_value(crate::protocols::key_management::secret::GetKeySecretBody {
                 key_id: key_id.to_string(),
             })?,

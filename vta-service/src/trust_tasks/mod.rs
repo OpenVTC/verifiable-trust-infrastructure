@@ -246,7 +246,6 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     // ─ vta/seeds/* — keep-and-spec under `vta/` (reduction plan §E).
     "https://trusttasks.org/spec/vta/seeds/list/1.0",
     "https://trusttasks.org/spec/vta/seeds/rotate/1.0",
-    "https://trusttasks.org/spec/vta/seeds/export-mnemonic/1.0",
     // ─ vta/audit retention pair — candidate `audit/retention/{show,update}`.
     "https://trusttasks.org/spec/vta/audit/get-retention/1.0",
     "https://trusttasks.org/spec/vta/audit/update-retention/1.0",
@@ -1709,6 +1708,11 @@ dispatch_table! {
     // one.
     vta_sdk::trust_tasks::TASK_KEYS_SET_EXPORTABILITY_0_1 => keys::handle_set_exportability
         [ Mutating Metadata false ],
+    // `None Secret false`: it reads existing material and changes nothing, and
+    // what it discloses is a private key. Same classification as
+    // `vta/contexts/secrets`, for the same reason — the act is disclosure.
+    vta_sdk::trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1 => keys::handle_export_secret
+        [ None Secret false ],
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_0_1 => keys::handle_sign
         [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1 => keys::handle_derive_and_sign
@@ -1720,8 +1724,6 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_SEEDS_ROTATE_1_0 => seeds::handle_rotate
         [ Destructive None false ],
-    vta_sdk::trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0 => seeds::handle_export_mnemonic
-        [ None Secret false ],
     // ─── Audit slice ─────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1 => audit::handle_list_logs
         [ None Metadata false ],
@@ -2323,12 +2325,17 @@ mod tests {
             "proxy-login acts as the subject"
         );
 
-        let seed = class_for(vta_sdk::trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0)
-            .expect("seed export is classified");
+        let export = class_for(vta_sdk::trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1)
+            .expect("key export is classified");
         assert_eq!(
-            seed.exposure.discloses,
+            export.exposure.discloses,
             Discloses::Secret,
-            "exporting the mnemonic discloses a secret"
+            "releasing a key's private half discloses a secret"
+        );
+        assert_eq!(
+            export.side_effects,
+            SideEffectLevel::None,
+            "it reads one key and changes nothing — the act is disclosure, not mutation"
         );
 
         assert!(

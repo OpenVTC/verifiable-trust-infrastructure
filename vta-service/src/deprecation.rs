@@ -307,7 +307,7 @@ const SUPERSEDED: &[(&str, &str, &str, &str)] = &[
         "GET",
         "/keys/{key_id}/secret",
         "GET /keys/{key_id}/secret",
-        trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0,
+        trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1,
     ),
     (
         "POST",

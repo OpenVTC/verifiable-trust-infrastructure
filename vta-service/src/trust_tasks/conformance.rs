@@ -157,6 +157,7 @@ use vta_sdk::protocols::key_management::import::ImportKeyBody;
 use vta_sdk::protocols::key_management::list::{ListKeysBody, ListKeysResultBody};
 use vta_sdk::protocols::key_management::rename::{RenameKeyBody, RenameKeyResultBody};
 use vta_sdk::protocols::key_management::revoke::{RevokeKeyBody, RevokeKeyResultBody};
+use vta_sdk::protocols::key_management::secret::{GetKeySecretBody, GetKeySecretResultBody};
 use vta_sdk::protocols::key_management::set_exportability::{
     SetKeyExportabilityBody, SetKeyExportabilityResultBody,
 };
@@ -1054,6 +1055,27 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     key_id: "app-signing-key".into(),
                     status: KeyStatus::Revoked,
                     updated_at: dt(),
+                })
+            ),
+        ),
+        (
+            uris::TASK_KEYS_EXPORT_SECRET_0_1,
+            checked!(
+                specs::keys::export_secret::v0_1::Payload,
+                specs::keys::export_secret::v0_1::Response,
+                to_v(GetKeySecretBody {
+                    key_id: "app-signing-key".into(),
+                }),
+                // Serialised from the type the service answers with. The
+                // response is a private key, so what this pins is that the
+                // shape carrying one matches the published schema exactly —
+                // there is no second chance to notice a drift here, because
+                // nothing downstream inspects a key it failed to parse.
+                to_v(GetKeySecretResultBody {
+                    key_id: "app-signing-key".into(),
+                    key_type: vta_sdk::keys::KeyType::Ed25519,
+                    public_key_multibase: "zPub".into(),
+                    private_key_multibase: "zPriv".into(),
                 })
             ),
         ),
