@@ -1727,6 +1727,8 @@ dispatch_table! {
     // ─── Audit slice ─────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1 => audit::handle_list_logs
         [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_AUDIT_VERIFY_1_0 => audit::handle_verify_chain
+        [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_AUDIT_GET_RETENTION_1_0 => audit::handle_get_retention
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0 => audit::handle_update_retention

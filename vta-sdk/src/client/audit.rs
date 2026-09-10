@@ -21,6 +21,22 @@ impl VtaClient {
     }
 
     /// Get the current audit log retention period.
+    /// Check the audit log's hash chain.
+    ///
+    /// The counts in the result are part of the answer: a chain can verify
+    /// while rows sit outside it, and those rows are what an insertion looks
+    /// like.
+    pub async fn verify_audit_chain(
+        &self,
+    ) -> Result<crate::protocols::audit_management::verify::AuditChainReport, VtaError> {
+        self.rpc_tt(
+            crate::trust_tasks::TASK_AUDIT_VERIFY_1_0,
+            serde_json::json!({}),
+            60,
+        )
+        .await
+    }
+
     pub async fn get_audit_retention(
         &self,
     ) -> Result<crate::protocols::audit_management::retention::RetentionResultBody, VtaError> {

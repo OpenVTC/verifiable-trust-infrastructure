@@ -571,6 +571,16 @@ pub const TASK_SERVICES_DRAIN_CANCEL_1_0: &str =
 /// admin must supply `contextId` within their own scope.
 pub const TASK_AUDIT_LIST_0_1: &str = "https://trusttasks.org/spec/audit/list/0.1";
 
+/// `spec/vta/audit/verify/1.0` — check the audit log's hash chain and
+/// report what was found. Payload:
+/// [`crate::protocols::audit_management::verify::VerifyChainBody`]; result:
+/// [`crate::protocols::audit_management::verify::AuditChainReport`].
+///
+/// Auth: admin. Reading whether the record of what everyone did is intact is
+/// itself a privileged question — a caller who cannot read the log has no
+/// business learning whether it has been altered.
+pub const TASK_AUDIT_VERIFY_1_0: &str = "https://trusttasks.org/spec/vta/audit/verify/1.0";
+
 /// `spec/vta/audit/get-retention/1.0` — read the current retention
 /// period. Payload:
 /// [`crate::protocols::audit_management::retention::GetRetentionBody`]
@@ -1918,6 +1928,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_SERVICES_DRAIN_CANCEL_1_0,
     // Audit slice
     TASK_AUDIT_LIST_0_1,
+    TASK_AUDIT_VERIFY_1_0,
     TASK_AUDIT_GET_RETENTION_1_0,
     TASK_AUDIT_UPDATE_RETENTION_1_0,
     // Discovery
