@@ -199,6 +199,13 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // what makes a blind retry safe — a producer that retried a lost `false`
     // must land on `false`, never toggle back to `true`.
     (trust_tasks::TASK_KEYS_SET_EXPORTABILITY_0_1, RetrySafe),
+    // `ReadOnly`, for the same reason as `vta/contexts/secrets` above: it reads
+    // one key and changes nothing, so it needs no dedup record and therefore
+    // parks no secret in one. The URI it replaces was classified `KeyedSecret`
+    // on the stated grounds that "the export guard is one-shot" — there was no
+    // guard, and there never had been. The name said mnemonic, the comment said
+    // guard, and the code did neither.
+    (trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1, ReadOnly),
     // Signing is a pure function of key + payload; the same request signs the
     // same bytes. No durable effect beyond the audit row.
     (trust_tasks::TASK_KEYS_SIGN_0_1, ReadOnly),
@@ -212,18 +219,14 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Rotation re-parents the key hierarchy. A second rotation on a lost reply
     // rotates again, past the seed the caller thinks it landed on.
     (trust_tasks::TASK_SEEDS_ROTATE_1_0, Keyed),
-    // Response is the mnemonic itself, and the export guard is one-shot.
-    (trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0, KeyedSecret),
     // `ReadOnly` even though the response carries private keys, and the
-    // distinction is worth stating because `export-mnemonic` above looks like
-    // the same task and is not. That one is `KeyedSecret` because its export
-    // guard is **one-shot** — a second call is not a second read, it is a
-    // second consumption of a guard — so it needs dedup, and `KeyedSecret` is
-    // how a task that needs dedup avoids parking a secret in the dedup store.
-    // This task has no guard: it is `sideEffects: none`, and a second call
+    // reasoning is worth keeping because it is not the obvious answer.
+    // `KeyedSecret` exists for a task that needs dedup *and* returns a secret,
+    // so that the dedup store never becomes a second place secrets live. This
+    // task needs no dedup at all: `sideEffects: none`, and a second call
     // returns the same bundle. `ReadOnly` therefore takes the dedup path out
     // altogether (`idempotency.rs` early-returns unless `needs_key()`), so no
-    // response body is stored at all — the same protection, reached by the
+    // response body is stored — the same protection, reached by the
     // classification actually being true rather than by a stronger one.
     (trust_tasks::TASK_CONTEXTS_SECRETS_1_0, ReadOnly),
     // ── Audit ───────────────────────────────────────────────────────────

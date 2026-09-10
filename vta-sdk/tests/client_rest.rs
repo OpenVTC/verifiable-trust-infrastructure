@@ -36,8 +36,7 @@ const TASK_KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.1";
 const TASK_AUDIT_LIST: &str = "https://trusttasks.org/spec/audit/list/0.1";
 /// `get_key_secret` dispatches this: the operation moved to the seeds slice
 /// because it acts on the seed behind the key, not the key itself.
-const TASK_SEEDS_EXPORT_MNEMONIC: &str =
-    "https://trusttasks.org/spec/vta/seeds/export-mnemonic/1.0";
+const TASK_KEYS_EXPORT_SECRET: &str = "https://trusttasks.org/spec/keys/export-secret/0.1";
 const TASK_WEBVH_DIDS_LIST: &str = "https://trusttasks.org/spec/vta/webvh/dids/list/1.0";
 
 /// A success response document carrying `payload`.
@@ -1996,9 +1995,7 @@ async fn fetch_context_secrets_walks_all_pages() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
-        .and(body_partial_json(
-            json!({"type": TASK_SEEDS_EXPORT_MNEMONIC}),
-        ))
+        .and(body_partial_json(json!({"type": TASK_KEYS_EXPORT_SECRET})))
         .respond_with(
             tt_ok(json!({
                 "key_id": "k",

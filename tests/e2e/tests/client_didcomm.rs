@@ -479,12 +479,12 @@ async fn multibase_import_key_via_didcomm_uses_the_canonical_task() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_key_secret_via_didcomm() {
-    // The trust-task twin lives in the seeds slice
-    // (`spec/vta/seeds/export-mnemonic/1.0`) — same `{ key_id }` request.
+    // `keys/export-secret/0.1` — the honest name, in the keys family. This
+    // used to name a URI in the seeds slice that exported no seed.
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0) {
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1) {
             tt_ok(
-                trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0,
+                trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1,
                 json!({
                     "key_id": "k1",
                     "key_type": "ed25519",
