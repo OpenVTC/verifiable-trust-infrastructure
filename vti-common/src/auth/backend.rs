@@ -278,6 +278,22 @@ pub trait AuthBackend: Send + Sync + 'static {
     /// before any other gate fires.
     async fn check_acl(&self, did: &str) -> Result<RoleResolution<Self::Role>, Self::Error>;
 
+    /// Whether `did` currently has an effective ACL entry.
+    ///
+    /// Used by [`crate::auth::handlers::handle_challenge`], which needs to
+    /// know whether to persist a session but **must not disclose the answer
+    /// to the caller**. Returning `bool` rather than `Result` is deliberate:
+    /// the caller cannot act on the difference between "no entry" and "the
+    /// ACL store failed", and both have to produce the same response, so a
+    /// failure reads as absent and the request gets an unusable challenge.
+    /// The real error surfaces at `/auth/authenticate`, where the caller has
+    /// already proven control of the DID.
+    ///
+    /// Default: `check_acl(did).await.is_ok()`.
+    async fn has_effective_entry(&self, did: &str) -> bool {
+        self.check_acl(did).await.is_ok()
+    }
+
     /// Optional DID-method validation gate. Default: accept any
     /// method (backends with no allowlist). VTA overrides in TEE
     /// mode to enforce `allowed_did_methods`.
