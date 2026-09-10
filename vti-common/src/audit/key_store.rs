@@ -260,6 +260,48 @@ impl AuditKeyStore {
         Ok(initial)
     }
 
+    /// Establish an initial key from the OS random source rather than from a
+    /// seed. Idempotent, like [`Self::ensure_initial`].
+    ///
+    /// # Why a node would prefer this
+    ///
+    /// The key's job is to be a stable handle for actor and target
+    /// identifiers: it has to exist before the first write, stay retrievable
+    /// while any envelope references it, and be rotatable. Nothing about that
+    /// requires it to be derivable.
+    ///
+    /// What derivation adds is a second copy of the key wherever the seed is.
+    /// A node whose recovery story is a mnemonic therefore has an audit key
+    /// that anyone holding the mnemonic can recompute — and since the
+    /// commitment exists so that an erasure can null the plaintext while the
+    /// row stays correlatable, that makes the erasure reversible by brute
+    /// force over the identifiers the node has seen. Generating the key
+    /// instead confines that to whoever holds the key material.
+    ///
+    /// The cost is that the key is not regenerable: if the keyspace holding it
+    /// is lost and envelopes survive elsewhere, their actor hashes can no
+    /// longer be checked against a candidate. Keep this keyspace in the backup
+    /// set.
+    pub async fn ensure_initial_random(&self) -> Result<AuditKey, AppError> {
+        if let Some(existing) = self.try_active().await? {
+            return Ok(existing);
+        }
+
+        let mut key = [0u8; 32];
+        rand::fill(&mut key);
+
+        let initial = AuditKey {
+            key_id: KeyId::new(),
+            key,
+            valid_from: Utc::now(),
+            valid_until: None,
+            rotation_reason: RotationReason::Initial,
+        };
+        self.persist(&initial).await?;
+        self.set_active(&initial.key_id).await?;
+        Ok(initial)
+    }
+
     /// Rotate the active key. The previous key gets `valid_until: now`
     /// and a fresh-random successor is generated + activated.
     /// Returns the new active key.
@@ -471,6 +513,46 @@ mod domain_separation_tests {
         assert_ne!(
             vtc_key.key, vta_key.key,
             "a VTC and the VTA beneath it must not share an audit key"
+        );
+    }
+
+    /// A generated key is idempotent the same way a derived one is: it is
+    /// established once and returned unchanged after that, so a node can call
+    /// it on every start.
+    #[tokio::test]
+    async fn a_generated_key_is_established_once() {
+        let (ks, _dir) = store();
+
+        let first = ks.ensure_initial_random().await.expect("first");
+        let second = ks.ensure_initial_random().await.expect("second");
+
+        assert_eq!(first.key_id, second.key_id);
+        assert_eq!(first.key, second.key);
+    }
+
+    /// The property that makes a generated key worth preferring: nothing
+    /// outside the key store reproduces it. Two nodes that share a seed —
+    /// a VTC and the VTA beneath it — still get unrelated keys.
+    #[tokio::test]
+    async fn a_generated_key_is_not_reproducible_from_the_seed() {
+        let seed = [7u8; 32];
+
+        let (generated_ks, _a) = store();
+        let (derived_ks, _b) = store();
+
+        let generated = generated_ks.ensure_initial_random().await.unwrap();
+        let derived = derived_ks
+            .ensure_initial_with_info(&seed, VTA_AUDIT_KEY_INFO)
+            .await
+            .unwrap();
+
+        assert_ne!(generated.key, derived.key);
+
+        let (other_ks, _c) = store();
+        let other = other_ks.ensure_initial_random().await.unwrap();
+        assert_ne!(
+            generated.key, other.key,
+            "two generated keys are unrelated to each other as well"
         );
     }
 
