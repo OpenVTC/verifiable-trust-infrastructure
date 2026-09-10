@@ -131,8 +131,7 @@ mod tests {
         // Both halves: the sink the sweeper writes through, and the keyspace
         // the assertions read back from. They are the same storage here — the
         // split exists so a deployment can point the write half elsewhere.
-        let audit: SharedAuditSink =
-            std::sync::Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
+        let audit: SharedAuditSink = vta_audit::shared_keyspace_sink(audit_ks.clone());
         (store, acl_ks, audit, audit_ks, dir)
     }
 

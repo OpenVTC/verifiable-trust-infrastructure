@@ -195,8 +195,7 @@ async fn a_fan_out_keeps_the_query_api_working_beside_a_new_backend() {
     let (state, _dir) = state_with_sink(None).await;
     let recording = Arc::new(Recording::default());
     let fan: vta_audit::SharedAuditSink = Arc::new(vta_audit::FanOutAuditSink::new(vec![
-        Arc::new(vta_audit::KeyspaceAuditSink::new(state.audit_ks.clone()))
-            as vta_audit::SharedAuditSink,
+        vta_audit::shared_keyspace_sink(state.audit_ks.clone()),
         Arc::clone(&recording) as vta_audit::SharedAuditSink,
     ]));
 

@@ -18,7 +18,9 @@ use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
 pub mod sink;
-pub use sink::{AuditSink, FanOutAuditSink, KeyspaceAuditSink, SharedAuditSink};
+pub use sink::{
+    AuditSink, FanOutAuditSink, KeyspaceAuditSink, SharedAuditSink, shared_keyspace_sink,
+};
 
 /// Emit a structured audit event to the tracing subsystem — **a log line, and
 /// nothing else**.

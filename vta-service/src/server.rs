@@ -519,7 +519,7 @@ pub async fn build_app_state(
     // because reads and retention deliberately do not route through the sink.
     let audit_sink: vta_audit::SharedAuditSink = parts
         .audit_sink
-        .unwrap_or_else(|| Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone())));
+        .unwrap_or_else(|| vta_audit::shared_keyspace_sink(audit_ks.clone()));
 
     Ok(AppState {
         keys_ks,
@@ -933,7 +933,7 @@ pub async fn run(
         // `AppStateParts` below, so the sweepers and the request path share one
         // sink object rather than two that merely happen to agree today.
         let audit_sink: vta_audit::SharedAuditSink =
-            Arc::new(vta_audit::KeyspaceAuditSink::new(audit_ks.clone()));
+            vta_audit::shared_keyspace_sink(audit_ks.clone());
         let storage_audit_sink = Arc::clone(&audit_sink);
         let storage_acl_ks = acl_ks.clone();
         let storage_consent_ks = consent_ks.clone();

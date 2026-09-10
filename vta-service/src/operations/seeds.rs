@@ -206,9 +206,8 @@ mod tests {
 
             let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
             let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
-            let audit: vta_audit::SharedAuditSink = std::sync::Arc::new(
-                vta_audit::KeyspaceAuditSink::new(store.keyspace(crate::keyspaces::AUDIT).unwrap()),
-            );
+            let audit: vta_audit::SharedAuditSink =
+                vta_audit::shared_keyspace_sink(store.keyspace(crate::keyspaces::AUDIT).unwrap());
 
             let initial_seed = vec![0xABu8; 32];
             let seed_store: Arc<dyn SeedStore> =
@@ -255,9 +254,8 @@ mod tests {
         .expect("open store");
         let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
         let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
-        let audit: vta_audit::SharedAuditSink = std::sync::Arc::new(
-            vta_audit::KeyspaceAuditSink::new(store.keyspace(crate::keyspaces::AUDIT).unwrap()),
-        );
+        let audit: vta_audit::SharedAuditSink =
+            vta_audit::shared_keyspace_sink(store.keyspace(crate::keyspaces::AUDIT).unwrap());
 
         // Bootstrap generation 0 as the active seed.
         save_seed_record(

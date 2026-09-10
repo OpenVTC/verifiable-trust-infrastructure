@@ -779,9 +779,8 @@ mod tests {
         })
         .unwrap();
         let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
-        let audit: vta_audit::SharedAuditSink = std::sync::Arc::new(
-            vta_audit::KeyspaceAuditSink::new(store.keyspace(crate::keyspaces::AUDIT).unwrap()),
-        );
+        let audit: vta_audit::SharedAuditSink =
+            vta_audit::shared_keyspace_sink(store.keyspace(crate::keyspaces::AUDIT).unwrap());
         (acl_ks, audit, dir)
     }
 
