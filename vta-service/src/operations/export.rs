@@ -48,6 +48,65 @@ pub struct ExportDeps<'a> {
     pub seed_store: &'a Arc<dyn SeedStore>,
 }
 
+
+/// Every private key of `context_id`'s own DID, for the service that operates it.
+///
+/// # Why this exists as one operation
+///
+/// A service that the VTA holds an identity for has to hold that DID's private keys to
+/// decrypt what is addressed to it — it cannot ask the VTA per frame. So it fetches them at
+/// startup. Assembling that bundle used to mean listing the context's keys and then calling
+/// the per-key export once each, and *that* export was gated on the global Admin role — so
+/// being a service required authority over the whole VTA.
+///
+/// One call, one authorization decision, about the one thing being decided: may this caller
+/// act in this context.
+///
+/// # Application, not Admin, and what makes that safe
+///
+/// Reading the keys of the DID you already operate is not an administrative act. What keeps
+/// the lower role sound is that it is scoped twice, and neither check is this function being
+/// careful — both are checks the keys surface already makes:
+///
+/// - [`AuthClaims::require_context`], inside [`build_did_secrets_bundle`], on the context
+///   asked for — so naming somebody else's context is refused before a single key is read,
+///   and before the context is even looked up. A caller not entitled to an id is therefore
+///   refused for that reason whether or not the id exists, and "not found" is only ever said
+///   to a caller already entitled to hear it;
+/// - [`super::keys::get_key_secret`]'s own per-key context gate, which would refuse a key
+///   that somehow did not belong to the context it was listed under.
+///
+/// A caller with `Application` in context A therefore gets A's keys and no others, and a
+/// caller with no context at all gets nothing. Asserted in the tests rather than trusted.
+///
+/// # Why it delegates
+///
+/// [`build_did_secrets_bundle`] is the whole of the traversal, and the only thing that
+/// differs between its two callers is the role floor: the offline export path runs as a
+/// local super-admin, while `vta/contexts/secrets/1.0` is reachable by an `Application`. A
+/// second traversal here would be a second set of rules to keep in step — which key ids are
+/// verification methods of the DID, which secrets are excluded, how the pages are walked —
+/// and those rules are exactly the part that must not drift.
+pub async fn get_context_secrets(
+    deps: &ExportDeps<'_>,
+    auth: &AuthClaims,
+    context_id: &str,
+    channel: &str,
+) -> Result<DidSecretsBundle, AppError> {
+    // The role floor. Application or higher — a Reader may see that keys exist and a Monitor
+    // may not even do that, and neither may hold one. The scope check is the delegate's.
+    auth.require_write()?;
+    let bundle = build_did_secrets_bundle(deps, auth, context_id, channel).await?;
+    tracing::info!(
+        channel,
+        context = %context_id,
+        did = %bundle.did,
+        keys = bundle.secrets.len(),
+        "context secrets released to the service that operates them"
+    );
+    Ok(bundle)
+}
+
 /// Build a [`DidSecretsBundle`] for `context_id` by enumerating active
 /// keys in the local store and loading each secret.
 ///
@@ -346,6 +405,24 @@ mod tests {
         }
     }
 
+    /// A caller with a role and a set of contexts it may act in.
+    ///
+    /// The pair is the whole of the authorization model this task turns on:
+    /// `role` is the floor and `allowed_contexts` is the scope, and a non-empty
+    /// scope narrows even [`Role::Admin`] (only an *empty* list means "all").
+    fn scoped(role: crate::acl::Role, contexts: &[&str]) -> AuthClaims {
+        AuthClaims {
+            did: "did:key:zTestCaller".into(),
+            role,
+            allowed_contexts: contexts.iter().map(|c| (*c).to_string()).collect(),
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            issued_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        }
+    }
+
     #[tokio::test]
     async fn build_did_secrets_rejects_missing_context() {
         let env = open_env().await;
@@ -403,26 +480,22 @@ mod tests {
         &env.data_dir
     }
 
-    /// Happy-path coverage for the kid-selection contract: the offline
-    /// bundle must carry exactly the keys whose ids are verification
-    /// methods of the context DID, and must drop an admin `did:key`
-    /// minted into the same context (a different DID, free-text label).
+    /// The DID a seeded context is given. Every operating key below is a
+    /// verification method of it.
+    const SEEDED_DID: &str = "did:webvh:QmScid:mediator.example.com:med";
+
+    /// Stand up one context holding the three key records the bundle logic has
+    /// to tell apart: two operating keys whose ids ARE verification methods of
+    /// [`SEEDED_DID`], and an admin `did:key` minted into the same context whose
+    /// VM id belongs to a *different* DID and whose label is free text.
     ///
-    /// Locks the wiring of [`select_secret_kid`] into the offline path —
-    /// the per-decision rules are unit-tested in
-    /// `vta_sdk::did_secrets`, but this proves `build_did_secrets_bundle`
-    /// feeds it the authoritative store `key_id` (and the label) so a
-    /// refactor can't silently re-include non-VM secrets and re-brick the
-    /// mediator's exact-match recipient lookup (the storm.ws outage).
-    #[tokio::test]
-    async fn build_did_secrets_excludes_non_vm_admin_did_key() {
+    /// Shared by the kid-selection test and the authorization tests so the two
+    /// cannot disagree about what a correctly-populated context looks like.
+    async fn seed_context_with_keys(env: &TestEnv, context_id: &str) -> String {
         use crate::keys::paths::allocate_path;
         use crate::keys::{KeyRecord, store_key};
         use chrono::Utc;
         use vta_sdk::keys::{KeyOrigin, KeyStatus, KeyType};
-
-        let env = open_env().await;
-        let auth = super_admin();
 
         // Seed the external store so derived keys can be minted + read back.
         env.seed_store
@@ -430,29 +503,27 @@ mod tests {
             .await
             .expect("seed the store");
 
-        // A context with a DID assigned — the bundle is keyed on it and VM
-        // ids are matched against it.
-        let did = "did:webvh:QmScid:mediator.example.com:med";
-        crate::contexts::create_context(&env.contexts_ks, "med-ctx", "Mediator Ctx")
+        crate::contexts::create_context(&env.contexts_ks, context_id, "Mediator Ctx")
             .await
             .expect("create context");
-        let mut rec = crate::contexts::get_context(&env.contexts_ks, "med-ctx")
+        let mut rec = crate::contexts::get_context(&env.contexts_ks, context_id)
             .await
             .expect("get context")
             .expect("context exists");
-        rec.did = Some(did.to_string());
+        rec.did = Some(SEEDED_DID.to_string());
         crate::contexts::store_context(&env.contexts_ks, &rec)
             .await
             .expect("store did on context");
 
         // Mint a key record the way internal DID provisioning does: an
-        // allocated path + a directly-written KeyRecord. VM-shaped
-        // key_ids are exclusive to this internal path — the public
-        // create_key/import_key ops reject them at validation. The
-        // stored public_key is not consulted by the bundle (secrets are
-        // re-derived from the path), so a placeholder is fine here.
+        // allocated path + a directly-written KeyRecord. VM-shaped key_ids are
+        // exclusive to this internal path — the public create_key/import_key ops
+        // reject them at validation. The stored public_key is not consulted by
+        // the bundle (secrets are re-derived from the path), so a placeholder is
+        // fine here.
         async fn mint_internal(
             env: &TestEnv,
+            context_id: &str,
             base_path: &str,
             kid: &str,
             kt: KeyType,
@@ -469,7 +540,7 @@ mod tests {
                 status: KeyStatus::Active,
                 public_key: "zPlaceholderNotUnderTest".into(),
                 label: label.map(String::from),
-                context_id: Some("med-ctx".into()),
+                context_id: Some(context_id.to_string()),
                 seed_id: None,
                 origin: KeyOrigin::Derived,
                 created_at: now,
@@ -481,37 +552,51 @@ mod tests {
                 .expect("store key record");
         }
 
-        // Two operating keys whose key_ids ARE verification methods of `did`.
+        for (suffix, kt) in [("#key-0", KeyType::Ed25519), ("#key-1", KeyType::X25519)] {
+            mint_internal(
+                env,
+                context_id,
+                &rec.base_path,
+                &format!("{SEEDED_DID}{suffix}"),
+                kt,
+                None,
+            )
+            .await;
+        }
         mint_internal(
-            &env,
+            env,
+            context_id,
             &rec.base_path,
-            &format!("{did}#key-0"),
-            KeyType::Ed25519,
-            None,
-        )
-        .await;
-        mint_internal(
-            &env,
-            &rec.base_path,
-            &format!("{did}#key-1"),
-            KeyType::X25519,
-            None,
-        )
-        .await;
-
-        // An admin did:key minted into the same context: its VM id belongs
-        // to a *different* DID and its label is free text. Must be excluded.
-        let admin = "did:key:z6Mkt6eNM38RhFfjSdmXBtT1SRL7sPgPZD1MkXZbwjYBhTLf";
-        mint_internal(
-            &env,
-            &rec.base_path,
-            &format!("{admin}#z6Mkt6eNM38RhFfjSdmXBtT1SRL7sPgPZD1MkXZbwjYBhTLf"),
+            &format!("{ADMIN_DID_KEY}#z6Mkt6eNM38RhFfjSdmXBtT1SRL7sPgPZD1MkXZbwjYBhTLf"),
             KeyType::Ed25519,
             Some("admin DID for context med-ctx"),
         )
         .await;
 
-        let bundle = build_did_secrets_bundle(&deps_of(&env), &auth, "med-ctx", "test")
+        SEEDED_DID.to_string()
+    }
+
+    /// An admin `did:key` that gets minted into a service context in practice.
+    /// Not a verification method of [`SEEDED_DID`], so it belongs in no bundle.
+    const ADMIN_DID_KEY: &str = "did:key:z6Mkt6eNM38RhFfjSdmXBtT1SRL7sPgPZD1MkXZbwjYBhTLf";
+
+    /// Happy-path coverage for the kid-selection contract: the offline
+    /// bundle must carry exactly the keys whose ids are verification
+    /// methods of the context DID, and must drop an admin `did:key`
+    /// minted into the same context (a different DID, free-text label).
+    ///
+    /// Locks the wiring of [`select_secret_kid`] into the offline path —
+    /// the per-decision rules are unit-tested in
+    /// `vta_sdk::did_secrets`, but this proves `build_did_secrets_bundle`
+    /// feeds it the authoritative store `key_id` (and the label) so a
+    /// refactor can't silently re-include non-VM secrets and re-brick the
+    /// mediator's exact-match recipient lookup (the storm.ws outage).
+    #[tokio::test]
+    async fn build_did_secrets_excludes_non_vm_admin_did_key() {
+        let env = open_env().await;
+        let did = seed_context_with_keys(&env, "med-ctx").await;
+
+        let bundle = build_did_secrets_bundle(&deps_of(&env), &super_admin(), "med-ctx", "test")
             .await
             .expect("bundle builds");
 
@@ -527,8 +612,113 @@ mod tests {
              did:key minted into the context must be excluded"
         );
         assert!(
-            !bundle.secrets.iter().any(|s| s.key_id.contains(admin)),
+            !bundle.secrets.iter().any(|s| s.key_id.contains(ADMIN_DID_KEY)),
             "admin did:key must not appear in the operating-secret bundle"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // `get_context_secrets` — the Trust Task path, and the loosening it makes.
+    //
+    // This is the only operation that hands private keys to an `Application`.
+    // What makes that sound is that the entitlement is a *scope* and not a
+    // *rank*, so the tests below are written to fail if anyone ever implements
+    // it the other way round.
+    // ---------------------------------------------------------------------
+
+    /// The point of the task: a service holding a context gets that context's
+    /// DID and its operating keys, at `Application` — not `Admin`.
+    #[tokio::test]
+    async fn an_application_fetches_its_own_contexts_secrets() {
+        let env = open_env().await;
+        let did = seed_context_with_keys(&env, "med-ctx").await;
+        let auth = scoped(crate::acl::Role::Application, &["med-ctx"]);
+
+        let bundle = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
+            .await
+            .expect("an application may read the keys of the context it operates");
+
+        assert_eq!(bundle.did, did);
+        let mut kids: Vec<&str> = bundle.secrets.iter().map(|s| s.key_id.as_str()).collect();
+        kids.sort_unstable();
+        assert_eq!(kids, vec![format!("{did}#key-0"), format!("{did}#key-1")]);
+    }
+
+    /// The check the loosening rests on. An `Application` entitled to one
+    /// context reaches nothing in another, and the refusal is about access
+    /// rather than existence.
+    #[tokio::test]
+    async fn an_application_cannot_reach_another_contexts_secrets() {
+        let env = open_env().await;
+        seed_context_with_keys(&env, "med-ctx").await;
+        let auth = scoped(crate::acl::Role::Application, &["some-other-ctx"]);
+
+        let err = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
+            .await
+            .expect_err("a context you do not hold is not yours to read keys from");
+        assert!(matches!(err, AppError::Forbidden(_)), "got: {err:?}");
+    }
+
+    /// Scope, not rank. `Admin` is the highest role there is, and it still
+    /// reaches nothing outside its `allowed_contexts` — because only an *empty*
+    /// list means "all contexts". A reimplementation that treated the
+    /// entitlement as a privilege level would hand this caller every context's
+    /// key material, so this test is the guard against that specific mistake.
+    #[tokio::test]
+    async fn an_admin_of_another_context_cannot_either() {
+        let env = open_env().await;
+        seed_context_with_keys(&env, "med-ctx").await;
+        let auth = scoped(crate::acl::Role::Admin, &["some-other-ctx"]);
+
+        let err = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
+            .await
+            .expect_err("admin of another context is still not this context's service");
+        assert!(matches!(err, AppError::Forbidden(_)), "got: {err:?}");
+    }
+
+    /// The role floor is real and sits below the scope check. A `Reader`
+    /// entitled to exactly this context is still refused: seeing that keys
+    /// exist is not holding them.
+    #[tokio::test]
+    async fn a_reader_of_this_very_context_is_below_the_role_floor() {
+        let env = open_env().await;
+        seed_context_with_keys(&env, "med-ctx").await;
+        let auth = scoped(crate::acl::Role::Reader, &["med-ctx"]);
+
+        let err = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
+            .await
+            .expect_err("a reader may see that keys exist, never hold one");
+        assert!(matches!(err, AppError::Forbidden(_)), "got: {err:?}");
+    }
+
+    /// The non-leak claim the spec makes about `notFound`: entitlement is
+    /// checked before existence, so a caller who is not entitled to an id gets
+    /// the *same* refusal whether or not that id exists. Comparing the two
+    /// against each other is what makes this an assertion about
+    /// indistinguishability rather than about either case alone.
+    #[tokio::test]
+    async fn entitlement_is_checked_before_existence() {
+        let env = open_env().await;
+        seed_context_with_keys(&env, "med-ctx").await;
+        let auth = scoped(crate::acl::Role::Application, &["some-other-ctx"]);
+
+        let real = get_context_secrets(&deps_of(&env), &auth, "med-ctx", "test")
+            .await
+            .expect_err("exists, not yours");
+        let imaginary = get_context_secrets(&deps_of(&env), &auth, "no-such-ctx", "test")
+            .await
+            .expect_err("does not exist, and not yours either");
+
+        assert!(matches!(real, AppError::Forbidden(_)), "got: {real:?}");
+        assert!(
+            matches!(imaginary, AppError::Forbidden(_)),
+            "an id that does not exist must not be distinguishable from one that \
+             does but is not the caller's — got: {imaginary:?}"
+        );
+        assert_eq!(
+            real.to_string().replace("med-ctx", "<id>"),
+            imaginary.to_string().replace("no-such-ctx", "<id>"),
+            "the two refusals must differ only in the id echoed back"
         );
     }
 }

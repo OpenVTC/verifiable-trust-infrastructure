@@ -1677,6 +1677,13 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_1_0 => contexts::handle_update
         [ Mutating None false ],
+    // `Secret`, not `Metadata`: the response carries private keys in the clear, and
+    // this classification — not the published registry — is what the PDP feeds into
+    // `PolicyInput`. Declaring it as a metadata read would lower the consent bar on the
+    // single most disclosing task in the surface. `None` side effects is right: it reads
+    // existing keys and mints, rotates and revokes nothing.
+    vta_sdk::trust_tasks::TASK_CONTEXTS_SECRETS_1_0 => contexts::handle_secrets
+        [ None Secret false ],
     vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0 => contexts::handle_update_did
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0 => contexts::handle_preview_delete

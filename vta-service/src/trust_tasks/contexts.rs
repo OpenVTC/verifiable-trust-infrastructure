@@ -112,6 +112,48 @@ pub(super) async fn handle_get(
     }
 }
 
+/// Handler for `spec/vta/contexts/secrets/1.0` — the private keys of a context's own DID.
+///
+/// **Application or higher, and only for a context the caller may act in.** Deliberately not
+/// Admin: reading the keys of the DID you already operate is not an administrative act, and
+/// requiring Admin meant a service had to be granted authority over everything else in the
+/// VTA in order to be itself.
+///
+/// Both checks live in [`operations::keys::get_context_secrets`] rather than here, so a
+/// second entry point cannot acquire a different set of them.
+pub(super) async fn handle_secrets(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: vta_sdk::protocols::context_management::secrets::GetContextSecretsBody =
+        match parse_payload(&doc) {
+            Ok(r) => r,
+            Err(resp) => return resp,
+        };
+    let deps = operations::export::ExportDeps {
+        keys_ks: &state.keys_ks,
+        contexts_ks: &state.contexts_ks,
+        imported_ks: &state.imported_ks,
+        audit: &state.audit_sink,
+        acl_ks: &state.acl_ks,
+        #[cfg(feature = "webvh")]
+        webvh_ks: &state.webvh_ks,
+        seed_store: &state.seed_store,
+    };
+    match operations::export::get_context_secrets(&deps, auth, &req.id, TRANSPORT_TRUST_TASK).await
+    {
+        // The spec's response is lowerCamelCase (SPEC §4.10); `DidSecretsBundle` is the
+        // internal snake_case form, shared with the on-disk export. The conversion is the
+        // boundary between them.
+        Ok(bundle) => success_response(
+            &doc,
+            vta_sdk::protocols::context_management::secrets::ContextSecretsResultBody::from(bundle),
+        ),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
 /// Handler for `spec/vta/contexts/update/1.0`. Super-admin only.
 pub(super) async fn handle_update(
     state: &AppState,
