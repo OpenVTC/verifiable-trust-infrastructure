@@ -559,16 +559,20 @@ async fn list(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answ
         Ok(a) => a,
         Err(e) => return from_app_error(doc, &e),
     };
-    match storage::list_records(
+    // Paginated honestly: the page the caller asked for, and a cursor when more
+    // remain. This used to `take(limit)` and drop the rest without a word, so a
+    // short page and a complete room were indistinguishable.
+    match storage::list_records_page(
         &state.records,
         &req.room_id,
         req.prefix.as_deref(),
         req.since_version,
+        req.cursor.as_deref(),
+        req.limit,
     )
     .await
     {
-        Ok(records) => {
-            let limit = req.limit.unwrap_or(usize::MAX);
+        Ok(page) => {
             // Metadata, never bodies — the same rule the VTC serves under, because it is a
             // property of the task rather than of any one host.
             // A listing names no single record; the event is that the room was surveyed.
@@ -577,7 +581,8 @@ async fn list(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answ
             respond(
                 doc,
                 ListRecordsResponse {
-                    records: records.iter().take(limit).map(|r| r.metadata()).collect(),
+                    records: page.records.iter().map(|r| r.metadata()).collect(),
+                    cursor: page.cursor,
                     // The reference host commits too. A host that served
                     // listings without one would be a working example of the
                     // thing the commitment exists to make detectable.

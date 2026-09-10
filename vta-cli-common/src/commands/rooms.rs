@@ -163,16 +163,38 @@ pub async fn cmd_rooms_list(
     limit: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session = present(client, &target, "read").await?;
-    let listing = target
+
+    // Read the listing to its END, then let `limit` decide how much to PRINT.
+    // A host pages, and absence of the cursor is the only end-of-listing signal
+    // — taking the first page would print "3 record(s)" over a room holding
+    // three hundred, which is the failure this whole member exists to prevent.
+    let mut listing = target
         .client()
         .list_records(
             &session,
             prefix,
             since_version,
+            None,
             signer.did,
             signer.key_multibase,
         )
         .await?;
+    let mut cursor = listing.cursor.clone();
+    while let Some(c) = cursor {
+        let next = target
+            .client()
+            .list_records(
+                &session,
+                prefix,
+                since_version,
+                Some(&c),
+                signer.did,
+                signer.key_multibase,
+            )
+            .await?;
+        cursor = next.cursor.clone();
+        listing.records.extend(next.records);
+    }
 
     if crate::render::is_json_output() {
         crate::render::print_json(&listing.records)?;
@@ -186,8 +208,16 @@ pub async fn cmd_rooms_list(
         return Ok(());
     }
 
-    println!("{} record(s):", listing.records.len());
-    for r in listing.records.iter().take(limit.unwrap_or(usize::MAX)) {
+    let shown = limit.unwrap_or(usize::MAX).min(listing.records.len());
+    if shown < listing.records.len() {
+        println!(
+            "{} record(s), showing {shown} — pass a larger --limit for the rest:",
+            listing.records.len()
+        );
+    } else {
+        println!("{} record(s):", listing.records.len());
+    }
+    for r in listing.records.iter().take(shown) {
         let key = r.get("key").and_then(Value::as_str).unwrap_or("?");
         let version = r.get("version").and_then(Value::as_u64).unwrap_or(0);
         let status = r.get("status").and_then(Value::as_str).unwrap_or("active");

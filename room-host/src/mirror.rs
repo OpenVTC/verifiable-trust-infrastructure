@@ -149,15 +149,42 @@ pub async fn pull_once(state: &HostState, mirror: &MirroredRoom) -> anyhow::Resu
     )?;
 
     let since = room.watermark();
-    let listing = client
-        .list_records(
-            &session,
-            None,
-            Some(since),
-            &mirror.signer_did,
-            &mirror.signer_key_multibase,
-        )
-        .await?;
+
+    // Read the listing to its END. A host pages now, and **absence of the
+    // cursor is the only end-of-listing signal** — a mirror that took the first
+    // page would silently stop replicating at the page size and look perfectly
+    // healthy doing it. A short page says nothing.
+    let mut pending: Vec<serde_json::Value> = Vec::new();
+    let mut cursor: Option<String> = None;
+    // A far side that will not end is a fault rather than a large room: at the
+    // host's maximum page this is a quarter of a million records, and returning
+    // what had been collected would reintroduce the silent-truncation defect
+    // one layer up and with a longer array.
+    const MAX_PAGES: usize = 500;
+    for page in 0..=MAX_PAGES {
+        if page == MAX_PAGES {
+            anyhow::bail!(
+                "room `{}` did not finish listing after {MAX_PAGES} pages; refusing to \
+                 replicate a prefix as though it were the room",
+                mirror.room_id
+            );
+        }
+        let listing = client
+            .list_records(
+                &session,
+                None,
+                Some(since),
+                cursor.as_deref(),
+                &mirror.signer_did,
+                &mirror.signer_key_multibase,
+            )
+            .await?;
+        pending.extend(listing.records);
+        match listing.cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
 
     let mut outcome = PullOutcome {
         copied: 0,
@@ -167,7 +194,6 @@ pub async fn pull_once(state: &HostState, mirror: &MirroredRoom) -> anyhow::Resu
     // Ordered by version so an interrupted pull leaves a prefix rather than a
     // hole: the watermark then resumes from the last record actually stored,
     // and nothing between it and the primary's head is silently skipped.
-    let mut pending: Vec<serde_json::Value> = listing.records;
     pending.sort_by_key(|r| {
         r.get("version")
             .and_then(serde_json::Value::as_u64)

@@ -230,11 +230,16 @@ impl VtcClient {
     /// `since_version` is the incremental-sync watermark, and the response **includes
     /// tombstones**: a caller that never saw a retraction would resurrect the record on its
     /// next full rebuild.
+    ///
+    /// `cursor` continues a previous page. **A listing is not complete until the response's
+    /// `cursor` is absent** — a page shorter than the one asked for says nothing, which is
+    /// why this takes the token rather than leaving callers to guess from a length.
     pub async fn list_records(
         &self,
         session: &RoomSession,
         prefix: Option<&str>,
         since_version: Option<u64>,
+        cursor: Option<&str>,
         signer_did: &str,
         private_key_multibase: &str,
     ) -> Result<ListRecordsResponse, VtcError> {
@@ -247,6 +252,9 @@ impl VtcClient {
         }
         if let Some(v) = since_version {
             payload["sinceVersion"] = serde_json::json!(v);
+        }
+        if let Some(c) = cursor {
+            payload["cursor"] = serde_json::json!(c);
         }
         let value = self
             .room_task(

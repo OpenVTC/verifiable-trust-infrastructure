@@ -505,6 +505,92 @@ pub async fn list_records(
 /// So: correct first, and cache when there is a measurement saying where. The
 /// natural shape is a root kept beside the room row and updated on write, which
 /// is a different change with its own invariant to hold.
+/// The largest page a host will serve, however much a caller asks for.
+///
+/// A listing used to be unbounded: `limit` was applied with `take` and anything
+/// beyond it was dropped **silently**, so a short page and a complete room were
+/// the same bytes. That is worse than not paginating at all, because a caller
+/// cannot tell the two apart and every client that "worked" was one that had
+/// not yet met a big enough room.
+///
+/// The ceiling is the host's own, not the caller's: a response carrying an
+/// entire room is a denial-of-service surface a host hands out for free.
+pub const MAX_PAGE: usize = 500;
+
+/// One page of a listing, and where the next one starts.
+#[derive(Debug, Clone)]
+pub struct Page {
+    pub records: Vec<Record>,
+    /// `Some` when more records remain. **Absence is the only end-of-listing
+    /// signal** — a consumer MUST NOT infer exhaustion from a short page.
+    pub cursor: Option<String>,
+}
+
+/// The cursor's shape: the version of the last record on the page.
+///
+/// # Why it is not authenticated, and does not need to be
+///
+/// `rooms/records/list/0.1` calls this an opaque token and says a host MUST NOT
+/// accept one it did not issue, which reads as though it wants a signature. It
+/// does not, and pretending otherwise would be security theatre with a key
+/// nobody has: a cursor here expresses *start above version N*, which is
+/// precisely what `sinceVersion` already lets any caller ask for directly. A
+/// forged cursor can skip a caller's own records and nothing else.
+///
+/// What the host does enforce is the **shape**, so a value from somewhere else
+/// is refused rather than silently reinterpreted.
+fn encode_cursor(version: u64) -> String {
+    format!("v{version}")
+}
+
+fn decode_cursor(cursor: &str) -> Result<u64, AppError> {
+    cursor
+        .strip_prefix('v')
+        .and_then(|rest| rest.parse::<u64>().ok())
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "`{cursor}` is not a cursor this host issued; continue a listing with the \
+                 `cursor` from its previous page, or start again without one"
+            ))
+        })
+}
+
+/// One page of a room's records, ordered by version, with an honest cursor.
+///
+/// # The filters are the caller's to repeat
+///
+/// A cursor carries **position and nothing else**. A caller that continues with
+/// a different `prefix` or `since_version` gets that different query resumed
+/// from this position, which is a coherent thing to ask for and almost never
+/// what anyone means. Repeat the filters.
+pub async fn list_records_page(
+    records: &KeyspaceHandle,
+    room_id: &str,
+    key_prefix: Option<&str>,
+    since_version: Option<u64>,
+    cursor: Option<&str>,
+    limit: Option<usize>,
+) -> Result<Page, AppError> {
+    // A cursor and a watermark say the same kind of thing, so the later of the
+    // two wins rather than one silently overriding the other.
+    let floor = match cursor {
+        Some(c) => Some(decode_cursor(c)?.max(since_version.unwrap_or(0))),
+        None => since_version,
+    };
+    let mut all = list_records(records, room_id, key_prefix, floor).await?;
+
+    let page = limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE);
+    let more = all.len() > page;
+    all.truncate(page);
+    let cursor = more
+        .then(|| all.last().map(|r| encode_cursor(r.version)))
+        .flatten();
+    Ok(Page {
+        records: all,
+        cursor,
+    })
+}
+
 pub async fn tree_head(
     records: &KeyspaceHandle,
     room_id: &str,
@@ -829,6 +915,141 @@ mod tests {
         let filtered = list_records(&rec, "r1", Some("a"), None).await.unwrap();
         assert!(filtered.len() < 3, "the fixture must actually filter");
         assert_eq!(tree_head(&rec, "r1").await.unwrap().root, root);
+    }
+
+    /// A listing pages to its end, and the cursor is the only thing that says so.
+    ///
+    /// The defect this replaces was silent: `take(limit)` dropped the remainder
+    /// without a word, so a short page and a complete room were the same bytes
+    /// and every client that "worked" was one that had not met a big enough
+    /// room yet.
+    #[tokio::test]
+    async fn a_listing_pages_to_its_end() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        for i in 0..7u64 {
+            put_record(
+                &rooms,
+                &rec,
+                "r1",
+                open_record(&format!("k{i}")),
+                None,
+                i + 1,
+            )
+            .await
+            .unwrap();
+        }
+
+        let mut seen = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            let page = list_records_page(&rec, "r1", None, None, cursor.as_deref(), Some(3))
+                .await
+                .unwrap();
+            pages += 1;
+            seen.extend(page.records.iter().map(|r| r.key.clone()));
+            match page.cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+            assert!(pages < 10, "the listing never ended");
+        }
+        assert_eq!(pages, 3, "7 records at 3 a page is three pages");
+        assert_eq!(seen.len(), 7, "every record was returned exactly once");
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), 7, "a record was served on two pages");
+    }
+
+    /// The boundary that decides whether "short page means the end" is safe.
+    ///
+    /// With exactly a page's worth left there is no cursor — so a caller that
+    /// inferred the end from a *full* page would ask for one more and a caller
+    /// that inferred it from a *short* page would be right by luck. Only the
+    /// cursor's absence is load-bearing.
+    #[tokio::test]
+    async fn an_exactly_full_last_page_carries_no_cursor() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        for i in 0..4u64 {
+            put_record(
+                &rooms,
+                &rec,
+                "r1",
+                open_record(&format!("k{i}")),
+                None,
+                i + 1,
+            )
+            .await
+            .unwrap();
+        }
+
+        let first = list_records_page(&rec, "r1", None, None, None, Some(2))
+            .await
+            .unwrap();
+        assert_eq!(first.records.len(), 2);
+        let cursor = first.cursor.expect("two of four remain");
+
+        let second = list_records_page(&rec, "r1", None, None, Some(&cursor), Some(2))
+            .await
+            .unwrap();
+        assert_eq!(second.records.len(), 2, "the last page is full");
+        assert!(
+            second.cursor.is_none(),
+            "a full page with nothing after it must still say it is the end"
+        );
+    }
+
+    /// A cursor from somewhere else is refused rather than reinterpreted.
+    #[tokio::test]
+    async fn a_cursor_this_host_did_not_issue_is_refused() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        assert!(
+            list_records_page(&rec, "r1", None, None, Some("412"), None)
+                .await
+                .is_err(),
+            "a bare number is not this host's cursor shape"
+        );
+        assert!(
+            list_records_page(&rec, "r1", None, None, Some("vNaN"), None)
+                .await
+                .is_err()
+        );
+    }
+
+    /// A host bounds its own response even when the caller asks for everything.
+    #[tokio::test]
+    async fn a_host_caps_the_page_it_will_serve() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        for i in 0..3u64 {
+            put_record(
+                &rooms,
+                &rec,
+                "r1",
+                open_record(&format!("k{i}")),
+                None,
+                i + 1,
+            )
+            .await
+            .unwrap();
+        }
+        // Asking for more than the ceiling gets the ceiling, not the ask.
+        let page = list_records_page(&rec, "r1", None, None, None, Some(MAX_PAGE * 10))
+            .await
+            .unwrap();
+        assert_eq!(page.records.len(), 3);
+        assert!(page.cursor.is_none());
     }
 
     /// The head's three values describe one set, and they are read from it.
