@@ -86,6 +86,25 @@ pub struct KeyRecord {
     /// Absent when unset, never `null`; the component types it `integer`.
     #[serde(default, alias = "seed_id", skip_serializing_if = "Option::is_none")]
     pub seed_id: Option<u32>,
+    /// Whether the private half may be released to a caller.
+    ///
+    /// `Some(false)` means every export of this key is refused and it can only
+    /// be *used* — signing, key agreement — so the material never leaves.
+    ///
+    /// **`None` means exportable.** That is the permissive reading and it is
+    /// deliberate: it is what every record written before this member existed
+    /// already meant, so adding the member cannot silently retract access that
+    /// callers already have. `Option<bool>` rather than a `#[serde(default)]`
+    /// `bool` for the same reason the spec declares no JSON Schema `default` —
+    /// a materialised default would rewrite absent as an explicit `true` on the
+    /// next save, turning "never asked" into "asked and allowed".
+    ///
+    /// Not a statement about recoverability. A whole-store backup is a
+    /// different mechanism from an export to a caller, and `vta-backup` reads
+    /// the `SeedStore` directly rather than going through `get_key_secret`, so
+    /// a non-exportable key still restores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exportable: Option<bool>,
     #[serde(default = "default_derived")]
     pub origin: KeyOrigin,
     #[serde(alias = "created_at")]

@@ -108,6 +108,7 @@ async fn create_internal_key(
         public_key: public_key.clone(),
         label: label.clone(),
         context_id: context_id.clone(),
+        exportable: None,
         // No seed is involved, so there is no seed generation to pin to.
         seed_id: None,
         origin: keys::KeyOrigin::Internal,
@@ -248,6 +249,7 @@ pub async fn create_key(
         public_key: public_key.clone(),
         label: params.label.clone(),
         context_id: context_id.clone(),
+        exportable: None,
         seed_id: Some(active_id),
         origin: keys::KeyOrigin::Derived,
         created_at: now,
@@ -394,6 +396,7 @@ pub async fn import_key(
         label: params.label.clone(),
         context_id: context_id.clone(),
         seed_id: None,
+        exportable: None,
         origin: KeyOrigin::Imported,
         created_at: now,
         updated_at: now,
@@ -742,6 +745,25 @@ pub async fn get_key_secret(
         )));
     }
 
+    // The exportability restriction, enforced at the one place a private key
+    // leaves the VTA. This function is the export surface — the callers are
+    // `seeds/export-mnemonic`, `build_did_secrets_bundle` (and so
+    // `vta/contexts/secrets`), and the operator's own CLI export prompt.
+    // `get_key_secret_internal` is deliberately NOT gated here: it is the *use*
+    // surface, loading a key so the VTA can sign or decrypt with it, and a key
+    // that may not leave may still be used. Gating it would break the VTA's own
+    // signing rather than protect anything, because nothing it returns reaches
+    // a caller.
+    //
+    // `None` means exportable — see `KeyRecord::exportable`. Only an explicit
+    // `Some(false)` refuses, so records written before the member existed are
+    // unaffected.
+    if record.exportable == Some(false) {
+        return Err(AppError::Forbidden(format!(
+            "key `{key_id}` is marked non-exportable and its private half is never              released; it can still be used for signing and key agreement. Changing              that needs `keys/set-exportability` with authority beyond the one that              set it"
+        )));
+    }
+
     let (public_key_multibase, private_key_multibase) = match record.origin {
         // Unreachable: the early return above refuses internal keys. Kept as a
         // second, local refusal so deleting that guard cannot quietly turn this
@@ -830,6 +852,110 @@ pub async fn get_key_secret(
         public_key_multibase,
         private_key_multibase,
     })
+}
+
+/// Set whether a key's private half may be released, and refuse to make that
+/// decision cheaply reversible.
+///
+/// # The asymmetry is the feature
+///
+/// A restriction that whoever imposed it can lift again protects against
+/// accident but not against a compromised caller holding that party's
+/// credentials — which is the case the restriction exists for. So the two
+/// directions do not carry the same entitlement:
+///
+/// - **Imposing it** (`exportable: false`) needs admin of the key's context.
+///   Foreclosing something is the safe direction.
+/// - **Lifting it** (`false` → `true`) needs that *and* one of two things
+///   beyond it: super-admin, or a live step-up on this session. Either is
+///   strictly more than the entitlement that imposed it, which is what
+///   `keys/set-exportability/0.1` requires of a conforming consumer. The spec
+///   deliberately does not name the mechanism — SPEC §7.3 item 13 forbids a
+///   specification from mandating a step-up — so choosing these two is this
+///   VTA's policy, and either satisfies the rule.
+///
+/// Offering both rather than only super-admin matters operationally: a
+/// deployment with no super-admin session to hand can still recover a key it
+/// locked down, by stepping up. One with no step-up policy configured can still
+/// do it as super-admin. Requiring only one of them would strand somebody.
+///
+/// # Idempotent, and only the transition is gated
+///
+/// `exportable` is an absolute state, not a toggle, so a producer that retries
+/// a request whose reply was lost lands where it asked. Setting `true` on a key
+/// that is already exportable takes nothing away and so takes the ordinary
+/// path — only a real `false` → `true` transition meets the stronger gate.
+pub async fn set_key_exportability(
+    keys_ks: &KeyspaceHandle,
+    sessions_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    key_id: &str,
+    exportable: bool,
+    channel: &str,
+) -> Result<KeyRecord, AppError> {
+    let mut record: KeyRecord = keys_ks
+        .get(keys::store_key(key_id))
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("key {key_id} not found")))?;
+
+    // Standing over the key's scope, exactly as the export path requires it.
+    if let Some(ref ctx) = record.context_id {
+        auth.require_context(ctx)?;
+    } else if !auth.is_super_admin() {
+        return Err(AppError::Forbidden(
+            "only super admin can act on keys without a context".into(),
+        ));
+    }
+    auth.require_admin()?;
+
+    // An internal key has no export surface at all, so `exportable: true` is
+    // asking for something no authority can grant. Refused as a precondition
+    // rather than a permission failure — retrying as super-admin changes
+    // nothing, and saying "forbidden" would send the operator to look for more
+    // authority that does not exist.
+    if record.origin == KeyOrigin::Internal && exportable {
+        return Err(AppError::Validation(format!(
+            "key `{key_id}` is an internal key: its private half is never released              regardless of this setting, so it cannot be made exportable"
+        )));
+    }
+
+    let currently = record.exportable != Some(false);
+    if !currently && exportable {
+        // The one gated transition. Super-admin OR a live step-up; the error
+        // names both, because a caller told only "forbidden" cannot tell which
+        // of the two routes is open to it.
+        if auth.require_super_admin().is_err() {
+            auth.require_fresh_step_up(sessions_ks).await.map_err(|_| {
+                AppError::Forbidden(format!(
+                    "making `{key_id}` exportable again needs more authority than the                      admin that restricted it: either super-admin, or a fresh step-up                      on this session"
+                ))
+            })?;
+        }
+    }
+
+    record.exportable = Some(exportable);
+    record.updated_at = chrono::Utc::now();
+    keys_ks.insert(keys::store_key(key_id), &record).await?;
+
+    audit!(
+        "key.set_exportability",
+        actor = &auth.did,
+        resource = key_id,
+        outcome = "success"
+    );
+    let _ = audit::record(
+        audit,
+        "key.set_exportability",
+        &auth.did,
+        Some(key_id),
+        "success",
+        Some(channel),
+        record.context_id.as_deref(),
+    )
+    .await;
+
+    Ok(record)
 }
 
 /// Internal-authority variant of [`get_key_secret`] that bypasses the
@@ -1416,6 +1542,7 @@ mod tests {
         imported_ks: KeyspaceHandle,
         internal_ks: KeyspaceHandle,
         acl_ks: KeyspaceHandle,
+        sessions_ks: KeyspaceHandle,
         seed_store: Arc<dyn SeedStore>,
         _dir: tempfile::TempDir,
     }
@@ -1436,6 +1563,7 @@ mod tests {
             let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
             let internal_ks = store.keyspace(crate::keyspaces::INTERNAL_KEYS).unwrap();
             let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
+            let sessions_ks = store.keyspace(crate::keyspaces::SESSIONS).unwrap();
 
             // 32-byte seed; will be expanded to 64 bytes by BIP-32 internally
             let seed_store: Arc<dyn SeedStore> =
@@ -1453,8 +1581,24 @@ mod tests {
                 imported_ks,
                 internal_ks,
                 acl_ks,
+                sessions_ks,
                 seed_store,
                 _dir: dir,
+            }
+        }
+
+        /// Admin of `test-ctx` and nothing else — the entitlement that may
+        /// impose the export restriction but must not be able to lift it.
+        fn context_admin_auth(&self) -> AuthClaims {
+            AuthClaims {
+                did: "did:key:z6MkCtxAdmin".to_string(),
+                role: Role::Admin,
+                allowed_contexts: vec!["test-ctx".to_string()],
+                session_id: "ctx-admin-session".into(),
+                access_expires_at: 0,
+                issued_at: 0,
+                amr: Vec::new(),
+                acr: String::new(),
             }
         }
 
@@ -2685,6 +2829,37 @@ mod tests {
     }
     // ── internal (non-extractable) keys ──────────────────────────────
 
+    /// An ordinary derived key in `test-ctx` — the scope `context_admin_auth`
+    /// administers, so the exportability tests exercise a real context admin
+    /// rather than borrowing super-admin authority.
+    async fn mint_derived(h: &TestHarness, key_id: &str) -> KeyRecord {
+        create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.super_admin_auth(),
+            CreateKeyParams {
+                internal: false,
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: Some(key_id.to_string()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("test-ctx".to_string()),
+            },
+            "test",
+        )
+        .await
+        .expect("mint derived key");
+        h.keys_ks
+            .get(keys::store_key(key_id))
+            .await
+            .expect("read back")
+            .expect("the record exists")
+    }
+
     async fn mint_internal(h: &TestHarness, key_id: &str) -> CreateKeyResultBody {
         create_key(
             &h.keys_ks,
@@ -2730,6 +2905,254 @@ mod tests {
         assert!(
             matches!(&err, AppError::Forbidden(m) if m.contains("internal key")),
             "a super-admin must still be refused; got {err:?}"
+        );
+    }
+
+    // ── exportability ────────────────────────────────────────────────
+    //
+    // The member's whole value is that the two directions are not equally easy
+    // to travel. These assert the relation, not just each end of it.
+
+    /// A key created the ordinary way carries no opinion, and absence reads as
+    /// exportable — the compatibility guarantee for every record written before
+    /// the member existed.
+    #[tokio::test]
+    async fn a_key_is_exportable_until_someone_says_otherwise() {
+        let h = TestHarness::new().await;
+        let created = mint_derived(&h, "k-open").await;
+        assert_eq!(
+            created.exportable, None,
+            "a new key records no decision; `Some(true)` would be a claim nobody made"
+        );
+
+        get_key_secret(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.super_admin_auth(),
+            "k-open",
+            "test",
+        )
+        .await
+        .expect("absence must read as exportable");
+    }
+
+    /// The restriction bites at the one place a private key leaves the VTA.
+    #[tokio::test]
+    async fn a_restricted_key_is_never_exported() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-shut").await;
+
+        set_key_exportability(
+            &h.keys_ks,
+            &h.sessions_ks,
+            &h.audit,
+            &h.context_admin_auth(),
+            "k-shut",
+            false,
+            "test",
+        )
+        .await
+        .expect("a context admin may impose the restriction");
+
+        let err = get_key_secret(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.super_admin_auth(),
+            "k-shut",
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("non-exportable")),
+            "even a super-admin is refused the material; got {err:?}"
+        );
+    }
+
+    /// The asymmetry itself. The same claim that imposed the restriction must
+    /// not be able to lift it — otherwise the restriction protects against
+    /// accident but not against a compromised caller holding that claim, which
+    /// is the case it exists for.
+    #[tokio::test]
+    async fn the_admin_that_restricted_a_key_cannot_release_it_again() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-asym").await;
+        let admin = h.context_admin_auth();
+
+        set_key_exportability(
+            &h.keys_ks,
+            &h.sessions_ks,
+            &h.audit,
+            &admin,
+            "k-asym",
+            false,
+            "test",
+        )
+        .await
+        .expect("imposing is the cheap direction");
+
+        let err = set_key_exportability(
+            &h.keys_ks,
+            &h.sessions_ks,
+            &h.audit,
+            &admin,
+            "k-asym",
+            true,
+            "test",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, AppError::Forbidden(m)
+                if m.contains("super-admin") && m.contains("step-up")),
+            "the refusal must name both routes, or a caller cannot tell which is \
+             open to it; got {err:?}"
+        );
+    }
+
+    /// Super-admin is one of the two ways past that gate.
+    #[tokio::test]
+    async fn a_super_admin_can_release_a_restricted_key() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-reopen").await;
+
+        set_key_exportability(
+            &h.keys_ks,
+            &h.sessions_ks,
+            &h.audit,
+            &h.context_admin_auth(),
+            "k-reopen",
+            false,
+            "test",
+        )
+        .await
+        .expect("restrict");
+
+        let record = set_key_exportability(
+            &h.keys_ks,
+            &h.sessions_ks,
+            &h.audit,
+            &h.super_admin_auth(),
+            "k-reopen",
+            true,
+            "test",
+        )
+        .await
+        .expect("a super-admin holds strictly more than the context admin that restricted it");
+        assert_eq!(record.exportable, Some(true));
+
+        get_key_secret(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.super_admin_auth(),
+            "k-reopen",
+            "test",
+        )
+        .await
+        .expect("and the key exports again");
+    }
+
+    /// Only a real `false` -> `true` transition meets the stronger gate.
+    /// Setting `true` on an already-exportable key takes nothing away, so
+    /// gating it would demand super-admin for a no-op — and would make a
+    /// retried request harder to complete than the original.
+    #[tokio::test]
+    async fn re_asserting_exportable_on_an_open_key_is_not_gated() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-noop").await;
+
+        let record = set_key_exportability(
+            &h.keys_ks,
+            &h.sessions_ks,
+            &h.audit,
+            &h.context_admin_auth(),
+            "k-noop",
+            true,
+            "test",
+        )
+        .await
+        .expect("a context admin may confirm what is already true");
+        assert_eq!(record.exportable, Some(true));
+    }
+
+    /// Idempotent in the other direction too: `exportable` is an absolute
+    /// state, so a producer retrying a lost `false` lands on `false` rather
+    /// than toggling back.
+    #[tokio::test]
+    async fn restricting_twice_stays_restricted() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-twice").await;
+        let admin = h.context_admin_auth();
+
+        for _ in 0..2 {
+            let record = set_key_exportability(
+                &h.keys_ks,
+                &h.sessions_ks,
+                &h.audit,
+                &admin,
+                "k-twice",
+                false,
+                "test",
+            )
+            .await
+            .expect("a repeat is a no-op, not a toggle");
+            assert_eq!(record.exportable, Some(false));
+        }
+    }
+
+    /// Scope still applies: an admin of another context reaches nothing here,
+    /// the same rule the export path enforces.
+    #[tokio::test]
+    async fn an_admin_of_another_context_cannot_set_exportability() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-scope").await;
+        let mut elsewhere = h.context_admin_auth();
+        elsewhere.allowed_contexts = vec!["some-other-ctx".to_string()];
+
+        let err = set_key_exportability(
+            &h.keys_ks,
+            &h.sessions_ks,
+            &h.audit,
+            &elsewhere,
+            "k-scope",
+            false,
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AppError::Forbidden(_)), "got: {err:?}");
+    }
+
+    /// An internal key can never be released, so asking for that is a
+    /// precondition failure rather than a permission one — retrying with more
+    /// authority changes nothing, and `Forbidden` would send the operator
+    /// looking for authority that does not exist.
+    #[tokio::test]
+    async fn an_internal_key_cannot_be_made_exportable() {
+        let h = TestHarness::new().await;
+        mint_internal(&h, "k-internal").await;
+
+        let err = set_key_exportability(
+            &h.keys_ks,
+            &h.sessions_ks,
+            &h.audit,
+            &h.super_admin_auth(),
+            "k-internal",
+            true,
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("internal key")),
+            "got: {err:?}"
         );
     }
 

@@ -407,6 +407,7 @@ mod tests {
         // Legacy KeyRecord exists in `key:*` but nothing in webvh_keys.
         let key_id = format!("did:webvh:{scid}#key-0");
         let record = KeyRecord {
+            exportable: None,
             key_id: key_id.clone(),
             derivation_path: "m/26'/0'/0'/0".into(),
             key_type: KeyType::Ed25519,

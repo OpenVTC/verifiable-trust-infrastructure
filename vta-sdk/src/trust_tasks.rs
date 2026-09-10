@@ -415,6 +415,25 @@ pub const TASK_KEYS_RENAME_0_1: &str = "https://trusttasks.org/spec/keys/rename/
 /// Auth: Admin.
 pub const TASK_KEYS_REVOKE_0_1: &str = "https://trusttasks.org/spec/keys/revoke/0.1";
 
+/// `spec/keys/set-exportability/0.1` — whether a key's private half may be
+/// released to a caller.
+///
+/// **The two directions do not carry the same entitlement, and that asymmetry
+/// is the point.** Imposing the restriction forecloses something and needs
+/// admin of the key's context. Lifting it restores an ability that was
+/// deliberately taken away, and needs strictly more: super-admin, or a live
+/// step-up on the session.
+///
+/// A restriction that whoever imposed it can lift again protects against
+/// accident but not against a compromised caller holding that party's
+/// credentials — which is the case the restriction exists for.
+///
+/// Payload:
+/// [`crate::protocols::key_management::set_exportability::SetKeyExportabilityBody`].
+/// Returns the key record; never any private material.
+pub const TASK_KEYS_SET_EXPORTABILITY_0_1: &str =
+    "https://trusttasks.org/spec/keys/set-exportability/0.1";
+
 /// `spec/vta/keys/sign/1.0` — sign a base64url-encoded payload with a
 /// stored key (raw-bytes signing oracle).
 /// Payload: [`crate::protocols::key_management::sign::SignRequestBody`].
@@ -1867,6 +1886,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_KEYS_SHOW_0_1,
     TASK_KEYS_RENAME_0_1,
     TASK_KEYS_REVOKE_0_1,
+    TASK_KEYS_SET_EXPORTABILITY_0_1,
     TASK_KEYS_SIGN_0_1,
     TASK_KEYS_DERIVE_AND_SIGN_0_1,
     TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,

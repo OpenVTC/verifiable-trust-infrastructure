@@ -7,6 +7,7 @@ pub mod list;
 pub mod rename;
 pub mod revoke;
 pub mod secret;
+pub mod set_exportability;
 pub mod sign;
 
 pub const PROTOCOL_BASE: &str = "https://firstperson.network/protocols/key-management/1.0";

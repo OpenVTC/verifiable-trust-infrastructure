@@ -120,6 +120,12 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // execution costs (nothing — it is idempotent), this asks what ONE
     // execution discloses.
     ("vta/contexts/secrets", Risk::Sensitive),
+    // Custody rules, changed. `keys/set-exportability` decides whether a key
+    // may ever leave — one direction forecloses that, the other restores it —
+    // so a blanket `vta_call` approval must not silently cover it. The verb
+    // rule would read `set-exportability` as an ordinary mutation, and in the
+    // lifting direction it is the step that lets a protected key out.
+    ("keys/set-exportability", Risk::Sensitive),
     // Authority, moved.
     ("acl/grant", Risk::Sensitive),
     ("acl/update", Risk::Sensitive),

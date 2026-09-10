@@ -1703,6 +1703,12 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_KEYS_REVOKE_0_1 => keys::handle_revoke
         [ Destructive None false ],
+    // `Mutating` and `Metadata`: it changes one member of a key record and
+    // discloses only the record. It never reads or releases key material — the
+    // task decides whether a *future* export may happen, and does not perform
+    // one.
+    vta_sdk::trust_tasks::TASK_KEYS_SET_EXPORTABILITY_0_1 => keys::handle_set_exportability
+        [ Mutating Metadata false ],
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_0_1 => keys::handle_sign
         [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1 => keys::handle_derive_and_sign

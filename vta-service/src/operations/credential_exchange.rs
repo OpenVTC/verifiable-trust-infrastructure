@@ -2251,6 +2251,7 @@ mod tests {
             .insert(
                 crate::keys::store_key(&key_id),
                 &KeyRecord {
+                    exportable: None,
                     key_id: key_id.clone(),
                     derivation_path: path.into(),
                     key_type: KeyType::Ed25519,
@@ -2505,6 +2506,7 @@ mod tests {
             .insert(
                 crate::keys::store_key(&key_id),
                 &KeyRecord {
+                    exportable: None,
                     key_id: key_id.clone(),
                     derivation_path: path.into(),
                     key_type: KeyType::Ed25519,

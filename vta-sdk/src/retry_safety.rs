@@ -193,6 +193,12 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_KEYS_SHOW_0_1, ReadOnly),
     (trust_tasks::TASK_KEYS_RENAME_0_1, RetrySafe),
     (trust_tasks::TASK_KEYS_REVOKE_0_1, RetrySafe),
+    // `RetrySafe`, not `Keyed`: `exportable` is an absolute state, so a second
+    // execution converges on the same record rather than leaving a second
+    // artefact. That is the property the spec insists on, and it is exactly
+    // what makes a blind retry safe — a producer that retried a lost `false`
+    // must land on `false`, never toggle back to `true`.
+    (trust_tasks::TASK_KEYS_SET_EXPORTABILITY_0_1, RetrySafe),
     // Signing is a pure function of key + payload; the same request signs the
     // same bytes. No durable effect beyond the audit row.
     (trust_tasks::TASK_KEYS_SIGN_0_1, ReadOnly),

@@ -533,6 +533,7 @@ mod tests {
                 .expect("allocate path");
             let now = Utc::now();
             let record = KeyRecord {
+                exportable: None,
                 key_id: kid.to_string(),
                 derivation_path: path,
                 key_type: kt,
