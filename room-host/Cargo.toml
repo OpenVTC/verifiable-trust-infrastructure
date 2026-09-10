@@ -85,7 +85,17 @@ k8s-secrets = ["vti-secrets/k8s-secrets"]
 ## Enrol with a VTA: ephemeral `did:key` → operator grant → auto-rotate, the flow
 ## the mediator, PNM and did-hosting already use. Separate from `didcomm` because
 ## a host can be reachable without being governed by any VTA.
-onboarding = ["dep:vti-secrets", "dep:vta-sdk", "vti-secrets/onboarding"]
+## `affinidi-secrets-resolver` because the identity this feature fetches is a set of
+## `Secret`s — it is the return type of `onboarding::fetch_identity`, not an internal
+## detail. Without it `--features onboarding` alone did not compile at all; the
+## dependency arrived only via `didcomm`, so every build that had both hid it.
+onboarding = [
+    "dep:vti-secrets",
+    "dep:vta-sdk",
+    "dep:affinidi-secrets-resolver",
+    "dep:toml",
+    "vti-secrets/onboarding",
+]
 ## Session storage for the enrolled identity. One is required by `onboarding`, and
 ## which one is an operator's decision — the same shape as `[secrets]`.
 config-session = ["vta-sdk/config-session"]

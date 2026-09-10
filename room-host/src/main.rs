@@ -7,7 +7,7 @@ use clap::Parser;
 
 /// The wrapper a `[secrets]` table arrives in, so the file reads the same as every other
 /// service's config rather than being a bare table this binary alone would accept.
-#[cfg(feature = "didcomm")]
+#[cfg(any(feature = "didcomm", feature = "onboarding"))]
 #[derive(serde::Deserialize)]
 struct SecretsFile {
     #[serde(default)]
@@ -68,7 +68,7 @@ struct Args {
     /// Omitted, the host keeps its identity in a plaintext file under `--data-dir`. That is
     /// the right default for running this on a laptop and the wrong one for a deployment: it
     /// is a private key on whatever volume the container was given.
-    #[cfg(feature = "didcomm")]
+    #[cfg(any(feature = "didcomm", feature = "onboarding"))]
     #[arg(long)]
     secrets: Option<std::path::PathBuf>,
 
@@ -81,6 +81,19 @@ struct Args {
     #[cfg(feature = "onboarding")]
     #[arg(long)]
     vta_did: Option<String>,
+
+    /// The VTA context this host serves rooms for.
+    ///
+    /// Its DID is what this host serves *as*: the VTA mints it, publishes it, and holds the
+    /// keys, and this host fetches them at startup. So the identity a member resolves and
+    /// the identity this host seals with are the same by construction.
+    ///
+    /// The grant an operator makes on enrolment is for this context, and it is an
+    /// `application` role — a host holds ciphertext it cannot read, so it needs to act in
+    /// the context and needs no authority over it.
+    #[cfg(feature = "onboarding")]
+    #[arg(long, default_value = "rooms")]
+    vta_context: String,
 
     /// Seconds between mirror pulls.
     ///
@@ -128,15 +141,12 @@ async fn main() -> anyhow::Result<()> {
         ));
     }
 
-    // Before the listener, for the same reason mirrors start first: a host that is going to
-    // be reachable at a mediator should be reachable *by the time* it starts answering, and
-    // an identity that will not load is a startup failure rather than something discovered
-    // by the first member who cannot reach it.
-    #[cfg(feature = "didcomm")]
-    if let Some(mediator_did) = args.mediator_did.clone() {
-        // The same `[secrets]` shape the VTA and VTC take. With none configured this is a
-        // plaintext file under `--data-dir`, which is right for a laptop; a deployment points
-        // it at the secret manager it already runs.
+    // One secrets store, used by both the VTA-identity cache and the self-minted identity.
+    // The same `[secrets]` shape the VTA and VTC take: with none configured this is a
+    // plaintext file under `--data-dir`, which is right for a laptop; a deployment points it
+    // at the secret manager it already runs.
+    #[cfg(any(feature = "didcomm", feature = "onboarding"))]
+    let identity_store = {
         let secrets = match &args.secrets {
             Some(path) => {
                 let text = std::fs::read_to_string(path)?;
@@ -161,9 +171,81 @@ async fn main() -> anyhow::Result<()> {
                 config
             }
         };
-        let store = vti_secrets::create_seed_store(&secrets, &args.data_dir)?;
-        let identity =
-            room_host::didcomm::HostIdentity::load_or_mint(store.as_ref(), &mediator_did).await?;
+        vti_secrets::create_seed_store(&secrets, &args.data_dir)?
+    };
+
+    // Enrolment first, because it can stop. A host awaiting a grant has nothing to serve
+    // and no identity to serve it under, and minting one before finding that out leaves a
+    // `did:peer` in the data directory that the VTA-governed path will never use.
+    //
+    // An operator who has to authorize this host should also find that out from the first
+    // line of output, not after a page of startup that implies it is working.
+    #[cfg(feature = "onboarding")]
+    let vta_identity = match args.vta_did.as_deref() {
+        None => None,
+        Some(vta_did) => match room_host::onboarding::enrol(&args.data_dir, vta_did)? {
+            room_host::onboarding::Enrolment::AwaitingGrant { ephemeral_did } => {
+                println!(
+                    "{}",
+                    room_host::onboarding::grant_instructions(&ephemeral_did, vta_did)
+                );
+                return Ok(());
+            }
+            room_host::onboarding::Enrolment::Enrolled => {
+                tracing::info!(vta = %vta_did, "enrolled with the VTA");
+                // The identity this host actually serves as. Fetched rather than minted:
+                // the VTA holds the context's DID and its keys, so what a member resolves
+                // and what this host seals with are the same by construction.
+                //
+                // The cache is the same secrets store the minted identity would use, so a
+                // VTA that is unreachable at boot costs this host nothing — it comes up on
+                // the identity it fetched last time. Without that, a VTA outage would stop
+                // every host enrolled with it, which is a far larger blast radius than the
+                // outage itself.
+                let identity = room_host::onboarding::fetch_identity(
+                    &args.data_dir,
+                    vta_did,
+                    &args.vta_context,
+                    identity_store.as_ref(),
+                )
+                .await?;
+                if !identity.fresh {
+                    tracing::warn!(
+                        did = %identity.did,
+                        "serving on the cached VTA identity — the VTA could not be reached"
+                    );
+                }
+                Some(identity)
+            }
+        },
+    };
+
+    // Before the listener, for the same reason mirrors start first: a host that is going to
+    // be reachable at a mediator should be reachable *by the time* it starts answering, and
+    // an identity that will not load is a startup failure rather than something discovered
+    // by the first member who cannot reach it.
+    #[cfg(feature = "didcomm")]
+    if let Some(mediator_did) = args.mediator_did.clone() {
+        // Governed by a VTA: serve as the DID it holds for this context.
+        #[cfg(feature = "onboarding")]
+        let from_vta = vta_identity
+            .map(|vta| room_host::didcomm::HostIdentity::from_vta(vta.did, vta.secrets));
+        // Built without onboarding, there is no VTA to be governed by and nothing to fetch.
+        #[cfg(not(feature = "onboarding"))]
+        let from_vta: Option<room_host::didcomm::HostIdentity> = None;
+
+        let identity = match from_vta {
+            Some(identity) => identity,
+            // Ungoverned: mint a `did:peer:2` of this host's own, which encodes the mediator
+            // so `?at=<did>` remains a complete address with nothing to resolve.
+            None => {
+                room_host::didcomm::HostIdentity::load_or_mint(
+                    identity_store.as_ref(),
+                    &mediator_did,
+                )
+                .await?
+            }
+        };
         // Printed, not only logged. It is this host's *address* — the thing a member puts
         // after `?at=` — and an operator has to be able to copy it out of a terminal.
         println!("host DID: {}", identity.did);
@@ -173,28 +255,6 @@ async fn main() -> anyhow::Result<()> {
                 tracing::error!(error = %e, "the mediator connection ended");
             }
         });
-    }
-
-    // Before the listener, and before anything is served: an operator who has to authorize
-    // this host should find that out from the first line of output, not after a page of
-    // startup that implies it is working.
-    #[cfg(feature = "onboarding")]
-    if let Some(vta_did) = args.vta_did.as_deref() {
-        match room_host::onboarding::enrol(&args.data_dir, vta_did)? {
-            room_host::onboarding::Enrolment::Enrolled => {
-                tracing::info!(vta = %vta_did, "enrolled with the VTA");
-            }
-            room_host::onboarding::Enrolment::AwaitingGrant { ephemeral_did } => {
-                // Printed and then stopped. Carrying on would serve a host that cannot be
-                // authorized for anything the VTA governs, which is a confusing kind of
-                // running — and the operator has a step to take before it can be otherwise.
-                println!(
-                    "{}",
-                    room_host::onboarding::grant_instructions(&ephemeral_did, vta_did)
-                );
-                return Ok(());
-            }
-        }
     }
 
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;

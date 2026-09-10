@@ -123,6 +123,22 @@ struct IdentityFile {
 }
 
 impl HostIdentity {
+    /// The identity a VTA holds for this host, rather than one minted here.
+    ///
+    /// The DID is a `did:webvh` the VTA minted into the host's context and the keys are the
+    /// ones it published under it, so what a member resolves and what this host seals with
+    /// are the same by construction rather than by agreement.
+    ///
+    /// No mediator is recorded because none is encoded: a `did:peer:2` carries its mediator
+    /// in the identifier, which is why [`load_or_mint`](Self::load_or_mint) checks the two
+    /// agree. A `did:webvh` carries a service block instead, and the mediator named there is
+    /// the VTA's business — it published the document. Checking it here would be this host
+    /// second-guessing the party that issued its identity.
+    #[must_use]
+    pub fn from_vta(did: String, secrets: Vec<Secret>) -> Self {
+        Self { did, secrets }
+    }
+
     /// Load this host's identity from `secrets`, minting one on first use.
     ///
     /// `did:peer:2`, so the identifier carries both its keys **and** the mediator it is
@@ -552,5 +568,29 @@ mod tests {
         // caller never sent, which is the same failure as threading on the wrong one.
         let no_id = serde_json::to_vec(&json!({ "type": "x", "payload": {} })).unwrap();
         assert_eq!(unwrap_request(Protocol::TSP, &no_id), None);
+    }
+
+    /// The VTA identity is what the host serves as, and nothing about it is re-derived
+    /// here — the DID comes from the VTA and the keys with it.
+    ///
+    /// Worth a test because the constructor's whole job is to *not* do what
+    /// `load_or_mint` does: no minting, no mediator check, no identity file. A future
+    /// refactor that "helpfully" made them share a path would silently start serving a
+    /// different DID than the one the VTA published.
+    #[test]
+    fn a_vta_identity_is_served_verbatim() {
+        let did = "did:webvh:QmScid:rooms.example:host".to_string();
+        let identity = HostIdentity::from_vta(did.clone(), Vec::new());
+        assert_eq!(identity.did, did, "the VTA's DID, unchanged");
+    }
+
+    /// The redacting Debug still holds for an identity that came from a VTA — it is the
+    /// same struct, and this is the half that carries private keys.
+    #[test]
+    fn a_vta_identity_still_redacts_its_secrets() {
+        let identity =
+            HostIdentity::from_vta("did:webvh:QmScid:rooms.example:host".into(), Vec::new());
+        let rendered = format!("{identity:?}");
+        assert!(rendered.contains("redacted"), "got: {rendered}");
     }
 }
