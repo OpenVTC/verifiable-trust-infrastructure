@@ -139,6 +139,16 @@ pub struct AuditKeyStore {
     ks: KeyspaceHandle,
 }
 
+/// HKDF info string for a VTC's audit key. The `/v2` is the rework recorded
+/// in this module's history and is part of the derivation — changing it
+/// derives a different key and orphans every existing hash.
+pub const VTC_AUDIT_KEY_INFO: &[u8] = b"vtc-audit-key/v2";
+
+/// HKDF info string for a VTA's audit key. Separate from
+/// [`VTC_AUDIT_KEY_INFO`] so that a VTC provisioned on a VTA does not share
+/// its HMAC key with the VTA underneath it.
+pub const VTA_AUDIT_KEY_INFO: &[u8] = b"vta-audit-key/v1";
+
 impl AuditKeyStore {
     /// Wrap a keyspace handle. The caller is responsible for
     /// configuring encryption-at-rest if desired.
@@ -207,13 +217,35 @@ impl AuditKeyStore {
     /// §5.2) — the IKM is now a 32-byte Ed25519 private from the
     /// VTA bundle, not a 64-byte BIP-39 seed.
     pub async fn ensure_initial(&self, master_seed: &[u8]) -> Result<AuditKey, AppError> {
+        self.ensure_initial_with_info(master_seed, VTC_AUDIT_KEY_INFO)
+            .await
+    }
+
+    /// As [`Self::ensure_initial`], deriving under an explicit HKDF info
+    /// string.
+    ///
+    /// The info string is what separates one node's audit key from another's
+    /// when both derive from the same seed — which is not hypothetical: a VTC
+    /// is provisioned on top of a VTA and can reach the same master seed, so
+    /// deriving both logs' keys under one label would give two different logs
+    /// one HMAC key. An actor hash would then correlate across them, which is
+    /// precisely the correlation the hash exists to contain.
+    ///
+    /// Use [`VTC_AUDIT_KEY_INFO`] or [`VTA_AUDIT_KEY_INFO`]; a new node type
+    /// adds a constant beside them rather than passing a literal, so the set
+    /// of labels in use is greppable.
+    pub async fn ensure_initial_with_info(
+        &self,
+        master_seed: &[u8],
+        info: &[u8],
+    ) -> Result<AuditKey, AppError> {
         if let Some(existing) = self.try_active().await? {
             return Ok(existing);
         }
 
         let mut key = [0u8; 32];
         Hkdf::<Sha256>::new(None, master_seed)
-            .expand(b"vtc-audit-key/v2", &mut key)
+            .expand(info, &mut key)
             .map_err(|e| AppError::Internal(format!("HKDF expand failed: {e}")))?;
 
         let initial = AuditKey {
@@ -298,7 +330,7 @@ mod tests {
     use crate::config::StoreConfig;
     use crate::store::Store;
 
-    fn temp_ks() -> (KeyspaceHandle, tempfile::TempDir) {
+    pub(super) fn temp_ks() -> (KeyspaceHandle, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let cfg = StoreConfig {
             data_dir: dir.path().to_path_buf(),
@@ -402,5 +434,81 @@ mod tests {
         let s = format!("{k:?}");
         assert!(!s.contains("AB"), "key bytes leaked: {s}");
         assert!(s.contains("<redacted>"), "missing redaction marker: {s}");
+    }
+}
+
+#[cfg(test)]
+mod domain_separation_tests {
+    use super::tests::temp_ks;
+    use super::*;
+
+    fn store() -> (AuditKeyStore, tempfile::TempDir) {
+        let (ks, dir) = temp_ks();
+        (AuditKeyStore::new(ks), dir)
+    }
+
+    /// The reason `ensure_initial_with_info` exists: a VTC is provisioned on
+    /// top of a VTA and can reach the same master seed. Deriving both logs'
+    /// keys under one label would give two different audit logs one HMAC key,
+    /// so an actor hash would correlate across them — the correlation the
+    /// hash exists to contain.
+    #[tokio::test]
+    async fn one_seed_derives_different_keys_per_node_type() {
+        let seed = [7u8; 32];
+
+        let (vtc, _vtc_dir) = store();
+        let (vta, _vta_dir) = store();
+
+        let vtc_key = vtc
+            .ensure_initial_with_info(&seed, VTC_AUDIT_KEY_INFO)
+            .await
+            .expect("derive vtc audit key");
+        let vta_key = vta
+            .ensure_initial_with_info(&seed, VTA_AUDIT_KEY_INFO)
+            .await
+            .expect("derive vta audit key");
+
+        assert_ne!(
+            vtc_key.key, vta_key.key,
+            "a VTC and the VTA beneath it must not share an audit key"
+        );
+    }
+
+    /// The plain constructor keeps deriving what it always derived, so an
+    /// existing community's hashes stay verifiable.
+    #[tokio::test]
+    async fn the_default_derivation_is_unchanged() {
+        let seed = [7u8; 32];
+
+        let (implicit, _a) = store();
+        let (explicit, _b) = store();
+
+        let a = implicit.ensure_initial(&seed).await.expect("implicit");
+        let b = explicit
+            .ensure_initial_with_info(&seed, VTC_AUDIT_KEY_INFO)
+            .await
+            .expect("explicit");
+
+        assert_eq!(a.key, b.key);
+    }
+
+    /// Derivation happens once. A second call returns the stored key rather
+    /// than re-deriving, which is what makes it safe to call on every boot.
+    #[tokio::test]
+    async fn deriving_twice_returns_the_same_key() {
+        let seed = [7u8; 32];
+        let (ks, _dir) = store();
+
+        let first = ks
+            .ensure_initial_with_info(&seed, VTA_AUDIT_KEY_INFO)
+            .await
+            .expect("first");
+        let second = ks
+            .ensure_initial_with_info(&seed, VTA_AUDIT_KEY_INFO)
+            .await
+            .expect("second");
+
+        assert_eq!(first.key_id, second.key_id);
+        assert_eq!(first.key, second.key);
     }
 }

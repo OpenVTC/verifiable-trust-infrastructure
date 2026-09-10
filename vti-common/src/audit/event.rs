@@ -78,6 +78,23 @@ pub enum AuditEvent {
     /// per tier is decided once, in `vti_rooms::audit`, and never at a call site.
     RoomOperation(RoomOperationData),
 
+    /// An operation performed by a VTA, in the flat shape its call sites
+    /// produce.
+    ///
+    /// The other variants of this enum each name one thing that can happen to
+    /// a community, because a VTC's audit surface is a closed set of
+    /// community events. A VTA's is not: it audits every gated operation it
+    /// serves, the set grows with the task catalogue, and the call sites
+    /// already carry a dotted action name rather than a type. Modelling each
+    /// as a variant would mean an enum that changes whenever an operation
+    /// does, and a wire contract that breaks with it.
+    ///
+    /// So the action stays a string and this variant carries the four things
+    /// a VTA call site supplies beside it. The actor and any DID-shaped
+    /// target travel outside the data, in the envelope's hashed members,
+    /// where an erasure can reach them.
+    VtaOperation(VtaOperationData),
+
     /// A passkey was registered against an admin DID (initial enrol
     /// at install **or** a subsequent additional-device enrolment).
     AdminPasskeyRegistered(AdminPasskeyData),
@@ -538,6 +555,12 @@ impl AuditEvent {
             Self::AdminInviteRevoked(..) => "AdminInviteRevoked",
             Self::SchemaRegistered(..) => "SchemaRegistered",
             Self::SchemaDeleted(..) => "SchemaDeleted",
+            // The variant name, not the action inside it. A consumer
+            // discriminating on `type` sees one kind for every VTA
+            // operation and reads `data.action` for which one — the same
+            // shape a SIEM already has to handle for any event carrying a
+            // subtype.
+            Self::VtaOperation(..) => "VtaOperation",
         }
     }
 }
@@ -681,6 +704,41 @@ pub struct EmergencyBootstrapData {
     /// and emitted the event — the gap between the two is itself
     /// audit-worthy.
     pub invoked_at: DateTime<Utc>,
+}
+
+/// Payload of [`AuditEvent::VtaOperation`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VtaOperationData {
+    /// Dotted action name as the call site reports it — `auth.challenge`,
+    /// `acl.create`, `vault.sign-trust-task`. Part of the wire contract for
+    /// consumers that filter on it.
+    pub action: String,
+
+    /// The object acted upon, where it is not a DID: a key id, a session id,
+    /// a context path. A DID-shaped target is carried in the envelope's
+    /// hashed `target_did_*` members instead, so that an erasure reaches it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+
+    /// `success`, `failure`, or whatever the call site reports. Refusals are
+    /// audited as well as successes, so this is load-bearing rather than
+    /// decorative.
+    pub outcome: String,
+
+    /// The transport the request arrived over. A VTA-specific fact: the same
+    /// operation under the same authority must reach the same decision on
+    /// every transport, and this is how an auditor checks that it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+
+    /// The trust context the action took place in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+
+    /// Operator-supplied rationale, where the operation asks for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
