@@ -837,6 +837,14 @@ pub const TASK_ROOMS_KEYS_CHAIN_0_1: &str = "https://trusttasks.org/spec/rooms/k
 pub const TASK_ROOMS_KEYS_BACKFILL_0_1: &str =
     "https://trusttasks.org/spec/rooms/keys/backfill/0.1";
 
+/// `spec/rooms/owner/anchor/0.1` — write the room's current state into the
+/// room's own witnessed log.
+///
+/// The one statement in this family a host does not make, cannot forge, and
+/// cannot show two members two versions of. Auth: `credentialWrite` capability,
+/// because it publishes in the room's name.
+pub const TASK_ROOMS_OWNER_ANCHOR_0_1: &str = "https://trusttasks.org/spec/rooms/owner/anchor/0.1";
+
 /// `spec/rooms/keys/read/0.1` — read one record from a room's host, check what
 /// the host asserted about it, and open it.
 ///
@@ -1972,6 +1980,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_LIST_0_1,
     TASK_ROOMS_OWNER_INVITE_0_1,
     TASK_ROOMS_OWNER_REGISTER_0_1,
+    TASK_ROOMS_OWNER_ANCHOR_0_1,
     TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
     TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
     TASK_VTA_MEMORY_DELETE_0_1,

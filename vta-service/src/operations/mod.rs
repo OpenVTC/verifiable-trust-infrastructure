@@ -67,6 +67,7 @@ pub mod protocol;
 /// `create_did_webvh`.
 #[cfg(feature = "webvh")]
 pub mod provision_integration;
+pub mod room_anchor;
 pub mod room_groups;
 pub mod room_host;
 pub mod room_invitation;

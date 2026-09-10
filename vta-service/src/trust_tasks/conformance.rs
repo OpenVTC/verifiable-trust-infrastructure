@@ -2081,6 +2081,32 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_OWNER_ANCHOR_0_1,
+            checked!(
+                specs::rooms::owner::anchor::v0_1::Payload,
+                specs::rooms::owner::anchor::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "signingKeyId": "room-northwind-signing"
+                }),
+                // What was written, and the log entry it rode — naming the entry
+                // is what lets anyone check the witnesses' signature over it.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "anchored": {
+                        "epoch": 7,
+                        "epochAuthenticator": "zQmZ4tDuvesekSs4qM5ZBKpXiZGun7S2CYtEZRB3DYXkjGx",
+                        "headVersion": 412,
+                        "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                        "recordCount": 118
+                    },
+                    "versionId": "42-QmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n",
+                    "reconciled": true
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_READ_0_1,
             checked!(
                 specs::rooms::keys::read::v0_1::Payload,
