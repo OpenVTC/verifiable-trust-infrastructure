@@ -276,6 +276,13 @@ gap is not.** The pull-shaped join is what any non-agent member needs — a
 browser, a mobile app, a CI job — and it should go upstream as a Trust Task
 family once the demo has shown its shape.
 
+Worked out to the edge of that in
+[`data-rooms-joining.md`](data-rooms-joining.md), which finds the mechanism
+smaller than it looks — the room is *already* addressable, and `room.json` says
+so — and finds the part worth waiting for: **what makes an applicant
+admissible** is policy, differs per tier, and is the one thing a spec written now
+would freeze wrongly.
+
 ---
 
 ## 5. The broker — the only backend, and how small it is
