@@ -256,6 +256,13 @@ pub async fn cmd_key_get(
         println!("Derivation Path: {}", resp.derivation_path);
         println!("Public Key:      {}", resp.public_key);
         println!("Status:          {}", resp.status);
+        // Printed only when it has been decided. A line reading "Exportable:
+        // yes" on every key would turn "nobody has considered this" into
+        // "somebody allowed it" — the same conflation the record avoids by
+        // storing `None` rather than `Some(true)`.
+        if resp.exportable == Some(false) {
+            println!("Exportable:      no — the private half is never released");
+        }
         if let Some(label) = &resp.label {
             println!("Label:           {label}");
         }
@@ -267,6 +274,38 @@ pub async fn cmd_key_get(
             "Updated At:      {}",
             crate::duration::format_local_datetime(resp.updated_at)
         );
+    }
+    Ok(())
+}
+
+/// Mark a key as releasable, or refuse every future export of it.
+///
+/// `exportable` is required rather than defaulted and there is no toggle: the
+/// state is absolute, so re-running a command whose output you did not see
+/// lands where you asked rather than undoing it.
+pub async fn cmd_key_set_exportability(
+    client: &VtaClient,
+    key_id: &str,
+    exportable: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client.set_key_exportability(key_id, exportable).await?;
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp)?;
+        return Ok(());
+    }
+    if resp.key.exportable == Some(false) {
+        println!("{} is no longer exportable.", resp.key.key_id);
+        println!(
+            "Its private half will not be released to any caller. It can still be used for \
+             signing and key agreement, so anything that asks the VTA to *use* it keeps working."
+        );
+        println!(
+            "Undoing this needs more authority than setting it did — super-admin, or a fresh \
+             step-up on your session."
+        );
+    } else {
+        println!("{} is exportable.", resp.key.key_id);
+        println!("Ordinary release rules apply: a caller entitled to the key can be given it.");
     }
     Ok(())
 }
