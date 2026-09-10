@@ -607,6 +607,14 @@ jobs:
       # tree. See the script header.
       - name: Nitro image copies every workspace member
         run: python3 scripts/check-nitro-copies-every-member.py
+      # Third whole-tree manifest invariant, and the one with the longest fuse:
+      # a member requiring a version of a sibling the sibling is not makes the
+      # tree unresolvable, and the alarm it eventually raises is a `cargo
+      # package` resolution error inside release-plz, six levels deep, naming no
+      # manifest. It blocked every release for five hours on 2026-09-10. Cheap
+      # here, expensive anywhere else. See the script header.
+      - name: Workspace version requirements agree
+        run: python3 scripts/check-workspace-version-reqs.py
 
   authz-context-types:
     # An approver's device chooses which approval card to render by
