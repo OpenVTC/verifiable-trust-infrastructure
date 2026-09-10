@@ -95,6 +95,43 @@ to ask "was this redacted row's actor this DID?", which is the question that
 survives an erasure — not a substitute for showing the actor while it is still
 there.
 
+## Where the audit key comes from
+
+Stage 1 says "derive the audit key from the master seed on boot, mirroring
+`vtc-service/src/server.rs`". A VTA can do that — the server holds the seed
+store and already reaches it during boot — but it is worth asking whether it
+should, because the seed is not the only source available and it is not
+obviously the best one.
+
+**A randomly generated key is the better default here.** The key's whole job is
+to be a stable HMAC handle for actor and target identifiers: it needs to exist
+before the first write, to be retrievable for as long as any envelope
+references it, and to be rotatable. It does not need to be derivable from
+anything. The key store already stores keys, keeps their history and rotates
+them, so a random initial key fits the model it already has.
+
+What derivation buys, and what it costs:
+
+| | Derived from the seed | Randomly generated |
+|---|---|---|
+| Availability at first write | Depends on the seed store answering. For a remote backend — a cloud secret manager, Vault — that is a network call that can fail at boot, and the VTC's answer to that failure is an `Option<AuditWriter>` that falls back to unchained rows | Available from the first boot, with no dependency to fail |
+| Recovery when the `audit_key` keyspace is lost | Regenerable from the mnemonic, which matters if envelopes were shipped off-node (a fan-out sink to a SIEM) and only the local key store was lost | Gone. Mitigated by keeping `audit_key` in the backup set, which leaves the gap at "backups lost, mnemonic survives" |
+| Who can recompute an actor hash | Anyone who holds the mnemonic, forever. A redaction that nulls the plaintext is then reversible by brute force for the seed holder, and the candidate space is small — the identifiers this node has seen | Whoever holds the key material |
+
+The third row is the one that decides it. VTI-AUD-005 exists so that an erasure
+removes personal data while the record stays verifiable. Deriving the audit key
+from the master seed means the mnemonic is also an audit-key backup, so the
+erasure is undone by whoever holds the recovery phrase — which, for a stack
+whose recovery story *is* the mnemonic, is a wide set.
+
+This makes a VTA's key source differ from a VTC's. That is a deliberate
+difference rather than an inconsistency, and the reasoning above applies to a
+VTC equally; moving it is a separate change, and its rotation machinery is the
+path if the working group wants to.
+
+**What this needs:** an `ensure_initial_random` beside `ensure_initial_with_info`
+on the key store, and `audit_key` in the VTA's backed-up keyspaces.
+
 ## Retention versus the chain
 
 `cleanup_expired_logs` deletes rows older than the retention period. Deleting
