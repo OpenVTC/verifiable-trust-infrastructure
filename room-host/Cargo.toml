@@ -22,7 +22,7 @@ vti-rooms-dtg = { path = "../vti-rooms-dtg" }
 # The room client, for pulling from a write-primary. Host-neutral despite the
 # name: a mirror reads its primary exactly as any member would, because that is
 # the only way to read a room.
-vtc-client = { path = "../vtc-client", version = "0.5" }
+vtc-client = { path = "../vtc-client", version = "0.6" }
 
 axum = { workspace = true }
 # CORS only, and only when an operator asks for it — see `router_with_origins`.
@@ -63,7 +63,7 @@ affinidi-messaging-core = { workspace = true, optional = true }
 vti-secrets = { path = "../vti-secrets", version = "0.3", optional = true }
 # The session store behind `onboarding` — which backend is an operator's choice,
 # exactly as `[secrets]` is.
-vta-sdk = { path = "../vta-sdk", version = "0.35", optional = true }
+vta-sdk = { path = "../vta-sdk", version = "0.36", optional = true }
 # Reading the `[secrets]` table out of a config file.
 toml = { workspace = true, optional = true }
 affinidi-secrets-resolver = { workspace = true, optional = true }
