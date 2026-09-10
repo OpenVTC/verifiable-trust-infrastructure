@@ -184,6 +184,44 @@ pub(super) async fn handle_revoke(
     }
 }
 
+/// Handler for `keys/set-exportability/0.1`.
+///
+/// Admin of the key's context to impose the restriction; strictly more than
+/// that to lift it. The asymmetry lives in the operation rather than here,
+/// because it depends on the key's *current* state — a handler-level gate would
+/// have to demand the stronger authority for both directions, which would make
+/// locking a key down as hard as unlocking it and so discourage the safe move.
+pub(super) async fn handle_set_exportability(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: vta_sdk::protocols::key_management::set_exportability::SetKeyExportabilityBody =
+        match parse_payload(&doc) {
+            Ok(r) => r,
+            Err(resp) => return resp,
+        };
+    match operations::keys::set_key_exportability(
+        &state.keys_ks,
+        &state.sessions_ks,
+        &state.audit_sink,
+        auth,
+        &req.key_id,
+        req.exportable,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(key) => success_response(
+            &doc,
+            vta_sdk::protocols::key_management::set_exportability::SetKeyExportabilityResultBody {
+                key,
+            },
+        ),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
 /// Handler for `keys/sign/0.1`. Application-or-higher (write).
 ///
 /// Decodes the base64url payload before invoking the signing oracle —

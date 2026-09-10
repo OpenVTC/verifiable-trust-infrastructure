@@ -157,6 +157,9 @@ use vta_sdk::protocols::key_management::import::ImportKeyBody;
 use vta_sdk::protocols::key_management::list::{ListKeysBody, ListKeysResultBody};
 use vta_sdk::protocols::key_management::rename::{RenameKeyBody, RenameKeyResultBody};
 use vta_sdk::protocols::key_management::revoke::{RevokeKeyBody, RevokeKeyResultBody};
+use vta_sdk::protocols::key_management::set_exportability::{
+    SetKeyExportabilityBody, SetKeyExportabilityResultBody,
+};
 use vta_sdk::protocols::key_management::sign::{SignAlgorithm, SignRequestBody, SignResultBody};
 use vta_sdk::protocols::memory::{
     MemoryDeleteBody, MemoryDeleteResponse, MemoryItem, MemoryListBody, MemoryListResponse,
@@ -377,6 +380,7 @@ fn policy_module_view() -> PolicyModuleView {
 /// A fully-populated canonical `KeyRecord` (the keys family's shared component).
 fn key_record() -> KeyRecord {
     KeyRecord {
+        exportable: None,
         key_id: "app-signing-key".into(),
         derivation_path: "m/26'/2'/0'/1'".into(),
         key_type: KeyType::Ed25519,
@@ -1050,6 +1054,39 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     key_id: "app-signing-key".into(),
                     status: KeyStatus::Revoked,
                     updated_at: dt(),
+                })
+            ),
+        ),
+        (
+            uris::TASK_KEYS_SET_EXPORTABILITY_0_1,
+            checked!(
+                specs::keys::set_exportability::v0_1::Payload,
+                specs::keys::set_exportability::v0_1::Response,
+                to_v(SetKeyExportabilityBody {
+                    key_id: "app-signing-key".into(),
+                    exportable: false,
+                }),
+                // Serialised from the type the service actually answers with.
+                // The risk this covers is the response wrapping: the spec wraps
+                // the record in `key` to match `keys/show`, and a bare record
+                // would validate against neither. A hand-written literal would
+                // be written to match the spec and keep passing if the service
+                // drifted.
+                to_v(SetKeyExportabilityResultBody {
+                    key: vta_sdk::keys::KeyRecord {
+                        key_id: "app-signing-key".into(),
+                        derivation_path: "m/0".into(),
+                        key_type: vta_sdk::keys::KeyType::Ed25519,
+                        status: KeyStatus::Active,
+                        public_key: "zPub".into(),
+                        label: None,
+                        context_id: Some("rooms".into()),
+                        seed_id: None,
+                        exportable: Some(false),
+                        origin: vta_sdk::keys::KeyOrigin::Derived,
+                        created_at: dt(),
+                        updated_at: dt(),
+                    },
                 })
             ),
         ),

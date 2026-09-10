@@ -222,6 +222,7 @@ mod tests {
         let key_id = format!("{subject_did}#{multibase}");
 
         let record = KeyRecord {
+            exportable: None,
             key_id: key_id.clone(),
             derivation_path: path.to_string(),
             key_type: KeyType::Ed25519,

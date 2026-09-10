@@ -72,6 +72,10 @@ pub async fn save_key_record(
         label: Some(label.to_string()),
         context_id: context_id.map(String::from),
         seed_id,
+        // Absent, not `Some(true)`: a newly created key has never been asked
+        // about, and recording an explicit "allowed" would be a claim nobody
+        // made. See `KeyRecord::exportable`.
+        exportable: None,
         origin: KeyOrigin::Derived,
         created_at: now,
         updated_at: now,

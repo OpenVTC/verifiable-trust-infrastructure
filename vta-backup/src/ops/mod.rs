@@ -1218,6 +1218,7 @@ mod tests {
             label: None,
             context_id: None,
             seed_id: None,
+            exportable: None,
             origin: KeyOrigin::Derived,
             created_at: now,
             updated_at: now,

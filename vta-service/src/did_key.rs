@@ -193,6 +193,7 @@ async fn import_ed25519_did_key(
 
     let now = Utc::now();
     let record = KeyRecord {
+        exportable: None,
         key_id: key_id.clone(),
         derivation_path: String::new(),
         key_type: KeyType::Ed25519,

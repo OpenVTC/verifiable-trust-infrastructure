@@ -2712,6 +2712,7 @@ pub async fn seed_holder_key(
         label: None,
         context_id: context_id.map(str::to_string),
         seed_id: None,
+        exportable: None,
         origin: KeyOrigin::Derived,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
