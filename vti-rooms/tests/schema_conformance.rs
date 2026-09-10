@@ -71,6 +71,7 @@ fn create_room_conforms() {
             owner_did: "did:key:z6MkOwner".into(),
             visibility,
             retention_days: Some(90),
+            anchor_cadence: Some(vti_rooms::AnchorCadence::Renewal),
         };
         check::<Payload>(
             &format!("CreateRoomBody ({visibility:?})"),
@@ -85,6 +86,7 @@ fn create_room_conforms() {
         owner_did: "did:key:z6MkOwner".into(),
         visibility: Visibility::Open,
         retention_days: None,
+        anchor_cadence: Some(vti_rooms::AnchorCadence::Renewal),
     };
     let value = serde_json::to_value(&body).expect("serialise");
     check::<Payload>("CreateRoomBody with no retention", &value);
@@ -283,6 +285,7 @@ fn responses_conform() {
         &serde_json::to_value(CreateRoomResponse {
             room_id: "did:webvh:example.com:rooms:northwind".into(),
             epoch: 1,
+            anchor_cadence: Some(vti_rooms::AnchorCadence::Renewal),
         })
         .expect("serialise"),
     );
@@ -360,6 +363,19 @@ fn responses_conform() {
     );
 
     check::<ListResponse>("ListRecordsResponse", &json!({ "records": records }));
+
+    // The cadence is echoed as what was RECORDED. A host that answered with
+    // what was asked would tell a caller their choice took effect on a host
+    // that had never heard of the member.
+    check::<CreateResponse>(
+        "CreateRoomResponse with a cadence",
+        &serde_json::to_value(CreateRoomResponse {
+            room_id: "did:webvh:example.com:rooms:northwind".into(),
+            epoch: 1,
+            anchor_cadence: Some(vti_rooms::AnchorCadence::Never),
+        })
+        .expect("serialise"),
+    );
 
     // And with a cursor, which is what a host serves when more remain. The
     // member was in the published schema and this implementation never emitted

@@ -923,6 +923,7 @@ mod tests {
             owner_did: "did:key:zOwner".into(),
             visibility,
             retention_policy: crate::RetentionPolicy::Chained,
+            anchor_cadence: Default::default(),
             epoch: 1,
             next_version: 1,
             retention_days: 90,

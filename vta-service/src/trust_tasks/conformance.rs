@@ -2129,6 +2129,9 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     "verification": {
                         "trace": "verified",
                         "priorRoots": "notChecked",
+                        // `ahead` is the ordinary answer: an anchor describes a
+                        // moment, not the present.
+                        "anchor": "ahead",
                         "head": {
                             "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
                             "recordCount": 118,
@@ -2161,6 +2164,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     "complete": true,
                     "verification": {
                         "priorRoots": "notChecked",
+                        "anchor": "ahead",
                         "count": "agrees",
                         "head": {
                             "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",

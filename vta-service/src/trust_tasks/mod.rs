@@ -1829,6 +1829,7 @@ dispatch_table! {
     // credentials to a party the caller names.
     // Publishes a witnessed log entry in the room's name, which cannot be
     // withdrawn — only superseded.
+    #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ANCHOR_0_1 => room_owner::handle_anchor
         [ Mutating Metadata true ],
     vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_1 => room_group::handle_read

@@ -251,7 +251,27 @@ pub(super) async fn handle_issue_authority(
 /// Everything else in this family produces values a host asserts. This is the
 /// one statement a host does not make, cannot forge, and cannot show two members
 /// two versions of — because witnesses co-sign the log entry it rides.
+#[cfg(feature = "webvh")]
 pub(super) async fn handle_anchor(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    // Boxed, for the reason `dispatch_trust_task` already documents at its own
+    // split: the dispatch table's state machine **inlines every handler's
+    // future**, so a large handler is paid for on the stack of every task that
+    // goes through the dispatcher — not just its own. This one is large (it
+    // presents, calls a host over the network, resolves a DID and publishes a
+    // webvh update), and adding it to the table overflowed the test thread in
+    // `tests/mock_vta.rs::webvh_family_response_shapes` — the same canary that
+    // caught it the last time, in a test that never calls this task.
+    //
+    // Boxing puts this machine on the heap and leaves a pointer in the table.
+    Box::pin(anchor_inner(state, auth, doc)).await
+}
+
+#[cfg(feature = "webvh")]
+async fn anchor_inner(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,

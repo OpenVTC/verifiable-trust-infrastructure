@@ -242,6 +242,21 @@ pub struct Room {
     /// Fixed at creation. See [`Visibility`].
     pub visibility: Visibility,
 
+    /// What this room intends about anchoring its state in its own witnessed log.
+    ///
+    /// **A statement of intent, not a schedule anything enforces** — nothing here
+    /// can make an owner anchor. It is stored and served so that a member knows
+    /// what to expect, which is what makes **silence legible**: a room that says
+    /// `Renewal` and has not anchored in ten epochs is telling a member
+    /// something, and a member who did not know what to expect could not have
+    /// noticed.
+    ///
+    /// Defaults to [`AnchorCadence::Manual`] on deserialisation, which draws no
+    /// expectation and is the honest reading of a room stored before this
+    /// existed.
+    #[serde(default)]
+    pub anchor_cadence: AnchorCadence,
+
     /// Fixed at creation. See [`RetentionPolicy`].
     ///
     /// Defaults to [`RetentionPolicy::FromJoin`] on deserialisation — the shape a room
@@ -321,6 +336,26 @@ impl Room {
     pub fn watermark(&self) -> u64 {
         self.next_version.saturating_sub(1)
     }
+}
+
+/// What a room intends about anchoring, as `rooms/create` records it.
+///
+/// Deliberately **not a duration**. A room that promised "daily" would be making
+/// a claim its owner's availability cannot keep, and a member comparing against a
+/// clock would read an owner's holiday as a host's misbehaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnchorCadence {
+    /// No anchor is intended. Honest, and cheap: anchoring costs a witnessed
+    /// update and a rotation of the room DID's update key each time.
+    Never,
+    /// One anchor per epoch change — the cadence §9's lifecycle already moves at.
+    Renewal,
+    /// The owner anchors when they decide to. A member should draw no freshness
+    /// expectation from this at all, which is exactly what it is for: it is the
+    /// honest answer where there is no rule, and so it is the default.
+    #[default]
+    Manual,
 }
 
 /// Curation state of a record.

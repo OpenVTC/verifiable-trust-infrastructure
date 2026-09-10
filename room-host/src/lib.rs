@@ -378,6 +378,8 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
         // put these rooms out of conformance. A room wanting `FromJoin` is a spec change
         // first, exactly as `retention_days` was.
         retention_policy: vti_rooms::RetentionPolicy::Chained,
+        // What the caller asked for, or the default that draws no expectation.
+        anchor_cadence: req.anchor_cadence.unwrap_or_default(),
         epoch: 1,
         next_version: 1,
         retention_days: req.retention_days.unwrap_or(DEFAULT_RETENTION_DAYS),
@@ -394,6 +396,10 @@ async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> An
             CreateRoomResponse {
                 room_id: req.room_id,
                 epoch: 1,
+                // What was recorded, never what was asked: the two differ on a
+                // host that predates this member, and echoing the request would
+                // tell a caller their choice took effect when it did not.
+                anchor_cadence: Some(room.anchor_cadence),
             },
         ),
         Err(e) => from_app_error(doc, &e),
@@ -1989,6 +1995,7 @@ mod tests {
 
         let room = Room {
             retention_policy: vti_rooms::RetentionPolicy::FromJoin,
+            anchor_cadence: Default::default(),
             ..f.room.clone()
         };
         storage::create_room(&st.rooms, &room)
