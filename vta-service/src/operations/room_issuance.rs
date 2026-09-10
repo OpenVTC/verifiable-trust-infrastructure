@@ -46,7 +46,7 @@ use std::sync::Arc;
 use affinidi_data_integrity::DataIntegrityProof;
 use affinidi_data_integrity::signer::Signer;
 use affinidi_secrets_resolver::secrets::KeyType;
-use vta_sdk::protocols::key_management::sign::SignAlgorithm;
+use vta_sdk::protocols::key_management::sign::{SignAlgorithm, SigningDomain};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 use vti_secrets::SeedStore;
@@ -124,6 +124,12 @@ impl Signer for RoomKeySigner<'_> {
             &self.key_id,
             data,
             &SignAlgorithm::EdDSA,
+            // Data-integrity proof input: the caller here is the code that
+            // built these bytes, and the proof specification has already
+            // established what they mean and how a verifier reconstructs
+            // them. Framing them again would produce a proof that a
+            // conforming verifier rejects.
+            SigningDomain::ProtocolDefined,
             "rooms/owner",
         )
         .await

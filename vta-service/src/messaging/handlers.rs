@@ -7,6 +7,7 @@
 //!   - Returns `Ok(Some(DIDCommResponse))` or `Ok(None)`
 
 use std::sync::Arc;
+use vta_sdk::protocols::key_management::sign::SigningDomain;
 
 use base64::Engine;
 
@@ -473,6 +474,8 @@ didcomm_handler!(
             &body.key_id,
             &payload,
             &body.algorithm,
+            // A payload from a DIDComm caller: the VTA cannot parse it.
+            SigningDomain::Opaque,
             "didcomm",
         )
         .await
