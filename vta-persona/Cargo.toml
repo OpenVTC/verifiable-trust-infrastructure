@@ -2,7 +2,7 @@
 name = "vta-persona"
 description = "VTA persona store — the holder's own identity attributes, the profiles that project over them, the bindings that assign a profile to a persona DID, and the contacts peers disclose"
 readme = "README.md"
-version = "0.3.1"
+version = "0.3.2"
 edition.workspace = true
 # Published for the same reason vta-vault is: `vta-service` is published, and a
 # crate cannot go to crates.io without its whole dependency closure. Nothing
