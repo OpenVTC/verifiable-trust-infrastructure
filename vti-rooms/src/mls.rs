@@ -283,6 +283,59 @@ impl RoomGroup {
         })
     }
 
+    /// Advance the epoch with **no membership change** — a renewal.
+    ///
+    /// # Why this had to exist
+    ///
+    /// [`Self::add_member`] and [`Self::remove_member`] both produce a commit,
+    /// and until this existed they were the *only* things that did. So "a room
+    /// renews" meant "a room adds or removes somebody", which is not what
+    /// renewal means — and §9's lifecycle, and every epoch anchor, ride
+    /// renewals. A room with a stable membership could not renew at all.
+    ///
+    /// # What it buys, and what it does not
+    ///
+    /// It is MLS's post-compromise security, taken deliberately rather than as a
+    /// side effect of somebody joining: the committer replaces its own leaf key,
+    /// so an attacker holding the old one is locked out from the next epoch. A
+    /// group that never commits never heals.
+    ///
+    /// It does **not** change who is in the room, and it does not by itself
+    /// preserve readability. Advancing the epoch makes everything sealed below
+    /// it unreadable to anyone who has not derived those keys — which is what
+    /// [`crate::retention::RetentionPolicy::Chained`] exists to prevent, by
+    /// sealing the outgoing epoch's key under the incoming one. **The rung is
+    /// minted by [`crate::sealed::SealedRoom`], not here**: a rung is bound to
+    /// the room, and this type deliberately does not know which room it is for.
+    /// A caller that advances without minting one severs the history.
+    ///
+    /// Returns the same [`MembershipChange`] shape as its two siblings, with
+    /// `welcome: None` — there is nobody new to welcome, and a caller that
+    /// looked for one would be looking for a party that does not exist.
+    pub fn self_update(&mut self) -> Result<MembershipChange, RoomKeyError> {
+        let bundle = self
+            .group
+            .self_update(
+                &self.provider,
+                &self.identity.signer,
+                LeafNodeParameters::default(),
+            )
+            .map_err(|e| RoomKeyError::Group(format!("self update: {e:?}")))?;
+
+        self.group
+            .merge_pending_commit(&self.provider)
+            .map_err(|e| RoomKeyError::Group(format!("merge self-update commit: {e:?}")))?;
+
+        Ok(MembershipChange {
+            commit: bundle
+                .into_commit()
+                .tls_serialize_detached()
+                .map_err(|e| RoomKeyError::Group(format!("serialise commit: {e:?}")))?,
+            welcome: None,
+            epoch: self.group.epoch().as_u64(),
+        })
+    }
+
     /// Apply a commit produced by another member.
     ///
     /// Returns the new epoch. The epoch **link** that keeps everything below it readable is
@@ -869,5 +922,65 @@ impl RoomGroup {
         };
 
         Self::join_with(identity, provider, welcome)
+    }
+}
+
+#[cfg(test)]
+mod self_update_tests {
+    use super::*;
+
+    /// A renewal advances the epoch and changes nobody.
+    ///
+    /// Until `self_update` existed, the only way to advance was to add or remove
+    /// somebody — so a room with a stable membership could not renew at all, and
+    /// "a room renews" meant something else.
+    #[test]
+    fn a_renewal_advances_the_epoch_and_changes_nobody() {
+        let mut group = RoomGroup::create("did:example:owner").expect("creates");
+        let before = group.epoch();
+        let members = group.member_count();
+
+        let change = group.self_update().expect("renews");
+
+        assert_eq!(change.epoch, before + 1, "the epoch moved by exactly one");
+        assert_eq!(group.epoch(), before + 1);
+        assert_eq!(
+            group.member_count(),
+            members,
+            "a renewal is not a membership change"
+        );
+        assert!(
+            change.welcome.is_none(),
+            "there is nobody new to welcome, and a caller looking for one would be \
+             looking for a party that does not exist"
+        );
+        assert!(!change.commit.is_empty(), "a renewal produces a commit");
+    }
+
+    /// Renewing twice keeps moving. A commit that did not advance would be a
+    /// renewal that healed nothing, which is the whole point of taking one.
+    #[test]
+    fn renewals_compose() {
+        let mut group = RoomGroup::create("did:example:owner").expect("creates");
+        let start = group.epoch();
+        group.self_update().expect("renews");
+        group.self_update().expect("renews again");
+        assert_eq!(group.epoch(), start + 2);
+    }
+
+    /// The exporter moves with the epoch, which is why a renewal severs history
+    /// unless a rung is minted — and is the reason that warning is on the method
+    /// rather than left to a caller to discover.
+    #[test]
+    fn a_renewal_changes_the_key_records_are_sealed_under() {
+        let mut group = RoomGroup::create("did:example:owner").expect("creates");
+        let before = group.storage_key().expect("exports");
+        group.self_update().expect("renews");
+        let after = group.storage_key().expect("exports");
+        assert_ne!(
+            before, after,
+            "if the storage key survived a commit, post-compromise security would be a \
+             claim this type does not keep"
+        );
     }
 }
