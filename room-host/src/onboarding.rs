@@ -123,10 +123,19 @@ pub async fn fetch_identity(
 
     match onboarding.connect(None, None).await {
         Ok(client) => {
-            let bundle = client
-                .fetch_did_secrets_bundle(context)
-                .await
-                .map_err(|e| anyhow::anyhow!("fetch this host's secrets from {vta_did}: {e}"))?;
+            let bundle = match client.fetch_did_secrets_bundle(context).await {
+                Ok(b) => b,
+                Err(e) => {
+                    // Only on the failure path, and only one extra call: ask whether
+                    // this is the one misconfiguration an operator can actually fix.
+                    // Doing it eagerly would cost every boot a round trip to answer a
+                    // question that is almost always "no".
+                    if let Some(help) = diagnose_contextless_did(&client, context, vta_did).await {
+                        anyhow::bail!(help);
+                    }
+                    anyhow::bail!("fetch this host's secrets from {vta_did}: {e}");
+                }
+            };
 
             // Cached before it is used, so a host that starts, fetches, and then finds the
             // VTA gone on its next boot still comes up. Caching afterwards would leave the
@@ -167,6 +176,60 @@ pub async fn fetch_identity(
             })
         }
     }
+}
+
+/// Is the reason the fetch failed simply that nobody has given this context a DID?
+///
+/// Returns the instructions if so, `None` if the failure was something else — in which
+/// case the caller reports the original error rather than a guess about it.
+///
+/// # Why this exists
+///
+/// A host enrolled into a context with no DID gets `context 'rooms' has no DID assigned`
+/// and nothing else. That is accurate and useless: it names a state, not a next step, and
+/// the operator's actual question at that moment is "was I supposed to create a DID for
+/// this host first?" — which is a reasonable thing not to know, because the room-creation
+/// form asks for a host DID without saying where one comes from.
+///
+/// So this answers it, in the same shape as [`grant_instructions`]: a pasteable command,
+/// because the person who has to run it is at a terminal.
+async fn diagnose_contextless_did(
+    client: &vta_sdk::client::VtaClient,
+    context: &str,
+    vta_did: &str,
+) -> Option<String> {
+    let ctx = client.get_context(context).await.ok()?;
+    if ctx.did.is_some() {
+        return None;
+    }
+    Some(contextless_did_help(context, vta_did))
+}
+
+/// The text of that guidance, split out so it can be read by a test.
+fn contextless_did_help(context: &str, vta_did: &str) -> String {
+    format!(
+        "Context `{context}` on {vta_did} has no DID, so there is no identity for this host \
+         to serve as.\n\
+         \n\
+         This host does not create one for itself: it enrols with an `application` role, and \
+         minting a DID in a context needs an admin. That split is deliberate — a host holds \
+         ciphertext it cannot read, and giving it authority to mint identities in your \
+         context would be more power than it needs.\n\
+         \n\
+         Create one against the VTA:\n\
+         \n    pnm did-mgmt dids create --context {context} --server <SERVER_ID> \\\n\
+                 --label \"room host\" --mediator-service\n\
+         \n\
+         `--server` is a DID-hosting server you have registered (`pnm did-mgmt servers \
+         list`). Add `--path <name>` to choose the name it is published under; omit it and \
+         the hosting server assigns one.\n\
+         \n\
+         `--mediator-service` is not optional for a room host in practice: members reach it \
+         by resolving its DID, so a DID that advertises no service block is one nobody can \
+         dial.\n\
+         \n\
+         Then start this host again — it will fetch that DID and its keys on boot."
+    )
 }
 
 /// Turn the VTA's bundle into the secrets a resolver takes.
@@ -245,5 +308,41 @@ mod tests {
         let told = grant_instructions(&ephemeral_did, vta);
         assert!(told.contains(&ephemeral_did));
         assert!(told.contains("<CONTEXT>"));
+    }
+
+    /// The instructions are the deliverable, so they get read here rather than
+    /// only in an incident. Escapes in a multi-line format string are easy to
+    /// get subtly wrong, and a mangled command is worse than none — an operator
+    /// pastes it, it fails, and now they distrust the guidance too.
+    #[test]
+    fn the_missing_did_instructions_render_a_pasteable_command() {
+        // Same body as `diagnose_contextless_did` returns; kept here rather
+        // than plumbed out of an async VTA call, which would test tokio.
+        let rendered = super::contextless_did_help("rooms", "did:webvh:example:vta");
+
+        assert!(rendered.contains("pnm did-mgmt dids create --context rooms"));
+        assert!(
+            rendered.contains("--mediator-service"),
+            "a room host DID nobody can dial is the failure this flag prevents"
+        );
+        assert!(
+            rendered.contains("--path <name>"),
+            "the naming option has to be mentioned, or the default looks like the only choice"
+        );
+        assert!(
+            !rendered.contains("\\n") && !rendered.contains("u{"),
+            "escapes must have been interpreted, not printed: {rendered}"
+        );
+        // Every continuation line of the pasteable command must still be part
+        // of that command — a line-continuation that lost its backslash yields
+        // two broken commands rather than one working one.
+        let cmd_line = rendered
+            .lines()
+            .find(|l| l.contains("pnm did-mgmt dids create"))
+            .expect("the command is present");
+        assert!(
+            cmd_line.trim_end().ends_with('\\'),
+            "the command wraps, so its first line must end in a continuation: {cmd_line:?}"
+        );
     }
 }
