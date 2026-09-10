@@ -24,6 +24,59 @@
 
 use affinidi_messaging_test_mediator::{TestMediator, acl};
 
+/// A seed store over a temporary directory — the plaintext backend, which is what a host with
+/// no `[secrets]` configuration gets.
+fn a_store(dir: &std::path::Path) -> Box<dyn vti_common::seed_store::SeedStore> {
+    // `SecretsConfig` is `#[non_exhaustive]`, so it is built by mutation rather than by a
+    // struct literal — which is the crate telling consumers not to depend on its shape.
+    let mut config = vti_secrets::SecretsConfig::default();
+    config.backend = Some(vti_secrets::SecretBackend::Plaintext);
+    config.allow_plaintext = true;
+    vti_secrets::create_seed_store(&config, dir).expect("a plaintext seed store")
+}
+
+/// **The identity survives a restart through whatever backend it was given.**
+///
+/// This is the property a member's saved address depends on, and it used to be a file this
+/// crate wrote and hardened itself. It now goes through `vti-secrets`, the same `[secrets]`
+/// config and the same backends the VTA and VTC take — so the durability question is the
+/// backend's, and this asserts the host asks it correctly rather than asserting a file
+/// exists.
+#[tokio::test]
+async fn the_identity_round_trips_through_the_configured_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let mediator = "did:webvh:QmScid:webvh.example:mediator";
+
+    let first =
+        room_host::didcomm::HostIdentity::load_or_mint(a_store(dir.path()).as_ref(), mediator)
+            .await
+            .expect("mint");
+
+    // A *different* store instance over the same directory, which is what a restart is.
+    let again =
+        room_host::didcomm::HostIdentity::load_or_mint(a_store(dir.path()).as_ref(), mediator)
+            .await
+            .expect("load");
+    assert_eq!(
+        first.did, again.did,
+        "a host's address must survive a restart"
+    );
+
+    // And a store with nothing in it mints a different one — so the test above is reading
+    // what was stored rather than deriving the same DID twice from the same inputs.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let fresh = room_host::didcomm::HostIdentity::load_or_mint(
+        a_store(elsewhere.path()).as_ref(),
+        mediator,
+    )
+    .await
+    .expect("mint");
+    assert_ne!(
+        first.did, fresh.did,
+        "an empty store means a new identity, not a rediscovered one"
+    );
+}
+
 /// A mediator whose DID is too long to embed refuses the host, and says why.
 ///
 /// The `TestMediator` mints itself a `did:peer`, which is exactly the case that does not fit
@@ -39,8 +92,12 @@ async fn a_host_refuses_to_mint_an_identity_no_member_could_resolve() {
         .await
         .expect("spawn a test mediator");
 
-    let refused = room_host::didcomm::HostIdentity::load_or_mint(dir.path(), mediator.did())
-        .expect_err("a did:peer mediator does not fit inside a did:peer host");
+    let refused = room_host::didcomm::HostIdentity::load_or_mint(
+        a_store(dir.path()).as_ref(),
+        mediator.did(),
+    )
+    .await
+    .expect_err("a did:peer mediator does not fit inside a did:peer host");
     let said = refused.to_string();
 
     assert!(
@@ -70,8 +127,10 @@ async fn a_webvh_mediator_leaves_a_host_comfortably_inside_the_limit() {
     let mediator =
         "did:webvh:QmTS3a3H9Dk4ZMPAZ8jNWGeyPbuKrPbrPZcSbg8CJ6yynD:webvh.example:mediator";
 
-    let identity = room_host::didcomm::HostIdentity::load_or_mint(dir.path(), mediator)
-        .expect("a did:webvh mediator fits");
+    let identity =
+        room_host::didcomm::HostIdentity::load_or_mint(a_store(dir.path()).as_ref(), mediator)
+            .await
+            .expect("a did:webvh mediator fits");
 
     assert!(
         identity.did.len() < 1000,
@@ -86,8 +145,10 @@ async fn a_webvh_mediator_leaves_a_host_comfortably_inside_the_limit() {
 
     // The same identity comes back, because a member's saved address names it. A host that
     // minted a new one on restart would leave every kept link pointing at somebody else.
-    let again = room_host::didcomm::HostIdentity::load_or_mint(dir.path(), mediator)
-        .expect("the stored identity loads");
+    let again =
+        room_host::didcomm::HostIdentity::load_or_mint(a_store(dir.path()).as_ref(), mediator)
+            .await
+            .expect("the stored identity loads");
     assert_eq!(
         identity.did, again.did,
         "a host's address must survive a restart"
@@ -95,9 +156,10 @@ async fn a_webvh_mediator_leaves_a_host_comfortably_inside_the_limit() {
 
     // Pointed somewhere else, it refuses rather than advertising where it no longer listens.
     let moved = room_host::didcomm::HostIdentity::load_or_mint(
-        dir.path(),
+        a_store(dir.path()).as_ref(),
         "did:webvh:QmOther:webvh.example:mediator",
     )
+    .await
     .expect_err("a stored identity names one mediator forever");
     assert!(
         moved.to_string().contains("advertises"),

@@ -56,6 +56,13 @@ affinidi-tdk = { workspace = true, optional = true }
 # `DidCommTransport` and `affinidi-messaging-core`'s shapes.
 affinidi-messaging-sdk = { version = "0.23", optional = true, default-features = false, features = ["tsp"] }
 affinidi-messaging-core = { workspace = true, optional = true }
+# **The same secret storage every other service in this workspace uses.** The
+# host's identity is a private key; it belongs behind the same `[secrets]`
+# config and the same backends the VTA and VTC take, not in a file this crate
+# invented. See `didcomm::HostIdentity`.
+vti-secrets = { path = "../vti-secrets", version = "0.3", optional = true }
+# Reading the `[secrets]` table out of a config file.
+toml = { workspace = true, optional = true }
 affinidi-secrets-resolver = { workspace = true, optional = true }
 # `ENVELOPE_TYPE`, from the crate that defines the binding rather than a fourth
 # hand-written copy of the URI.
@@ -65,8 +72,21 @@ futures-util = { workspace = true, optional = true }
 
 [features]
 default = []
+keyring = ["vti-secrets/keyring"]
+config-secret = ["vti-secrets/config-seed"]
+aws-secrets = ["vti-secrets/aws-secrets"]
+gcp-secrets = ["vti-secrets/gcp-secrets"]
+azure-secrets = ["vti-secrets/azure-secrets"]
+vault-secrets = ["vti-secrets/vault-secrets"]
+k8s-secrets = ["vti-secrets/k8s-secrets"]
 ## Serve Trust Tasks over DIDComm and TSP at a mediator, as well as over HTTP.
+##
+## Secret backends are opt-in on top, exactly as they are for the VTA and VTC —
+## a host with none configured keeps its identity in a plaintext file under
+## `--data-dir`, which is right for a laptop and not for anything else.
 didcomm = [
+    "dep:vti-secrets",
+    "dep:toml",
     "dep:affinidi-tdk",
     "dep:affinidi-messaging-sdk",
     "dep:affinidi-messaging-core",

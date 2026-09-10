@@ -29,9 +29,20 @@
 //! A host's DID is what a member's saved address names. If it changed on restart, every link
 //! anybody had kept would point at a host that no longer exists — and the failure would be a
 //! timeout, which reads as "the host is down" rather than "the host is now somebody else".
-//! So it is minted once into the data directory and read back thereafter.
+//! So it is minted once and read back thereafter.
+//!
+//! # Where it is kept, and why not here
+//!
+//! Through [`vti_secrets::create_seed_store`] — the same `[secrets]` config and the same
+//! backends the VTA and the VTC take: keyring, AWS, GCP, Azure, Vault, Kubernetes, or a
+//! plaintext file. This crate used to write its own JSON beside the records and harden the
+//! file mode, which is defensible on a laptop and wrong the moment a host is deployed: a
+//! private key on a container volume, with no path to the secret manager the rest of the
+//! deployment already uses.
+//!
+//! Nothing here knows which backend it got. That is the point of the trait, and it is why
+//! adding a backend is a feature flag rather than a change to this file.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use affinidi_messaging_core::{MessageTransport, Protocol};
@@ -112,25 +123,23 @@ struct IdentityFile {
 }
 
 impl HostIdentity {
-    /// Load this host's identity, minting one on first use.
+    /// Load this host's identity from `secrets`, minting one on first use.
     ///
     /// `did:peer:2`, so the identifier carries both its keys **and** the mediator it is
     /// reached at. That is what makes `?at=<did>` a complete address: a member resolves it
     /// by computation — no network, no registry — and learns where to dial and what to seal
     /// to. A `did:key` could not say the second thing, and a `did:webvh` would make every
     /// member fetch a log to talk to a host that is already telling them everything.
-    pub fn load_or_mint(data_dir: &Path, mediator_did: &str) -> anyhow::Result<Self> {
-        let path = data_dir.join("host-identity.json");
-
-        if path.exists() {
-            if let Err(e) = vti_common::secure_file::restrict_file_to_owner(&path) {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "could not restrict the host identity to its owner; it holds a private key"
-                );
-            }
-            let file: IdentityFile = serde_json::from_slice(&std::fs::read(&path)?)?;
+    pub async fn load_or_mint(
+        store: &dyn vti_common::seed_store::SeedStore,
+        mediator_did: &str,
+    ) -> anyhow::Result<Self> {
+        if let Some(stored) = store
+            .get()
+            .await
+            .map_err(|e| anyhow::anyhow!("read the host identity: {e}"))?
+        {
+            let file: IdentityFile = serde_json::from_slice(&stored)?;
             // A `did:peer` encodes its keys *and its services* in the identifier, so an
             // identity minted against one mediator names that mediator forever. Pointed at a
             // different one, the stored DID would advertise somewhere this host no longer
@@ -138,11 +147,10 @@ impl HostIdentity {
             // Refuse rather than serve a lie about where we are.
             if file.mediator != mediator_did {
                 anyhow::bail!(
-                    "the stored host identity at {} advertises {}, not {}. A did:peer names \
-                     its services in its identifier, so changing mediator means a new \
-                     identity and a new address — delete it to mint one, and expect saved \
-                     links to stop resolving.",
-                    path.display(),
+                    "the stored host identity advertises {}, not {}. A did:peer names its \
+                     services in its identifier, so changing mediator means a new identity \
+                     and a new address — clear the stored secret to mint one, and expect \
+                     saved links to stop resolving.",
                     file.mediator,
                     mediator_did
                 );
@@ -178,20 +186,25 @@ impl HostIdentity {
             );
         }
 
-        std::fs::create_dir_all(data_dir)?;
-        std::fs::write(
-            &path,
-            serde_json::to_vec_pretty(&IdentityFile {
-                did: did.clone(),
-                mediator: mediator_did.to_string(),
-                secrets: secrets.clone(),
-            })?,
-        )?;
-        if let Err(e) = vti_common::secure_file::restrict_file_to_owner(&path) {
+        let file = serde_json::to_vec(&IdentityFile {
+            did: did.clone(),
+            mediator: mediator_did.to_string(),
+            secrets: secrets.clone(),
+        })?;
+        store
+            .set(&file)
+            .await
+            .map_err(|e| anyhow::anyhow!("store the host identity: {e}"))?;
+
+        // A backend that does not survive a restart cannot hold this. The DID is a member's
+        // saved address, so an identity that evaporates makes every kept link point at a host
+        // that no longer exists — and it would present as a timeout, long after the choice
+        // that caused it.
+        if !store.set_persists_across_restart() {
             tracing::warn!(
-                path = %path.display(),
-                error = %e,
-                "could not restrict the host identity to its owner; it holds a private key"
+                did = %did,
+                "this host's identity is in a store that does not survive a restart — every \
+                 saved address for it will stop resolving when this process ends"
             );
         }
 

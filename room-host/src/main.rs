@@ -4,6 +4,15 @@
 //! test or the `data_room` example without a socket.
 
 use clap::Parser;
+
+/// The wrapper a `[secrets]` table arrives in, so the file reads the same as every other
+/// service's config rather than being a bare table this binary alone would accept.
+#[cfg(feature = "didcomm")]
+#[derive(serde::Deserialize)]
+struct SecretsFile {
+    #[serde(default)]
+    secrets: vti_secrets::SecretsConfig,
+}
 use room_host::{open_state_with_resolver, router_with_origins};
 
 #[derive(Parser, Debug)]
@@ -53,6 +62,15 @@ struct Args {
     #[cfg(feature = "didcomm")]
     #[arg(long)]
     mediator_did: Option<String>,
+
+    /// A TOML file carrying a `[secrets]` table, in the shape the VTA and VTC take.
+    ///
+    /// Omitted, the host keeps its identity in a plaintext file under `--data-dir`. That is
+    /// the right default for running this on a laptop and the wrong one for a deployment: it
+    /// is a private key on whatever volume the container was given.
+    #[cfg(feature = "didcomm")]
+    #[arg(long)]
+    secrets: Option<std::path::PathBuf>,
 
     /// Seconds between mirror pulls.
     ///
@@ -106,8 +124,36 @@ async fn main() -> anyhow::Result<()> {
     // by the first member who cannot reach it.
     #[cfg(feature = "didcomm")]
     if let Some(mediator_did) = args.mediator_did.clone() {
+        // The same `[secrets]` shape the VTA and VTC take. With none configured this is a
+        // plaintext file under `--data-dir`, which is right for a laptop; a deployment points
+        // it at the secret manager it already runs.
+        let secrets = match &args.secrets {
+            Some(path) => {
+                let text = std::fs::read_to_string(path)?;
+                toml::from_str::<SecretsFile>(&text)?.secrets
+            }
+            // No `[secrets]` given: keep the identity in a cleartext file under `--data-dir`,
+            // and say so rather than doing it quietly. `vti-secrets` gates plaintext behind
+            // an explicit opt-in because for a VTA the secret is a BIP-32 master seed; for a
+            // host it is one service identity that holds no room keys and can read no record.
+            // That makes the default defensible, not invisible — an operator who is going to
+            // deploy this should be told once, here, rather than find out from the volume.
+            None => {
+                let mut config = vti_secrets::SecretsConfig::default();
+                config.backend = Some(vti_secrets::SecretBackend::Plaintext);
+                config.allow_plaintext = true;
+                tracing::warn!(
+                    data_dir = %args.data_dir.display(),
+                    "no --secrets given, so this host's identity is kept in a cleartext file \
+                     under --data-dir. Pass --secrets with a `[secrets]` table to use the \
+                     keyring or a secret manager, in the same shape the VTA and VTC take."
+                );
+                config
+            }
+        };
+        let store = vti_secrets::create_seed_store(&secrets, &args.data_dir)?;
         let identity =
-            room_host::didcomm::HostIdentity::load_or_mint(&args.data_dir, &mediator_did)?;
+            room_host::didcomm::HostIdentity::load_or_mint(store.as_ref(), &mediator_did).await?;
         // Printed, not only logged. It is this host's *address* — the thing a member puts
         // after `?at=` — and an operator has to be able to copy it out of a terminal.
         println!("host DID: {}", identity.did);
