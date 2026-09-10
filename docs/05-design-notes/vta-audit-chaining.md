@@ -114,7 +114,7 @@ What derivation buys, and what it costs:
 
 | | Derived from the seed | Randomly generated |
 |---|---|---|
-| Availability at first write | Depends on the seed store answering. For a remote backend — a cloud secret manager, Vault — that is a network call that can fail at boot, and the VTC's answer to that failure is an `Option<AuditWriter>` that falls back to unchained rows | Available from the first boot, with no dependency to fail |
+| Availability at first write | Not an issue either way — see *The first entry* below | Not an issue either way |
 | Recovery when the `audit_key` keyspace is lost | Regenerable from the mnemonic, which matters if envelopes were shipped off-node (a fan-out sink to a SIEM) and only the local key store was lost | Gone. Mitigated by keeping `audit_key` in the backup set, which leaves the gap at "backups lost, mnemonic survives" |
 | Who can recompute an actor hash | Anyone who holds the mnemonic, forever. A redaction that nulls the plaintext is then reversible by brute force for the seed holder, and the candidate space is small — the identifiers this node has seen | Whoever holds the key material |
 
@@ -131,6 +131,33 @@ path if the working group wants to.
 
 **What this needs:** an `ensure_initial_random` beside `ensure_initial_with_info`
 on the key store, and `audit_key` in the VTA's backed-up keyspaces.
+
+## The first entry
+
+There is no window before the key exists that needs auditing, because there is
+nothing a VTA can do before its seed is loaded. It holds no keys, can sign
+nothing, has no ACL to consult and no context to act in. The audit surface
+begins where the seed does.
+
+So **the first entry in the chain is the creation of the key that chains it.**
+Written the moment the key exists, committing to its id, it is a genesis that
+describes itself: a verifier reading the log from the start learns which key
+the following entries are hashed under, from an entry hashed under that same
+key.
+
+The same shape covers rotation. A rotation is an audited event, and the natural
+place for it is the first entry of the new key's era, so that each key's
+segment of the chain opens with the record of why the key changed.
+
+One class of event stays outside the chain: a failure to obtain the seed at
+all. It cannot be chained, because the key that would chain it does not exist —
+and this is the one moment where that is acceptable, since a node that cannot
+load its seed is a node that is not serving. It belongs in the log stream,
+which the `audit!` macro already writes to, and a reader should understand the
+chained log as beginning at the first moment the node could act.
+
+*Recorded from a review question: what would we even be auditing before the
+seed is there?*
 
 ## Retention versus the chain
 
