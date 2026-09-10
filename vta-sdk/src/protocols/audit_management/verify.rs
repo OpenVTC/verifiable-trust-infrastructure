@@ -7,11 +7,24 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Payload of `spec/vta/audit/verify/1.0`. The whole log is verified; there is
-//  nothing to select.
+/// Payload of `spec/vta/audit/verify/1.0`. The whole log is verified, so there
+/// is nothing to select.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct VerifyChainBody {}
+pub struct VerifyChainBody {
+    /// Ecosystem-defined extension members (SPEC §4.5.1).
+    ///
+    /// Carried explicitly rather than by relaxing `deny_unknown_fields`: the
+    /// published schemas declare an `ext` slot, so a conforming producer may
+    /// send one and refusing the whole document over it would break interop
+    /// with a peer doing exactly what the spec allows. Keeping
+    /// `deny_unknown_fields` beside it means a *typo* is still refused, which
+    /// is the guard that clause is there for.
+    ///
+    /// The VTA does not interpret the contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<serde_json::Value>,
+}
 
 /// What verifying the audit chain found.
 ///
