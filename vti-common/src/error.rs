@@ -195,6 +195,14 @@ impl From<crate::auth::backend::AuthError> for AppError {
         match e {
             A::Forbidden | A::DidMethodRejected => AppError::Forbidden(e.to_string()),
             A::PendingChallengeLimitReached => AppError::Validation(e.to_string()),
+            // One message for every failure reachable *without* the
+            // subject's private key. These variants differ in ways a caller
+            // must not be able to observe: "session not found" versus
+            // "signer mismatch" tells a party probing identifiers whether
+            // the subject it named is enrolled here, which is precisely what
+            // `handle_challenge` stops disclosing at the other end of the
+            // flow. The variant is preserved for the log line; the caller is
+            // told that authentication failed.
             A::SessionNotFound
             | A::SessionStateMismatch
             | A::ChallengeMismatch
@@ -202,7 +210,10 @@ impl From<crate::auth::backend::AuthError> for AppError {
             | A::SignerMismatch
             | A::StaleMessage
             | A::RefreshTokenInvalid
-            | A::RefreshTokenExpired => AppError::Authentication(e.to_string()),
+            | A::RefreshTokenExpired => {
+                tracing::debug!(reason = %e, "authentication failed");
+                AppError::Authentication("authentication failed".into())
+            }
             A::AttestationFailed(msg) => AppError::Internal(format!("tee attestation: {msg}")),
             A::Internal(msg) => AppError::Internal(msg),
         }
