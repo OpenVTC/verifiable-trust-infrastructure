@@ -264,12 +264,12 @@ has unrestricted access across all contexts.
 
 ### Backup & Restore
 
-| Command                                           | Description                                   |
-| ------------------------------------------------- | --------------------------------------------- |
-| `backup export [--include-audit] [--output FILE]` | Export encrypted backup of all VTA state       |
-| `backup import <file> [--preview]`                | Import backup (preview or apply + restart VTA) |
+| Command                                                     | Description                                    |
+| ----------------------------------------------------------- | ---------------------------------------------- |
+| `backup export [--include-audit] [--output FILE] [--force]` | Export encrypted backup of all VTA state        |
+| `backup import <file> [--preview]`                          | Import backup (preview or apply + restart VTA) |
 
-Backups are encrypted with Argon2id + AES-256-GCM using a user-provided password (minimum 15 characters). The `.vtabak` file contains the seed, keys, ACL, contexts, WebVH records, and config.
+Backups are encrypted with Argon2id + AES-256-GCM using a user-provided password (minimum 15 characters). The `.vtabak` file contains the seed, keys, ACL, contexts, WebVH records, and config. It is created readable by its owner only (`0600` on Unix, an owner-only ACL on Windows), and an existing file is not overwritten unless you pass `--force`.
 
 ### VTA Management
 

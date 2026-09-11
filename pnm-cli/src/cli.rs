@@ -877,6 +877,9 @@ pub(crate) enum BackupCommands {
         /// Output file path (default: `vta-backup-<timestamp>.vtabak`)
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
+        /// Replace the output file if it already exists.
+        #[arg(long)]
+        force: bool,
         /// Fall back to the legacy inline `/backup/export` REST route
         /// instead of the descriptor-pattern trust-task flow.
         ///

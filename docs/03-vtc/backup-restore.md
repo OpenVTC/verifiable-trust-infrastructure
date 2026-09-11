@@ -43,8 +43,12 @@ keyspace overlay (its meaningful values ride in the identity snapshot above).
 ```sh
 # Prompts for the encryption password (min 15 chars), writes
 # vtc-backup-<slug>-<timestamp>.vtcbak.
-cnm backup export [--include-audit] [--output FILE]
+cnm backup export [--include-audit] [--output FILE] [--force]
 ```
+
+The file is created readable by its owner only (`0600` on Unix, an owner-only
+ACL on Windows). An existing file is never overwritten unless you pass
+`--force`.
 
 Under the hood this is `POST /v1/backup/export` (super-admin) — to script it
 directly:

@@ -130,5 +130,10 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 bytes = "1"
 
+[target.'cfg(unix)'.dev-dependencies]
+# `umask` in the secure_file tests, to prove a secret file is 0600 regardless
+# of the process file-creation mask.
+libc = { workspace = true }
+
 [lints]
 workspace = true

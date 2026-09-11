@@ -6,6 +6,7 @@
 //! committing.
 
 use vta_cli_common::render::{DIM, GREEN, RED, RESET};
+use vta_cli_common::secure_file;
 use vta_sdk::client::VtaClient;
 use vta_sdk::protocols::backup_management::{MIN_BACKUP_PASSWORD_LEN, validate_backup_password};
 
@@ -19,12 +20,16 @@ pub(crate) async fn run(
         BackupCommands::Export {
             include_audit,
             output,
+            force,
             use_rest_legacy,
         } => {
+            if let Some(path) = &output {
+                secure_file::check_export_path(path, force)?;
+            }
             if use_rest_legacy {
-                cmd_backup_export(client, include_audit, output).await
+                cmd_backup_export(client, include_audit, output, force).await
             } else {
-                cmd_backup_export_descriptor(client, include_audit, output).await
+                cmd_backup_export_descriptor(client, include_audit, output, force).await
             }
         }
         BackupCommands::Import {
@@ -46,6 +51,7 @@ async fn cmd_backup_export(
     client: &VtaClient,
     include_audit: bool,
     output: Option<std::path::PathBuf>,
+    force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
     let password = dialoguer::Password::new()
@@ -62,16 +68,13 @@ async fn cmd_backup_export(
     // Determine output path
     let path = output.unwrap_or_else(|| {
         let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-        let slug = envelope
-            .source_did
-            .as_deref()
-            .and_then(|d| d.rsplit(':').next())
-            .unwrap_or("vta");
+        let slug = secure_file::did_filename_slug(envelope.source_did.as_deref(), "vta");
         std::path::PathBuf::from(format!("vta-backup-{slug}-{ts}.vtabak"))
     });
 
     let json = serde_json::to_string_pretty(&envelope)?;
-    std::fs::write(&path, &json)?;
+    // Owner-only (0600), and never silently over an existing file.
+    secure_file::write_secret_export(&path, json.as_bytes(), force)?;
 
     println!("{GREEN}✓{RESET} Backup saved to {}", path.display());
     println!(
@@ -156,6 +159,7 @@ async fn cmd_backup_export_descriptor(
     client: &VtaClient,
     include_audit: bool,
     output: Option<std::path::PathBuf>,
+    force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let password = dialoguer::Password::new()
         .with_prompt(format!(
@@ -177,15 +181,12 @@ async fn cmd_backup_export_descriptor(
 
     let path = output.unwrap_or_else(|| {
         let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-        let slug = envelope
-            .source_did
-            .as_deref()
-            .and_then(|d| d.rsplit(':').next())
-            .unwrap_or("vta");
+        let slug = secure_file::did_filename_slug(envelope.source_did.as_deref(), "vta");
         std::path::PathBuf::from(format!("vta-backup-{slug}-{ts}.vtabak"))
     });
 
-    std::fs::write(&path, &bytes)?;
+    // Owner-only (0600), and never silently over an existing file.
+    secure_file::write_secret_export(&path, &bytes, force)?;
 
     println!("{GREEN}✓{RESET} Backup saved to {}", path.display());
     println!(

@@ -16,6 +16,7 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 use vta_cli_common::render::{DIM, GREEN, RED, RESET};
+use vta_cli_common::secure_file;
 use vta_sdk::client::VtaClient;
 use vta_sdk::protocols::backup_management::{MIN_BACKUP_PASSWORD_LEN, validate_backup_password};
 
@@ -68,7 +69,11 @@ pub(crate) async fn cmd_export(
     keyring_key: &str,
     include_audit: bool,
     output: Option<PathBuf>,
+    force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(path) = &output {
+        secure_file::check_export_path(path, force)?;
+    }
     let password = dialoguer::Password::new()
         .with_prompt(format!(
             "Backup password (min {MIN_BACKUP_PASSWORD_LEN} chars)"
@@ -89,10 +94,7 @@ pub(crate) async fn cmd_export(
 
     let source_did = envelope.get("sourceDid").and_then(Value::as_str);
     let path = output.unwrap_or_else(|| {
-        let slug = source_did
-            .and_then(|d| d.rsplit(':').next())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("vtc");
+        let slug = secure_file::did_filename_slug(source_did, "vtc");
         PathBuf::from(format!(
             "vtc-backup-{slug}-{}.vtcbak",
             file_stamp(&envelope)
@@ -100,7 +102,8 @@ pub(crate) async fn cmd_export(
     });
 
     let json_str = serde_json::to_string_pretty(&envelope)?;
-    std::fs::write(&path, &json_str)?;
+    // Owner-only (0600), and never silently over an existing file.
+    secure_file::write_secret_export(&path, json_str.as_bytes(), force)?;
 
     println!("{GREEN}✓{RESET} Backup saved to {}", path.display());
     println!("  Source DID:     {}", source_did.unwrap_or("(none)"));
