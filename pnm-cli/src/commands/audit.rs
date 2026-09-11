@@ -32,6 +32,7 @@ pub(crate) async fn run(
             };
             audit::cmd_list_audit_logs(client, &params).await
         }
+        AuditCommands::Verify => audit::cmd_verify_chain(client).await,
         AuditCommands::Retention { command } => match command {
             RetentionCommands::Get => audit::cmd_get_retention(client).await,
             RetentionCommands::Set { days } => audit::cmd_update_retention(client, days).await,
