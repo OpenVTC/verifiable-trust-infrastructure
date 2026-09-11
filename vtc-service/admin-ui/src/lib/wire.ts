@@ -615,6 +615,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/community/branding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The community's branding; every member absent when none is set. */
+        get: operations["communityBrandingShow"];
+        /** Replace the community's branding. An empty body clears it. */
+        put: operations["communityBrandingUpdate"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/community/profile": {
         parameters: {
             query?: never;
@@ -914,6 +932,23 @@ export interface paths {
          *     them with an optional reason. Auth: Admin.
          */
         post: operations["decide"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/join-requests/{id}/vetting": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The vetting facts a join request was decided on. */
+        get: operations["joinRequestVettingShow"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1606,7 +1641,65 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/vetting/auto-grant": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The automatic vetter-grant configuration and the last sweep. */
+        get: operations["vettingAutoGrantShow"];
+        /** Replace the automatic vetter-grant configuration. */
+        put: operations["vettingAutoGrantUpdate"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/vetting/revocations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every vetting statement withdrawal notice, with the admissions it touches.
+         * @description A notice is matched to the join requests whose recorded vetting facts
+         *     counted a statement with the notice's issuer and id. Review is not yet a
+         *     workflow: `needsReview` says an admin should look, and nothing records that
+         *     one did.
+         */
+        get: operations["vettingRevocationList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/vetting/vetters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every vetter grant, newest first. */
+        get: operations["vettingVetterList"];
+        put?: never;
+        post: operations["vettingVetterGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/vetting/vetters/{memberDid}/resend": {
         parameters: {
             query?: never;
             header?: never;
@@ -1615,7 +1708,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["vettingVetterGrant"];
+        /** Deliver a vetter's live grant credential again. */
+        post: operations["vettingVetterResend"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1852,6 +1946,61 @@ export interface components {
             session: components["schemas"]["Session"];
             tokens: components["schemas"]["TokenBundle"];
         };
+        /** @description `PUT /v1/vetting/auto-grant` body. An absent member takes its default. */
+        AutoGrantConfig: {
+            /** @description Whether the sweep runs. Off unless an admin turns it on. */
+            enabled: boolean;
+            /**
+             * Format: int32
+             * @description Minutes between sweeps, 5–1440; 60 when absent.
+             */
+            sweepMinutes?: number | null;
+            /**
+             * Format: int64
+             * @description Validity of a grant the sweep issues, within the grant bounds (one day
+             *     to two years); one year when absent.
+             */
+            validitySeconds?: number | null;
+        };
+        /** @description `GET /v1/vetting/auto-grant` response, and the answer to a `PUT`. */
+        AutoGrantStatus: {
+            /** @description Whether the sweep runs. */
+            enabled: boolean;
+            lastSweep?: null | components["schemas"]["AutoGrantSweep"];
+            /**
+             * Format: int32
+             * @description Minutes between sweeps.
+             */
+            sweepMinutes: number;
+            /**
+             * Format: int64
+             * @description Validity of a grant the sweep issues.
+             */
+            validitySeconds: number;
+        };
+        /** @description What one automatic-grant sweep did. */
+        AutoGrantSweep: {
+            /**
+             * Format: int32
+             * @description Members the sweep could not decide or act on.
+             */
+            errors: number;
+            /**
+             * Format: int32
+             * @description Grants issued.
+             */
+            granted: number;
+            /**
+             * Format: date-time
+             * @description When the sweep finished.
+             */
+            ranAt: string;
+            /**
+             * Format: int32
+             * @description Automatic grants revoked.
+             */
+            revoked: number;
+        };
         BootstrapRequest: {
             setupSessionToken: string;
         };
@@ -1976,6 +2125,21 @@ export interface components {
              *     registration state.
              */
             registrationId: string;
+        };
+        /**
+         * @description A community's presentation — `join-requests/manifest/0.2`'s `branding`, and
+         *     the body of the VTC's `GET`/`PUT /v1/community/branding`. Every member is
+         *     optional. Presentation only: a client never trusts a community because of
+         *     how it is branded.
+         */
+        CommunityBranding: {
+            /** @description `#rrggbb`. */
+            accentColor?: string | null;
+            /** @description The name to show; 1–128 characters. */
+            displayName?: string | null;
+            ext?: null | components["schemas"]["Value"];
+            /** @description An `https` URL of at most 2048 characters. */
+            logoUrl?: string | null;
         };
         /**
          * @description The singleton record. Field names are wire contract — operators
@@ -2568,6 +2732,11 @@ export interface components {
             subject: string;
         };
         /**
+         * @description Who issued a vetter grant.
+         * @enum {string}
+         */
+        GrantOrigin: "auto" | "manual";
+        /**
          * @description One edge between a pair of identifiers, carrying every VRC published between
          *     them.
          */
@@ -2958,6 +3127,76 @@ export interface components {
         /** @description `{ request: … }` — the shape `vtc/join-requests/show/0.1` publishes. */
         JoinRequestEnvelope: {
             request: components["schemas"]["JoinRequest"];
+        };
+        /**
+         * @description The vetting facts a join request was decided on — the policy's
+         *     `input.evidence.vetting`, in lowerCamelCase.
+         */
+        JoinRequestVetting: {
+            /** @description The applicant named that digest. */
+            applicantDigestMatches: boolean;
+            /** @description Counted statements by method. */
+            byMethod: {
+                [key: string]: number;
+            };
+            /** @description All counted statements carry one identity commitment. */
+            commitmentsConsistent: boolean;
+            /** @description The criterion whose requirements were applied. */
+            criterionId: string;
+            /**
+             * Format: int32
+             * @description Distinct eligible vetters counted.
+             */
+            distinctCountedVetters: number;
+            /** @description No declared-relationship cap is exceeded. */
+            independenceOk: boolean;
+            /** @description The requirements demanded an invitation. */
+            invitationRequired: boolean;
+            /** @description What was still missing, in the `vetting:*` grammar. */
+            needs: string[];
+            /**
+             * Format: date-time
+             * @description When the facts were recorded.
+             */
+            recordedAt: string;
+            /** @description That criterion's `requirementsDigest` at the decision. */
+            requirementsDigest: string;
+            /** @description Count, method floors, consistency and independence all held. */
+            satisfied: boolean;
+            /** @description Every identity-vetting statement the presentation carried. */
+            statements: components["schemas"]["JoinRequestVettingStatement"][];
+        };
+        /** @description `GET /v1/join-requests/{id}/vetting` response. */
+        JoinRequestVettingResponse: {
+            /**
+             * Format: uuid
+             * @description The join request.
+             */
+            requestId: string;
+            vetting?: null | components["schemas"]["JoinRequestVetting"];
+        };
+        /** @description One presented statement, as the community saw it at the decision. */
+        JoinRequestVettingStatement: {
+            /** @description It counted toward the requirements. */
+            counted: boolean;
+            /** @description The vetter's declared relationship to the applicant. */
+            declaredRelationship?: string | null;
+            /** @description The issuer was an eligible vetter. */
+            eligible: boolean;
+            /** @description Why it did not count. */
+            failures: string[];
+            /** @description The statement `id`. */
+            id?: string | null;
+            /** @description The issuer DID. */
+            issuer?: string | null;
+            /** @description `inPerson` / `video` / `priorAcquaintance`. */
+            method?: string | null;
+            /** @description Withdrawn by its vetter before the decision. */
+            revoked: boolean;
+            /** @description Proof, type, window and body verified. */
+            verified: boolean;
+            /** @description Withdrawn by its vetter now — after the decision, if `revoked` is false. */
+            withdrawnNow: boolean;
         };
         /**
          * @description State of a join request through its lifecycle.
@@ -3692,18 +3931,19 @@ export interface components {
          *     `crossCommunityRoles`) — operators wire purposes into REST
          *     payloads + the policies CLI verbs.
          *
-         *     Per spec §7.1, the workspace ships ten purposes. They split
-         *     into four groups:
+         *     The workspace ships twelve purposes (spec §7.1 names the first ten). They
+         *     split into five groups:
          *     - **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],
          *       [`Self::Personhood`].
          *     - **Discoverability**: [`Self::Registry`], [`Self::Directory`].
-         *     - **Authorization**: [`Self::RoleDefinitions`],
+         *     - **Authorization**: [`Self::RoleDefinitions`], [`Self::RoleChange`],
          *       [`Self::CrossCommunityRoles`],
          *       [`Self::CrossCommunityRelationships`], [`Self::Relationships`].
          *     - **Hosting**: [`Self::Rooms`].
+         *     - **Vetting**: [`Self::VetterEligibility`].
          * @enum {string}
          */
-        PolicyPurpose: "join" | "removal" | "personhood" | "registry" | "directory" | "roleDefinitions" | "crossCommunityRoles" | "crossCommunityRelationships" | "relationships" | "roleChange" | "rooms";
+        PolicyPurpose: "join" | "removal" | "personhood" | "registry" | "directory" | "roleDefinitions" | "crossCommunityRoles" | "crossCommunityRelationships" | "relationships" | "roleChange" | "rooms" | "vetterEligibility";
         /** @enum {string} */
         PolicyStatusFilter: "active" | "archived";
         /**
@@ -4226,6 +4466,11 @@ export interface components {
             credentialId: string;
             revokedAt: string;
         };
+        /**
+         * @description Whether a withdrawn statement touches a standing membership.
+         * @enum {string}
+         */
+        RevocationReviewState: "noAdmission" | "needsReview";
         RevokeBody: {
             pop?: null | components["schemas"]["Value"];
         };
@@ -4642,6 +4887,11 @@ export interface components {
              */
             validitySeconds?: number | null;
         };
+        /** @description `GET /v1/vetting/vetters` response: every grant, newest first. */
+        VetterGrantListResponse: {
+            /** @description The grants. */
+            vetters: components["schemas"]["VetterGrantRow"][];
+        };
         /**
          * @description `vtc/vetting/vetters/grant/0.1#response` payload.
          *
@@ -4665,6 +4915,111 @@ export interface components {
              * @description The credential's `validUntil`.
              */
             validUntil: string;
+        };
+        /** @description One vetter grant, as `GET /v1/vetting/vetters` reports it. */
+        VetterGrantRow: {
+            /** @description The vetter role credential's `id`. */
+            credentialId: string;
+            /**
+             * @description The grant's record — what `DELETE /v1/credentials/endorsements/{id}`
+             *     revokes.
+             */
+            endorsementId: string;
+            /** @description Unrevoked, unexpired, and held by a current member. */
+            live: boolean;
+            /** @description The member named a vetter. */
+            memberDid: string;
+            /** @description Issued by the automatic sweep or by an admin. */
+            origin: components["schemas"]["GrantOrigin"];
+            profile?: null | components["schemas"]["VetterProfileSummary"];
+            /** @description The grant has been revoked. */
+            revoked: boolean;
+            /**
+             * Format: date-time
+             * @description When it was revoked.
+             */
+            revokedAt?: string | null;
+            /**
+             * Format: date-time
+             * @description The credential's `validFrom`.
+             */
+            validFrom: string;
+            /**
+             * Format: date-time
+             * @description The credential's `validUntil`; absent on a row that did not record it.
+             */
+            validUntil?: string | null;
+        };
+        /** @description What an admin sees of a vetter's published profile. */
+        VetterProfileSummary: {
+            /** @description The profile's `location.country`. */
+            country?: string | null;
+            /** @description The profile's `displayName`. */
+            displayName?: string | null;
+            /**
+             * Format: int32
+             * @description How many events the profile lists, ended or not.
+             */
+            eventCount: number;
+            /** @description The profile's `languages`. */
+            languages?: string[];
+            /** @description Whether the profile appears in listings. */
+            listed: boolean;
+            /** @description The profile's `methods`. */
+            methods?: components["schemas"]["VettingMethod"][];
+            /**
+             * Format: date-time
+             * @description When the profile was last published.
+             */
+            updatedAt: string;
+        };
+        /**
+         * @description `vtc/vetting/vetters/resend/0.1#response` payload — also the answer to the
+         *     admin `POST /v1/vetting/vetters/{memberDid}/resend`.
+         */
+        VetterResendResponseBody: {
+            /** @description The re-delivered credential's `id`. */
+            credentialId: string;
+            /**
+             * Format: date-time
+             * @description Its `validUntil`.
+             */
+            validUntil: string;
+        };
+        /**
+         * @description How a vetter established who the applicant is.
+         * @enum {string}
+         */
+        VettingMethod: "inPerson" | "video" | "priorAcquaintance";
+        /** @description `GET /v1/vetting/revocations` response: every notice, newest first. */
+        VettingRevocationListResponse: {
+            /** @description The notices. */
+            revocations: components["schemas"]["VettingRevocationRow"][];
+        };
+        /** @description One withdrawal notice, and the admissions it touches. */
+        VettingRevocationRow: {
+            /** @description Approved join requests that counted the statement. */
+            affectedJoinRequests: string[];
+            /** @description Of their applicants, those who are current members. */
+            affectedMembers: string[];
+            /** @description The vetter who withdrew the statement. */
+            issuer: string;
+            /**
+             * @description The vetter's reason, when given (`mistake`, `newInformation`,
+             *     `keyCompromise`, `other`).
+             */
+            reason?: string | null;
+            /**
+             * Format: date-time
+             * @description When the community recorded the notice.
+             */
+            recordedAt: string;
+            /** @description Whether a current membership rests on the statement. */
+            reviewState: components["schemas"]["RevocationReviewState"];
+            /** @description The statement's `digestMultibase`. */
+            statementDigestMultibase: string;
+            /** @description The statement's `id`. */
+            statementId: string;
         };
         /**
          * @description One of `admin`, `moderator`, `issuer`, `member`, or                  `custom:<name>` where `<name>` is 1..=64 lowercase                  alphanumerics, `-`, or `_`.
@@ -6039,6 +6394,85 @@ export interface operations {
             };
         };
     };
+    communityBrandingShow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The community's branding */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityBranding"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    communityBrandingUpdate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommunityBranding"];
+            };
+        };
+        responses: {
+            /** @description The stored branding */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommunityBranding"];
+                };
+            };
+            /** @description A member breaks its bounds */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Audit writer not configured — change refused */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     get_profile: {
         parameters: {
             query?: never;
@@ -6864,6 +7298,50 @@ export interface operations {
             };
             /** @description Request is not Pending, or applicant is already a member */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    joinRequestVettingShow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Join request id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The vetting facts recorded for the request; `vetting` is absent when none were */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JoinRequestVettingResponse"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Join request not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8558,6 +9036,160 @@ export interface operations {
             };
         };
     };
+    vettingAutoGrantShow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Configuration and last sweep */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoGrantStatus"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vettingAutoGrantUpdate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutoGrantConfig"];
+            };
+        };
+        responses: {
+            /** @description The stored configuration and the last sweep */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutoGrantStatus"];
+                };
+            };
+            /** @description A value is out of bounds */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Audit writer not configured — change refused */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vettingRevocationList: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every withdrawal notice, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VettingRevocationListResponse"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vettingVetterList: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every vetter grant, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VetterGrantListResponse"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     vettingVetterGrant: {
         parameters: {
             query?: never;
@@ -8605,6 +9237,57 @@ export interface operations {
             };
             /** @description Caller is not a community admin */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vettingVetterResend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The vetter's member DID */
+                memberDid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The credential was handed to the transport for delivery */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VetterResendResponseBody"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not a community admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The member holds no live vetter grant whose credential the community kept */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The delivery could not be handed to the transport */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

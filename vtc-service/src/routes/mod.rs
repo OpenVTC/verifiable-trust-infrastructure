@@ -441,6 +441,12 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // render before any session exists. Curated subset only (no
         // extensions, no registry status).
         .routes(routes!(community::profile::get_public_profile))
+        // Community branding, published on `join-requests/manifest/0.2`. Admin
+        // REST with no Trust Task of its own.
+        .routes(routes!(
+            community::branding::get_branding,
+            community::branding::put_branding
+        ))
         // Admin config (M0.8). GET and PATCH share a path but carry
         // *separate* canonical tasks — `task_routes` layers the method
         // router and axum merges same-path routers per method, so each
@@ -767,6 +773,18 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(vetting::grant_vetter),
             "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1",
         ))
+        // The vetter registry's admin surface. Resend enforces the task a vetter
+        // also sends for themselves. The grant listing, the automatic-grant
+        // configuration and the withdrawal notices are admin REST with no Trust
+        // Task of their own, so — like the schemas routes — they carry no
+        // binding rather than borrowing a URI that describes something else.
+        .routes(tt(
+            routes!(vetting::resend_vetter),
+            "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1",
+        ))
+        .routes(routes!(vetting::list_vetters))
+        .routes(routes!(vetting::get_auto_grant, vetting::put_auto_grant))
+        .routes(routes!(vetting::list_revocations))
         // GET / PATCH / DELETE on `/members/{did}` each carry their own
         // canonical task. They shared `members/show/1.0` while the
         // router was believed to need per-method selectors; it does not
@@ -800,6 +818,9 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(join_requests::read::show_join_request),
             "https://trusttasks.org/spec/vtc/join-requests/show/0.1",
         ))
+        // The vetting facts a request was decided on — admin REST with no Trust
+        // Task of its own.
+        .routes(routes!(join_requests::read::show_join_request_vetting))
         // One decision endpoint, one task: `decide/0.1` carries
         // `{ decision: approved | rejected, reason? }`, superseding the
         // retired `approve/0.1` + `reject/0.1` pair (clean cutover — the

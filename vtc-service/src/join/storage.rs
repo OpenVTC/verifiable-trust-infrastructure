@@ -73,8 +73,71 @@ pub async fn store_join_request(
     .await
 }
 
+/// Delete a join request and the vetting facts recorded for it.
 pub async fn delete_join_request(ks: &KeyspaceHandle, id: Uuid) -> Result<(), AppError> {
+    ks.remove(vetting_facts_key(id)).await?;
     ks.remove(key(id)).await
+}
+
+/// Key prefix of the vetting facts recorded for a join request. Distinct from
+/// [`PREFIX`], so a request listing never reads one.
+const VETTING_FACTS_PREFIX: &[u8] = b"join_vetting:";
+
+fn vetting_facts_key(id: Uuid) -> Vec<u8> {
+    let mut k = VETTING_FACTS_PREFIX.to_vec();
+    k.extend_from_slice(id.as_hyphenated().to_string().as_bytes());
+    k
+}
+
+/// What the community established about a join request's vetting evidence
+/// when it decided the request — the facts the policy read.
+///
+/// Kept beside the request rather than on it: the request row is a published
+/// wire shape (`vtc/join-requests/show/0.1`), and these are the host's working
+/// record. They answer `GET /v1/join-requests/{id}/vetting`, tell the vetter
+/// sweep how a member was admitted, and let a withdrawn statement be traced to
+/// the admissions it counted toward. Deleted with the request.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredVettingFacts {
+    /// The join request.
+    pub request_id: Uuid,
+    /// The facts, as the policy read them.
+    pub facts: crate::vetting::VettingFacts,
+    /// When they were recorded.
+    pub recorded_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Record the vetting facts a join request was decided on.
+pub async fn store_vetting_facts(
+    ks: &KeyspaceHandle,
+    request_id: Uuid,
+    facts: &crate::vetting::VettingFacts,
+    recorded_at: chrono::DateTime<chrono::Utc>,
+) -> Result<(), AppError> {
+    let row = StoredVettingFacts {
+        request_id,
+        facts: facts.clone(),
+        recorded_at,
+    };
+    ks.insert(
+        String::from_utf8(vetting_facts_key(request_id)).expect("key is ASCII"),
+        &row,
+    )
+    .await
+}
+
+/// The vetting facts recorded for a join request, if any.
+pub async fn get_vetting_facts(
+    ks: &KeyspaceHandle,
+    request_id: Uuid,
+) -> Result<Option<StoredVettingFacts>, AppError> {
+    match ks.get_raw(vetting_facts_key(request_id)).await? {
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| AppError::Internal(format!("join vetting facts decode: {e}"))),
+        None => Ok(None),
+    }
 }
 
 /// Whole-keyspace walk — used by the retention sweeper. Routes use

@@ -77,6 +77,10 @@ pub const OUTBOX: &str = "outbox";
 /// one row per (issuer, statement id, statement digest), written when a vetter
 /// withdraws a statement and read whenever presented statements are counted.
 pub const VETTING_REVOCATIONS: &str = "vetting_revocations";
+/// Vetter profiles (`vtc/vetting/vetters/profile/0.1`): one row per vetter DID,
+/// written by the vetter, deleted when they no longer hold a live grant, and
+/// read by the vetter listing.
+pub const VETTER_PROFILES: &str = "vetter_profiles";
 
 /// Every keyspace the daemon opens, in `AppState` field order. The
 /// setup wizard pre-creates exactly this set; `server::run` opens
@@ -111,6 +115,7 @@ pub const ALL: &[&str] = &[
     INVITATIONS,
     OUTBOX,
     VETTING_REVOCATIONS,
+    VETTER_PROFILES,
 ];
 
 /// Keyspaces captured by `POST /v1/backup/export` (P3.9). These hold
@@ -154,6 +159,9 @@ pub const BACKED_UP: &[&str] = &[
     // A withdrawn vetting statement must stay withdrawn across a restore, or a
     // restored community would count a statement its vetter took back.
     VETTING_REVOCATIONS,
+    // A vetter's published profile is theirs to replace, not the community's to
+    // reconstruct: a restore without it would silently unlist every vetter.
+    VETTER_PROFILES,
 ];
 
 /// Keyspaces deliberately omitted from backup (P3.9): ephemeral auth,
@@ -183,7 +191,7 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        assert_eq!(ALL.len(), 29, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 30, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

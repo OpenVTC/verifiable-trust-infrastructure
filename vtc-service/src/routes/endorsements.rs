@@ -279,6 +279,8 @@ pub async fn issue(
         created_at: now,
         revoked_at: None,
         valid_until: Some(valid_until),
+        auto_granted: false,
+        credential: None,
     };
     store_endorsement(&state.endorsements_ks, &end).await?;
 
@@ -549,6 +551,12 @@ pub async fn revoke(
             }),
         )
         .await?;
+
+    // A vetter whose grant this was, holding no other, no longer has a profile
+    // to publish (`vtc/vetting/vetters/profile/0.1`, Conformance 5).
+    if row.endorsement_type == vta_sdk::protocols::vetting::COMMUNITY_ROLE_ENDORSEMENT_TYPE {
+        crate::vetting::profiles::after_grant_revoked(&state, &auth.did, &row.subject_did).await?;
+    }
 
     info!(
         endorsement_id = %id,

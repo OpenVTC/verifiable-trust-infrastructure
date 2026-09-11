@@ -105,15 +105,16 @@ pub const POLICY_SOURCE_MAX_BYTES: usize = 64 * 1024;
 /// `crossCommunityRoles`) — operators wire purposes into REST
 /// payloads + the policies CLI verbs.
 ///
-/// Per spec §7.1, the workspace ships ten purposes. They split
-/// into four groups:
+/// The workspace ships twelve purposes (spec §7.1 names the first ten). They
+/// split into five groups:
 /// - **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],
 ///   [`Self::Personhood`].
 /// - **Discoverability**: [`Self::Registry`], [`Self::Directory`].
-/// - **Authorization**: [`Self::RoleDefinitions`],
+/// - **Authorization**: [`Self::RoleDefinitions`], [`Self::RoleChange`],
 ///   [`Self::CrossCommunityRoles`],
 ///   [`Self::CrossCommunityRelationships`], [`Self::Relationships`].
 /// - **Hosting**: [`Self::Rooms`].
+/// - **Vetting**: [`Self::VetterEligibility`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
@@ -140,6 +141,12 @@ pub enum PolicyPurpose {
     /// change hosts. This purpose decides the narrower question a host is
     /// unambiguously entitled to decide: whether to lend its disk.
     Rooms,
+    /// Which members the automatic vetter-grant sweep names vetters
+    /// (`vtc.vetter_eligibility`). Evaluated per active member when automatic
+    /// grants are on: `allow` grants a member without a live grant, `deny`
+    /// revokes the grants the sweep issued. Wire form `vetterEligibility`, like
+    /// every purpose; the package spells it `vetter_eligibility`.
+    VetterEligibility,
 }
 
 impl PolicyPurpose {
@@ -147,7 +154,7 @@ impl PolicyPurpose {
     /// boot-time default-policy loader (M2.5) so missing rows can
     /// be filled from the bundled defaults without listing each
     /// purpose explicitly at the call site.
-    pub const ALL: [PolicyPurpose; 11] = [
+    pub const ALL: [PolicyPurpose; 12] = [
         PolicyPurpose::Join,
         PolicyPurpose::Removal,
         PolicyPurpose::Personhood,
@@ -159,6 +166,7 @@ impl PolicyPurpose {
         PolicyPurpose::Relationships,
         PolicyPurpose::RoleChange,
         PolicyPurpose::Rooms,
+        PolicyPurpose::VetterEligibility,
     ];
 
     /// Lowercase camelCase wire form of this purpose. Stable wire
@@ -177,6 +185,7 @@ impl PolicyPurpose {
             PolicyPurpose::Relationships => "relationships",
             PolicyPurpose::RoleChange => "roleChange",
             PolicyPurpose::Rooms => "rooms",
+            PolicyPurpose::VetterEligibility => "vetterEligibility",
         }
     }
 
@@ -203,6 +212,9 @@ impl PolicyPurpose {
             // which this service refuses rather than reads as consent — but an
             // operator would see every registration denied with no clue why.
             PolicyPurpose::Rooms => Some("vtc.rooms"),
+            // Probed by a fixed package: a policy in any other package answers
+            // nothing, which the sweep logs and acts on for no one.
+            PolicyPurpose::VetterEligibility => Some("vtc.vetter_eligibility"),
             _ => None,
         }
     }
@@ -262,6 +274,7 @@ mod tests {
             ),
             (PolicyPurpose::Relationships, json!("relationships")),
             (PolicyPurpose::RoleChange, json!("roleChange")),
+            (PolicyPurpose::VetterEligibility, json!("vetterEligibility")),
         ];
         for (purpose, wire) in cases {
             assert_eq!(serde_json::to_value(purpose).unwrap(), wire);
@@ -302,7 +315,7 @@ mod tests {
         // the bundled default would silently never load. Drive the
         // count + exhaustiveness assertion off the same constant
         // so a missed entry surfaces at test time.
-        assert_eq!(PolicyPurpose::ALL.len(), 11);
+        assert_eq!(PolicyPurpose::ALL.len(), 12);
         for purpose in PolicyPurpose::ALL {
             // Compiles iff the match is total — `as_str` exhaustively
             // matches every variant; this exists so the assertion

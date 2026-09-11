@@ -16,7 +16,8 @@ AES-256-GCM encryption of:
 - **Community state** — every backed-up keyspace, dumped row-for-row: `acl`,
   `community`, `members`, `join_requests`, `policies`, `active_policies`,
   `status_lists`, `relationships`, `relationships_by_did`, `endorsement_types`,
-  `schemas`, `endorsements`, and `audit_key`. The `audit` log is included only
+  `schemas`, `endorsements`, `vetting_revocations`, `vetter_profiles`, and
+  `audit_key`. The `audit` log is included only
   when you pass `include_audit: true` — and when it is, its signed checkpoints
   (`audit_checkpoint`) come with it. That pairing is not optional: a log
   restored without its checkpoints holds fewer entries than every signed

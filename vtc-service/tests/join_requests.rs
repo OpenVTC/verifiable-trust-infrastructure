@@ -2471,6 +2471,44 @@ async fn naming_a_vetter_twice_returns_the_same_grant() {
     assert_eq!(grants_of(&fix, &carol).await.len(), 1, "one slot, one row");
 }
 
+/// A member named a vetter in the same second they joined holds a live grant,
+/// so naming them again returns it rather than issuing a duplicate.
+///
+/// The grant's recorded time is its credential's second-precision `validFrom`;
+/// `joined_at` keeps sub-seconds. Compared as they were, a grant from the second
+/// the member joined sorted before the membership and never read as live.
+#[tokio::test]
+async fn a_vetter_named_in_the_second_they_joined_is_not_granted_twice() {
+    use chrono::{SubsecRound, Timelike};
+    let fix = build_fixture().await;
+    let (carol, _) = did_key_secret([0x11; 32]);
+    seed_member(&fix, &carol).await;
+    // Joined late in the current second: the grant that follows is stamped
+    // with this second, and so sorts before a sub-second `joined_at`.
+    let mut member = vtc_service::members::storage::get_member(&fix.members_ks, &carol)
+        .await
+        .unwrap()
+        .expect("seeded member");
+    member.joined_at = chrono::Utc::now()
+        .trunc_subsecs(0)
+        .with_nanosecond(999_999_999)
+        .unwrap();
+    vtc_service::members::storage::store_member(&fix.members_ks, &member)
+        .await
+        .unwrap();
+
+    let (status, first) = grant_vetter(&fix, &carol).await;
+    assert_eq!(status, StatusCode::CREATED, "got {first}");
+    let (status, second) = grant_vetter(&fix, &carol).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the grant from the joining second is live and is returned: {second}"
+    );
+    assert_eq!(first["endorsementId"], second["endorsementId"]);
+    assert_eq!(grants_of(&fix, &carol).await.len(), 1, "no duplicate grant");
+}
+
 /// A `vtc/vetting/revoke-statement/0.1` document for `statement`, signed by `seed`.
 async fn withdrawal_doc(seed: [u8; 32], statement: &Value) -> Value {
     let digest = dtg_credentials::digest_multibase_json(statement).expect("statement digest");
@@ -2485,6 +2523,631 @@ async fn withdrawal_doc(seed: [u8; 32], statement: &Value) -> Value {
     )
     .await;
     doc
+}
+
+// ---------------------------------------------------------------------------
+// The vetter registry: profiles, listing, resend, branding, automatic grants,
+// and the admin views of vetting facts and withdrawals.
+// ---------------------------------------------------------------------------
+
+use vta_sdk::protocols::join_requests::JOIN_REQUEST_MANIFEST_0_2_TYPE;
+use vta_sdk::protocols::vetting::{
+    VETTING_VETTER_LIST_TYPE, VETTING_VETTER_PROFILE_ERR_NOT_ELIGIBLE, VETTING_VETTER_PROFILE_TYPE,
+    VETTING_VETTER_RESEND_ERR_NOT_GRANTED, VETTING_VETTER_RESEND_TYPE,
+};
+
+const RESEND_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1";
+
+/// An admin REST call to a route with no Trust Task binding: no `Trust-Task`
+/// header at all.
+async fn admin_rest(
+    fix: &Fixture,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("Authorization", format!("Bearer {}", fix.admin_token));
+    let res = fix
+        .router
+        .clone()
+        .oneshot(
+            req.body(
+                body.map(|v| Body::from(v.to_string()))
+                    .unwrap_or(Body::empty()),
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json)
+}
+
+fn day(offset: i64) -> String {
+    (chrono::Utc::now() + chrono::Duration::days(offset))
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+/// A profile with one event already over and one to come.
+fn carols_profile(listed: bool) -> Value {
+    json!({
+        "listed": listed,
+        "displayName": "Carol M.",
+        "languages": ["en", "de-AT"],
+        "location": { "country": "AT", "city": "Vienna" },
+        "methods": ["inPerson", "video"],
+        "acceptsDocumentation": ["passport", "none"],
+        "contactHint": "Ask at the kernel-vtc table.",
+        "events": [
+            { "name": "Last Month's Meetup", "startDate": day(-40), "endDate": day(-38) },
+            { "name": "Kernel Maintainers Meetup", "startDate": day(20), "endDate": day(22) }
+        ]
+    })
+}
+
+async fn publish_profile(fix: &Fixture, seed: [u8; 32], profile: Value) -> (StatusCode, Value) {
+    let (_did, doc) = signed_trust_task_seed(&seed, VETTING_VETTER_PROFILE_TYPE, profile).await;
+    post_tt(&fix.router, doc).await
+}
+
+/// List vetters as the applicant — not a member of the community.
+async fn list_vetters(fix: &Fixture, filters: Value) -> Value {
+    let (_did, doc) = signed_trust_task(VETTING_VETTER_LIST_TYPE, filters).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "list: {body}");
+    tt_payload(&body)
+}
+
+fn listed_dids(page: &Value) -> Vec<String> {
+    page["vetters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["vetterDid"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_vetter_publishes_a_profile_that_applicants_find_by_filter() {
+    let fix = build_fixture().await;
+    let (carol, _) = did_key_secret([0x11; 32]);
+    seed_vetter(&fix, &carol).await;
+
+    let (status, body) = publish_profile(&fix, [0x11; 32], carols_profile(true)).await;
+    assert_eq!(status, StatusCode::OK, "publish: {body}");
+    let stored = tt_payload(&body);
+    assert_eq!(stored["listed"], true);
+    assert!(stored["updatedAt"].is_string());
+
+    let page = list_vetters(&fix, json!({})).await;
+    assert_eq!(listed_dids(&page), vec![carol.clone()]);
+    let entry = &page["vetters"][0];
+    assert_eq!(entry["displayName"], "Carol M.");
+    assert_eq!(entry["acceptsDocumentation"], json!(["passport", "none"]));
+    assert!(entry["grantValidUntil"].is_string());
+    assert_eq!(entry["updatedAt"], stored["updatedAt"]);
+    let events = entry["events"].as_array().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "an event already over is not listed: {entry}"
+    );
+    assert_eq!(events[0]["name"], "Kernel Maintainers Meetup");
+    assert!(entry.get("listed").is_none() && page.get("nextCursor").is_none());
+
+    // One filtered request over the wire; the rest of the matrix straight
+    // through the listing, since `/v1/trust-tasks` is rate limited per caller.
+    assert!(listed_dids(&list_vetters(&fix, json!({ "language": "fr" })).await).is_empty());
+    for (filters, found) in [
+        (json!({ "language": "de" }), true),
+        (json!({ "language": "DE-at" }), true),
+        (
+            json!({ "country": "AT", "city": "vienna", "method": "video" }),
+            true,
+        ),
+        (json!({ "country": "DE" }), false),
+        (json!({ "method": "priorAcquaintance" }), false),
+        (
+            json!({ "eventFrom": day(21), "eventName": "maintainers" }),
+            true,
+        ),
+        (json!({ "eventFrom": day(-40), "eventTo": day(-38) }), false),
+        (json!({ "eventName": "last month" }), false),
+    ] {
+        let body = serde_json::from_value(filters.clone()).unwrap();
+        let page = vtc_service::vetting::profiles::list(&fix.state, &body)
+            .await
+            .unwrap();
+        assert_eq!(
+            !page.vetters.is_empty(),
+            found,
+            "filters {filters} gave {page:?}"
+        );
+    }
+
+    // The admin view carries the profile summary.
+    let (status, body) = admin_rest(&fix, "GET", "/v1/vetting/vetters", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let row = &body["vetters"][0];
+    assert_eq!(row["memberDid"], carol);
+    assert_eq!(row["origin"], "manual");
+    assert_eq!(row["live"], true);
+    assert_eq!(row["profile"]["displayName"], "Carol M.");
+    assert_eq!(row["profile"]["eventCount"], 2);
+}
+
+#[tokio::test]
+async fn listings_page_in_order_with_cursors_bound_to_their_filters() {
+    let fix = build_fixture().await;
+    let names = [
+        ([0x41; 32], Some("Zed")),
+        ([0x42; 32], None),
+        ([0x43; 32], Some("Anna")),
+    ];
+    for (seed, name) in names {
+        let (did, _) = did_key_secret(seed);
+        seed_vetter(&fix, &did).await;
+        let mut profile = carols_profile(true);
+        match name {
+            Some(n) => profile["displayName"] = json!(n),
+            None => {
+                profile.as_object_mut().unwrap().remove("displayName");
+            }
+        }
+        let (status, body) = publish_profile(&fix, seed, profile).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (anna, _) = did_key_secret([0x43; 32]);
+    let (zed, _) = did_key_secret([0x41; 32]);
+    let (nameless, _) = did_key_secret([0x42; 32]);
+
+    let first = list_vetters(&fix, json!({ "limit": 2 })).await;
+    assert_eq!(listed_dids(&first), vec![anna, zed]);
+    let cursor = first["nextCursor"]
+        .as_str()
+        .expect("a second page")
+        .to_string();
+    let second = list_vetters(&fix, json!({ "limit": 2, "cursor": cursor })).await;
+    assert_eq!(listed_dids(&second), vec![nameless]);
+    assert!(second.get("nextCursor").is_none());
+
+    // The same cursor with other filters is refused.
+    let (_did, doc) = signed_trust_task(
+        VETTING_VETTER_LIST_TYPE,
+        json!({ "language": "en", "cursor": cursor }),
+    )
+    .await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(tt_error_code(&body), "malformedRequest");
+}
+
+#[tokio::test]
+async fn only_an_identified_caller_may_list_vetters() {
+    let fix = build_fixture().await;
+    let unsigned = json!({
+        "type": VETTING_VETTER_LIST_TYPE,
+        "id": format!("urn:uuid:{}", Uuid::new_v4()),
+        "recipient": vtc_service::test_support::TEST_VTC_DID,
+        "issuedAt": "2026-01-01T00:00:00Z",
+        "expiresAt": "2099-01-01T00:00:00Z",
+        "payload": {},
+    });
+    let (status, body) = post_tt(&fix.router, unsigned).await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(tt_error_code(&body), "permissionDenied", "{body}");
+}
+
+#[tokio::test]
+async fn only_a_member_holding_a_live_grant_may_publish_a_profile() {
+    let fix = build_fixture().await;
+    let (erin, _) = did_key_secret([0x33; 32]);
+    seed_member(&fix, &erin).await;
+    let (status, body) = publish_profile(&fix, [0x33; 32], carols_profile(true)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        VETTING_VETTER_PROFILE_ERR_NOT_ELIGIBLE
+    );
+
+    // A profile that breaks its bounds is malformed, grant or not.
+    let (carol, _) = did_key_secret([0x11; 32]);
+    seed_vetter(&fix, &carol).await;
+    let mut too_long = carols_profile(true);
+    too_long["events"][1]["endDate"] = json!(day(60));
+    let (status, body) = publish_profile(&fix, [0x11; 32], too_long).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(tt_error_code(&body), "malformedRequest");
+}
+
+#[tokio::test]
+async fn unlisting_hides_a_profile_and_revoking_the_grant_deletes_it() {
+    use vtc_service::vetting::profiles::get_profile;
+    let fix = build_fixture().await;
+    let (carol, _) = did_key_secret([0x11; 32]);
+    let grant = seed_vetter(&fix, &carol).await;
+
+    publish_profile(&fix, [0x11; 32], carols_profile(false)).await;
+    assert!(listed_dids(&list_vetters(&fix, json!({})).await).is_empty());
+    assert!(
+        get_profile(&fix.state.vetter_profiles_ks, &carol)
+            .await
+            .unwrap()
+            .is_some(),
+        "an unlisted profile is kept"
+    );
+
+    publish_profile(&fix, [0x11; 32], carols_profile(true)).await;
+    assert_eq!(listed_dids(&list_vetters(&fix, json!({})).await).len(), 1);
+
+    let (status, body) = send(
+        &fix.router,
+        "DELETE",
+        &format!("/v1/credentials/endorsements/{grant}"),
+        ENDORSEMENT_REVOKE_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "revoke grant: {body}");
+    assert!(
+        get_profile(&fix.state.vetter_profiles_ks, &carol)
+            .await
+            .unwrap()
+            .is_none(),
+        "revoking the grant deletes the profile"
+    );
+    assert!(listed_dids(&list_vetters(&fix, json!({})).await).is_empty());
+}
+
+#[tokio::test]
+async fn an_older_profile_document_does_not_replace_a_newer_one() {
+    use vta_sdk::protocols::vetting::VetterProfileBody;
+    use vtc_service::vetting::profiles::publish;
+    let fix = build_fixture().await;
+    let (carol, _) = did_key_secret([0x11; 32]);
+    seed_vetter(&fix, &carol).await;
+    let body: VetterProfileBody = serde_json::from_value(carols_profile(true)).unwrap();
+    let now = chrono::Utc::now();
+
+    publish(&fix.state, &carol, &body, Some(now)).await.unwrap();
+    let stale = publish(
+        &fix.state,
+        &carol,
+        &body,
+        Some(now - chrono::Duration::hours(1)),
+    )
+    .await;
+    assert!(
+        matches!(stale, Err(vti_common::error::AppError::Validation(_))),
+        "{stale:?}"
+    );
+    publish(
+        &fix.state,
+        &carol,
+        &body,
+        Some(now + chrono::Duration::hours(1)),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_vetter_asks_for_the_grant_credential_again() {
+    let fix = build_fixture().await;
+    let (carol, _) = did_key_secret([0x11; 32]);
+    let (erin, _) = did_key_secret([0x33; 32]);
+    seed_vetter(&fix, &carol).await;
+    seed_member(&fix, &erin).await;
+
+    // Carol holds a grant; this test community has no messaging, so the
+    // delivery cannot be handed to a transport.
+    let (_did, doc) =
+        signed_trust_task_seed(&[0x11; 32], VETTING_VETTER_RESEND_TYPE, json!({})).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(tt_error_code(&body), "unavailable");
+
+    let (_did, doc) =
+        signed_trust_task_seed(&[0x33; 32], VETTING_VETTER_RESEND_TYPE, json!({})).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(tt_error_code(&body), VETTING_VETTER_RESEND_ERR_NOT_GRANTED);
+
+    let (_did, doc) = signed_trust_task_seed(
+        &[0x11; 32],
+        VETTING_VETTER_RESEND_TYPE,
+        json!({ "memberDid": erin }),
+    )
+    .await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a resend names nobody: {body}"
+    );
+
+    // The admin route answers the same way.
+    let (status, body) = send(
+        &fix.router,
+        "POST",
+        &format!("/v1/vetting/vetters/{carol}/resend"),
+        RESEND_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let (status, body) = send(
+        &fix.router,
+        "POST",
+        &format!("/v1/vetting/vetters/{erin}/resend"),
+        RESEND_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
+#[tokio::test]
+async fn branding_is_published_on_manifest_0_2_only() {
+    let fix = build_fixture().await;
+    let (status, body) = admin_rest(&fix, "GET", "/v1/community/branding", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({}));
+
+    let (status, body) = admin_rest(
+        &fix,
+        "PUT",
+        "/v1/community/branding",
+        Some(json!({ "displayName": "Kernel", "accentColor": "#1A2B3C" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["accentColor"], "#1a2b3c", "stored in lower case");
+
+    let (status, body) = admin_rest(
+        &fix,
+        "PUT",
+        "/v1/community/branding",
+        Some(json!({ "logoUrl": "http://kernel.example/logo.svg" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (_did, doc) = signed_trust_task(JOIN_REQUEST_MANIFEST_0_2_TYPE, json!({})).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        tt_payload(&body)["branding"],
+        json!({ "displayName": "Kernel", "accentColor": "#1a2b3c" })
+    );
+    let (_did, doc) = signed_trust_task(MANIFEST_TASK, json!({})).await;
+    let (_status, body) = post_tt(&fix.router, doc).await;
+    assert!(tt_payload(&body).get("branding").is_none(), "{body}");
+}
+
+/// Make `source` the active `vetterEligibility` policy.
+async fn activate_vetter_policy(fix: &Fixture, source: &str) {
+    use sha2::{Digest, Sha256};
+    use vtc_service::policy::{Policy, PolicyPurpose, set_active_policy_id, store_policy};
+    let id = Uuid::new_v4();
+    let now = chrono::Utc::now();
+    store_policy(
+        &fix.state.policies_ks,
+        &Policy {
+            id,
+            purpose: PolicyPurpose::VetterEligibility,
+            rego_source: source.into(),
+            sha256: Sha256::digest(source.as_bytes()).into(),
+            activated_at: Some(now),
+            author_did: ADMIN_DID.into(),
+            created_at: now,
+            version: 99,
+            name: None,
+            description: None,
+        },
+    )
+    .await
+    .unwrap();
+    set_active_policy_id(
+        &fix.state.active_policies_ks,
+        PolicyPurpose::VetterEligibility,
+        id,
+    )
+    .await
+    .unwrap();
+}
+
+const DENY_ALL_VETTERS: &str =
+    "package vtc.vetter_eligibility\nimport rego.v1\ndecision := {\"effect\": \"deny\"}\n";
+
+#[tokio::test]
+async fn the_sweep_grants_by_policy_and_revokes_only_its_own_grants() {
+    use vtc_service::vetting::auto_grant::run_sweep;
+    let fix = build_fixture().await;
+    let (founder, _) = did_key_secret([0x51; 32]);
+    let (dave, _) = did_key_secret([0x22; 32]);
+    seed_member(&fix, &founder).await;
+    seed_vetter(&fix, &dave).await;
+
+    let (status, body) = admin_rest(
+        &fix,
+        "PUT",
+        "/v1/vetting/auto-grant",
+        Some(json!({ "enabled": true, "sweepMinutes": 5 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["enabled"], true);
+    assert_eq!(body["sweepMinutes"], 5);
+    assert_eq!(body["validitySeconds"], 31_536_000);
+    assert!(body.get("lastSweep").is_none());
+    let (status, _) = admin_rest(
+        &fix,
+        "PUT",
+        "/v1/vetting/auto-grant",
+        Some(json!({ "enabled": true, "sweepMinutes": 1 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // The shipped policy names genesis members; Dave already holds a grant.
+    let sweep = run_sweep(&fix.state).await.expect("sweep");
+    assert_eq!((sweep.granted, sweep.revoked, sweep.errors), (1, 0, 0));
+    let grants = grants_of(&fix, &founder).await;
+    assert_eq!(grants.len(), 1);
+    assert!(grants[0].auto_granted);
+    assert!(
+        grants[0].credential.is_some(),
+        "the credential is kept for resend"
+    );
+    let (_, body) = admin_rest(&fix, "GET", "/v1/vetting/vetters", None).await;
+    let origin_of = |did: &str| {
+        body["vetters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["memberDid"] == did)
+            .map(|r| r["origin"].clone())
+    };
+    assert_eq!(origin_of(&founder), Some(json!("auto")));
+    assert_eq!(origin_of(&dave), Some(json!("manual")));
+
+    // A sweep that finds nothing to change changes nothing.
+    let again = run_sweep(&fix.state).await.unwrap();
+    assert_eq!((again.granted, again.revoked), (0, 0));
+
+    activate_vetter_policy(&fix, DENY_ALL_VETTERS).await;
+    let sweep = run_sweep(&fix.state).await.unwrap();
+    assert_eq!((sweep.granted, sweep.revoked, sweep.errors), (0, 1, 0));
+    assert!(grants_of(&fix, &founder).await[0].is_revoked());
+    assert!(
+        !grants_of(&fix, &dave).await[0].is_revoked(),
+        "the sweep never revokes an admin's grant"
+    );
+
+    let (_, body) = admin_rest(&fix, "GET", "/v1/vetting/auto-grant", None).await;
+    assert_eq!(body["lastSweep"]["revoked"], 1, "{body}");
+    assert!(body["lastSweep"]["ranAt"].is_string());
+}
+
+#[tokio::test]
+async fn an_admin_who_grants_an_automatic_vetter_adopts_the_grant() {
+    use vtc_service::vetting::auto_grant::run_sweep;
+    let fix = build_fixture().await;
+    let (founder, _) = did_key_secret([0x51; 32]);
+    seed_member(&fix, &founder).await;
+    run_sweep(&fix.state).await.unwrap();
+    let auto = grants_of(&fix, &founder).await;
+    assert!(auto[0].auto_granted);
+
+    let (status, body) = grant_vetter(&fix, &founder).await;
+    assert_eq!(status, StatusCode::OK, "the live grant is returned: {body}");
+    assert_eq!(body["endorsementId"], auto[0].id.to_string());
+    assert!(!grants_of(&fix, &founder).await[0].auto_granted);
+
+    activate_vetter_policy(&fix, DENY_ALL_VETTERS).await;
+    let sweep = run_sweep(&fix.state).await.unwrap();
+    assert_eq!(sweep.revoked, 0);
+    assert!(!grants_of(&fix, &founder).await[0].is_revoked());
+}
+
+#[tokio::test]
+async fn admins_see_the_vetting_facts_and_the_withdrawals_that_touch_a_membership() {
+    use vtc_service::vetting::auto_grant::{AdmittedVia, eligibility_facts};
+    let fix = build_fixture().await;
+    store_vetting_criterion(&fix).await;
+    let (applicant, _) = did_key_secret(MEMBER_SEED);
+    let (carol, carol_key) = did_key_secret([0x11; 32]);
+    let (dave, dave_key) = did_key_secret([0x22; 32]);
+    seed_vetter(&fix, &carol).await;
+    seed_vetter(&fix, &dave).await;
+    let from_carol = vetting_statement(&carol_key, &applicant, 1).await;
+    let from_dave = vetting_statement(&dave_key, &applicant, 2).await;
+
+    let (_did, doc) =
+        submit_doc(&vetting_vp(&applicant, vec![from_carol.clone(), from_dave])).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(verdict_effect(&body), "allow", "{body}");
+    let request_id = body["payload"]["requestId"].as_str().unwrap().to_string();
+
+    let (status, facts) = admin_rest(
+        &fix,
+        "GET",
+        &format!("/v1/join-requests/{request_id}/vetting"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{facts}");
+    assert_eq!(facts["vetting"]["satisfied"], true, "{facts}");
+    assert_eq!(facts["vetting"]["distinctCountedVetters"], 2);
+    assert_eq!(facts["vetting"]["statements"][0]["withdrawnNow"], false);
+
+    let member_facts = |all: Vec<vtc_service::vetting::auto_grant::EligibilityFacts>| {
+        all.into_iter()
+            .find(|f| f.did == applicant)
+            .expect("the applicant is a member")
+    };
+    let admitted = member_facts(
+        eligibility_facts(&fix.state, chrono::Utc::now())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(admitted.admitted_via, AdmittedVia::Vetting);
+    assert_eq!(admitted.depth, Some(1), "vetted by genesis members");
+    assert!(!admitted.under_review);
+
+    let (status, body) = post_tt(&fix.router, withdrawal_doc([0x11; 32], &from_carol).await).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = admin_rest(&fix, "GET", "/v1/vetting/revocations", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let notice = &body["revocations"][0];
+    assert_eq!(notice["issuer"], carol);
+    assert_eq!(notice["reviewState"], "needsReview");
+    assert_eq!(notice["affectedMembers"], json!([applicant.clone()]));
+    assert_eq!(notice["affectedJoinRequests"], json!([request_id.clone()]));
+
+    let (_, facts) = admin_rest(
+        &fix,
+        "GET",
+        &format!("/v1/join-requests/{request_id}/vetting"),
+        None,
+    )
+    .await;
+    let withdrawn: Vec<bool> = facts["vetting"]["statements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["withdrawnNow"].as_bool().unwrap())
+        .collect();
+    assert!(withdrawn.contains(&true), "{facts}");
+    let under_review = member_facts(
+        eligibility_facts(&fix.state, chrono::Utc::now())
+            .await
+            .unwrap(),
+    );
+    assert!(under_review.under_review);
+
+    let (status, _) = admin_rest(
+        &fix,
+        "GET",
+        &format!("/v1/join-requests/{}/vetting", Uuid::new_v4()),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let _ = dave;
 }
 
 // ---------------------------------------------------------------------------

@@ -103,11 +103,167 @@ answers its own request and holds a role credential this community signed for
 that vetter — so the applicant knows before any session that the vetter's
 statement will count.
 
-`eligibleVetters.role` names the grant: `"vetter"`, or `"custom:vetter"`.
+`eligibleVetters.role` names the role the community's `CommunityRole` credential
+carries — a bare token such as `"vetter"`: a letter, then letters, digits, `_` or
+`-`, at most 128 characters. It is not an ACL role name, so a `custom:*` form is
+refused.
+
+Before it relies on the credential, the applicant's client checks it has not
+been revoked with `vta_sdk::vetting::status::check_credential_status`: it
+fetches the community's status list through a fetch function the client
+supplies (the client owns the transport and its timeouts), verifies the list's
+proof and that its issuer is the community, and reads the credential's bit —
+`Active`, `Revoked`, or `Unknown` with the reason. `Unknown` is never treated
+as `Active`.
 
 To withdraw a vetter, revoke the grant like any endorsement: "Revoke vetter
 role" in the console, or `DELETE /v1/credentials/endorsements/{endorsementId}`
 (`vtc/endorsements/revoke/0.1`). A member's grants are revoked when they leave.
+Either way the vetter's profile is deleted.
+
+`GET /v1/vetting/vetters` lists every grant, newest first, for the console:
+
+```json
+{ "vetters": [ { "endorsementId": "…", "memberDid": "did:…", "credentialId": "urn:uuid:…",
+                 "validFrom": "…", "validUntil": "…", "revoked": false, "live": true,
+                 "origin": "manual",
+                 "profile": { "listed": true, "displayName": "Carol M.", "country": "AT",
+                              "languages": ["en", "de-AT"], "methods": ["inPerson"],
+                              "eventCount": 1, "updatedAt": "…" } } ] }
+```
+
+`live` is unrevoked, unexpired and held by a current member; `origin` is
+`manual` for an admin's grant and `auto` for one the sweep issued (below).
+
+A vetter whose wallet lost the credential asks for it again with
+`vtc/vetting/vetters/resend/0.1` (payload `{}`); an admin can do the same with
+`POST /v1/vetting/vetters/{memberDid}/resend`. The community delivers the same
+credential over `credential-exchange/issue` — nothing new is issued — and
+answers `{ "credentialId": "…", "validUntil": "…" }`. A sender with no live
+grant is refused with `vtc/vetting/vetters/resend:notGranted` (404 over admin
+REST); a delivery that cannot be handed to the transport with `unavailable`
+(503). A resend is audited as `VetterGrantResent`.
+
+### 4. Let applicants find vetters
+
+A vetter publishes a **profile** with `vtc/vetting/vetters/profile/0.1`, over
+REST (`POST /v1/trust-tasks`), DIDComm or TSP. It replaces the whole profile:
+
+```json
+{
+  "listed": true,
+  "displayName": "Carol M.",
+  "languages": ["en", "de-AT"],
+  "location": { "country": "AT", "city": "Vienna" },
+  "methods": ["inPerson", "video"],
+  "acceptsDocumentation": ["passport", "nationalId", "none"],
+  "availability": "Weekday evenings, Central European Time.",
+  "contactHint": "Ask for a ticket at the kernel-vtc table at the meetup.",
+  "events": [ { "name": "Kernel Maintainers Meetup 2026",
+                "startDate": "2026-10-05", "endDate": "2026-10-07",
+                "location": { "country": "AT", "city": "Vienna" } } ]
+}
+```
+
+`languages`, `methods` (one to three), `acceptsDocumentation` and `events` are
+required and may be empty (all but `methods`). An event lasts at most 31 days.
+Only an active member holding a live vetter grant may publish; anyone else gets
+`vtc/vetting/vetters/profile:notEligible`. A document older (`issuedAt`) than
+the one the stored profile came from is refused with `malformedRequest`, so a
+replayed copy cannot re-list a vetter who unlisted. `listed: false` keeps the
+profile and removes it from listings. Publishing is audited as
+`VetterProfileUpdated`; the profile is deleted — `VetterProfileDeleted` — when
+the vetter's grant is revoked or they leave, and kept but unlisted while a
+grant has merely expired.
+
+Anyone the community can identify — a member, or an applicant with a DID —
+finds vetters with `vtc/vetting/vetters/list/0.1`. An unidentified caller is
+refused with `permissionDenied`. Every filter is optional and they combine:
+
+| Filter | Matches |
+|---|---|
+| `language` | a listed tag equal to it, or starting with it and `-` (`de` matches `de-AT`), case-insensitively |
+| `country` | `location.country` |
+| `region`, `city` | `location.region`, `location.city`, case-insensitively |
+| `method` | one of the vetter's `methods` |
+| `eventFrom`, `eventTo`, `eventName` | one event, not yet ended, that overlaps the range (an open end is unbounded) and whose name contains `eventName` |
+| `limit`, `cursor` | pages of 1–100 (50 by default); `cursor` is the previous page's `nextCursor`, sent with the same filters |
+
+Only active members with a live grant and a listed profile appear, each with
+its published profile (ended events left out), `vetterDid`, `grantValidUntil`
+and `updatedAt` — nothing else. With an event filter the earliest matching
+event comes first; otherwise vetters are ordered by `displayName` (vetters
+without one last), then by DID, by code point.
+
+A vetter hands out tickets as a QR code carrying a **ticket URI**, encoded and
+decoded with `vta_sdk::vetting::ticket_uri`:
+
+```text
+vetting-ticket:?v=1&community=<pct-encoded DID>&vetter=<pct-encoded DID>&ticket=<ticketId>&secret=<base64url 32 bytes>
+vetting-ticket:?v=1&community=<pct-encoded DID>&vetter=<pct-encoded DID>&code=K7QF-2M9X
+```
+
+A reader refuses an unknown `v`, a URI with both `ticket`/`secret` and `code`,
+and any member that breaks the `vetting/request` patterns.
+
+### 5. Name vetters automatically (optional)
+
+A large community can let policy name its vetters. The `vetterEligibility`
+policy purpose (Rego package `vtc.vetter_eligibility`, query
+`data.vtc.vetter_eligibility.decision`) is evaluated for every active member by
+a periodic sweep, with this input:
+
+```json
+{ "did": "did:…", "status": "active", "roles": ["member"], "tenureDays": 412,
+  "admittedVia": "vetting", "underReview": false, "depth": 1 }
+```
+
+- `admittedVia` — `vetting` when the join request that admitted the member was
+  satisfied by counted statements, else `invitation`, else `open` for any other
+  join request, else `genesis` for a member not admitted through a join request.
+- `underReview` — a statement that counted toward the member's admission has
+  since been withdrawn.
+- `depth` — `0` for a genesis member, one more than the shallowest counted
+  vetter for a vetted one, `null` when unknown.
+
+`{"effect": "allow"}` grants a member without a live grant (audited
+`VetterAutoGranted`, with `VecIssued`); `{"effect": "deny"}` revokes the grants
+**the sweep issued** — never an admin's. A policy that answers anything else
+changes nothing and is counted as an error. The shipped default allows only
+active `genesis` members who are not under review; who else is trusted to vet,
+and after how long, is the community's call — upload a policy that says so
+(`PUT /v1/policies`, purpose `vetterEligibility`).
+
+The sweep is off until an admin turns it on:
+
+```bash
+curl -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{ "enabled": true, "sweepMinutes": 60, "validitySeconds": 31536000 }' \
+     "$VTC_URL/v1/vetting/auto-grant"
+```
+
+`sweepMinutes` is 5–1440 (60 by default) and `validitySeconds` is within the
+grant bounds (one year by default). `GET /v1/vetting/auto-grant` returns the
+configuration and the last sweep — `{ "ranAt", "granted", "revoked", "errors" }`.
+A configuration change is audited as `VetterAutoGrantConfigured` and each sweep
+as `VetterAutoGrantSwept`. An admin who grants a member the sweep already named
+adopts the grant: it becomes `manual`, and the sweep leaves it alone.
+
+### 6. Brand the community (optional)
+
+`PUT /v1/community/branding` (admin) sets how the community asks an applicant's
+client to show it; `GET` reads it back:
+
+```json
+{ "displayName": "Linux Kernel", "accentColor": "#1a2b3c",
+  "logoUrl": "https://kernel.example.org/logo.svg" }
+```
+
+Every member is optional; `displayName` is 1–128 characters, `accentColor`
+`#rrggbb` (stored in lower case), `logoUrl` an https URL of at most 2048
+characters. `join-requests/manifest/0.2` carries it as `branding` when any is
+set. It is presentation only — `communityDid` identifies the community. Changes
+are audited as `CommunityBrandingUpdated`.
 
 ## What the community checks at submit
 
@@ -127,6 +283,11 @@ For every identity-vetting statement in the join presentation
 The criterion applied is the one whose current `requirementsDigest` the
 applicant sent in `extensions.requirementsDigest`, otherwise the first vetting
 criterion.
+
+The facts are recorded beside the join request, and an admin reads them with
+`GET /v1/join-requests/{id}/vetting` — the same facts in lowerCamelCase, each
+statement with `withdrawnNow` (withdrawn since the decision), and `recordedAt`.
+`vetting` is absent when no vetting criterion applied.
 
 The count becomes `input.evidence.vetting` for the join policy:
 
@@ -187,6 +348,13 @@ only ever withdraw a statement its sender signed. A withdrawn statement reads as
 Repeating a notice returns the original `recordedAt`. The first notice is
 audited as `VettingStatementRevoked`, and notices are part of a backup.
 
+`GET /v1/vetting/revocations` lists every notice, newest first, with the
+approved join requests that counted the statement (`affectedJoinRequests`), the
+applicants among them who are still members (`affectedMembers`), and a
+`reviewState` of `needsReview` when there are any, else `noAdmission`. A member
+admitted on a withdrawn statement also reads `underReview: true` to the
+automatic-grant policy.
+
 ## Current limits
 
 - Statements are counted on the VP-submit path. The credential-exchange
@@ -195,12 +363,22 @@ audited as `VettingStatementRevoked`, and notices are part of a backup.
   statement was signed: withdrawing a vetter stops every statement they signed
   counting, including those signed while the grant stood. That errs toward not
   admitting.
-- The applicant-side eligibility check verifies the vetter role credential but
-  leaves its status list to the caller; a revoked grant is always caught at the
-  community.
-- Delivering the credential to the member is best effort. The community's
-  record is what counts statements, so a vetter whose wallet missed it is still
-  counted; revoke and grant again to re-issue it.
+- The applicant-side eligibility check and the status check are separate calls
+  (`eligibility::verify_eligibility_vp`, then `status::check_credential_status`
+  on its `credential_status()`); a revoked grant is always caught at the
+  community regardless.
+- Delivering the credential to the member at grant is best effort. The
+  community's record is what counts statements, so a vetter whose wallet missed
+  it is still counted, and can ask for it again. A grant recorded before grant
+  credentials were kept cannot be resent (`notGranted`); revoke and grant again.
+- `needsReview` on a withdrawal notice is advisory: nothing records that an
+  admin reviewed the admission, and a withdrawal does not by itself suspend the
+  membership.
+- A listing is paged by position: a profile published or withdrawn between two
+  pages can shift one entry across the page boundary.
+- A member admitted through a join request whose vetting facts were not
+  recorded (decided before recording, or a recording failure, which is logged)
+  reads as `open` to the automatic-grant policy.
 - Distinct vetters are distinct member DIDs; one person holding two member DIDs
   would count twice.
 - Withdrawal notices are kept indefinitely — there is no retention sweep yet.

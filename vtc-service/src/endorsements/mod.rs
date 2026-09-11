@@ -26,8 +26,8 @@ use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
 pub use storage::{
-    ENDORSEMENTS_PREFIX, count_live_by_type, delete_endorsement, endorsements_for_subject,
-    get_endorsement, list_endorsements, mark_revoked, store_endorsement,
+    ENDORSEMENTS_PREFIX, count_live_by_type, delete_endorsement, endorsements_by_type,
+    endorsements_for_subject, get_endorsement, list_endorsements, mark_revoked, store_endorsement,
 };
 
 /// A stored custom endorsement. The accompanying VEC body
@@ -72,6 +72,17 @@ pub struct Endorsement {
     /// recorded; those rows' lifetime is unknown here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_until: Option<DateTime<Utc>>,
+    /// Issued by the automatic vetter-grant sweep rather than by an admin. The
+    /// sweep revokes only rows that carry this. Absent (false) on every other
+    /// row.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_granted: bool,
+    /// The signed credential, kept so it can be delivered again
+    /// (`vtc/vetting/vetters/resend/0.1`). Recorded for vetter grants; absent
+    /// on other endorsements and on rows written before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub credential: Option<JsonValue>,
 }
 
 impl Endorsement {

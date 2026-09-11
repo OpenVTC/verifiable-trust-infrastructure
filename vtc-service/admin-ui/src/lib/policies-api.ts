@@ -50,6 +50,7 @@ const PURPOSE_ORDER: Record<Purpose, true> = {
   relationships: true,
   roleChange: true,
   rooms: true,
+  vetterEligibility: true,
 };
 
 export const ALL_PURPOSES = Object.keys(PURPOSE_ORDER) as Purpose[];

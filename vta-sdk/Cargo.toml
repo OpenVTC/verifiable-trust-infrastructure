@@ -246,6 +246,9 @@ vetting = [
   "dep:dtg-credentials",
   "dep:sha2",
   "dep:getrandom",
+  # `vetting::status` decodes a community's status list with the same crate the
+  # VTC encodes it with, so the two cannot disagree on bit order or compression.
+  "dep:affinidi-status-list",
 ]
 # Expose in-memory test fixtures for downstream integration tests.
 # Currently gates: `SessionBackend` mocks (always); `provision_client::test_helpers`
@@ -333,6 +336,8 @@ affinidi-secrets-resolver = { workspace = true, optional = true }
 trust-tasks-rs = { workspace = true, optional = true }
 # DTG credential construction for the Vetting Statement (`vetting` feature).
 dtg-credentials = { workspace = true, optional = true }
+# Bitstring status-list decoding for `vetting::status` (`vetting` feature).
+affinidi-status-list = { workspace = true, optional = true }
 ciborium = { version = "0.2", optional = true }
 # Direct OS-CSPRNG access for seed/nonce/bundle-id generation. (hpke 0.14
 # sources its own randomness internally, so this is no longer the bridge

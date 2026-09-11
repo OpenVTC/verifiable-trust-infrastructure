@@ -422,7 +422,7 @@ async fn depart(
     state: &AppState,
     subject_did: &str,
     disposition: Disposition,
-    _actor_did: &str,
+    actor_did: &str,
 ) -> Result<DepartOutcome, AppError> {
     let _guard = LAST_ADMIN_LOCK.lock().await;
 
@@ -529,7 +529,8 @@ async fn depart(
 
     // A departed member is no vetter. Eligibility already requires a current
     // member, but a grant left live would count again if this DID rejoined.
-    let revoked_grants = crate::vetting::vetters::revoke_on_departure(state, subject_did).await;
+    let revoked_grants =
+        crate::vetting::vetters::revoke_on_departure(state, actor_did, subject_did).await;
 
     Ok(DepartOutcome {
         disposition,

@@ -110,6 +110,8 @@ pub struct AppState {
     /// Vetting statement withdrawal notices, keyed by issuer + statement id +
     /// digest (`crate::vetting::revocation`).
     pub vetting_revocations_ks: KeyspaceHandle,
+    /// Vetter profiles, keyed by vetter DID (`crate::vetting::profiles`).
+    pub vetter_profiles_ks: KeyspaceHandle,
     /// Credential-type schema store (Phase 2 task 2.2): the Issues / Accepts
     /// registry binding each type to a DTG catalog type + JSON Schema.
     pub schemas_ks: KeyspaceHandle,
@@ -460,6 +462,7 @@ pub async fn run(
     let relationships_by_did_ks = store.keyspace(keyspaces::RELATIONSHIPS_BY_DID)?;
     let endorsement_types_ks = store.keyspace(keyspaces::ENDORSEMENT_TYPES)?;
     let vetting_revocations_ks = store.keyspace(keyspaces::VETTING_REVOCATIONS)?;
+    let vetter_profiles_ks = store.keyspace(keyspaces::VETTER_PROFILES)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
     // Seed the schema store with the built-in catalog Issues types (idempotent;
     // never overwrites operator edits) so the registry reflects what the VTC
@@ -734,6 +737,7 @@ pub async fn run(
         relationships_by_did_ks,
         endorsement_types_ks,
         vetting_revocations_ks,
+        vetter_profiles_ks,
         schemas_ks,
         endorsements_ks,
         rooms_ks,
@@ -1095,6 +1099,11 @@ pub async fn run(
         boot_cfg.join_requests.clone(),
         shutdown_rx.clone(),
     );
+
+    // Automatic vetter grants. Always spawned: it reads its configuration
+    // every minute and does nothing until an admin turns it on
+    // (`PUT /v1/vetting/auto-grant`), so enabling needs no restart.
+    crate::vetting::auto_grant::AutoGrantSweeper::spawn(state.clone(), shutdown_rx.clone());
 
     // #708: spawn the signed-checkpoint emitter. Without it the audit chain
     // is unkeyed all the way down — a store-level adversary can restamp a

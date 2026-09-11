@@ -98,6 +98,23 @@ pub async fn endorsements_for_subject(
     Ok(rows)
 }
 
+/// Every endorsement of `endorsement_type`, revoked ones included, oldest
+/// first. One scan, for callers that need a whole type at once — listing
+/// vetters — rather than one subject.
+pub async fn endorsements_by_type(
+    ks: &KeyspaceHandle,
+    endorsement_type: &str,
+) -> Result<Vec<Endorsement>, AppError> {
+    let pairs = ks.prefix_iter_raw(ENDORSEMENTS_PREFIX.to_vec()).await?;
+    let mut rows: Vec<Endorsement> = pairs
+        .into_iter()
+        .filter_map(|(_k, v)| decode(&v).ok())
+        .filter(|row| row.endorsement_type == endorsement_type)
+        .collect();
+    rows.sort_by_key(|row| row.created_at);
+    Ok(rows)
+}
+
 pub async fn list_endorsements(
     ks: &KeyspaceHandle,
     audit_key: &AuditKey,
@@ -149,6 +166,8 @@ mod tests {
             created_at: Utc::now(),
             revoked_at: None,
             valid_until: None,
+            auto_granted: false,
+            credential: None,
         }
     }
 

@@ -11,6 +11,13 @@
 //! | `spec/vetting/decline/0.1` | vetter → applicant | [`VettingDeclineBody`] |
 //! | `spec/vtc/vetting/revoke-statement/0.1` | vetter → community | [`RevokeStatementBody`] → [`RevokeStatementResponseBody`] |
 //! | `spec/vtc/vetting/vetters/grant/0.1` | community admin → community | [`VetterGrantBody`] → [`VetterGrantResponseBody`] |
+//! | `spec/vtc/vetting/vetters/profile/0.1` | vetter → community | [`VetterProfileBody`] → [`VetterProfileResponseBody`] |
+//! | `spec/vtc/vetting/vetters/list/0.1` | member or applicant → community | [`VetterListBody`] → [`VetterListResponseBody`] |
+//! | `spec/vtc/vetting/vetters/resend/0.1` | vetter → community | [`VetterResendBody`] → [`VetterResendResponseBody`] |
+//!
+//! The community's admin REST surface for vetters shares the module:
+//! [`VetterGrantListResponse`] (`GET /v1/vetting/vetters`) and
+//! [`AutoGrantConfig`] / [`AutoGrantStatus`] (`GET`/`PUT /v1/vetting/auto-grant`).
 //!
 //! A vetter is named by a **vetter role credential**: a DTG
 //! `EndorsementCredential` the community issues to the member, with endorsement
@@ -42,7 +49,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -78,6 +85,31 @@ pub const VETTING_VETTER_GRANT_TYPE: &str =
 /// `#response` variant of [`VETTING_VETTER_GRANT_TYPE`].
 pub const VETTING_VETTER_GRANT_RESPONSE_TYPE: &str =
     "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1#response";
+/// Vetter → community: publish (or replace) the sender's vetter profile.
+pub const VETTING_VETTER_PROFILE_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/vetting/vetters/profile/0.1";
+/// `#response` variant of [`VETTING_VETTER_PROFILE_TYPE`].
+pub const VETTING_VETTER_PROFILE_RESPONSE_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/vetting/vetters/profile/0.1#response";
+/// Member or applicant → community: find vetters by language, place, method
+/// or event.
+pub const VETTING_VETTER_LIST_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1";
+/// `#response` variant of [`VETTING_VETTER_LIST_TYPE`].
+pub const VETTING_VETTER_LIST_RESPONSE_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1#response";
+/// Vetter → community: deliver the sender's live vetter grant credential again.
+pub const VETTING_VETTER_RESEND_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1";
+/// `#response` variant of [`VETTING_VETTER_RESEND_TYPE`].
+pub const VETTING_VETTER_RESEND_RESPONSE_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1#response";
+
+/// `vtc/vetting/vetters/profile` refusal: the sender is not an active member
+/// holding a live vetter grant.
+pub const VETTING_VETTER_PROFILE_ERR_NOT_ELIGIBLE: &str = "vtc/vetting/vetters/profile:notEligible";
+/// `vtc/vetting/vetters/resend` refusal: the sender holds no live vetter grant.
+pub const VETTING_VETTER_RESEND_ERR_NOT_GRANTED: &str = "vtc/vetting/vetters/resend:notGranted";
 
 /// `credentialSubject.endorsement.type` of a community role credential — the
 /// role VEC a community issues to a member.
@@ -130,6 +162,7 @@ pub const VETTING_REQUEST_ERR_METHOD_UNAVAILABLE: &str = "vetting/request:method
 
 /// How a vetter established who the applicant is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub enum VettingMethod {
@@ -837,6 +870,472 @@ pub struct VetterGrantResponseBody {
 }
 
 // ---------------------------------------------------------------------------
+// vtc/vetting/vetters/profile/0.1
+// ---------------------------------------------------------------------------
+
+/// Longest `displayName`, `region` or `city`.
+pub const MAX_VETTER_NAME_CHARS: usize = 128;
+/// Most `languages` a profile lists.
+pub const MAX_VETTER_LANGUAGES: usize = 16;
+/// Most `methods` a profile lists (there are three).
+pub const MAX_VETTER_METHODS: usize = 3;
+/// Most `acceptsDocumentation` tokens a profile lists.
+pub const MAX_VETTER_ACCEPTED_DOCUMENTATION: usize = 16;
+/// Longest `availability`.
+pub const MAX_VETTER_AVAILABILITY_CHARS: usize = 500;
+/// Longest `contactHint`.
+pub const MAX_VETTER_CONTACT_HINT_CHARS: usize = 300;
+/// Most `events` a profile lists.
+pub const MAX_VETTER_EVENTS: usize = 32;
+/// Longest event `name`, and the longest `eventName` filter.
+pub const MAX_VETTER_EVENT_NAME_CHARS: usize = 200;
+/// Longest span of one event, `endDate − startDate`, in days.
+pub const MAX_VETTER_EVENT_SPAN_DAYS: i64 = 31;
+/// Longest event `url` and branding `logoUrl`.
+pub const MAX_VETTING_URL_CHARS: usize = 2048;
+
+/// Where a vetter is, or where an event is held.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VetterLocation {
+    /// ISO 3166-1 alpha-2, uppercase.
+    pub country: String,
+    /// Region, state or province; 1–128 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// City; 1–128 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+}
+
+/// An event a vetter will attend and vet at — a conference, a summit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VetterEvent {
+    /// The event's name; 1–200 characters.
+    pub name: String,
+    /// First day, `YYYY-MM-DD`.
+    #[serde(with = "date_only")]
+    pub start_date: NaiveDate,
+    /// Last day, `YYYY-MM-DD`; not before `startDate`, at most 31 days after it.
+    #[serde(with = "date_only")]
+    pub end_date: NaiveDate,
+    /// Where it is held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<VetterLocation>,
+    /// The event's page; `https`, at most 2048 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// `vtc/vetting/vetters/profile/0.1` payload. Replaces the whole profile.
+///
+/// `languages`, `methods`, `acceptsDocumentation` and `events` are required,
+/// and may be empty — all but `methods`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VetterProfileBody {
+    /// `false` keeps the profile but removes it from listings.
+    pub listed: bool,
+    /// How the vetter wants to be named; 1–128 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// BCP 47 tags the vetter can vet in, most preferred first; at most 16.
+    pub languages: Vec<String>,
+    /// Where the vetter is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<VetterLocation>,
+    /// The methods the vetter offers; one to three, no repeats.
+    pub methods: Vec<VettingMethod>,
+    /// The documentation this vetter accepts — their own choice (D16); at most
+    /// 16 distinct tokens, as in `vetting/request#response`.
+    pub accepts_documentation: Vec<String>,
+    /// Free-text availability; 1–500 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability: Option<String>,
+    /// How to get a ticket from this vetter; 1–300 characters. A request still
+    /// needs a ticket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact_hint: Option<String>,
+    /// Events the vetter will vet at; at most 32.
+    pub events: Vec<VetterEvent>,
+    /// Ecosystem-defined extension members (SPEC §4.5.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
+}
+
+/// `vtc/vetting/vetters/profile/0.1#response` payload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VetterProfileResponseBody {
+    /// The `listed` the community stored.
+    pub listed: bool,
+    /// When the community stored the profile.
+    pub updated_at: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// vtc/vetting/vetters/list/0.1
+// ---------------------------------------------------------------------------
+
+/// A listing page when the request names no `limit`.
+pub const DEFAULT_VETTER_LIST_LIMIT: u32 = 50;
+/// The largest listing page.
+pub const MAX_VETTER_LIST_LIMIT: u32 = 100;
+/// Longest listing `cursor`.
+pub const MAX_VETTER_LIST_CURSOR_CHARS: usize = 512;
+
+/// `vtc/vetting/vetters/list/0.1` payload. Every filter is optional; filters
+/// combine with AND.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VetterListBody {
+    /// A BCP 47 tag. Matches a listed tag equal to it, or one it is a prefix of
+    /// at a subtag boundary (`de` matches `de-AT`). Compared case-insensitively.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// ISO 3166-1 alpha-2, uppercase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    /// Case-insensitive exact match on `location.region`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// Case-insensitive exact match on `location.city`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    /// A method the vetter offers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<VettingMethod>,
+    /// With `eventTo`, a date range a listed event must overlap; an open end is
+    /// unbounded.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_date_only"
+    )]
+    pub event_from: Option<NaiveDate>,
+    /// See [`Self::event_from`].
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_date_only"
+    )]
+    pub event_to: Option<NaiveDate>,
+    /// Case-insensitive substring of a listed event's name; at most 200
+    /// characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_name: Option<String>,
+    /// Page size, 1–100; 50 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    /// The `nextCursor` of the previous page; at most 512 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// Ecosystem-defined extension members (SPEC §4.5.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
+}
+
+impl VetterListBody {
+    /// Whether the request filters on events at all: a date bound or a name.
+    #[must_use]
+    pub fn has_event_filter(&self) -> bool {
+        self.event_from.is_some() || self.event_to.is_some() || self.event_name.is_some()
+    }
+}
+
+/// One vetter in a listing: the published profile, the DID and the grant's
+/// expiry — nothing else about the member.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListedVetter {
+    /// The vetter's DID — where a `vetting/request` goes.
+    pub vetter_did: String,
+    /// See [`VetterProfileBody::display_name`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// See [`VetterProfileBody::languages`].
+    pub languages: Vec<String>,
+    /// See [`VetterProfileBody::location`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<VetterLocation>,
+    /// See [`VetterProfileBody::methods`].
+    pub methods: Vec<VettingMethod>,
+    /// See [`VetterProfileBody::accepts_documentation`].
+    pub accepts_documentation: Vec<String>,
+    /// See [`VetterProfileBody::availability`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability: Option<String>,
+    /// See [`VetterProfileBody::contact_hint`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact_hint: Option<String>,
+    /// The profile's events that have not ended (`endDate` ≥ today, UTC).
+    pub events: Vec<VetterEvent>,
+    /// When the vetter's grant expires.
+    pub grant_valid_until: DateTime<Utc>,
+    /// When the profile was last published.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// `vtc/vetting/vetters/list/0.1#response` payload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VetterListResponseBody {
+    /// This page, in the listing's order.
+    pub vetters: Vec<ListedVetter>,
+    /// Pass as `cursor`, with the same filters, for the next page; absent on
+    /// the last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// vtc/vetting/vetters/resend/0.1
+// ---------------------------------------------------------------------------
+
+/// `vtc/vetting/vetters/resend/0.1` payload: nothing but `ext`. The sender is
+/// the vetter whose grant is re-delivered.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VetterResendBody {
+    /// Ecosystem-defined extension members (SPEC §4.5.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
+}
+
+/// `vtc/vetting/vetters/resend/0.1#response` payload — also the answer to the
+/// admin `POST /v1/vetting/vetters/{memberDid}/resend`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VetterResendResponseBody {
+    /// The re-delivered credential's `id`.
+    pub credential_id: String,
+    /// Its `validUntil`.
+    pub valid_until: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// VTC admin REST: vetter grants and automatic grants
+// ---------------------------------------------------------------------------
+
+/// Who issued a vetter grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum GrantOrigin {
+    /// The automatic-grant sweep, on the `vetter_eligibility` policy's
+    /// `allow`. Only these does the sweep revoke.
+    Auto,
+    /// An admin.
+    Manual,
+}
+
+/// What an admin sees of a vetter's published profile.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct VetterProfileSummary {
+    /// Whether the profile appears in listings.
+    pub listed: bool,
+    /// The profile's `displayName`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// The profile's `location.country`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    /// The profile's `languages`.
+    #[serde(default)]
+    pub languages: Vec<String>,
+    /// The profile's `methods`.
+    #[serde(default)]
+    pub methods: Vec<VettingMethod>,
+    /// How many events the profile lists, ended or not.
+    pub event_count: u32,
+    /// When the profile was last published.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// One vetter grant, as `GET /v1/vetting/vetters` reports it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct VetterGrantRow {
+    /// The grant's record — what `DELETE /v1/credentials/endorsements/{id}`
+    /// revokes.
+    pub endorsement_id: String,
+    /// The member named a vetter.
+    pub member_did: String,
+    /// The vetter role credential's `id`.
+    pub credential_id: String,
+    /// The credential's `validFrom`.
+    pub valid_from: DateTime<Utc>,
+    /// The credential's `validUntil`; absent on a row that did not record it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<DateTime<Utc>>,
+    /// The grant has been revoked.
+    pub revoked: bool,
+    /// When it was revoked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<DateTime<Utc>>,
+    /// Unrevoked, unexpired, and held by a current member.
+    pub live: bool,
+    /// Issued by the automatic sweep or by an admin.
+    pub origin: GrantOrigin,
+    /// The member's published profile, when they have one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<VetterProfileSummary>,
+}
+
+/// `GET /v1/vetting/vetters` response: every grant, newest first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct VetterGrantListResponse {
+    /// The grants.
+    pub vetters: Vec<VetterGrantRow>,
+}
+
+/// How often the automatic-grant sweep runs when unconfigured, in minutes.
+pub const DEFAULT_AUTO_GRANT_SWEEP_MINUTES: u32 = 60;
+/// The most often the sweep may run, in minutes.
+pub const MIN_AUTO_GRANT_SWEEP_MINUTES: u32 = 5;
+/// The least often the sweep may run, in minutes (a day).
+pub const MAX_AUTO_GRANT_SWEEP_MINUTES: u32 = 1440;
+
+/// `PUT /v1/vetting/auto-grant` body. An absent member takes its default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutoGrantConfig {
+    /// Whether the sweep runs. Off unless an admin turns it on.
+    pub enabled: bool,
+    /// Minutes between sweeps, 5–1440; 60 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sweep_minutes: Option<u32>,
+    /// Validity of a grant the sweep issues, within the grant bounds (one day
+    /// to two years); one year when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validity_seconds: Option<u64>,
+}
+
+impl AutoGrantConfig {
+    /// Check the bounds.
+    ///
+    /// # Errors
+    ///
+    /// [`ShapeError`] for the first rule broken.
+    pub fn check_shape(&self) -> Result<(), ShapeError> {
+        if self.sweep_minutes.is_some_and(|m| {
+            !(MIN_AUTO_GRANT_SWEEP_MINUTES..=MAX_AUTO_GRANT_SWEEP_MINUTES).contains(&m)
+        }) {
+            return Err(ShapeError::Field {
+                field: "sweepMinutes",
+                rule: "must be between 5 and 1440",
+            });
+        }
+        if self.validity_seconds.is_some_and(|s| {
+            !(MIN_VETTER_GRANT_VALIDITY_SECONDS..=MAX_VETTER_GRANT_VALIDITY_SECONDS).contains(&s)
+        }) {
+            return Err(ShapeError::Field {
+                field: "validitySeconds",
+                rule: "must be between one day and two years",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// What one automatic-grant sweep did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct AutoGrantSweep {
+    /// When the sweep finished.
+    pub ran_at: DateTime<Utc>,
+    /// Grants issued.
+    pub granted: u32,
+    /// Automatic grants revoked.
+    pub revoked: u32,
+    /// Members the sweep could not decide or act on.
+    pub errors: u32,
+}
+
+/// `GET /v1/vetting/auto-grant` response, and the answer to a `PUT`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct AutoGrantStatus {
+    /// Whether the sweep runs.
+    pub enabled: bool,
+    /// Minutes between sweeps.
+    pub sweep_minutes: u32,
+    /// Validity of a grant the sweep issues.
+    pub validity_seconds: u64,
+    /// The last sweep, when one has run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sweep: Option<AutoGrantSweep>,
+}
+
+/// `YYYY-MM-DD`, exactly: four-digit year, two-digit month and day.
+mod date_only {
+    use chrono::NaiveDate;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) const FORMAT: &str = "%Y-%m-%d";
+
+    pub(super) fn parse(s: &str) -> Option<NaiveDate> {
+        let b = s.as_bytes();
+        let shaped = b.len() == 10
+            && b[4] == b'-'
+            && b[7] == b'-'
+            && b.iter()
+                .enumerate()
+                .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit());
+        if !shaped {
+            return None;
+        }
+        NaiveDate::parse_from_str(s, FORMAT).ok()
+    }
+
+    pub(super) fn serialize<S: Serializer>(date: &NaiveDate, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&date.format(FORMAT).to_string())
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<NaiveDate, D::Error> {
+        let s = String::deserialize(d)?;
+        parse(&s).ok_or_else(|| serde::de::Error::custom("a date must be YYYY-MM-DD"))
+    }
+}
+
+/// [`date_only`] for an optional member.
+mod optional_date_only {
+    use chrono::NaiveDate;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    #[allow(clippy::ref_option)] // serde's `with` hands serializers `&Option<T>`
+    pub(super) fn serialize<S: Serializer>(
+        date: &Option<NaiveDate>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        match date {
+            Some(d) => super::date_only::serialize(d, s),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<NaiveDate>, D::Error> {
+        let s = String::deserialize(d)?;
+        super::date_only::parse(&s)
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom("a date must be YYYY-MM-DD"))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shape checks for the remaining payloads
 // ---------------------------------------------------------------------------
 
@@ -980,10 +1479,179 @@ impl VetterGrantBody {
     }
 }
 
+impl VetterLocation {
+    /// Check the schema's bounds and patterns.
+    ///
+    /// # Errors
+    ///
+    /// [`ShapeError`] for the first rule broken.
+    pub fn check_shape(&self) -> Result<(), ShapeError> {
+        shape::country("location.country", &self.country)?;
+        shape::optional_length(
+            "location.region",
+            self.region.as_deref(),
+            MAX_VETTER_NAME_CHARS,
+        )?;
+        shape::optional_length("location.city", self.city.as_deref(), MAX_VETTER_NAME_CHARS)
+    }
+}
+
+impl VetterEvent {
+    /// Check the schema's bounds and patterns.
+    ///
+    /// # Errors
+    ///
+    /// [`ShapeError`] for the first rule broken.
+    pub fn check_shape(&self) -> Result<(), ShapeError> {
+        shape::length("events.name", &self.name, MAX_VETTER_EVENT_NAME_CHARS)?;
+        if self.end_date < self.start_date {
+            return Err(ShapeError::Field {
+                field: "events.endDate",
+                rule: "must not be before startDate",
+            });
+        }
+        if (self.end_date - self.start_date).num_days() > MAX_VETTER_EVENT_SPAN_DAYS {
+            return Err(ShapeError::Field {
+                field: "events.endDate",
+                rule: "must be at most 31 days after startDate",
+            });
+        }
+        if let Some(location) = &self.location {
+            location.check_shape()?;
+        }
+        match &self.url {
+            Some(url) => shape::https_url("events.url", url, MAX_VETTING_URL_CHARS),
+            None => Ok(()),
+        }
+    }
+}
+
+impl VetterProfileBody {
+    /// Check the schema's bounds and patterns.
+    ///
+    /// # Errors
+    ///
+    /// [`ShapeError`] for the first rule broken.
+    pub fn check_shape(&self) -> Result<(), ShapeError> {
+        shape::optional_length(
+            "displayName",
+            self.display_name.as_deref(),
+            MAX_VETTER_NAME_CHARS,
+        )?;
+        shape::languages("languages", &self.languages)?;
+        if let Some(location) = &self.location {
+            location.check_shape()?;
+        }
+        if self.methods.is_empty() || self.methods.len() > MAX_VETTER_METHODS {
+            return Err(ShapeError::Field {
+                field: "methods",
+                rule: "must list one to three methods",
+            });
+        }
+        if self
+            .methods
+            .iter()
+            .enumerate()
+            .any(|(i, m)| self.methods[..i].contains(m))
+        {
+            return Err(ShapeError::Field {
+                field: "methods",
+                rule: "repeats a method",
+            });
+        }
+        if self.accepts_documentation.len() > MAX_VETTER_ACCEPTED_DOCUMENTATION {
+            return Err(ShapeError::Field {
+                field: "acceptsDocumentation",
+                rule: "lists more than 16 documentation tokens",
+            });
+        }
+        shape::tokens("acceptsDocumentation", &self.accepts_documentation)?;
+        if self
+            .accepts_documentation
+            .iter()
+            .enumerate()
+            .any(|(i, d)| self.accepts_documentation[..i].contains(d))
+        {
+            return Err(ShapeError::Field {
+                field: "acceptsDocumentation",
+                rule: "repeats a documentation token",
+            });
+        }
+        shape::optional_length(
+            "availability",
+            self.availability.as_deref(),
+            MAX_VETTER_AVAILABILITY_CHARS,
+        )?;
+        shape::optional_length(
+            "contactHint",
+            self.contact_hint.as_deref(),
+            MAX_VETTER_CONTACT_HINT_CHARS,
+        )?;
+        if self.events.len() > MAX_VETTER_EVENTS {
+            return Err(ShapeError::Field {
+                field: "events",
+                rule: "lists more than 32 events",
+            });
+        }
+        self.events.iter().try_for_each(VetterEvent::check_shape)
+    }
+}
+
+impl VetterListBody {
+    /// Check the schema's bounds and patterns.
+    ///
+    /// # Errors
+    ///
+    /// [`ShapeError`] for the first rule broken.
+    pub fn check_shape(&self) -> Result<(), ShapeError> {
+        if let Some(language) = &self.language
+            && !shape::language_tag(language)
+        {
+            return Err(ShapeError::Field {
+                field: "language",
+                rule: "must be a BCP 47 language tag",
+            });
+        }
+        if let Some(country) = &self.country {
+            shape::country("country", country)?;
+        }
+        shape::optional_length("region", self.region.as_deref(), MAX_VETTER_NAME_CHARS)?;
+        shape::optional_length("city", self.city.as_deref(), MAX_VETTER_NAME_CHARS)?;
+        if let (Some(from), Some(to)) = (self.event_from, self.event_to)
+            && to < from
+        {
+            return Err(ShapeError::Field {
+                field: "eventTo",
+                rule: "must not be before eventFrom",
+            });
+        }
+        shape::optional_length(
+            "eventName",
+            self.event_name.as_deref(),
+            MAX_VETTER_EVENT_NAME_CHARS,
+        )?;
+        if self
+            .limit
+            .is_some_and(|l| !(1..=MAX_VETTER_LIST_LIMIT).contains(&l))
+        {
+            return Err(ShapeError::Field {
+                field: "limit",
+                rule: "must be between 1 and 100",
+            });
+        }
+        shape::optional_length(
+            "cursor",
+            self.cursor.as_deref(),
+            MAX_VETTER_LIST_CURSOR_CHARS,
+        )
+    }
+}
+
 /// The bounds and patterns the vetting schemas set, written out rather than
 /// compiled from regular expressions so the crate takes no regex dependency.
-/// Each function names the schema pattern it implements.
-mod shape {
+/// Each function names the schema pattern it implements. Crate-visible so
+/// `crate::vetting::ticket_uri` checks a decoded ticket with the same rules.
+pub(crate) mod shape {
     use super::{PORTRAIT_CLAIM_TYPE, ShapeError};
 
     /// Crockford base32: no `I`, `L`, `O` or `U` (`[0-9A-HJKMNP-TV-Z]`).
@@ -995,7 +1663,7 @@ mod shape {
 
     /// `minLength: 1`, `maxLength: max`, counted in characters as JSON Schema
     /// counts them.
-    pub(super) fn length(field: &'static str, value: &str, max: usize) -> Result<(), ShapeError> {
+    pub(crate) fn length(field: &'static str, value: &str, max: usize) -> Result<(), ShapeError> {
         let n = value.chars().count();
         if n == 0 || n > max {
             return fail(field, "is empty or longer than its schema allows");
@@ -1003,7 +1671,7 @@ mod shape {
         Ok(())
     }
 
-    pub(super) fn optional_length(
+    pub(crate) fn optional_length(
         field: &'static str,
         value: Option<&str>,
         max: usize,
@@ -1012,7 +1680,7 @@ mod shape {
     }
 
     /// `^did:`.
-    pub(super) fn did(field: &'static str, value: &str) -> Result<(), ShapeError> {
+    pub(crate) fn did(field: &'static str, value: &str) -> Result<(), ShapeError> {
         if value.len() > "did:".len() && value.starts_with("did:") {
             return Ok(());
         }
@@ -1020,7 +1688,7 @@ mod shape {
     }
 
     /// `^[A-Za-z0-9_-]{43}$` — 32 bytes, base64url without padding.
-    pub(super) fn base64url_32(field: &'static str, value: &str) -> Result<(), ShapeError> {
+    pub(crate) fn base64url_32(field: &'static str, value: &str) -> Result<(), ShapeError> {
         if value.len() == 43
             && value
                 .bytes()
@@ -1033,7 +1701,7 @@ mod shape {
 
     /// `^[a-z][a-zA-Z0-9]*$`, at most 64 characters — documentation classes
     /// and provenance values.
-    pub(super) fn token(field: &'static str, value: &str) -> Result<(), ShapeError> {
+    pub(crate) fn token(field: &'static str, value: &str) -> Result<(), ShapeError> {
         let mut chars = value.chars();
         if value.len() <= 64
             && chars.next().is_some_and(|c| c.is_ascii_lowercase())
@@ -1047,13 +1715,13 @@ mod shape {
         )
     }
 
-    pub(super) fn tokens(field: &'static str, values: &[String]) -> Result<(), ShapeError> {
+    pub(crate) fn tokens(field: &'static str, values: &[String]) -> Result<(), ShapeError> {
         values.iter().try_for_each(|v| token(field, v))
     }
 
     /// `maxItems: 16`, `uniqueItems`, each item at most 35 characters of
     /// `^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$`.
-    pub(super) fn languages(field: &'static str, tags: &[String]) -> Result<(), ShapeError> {
+    pub(crate) fn languages(field: &'static str, tags: &[String]) -> Result<(), ShapeError> {
         if tags.len() > 16 {
             return fail(field, "lists more than 16 languages");
         }
@@ -1068,7 +1736,7 @@ mod shape {
         Ok(())
     }
 
-    fn language_tag(tag: &str) -> bool {
+    pub(crate) fn language_tag(tag: &str) -> bool {
         let mut parts = tag.split('-');
         tag.len() <= 35
             && parts.next().is_some_and(|primary| {
@@ -1080,7 +1748,7 @@ mod shape {
     }
 
     /// `^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$`.
-    pub(super) fn ticket_code(field: &'static str, code: &str) -> Result<(), ShapeError> {
+    pub(crate) fn ticket_code(field: &'static str, code: &str) -> Result<(), ShapeError> {
         if code.len() == 9
             && code.bytes().enumerate().all(|(i, b)| {
                 if i == 4 {
@@ -1096,7 +1764,7 @@ mod shape {
     }
 
     /// `^[A-Za-z0-9._:-]+$`, at most 128 characters.
-    pub(super) fn ticket_id(field: &'static str, id: &str) -> Result<(), ShapeError> {
+    pub(crate) fn ticket_id(field: &'static str, id: &str) -> Result<(), ShapeError> {
         if (1..=128).contains(&id.len())
             && id
                 .bytes()
@@ -1113,7 +1781,7 @@ mod shape {
     /// `^[a-zA-Z][a-zA-Z0-9+.-]*:\S+$`, at most 512 characters — a URI with a
     /// scheme, such as `urn:uuid:…`. The scheme cannot contain `:`, so the
     /// first `:` is where it ends.
-    pub(super) fn statement_id(field: &'static str, id: &str) -> Result<(), ShapeError> {
+    pub(crate) fn statement_id(field: &'static str, id: &str) -> Result<(), ShapeError> {
         let well_formed = id.split_once(':').is_some_and(|(scheme, rest)| {
             let mut scheme = scheme.chars();
             scheme.next().is_some_and(|c| c.is_ascii_alphabetic())
@@ -1128,7 +1796,7 @@ mod shape {
     }
 
     /// `^[a-zA-Z][a-zA-Z0-9_-]*$`, at most 128 characters.
-    pub(super) fn role(field: &'static str, role: &str) -> Result<(), ShapeError> {
+    pub(crate) fn role(field: &'static str, role: &str) -> Result<(), ShapeError> {
         let mut chars = role.chars();
         if role.len() <= 128
             && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
@@ -1139,8 +1807,32 @@ mod shape {
         fail(field, "must be a role name of at most 128 characters")
     }
 
+    /// `^[A-Z]{2}$` — ISO 3166-1 alpha-2.
+    pub(crate) fn country(field: &'static str, value: &str) -> Result<(), ShapeError> {
+        if value.len() == 2 && value.bytes().all(|b| b.is_ascii_uppercase()) {
+            return Ok(());
+        }
+        fail(field, "must be an uppercase ISO 3166-1 alpha-2 code")
+    }
+
+    /// `^https://\S+$`, at most `max` characters.
+    pub(crate) fn https_url(
+        field: &'static str,
+        value: &str,
+        max: usize,
+    ) -> Result<(), ShapeError> {
+        if value.len() > "https://".len()
+            && value.starts_with("https://")
+            && value.chars().count() <= max
+            && !value.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
+            return Ok(());
+        }
+        fail(field, "must be an https URL of at most 2048 characters")
+    }
+
     /// Portraits are not carried (D17).
-    pub(super) fn no_portrait<'a>(
+    pub(crate) fn no_portrait<'a>(
         field: &'static str,
         mut claim_types: impl Iterator<Item = &'a str>,
     ) -> Result<(), ShapeError> {
@@ -1155,6 +1847,244 @@ mod shape {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn profile() -> VetterProfileBody {
+        serde_json::from_value(json!({
+            "listed": true,
+            "displayName": "Carol",
+            "languages": ["en", "de-AT"],
+            "location": { "country": "CZ", "city": "Prague" },
+            "methods": ["inPerson", "video"],
+            "acceptsDocumentation": ["passport", "none"],
+            "availability": "Weekday evenings",
+            "contactHint": "Ask on the kernel list",
+            "events": [{
+                "name": "Kernel Maintainer Summit",
+                "startDate": "2026-10-05",
+                "endDate": "2026-10-08",
+                "location": { "country": "CZ", "city": "Prague" },
+                "url": "https://events.example.org/kms"
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_vetter_profile_is_camel_case_closed_and_writes_its_arrays() {
+        let p = profile();
+        p.check_shape().unwrap();
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["events"][0]["startDate"], "2026-10-05");
+        assert_eq!(v["acceptsDocumentation"][1], "none");
+
+        let minimal_json = json!({
+            "listed": false, "languages": [], "methods": ["video"],
+            "acceptsDocumentation": [], "events": []
+        });
+        let minimal: VetterProfileBody = serde_json::from_value(minimal_json.clone()).unwrap();
+        minimal.check_shape().unwrap();
+        let v = serde_json::to_value(&minimal).unwrap();
+        assert_eq!(
+            v, minimal_json,
+            "the empty arrays are written, optionals are absent"
+        );
+
+        for required in ["languages", "methods", "acceptsDocumentation", "events"] {
+            let mut missing = minimal_json.clone();
+            missing.as_object_mut().unwrap().remove(required);
+            assert!(
+                serde_json::from_value::<VetterProfileBody>(missing).is_err(),
+                "{required} is required"
+            );
+        }
+        for (member, value) in [
+            ("email", json!("c@example.com")),
+            ("location", json!({ "country": "CZ", "street": "x" })),
+        ] {
+            let mut extra = minimal_json.clone();
+            extra[member] = value;
+            assert!(serde_json::from_value::<VetterProfileBody>(extra).is_err());
+        }
+        let response: VetterProfileResponseBody = serde_json::from_value(json!({
+            "listed": true, "updatedAt": "2026-09-15T08:30:01Z"
+        }))
+        .unwrap();
+        assert!(response.listed);
+        assert!(
+            serde_json::from_value::<VetterProfileResponseBody>(json!({
+                "listed": true, "updatedAt": "2026-09-15T08:30:01Z", "ext": {}
+            }))
+            .is_err(),
+            "the response has no ext"
+        );
+    }
+
+    #[test]
+    fn a_vetter_profile_is_bounded() {
+        let broken = |f: &dyn Fn(&mut VetterProfileBody)| {
+            let mut p = profile();
+            f(&mut p);
+            p.check_shape().is_err()
+        };
+        assert!(broken(&|p| p.display_name = Some(String::new())));
+        assert!(broken(&|p| p.display_name = Some("x".repeat(129))));
+        assert!(!broken(&|p| p.display_name = Some("é".repeat(128))));
+        assert!(broken(&|p| p.languages = vec!["x".into()]));
+        assert!(broken(&|p| p.languages = vec!["en".into(), "en".into()]));
+        assert!(broken(
+            &|p| p.languages = (0..17).map(|i| format!("en-{i}")).collect()
+        ));
+        assert!(broken(&|p| p.methods.clear()));
+        assert!(broken(
+            &|p| p.methods = vec![VettingMethod::Video, VettingMethod::Video]
+        ));
+        assert!(broken(
+            &|p| p.accepts_documentation = vec!["Passport".into()]
+        ));
+        assert!(broken(
+            &|p| p.accepts_documentation = vec!["none".into(), "none".into()]
+        ));
+        assert!(broken(
+            &|p| p.accepts_documentation = (0..17).map(|i| format!("doc{i}")).collect()
+        ));
+        assert!(broken(&|p| p.availability = Some("x".repeat(501))));
+        assert!(broken(&|p| p.contact_hint = Some("x".repeat(301))));
+        assert!(broken(
+            &|p| p.location.as_mut().unwrap().country = "cz".into()
+        ));
+        assert!(broken(
+            &|p| p.location.as_mut().unwrap().country = "CZE".into()
+        ));
+        assert!(broken(
+            &|p| p.location.as_mut().unwrap().region = Some(String::new())
+        ));
+        assert!(broken(&|p| p.events = vec![p.events[0].clone(); 33]));
+        assert!(broken(&|p| p.events[0].name = "x".repeat(201)));
+        assert!(broken(
+            &|p| p.events[0].url = Some("http://events.example.org".into())
+        ));
+        assert!(broken(&|p| p.events[0].url = Some("https://a b".into())));
+        assert!(broken(&|p| {
+            p.events[0].end_date = p.events[0].start_date - chrono::Duration::days(1);
+        }));
+        assert!(broken(&|p| {
+            p.events[0].end_date = p.events[0].start_date + chrono::Duration::days(32);
+        }));
+        assert!(!broken(&|p| {
+            p.events[0].end_date = p.events[0].start_date + chrono::Duration::days(31);
+        }));
+    }
+
+    #[test]
+    fn event_dates_are_exactly_year_month_day() {
+        let event = |start: &str| {
+            serde_json::from_value::<VetterEvent>(json!({
+                "name": "Summit", "startDate": start, "endDate": "2026-10-08"
+            }))
+        };
+        assert!(event("2026-10-05").is_ok());
+        for bad in [
+            "2026-1-05",
+            "26-10-05",
+            "2026-10-05T00:00:00Z",
+            "+2026-10-05",
+            "2026-13-01",
+            "2026-02-30",
+            "",
+        ] {
+            assert!(event(bad).is_err(), "accepted {bad}");
+        }
+    }
+
+    #[test]
+    fn a_listing_request_is_closed_and_bounded() {
+        let body: VetterListBody = serde_json::from_value(json!({
+            "language": "de", "country": "AT", "region": "Wien", "city": "Wien",
+            "method": "inPerson", "eventFrom": "2026-10-01", "eventTo": "2026-10-31",
+            "eventName": "summit", "limit": 100, "cursor": "abc"
+        }))
+        .unwrap();
+        body.check_shape().unwrap();
+        assert!(body.has_event_filter());
+        assert!(!VetterListBody::default().has_event_filter());
+        VetterListBody::default().check_shape().unwrap();
+        assert!(
+            serde_json::from_value::<VetterListBody>(json!({ "memberDid": "did:key:z" })).is_err()
+        );
+
+        let broken = |f: &dyn Fn(&mut VetterListBody)| {
+            let mut b = body.clone();
+            f(&mut b);
+            b.check_shape().is_err()
+        };
+        assert!(broken(&|b| b.language = Some("deutsch-".into())));
+        assert!(broken(&|b| b.country = Some("at".into())));
+        assert!(broken(&|b| b.limit = Some(0)));
+        assert!(broken(&|b| b.limit = Some(101)));
+        assert!(broken(&|b| b.cursor = Some("x".repeat(513))));
+        assert!(broken(&|b| b.event_name = Some("x".repeat(201))));
+        assert!(broken(
+            &|b| b.event_to = Some(NaiveDate::from_ymd_opt(2026, 9, 30).unwrap())
+        ));
+        let v = serde_json::to_value(VetterListBody::default()).unwrap();
+        assert_eq!(v, json!({}), "every filter is absent, never null");
+    }
+
+    #[test]
+    fn a_resend_carries_nothing_and_answers_with_the_credential() {
+        serde_json::from_value::<VetterResendBody>(json!({})).unwrap();
+        assert!(
+            serde_json::from_value::<VetterResendBody>(json!({ "memberDid": "did:key:z" }))
+                .is_err()
+        );
+        let r = VetterResendResponseBody {
+            credential_id: "urn:uuid:g".into(),
+            valid_until: Utc::now(),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert!(v["credentialId"].is_string() && v["validUntil"].is_string());
+        assert!(v.get("ext").is_none());
+    }
+
+    #[test]
+    fn the_auto_grant_config_is_bounded() {
+        let config = |sweep: Option<u32>, validity: Option<u64>| AutoGrantConfig {
+            enabled: true,
+            sweep_minutes: sweep,
+            validity_seconds: validity,
+        };
+        assert!(config(None, None).check_shape().is_ok());
+        assert!(
+            config(Some(5), Some(MIN_VETTER_GRANT_VALIDITY_SECONDS))
+                .check_shape()
+                .is_ok()
+        );
+        assert!(
+            config(Some(1440), Some(MAX_VETTER_GRANT_VALIDITY_SECONDS))
+                .check_shape()
+                .is_ok()
+        );
+        assert!(config(Some(4), None).check_shape().is_err());
+        assert!(config(Some(1441), None).check_shape().is_err());
+        assert!(
+            config(None, Some(MIN_VETTER_GRANT_VALIDITY_SECONDS - 1))
+                .check_shape()
+                .is_err()
+        );
+        assert!(
+            serde_json::from_value::<AutoGrantConfig>(json!({ "enabled": true, "x": 1 })).is_err()
+        );
+        let status = AutoGrantStatus {
+            enabled: false,
+            sweep_minutes: DEFAULT_AUTO_GRANT_SWEEP_MINUTES,
+            validity_seconds: DEFAULT_VETTER_GRANT_VALIDITY_SECONDS,
+            last_sweep: None,
+        };
+        let v = serde_json::to_value(status).unwrap();
+        assert_eq!(v["sweepMinutes"], 60);
+        assert!(v.get("lastSweep").is_none());
+        assert_eq!(serde_json::to_value(GrantOrigin::Auto).unwrap(), "auto");
+    }
 
     #[test]
     fn the_vetter_role_matches_in_both_spellings_and_nothing_else_does() {

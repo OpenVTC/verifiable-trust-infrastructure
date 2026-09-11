@@ -234,6 +234,9 @@ async fn dispatch_typed(
             handle_revoke_statement(state, ctx, doc).await
         }
         vetting_wire::VETTING_VETTER_GRANT_TYPE => handle_vetter_grant(state, ctx, doc).await,
+        vetting_wire::VETTING_VETTER_PROFILE_TYPE => handle_vetter_profile(state, ctx, doc).await,
+        vetting_wire::VETTING_VETTER_LIST_TYPE => handle_vetter_list(state, ctx, doc).await,
+        vetting_wire::VETTING_VETTER_RESEND_TYPE => handle_vetter_resend(state, ctx, doc).await,
         // The rooms family. Note what these do not take: no `ctx`, and no auth claims.
         // A room operation is authorized by the authority chain the room itself issued,
         // never by this service's ACL, roster, or the caller's session — invariant I5 of
@@ -376,6 +379,12 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,
     // An admin naming a vetter — also mounted on REST as `POST /v1/vetting/vetters`.
     vetting_wire::VETTING_VETTER_GRANT_TYPE,
+    // The vetter registry: a vetter publishing a profile, anyone identified
+    // finding vetters, and a vetter asking for their grant credential again
+    // (resend is also mounted for admins as `POST /v1/vetting/vetters/{memberDid}/resend`).
+    vetting_wire::VETTING_VETTER_PROFILE_TYPE,
+    vetting_wire::VETTING_VETTER_LIST_TYPE,
+    vetting_wire::VETTING_VETTER_RESEND_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
@@ -591,6 +600,108 @@ async fn handle_vetter_grant(
     };
     match crate::vetting::vetters::grant(state, &admin_did, &body).await {
         Ok(grant) => success_response(&doc, grant.response),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// A specification-extended error code, `<slug>:<local>`, as a framework code.
+fn extended_code(code: &str) -> trust_tasks_rs::TrustTaskCode {
+    let (slug, local) = code
+        .rsplit_once(':')
+        .expect("an extended code is <slug>:<local>");
+    trust_tasks_rs::TrustTaskCode::Extended {
+        slug: slug.to_string(),
+        local: local.to_string(),
+    }
+}
+
+/// `vtc/vetting/vetters/profile/0.1` — a vetter publishes their profile.
+///
+/// The sender is the proven signer and the only vetter whose profile it can
+/// write. Who may publish is decided in [`crate::vetting::profiles::publish`];
+/// a sender without a live grant is refused with the task's `notEligible`.
+async fn handle_vetter_profile(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let vetter_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    let body: vetting_wire::VetterProfileBody = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::profiles::publish(state, &vetter_did, &body, doc.issued_at).await {
+        Ok(response) => success_response(&doc, response),
+        Err(AppError::Forbidden(reason)) => reject_with_code(
+            &doc,
+            extended_code(vetting_wire::VETTING_VETTER_PROFILE_ERR_NOT_ELIGIBLE),
+            reason,
+            None,
+        ),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/vetters/list/0.1` — find listed vetters.
+///
+/// Any identified caller, member or applicant. [`resolve_holder`] is what
+/// refuses an unidentified one — no proof over REST, no authenticated sender
+/// otherwise — with `permissionDenied`, before anything is read.
+async fn handle_vetter_list(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(reject) = resolve_holder(state, ctx, &doc).await {
+        return reject;
+    }
+    let body: vetting_wire::VetterListBody = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::profiles::list(state, &body).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/vetters/resend/0.1` — a vetter asks for their grant credential
+/// again. Always the sender's own grant.
+async fn handle_vetter_resend(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use trust_tasks_rs::{StandardCode, TrustTaskCode};
+
+    let vetter_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    if let Err(reject) = parse_payload::<vetting_wire::VetterResendBody>(&doc) {
+        return reject;
+    }
+    match crate::vetting::vetters::resend(state, &vetter_did, &vetter_did).await {
+        Ok(response) => success_response(&doc, response),
+        Err(AppError::NotFound(reason)) => reject_with_code(
+            &doc,
+            extended_code(vetting_wire::VETTING_VETTER_RESEND_ERR_NOT_GRANTED),
+            reason,
+            None,
+        ),
+        Err(AppError::ServiceError { status, message })
+            if status == axum::http::StatusCode::SERVICE_UNAVAILABLE =>
+        {
+            reject_with_code(
+                &doc,
+                TrustTaskCode::Standard(StandardCode::Unavailable),
+                message,
+                None,
+            )
+        }
         Err(e) => app_error_to_reject(&doc, &e),
     }
 }
@@ -1007,6 +1118,9 @@ mod tests {
             mem::MEMBER_VMC_TYPE,
             vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,
             vetting_wire::VETTING_VETTER_GRANT_TYPE,
+            vetting_wire::VETTING_VETTER_PROFILE_TYPE,
+            vetting_wire::VETTING_VETTER_LIST_TYPE,
+            vetting_wire::VETTING_VETTER_RESEND_TYPE,
             <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ];

@@ -16,6 +16,9 @@
 //!   are in the same session.
 //! - [`eligibility`] — a vetter presenting the vetter role credential the
 //!   community issued them, and the applicant's check of it.
+//! - [`status`] — the applicant's check that such a credential has not been
+//!   revoked, against the issuer's signed status list.
+//! - [`ticket_uri`] — the Vetting Ticket as the URI a vetter's QR code carries.
 //!
 //! Every verification returns a distinct `Verified*` type (workspace typestate
 //! rule): code that needs a verified card or statement cannot be handed an
@@ -28,6 +31,8 @@ pub mod eligibility;
 pub mod match_code;
 pub mod requirements;
 pub mod statement;
+pub mod status;
+pub mod ticket_uri;
 
 use affinidi_data_integrity::DataIntegrityProof;
 use serde_json::Value;
@@ -82,6 +87,15 @@ pub enum VettingError {
     /// holder, in the required role, for the expected community.
     #[error("no role credential names this vetter in that role for this community")]
     NoRoleCredential,
+    /// The artifact names a version this reader does not understand — a newer
+    /// client made it.
+    #[error("{what} version `{version}` is not supported")]
+    UnsupportedVersion {
+        /// Which artifact.
+        what: &'static str,
+        /// The version it named, truncated.
+        version: String,
+    },
     /// Signing failed.
     #[error("signing failed")]
     Sign(String),

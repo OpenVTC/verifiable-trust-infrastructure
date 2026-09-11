@@ -75,9 +75,17 @@ pub async fn manifest_inner(
         .map(|c| manifest_criterion(c, version))
         .collect::<Result<Vec<_>, _>>()?;
 
+    // 0.2 only, and only when the community set some: 0.1 defines no branding.
+    let branding = match version {
+        ManifestVersion::V0_1 => None,
+        ManifestVersion::V0_2 => Some(crate::community::load_branding(&state.community_ks).await?)
+            .filter(|b| !b.is_empty()),
+    };
+
     Ok(JoinRequestManifestResponseBody {
         community_did,
         criteria,
+        branding,
     })
 }
 
