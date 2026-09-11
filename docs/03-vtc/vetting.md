@@ -103,7 +103,10 @@ answers its own request and holds a role credential this community signed for
 that vetter — so the applicant knows before any session that the vetter's
 statement will count.
 
-`eligibleVetters.role` names the grant: `"vetter"`, or `"custom:vetter"`.
+`eligibleVetters.role` names the role the community's `CommunityRole` credential
+carries — a bare token such as `"vetter"`: a letter, then letters, digits, `_` or
+`-`, at most 128 characters. It is not an ACL role name, so a `custom:*` form is
+refused.
 
 Before it relies on the credential, the applicant's client checks it has not
 been revoked with `vta_sdk::vetting::status::check_credential_status`: it
