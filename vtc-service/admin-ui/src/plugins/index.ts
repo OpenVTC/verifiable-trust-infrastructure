@@ -12,6 +12,7 @@
 // awkward, the API is wrong.
 
 import {
+  BadgeCheck,
   ClipboardList,
   DoorOpen,
   Inbox,
@@ -41,6 +42,7 @@ import { Recognition } from "@/plugins/recognition";
 import { Relationships } from "@/plugins/relationshipsGraph";
 import { Rooms } from "@/plugins/rooms";
 import { Sessions } from "@/plugins/sessions";
+import { Vetting } from "@/plugins/vetting";
 
 export function registerBuiltinPlugins(): void {
   registerPlugin({
@@ -65,6 +67,14 @@ export function registerBuiltinPlugins(): void {
     path: "/join-requests",
     iconComponent: Inbox,
     reactComponent: JoinRequests,
+  });
+
+  registerPlugin({
+    id: "vetting",
+    label: "Vetting",
+    path: "/vetting",
+    iconComponent: BadgeCheck,
+    reactComponent: Vetting,
   });
 
   registerPlugin({

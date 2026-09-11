@@ -15,7 +15,7 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { getJson, postJson } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
@@ -181,7 +181,17 @@ export function Ceremonies() {
   // The daemon is the source of truth for the ceremony registry.
   const query = useQuery({ queryKey: ["ceremonies"], queryFn: fetchCeremonies });
   const ceremonies = query.data ?? [];
-  const [active, setActive] = useState<string>("");
+  // `?purpose=<purpose>` opens that purpose's policy. Other panels link here
+  // (the vetter settings link to `vetterEligibility`) rather than growing a
+  // policy editor of their own.
+  const [searchParams] = useSearchParams();
+  const requested = searchParams.get("purpose");
+  const requestedOther = OTHER_PURPOSES.find((p) => p === requested);
+  const requestedCeremony = CEREMONY_PURPOSES.find((p) => p === requested);
+  // An unknown purpose falls back to the first ceremony, as no parameter does.
+  const [active, setActive] = useState<string>(
+    requestedOther ? "other" : (requestedCeremony ?? ""),
+  );
 
   // Default to the first ceremony once the registry loads.
   useEffect(() => {
@@ -245,7 +255,7 @@ export function Ceremonies() {
       </div>
 
       {active === "other" ? (
-        <OtherPolicies />
+        <OtherPolicies initial={requestedOther} />
       ) : ceremony ? (
         <CeremonyPanel key={ceremony.purpose} ceremony={ceremony} />
       ) : null}
@@ -945,8 +955,8 @@ function UploadPolicyForm({
   );
 }
 
-function OtherPolicies() {
-  const [purpose, setPurpose] = useState<Purpose>(OTHER_PURPOSES[0]!);
+function OtherPolicies({ initial }: { initial?: Purpose }) {
+  const [purpose, setPurpose] = useState<Purpose>(initial ?? OTHER_PURPOSES[0]!);
   return (
     <>
       <p className="cer-sub" style={{ marginTop: "var(--space-5)" }}>

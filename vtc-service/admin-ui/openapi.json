@@ -2268,6 +2268,39 @@
         ]
       }
     },
+    "/v1/join-requests/manifest": {
+      "get": {
+        "tags": [
+          "join-requests"
+        ],
+        "summary": "GET /join-requests/manifest — the join manifest (0.2) as applicants receive\nit, for an admin session.",
+        "description": "Applicants read the manifest as a Trust Task document over\n`POST /v1/trust-tasks`. The admin console reads the same answer here, under\nthe same `vtc/join-requests/manifest/0.2` task, to show each criterion's\nvetting requirements and `requirementsDigest` — criteria are registered\nthrough `/v1/schemas/accepts`, which carries no digest.",
+        "operationId": "joinRequestManifestShow",
+        "responses": {
+          "200": {
+            "description": "The join manifest (0.2): each criterion with its vetting requirements and requirementsDigest, and the branding",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequestManifestResponseBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
     "/v1/join-requests/query": {
       "post": {
         "tags": [
@@ -4580,6 +4613,52 @@
           },
           "403": {
             "description": "Caller is not a community admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/vetting/vetters/list": {
+      "post": {
+        "tags": [
+          "vetting"
+        ],
+        "summary": "The public vetter listing, as applicants see it.",
+        "description": "The body and the answer are `vtc/vetting/vetters/list/0.1`'s, and both go\nthrough [`crate::vetting::profiles::list`], so the console previews exactly\nwhat `POST /v1/trust-tasks` returns to an applicant with the same filters.",
+        "operationId": "vettingVetterListing",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VetterListBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "A page of listed vetters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VetterListResponseBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A filter breaks its bounds, or the cursor was issued for other filters"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
           }
         },
         "security": [
@@ -6987,6 +7066,36 @@
           }
         }
       },
+      "JoinRequestManifestResponseBody": {
+        "type": "object",
+        "description": "Manifest response: the community's join evidence requirements.",
+        "required": [
+          "communityDid",
+          "criteria"
+        ],
+        "properties": {
+          "branding": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CommunityBranding",
+                "description": "How the community presents itself to an applicant's client (manifest\n0.2). Absent when the community has set none, and always absent from a\n0.1 answer."
+              }
+            ]
+          },
+          "communityDid": {
+            "type": "string"
+          },
+          "criteria": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ManifestCriterion"
+            }
+          }
+        }
+      },
       "JoinRequestVetting": {
         "type": "object",
         "description": "The vetting facts a join request was decided on — the policy's\n`input.evidence.vetting`, in lowerCamelCase.",
@@ -7358,6 +7467,132 @@
               "$ref": "#/components/schemas/RegisteredCredential"
             },
             "description": "`credentials`, the name `auth/passkey/list/0.1` publishes. It was\n`passkeys` until #1112 — the same object under a name the schema does\nnot define, so no conforming client could find it."
+          }
+        }
+      },
+      "ListedVetter": {
+        "type": "object",
+        "description": "One vetter in a listing: the published profile, the DID and the grant's\nexpiry — nothing else about the member.",
+        "required": [
+          "vetterDid",
+          "languages",
+          "methods",
+          "acceptsDocumentation",
+          "events",
+          "grantValidUntil",
+          "updatedAt"
+        ],
+        "properties": {
+          "acceptsDocumentation": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "See [`VetterProfileBody::accepts_documentation`]."
+          },
+          "availability": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "See [`VetterProfileBody::availability`]."
+          },
+          "contactHint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "See [`VetterProfileBody::contact_hint`]."
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "See [`VetterProfileBody::display_name`]."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VetterEvent"
+            },
+            "description": "The profile's events that have not ended (`endDate` ≥ today, UTC)."
+          },
+          "grantValidUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the vetter's grant expires."
+          },
+          "languages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "See [`VetterProfileBody::languages`]."
+          },
+          "location": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/VetterLocation",
+                "description": "See [`VetterProfileBody::location`]."
+              }
+            ]
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VettingMethod"
+            },
+            "description": "See [`VetterProfileBody::methods`]."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the profile was last published."
+          },
+          "vetterDid": {
+            "type": "string",
+            "description": "The vetter's DID — where a `vetting/request` goes."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ManifestCriterion": {
+        "type": "object",
+        "description": "One community evidence requirement — a named DCQL Presentation\nDefinition the applicant may present against.",
+        "required": [
+          "id",
+          "presentationDefinition"
+        ],
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "presentationDefinition": {
+            "$ref": "#/components/schemas/Value"
+          },
+          "requirementsDigest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`digestMultibase` over this criterion without this member (manifest\n0.2). An applicant records it when it starts gathering, so a change to\nthe requirements mid-application is detectable."
+          },
+          "vetting": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Peer identity vetting this criterion requires (manifest 0.2). Absent on\na criterion that needs none."
           }
         }
       },
@@ -9720,6 +9955,50 @@
           }
         }
       },
+      "VetterEvent": {
+        "type": "object",
+        "description": "An event a vetter will attend and vet at — a conference, a summit.",
+        "required": [
+          "name",
+          "startDate",
+          "endDate"
+        ],
+        "properties": {
+          "endDate": {
+            "type": "string",
+            "format": "date",
+            "description": "Last day, `YYYY-MM-DD`; not before `startDate`, at most 31 days after it."
+          },
+          "location": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/VetterLocation",
+                "description": "Where it is held."
+              }
+            ]
+          },
+          "name": {
+            "type": "string",
+            "description": "The event's name; 1–200 characters."
+          },
+          "startDate": {
+            "type": "string",
+            "format": "date",
+            "description": "First day, `YYYY-MM-DD`."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The event's page; `https`, at most 2048 characters."
+          }
+        },
+        "additionalProperties": false
+      },
       "VetterGrantBody": {
         "type": "object",
         "description": "`vtc/vetting/vetters/grant/0.1` payload.",
@@ -9866,6 +10145,146 @@
             "description": "The credential's `validUntil`; absent on a row that did not record it."
           }
         }
+      },
+      "VetterListBody": {
+        "type": "object",
+        "description": "`vtc/vetting/vetters/list/0.1` payload. Every filter is optional; filters\ncombine with AND.",
+        "properties": {
+          "city": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Case-insensitive exact match on `location.city`."
+          },
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "ISO 3166-1 alpha-2, uppercase."
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `nextCursor` of the previous page; at most 512 characters."
+          },
+          "eventFrom": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "With `eventTo`, a date range a listed event must overlap; an open end is\nunbounded."
+          },
+          "eventName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Case-insensitive substring of a listed event's name; at most 200\ncharacters."
+          },
+          "eventTo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "See [`Self::event_from`]."
+          },
+          "ext": {
+            "description": "Ecosystem-defined extension members (SPEC §4.5.1)."
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A BCP 47 tag. Matches a listed tag equal to it, or one it is a prefix of\nat a subtag boundary (`de` matches `de-AT`). Compared case-insensitively."
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Page size, 1–100; 50 when absent.",
+            "minimum": 0
+          },
+          "method": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/VettingMethod",
+                "description": "A method the vetter offers."
+              }
+            ]
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Case-insensitive exact match on `location.region`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VetterListResponseBody": {
+        "type": "object",
+        "description": "`vtc/vetting/vetters/list/0.1#response` payload.",
+        "required": [
+          "vetters"
+        ],
+        "properties": {
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `cursor`, with the same filters, for the next page; absent on\nthe last."
+          },
+          "vetters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListedVetter"
+            },
+            "description": "This page, in the listing's order."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VetterLocation": {
+        "type": "object",
+        "description": "Where a vetter is, or where an event is held.",
+        "required": [
+          "country"
+        ],
+        "properties": {
+          "city": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "City; 1–128 characters."
+          },
+          "country": {
+            "type": "string",
+            "description": "ISO 3166-1 alpha-2, uppercase."
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Region, state or province; 1–128 characters."
+          }
+        },
+        "additionalProperties": false
       },
       "VetterProfileSummary": {
         "type": "object",

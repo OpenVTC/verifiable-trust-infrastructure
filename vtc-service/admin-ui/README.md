@@ -54,7 +54,13 @@ plugins ship as a JS bundle that calls
 ```sh
 npm install          # one-time
 npm run build        # produces dist/
+npm run lint         # wire types match openapi.json, then tsc
+npm test             # component + unit tests (Vitest, jsdom)
 ```
+
+Tests sit beside what they test as `*.test.ts(x)` and render components
+through `src/test/render.tsx`, which supplies the providers `main.tsx` does and
+a table-driven `fetch` mock. `cargo build` does not run them.
 
 `cargo build` (from `vtc-service/`) runs `npm install && npm run
 build` automatically via `build.rs`. To skip the build (e.g. in

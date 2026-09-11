@@ -1,9 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink } from "lucide-react";
+import { Link } from "react-router-dom";
 
 import { CopyButton } from "@/components/CopyButton";
 import { fetchHealth, fetchBuildInfo, fetchDiagnostics } from "@/lib/api";
 import { formatDuration } from "@/lib/format";
+import {
+  fetchPendingWithVetting,
+  fetchRevocations,
+  vettingKeys,
+} from "@/plugins/vetting/api";
 
 export function Dashboard() {
   const health = useQuery({ queryKey: ["health"], queryFn: fetchHealth });
@@ -18,6 +24,19 @@ export function Dashboard() {
     queryKey: ["diagnostics"],
     queryFn: fetchDiagnostics,
   });
+  // Vetting work waiting on an admin: pending join requests that carry vetting
+  // facts, and withdrawn statements a current membership rests on.
+  const pendingVetting = useQuery({
+    queryKey: vettingKeys.pendingWithVetting,
+    queryFn: fetchPendingWithVetting,
+  });
+  const withdrawals = useQuery({
+    queryKey: vettingKeys.revocations,
+    queryFn: fetchRevocations,
+  });
+  const needsReview = withdrawals.data?.filter(
+    (r) => r.reviewState === "needsReview",
+  ).length;
 
   const status = health.data?.status;
   const mediatorDid = diagnostics.data?.mediatorDid;
@@ -172,6 +191,54 @@ export function Dashboard() {
             }
           />
         )}
+        <StatTile
+          label="Awaiting a vetting decision"
+          value={
+            pendingVetting.data
+              ? `${pendingVetting.data.count}${pendingVetting.data.more ? "+" : ""}`
+              : pendingVetting.error
+                ? "—"
+                : "…"
+          }
+          foot={
+            pendingVetting.error
+              ? "Could not check pending join requests"
+              : pendingVetting.data
+                ? pendingVetting.data.count
+                  ? "pending join requests with vetting facts"
+                  : "no join request is waiting"
+                : undefined
+          }
+          tone={
+            pendingVetting.error || pendingVetting.data?.count
+              ? "warn"
+              : pendingVetting.data
+                ? "ok"
+                : "neutral"
+          }
+          to="/join-requests"
+        />
+        <StatTile
+          label="Withdrawn statements"
+          value={needsReview ?? (withdrawals.error ? "—" : "…")}
+          foot={
+            withdrawals.error
+              ? "Could not load withdrawal notices"
+              : needsReview === undefined
+                ? undefined
+                : needsReview
+                  ? `${needsReview === 1 ? "admission" : "admissions"} to review`
+                  : "no admission to review"
+          }
+          tone={
+            withdrawals.error || needsReview
+              ? "warn"
+              : needsReview === 0
+                ? "ok"
+                : "neutral"
+          }
+          to="/vetting/withdrawals"
+        />
       </div>
 
       {/* The document-versus-binary comparison, always shown rather than only
@@ -386,15 +453,18 @@ function StatTile({
   foot,
   tone = "neutral",
   mono = false,
+  to,
 }: {
   label: string;
   value: React.ReactNode;
   foot?: string;
   tone?: "ok" | "warn" | "neutral";
   mono?: boolean;
+  /** Where acting on the tile happens; makes the whole tile a link. */
+  to?: string;
 }) {
-  return (
-    <div className="stat-tile">
+  const body = (
+    <>
       <span className="stat-tile-label">{label}</span>
       <span className={`stat-tile-value${mono ? " mono" : ""}`}>{value}</span>
       {foot && (
@@ -404,6 +474,13 @@ function StatTile({
           {foot}
         </span>
       )}
-    </div>
+    </>
+  );
+  return to ? (
+    <Link to={to} className="stat-tile">
+      {body}
+    </Link>
+  ) : (
+    <div className="stat-tile">{body}</div>
   );
 }

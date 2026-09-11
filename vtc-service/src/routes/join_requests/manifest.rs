@@ -25,10 +25,36 @@ use axum::extract::State;
 
 use vta_sdk::protocols::join_requests::{JoinRequestManifestResponseBody, ManifestCriterion};
 use vta_sdk::vetting::requirements::requirements_digest;
+use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
 use crate::schemas::accepts::{AcceptsCriterion, list_accepts};
 use crate::server::AppState;
+
+/// GET /join-requests/manifest — the join manifest (0.2) as applicants receive
+/// it, for an admin session.
+///
+/// Applicants read the manifest as a Trust Task document over
+/// `POST /v1/trust-tasks`. The admin console reads the same answer here, under
+/// the same `vtc/join-requests/manifest/0.2` task, to show each criterion's
+/// vetting requirements and `requirementsDigest` — criteria are registered
+/// through `/v1/schemas/accepts`, which carries no digest.
+#[utoipa::path(
+    get, path = "/join-requests/manifest",
+    operation_id = "joinRequestManifestShow", tag = "join-requests",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "The join manifest (0.2): each criterion with its vetting requirements and requirementsDigest, and the branding", body = JoinRequestManifestResponseBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
+pub async fn admin_manifest(
+    _admin: AdminAuth,
+    State(state): State<AppState>,
+) -> Result<Json<JoinRequestManifestResponseBody>, AppError> {
+    Ok(Json(manifest_inner(&state, ManifestVersion::V0_2).await?))
+}
 
 /// Which manifest version a caller asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

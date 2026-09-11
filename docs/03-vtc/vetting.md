@@ -195,6 +195,12 @@ and `updatedAt` — nothing else. With an event filter the earliest matching
 event comes first; otherwise vetters are ordered by `displayName` (vetters
 without one last), then by DID, by code point.
 
+An admin session reads the same listing with `POST /v1/vetting/vetters/list`
+(`Trust-Task: …/vtc/vetting/vetters/list/0.1`), whose body and answer are the
+task's payloads. Over `POST /v1/trust-tasks` the listing names its caller by the
+document proof, which a browser session cannot sign; the admin console's
+**Vetting → Registry preview** uses this route to show what applicants see.
+
 A vetter hands out tickets as a QR code carrying a **ticket URI**, encoded and
 decoded with `vta_sdk::vetting::ticket_uri`:
 
@@ -264,6 +270,27 @@ Every member is optional; `displayName` is 1–128 characters, `accentColor`
 characters. `join-requests/manifest/0.2` carries it as `branding` when any is
 set. It is presentation only — `communityDid` identifies the community. Changes
 are audited as `CommunityBrandingUpdated`.
+
+## In the admin console
+
+- **Vetting → Vetters** lists every grant with its origin, validity and profile
+  summary; grants a current member the role for one day to two years; resends a
+  grant's credential; and revokes a grant.
+- **Vetting → Registry preview** shows the listing as applicants see it, with
+  the same filters.
+- **Vetting → Automatic grants** sets the sweep, shows the last one, and links
+  to the `vetterEligibility` policy under **Ceremonies → Other policies**.
+- **Vetting → Withdrawals** lists withdrawal notices with their review state,
+  linking to the join requests and members they touch.
+- **Vetting → Requirements** shows each criterion's vetting requirements and
+  `requirementsDigest` as the join manifest publishes them, read from
+  `GET /v1/join-requests/manifest` — the manifest 0.2 answer for an admin
+  session, under the same task. It is read-only: criteria are registered with
+  `POST /v1/schemas/accepts`.
+- A join request's page shows the vetting facts it was decided on, statement
+  by statement; the **Community profile** page edits the branding; the
+  dashboard counts pending requests with vetting facts and withdrawals to
+  review.
 
 ## What the community checks at submit
 
