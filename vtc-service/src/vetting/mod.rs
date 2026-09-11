@@ -368,7 +368,9 @@ async fn vetter_eligible(
     let Some(member) = get_member(&state.members_ks, issuer).await? else {
         return Ok(false);
     };
-    if member.removed_at.is_some() || member.joined_at > issued_at {
+    // `issued_at` and a grant's `created_at` are second-precision credential
+    // timestamps; compare them with the second the member joined.
+    if member.removed_at.is_some() || vetters::joined_at_second(&member) > issued_at {
         return Ok(false);
     }
     let grants = endorsements_for_subject(
@@ -377,9 +379,9 @@ async fn vetter_eligible(
         COMMUNITY_ROLE_ENDORSEMENT_TYPE,
     )
     .await?;
-    Ok(grants
-        .iter()
-        .any(|g| g.created_at >= member.joined_at && vetters::grant_covers(g, role, issued_at)))
+    Ok(grants.iter().any(|g| {
+        vetters::recorded_during_membership(g, &member) && vetters::grant_covers(g, role, issued_at)
+    }))
 }
 
 #[cfg(test)]

@@ -33,7 +33,7 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, SubsecRound, Utc};
 use serde_json::{Value as JsonValue, json};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -111,10 +111,27 @@ pub fn origin_of(row: &Endorsement) -> GrantOrigin {
     }
 }
 
+/// When `member` joined, to the whole second.
+///
+/// A grant's `created_at` is its credential's `validFrom`, which is written to
+/// the second; `joined_at` keeps sub-seconds. Compared as they are, a grant made
+/// in the same second the member joined reads as recorded *before* the
+/// membership — so it was never live, and granting again issued a duplicate.
+/// Every comparison of membership start against a credential timestamp goes
+/// through this.
+pub(crate) fn joined_at_second(member: &Member) -> DateTime<Utc> {
+    member.joined_at.trunc_subsecs(0)
+}
+
+/// Was `grant` recorded during `member`'s current membership?
+pub(crate) fn recorded_during_membership(grant: &Endorsement, member: &Member) -> bool {
+    grant.created_at >= joined_at_second(member)
+}
+
 /// A live vetter grant for `member`, now: recorded during this membership and
 /// covering `now`.
 fn is_live_for(grant: &Endorsement, member: &Member, now: DateTime<Utc>) -> bool {
-    grant.created_at >= member.joined_at && grant_covers(grant, VETTER_ROLE, now)
+    recorded_during_membership(grant, member) && grant_covers(grant, VETTER_ROLE, now)
 }
 
 /// The live vetter grant `did` holds, if they are a current member holding
@@ -765,6 +782,33 @@ mod tests {
         assert!(!is_live_for(&old, &member, now));
         let current = grant_row("vetter", now - Duration::days(1), None);
         assert!(is_live_for(&current, &member, now));
+    }
+
+    /// A grant made in the same second the member joined is live. The grant's
+    /// time comes from a second-precision `validFrom`, so it can sort before a
+    /// sub-second `joined_at` from that same second.
+    #[test]
+    fn a_grant_made_in_the_second_the_member_joined_is_live() {
+        use chrono::Timelike;
+        let now = Utc::now();
+        let mut member = Member::fresh("did:key:zCarol");
+        member.joined_at = now.with_nanosecond(900_000_000).unwrap();
+        let same_second = grant_row("vetter", now.trunc_subsecs(0), None);
+        assert!(
+            same_second.created_at < member.joined_at,
+            "the precondition"
+        );
+        assert!(is_live_for(
+            &same_second,
+            &member,
+            now + Duration::seconds(1)
+        ));
+
+        let second_before = grant_row("vetter", now.trunc_subsecs(0) - Duration::seconds(1), None);
+        assert!(
+            !is_live_for(&second_before, &member, now + Duration::seconds(1)),
+            "a grant from the second before still predates the membership"
+        );
     }
 
     #[test]
