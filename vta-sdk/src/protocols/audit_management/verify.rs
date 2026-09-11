@@ -1,4 +1,4 @@
-//! `spec/vta/audit/verify/1.0` — the result of checking the audit log's
+//! `openvtc/vta/audit/verify/1.0` — the result of checking the audit log's
 //! hash chain.
 //!
 //! Published here rather than kept in the service because a caller has to be
@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Payload of `spec/vta/audit/verify/1.0`. The whole log is verified, so there
+/// Payload of `openvtc/vta/audit/verify/1.0`. The whole log is verified, so there
 /// is nothing to select.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

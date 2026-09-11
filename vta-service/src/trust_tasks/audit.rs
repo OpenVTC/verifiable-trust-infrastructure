@@ -40,7 +40,7 @@ pub(super) async fn handle_list_logs(
     }
 }
 
-/// Handler for `spec/vta/audit/verify/1.0`. Admin only.
+/// Handler for `openvtc/vta/audit/verify/1.0`. Admin only.
 ///
 /// Verifying is a read of the whole log, so it takes the same authority
 /// reading the log takes — and the answer is about the log as a whole, so

@@ -571,7 +571,7 @@ pub const TASK_SERVICES_DRAIN_CANCEL_1_0: &str =
 /// admin must supply `contextId` within their own scope.
 pub const TASK_AUDIT_LIST_0_1: &str = "https://trusttasks.org/spec/audit/list/0.1";
 
-/// `spec/vta/audit/verify/1.0` — check the audit log's hash chain and
+/// `openvtc/vta/audit/verify/1.0` — check the audit log's hash chain and
 /// report what was found. Payload:
 /// [`crate::protocols::audit_management::verify::VerifyChainBody`]; result:
 /// [`crate::protocols::audit_management::verify::AuditChainReport`].
@@ -579,7 +579,18 @@ pub const TASK_AUDIT_LIST_0_1: &str = "https://trusttasks.org/spec/audit/list/0.
 /// Auth: admin. Reading whether the record of what everyone did is intact is
 /// itself a privileged question — a caller who cannot read the log has no
 /// business learning whether it has been altered.
-pub const TASK_AUDIT_VERIFY_1_0: &str = "https://trusttasks.org/spec/vta/audit/verify/1.0";
+///
+/// # Why this authority
+///
+/// On `openvtc/`, which this project controls, rather than `spec/`, which the
+/// canonical registry serves. A URI on the canonical authority is a claim that
+/// the registry publishes a schema for it, and nothing does yet — binding one
+/// there would be asserting a specification that has not been written. The
+/// same operation exists on the VTC at `openvtc/vtc/audit/verify/1.0`.
+///
+/// It moves to `spec/` if and when the operation is specified upstream, which
+/// is the route every other family here has taken.
+pub const TASK_AUDIT_VERIFY_1_0: &str = "https://trusttasks.org/openvtc/vta/audit/verify/1.0";
 
 /// `spec/vta/audit/get-retention/1.0` — read the current retention
 /// period. Payload:
