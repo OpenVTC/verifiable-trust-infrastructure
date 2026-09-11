@@ -1,0 +1,6 @@
+# Every HTTP call from this CLI goes through `vta_sdk::http::rest_client()`,
+# which carries request/connect timeouts and refuses to follow a redirect off
+# the original origin. A bare client has neither.
+disallowed-methods = [
+  { path = "reqwest::Client::new", reason = "use vta_sdk::http::rest_client() (timeouts, same-origin redirects)" },
+]

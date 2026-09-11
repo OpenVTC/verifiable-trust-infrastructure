@@ -84,6 +84,18 @@ pub(crate) struct Cli {
     #[arg(long, value_enum, default_value_t = TransportOpt::Auto, global = true)]
     pub(crate) transport: TransportOpt,
 
+    /// Accept a VTA REST endpoint on a private network (RFC 1918, IPv6
+    /// unique-local, carrier-grade NAT, `*.internal` / `*.local` names) when
+    /// it comes from a DID document. Off by default: such an endpoint must
+    /// otherwise be a public host, or loopback for local development.
+    #[arg(
+        long,
+        global = true,
+        env = "VTA_ALLOW_PRIVATE_ENDPOINTS",
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
+    pub(crate) allow_private_endpoints: bool,
+
     #[command(subcommand)]
     pub(crate) command: Commands,
 }

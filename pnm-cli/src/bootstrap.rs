@@ -364,15 +364,23 @@ pub async fn run_connect(
     // `did:key:z6Mk…` string.
     let body = BootstrapRequest::new(ed_pub, nonce, None);
 
+    // Largest bootstrap response read into memory: one armored bundle plus an
+    // attestation document, a few KiB in practice.
+    const MAX_BOOTSTRAP_RESPONSE_BYTES: usize = 1024 * 1024;
+
     let url = format!("{}/bootstrap/request", vta_url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
+    // The SDK client: finite timeouts, and no redirect off the VTA's origin.
+    let client = vta_sdk::http::rest_client();
     let resp = client.post(&url).json(&body).send().await?;
     let status = resp.status();
+    let bytes = vta_sdk::http::read_body_capped(resp, MAX_BOOTSTRAP_RESPONSE_BYTES)
+        .await
+        .map_err(|e| format!("bootstrap request ({status}): {e}"))?;
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        let body = String::from_utf8_lossy(&bytes);
         return Err(format!("bootstrap request failed ({status}): {body}").into());
     }
-    let wire: BootstrapResponseWire = resp.json().await?;
+    let wire: BootstrapResponseWire = serde_json::from_slice(&bytes)?;
 
     // Optional client-side digest verification. Attestation + TLS give the
     // primary integrity anchor; this is a belt-and-suspenders check the
