@@ -183,6 +183,7 @@ async fn assemble_directory_facts(
             subject_did: subject_did.to_string(),
             subject_member,
             evidence: Evidence {
+                vetting: None,
                 invitation: None,
                 presentation: None,
                 request,

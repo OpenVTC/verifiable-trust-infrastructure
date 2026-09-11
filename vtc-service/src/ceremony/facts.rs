@@ -216,6 +216,11 @@ pub struct Evidence {
     /// Phase 1; tightened to per-purpose typed requests later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<JsonValue>,
+    /// Peer identity vetting evidence — the host's verification and count of
+    /// the vetting statements a join presentation carried, when the criterion
+    /// requires vetting. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vetting: Option<crate::vetting::VettingFacts>,
 }
 
 /// A verified invitation credential (VIC). All fields are
@@ -407,6 +412,7 @@ mod tests {
                 thread_id: None,
             },
             evidence: Evidence {
+                vetting: None,
                 invitation: None,
                 presentation: Some(Presentation {
                     verified: true,
@@ -478,6 +484,7 @@ mod tests {
                 thread_id: None,
             },
             evidence: Evidence {
+                vetting: None,
                 invitation: None,
                 presentation: None,
                 request: Some(json!({ "fields_requested": ["did", "role", "joined_at"] })),
@@ -546,6 +553,7 @@ mod tests {
                 thread_id: Some("urn:uuid:this-exchange".into()),
             },
             evidence: Evidence {
+                vetting: None,
                 invitation: None,
                 presentation: Some(Presentation {
                     verified: true,

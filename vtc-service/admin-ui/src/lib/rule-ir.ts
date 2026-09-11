@@ -45,6 +45,13 @@ export interface ExplainFacts {
   state?: { subject_member?: { role?: string } | null };
   evidence?: {
     invitation?: { verified?: boolean; consumed?: boolean };
+    vetting?: {
+      satisfied?: boolean;
+      commitments_consistent?: boolean;
+      independence_ok?: boolean;
+      invitation_required?: boolean;
+      needs?: string[];
+    };
     presentation?: {
       credentials?: Array<{
         type?: string;
@@ -78,6 +85,13 @@ export interface ConditionDef {
   test: (facts: ExplainFacts, arg?: string) => boolean;
 }
 
+/** Shared by every vetting condition that depends on the invitation
+ * requirement. Identical rule bodies may be emitted more than once — Rego
+ * treats repeated boolean rule definitions as one. */
+const VETTING_INVITATION_HELPERS =
+  "vetting_invitation_missing if {\n\tinput.evidence.vetting.satisfied == true\n\tinput.evidence.vetting.invitation_required == true\n\tnot vetting_invitation_held\n}\n\n" +
+  "vetting_invitation_held if {\n\tinput.evidence.invitation.verified\n\tnot input.evidence.invitation.consumed\n}";
+
 const HELPERS: Record<string, string> = {
   cred_held:
     'cred_held(t) if {\n\tsome c in input.evidence.presentation.credentials\n\tc.type == t\n\tc.status == "valid"\n}',
@@ -90,6 +104,19 @@ const HELPERS: Record<string, string> = {
   agreed:
     "agreed(tag) if {\n\tinput.evidence.request.agreements[tag] == true\n}",
   target_role: "target_role := input.evidence.request.target_role",
+  vetting_inconsistent:
+    "vetting_inconsistent if {\n\tinput.evidence.vetting.commitments_consistent == false\n}",
+  vetting_incomplete:
+    "vetting_incomplete if {\n\tinput.evidence.vetting.commitments_consistent == true\n\tcount(input.evidence.vetting.needs) > 0\n}",
+  vetting_not_independent:
+    "vetting_not_independent if {\n\tinput.evidence.vetting.commitments_consistent == true\n\tcount(input.evidence.vetting.needs) == 0\n\tinput.evidence.vetting.independence_ok == false\n}",
+  vetting_invitation_missing: VETTING_INVITATION_HELPERS,
+  vetting_satisfied:
+    "vetting_satisfied if {\n\tinput.evidence.vetting.satisfied == true\n\tnot vetting_invitation_missing\n}\n\n" +
+    VETTING_INVITATION_HELPERS,
+  vetting_ok:
+    "vetting_ok if not input.evidence.vetting\n\nvetting_ok if {\n\tinput.evidence.vetting.satisfied == true\n\tnot vetting_invitation_missing\n}\n\n" +
+    VETTING_INVITATION_HELPERS,
 };
 
 const SHARED: ConditionDef[] = [
@@ -114,7 +141,68 @@ const SHARED: ConditionDef[] = [
   },
 ];
 
+/** Client-side mirror of the `vetting_invitation_missing` helper. */
+const vettingInvitationMissing = (f: ExplainFacts) =>
+  f.evidence?.vetting?.satisfied === true &&
+  f.evidence?.vetting?.invitation_required === true &&
+  !(
+    f.evidence?.invitation?.verified === true &&
+    f.evidence?.invitation?.consumed !== true
+  );
+
+const vettingSatisfied = (f: ExplainFacts) =>
+  f.evidence?.vetting?.satisfied === true && !vettingInvitationMissing(f);
+
 const JOIN: ConditionDef[] = [
+  // Peer identity vetting. The daemon verifies and counts the statements;
+  // these read its verdicts (OpenVTC docs/design/vetting-process.md §10).
+  {
+    id: "vetting_inconsistent",
+    label: "vetters verified different identities",
+    expr: () => "vetting_inconsistent",
+    helper: "vetting_inconsistent",
+    test: (f) => f.evidence?.vetting?.commitments_consistent === false,
+  },
+  {
+    id: "vetting_incomplete",
+    label: "vetting is incomplete",
+    expr: () => "vetting_incomplete",
+    helper: "vetting_incomplete",
+    test: (f) =>
+      f.evidence?.vetting?.commitments_consistent === true &&
+      (f.evidence?.vetting?.needs?.length ?? 0) > 0,
+  },
+  {
+    id: "vetting_not_independent",
+    label: "vetters are not independent enough",
+    expr: () => "vetting_not_independent",
+    helper: "vetting_not_independent",
+    test: (f) =>
+      f.evidence?.vetting?.commitments_consistent === true &&
+      (f.evidence?.vetting?.needs?.length ?? 0) === 0 &&
+      f.evidence?.vetting?.independence_ok === false,
+  },
+  {
+    id: "vetting_invitation_missing",
+    label: "vetting is met but an invitation is required",
+    expr: () => "vetting_invitation_missing",
+    helper: "vetting_invitation_missing",
+    test: vettingInvitationMissing,
+  },
+  {
+    id: "vetting_satisfied",
+    label: "vetting requirements are met",
+    expr: () => "vetting_satisfied",
+    helper: "vetting_satisfied",
+    test: vettingSatisfied,
+  },
+  {
+    id: "vetting_ok",
+    label: "no vetting is required, or it is met",
+    expr: () => "vetting_ok",
+    helper: "vetting_ok",
+    test: (f) => !f.evidence?.vetting || vettingSatisfied(f),
+  },
   {
     id: "has_valid_invitation",
     label: "holds a valid invitation",

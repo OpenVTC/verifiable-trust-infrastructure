@@ -105,7 +105,17 @@ pub async fn present_and_decide_join(
     // 3 + 4. Decide under the active join policy, then realize the verdict. The
     // credential-exchange path carries no VIC (invitations ride the VP-submit
     // path), so no invitation fact and nothing to consume.
-    let verdict = decide_join(state, &applicant_did, presentation, None, Some(thread_id)).await?;
+    // No vetting facts on this path yet: identity-vetting statements are counted
+    // on the VP-submit path, which is the one the OpenVTC client presents them on.
+    let verdict = decide_join(
+        state,
+        &applicant_did,
+        presentation,
+        None,
+        None,
+        Some(thread_id),
+    )
+    .await?;
     let vp_claims = vp_claims_from_set(&set);
     realize_join_verdict(
         state,
