@@ -31,7 +31,7 @@ use serde_json::{Map, Value};
 
 use vta_sdk::openapi::{JoinManifest01Response, JoinManifest02Response};
 use vta_sdk::protocols::join_requests::manifest::{v0_1, v0_2};
-use vta_sdk::protocols::vetting::CheckShape;
+use vta_sdk::protocols::vetting::{CheckShape, read_branding};
 use vta_sdk::vetting::requirements::requirements_digest;
 use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
@@ -141,21 +141,29 @@ pub fn response_v0_1(
 /// The 0.2 answer over `stored` criteria and `branding`.
 ///
 /// Branding the manifest cannot carry — a `logoUrl` that is not an absolute
-/// https URI among it — is not emitted. Storing branding refuses it first
-/// ([`crate::community::branding::store_branding`]), so only a row written
-/// before that check can reach here, and it is the community's fault.
+/// https URI among it — is left out, and the manifest is served without it.
+/// Branding is presentation only, and the manifest is what every applicant
+/// needs to join, so a bad logo address must not stop joins. Storing branding
+/// refuses such a value first ([`crate::community::branding::store_branding`]),
+/// so only a row written before that check can reach here; a warning names the
+/// members at fault, never their values, which may be hostile.
 pub fn response_v0_2(
     community_did: String,
     stored: Vec<AcceptsCriterion>,
     branding: Option<v0_2::CommunityBranding>,
 ) -> Result<v0_2::Response, AppError> {
-    if let Some(branding) = &branding {
-        branding.check_shape().map_err(|e| {
-            AppError::Internal(format!(
-                "the stored branding does not project onto the manifest: {e}"
-            ))
-        })?;
-    }
+    let branding = branding.filter(|branding| {
+        if branding.check_shape().is_ok() {
+            return true;
+        }
+        let members = invalid_branding_members(branding);
+        tracing::warn!(
+            members = %if members.is_empty() { "branding".to_string() } else { members.join(", ") },
+            "the stored community branding breaks the join manifest's CommunityBranding \
+             definition; serving manifest 0.2 without branding until an admin replaces it"
+        );
+        false
+    });
     let criteria = stored
         .into_iter()
         .map(manifest_criterion)
@@ -168,6 +176,23 @@ pub fn response_v0_2(
             .branding(branding),
     )
     .map_err(|e| AppError::Internal(format!("manifest 0.2: {e}")))
+}
+
+/// The top-level members of `branding` that fail the manifest's
+/// `CommunityBranding` definition on their own. Names only: a value is what an
+/// admin typed, and a log is no place to repeat a hostile one.
+fn invalid_branding_members(branding: &v0_2::CommunityBranding) -> Vec<String> {
+    let Ok(Value::Object(members)) = serde_json::to_value(branding) else {
+        return Vec::new();
+    };
+    members
+        .into_iter()
+        .filter(|(name, value)| {
+            let alone = Value::Object(Map::from_iter([(name.clone(), value.clone())]));
+            read_branding(&alone).is_err()
+        })
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// A stored criterion that does not project onto the manifest is the
@@ -346,25 +371,42 @@ mod tests {
         ));
     }
 
+    fn branding(logo: &str) -> v0_2::CommunityBranding {
+        serde_json::from_value(json!({ "displayName": "Kernel", "logoUrl": logo })).unwrap()
+    }
+
     #[test]
-    fn branding_the_manifest_cannot_carry_is_not_emitted() {
+    fn branding_the_manifest_cannot_carry_is_omitted_and_the_manifest_still_served() {
         let answer = |logo: &str| {
-            let branding: v0_2::CommunityBranding =
-                serde_json::from_value(json!({ "displayName": "Kernel", "logoUrl": logo }))
-                    .unwrap();
             response_v0_2(
                 "did:web:vtc.example".into(),
                 vec![stored(None)],
-                Some(branding),
+                Some(branding(logo)),
             )
+            .expect("branding must never fail the manifest an applicant joins by")
         };
-        assert!(answer("https://kernel.example/logo.svg").is_ok());
+        let good = answer("https://kernel.example/logo.svg");
+        assert_eq!(
+            good.branding.and_then(|b| b.logo_url),
+            Some("https://kernel.example/logo.svg".to_string())
+        );
         for bad in [
             "https://kernel.example/my logo.svg",
             "https://kernel.example/logo\u{7}.svg",
             "http://kernel.example/logo.svg",
         ] {
-            assert!(matches!(answer(bad), Err(AppError::Internal(_))), "{bad:?}");
+            let manifest = answer(bad);
+            assert!(manifest.branding.is_none(), "{bad:?}");
+            assert_eq!(manifest.criteria.len(), 1, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_warning_names_the_member_at_fault_not_its_value() {
+        assert_eq!(
+            invalid_branding_members(&branding("https://kernel.example/my logo.svg")),
+            vec!["logoUrl".to_string()]
+        );
+        assert!(invalid_branding_members(&branding("https://kernel.example/logo.svg")).is_empty());
     }
 }
