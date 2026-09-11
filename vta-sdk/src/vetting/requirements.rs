@@ -303,13 +303,13 @@ mod tests {
             "version": "0.1",
             "statementType": IDENTITY_VETTING_ENDORSEMENT_TYPE,
             "minStatements": 2,
-            "minByMethod": { "in-person": 1 },
-            "acceptedMethods": ["in-person", "video", "prior-acquaintance"],
+            "minByMethod": { "inPerson": 1 },
+            "acceptedMethods": ["inPerson", "video", "priorAcquaintance"],
             "requiredClaims": ["name.legal"],
             "maxStatementAge": "P120D",
             "eligibleVetters": { "role": "vetter" },
             "independence": {
-                "maxByDeclaredRelationship": { "family": 0, "same-employer": 1 },
+                "maxByDeclaredRelationship": { "family": 0, "sameEmployer": 1 },
                 "requireConsistentIdentityCommitment": true
             }
         }))
@@ -376,7 +376,7 @@ mod tests {
             Utc::now(),
         );
         assert_eq!(e.needs, vec![Need::Method(VettingMethod::InPerson, 1)]);
-        assert_eq!(e.needs[0].to_wire(), "vetting:method:in-person:1");
+        assert_eq!(e.needs[0].to_wire(), "vetting:method:inPerson:1");
     }
 
     #[test]

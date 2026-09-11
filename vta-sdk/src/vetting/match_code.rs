@@ -17,8 +17,9 @@
 
 use sha2::{Digest, Sha256};
 
-/// Domain separation for the vetting derivation.
-const DOMAIN_TAG: &[u8] = b"openvtc-vetting-match/v1\0";
+/// Domain separation for the vetting derivation, as `vetting/session/0.1`
+/// defines it.
+const DOMAIN_TAG: &[u8] = b"vetting-session-match/v1\0";
 
 /// Crockford base32 — no `I`, `L`, `O` or `U`.
 const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
