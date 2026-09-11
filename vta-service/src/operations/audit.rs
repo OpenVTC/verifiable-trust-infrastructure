@@ -466,8 +466,12 @@ pub(crate) mod verify_tests_support {
         })
         .expect("store");
         (
-            store.keyspace("audit").expect("audit"),
-            store.keyspace("audit_key").expect("audit_key"),
+            store
+                .keyspace(crate::keyspaces::AUDIT)
+                .expect("audit keyspace"),
+            store
+                .keyspace(crate::keyspaces::AUDIT_KEY)
+                .expect("audit_key keyspace"),
             dir,
         )
     }
