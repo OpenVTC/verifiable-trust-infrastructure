@@ -911,15 +911,18 @@ pub struct VetterLocation {
 
 /// An event a vetter will attend and vet at — a conference, a summit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VetterEvent {
     /// The event's name; 1–200 characters.
     pub name: String,
     /// First day, `YYYY-MM-DD`.
     #[serde(with = "date_only")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = Date))]
     pub start_date: NaiveDate,
     /// Last day, `YYYY-MM-DD`; not before `startDate`, at most 31 days after it.
     #[serde(with = "date_only")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = Date))]
     pub end_date: NaiveDate,
     /// Where it is held.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -989,6 +992,7 @@ pub const MAX_VETTER_LIST_CURSOR_CHARS: usize = 512;
 /// `vtc/vetting/vetters/list/0.1` payload. Every filter is optional; filters
 /// combine with AND.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VetterListBody {
     /// A BCP 47 tag. Matches a listed tag equal to it, or one it is a prefix of
@@ -1014,6 +1018,7 @@ pub struct VetterListBody {
         skip_serializing_if = "Option::is_none",
         with = "optional_date_only"
     )]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
     pub event_from: Option<NaiveDate>,
     /// See [`Self::event_from`].
     #[serde(
@@ -1021,6 +1026,7 @@ pub struct VetterListBody {
         skip_serializing_if = "Option::is_none",
         with = "optional_date_only"
     )]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
     pub event_to: Option<NaiveDate>,
     /// Case-insensitive substring of a listed event's name; at most 200
     /// characters.
@@ -1048,6 +1054,7 @@ impl VetterListBody {
 /// One vetter in a listing: the published profile, the DID and the grant's
 /// expiry — nothing else about the member.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListedVetter {
     /// The vetter's DID — where a `vetting/request` goes.
@@ -1080,6 +1087,7 @@ pub struct ListedVetter {
 
 /// `vtc/vetting/vetters/list/0.1#response` payload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VetterListResponseBody {
     /// This page, in the listing's order.
