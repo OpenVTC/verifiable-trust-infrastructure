@@ -40,25 +40,6 @@ pub(super) async fn handle_list_logs(
     }
 }
 
-/// Handler for `openvtc/vta/audit/verify/1.0`. Admin only.
-///
-/// Verifying is a read of the whole log, so it takes the same authority
-/// reading the log takes — and the answer is about the log as a whole, so
-/// there is no context-scoped form of the question.
-pub(super) async fn handle_verify_chain(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
-    match operations::audit::verify_audit_chain(&state.audit_ks).await {
-        Ok(report) => success_response(&doc, report),
-        Err(e) => app_error_to_reject(&doc, e),
-    }
-}
-
 /// Handler for `spec/vta/audit/get-retention/1.0`. Admin only.
 pub(super) async fn handle_get_retention(
     state: &AppState,

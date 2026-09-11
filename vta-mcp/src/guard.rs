@@ -36,16 +36,6 @@ use std::fmt;
 /// `acl/*`, not the full URI.
 pub const SPEC_PREFIX: &str = "https://trusttasks.org/spec/";
 
-/// The prefix of tasks bound on the authority this project controls, for
-/// operations the canonical registry does not yet specify.
-///
-/// A task lives here until it is specified upstream and moves to
-/// [`SPEC_PREFIX`]. Both yield the same slug, so a pattern an operator wrote
-/// keeps matching across that move — and, more to the point, a task does not
-/// escape classification by being bound on the authority it is supposed to be
-/// bound on while it waits for a spec.
-pub const OPENVTC_PREFIX: &str = "https://trusttasks.org/openvtc/vta/";
-
 /// How much damage an operation can do, judged from the URI alone.
 ///
 /// Deliberately coarse. This is a gate on *shape*, not a policy engine — the
@@ -241,10 +231,6 @@ const READ_VERBS: &[&str] = &[
     "explain",
     "get-retention",
     "approver-list",
-    // Checks the audit log's hash chain and reports what it found. A read of
-    // the whole log and nothing else — it writes nothing, and the answer being
-    // "broken" is a fact about what is already there.
-    "verify",
     // Reads the record of what was disclosed to whom. Only ever a read — the
     // disclosure itself is written by `present`, not by looking at it later.
     "history",
@@ -285,9 +271,7 @@ const DESTRUCTIVE_VERBS: &[&str] = &[
 /// bare family-namespace constants (`…/spec/acl/`), so callers can refuse
 /// rather than guess.
 pub fn slug_of(uri: &str) -> Option<&str> {
-    let rest = uri
-        .strip_prefix(SPEC_PREFIX)
-        .or_else(|| uri.strip_prefix(OPENVTC_PREFIX))?;
+    let rest = uri.strip_prefix(SPEC_PREFIX)?;
     let (slug, version) = rest.rsplit_once('/')?;
     // A version segment is digits and dots; a trailing `/` leaves it empty.
     if version.is_empty() || !version.chars().all(|c| c.is_ascii_digit() || c == '.') {
