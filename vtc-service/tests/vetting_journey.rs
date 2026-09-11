@@ -46,10 +46,11 @@ use tower::ServiceExt;
 use uuid::Uuid;
 use vta_sdk::protocols::credential_exchange::{ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody};
 use vta_sdk::protocols::join_requests::JOIN_REQUEST_MANIFEST_0_2_TYPE;
+use vta_sdk::protocols::vetting::session::v0_1::VettingCardClaim;
 use vta_sdk::protocols::vetting::{
-    COMMUNITY_ROLE_ENDORSEMENT_TYPE, CardClaim, DeclaredRelationship,
-    IDENTITY_VETTING_ENDORSEMENT_TYPE, IdentityVettingEndorsement, VETTING_REVOKE_STATEMENT_TYPE,
-    VETTING_VETTER_LIST_TYPE, VETTING_VETTER_PROFILE_TYPE, VettingMethod,
+    COMMUNITY_ROLE_ENDORSEMENT_TYPE, IDENTITY_VETTING_ENDORSEMENT_TYPE, IdentityVettingEndorsement,
+    VETTING_REVOKE_STATEMENT_TYPE, VETTING_VETTER_LIST_TYPE, VETTING_VETTER_PROFILE_TYPE,
+    VettingMethod, VettingRelationship,
 };
 use vta_sdk::trust_task_proof::TrustTaskVmResolver;
 use vta_sdk::vetting::card::{
@@ -847,11 +848,15 @@ impl Community {
                 domain: self.did.clone(),
                 issued_at: Utc::now(),
                 validity: Duration::minutes(15),
-                claims: vec![CardClaim {
-                    claim_type: "name.legal".into(),
-                    value: json!(applicant.legal_name),
-                    provenance: "selfAsserted".into(),
-                }],
+                claims: vec![
+                    VettingCardClaim::try_from(
+                        VettingCardClaim::builder()
+                            .type_("name.legal")
+                            .value(json!(applicant.legal_name))
+                            .provenance("selfAsserted"),
+                    )
+                    .expect("a claim of the published shape"),
+                ],
                 identity_types: required.clone(),
                 salt: applicant.salt.clone(),
             },
@@ -884,12 +889,12 @@ impl Community {
                     endorsement_type: IDENTITY_VETTING_ENDORSEMENT_TYPE.into(),
                     community: self.did.clone(),
                     method,
-                    document_classes: vec!["passport".into()],
-                    claims_verified: required.clone(),
+                    document_classes: vec!["passport".try_into().unwrap()],
+                    claims_verified: vec!["name.legal".try_into().unwrap()],
                     liveness_confirmed: true,
-                    identity_commitment: checked.card().identity_commitment.clone(),
+                    identity_commitment: checked.card().identity_commitment.as_str().to_owned(),
                     card_digest_multibase: checked.digest_multibase().to_string(),
-                    declared_relationship: DeclaredRelationship::None,
+                    declared_relationship: VettingRelationship::None,
                     attestation_text_digest: None,
                 },
                 valid_from: now,

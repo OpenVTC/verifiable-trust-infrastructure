@@ -7,6 +7,10 @@
 //! statement; the community stores it and decides only who may publish one
 //! and who appears in a listing.
 //!
+//! Both tasks' payloads and responses are the generated
+//! `vta_sdk::protocols::vetting::vetters::{profile, list}::v0_1` types, and a
+//! stored profile is the profile payload as published.
+//!
 //! ## Who may publish, and who is listed
 //!
 //! Publishing needs what counting a statement needs: an active member holding a
@@ -23,7 +27,9 @@
 //!
 //! The published profile (events already over are left out), the vetter's DID
 //! and the grant's expiry. Nothing about the member row, their other
-//! credentials or how they joined.
+//! credentials or how they joined. A listing row is read as the listing
+//! schema's own `ListedVetter`, which is closed: a profile member the listing
+//! does not define fails the read instead of being disclosed.
 //!
 //! ## Order and pages
 //!
@@ -46,16 +52,20 @@
 //! MAY, Conformance 4).
 
 use std::cmp::Ordering;
+use std::num::NonZeroU64;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tracing::{info, warn};
 
+use vta_sdk::protocols::vetting::vetters::{
+    list::v0_1 as list_wire, profile::v0_1 as profile_wire,
+};
 use vta_sdk::protocols::vetting::{
-    DEFAULT_VETTER_LIST_LIMIT, ListedVetter, VetterEvent, VetterListBody, VetterListResponseBody,
-    VetterProfileBody, VetterProfileResponseBody, VetterProfileSummary,
+    CheckShape, DEFAULT_VETTER_LIST_LIMIT, VetterProfileSummary, has_event_filter,
 };
 use vti_common::audit::{AuditEvent, VetterProfileDeletedData, VetterProfileUpdatedData};
 use vti_common::error::AppError;
@@ -76,13 +86,13 @@ pub const DELETED_GRANT_REVOKED: &str = "grantRevoked";
 pub const DELETED_DEPARTED: &str = "departed";
 
 /// A stored profile.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredProfile {
     /// The vetter — the authenticated sender who published it.
     pub vetter_did: String,
-    /// The profile as published.
-    pub profile: VetterProfileBody,
+    /// The profile as published: the `vtc/vetting/vetters/profile/0.1` payload.
+    pub profile: profile_wire::Payload,
     /// When it was published.
     pub updated_at: DateTime<Utc>,
     /// The publishing document's `issuedAt`, when it carried one.
@@ -93,13 +103,14 @@ pub struct StoredProfile {
 impl StoredProfile {
     /// What an admin sees of it.
     pub fn summary(&self) -> VetterProfileSummary {
+        let p = &self.profile;
         VetterProfileSummary {
-            listed: self.profile.listed,
-            display_name: self.profile.display_name.clone(),
-            country: self.profile.location.as_ref().map(|l| l.country.clone()),
-            languages: self.profile.languages.clone(),
-            methods: self.profile.methods.clone(),
-            event_count: u32::try_from(self.profile.events.len()).unwrap_or(u32::MAX),
+            listed: p.listed,
+            display_name: p.display_name.as_ref().map(|n| n.as_str().to_owned()),
+            country: p.location.as_ref().map(|l| l.country.as_str().to_owned()),
+            languages: p.languages.iter().map(|l| l.as_str().to_owned()).collect(),
+            methods: p.methods.0.clone(),
+            event_count: u32::try_from(p.events.len()).unwrap_or(u32::MAX),
             updated_at: self.updated_at,
         }
     }
@@ -152,7 +163,7 @@ pub async fn delete_profile(ks: &KeyspaceHandle, vetter_did: &str) -> Result<boo
 ///
 /// # Errors
 ///
-/// [`AppError::Validation`] for a body that breaks its schema bounds or a
+/// [`AppError::Validation`] for a body that breaks its specification or a
 /// document older than the one the stored profile came from, and
 /// [`AppError::Forbidden`] when the sender is not an active member holding a
 /// live vetter grant — the Trust Task dispatcher answers that with
@@ -160,9 +171,9 @@ pub async fn delete_profile(ks: &KeyspaceHandle, vetter_did: &str) -> Result<boo
 pub async fn publish(
     state: &AppState,
     vetter_did: &str,
-    body: &VetterProfileBody,
+    body: &profile_wire::Payload,
     issued_at: Option<DateTime<Utc>>,
-) -> Result<VetterProfileResponseBody, AppError> {
+) -> Result<profile_wire::Response, AppError> {
     body.check_shape()
         .map_err(|e| AppError::Validation(e.to_string()))?;
     let now = Utc::now();
@@ -209,10 +220,12 @@ pub async fn publish(
             .await?;
     }
     info!(vetter = %vetter_did, listed = body.listed, "vetter profile published");
-    Ok(VetterProfileResponseBody {
-        listed: body.listed,
-        updated_at: now,
-    })
+    profile_wire::Response::try_from(
+        profile_wire::Response::builder()
+            .listed(body.listed)
+            .updated_at(now),
+    )
+    .map_err(|e| AppError::Internal(format!("vetter profile response: {e}")))
 }
 
 /// Delete `vetter_did`'s profile when they no longer hold a live grant, and
@@ -263,12 +276,12 @@ pub(crate) async fn after_grant_revoked(
 ///
 /// # Errors
 ///
-/// [`AppError::Validation`] for a request that breaks its bounds or carries a
-/// cursor this community did not issue for these filters.
+/// [`AppError::Validation`] for a request that breaks its specification or
+/// carries a cursor this community did not issue for these filters.
 pub async fn list(
     state: &AppState,
-    body: &VetterListBody,
-) -> Result<VetterListResponseBody, AppError> {
+    body: &list_wire::Payload,
+) -> Result<list_wire::Response, AppError> {
     body.check_shape()
         .map_err(|e| AppError::Validation(e.to_string()))?;
     let tag = filter_tag(body);
@@ -276,14 +289,17 @@ pub async fn list(
         Some(cursor) => decode_cursor(cursor, &tag)?,
         None => 0,
     };
-    let limit = usize::try_from(body.limit.unwrap_or(DEFAULT_VETTER_LIST_LIMIT))
-        .unwrap_or(usize::MAX)
-        .max(1);
+    let limit = usize::try_from(
+        body.limit
+            .map_or(DEFAULT_VETTER_LIST_LIMIT, NonZeroU64::get),
+    )
+    .unwrap_or(usize::MAX)
+    .max(1);
     let now = Utc::now();
     let today = now.date_naive();
 
     let live = vetters::live_grants(state, now).await?;
-    let mut rows: Vec<(SortKey, ListedVetter)> = Vec::new();
+    let mut rows: Vec<(SortKey, list_wire::ListedVetter)> = Vec::new();
     for stored in list_profiles(&state.vetter_profiles_ks).await? {
         if !stored.profile.listed {
             continue;
@@ -299,25 +315,36 @@ pub async fn list(
         };
         let sort = SortKey {
             event_date,
-            name: stored.profile.display_name.clone(),
+            name: stored
+                .profile
+                .display_name
+                .as_ref()
+                .map(|n| n.as_str().to_owned()),
             did: stored.vetter_did.clone(),
         };
-        rows.push((sort, listed(stored, grant_valid_until, today)));
+        rows.push((sort, listed(stored, grant_valid_until, today)?));
     }
     rows.sort_by(|(a, _), (b, _)| a.cmp(b));
 
     let total = rows.len();
-    let vetters: Vec<ListedVetter> = rows
+    let vetters: Vec<list_wire::ListedVetter> = rows
         .into_iter()
         .skip(offset)
         .take(limit)
         .map(|(_, v)| v)
         .collect();
     let next = offset.saturating_add(limit);
-    Ok(VetterListResponseBody {
-        vetters,
-        next_cursor: (next < total).then(|| encode_cursor(next, &tag)),
-    })
+    let next_cursor = (next < total)
+        .then(|| encode_cursor(next, &tag))
+        .map(list_wire::ResponseNextCursor::try_from)
+        .transpose()
+        .map_err(|e| AppError::Internal(format!("vetter listing cursor: {e}")))?;
+    list_wire::Response::try_from(
+        list_wire::Response::builder()
+            .vetters(vetters)
+            .next_cursor(next_cursor),
+    )
+    .map_err(|e| AppError::Internal(format!("vetter listing: {e}")))
 }
 
 /// The listing order: earliest matching event first when the request filters
@@ -356,8 +383,8 @@ impl PartialOrd for SortKey {
 /// otherwise the earliest matching event's start date when the request filters
 /// on events, and `Some(None)` when it does not.
 fn matches(
-    profile: &VetterProfileBody,
-    body: &VetterListBody,
+    profile: &profile_wire::Payload,
+    body: &list_wire::Payload,
     today: NaiveDate,
 ) -> Option<Option<NaiveDate>> {
     if let Some(language) = &body.language {
@@ -379,38 +406,51 @@ fn matches(
     }
     if let Some(region) = &body.region
         && !location
-            .and_then(|l| l.region.as_deref())
+            .and_then(|l| l.region.as_ref())
             .is_some_and(|r| same_text(r, region))
     {
         return None;
     }
     if let Some(city) = &body.city
         && !location
-            .and_then(|l| l.city.as_deref())
+            .and_then(|l| l.city.as_ref())
             .is_some_and(|c| same_text(c, city))
     {
         return None;
     }
+    // Each schema generates its own `VettingMethod` from the one shared
+    // vocabulary; they compare by wire value.
     if let Some(method) = body.method
-        && !profile.methods.contains(&method)
+        && !profile
+            .methods
+            .iter()
+            .any(|m| m.to_string() == method.to_string())
     {
         return None;
     }
-    if !body.has_event_filter() {
+    if !has_event_filter(body) {
         return Some(None);
     }
-    let name = body.event_name.as_deref().map(str::to_lowercase);
+    let name = body.event_name.as_ref().map(|n| n.to_lowercase());
     profile
         .events
         .iter()
-        .filter(|e| e.end_date >= today)
-        .filter(|e| body.event_from.is_none_or(|from| e.end_date >= from))
-        .filter(|e| body.event_to.is_none_or(|to| e.start_date <= to))
+        .filter(|e| e.end_date.0 >= today)
+        .filter(|e| {
+            body.event_from
+                .as_ref()
+                .is_none_or(|from| e.end_date.0 >= from.0)
+        })
+        .filter(|e| {
+            body.event_to
+                .as_ref()
+                .is_none_or(|to| e.start_date.0 <= to.0)
+        })
         .filter(|e| {
             name.as_deref()
                 .is_none_or(|n| e.name.to_lowercase().contains(n))
         })
-        .map(|e| e.start_date)
+        .map(|e| e.start_date.0)
         .min()
         .map(Some)
 }
@@ -419,41 +459,56 @@ fn same_text(a: &str, b: &str) -> bool {
     a.to_lowercase() == b.to_lowercase()
 }
 
+/// One listing row: the published profile with only the events that have not
+/// ended, the vetter's DID and the grant's expiry.
+///
+/// The profile is read as the listing schema's `ListedVetter`. The two
+/// schemas share their member definitions, and `ListedVetter` is closed, so a
+/// member a profile gains that a listing does not define fails here rather than
+/// reaching an applicant.
 fn listed(
     stored: StoredProfile,
     grant_valid_until: DateTime<Utc>,
     today: NaiveDate,
-) -> ListedVetter {
-    let p = stored.profile;
-    ListedVetter {
-        vetter_did: stored.vetter_did,
-        display_name: p.display_name,
-        languages: p.languages,
-        location: p.location,
-        methods: p.methods,
-        accepts_documentation: p.accepts_documentation,
-        availability: p.availability,
-        contact_hint: p.contact_hint,
-        events: p
-            .events
-            .into_iter()
-            .filter(|e: &VetterEvent| e.end_date >= today)
-            .collect(),
-        grant_valid_until,
-        updated_at: stored.updated_at,
-    }
+) -> Result<list_wire::ListedVetter, AppError> {
+    let internal =
+        |e: &dyn std::fmt::Display| AppError::Internal(format!("vetter listing row: {e}"));
+    let current: Vec<&profile_wire::VetterEvent> = stored
+        .profile
+        .events
+        .iter()
+        .filter(|e| e.end_date.0 >= today)
+        .collect();
+    let events = serde_json::to_value(current).map_err(|e| internal(&e))?;
+    let mut row = serde_json::to_value(&stored.profile).map_err(|e| internal(&e))?;
+    let fields = row
+        .as_object_mut()
+        .ok_or_else(|| internal(&"a profile is not an object"))?;
+    // Not part of a listing entry: that the profile is listed (it is), and the
+    // profile document's extensions.
+    fields.remove("listed");
+    fields.remove("ext");
+    fields.insert("events".into(), events);
+    fields.insert("vetterDid".into(), Value::String(stored.vetter_did));
+    fields.insert(
+        "grantValidUntil".into(),
+        serde_json::to_value(grant_valid_until).map_err(|e| internal(&e))?,
+    );
+    fields.insert(
+        "updatedAt".into(),
+        serde_json::to_value(stored.updated_at).map_err(|e| internal(&e))?,
+    );
+    serde_json::from_value(row).map_err(|e| internal(&e))
 }
 
 /// A short digest of the request's filters — everything but `limit`, `cursor`
 /// and `ext` — that a cursor is bound to.
-fn filter_tag(body: &VetterListBody) -> String {
+fn filter_tag(body: &list_wire::Payload) -> String {
     use sha2::{Digest, Sha256};
-    let filters = VetterListBody {
-        limit: None,
-        cursor: None,
-        ext: None,
-        ..body.clone()
-    };
+    let mut filters = body.clone();
+    filters.limit = None;
+    filters.cursor = None;
+    filters.ext = None;
     let bytes = serde_json::to_vec(&filters).unwrap_or_default();
     hex::encode(&Sha256::digest(&bytes)[..8])
 }
@@ -483,9 +538,8 @@ fn decode_cursor(cursor: &str, tag: &str) -> Result<usize, AppError> {
 mod tests {
     use super::*;
     use serde_json::json;
-    use vta_sdk::protocols::vetting::VettingMethod;
 
-    fn profile(value: serde_json::Value) -> VetterProfileBody {
+    fn profile(value: serde_json::Value) -> profile_wire::Payload {
         serde_json::from_value(value).unwrap()
     }
 
@@ -493,7 +547,7 @@ mod tests {
         NaiveDate::from_ymd_opt(2026, 9, 11).unwrap()
     }
 
-    fn carol() -> VetterProfileBody {
+    fn carol() -> profile_wire::Payload {
         profile(json!({
             "listed": true,
             "displayName": "Carol",
@@ -509,7 +563,7 @@ mod tests {
         }))
     }
 
-    fn filter(value: serde_json::Value) -> VetterListBody {
+    fn filter(value: serde_json::Value) -> list_wire::Payload {
         serde_json::from_value(value).unwrap()
     }
 
@@ -519,7 +573,6 @@ mod tests {
         assert!(matches(&p, &filter(json!({ "language": "de" })), today()).is_some());
         assert!(matches(&p, &filter(json!({ "language": "DE-at" })), today()).is_some());
         assert!(matches(&p, &filter(json!({ "language": "en" })), today()).is_some());
-        assert!(matches(&p, &filter(json!({ "language": "d" })), today()).is_none());
         assert!(matches(&p, &filter(json!({ "language": "de-CH" })), today()).is_none());
         assert!(matches(&p, &filter(json!({ "language": "fr" })), today()).is_none());
     }
@@ -587,7 +640,10 @@ mod tests {
         );
         assert_eq!(date(None, None, Some("old meetup")), None);
         // No event filter at all.
-        assert_eq!(matches(&p, &VetterListBody::default(), today()), Some(None));
+        assert_eq!(
+            matches(&p, &list_wire::Payload::default(), today()),
+            Some(None)
+        );
     }
 
     #[test]
@@ -636,10 +692,13 @@ mod tests {
             updated_at: Utc::now(),
             issued_at: None,
         };
-        let row = listed(stored, Utc::now(), today());
+        let row = listed(stored, Utc::now(), today()).unwrap();
         let names: Vec<&str> = row.events.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["Kernel Maintainer Summit", "Plumbers"]);
-        assert_eq!(row.methods, vec![VettingMethod::InPerson]);
+        assert_eq!(row.methods.0, vec![list_wire::VettingMethod::InPerson]);
+        assert_eq!(row.vetter_did.as_str(), "did:key:zCarol");
+        let wire = serde_json::to_value(&row).unwrap();
+        assert!(wire.get("listed").is_none() && wire.get("ext").is_none());
     }
 
     #[test]

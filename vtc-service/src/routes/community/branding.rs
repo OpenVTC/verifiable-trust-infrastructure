@@ -3,13 +3,16 @@
 //! `join-requests/manifest/0.2`.
 //!
 //! Admin REST with no Trust Task of its own; mounted without a binding. The
-//! body is [`CommunityBranding`], replaced whole.
+//! body is the manifest 0.2 `CommunityBranding` definition
+//! ([`JoinManifest02CommunityBranding`]), replaced whole — what the admin stores
+//! is what the manifest publishes.
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use tracing::info;
-use vta_sdk::protocols::join_requests::CommunityBranding;
+use vta_sdk::openapi::JoinManifest02CommunityBranding;
+use vta_sdk::protocols::vetting::read_branding;
 use vti_common::audit::{AuditEvent, CommunityBrandingUpdatedData};
 use vti_common::auth::{AdminAuth, AuthClaims};
 use vti_common::error::AppError;
@@ -23,15 +26,15 @@ use crate::server::AppState;
     operation_id = "communityBrandingShow", tag = "community",
     security(("bearer_jwt" = [])),
     responses(
-        (status = 200, description = "The community's branding", body = CommunityBranding),
+        (status = 200, description = "The community's branding", body = JoinManifest02CommunityBranding),
         (status = 401, description = "Missing or invalid bearer token"),
     ),
 )]
 pub async fn get_branding(
     _auth: AuthClaims,
     State(state): State<AppState>,
-) -> Result<Json<CommunityBranding>, AppError> {
-    Ok(Json(load_branding(&state.community_ks).await?))
+) -> Result<Json<JoinManifest02CommunityBranding>, AppError> {
+    Ok(Json(load_branding(&state.community_ks).await?.into()))
 }
 
 /// Replace the community's branding. An empty body clears it.
@@ -39,9 +42,9 @@ pub async fn get_branding(
     put, path = "/community/branding",
     operation_id = "communityBrandingUpdate", tag = "community",
     security(("bearer_jwt" = [])),
-    request_body = CommunityBranding,
+    request_body = JoinManifest02CommunityBranding,
     responses(
-        (status = 200, description = "The stored branding", body = CommunityBranding),
+        (status = 200, description = "The stored branding", body = JoinManifest02CommunityBranding),
         (status = 400, description = "A member breaks its bounds"),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
@@ -51,8 +54,11 @@ pub async fn get_branding(
 pub async fn put_branding(
     admin: AdminAuth,
     State(state): State<AppState>,
-    Json(body): Json<CommunityBranding>,
-) -> Result<Json<CommunityBranding>, AppError> {
+    // Read as JSON, then checked against the manifest schema before parsing:
+    // the body is the manifest's `CommunityBranding`, as documented above.
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<JoinManifest02CommunityBranding>, AppError> {
+    let body = read_branding(&body).map_err(|e| AppError::Validation(e.to_string()))?;
     // Fail closed, as the profile route does: a change that cannot be audited
     // is not made.
     let writer = state
@@ -77,5 +83,5 @@ pub async fn put_branding(
             .await?;
         info!(fields_changed = ?changed, "community branding updated");
     }
-    Ok(Json(stored))
+    Ok(Json(stored.into()))
 }

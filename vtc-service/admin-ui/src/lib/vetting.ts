@@ -8,15 +8,19 @@
 // trail, or to write a policy — can still find it.
 //
 // It also mirrors the checks the daemon runs on what the console sends, so a
-// form can say what is wrong before a request is refused:
+// form can say what is wrong before a request is refused. The shapes are the
+// published specifications' (`wire-types.ts`); the daemon checks each against
+// its schema, plus the rules a schema cannot state
+// (`vta_sdk::protocols::vetting::CheckShape`):
 //
-//   - `validateRequirements` is `VettingRequirements::validate` plus the serde
-//     rules on its members (`vta-sdk/src/protocols/vetting.rs`).
-//   - `validateBranding` is `CommunityBranding::check_shape`
-//     (`vta-sdk/src/protocols/join_requests.rs`).
-//   - `buildListBody` is `VetterListBody::check_shape`.
+//   - `validateRequirements` is the `VettingRequirements` definition of
+//     `vtc/join-requests/manifest/0.2`, plus its rule that every `minByMethod`
+//     method is accepted.
+//   - `validateBranding` is that manifest's `CommunityBranding` definition.
+//   - `buildListBody` is `vtc/vetting/vetters/list/0.1`'s payload, plus its
+//     rule that `eventTo` is not before `eventFrom`.
 //   - the grant and sweep bounds are `MIN_/MAX_VETTER_GRANT_VALIDITY_SECONDS`
-//     and `MIN_/MAX_AUTO_GRANT_SWEEP_MINUTES`.
+//     (the grant schema's own) and `MIN_/MAX_AUTO_GRANT_SWEEP_MINUTES`.
 //
 // The daemon stays the authority: it runs every one of these again, and makes
 // the one check this module cannot — that a `statementType` is a registered
@@ -29,8 +33,12 @@ import type {
   VetterGrantRow,
   VetterListBody,
   VettingMethod,
+  VettingRelationship,
+  VettingRequirements,
   VettingRevocationRow,
 } from "@/lib/wire-types";
+
+export type { VettingRequirements };
 
 // ── Methods and relationships ───────────────────────────────────────────
 
@@ -65,14 +73,16 @@ export function methodLabel(method: string): string {
   return isVettingMethod(method) ? METHOD_LABELS[method] : method;
 }
 
-export const DECLARED_RELATIONSHIPS = [
+/** A vetter's declared relationship to the applicant. */
+export type DeclaredRelationship = VettingRelationship;
+
+export const DECLARED_RELATIONSHIPS: readonly DeclaredRelationship[] = [
   "none",
   "communityColleague",
   "sameEmployer",
   "family",
   "otherPersonal",
-] as const;
-export type DeclaredRelationship = (typeof DECLARED_RELATIONSHIPS)[number];
+];
 
 const RELATIONSHIP_LABELS: Record<DeclaredRelationship, string> = {
   none: "No prior relationship",
@@ -334,33 +344,10 @@ export function describeSeconds(total: number): string {
 }
 
 // ── Vetting requirements (manifest 0.2) ─────────────────────────────────
-
-/**
- * A criterion's `vetting` object. The daemon publishes this member as an
- * opaque object in its OpenAPI document (`value_type = Object`), so there is no
- * generated type to alias: it is read as `unknown`, and `validateRequirements`
- * is what makes it this shape.
- */
-export interface VettingRequirements {
-  version: string;
-  statementType: string;
-  minStatements: number;
-  minByMethod?: Partial<Record<VettingMethod, number>>;
-  acceptedMethods: VettingMethod[];
-  acceptedDocumentClasses?: string[];
-  requiredClaims?: string[];
-  optionalClaims?: string[];
-  maxStatementAge?: string;
-  eligibleVetters: { role: string };
-  independence?: {
-    maxByDeclaredRelationship?: Partial<Record<DeclaredRelationship, number>>;
-    requireConsistentIdentityCommitment?: boolean;
-  };
-  invitation?: "required" | "optional" | "none";
-  decisionSla?: string;
-  requirementsGrace?: string;
-  governanceFrameworkUrl?: string;
-}
+//
+// `VettingRequirements` is the manifest specification's own definition,
+// aliased in `wire-types.ts`. `validateRequirements` still takes `unknown`: it
+// reports on a criterion stored before a rule existed, which need not match.
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);

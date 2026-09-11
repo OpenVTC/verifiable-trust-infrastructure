@@ -24,7 +24,7 @@ use affinidi_openid4vp::DcqlQuery;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use vta_sdk::protocols::vetting::VettingRequirements;
+use vta_sdk::protocols::vetting::{CheckShape, VettingRequirements};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -43,7 +43,7 @@ fn key(id: &str) -> Vec<u8> {
 /// A named required-evidence criterion: a DCQL query over the schema-store
 /// registry that a ceremony runs to decide whether a holder's presented
 /// credentials satisfy the community's acceptance rules.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct AcceptsCriterion {
@@ -57,12 +57,12 @@ pub struct AcceptsCriterion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Peer identity vetting this criterion requires, advertised to applicants
-    /// in the join manifest (0.2). Every number in it is this community's
-    /// policy. Checked by [`VettingRequirements::validate`] when stored; the
-    /// admin route additionally requires its `statementType` to be a registered
-    /// endorsement type.
+    /// in the join manifest (0.2): the manifest's own `VettingRequirements`.
+    /// Every number in it is this community's policy. Checked against the
+    /// manifest schema when stored; the admin route additionally requires its
+    /// `statementType` to be a registered endorsement type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Object>)]
+    #[schema(value_type = Option<vta_sdk::openapi::JoinManifest02VettingRequirements>)]
     pub vetting: Option<VettingRequirements>,
     pub created_at: DateTime<Utc>,
     /// Admin DID that registered the criterion (audit correlation).
@@ -108,9 +108,10 @@ pub async fn validate_accepts_query(
 }
 
 /// Validate + store an Accepts criterion. The query is validated against the
-/// registry first, and any vetting requirements must be evaluable; a criterion
-/// with a malformed query, a dangling type reference or requirements no
-/// applicant could satisfy is **not** stored.
+/// registry first, any vetting requirements must be evaluable, and the
+/// criterion must be one the join manifest can publish; a criterion with a
+/// malformed query, a dangling type reference, requirements no applicant could
+/// satisfy, or a member the manifest schema refuses is **not** stored.
 pub async fn store_accepts(
     schemas_ks: &KeyspaceHandle,
     criterion: &AcceptsCriterion,
@@ -118,9 +119,10 @@ pub async fn store_accepts(
     validate_accepts_query(schemas_ks, &criterion.query).await?;
     if let Some(vetting) = &criterion.vetting {
         vetting
-            .validate()
-            .map_err(|e| AppError::Validation(e.to_string()))?;
+            .check_shape()
+            .map_err(|e| AppError::Validation(format!("vetting: {e}")))?;
     }
+    crate::routes::join_requests::manifest::manifest_criterion(criterion.clone())?;
     schemas_ks
         .insert(
             String::from_utf8(key(&criterion.id)).expect("ascii key"),
@@ -228,7 +230,10 @@ mod tests {
             .expect("valid criterion stores");
 
         let got = get_accepts(&ks, "join").await.unwrap().unwrap();
-        assert_eq!(got, c);
+        assert_eq!(
+            serde_json::to_value(&got).unwrap(),
+            serde_json::to_value(&c).unwrap()
+        );
         assert_eq!(list_accepts(&ks).await.unwrap().len(), 1);
 
         // Retrievable as a runnable DCQL query (what a ceremony does).
@@ -272,11 +277,12 @@ mod tests {
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
     }
 
-    fn vetting(min: u32) -> VettingRequirements {
+    fn vetting(min: u32, min_by_method: Value) -> VettingRequirements {
         serde_json::from_value(json!({
             "version": "0.1",
             "statementType": "https://firstperson.network/endorsements/identity-vetting/0.1",
             "minStatements": min,
+            "minByMethod": min_by_method,
             "acceptedMethods": ["inPerson"],
             "eligibleVetters": { "role": "vetter" }
         }))
@@ -288,12 +294,15 @@ mod tests {
         let (_d, _s, ks) = ks().await;
         register_membership(&ks).await;
         let mut c = criterion("kernel", MEMBERSHIP_VCT);
-        c.vetting = Some(vetting(2));
+        c.vetting = Some(vetting(2, json!({ "inPerson": 1 })));
         store_accepts(&ks, &c)
             .await
             .expect("evaluable requirements store");
         let got = get_accepts(&ks, "kernel").await.unwrap().unwrap();
-        assert_eq!(got.vetting, Some(vetting(2)));
+        assert_eq!(
+            serde_json::to_value(got.vetting).unwrap(),
+            serde_json::to_value(c.vetting).unwrap()
+        );
     }
 
     #[tokio::test]
@@ -301,11 +310,23 @@ mod tests {
         let (_d, _s, ks) = ks().await;
         register_membership(&ks).await;
         let mut c = criterion("kernel", MEMBERSHIP_VCT);
-        c.vetting = Some(vetting(0));
+        c.vetting = Some(vetting(2, json!({ "video": 1 })));
         let err = store_accepts(&ks, &c)
             .await
-            .expect_err("minStatements 0 is refused");
+            .expect_err("a floor on a method the requirements do not accept is refused");
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
         assert!(get_accepts(&ks, "kernel").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn refuses_a_criterion_the_join_manifest_cannot_publish() {
+        let (_d, _s, ks) = ks().await;
+        register_membership(&ks).await;
+        let c = criterion(&"k".repeat(129), MEMBERSHIP_VCT);
+        let err = store_accepts(&ks, &c)
+            .await
+            .expect_err("a criterion id longer than the manifest allows is refused");
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+        assert!(list_accepts(&ks).await.unwrap().is_empty());
     }
 }

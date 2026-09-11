@@ -430,45 +430,11 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
         "VPC persona annotation (#1067) — bound ahead of its spec while \
          dtgwg-cred-spec#9 (how a VPC binds to an edge) is open upstream",
     ),
-    // Peer identity vetting — OpenVTC `docs/design/vetting-process.md`. Bound
-    // ahead of their specs by the same mechanism as the persona entry above:
-    // the payload types are in `vta_sdk::protocols::vetting`, and the specs are
-    // proposed upstream in trustoverip/dtgwg-trust-tasks-tf (stacked draft PRs
-    // `spec/vtc-join-manifest-vetting`, `spec/vetting-peer-tasks`,
-    // `spec/vetting-revoke-and-ceremony`). Each count goes to zero when the
-    // trust-tasks-rs release that serves it is taken here.
+    // Peer identity vetting (`vetting/*`, `vtc/vetting/*`) and join manifest
+    // 0.2 were bound ahead of their specs here, and went back to zero with
+    // trust-tasks-rs 0.20.4, which serves all nine and generates their wire
+    // types.
     //
-    // `vetting/{request,session,decline}/0.1` — the applicant↔vetter exchange.
-    // Top-level, not `spec/vtc/`: it runs between two people's agents, and no
-    // community service is party to it.
-    (
-        "https://trusttasks.org/spec/vetting/",
-        3,
-        "peer vetting request/session/decline — proposed in dtgwg-trust-tasks-tf \
-         (spec/vetting-peer-tasks)",
-    ),
-    // `vtc/vetting/revoke-statement/0.1` — a vetter withdrawing a statement
-    // from the community that relies on it (design §9.6).
-    // `vtc/vetting/vetters/grant/0.1` — an admin naming a vetter by issuing a
-    // revocable vetter role credential.
-    // `vtc/vetting/vetters/{profile,list,resend}/0.1` — the vetter registry: a
-    // vetter publishing a profile, anyone finding vetters, and a vetter asking
-    // for their grant credential again.
-    (
-        "https://trusttasks.org/spec/vtc/vetting/",
-        5,
-        "vetting statement revocation notice, vetter grant, and the vetter \
-         registry (profile, list, resend) — proposed in dtgwg-trust-tasks-tf \
-         (spec/vetting-revoke-and-ceremony, spec/vetting-vetters-grant)",
-    ),
-    // `vtc/join-requests/manifest/0.2` — 0.1 plus the per-criterion `vetting`
-    // requirements object and `requirementsDigest`.
-    (
-        "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2",
-        1,
-        "join manifest with vetting requirements — proposed in dtgwg-trust-tasks-tf \
-         (spec/vtc-join-manifest-vetting)",
-    ),
     // Not a dispatchable task: the framework's error envelope is a *response*
     // type, deliberately absent from the task index, so `schema_for` will never
     // resolve it. This entry is permanent — the others are debt.

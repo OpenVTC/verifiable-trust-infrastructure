@@ -2042,8 +2042,8 @@ async fn vetting_statement_from(
     valid_from: chrono::DateTime<chrono::Utc>,
 ) -> Value {
     use vta_sdk::protocols::vetting::{
-        DeclaredRelationship, IDENTITY_VETTING_ENDORSEMENT_TYPE, IdentityVettingEndorsement,
-        VettingMethod,
+        IDENTITY_VETTING_ENDORSEMENT_TYPE, IdentityVettingEndorsement, VettingMethod,
+        VettingRelationship,
     };
     use vta_sdk::vetting::statement::{StatementDraft, sign_statement};
     let now = valid_from;
@@ -2056,12 +2056,12 @@ async fn vetting_statement_from(
                 endorsement_type: IDENTITY_VETTING_ENDORSEMENT_TYPE.into(),
                 community: vtc_service::test_support::TEST_VTC_DID.into(),
                 method: VettingMethod::Video,
-                document_classes: vec!["passport".into()],
-                claims_verified: vec!["name.legal".into()],
+                document_classes: vec!["passport".try_into().unwrap()],
+                claims_verified: vec!["name.legal".try_into().unwrap()],
                 liveness_confirmed: true,
                 identity_commitment: "zSameIdentity".into(),
                 card_digest_multibase: format!("zCard{n}"),
-                declared_relationship: DeclaredRelationship::None,
+                declared_relationship: VettingRelationship::None,
                 attestation_text_digest: None,
             },
             valid_from: now,
@@ -2346,7 +2346,7 @@ async fn only_an_admin_can_name_a_vetter() {
 /// `vta_sdk::vetting::eligibility`.
 #[tokio::test]
 async fn the_vetter_role_credential_is_revocable_and_verifies_for_an_applicant() {
-    use vta_sdk::protocols::vetting::VetterGrantBody;
+    use vta_sdk::protocols::vetting::vetters::grant::v0_1 as grant_wire;
     use vta_sdk::trust_task_proof::TrustTaskVmResolver;
     use vta_sdk::vetting::eligibility::{
         EligibilityExpectations, build_eligibility_vp, verify_eligibility_vp,
@@ -2399,11 +2399,10 @@ async fn the_vetter_role_credential_is_revocable_and_verifies_for_an_applicant()
     let grant = vtc_service::vetting::vetters::grant(
         &vtc.state,
         ADMIN_DID,
-        &VetterGrantBody {
-            member_did: vetter.clone(),
-            validity_seconds: Some(30 * 86_400),
-            ext: None,
-        },
+        &serde_json::from_value::<grant_wire::Payload>(
+            json!({ "memberDid": vetter, "validitySeconds": 30 * 86_400 }),
+        )
+        .unwrap(),
     )
     .await
     .expect("grant");
@@ -2848,12 +2847,12 @@ async fn unlisting_hides_a_profile_and_revoking_the_grant_deletes_it() {
 
 #[tokio::test]
 async fn an_older_profile_document_does_not_replace_a_newer_one() {
-    use vta_sdk::protocols::vetting::VetterProfileBody;
+    use vta_sdk::protocols::vetting::vetters::profile::v0_1::Payload as VetterProfile;
     use vtc_service::vetting::profiles::publish;
     let fix = build_fixture().await;
     let (carol, _) = did_key_secret([0x11; 32]);
     seed_vetter(&fix, &carol).await;
-    let body: VetterProfileBody = serde_json::from_value(carols_profile(true)).unwrap();
+    let body: VetterProfile = serde_json::from_value(carols_profile(true)).unwrap();
     let now = chrono::Utc::now();
 
     publish(&fix.state, &carol, &body, Some(now)).await.unwrap();

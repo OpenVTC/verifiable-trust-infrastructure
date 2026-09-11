@@ -34,9 +34,12 @@ use vta_cli_common::render::{
     print_full_list_title, print_json, print_widget,
 };
 use vta_sdk::client::VtaClient;
-use vtc_client::join_requests::CommunityBranding;
+use vtc_client::join_requests::manifest::v0_2::{
+    CommunityBranding, CommunityBrandingAccentColor, CommunityBrandingDisplayName,
+};
+use vtc_client::vetting::vetters::grant::v0_1 as grant_wire;
 use vtc_client::vetting::{
-    AutoGrantConfig, AutoGrantStatus, GrantOrigin, MAX_AUTO_GRANT_SWEEP_MINUTES,
+    AutoGrantConfig, AutoGrantStatus, CheckShape, GrantOrigin, MAX_AUTO_GRANT_SWEEP_MINUTES,
     MAX_VETTER_GRANT_VALIDITY_SECONDS, MIN_AUTO_GRANT_SWEEP_MINUTES,
     MIN_VETTER_GRANT_VALIDITY_SECONDS, VetterGrantRow,
 };
@@ -327,12 +330,29 @@ async fn cmd_vetters_list(vtc: &VtcClient) -> CliResult {
     Ok(())
 }
 
+/// The `vtc/vetting/vetters/grant/0.1` payload naming `member_did`.
+pub(crate) fn grant_payload(
+    member_did: &str,
+    validity_seconds: Option<u64>,
+) -> CliResult<grant_wire::Payload> {
+    let validity_seconds = validity_seconds
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| "the grant validity is too large")?;
+    grant_wire::Payload::try_from(
+        grant_wire::Payload::builder()
+            .member_did(member_did)
+            .validity_seconds(validity_seconds),
+    )
+    .map_err(|e| format!("{member_did} cannot be named in a vetter grant: {e}").into())
+}
+
 async fn cmd_vetters_grant(vtc: &VtcClient, member_did: &str, validity: Option<&str>) -> CliResult {
     let validity_seconds = validity
         .map(|v| parse_grant_validity("--validity", v))
         .transpose()?;
     let result = vtc
-        .grant_vetter(member_did, validity_seconds)
+        .grant_vetter(&grant_payload(member_did, validity_seconds)?)
         .await
         .map_err(|e| guidance(e, Op::Grant { member_did }))?;
     let grant = &result.grant;
@@ -356,8 +376,8 @@ async fn cmd_vetters_grant(vtc: &VtcClient, member_did: &str, validity: Option<&
             );
         }
     }
-    println!("  Endorsement:  {}", grant.endorsement_id);
-    println!("  Credential:   {}", grant.credential_id);
+    println!("  Endorsement:  {}", grant.endorsement_id.as_str());
+    println!("  Credential:   {}", grant.credential_id.as_str());
     println!(
         "  Valid:        {} → {}",
         date(grant.valid_from),
@@ -366,7 +386,7 @@ async fn cmd_vetters_grant(vtc: &VtcClient, member_did: &str, validity: Option<&
     println!(
         "  {DIM}Withdraw it with `{} vetting vetters revoke {}`.{RESET}",
         bin_name(),
-        grant.endorsement_id
+        grant.endorsement_id.as_str()
     );
     Ok(())
 }
@@ -405,7 +425,7 @@ async fn cmd_vetters_resend(vtc: &VtcClient, member_did: &str) -> CliResult {
     println!(
         "{GREEN}✓{RESET} Handed credential {} to the community's messaging transport for \
          {member_did}.",
-        sent.credential_id
+        sent.credential_id.as_str()
     );
     println!("  Valid until:  {}", date(sent.valid_until));
     println!(
@@ -607,11 +627,17 @@ fn merged_branding(
             BrandingField::LogoUrl => current.logo_url = None,
         }
     }
-    if change.display_name.is_some() {
-        current.display_name = change.display_name;
+    if let Some(name) = change.display_name {
+        current.display_name = Some(
+            CommunityBrandingDisplayName::try_from(name)
+                .map_err(|e| format!("--display-name: {e}"))?,
+        );
     }
-    if change.accent_color.is_some() {
-        current.accent_color = change.accent_color;
+    if let Some(color) = change.accent_color {
+        current.accent_color = Some(
+            CommunityBrandingAccentColor::try_from(color)
+                .map_err(|e| format!("--accent-color must be #rrggbb: {e}"))?,
+        );
     }
     if change.logo_url.is_some() {
         current.logo_url = change.logo_url;
@@ -625,10 +651,16 @@ fn print_branding(branding: &CommunityBranding) -> CliResult {
         return Ok(());
     }
     let unset = format!("{DIM}(not set){RESET}");
-    let show = |v: &Option<String>| v.clone().unwrap_or_else(|| unset.clone());
-    println!("  Display name:  {}", show(&branding.display_name));
-    println!("  Accent colour: {}", show(&branding.accent_color));
-    println!("  Logo URL:      {}", show(&branding.logo_url));
+    let show = |v: Option<&str>| v.map_or_else(|| unset.clone(), str::to_owned);
+    println!(
+        "  Display name:  {}",
+        show(branding.display_name.as_ref().map(|v| v.as_str()))
+    );
+    println!(
+        "  Accent colour: {}",
+        show(branding.accent_color.as_ref().map(|v| v.as_str()))
+    );
+    println!("  Logo URL:      {}", show(branding.logo_url.as_deref()));
     if branding.display_name.is_none()
         && branding.accent_color.is_none()
         && branding.logo_url.is_none()
@@ -996,12 +1028,12 @@ mod tests {
 
     #[test]
     fn branding_set_merges_clears_and_refuses_a_contradiction() {
-        let current = CommunityBranding {
-            display_name: Some("Linux Kernel".into()),
-            accent_color: Some("#1a2b3c".into()),
-            logo_url: Some("https://kernel.example/logo.svg".into()),
-            ext: None,
-        };
+        let current: CommunityBranding = serde_json::from_value(json!({
+            "displayName": "Linux Kernel",
+            "accentColor": "#1a2b3c",
+            "logoUrl": "https://kernel.example/logo.svg",
+        }))
+        .unwrap();
         let merged = merged_branding(
             current.clone(),
             BrandingChange {
@@ -1011,9 +1043,26 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(merged.display_name.as_deref(), Some("Linux Kernel"));
-        assert_eq!(merged.accent_color.as_deref(), Some("#000000"));
+        assert_eq!(
+            merged.display_name.as_ref().map(|v| v.as_str()),
+            Some("Linux Kernel")
+        );
+        assert_eq!(
+            merged.accent_color.as_ref().map(|v| v.as_str()),
+            Some("#000000")
+        );
         assert!(merged.logo_url.is_none());
+
+        let err = merged_branding(
+            current.clone(),
+            BrandingChange {
+                accent_color: Some("red".into()),
+                ..BrandingChange::default()
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("--accent-color"), "{err}");
 
         let err = merged_branding(
             current,

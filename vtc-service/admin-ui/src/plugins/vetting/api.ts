@@ -186,8 +186,7 @@ export type { JoinManifest, ManifestCriterion };
 /**
  * `join-requests/manifest/0.2` as applicants receive it — each criterion with
  * its vetting requirements and `requirementsDigest` — from the admin route that
- * answers under the same task. A criterion's `vetting` is an opaque object in
- * the OpenAPI document; `validateRequirements` reads it.
+ * answers under the same task. The shape is the manifest specification's own.
  */
 export const fetchManifest = (): Promise<JoinManifest> =>
   getJson<JoinManifest>("/v1/join-requests/manifest", {

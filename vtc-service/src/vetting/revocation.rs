@@ -27,7 +27,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::info;
 
-use vta_sdk::protocols::vetting::{RevocationReason, RevokeStatementBody};
+use vta_sdk::protocols::vetting::CheckShape;
+use vta_sdk::protocols::vetting::revoke_statement::v0_1::{
+    Payload as RevokeStatement, PayloadReason as RevocationReason,
+};
 use vti_common::audit::{AuditEvent, VettingStatementRevokedData};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
@@ -98,7 +101,7 @@ pub async fn is_revoked(
 pub async fn record(
     ks: &KeyspaceHandle,
     issuer: &str,
-    body: &RevokeStatementBody,
+    body: &RevokeStatement,
     now: DateTime<Utc>,
 ) -> Result<(RevocationNotice, bool), AppError> {
     body.check_shape()
@@ -111,8 +114,8 @@ pub async fn record(
     }
     let notice = RevocationNotice {
         issuer: issuer.to_string(),
-        statement_id: body.statement_id.clone(),
-        statement_digest_multibase: body.statement_digest_multibase.clone(),
+        statement_id: body.statement_id.as_str().to_owned(),
+        statement_digest_multibase: body.statement_digest_multibase.as_str().to_owned(),
         reason: body.reason,
         recorded_at: now,
     };
@@ -143,7 +146,7 @@ pub async fn list_notices(ks: &KeyspaceHandle) -> Result<Vec<RevocationNotice>, 
 pub async fn withdraw(
     state: &AppState,
     vetter_did: &str,
-    body: &RevokeStatementBody,
+    body: &RevokeStatement,
 ) -> Result<RevocationNotice, AppError> {
     if get_member(&state.members_ks, vetter_did).await?.is_none() {
         return Err(AppError::Forbidden(
@@ -161,10 +164,7 @@ pub async fn withdraw(
                     AuditEvent::VettingStatementRevoked(VettingStatementRevokedData {
                         statement_id: notice.statement_id.clone(),
                         statement_digest_multibase: notice.statement_digest_multibase.clone(),
-                        reason: notice
-                            .reason
-                            .and_then(|r| serde_json::to_value(r).ok())
-                            .and_then(|v| v.as_str().map(str::to_string)),
+                        reason: notice.reason.map(|r| r.to_string()),
                     }),
                 )
                 .await?;
@@ -191,13 +191,13 @@ mod tests {
         (dir, store, ks)
     }
 
-    fn body(id: &str, digest: &str) -> RevokeStatementBody {
-        RevokeStatementBody {
-            statement_id: id.into(),
-            statement_digest_multibase: digest.into(),
-            reason: Some(RevocationReason::Mistake),
-            ext: None,
-        }
+    fn body(id: &str, digest: &str) -> RevokeStatement {
+        serde_json::from_value(json!({
+            "statementId": id,
+            "statementDigestMultibase": digest,
+            "reason": "mistake",
+        }))
+        .unwrap()
     }
 
     fn digest_of(v: serde_json::Value) -> String {
@@ -261,34 +261,43 @@ mod tests {
         .unwrap();
         assert!(!created);
         assert_eq!(again.recorded_at, first.recorded_at);
+        assert_eq!(again.reason, Some(RevocationReason::Mistake));
     }
 
+    /// A digest the schema's pattern admits but that decodes to no multihash
+    /// is refused, and names nothing.
     #[tokio::test]
-    async fn a_malformed_digest_is_refused_and_names_nothing() {
+    async fn a_digest_that_does_not_decode_is_refused_and_names_nothing() {
         let (_d, _s, ks) = ks().await;
+        let undecodable = "z1111111111111111111111";
         let err = record(
             &ks,
             "did:key:zCarol",
-            &body("urn:uuid:s1", "not-multibase"),
+            &body("urn:uuid:s1", undecodable),
             Utc::now(),
         )
         .await
         .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
         assert!(
-            !is_revoked(&ks, "did:key:zCarol", "urn:uuid:s1", "not-multibase")
+            !is_revoked(&ks, "did:key:zCarol", "urn:uuid:s1", undecodable)
                 .await
                 .unwrap()
         );
     }
 
-    #[tokio::test]
-    async fn an_empty_statement_id_is_refused() {
-        let (_d, _s, ks) = ks().await;
+    #[test]
+    fn a_notice_that_breaks_its_schema_never_reaches_the_store() {
         let digest = digest_of(json!({ "statement": 1 }));
-        assert!(matches!(
-            record(&ks, "did:key:zCarol", &body("  ", &digest), Utc::now()).await,
-            Err(AppError::Validation(_))
-        ));
+        for (id, digest) in [("  ", digest.as_str()), ("urn:uuid:s1", "not-multibase")] {
+            assert!(
+                serde_json::from_value::<RevokeStatement>(json!({
+                    "statementId": id,
+                    "statementDigestMultibase": digest,
+                }))
+                .is_err(),
+                "{id} / {digest}"
+            );
+        }
     }
 }

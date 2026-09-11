@@ -63,7 +63,7 @@ use vta_sdk::protocols::join_requests::{
 };
 use vta_sdk::protocols::members::{self as mem, MemberVmcBody, MemberVmcReceiptBody};
 use vta_sdk::protocols::vetting::{
-    self as vetting_wire, RevokeStatementBody, RevokeStatementResponseBody,
+    self as vetting_wire, revoke_statement::v0_1 as revoke_statement,
 };
 
 use vti_rooms::wire as rooms_wire;
@@ -563,18 +563,20 @@ async fn handle_revoke_statement(
         Ok(did) => did,
         Err(reject) => return reject,
     };
-    let body: RevokeStatementBody = match parse_payload(&doc) {
+    let body: revoke_statement::Payload = match parse_checked_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::vetting::revocation::withdraw(state, &vetter_did, &body).await {
-        Ok(notice) => success_response(
-            &doc,
-            RevokeStatementResponseBody {
-                recorded_at: notice.recorded_at,
-                ext: None,
-            },
-        ),
+    let answer = crate::vetting::revocation::withdraw(state, &vetter_did, &body)
+        .await
+        .and_then(|notice| {
+            revoke_statement::Response::try_from(
+                revoke_statement::Response::builder().recorded_at(notice.recorded_at),
+            )
+            .map_err(|e| AppError::Internal(format!("revoke-statement response: {e}")))
+        });
+    match answer {
+        Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
 }
@@ -594,7 +596,7 @@ async fn handle_vetter_grant(
         Ok(did) => did,
         Err(reject) => return reject,
     };
-    let body: vetting_wire::VetterGrantBody = match parse_payload(&doc) {
+    let body: vetting_wire::vetters::grant::v0_1::Payload = match parse_checked_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
@@ -602,6 +604,25 @@ async fn handle_vetter_grant(
         Ok(grant) => success_response(&doc, grant.response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
+}
+
+/// Parse a published task's payload as received: the JSON is validated against
+/// the published schema before it is parsed — a generated constructor can
+/// normalise what it reads — and then the rules no schema can state are applied
+/// ([`vetting_wire::read_checked`]). A payload failing any of it is
+/// `malformedRequest`.
+fn parse_checked_payload<P>(doc: &TrustTask<Value>) -> Result<P, TrustTaskOutcome>
+where
+    P: trust_tasks_rs::Payload + serde::de::DeserializeOwned + vetting_wire::CheckShape,
+{
+    vetting_wire::read_checked::<P>(&doc.payload).map_err(|e| {
+        reject_with(
+            doc,
+            RejectReason::MalformedRequest {
+                reason: format!("payload: {e}"),
+            },
+        )
+    })
 }
 
 /// A specification-extended error code, `<slug>:<local>`, as a framework code.
@@ -629,7 +650,7 @@ async fn handle_vetter_profile(
         Ok(did) => did,
         Err(reject) => return reject,
     };
-    let body: vetting_wire::VetterProfileBody = match parse_payload(&doc) {
+    let body: vetting_wire::vetters::profile::v0_1::Payload = match parse_checked_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
@@ -658,7 +679,7 @@ async fn handle_vetter_list(
     if let Err(reject) = resolve_holder(state, ctx, &doc).await {
         return reject;
     }
-    let body: vetting_wire::VetterListBody = match parse_payload(&doc) {
+    let body: vetting_wire::vetters::list::v0_1::Payload = match parse_checked_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
@@ -681,7 +702,8 @@ async fn handle_vetter_resend(
         Ok(did) => did,
         Err(reject) => return reject,
     };
-    if let Err(reject) = parse_payload::<vetting_wire::VetterResendBody>(&doc) {
+    if let Err(reject) = parse_checked_payload::<vetting_wire::vetters::resend::v0_1::Payload>(&doc)
+    {
         return reject;
     }
     match crate::vetting::vetters::resend(state, &vetter_did, &vetter_did).await {
@@ -715,10 +737,16 @@ async fn handle_manifest(
     doc: TrustTask<Value>,
     version: ManifestVersion,
 ) -> TrustTaskOutcome {
-    match crate::routes::join_requests::manifest::manifest_inner(state, version).await {
-        Ok(body) => success_response(&doc, body),
-        Err(e) => app_error_to_reject(&doc, &e),
-    }
+    use crate::routes::join_requests::manifest::{manifest_v0_1, manifest_v0_2};
+    let answer = match version {
+        ManifestVersion::V0_1 => manifest_v0_1(state)
+            .await
+            .map(|r| success_response(&doc, r)),
+        ManifestVersion::V0_2 => manifest_v0_2(state)
+            .await
+            .map(|r| success_response(&doc, r)),
+    };
+    answer.unwrap_or_else(|e| app_error_to_reject(&doc, &e))
 }
 
 // ─── status ────────────────────────────────────────────────────────────────

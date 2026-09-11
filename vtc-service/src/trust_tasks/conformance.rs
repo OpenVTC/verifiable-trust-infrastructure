@@ -990,19 +990,22 @@ fn table() -> Vec<Conformance> {
             s::join_requests::manifest::v0_1::Payload,
             s::join_requests::manifest::v0_1::Response,
             json!({}),
-            // Built from the SDK type, not transcribed.
-            to_v(jr::JoinRequestManifestResponseBody {
-                community_did: COMMUNITY_DID.into(),
-                criteria: vec![jr::ManifestCriterion {
-                    id: "email-verified".into(),
-                    description: Some("A verified email credential".into()),
-                    presentation_definition: json!({ "credentials": [] }),
-                    vetting: None,
-                    requirements_digest: None,
-                }],
-                // 0.1 defines no branding; the dispatcher never sets it there.
-                branding: None,
-            })
+            // Projected by the manifest read the dispatcher answers with, not
+            // transcribed.
+            to_v(
+                crate::routes::join_requests::manifest::response_v0_1(
+                    COMMUNITY_DID.into(),
+                    vec![crate::schemas::accepts::AcceptsCriterion {
+                        id: "email-verified".into(),
+                        query: json!({ "credentials": [] }),
+                        description: Some("A verified email credential".into()),
+                        vetting: None,
+                        created_at: chrono::Utc::now(),
+                        created_by_did: "did:key:zAdmin".into(),
+                    }],
+                )
+                .expect("the manifest projects the criterion"),
+            )
         ),
         checked!(
             s::join_requests::submit::v0_2::Payload,
@@ -1373,6 +1376,151 @@ fn table() -> Vec<Conformance> {
             // `RollbackResponse` — 200 with zero bytes until #1059, which
             // discarded a `noop` it had already computed.
             json!({ "generation": "1", "current": true, "noop": false })
+        ),
+        // ─── join manifest 0.2 and peer identity vetting ─────────────
+        //
+        // Every one of these handlers speaks the generated types. The
+        // responses are built the way the handlers build them — through the
+        // generated builders, or the manifest read itself — so a response the
+        // service could not produce cannot stand in for one it does.
+        checked!(
+            s::join_requests::manifest::v0_2::Payload,
+            s::join_requests::manifest::v0_2::Response,
+            json!({}),
+            to_v(
+                crate::routes::join_requests::manifest::response_v0_2(
+                    COMMUNITY_DID.into(),
+                    vec![crate::schemas::accepts::AcceptsCriterion {
+                        id: "kernel-developer".into(),
+                        query: json!({ "credentials": [] }),
+                        description: Some("Two vetters, one in person".into()),
+                        vetting: Some(
+                            serde_json::from_value(json!({
+                                "version": "0.1",
+                                "statementType":
+                                    vta_sdk::protocols::vetting::IDENTITY_VETTING_ENDORSEMENT_TYPE,
+                                "minStatements": 2,
+                                "minByMethod": { "inPerson": 1 },
+                                "acceptedMethods": ["inPerson", "video"],
+                                "eligibleVetters": { "role": "vetter" },
+                                "independence": { "requireConsistentIdentityCommitment": true }
+                            }))
+                            .expect("vetting requirements"),
+                        ),
+                        created_at: chrono::Utc::now(),
+                        created_by_did: DID.into(),
+                    }],
+                    Some(
+                        serde_json::from_value(
+                            json!({ "displayName": "Kernel", "accentColor": "#1a2b3c" }),
+                        )
+                        .expect("branding"),
+                    ),
+                )
+                .expect("the manifest projects the criterion"),
+            )
+        ),
+        checked!(
+            s::vetting::revoke_statement::v0_1::Payload,
+            s::vetting::revoke_statement::v0_1::Response,
+            json!({
+                "statementId": format!("urn:uuid:{REQUEST_ID}"),
+                "statementDigestMultibase": "zQmYimQAvAKzznkjph8xTTpuLhf21jAiUPMy7qdBp7qsU7Z",
+                "reason": "newInformation",
+            }),
+            to_v(
+                s::vetting::revoke_statement::v0_1::Response::try_from(
+                    s::vetting::revoke_statement::v0_1::Response::builder()
+                        .recorded_at(TS.parse::<DateTime<chrono::Utc>>().unwrap()),
+                )
+                .expect("revoke-statement response")
+            )
+        ),
+        checked!(
+            s::vetting::vetters::grant::v0_1::Payload,
+            s::vetting::vetters::grant::v0_1::Response,
+            json!({ "memberDid": OTHER_DID, "validitySeconds": 31_536_000 }),
+            to_v(
+                s::vetting::vetters::grant::v0_1::Response::try_from(
+                    s::vetting::vetters::grant::v0_1::Response::builder()
+                        .endorsement_id(REQUEST_ID)
+                        .credential_id(format!("urn:uuid:{REQUEST_ID}"))
+                        .valid_from(TS.parse::<DateTime<chrono::Utc>>().unwrap())
+                        .valid_until(
+                            "2027-08-23T00:00:00Z"
+                                .parse::<DateTime<chrono::Utc>>()
+                                .unwrap()
+                        ),
+                )
+                .expect("grant response")
+            )
+        ),
+        checked!(
+            s::vetting::vetters::profile::v0_1::Payload,
+            s::vetting::vetters::profile::v0_1::Response,
+            json!({
+                "listed": true,
+                "displayName": "Carol M.",
+                "languages": ["en", "de-AT"],
+                "location": { "country": "AT", "city": "Vienna" },
+                "methods": ["inPerson", "video"],
+                "acceptsDocumentation": ["passport", "none"],
+                "events": [{ "name": "Kernel Maintainers Meetup",
+                             "startDate": "2026-10-05", "endDate": "2026-10-07" }],
+            }),
+            to_v(
+                s::vetting::vetters::profile::v0_1::Response::try_from(
+                    s::vetting::vetters::profile::v0_1::Response::builder()
+                        .listed(true)
+                        .updated_at(TS.parse::<DateTime<chrono::Utc>>().unwrap()),
+                )
+                .expect("profile response")
+            )
+        ),
+        checked!(
+            s::vetting::vetters::list::v0_1::Payload,
+            s::vetting::vetters::list::v0_1::Response,
+            json!({ "language": "de", "eventFrom": "2026-10-01", "limit": 10 }),
+            to_v(
+                s::vetting::vetters::list::v0_1::Response::try_from(
+                    s::vetting::vetters::list::v0_1::Response::builder()
+                        .vetters(vec![
+                            serde_json::from_value::<s::vetting::vetters::list::v0_1::ListedVetter>(
+                                json!({
+                                    "vetterDid": OTHER_DID,
+                                    "displayName": "Carol M.",
+                                    "languages": ["en", "de-AT"],
+                                    "methods": ["inPerson"],
+                                    "acceptsDocumentation": ["passport"],
+                                    "events": [],
+                                    "grantValidUntil": TS,
+                                    "updatedAt": TS,
+                                }),
+                            )
+                            .expect("listed vetter"),
+                        ])
+                        .next_cursor(Some(
+                            s::vetting::vetters::list::v0_1::ResponseNextCursor::try_from(
+                                "b2Zmc2V0OjEw"
+                            )
+                            .expect("cursor"),
+                        )),
+                )
+                .expect("list response")
+            )
+        ),
+        checked!(
+            s::vetting::vetters::resend::v0_1::Payload,
+            s::vetting::vetters::resend::v0_1::Response,
+            json!({}),
+            to_v(
+                s::vetting::vetters::resend::v0_1::Response::try_from(
+                    s::vetting::vetters::resend::v0_1::Response::builder()
+                        .credential_id(format!("urn:uuid:{REQUEST_ID}"))
+                        .valid_until(TS.parse::<DateTime<chrono::Utc>>().unwrap()),
+                )
+                .expect("resend response")
+            )
         ),
     ]
 }
