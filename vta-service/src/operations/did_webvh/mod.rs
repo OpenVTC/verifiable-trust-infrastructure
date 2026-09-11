@@ -1096,9 +1096,14 @@ pub async fn create_did_webvh(
             vars.insert(k.clone(), v.clone());
         }
 
-        let rendered = record.template.render(&vars).map_err(|e| {
+        let mut rendered = record.template.render(&vars).map_err(|e| {
             AppError::Validation(format!("template '{template_name}' render failed: {e}"))
         })?;
+        // A rendered template is treated as caller-supplied from here on, so it
+        // never reaches the builder `with_tsp_service` feeds below — which is how
+        // `add_tsp_service` came to be silently ignored for every templated DID.
+        // Apply it to the document itself, at the mediator the template names.
+        document::with_tsp_in_rendered_document(params.add_tsp_service, &mut rendered)?;
         params.did_document = Some(rendered);
     }
 

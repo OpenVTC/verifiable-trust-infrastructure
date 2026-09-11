@@ -14,6 +14,9 @@ use serde_json::json;
 
 use crate::config::AppConfig;
 use crate::keys::{self};
+use vta_sdk::protocol::matching::DIDCOMM_SERVICE_TYPE;
+
+use crate::error::AppError;
 use crate::operations::protocol::document::{TSP_SERVICE_FRAGMENT, TSP_SERVICE_TYPE};
 
 /// Append a `#tsp` (`TSPTransport`) entry to `additional` when the caller asked
@@ -78,6 +81,101 @@ fn is_tsp_service(service: &serde_json::Value) -> bool {
             types.iter().any(|t| t.as_str() == Some(TSP_SERVICE_TYPE))
         }
         _ => false,
+    }
+}
+
+/// Add a `#tsp` entry to a **template-rendered** document when the caller asked
+/// for one, at the mediator the document's own DIDComm entry names.
+///
+/// A rendered template never reaches the builder [`with_tsp_service`] feeds —
+/// `create_did_webvh` treats it as a caller-supplied document — so until this,
+/// `addTspService` was accepted on the wire and silently dropped for every DID
+/// minted from a template. A room, a room host, or any other templated identity
+/// could not advertise TSP however it was asked, and nothing said so.
+///
+/// Two deliberate differences from [`with_tsp_service`]:
+///
+/// - **The endpoint is the document's mediator, not this VTA's.** A template
+///   names its own (`MEDIATOR_DID`), and TSP binds the same mediator DIDComm
+///   does (tsp-enablement.md D8, §14 Q2). Advertising this VTA's mediator on a
+///   document routed elsewhere would give one DID a different mediator per
+///   protocol.
+/// - **`services.tsp` is not consulted.** That gate stops this VTA claiming a
+///   transport *its own stack* cannot carry, on documents that route to its own
+///   mediator. A templated DID's holder is usually something else — a room host
+///   serving at its own `--mediator-did`, a community — and whether *that*
+///   decodes TSP is the caller's claim, exactly as `SERVICE_TSP` is at
+///   provisioning (see `vta_sdk::did_templates::transports`).
+///
+/// Refused rather than skipped when the document names no DIDComm mediator: a
+/// TSP entry advertises a mediator DID, so there is nothing to point it at, and
+/// minting without the entry the caller asked for is the defect this replaces.
+/// A document that already carries a `TSPTransport` entry keeps it.
+pub(crate) fn with_tsp_in_rendered_document(
+    add_tsp_service: bool,
+    document: &mut serde_json::Value,
+) -> Result<(), AppError> {
+    if !add_tsp_service {
+        return Ok(());
+    }
+    let services = document
+        .get("service")
+        .and_then(serde_json::Value::as_array);
+    if services.is_some_and(|s| s.iter().any(is_tsp_service)) {
+        return Ok(());
+    }
+    let Some(mediator_did) = services.and_then(|s| s.iter().find_map(didcomm_mediator)) else {
+        return Err(AppError::Validation(
+            "addTspService: this document names no DIDComm mediator, and a TSP entry \
+             advertises the same mediator DIDComm uses — there is nothing to point it at"
+                .into(),
+        ));
+    };
+    let entry = vta_sdk::did_templates::tsp_service(&mediator_did)
+        .map_err(|e| AppError::Validation(format!("addTspService: {e}")))?;
+    if let Some(services) = document
+        .get_mut("service")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        services.push(entry);
+    }
+    // Same ordering every other path that adds a transport ends with, so a
+    // templated document and a built one agree on TSP > DIDComm > REST.
+    crate::operations::protocol::document::sort_services_canonical(document);
+    Ok(())
+}
+
+/// The mediator DID a `DIDCommMessaging` entry routes through.
+///
+/// DID-Core and DIDComm v2 allow three `serviceEndpoint` shapes — a bare
+/// string, an object carrying `uri`, or an array of either — and templates use
+/// the array form. Only a DID counts: a URL there is not a mediator a TSP entry
+/// could name.
+fn didcomm_mediator(service: &serde_json::Value) -> Option<String> {
+    let is_didcomm = match service.get("type") {
+        Some(serde_json::Value::String(t)) => t == DIDCOMM_SERVICE_TYPE,
+        Some(serde_json::Value::Array(types)) => types
+            .iter()
+            .any(|t| t.as_str() == Some(DIDCOMM_SERVICE_TYPE)),
+        _ => false,
+    };
+    if !is_didcomm {
+        return None;
+    }
+    let uri = match service.get("serviceEndpoint")? {
+        serde_json::Value::Array(items) => items.iter().find_map(endpoint_uri),
+        other => endpoint_uri(other),
+    };
+    uri.map(str::trim)
+        .filter(|u| u.starts_with("did:"))
+        .map(str::to_owned)
+}
+
+fn endpoint_uri(endpoint: &serde_json::Value) -> Option<&str> {
+    match endpoint {
+        serde_json::Value::String(s) => Some(s),
+        serde_json::Value::Object(o) => o.get("uri").and_then(serde_json::Value::as_str),
+        _ => None,
     }
 }
 
@@ -413,5 +511,119 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0]["type"], "VTARest");
         assert_eq!(tsp_endpoints(&Some(out)), [MEDIATOR]);
+    }
+
+    // ── Template-rendered documents ─────────────────────────────────────────
+    //
+    // Rendered from the real built-ins, the way `create_did_webvh` renders them,
+    // so a template that changes its service block is caught here rather than
+    // at the first mint.
+
+    const ROOM_MEDIATOR: &str = "did:webvh:QmRoomMediator:mediator.example.com";
+
+    fn render_builtin(name: &str, extra: &[(&str, &str)]) -> serde_json::Value {
+        let template = vta_sdk::did_templates::load_embedded(name).expect("builtin template");
+        let mut vars = vta_sdk::did_templates::TemplateVars::new();
+        vars.insert_string("DID", "{DID}");
+        vars.insert_string("SIGNING_KEY_MB", "z6MkSigningExample");
+        vars.insert_string("KA_KEY_MB", "z6LSkaExample");
+        for (k, v) in extra {
+            vars.insert_string(*k, *v);
+        }
+        template.render(&vars).expect("render")
+    }
+
+    fn service_types(doc: &serde_json::Value) -> Vec<&str> {
+        doc["service"]
+            .as_array()
+            .expect("service array")
+            .iter()
+            .map(|s| s["type"].as_str().expect("type"))
+            .collect()
+    }
+
+    /// The defect: a room minted from its template could not advertise TSP at
+    /// all. Asked, it now does — at the room's own mediator, first.
+    #[test]
+    fn a_templated_room_advertises_tsp_at_its_own_mediator_when_asked() {
+        let mut doc = render_builtin(
+            "room",
+            &[("WEBVH_SERVER", "prod"), ("MEDIATOR_DID", ROOM_MEDIATOR)],
+        );
+        with_tsp_in_rendered_document(true, &mut doc).expect("tsp added");
+        assert_eq!(service_types(&doc), ["TSPTransport", "DIDCommMessaging"]);
+        assert_eq!(doc["service"][0]["id"], "{DID}#tsp");
+        assert_eq!(doc["service"][0]["serviceEndpoint"], ROOM_MEDIATOR);
+    }
+
+    /// A room host carries REST beside DIDComm. TSP joins them in canonical
+    /// order and the REST entry — the one the agent calls a host on — survives.
+    #[test]
+    fn a_templated_room_host_keeps_its_rest_entry_in_canonical_order() {
+        let mut doc = render_builtin(
+            "room-host",
+            &[
+                ("WEBVH_SERVER", "prod"),
+                ("URL", "https://rooms.example.com"),
+                ("MEDIATOR_DID", ROOM_MEDIATOR),
+            ],
+        );
+        with_tsp_in_rendered_document(true, &mut doc).expect("tsp added");
+        assert_eq!(
+            service_types(&doc),
+            ["TSPTransport", "DIDCommMessaging", "VTARest"]
+        );
+        assert_eq!(doc["service"][0]["serviceEndpoint"], ROOM_MEDIATOR);
+    }
+
+    /// Opt-in: not asked, the rendered document is exactly what the template
+    /// produced.
+    #[test]
+    fn a_rendered_document_is_untouched_unless_the_caller_asks() {
+        let rendered = render_builtin(
+            "room",
+            &[("WEBVH_SERVER", "prod"), ("MEDIATOR_DID", ROOM_MEDIATOR)],
+        );
+        let mut doc = rendered.clone();
+        with_tsp_in_rendered_document(false, &mut doc).expect("no-op");
+        assert_eq!(doc, rendered);
+    }
+
+    /// `ai-agent` already publishes `#tsp`. Asking again must not produce a
+    /// second entry — two `#tsp` services would be a malformed document.
+    #[test]
+    fn a_template_that_already_advertises_tsp_is_not_duplicated() {
+        let mut doc = render_builtin("ai-agent", &[("MEDIATOR_DID", ROOM_MEDIATOR)]);
+        with_tsp_in_rendered_document(true, &mut doc).expect("left as is");
+        let tsp = service_types(&doc)
+            .into_iter()
+            .filter(|t| *t == "TSPTransport")
+            .count();
+        assert_eq!(tsp, 1);
+    }
+
+    /// `did-host-http` names no mediator. A TSP entry advertises one, so the
+    /// request is refused rather than quietly minting without it.
+    #[test]
+    fn asking_for_tsp_on_a_document_with_no_mediator_is_refused() {
+        let mut doc = render_builtin("did-host-http", &[("URL", "https://host.example.com")]);
+        let err = with_tsp_in_rendered_document(true, &mut doc).expect_err("refused");
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+    }
+
+    /// All three `serviceEndpoint` shapes resolve to the mediator, and a URL in
+    /// any of them does not.
+    #[test]
+    fn the_didcomm_mediator_is_found_in_every_endpoint_shape() {
+        for endpoint in [
+            json!(ROOM_MEDIATOR),
+            json!({ "uri": ROOM_MEDIATOR }),
+            json!([{ "uri": ROOM_MEDIATOR, "accept": ["didcomm/v2"] }]),
+        ] {
+            let svc = json!({ "type": "DIDCommMessaging", "serviceEndpoint": endpoint });
+            assert_eq!(didcomm_mediator(&svc).as_deref(), Some(ROOM_MEDIATOR));
+        }
+        let url = json!({ "type": "DIDCommMessaging", "serviceEndpoint": "https://m.example.com" });
+        assert_eq!(didcomm_mediator(&url), None);
     }
 }
