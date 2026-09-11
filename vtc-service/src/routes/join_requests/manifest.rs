@@ -50,6 +50,8 @@ pub async fn manifest_inner(state: &AppState) -> Result<JoinRequestManifestRespo
             id: c.id,
             description: c.description,
             presentation_definition: c.query,
+            vetting: None,
+            requirements_digest: None,
         })
         .collect();
 

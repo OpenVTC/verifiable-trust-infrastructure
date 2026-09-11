@@ -197,6 +197,11 @@ mod tsp_demux;
 // credentials into a signed `vp_token` the VTC's join verifier accepts.
 #[cfg(feature = "vp")]
 pub mod vp;
+// Peer identity vetting: building, signing and verifying the Vetting Card and
+// Vetting Statement, and counting statements against a community's
+// requirements. Shapes are in `protocols::vetting`.
+#[cfg(feature = "vetting")]
+pub mod vetting;
 pub mod webvh;
 
 #[cfg(feature = "integration")]

@@ -116,6 +116,16 @@ pub const JOIN_REQUEST_MANIFEST_TYPE: &str =
 pub const JOIN_REQUEST_MANIFEST_RESPONSE_TYPE: &str =
     "https://trusttasks.org/spec/vtc/join-requests/manifest/0.1#response";
 
+/// Manifest 0.2: 0.1 plus an optional `vetting` requirements object and a
+/// `requirementsDigest` on each criterion. A community answers both versions;
+/// a 0.1 reader simply does not see the new members.
+pub const JOIN_REQUEST_MANIFEST_0_2_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2";
+
+/// `#response` variant of [`JOIN_REQUEST_MANIFEST_0_2_TYPE`].
+pub const JOIN_REQUEST_MANIFEST_0_2_RESPONSE_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2#response";
+
 /// One community evidence requirement — a named DCQL Presentation
 /// Definition the applicant may present against.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +136,16 @@ pub struct ManifestCriterion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub presentation_definition: JsonValue,
+    /// Peer identity vetting this criterion requires (manifest 0.2). Absent on
+    /// a criterion that needs none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<Object>))]
+    pub vetting: Option<super::vetting::VettingRequirements>,
+    /// `digestMultibase` over this criterion without this member (manifest
+    /// 0.2). An applicant records it when it starts gathering, so a change to
+    /// the requirements mid-application is detectable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirements_digest: Option<String>,
 }
 
 /// Manifest response: the community's join evidence requirements.

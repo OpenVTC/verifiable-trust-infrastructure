@@ -845,6 +845,14 @@ jobs:
         run: cargo check -p vta-sdk --features attest-verify
       - name: vta-sdk client + sealed-transfer + provision-integration
         run: cargo check -p vta-sdk --features client,sealed-transfer,provision-integration
+      # `vetting` is off by default and no workspace member's *tests* run with it
+      # on, so `cargo test --workspace` never compiles its unit tests — the
+      # all-features clippy step below lints them but runs nothing. Tested, not
+      # checked: what these guard (a card replayed to another vetter, a statement
+      # over a different card, one vetter counted twice) compiles perfectly.
+      # `client` rides along because `trust_task_proof`'s own unit tests need it.
+      - name: vta-sdk vetting
+        run: cargo test -p vta-sdk --features client,vetting --lib vetting
 
       # The *maximal* combination. Every step above narrows the feature set;
       # nothing built the top end, and `clippy`/`check` elsewhere in this

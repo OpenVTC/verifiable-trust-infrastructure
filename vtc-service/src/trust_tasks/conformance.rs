@@ -997,6 +997,8 @@ fn table() -> Vec<Conformance> {
                     id: "email-verified".into(),
                     description: Some("A verified email credential".into()),
                     presentation_definition: json!({ "credentials": [] }),
+                    vetting: None,
+                    requirements_digest: None,
                 }],
             })
         ),

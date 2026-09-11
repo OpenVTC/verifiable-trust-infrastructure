@@ -90,6 +90,30 @@ const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[
          `IssuedCredentialSummary` above.",
     ),
     (
+        "VettingCard",
+        "Not a Trust Task payload: the signed Vetting Card (an r-card VDS) that \
+         rides *inside* `vetting/session/0.1#response`'s `card`. SPEC §4.5.1's \
+         slot belongs to that payload, which carries `ext`. The card itself is \
+         closed on purpose — every member of it is signed by the applicant and \
+         shown to a human vetter, and an extension member the vetter's client \
+         cannot render would be a signed claim nobody looked at. The shared card \
+         schema proposed in dtgwg-trust-tasks-tf closes it the same way.",
+    ),
+    (
+        "CardClaim",
+        "One entry of a `VettingCard`'s `claims`, closed for the same reason as \
+         the card: what is signed must be what is shown.",
+    ),
+    (
+        "IdentityVettingEndorsement",
+        "Not a Trust Task payload: the `endorsement` body of a Vetting Statement \
+         (a DTG `EndorsementCredential`), whose shape the community registers as \
+         the endorsement type's `claimSchema`. It is attested content — a member \
+         a verifier does not recognise would be an attestation it cannot \
+         interpret yet would count — so it is closed, and a new member is a new \
+         endorsement-type version rather than an extension.",
+    ),
+    (
         "LocalProfileEntry",
         "One item of `persona/local/profile/put/1.0`'s `entries` array. The \
          schema closes it to the single `inline` member — that closure is \
