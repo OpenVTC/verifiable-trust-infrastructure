@@ -37,11 +37,21 @@ pub struct Person {
     pub public: SignedPublicKey,
 }
 
+/// When every test key was created: 400 days before the first key this process
+/// makes, read once.
+///
+/// An OpenPGP fingerprint covers the key's creation time, so a seed alone does
+/// not fix the key. Reading the clock per key made `Person::new(2, "Alice")`
+/// a different key whenever two calls straddled a second boundary — a keyring
+/// holding both then counted nine keys, not eight.
+static KEYS_CREATED: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| now() - 400 * DAY);
+
 impl Person {
-    /// A key with one user ID and one signing subkey, created 400 days ago.
+    /// A key with one user ID and one signing subkey, created 400 days before
+    /// the process's first key. The same seed is the same key for the whole run.
     pub fn new(seed: u64, name: &str) -> Self {
         let mut rng = StdRng::seed_from_u64(seed);
-        let created = ts(now() - 400 * DAY);
+        let created = ts(*KEYS_CREATED);
         let subkey = SubkeyParamsBuilder::default()
             .key_type(KeyType::Ed25519Legacy)
             .can_sign(true)
