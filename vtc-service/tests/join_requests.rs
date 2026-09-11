@@ -1917,6 +1917,211 @@ async fn manifest_0_2_advertises_vetting_requirements_and_their_digest() {
 }
 
 // ---------------------------------------------------------------------------
+// Peer identity vetting — statements counted at submit (OpenVTC vetting design §10)
+// ---------------------------------------------------------------------------
+
+/// A `did:key` secret from a fixed seed, as `signed_trust_task_seed` builds one.
+fn did_key_secret(seed: [u8; 32]) -> (String, Secret) {
+    let mut secret = Secret::generate_ed25519(None, Some(&seed));
+    let pub_mb = secret.get_public_keymultibase().expect("pubkey multibase");
+    let did = format!("did:key:{pub_mb}");
+    secret.id = format!("{did}#{pub_mb}");
+    (did, secret)
+}
+
+/// A community member holding `role`, admitted a month ago.
+async fn seed_member(fix: &Fixture, did: &str, role: VtcRole) {
+    let mut member = vtc_service::members::Member::fresh(did);
+    member.joined_at = chrono::Utc::now() - chrono::Duration::days(30);
+    vtc_service::members::storage::store_member(&fix.members_ks, &member)
+        .await
+        .expect("store member");
+    store_acl_entry(
+        &fix.acl_ks,
+        &VtcAclEntry {
+            did: did.into(),
+            role,
+            label: None,
+            allowed_contexts: vec![],
+            created_at: vtc_service::auth::session::now_epoch(),
+            created_by: ADMIN_DID.into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .expect("store acl");
+}
+
+/// Two distinct eligible vetters, video or in person, `name.legal` verified.
+async fn store_vetting_criterion(fix: &Fixture) {
+    use vtc_service::schemas::accepts::{AcceptsCriterion, store_accepts};
+    store_accepts(
+        &fix.state.schemas_ks,
+        &AcceptsCriterion {
+            id: "kernel-developer".into(),
+            query: json!({
+                "credentials": [{
+                    "id": "vetting",
+                    "format": "ldp_vc",
+                    "meta": { "type_values": ["EndorsementCredential"] }
+                }]
+            }),
+            description: Some("Two vetters".into()),
+            vetting: Some(
+                serde_json::from_value(json!({
+                    "version": "0.1",
+                    "statementType": vta_sdk::protocols::vetting::IDENTITY_VETTING_ENDORSEMENT_TYPE,
+                    "minStatements": 2,
+                    "acceptedMethods": ["inPerson", "video"],
+                    "requiredClaims": ["name.legal"],
+                    "eligibleVetters": { "role": "vetter" },
+                    "independence": { "requireConsistentIdentityCommitment": true }
+                }))
+                .unwrap(),
+            ),
+            created_at: chrono::Utc::now(),
+            created_by_did: ADMIN_DID.into(),
+        },
+    )
+    .await
+    .expect("store vetting criterion");
+}
+
+/// A Vetting Statement signed by `vetter` about `applicant`.
+async fn vetting_statement(vetter: &Secret, applicant: &str, n: u8) -> Value {
+    use vta_sdk::protocols::vetting::{
+        DeclaredRelationship, IDENTITY_VETTING_ENDORSEMENT_TYPE, IdentityVettingEndorsement,
+        VettingMethod,
+    };
+    use vta_sdk::vetting::statement::{StatementDraft, sign_statement};
+    let now = chrono::Utc::now();
+    sign_statement(
+        StatementDraft {
+            id: format!("urn:uuid:statement-{n}"),
+            issuer: vetter.id.split('#').next().unwrap().to_string(),
+            subject: applicant.to_string(),
+            endorsement: IdentityVettingEndorsement {
+                endorsement_type: IDENTITY_VETTING_ENDORSEMENT_TYPE.into(),
+                community: vtc_service::test_support::TEST_VTC_DID.into(),
+                method: VettingMethod::Video,
+                document_classes: vec!["passport".into()],
+                claims_verified: vec!["name.legal".into()],
+                liveness_confirmed: true,
+                identity_commitment: "zSameIdentity".into(),
+                card_digest_multibase: format!("zCard{n}"),
+                declared_relationship: DeclaredRelationship::None,
+                attestation_text_digest: None,
+            },
+            valid_from: now - chrono::Duration::minutes(5),
+            valid_until: now + chrono::Duration::days(90),
+            task_context: format!("urn:uuid:session-{n}"),
+        },
+        vetter,
+    )
+    .await
+    .expect("sign vetting statement")
+}
+
+fn vetting_vp(applicant: &str, statements: Vec<Value>) -> Value {
+    json!({
+        "type": "VerifiablePresentation",
+        "holder": applicant,
+        "verifiableCredential": statements,
+    })
+}
+
+#[tokio::test]
+async fn vetted_applicant_with_two_eligible_vetters_is_admitted() {
+    let fix = build_fixture().await;
+    store_vetting_criterion(&fix).await;
+    let (applicant, _) = did_key_secret(MEMBER_SEED);
+    let (carol, carol_key) = did_key_secret([0x11; 32]);
+    let (dave, dave_key) = did_key_secret([0x22; 32]);
+    seed_member(&fix, &carol, VtcRole::Custom("vetter".into())).await;
+    seed_member(&fix, &dave, VtcRole::Custom("vetter".into())).await;
+
+    let vp = vetting_vp(
+        &applicant,
+        vec![
+            vetting_statement(&carol_key, &applicant, 1).await,
+            vetting_statement(&dave_key, &applicant, 2).await,
+        ],
+    );
+    let (_did, doc) = submit_doc(&vp).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(verdict_effect(&body), "allow", "got {body}");
+    assert!(
+        get_member(&fix.members_ks, &applicant)
+            .await
+            .unwrap()
+            .is_some(),
+        "an allowed vetted join admits the applicant"
+    );
+}
+
+#[tokio::test]
+async fn one_statement_short_asks_for_exactly_what_is_missing() {
+    let fix = build_fixture().await;
+    store_vetting_criterion(&fix).await;
+    let (applicant, _) = did_key_secret(MEMBER_SEED);
+    let (carol, carol_key) = did_key_secret([0x11; 32]);
+    seed_member(&fix, &carol, VtcRole::Custom("vetter".into())).await;
+
+    let vp = vetting_vp(
+        &applicant,
+        vec![vetting_statement(&carol_key, &applicant, 1).await],
+    );
+    let (_did, doc) = submit_doc(&vp).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    // The wire spells the effect lowerCamelCase; Rego authors it `request_more`.
+    assert_eq!(verdict_effect(&body), "requestMore", "got {body}");
+    assert_eq!(
+        body.pointer("/payload/verdict/with/needs"),
+        Some(&json!(["vetting:statements:1"])),
+        "the host expands the policy's generic need into the shortfall: {body}"
+    );
+    assert!(
+        get_member(&fix.members_ks, &applicant)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_statement_from_a_member_who_is_not_a_vetter_does_not_count() {
+    let fix = build_fixture().await;
+    store_vetting_criterion(&fix).await;
+    let (applicant, _) = did_key_secret(MEMBER_SEED);
+    let (carol, carol_key) = did_key_secret([0x11; 32]);
+    let (erin, erin_key) = did_key_secret([0x33; 32]);
+    seed_member(&fix, &carol, VtcRole::Custom("vetter".into())).await;
+    seed_member(&fix, &erin, VtcRole::Member).await;
+
+    let vp = vetting_vp(
+        &applicant,
+        vec![
+            vetting_statement(&carol_key, &applicant, 1).await,
+            vetting_statement(&erin_key, &applicant, 2).await,
+        ],
+    );
+    let (_did, doc) = submit_doc(&vp).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    // The wire spells the effect lowerCamelCase; Rego authors it `request_more`.
+    assert_eq!(verdict_effect(&body), "requestMore", "got {body}");
+    assert_eq!(
+        body.pointer("/payload/verdict/with/needs"),
+        Some(&json!(["vetting:statements:1"])),
+        "{body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Status — applicant poll (join-requests/status/1.0)
 // ---------------------------------------------------------------------------
 

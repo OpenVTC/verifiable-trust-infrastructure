@@ -135,6 +135,7 @@ cred_trusted(t) if {
                 thread_id: None,
             },
             evidence: Evidence {
+                vetting: None,
                 invitation: None,
                 presentation: Some(Presentation {
                     verified: true,

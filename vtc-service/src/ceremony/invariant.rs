@@ -159,6 +159,7 @@ mod tests {
                 thread_id: None,
             },
             evidence: Evidence {
+                vetting: None,
                 invitation: None,
                 presentation: None,
                 request: Some(request),

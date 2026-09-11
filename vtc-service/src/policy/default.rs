@@ -698,6 +698,144 @@ mod tests {
         );
     }
 
+    // ── Peer identity vetting (OpenVTC docs/design/vetting-process.md §10) ──
+
+    fn join_decision(input: serde_json::Value) -> serde_json::Value {
+        let c = compile_default(PolicyPurpose::Join);
+        evaluate(&c, "data.vtc.join.decision", input)
+            .unwrap()
+            .pointer("/result/0/expressions/0/value")
+            .cloned()
+            .expect("join decision value")
+    }
+
+    /// Host-assembled vetting facts. `satisfied` is derived here the way the
+    /// host derives it, so no test can hand the policy an impossible state.
+    fn vetting_facts(consistent: bool, independent: bool, needs: &[&str]) -> serde_json::Value {
+        json!({
+            "criterion_id": "kernel-developer",
+            "requirements_digest": "zDigest",
+            "applicant_digest_matches": true,
+            "statements": [],
+            "distinct_counted_vetters": 2,
+            "by_method": { "inPerson": 1, "video": 1 },
+            "commitments_consistent": consistent,
+            "independence_ok": independent,
+            "invitation_required": false,
+            "satisfied": consistent && independent && needs.is_empty(),
+            "needs": needs,
+        })
+    }
+
+    fn valid_invitation(scopes: &[&str]) -> serde_json::Value {
+        json!({
+            "verified": true,
+            "issuer": "did:webvh:acme.example",
+            "issuer_trusted": true,
+            "consumed": false,
+            "scopes": scopes,
+        })
+    }
+
+    #[test]
+    fn join_default_admits_when_vetting_is_satisfied() {
+        assert_eq!(
+            join_decision(json!({ "evidence": { "vetting": vetting_facts(true, true, &[]) } })),
+            json!({ "effect": "allow", "with": { "role": "member" } }),
+        );
+    }
+
+    #[test]
+    fn join_default_asks_for_more_vetting_with_the_generic_need() {
+        // The host replaces "vetting" with the precise shortfall after deciding.
+        assert_eq!(
+            join_decision(json!({
+                "evidence": { "vetting": vetting_facts(true, true, &["vetting:statements:1"]) }
+            })),
+            json!({ "effect": "request_more", "with": { "needs": ["vetting"] } }),
+        );
+    }
+
+    #[test]
+    fn join_default_refers_when_vetters_verified_different_identities() {
+        assert_eq!(
+            join_decision(json!({ "evidence": { "vetting": vetting_facts(false, true, &[]) } })),
+            json!({ "effect": "refer", "with": { "queue": "vetting-review" } }),
+        );
+    }
+
+    #[test]
+    fn join_default_refers_when_vetters_are_not_independent() {
+        assert_eq!(
+            join_decision(json!({ "evidence": { "vetting": vetting_facts(true, false, &[]) } })),
+            json!({ "effect": "refer", "with": { "queue": "vetting-review" } }),
+        );
+    }
+
+    #[test]
+    fn join_default_invitation_does_not_bypass_required_vetting() {
+        assert_eq!(
+            join_decision(json!({
+                "evidence": {
+                    "invitation": valid_invitation(&[]),
+                    "vetting": vetting_facts(true, true, &["vetting:statements:2"]),
+                }
+            })),
+            json!({ "effect": "request_more", "with": { "needs": ["vetting"] } }),
+        );
+    }
+
+    #[test]
+    fn join_default_trusted_credential_does_not_bypass_required_vetting() {
+        assert_eq!(
+            join_decision(json!({
+                "evidence": {
+                    "presentation": { "credentials": [
+                        { "type": "WitnessCredential", "issuer_trusted": true, "status": "valid" }
+                    ]},
+                    "vetting": vetting_facts(true, true, &["vetting:method:inPerson:1"]),
+                }
+            })),
+            json!({ "effect": "request_more", "with": { "needs": ["vetting"] } }),
+        );
+    }
+
+    #[test]
+    fn join_default_asks_for_a_required_invitation_once_vetting_is_met() {
+        let mut facts = vetting_facts(true, true, &[]);
+        facts["invitation_required"] = json!(true);
+        assert_eq!(
+            join_decision(json!({ "evidence": { "vetting": facts } })),
+            json!({ "effect": "request_more", "with": { "needs": ["vetting:invitation"] } }),
+        );
+    }
+
+    #[test]
+    fn join_default_met_vetting_with_an_invitation_admits_at_the_invited_role() {
+        let mut facts = vetting_facts(true, true, &[]);
+        facts["invitation_required"] = json!(true);
+        assert_eq!(
+            join_decision(json!({
+                "evidence": { "invitation": valid_invitation(&["role:maintainer"]), "vetting": facts }
+            })),
+            json!({ "effect": "allow", "with": { "role": "maintainer" } }),
+        );
+    }
+
+    #[test]
+    fn join_default_without_vetting_facts_is_unchanged() {
+        // A community whose criteria require no vetting keeps the pre-vetting
+        // behaviour exactly: invitation admits, everything else is referred.
+        assert_eq!(
+            join_decision(json!({ "evidence": { "invitation": valid_invitation(&[]) } })),
+            json!({ "effect": "allow", "with": { "role": "member" } }),
+        );
+        assert_eq!(
+            join_decision(json!({ "evidence": {} })),
+            json!({ "effect": "refer", "with": { "queue": "moderator" } }),
+        );
+    }
+
     #[test]
     fn removal_default_allows_admin_removing_member() {
         // The removal default is now the leave-ceremony decision spine:
