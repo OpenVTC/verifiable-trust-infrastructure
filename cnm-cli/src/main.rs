@@ -3,6 +3,7 @@ mod auth;
 mod backup;
 mod config;
 mod setup;
+mod vetting;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use config::{community_keyring_key, resolve_community};
@@ -165,6 +166,13 @@ enum Commands {
     Audit {
         #[command(subcommand)]
         command: AuditCommands,
+    },
+
+    /// Peer identity vetting: vetter grants, automatic grants, branding,
+    /// statement withdrawals, and seeding vetters from a PGP web of trust.
+    Vetting {
+        #[command(subcommand)]
+        command: vetting::VettingCommands,
     },
 
     /// Sealed-transfer bootstrap (consumer side).
@@ -1287,6 +1295,7 @@ async fn main() {
         Commands::Audit { command } => match command {
             AuditCommands::Verify => audit::cmd_verify(&client, &keyring_key).await,
         },
+        Commands::Vetting { command } => vetting::run(command, &client, &keyring_key).await,
         Commands::Bootstrap { command } => match command {
             BootstrapCommands::Request { out, label } => bootstrap_request(out, label),
             BootstrapCommands::Open {
@@ -1880,6 +1889,81 @@ mod tests {
             command: ContextCommands::List,
         };
         assert!(requires_auth(&cmd));
+    }
+
+    #[test]
+    fn test_requires_auth_vetting_true() {
+        let cmd = Commands::Vetting {
+            command: vetting::VettingCommands::Revocations,
+        };
+        assert!(requires_auth(&cmd));
+    }
+
+    /// The contract's command shapes parse (CONTRACT-vetter-registry §9).
+    #[test]
+    fn vetting_commands_parse_as_documented() {
+        for argv in [
+            vec!["cnm", "vetting", "vetters", "list"],
+            vec![
+                "cnm",
+                "vetting",
+                "vetters",
+                "grant",
+                "did:key:z6Mk",
+                "--validity",
+                "180d",
+            ],
+            vec![
+                "cnm",
+                "vetting",
+                "vetters",
+                "revoke",
+                "3f1c9a52-8c1e-4f2b-9d7a-0b6e5c4d3a21",
+            ],
+            vec!["cnm", "vetting", "vetters", "resend", "did:key:z6Mk"],
+            vec!["cnm", "vetting", "auto-grant", "show"],
+            vec![
+                "cnm",
+                "vetting",
+                "auto-grant",
+                "set",
+                "--enabled",
+                "true",
+                "--sweep-minutes",
+                "30",
+            ],
+            vec![
+                "cnm",
+                "vetting",
+                "branding",
+                "set",
+                "--accent-color",
+                "#1a2b3c",
+                "--clear",
+                "logo-url",
+            ],
+            vec!["cnm", "--json", "vetting", "revocations"],
+            vec![
+                "cnm",
+                "vetting",
+                "bootstrap-pgp",
+                "--keyring",
+                "k.asc",
+                "--roots",
+                "AAAA,BBBB",
+                "--max-depth",
+                "2",
+                "--links",
+                "links",
+                "--dry-run",
+                "--validity",
+                "365d",
+            ],
+        ] {
+            if let Err(e) = Cli::try_parse_from(&argv) {
+                panic!("{argv:?} should parse: {e}");
+            }
+        }
     }
 
     #[test]

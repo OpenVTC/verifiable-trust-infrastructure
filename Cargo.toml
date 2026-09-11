@@ -206,6 +206,12 @@ chrono = { version = "0.4", features = ["serde"] }
 # Random number generation
 rand = "0.10"
 
+# OpenPGP (rPGP). `cnm vetting bootstrap-pgp` reads a PGP web of trust: keyring
+# parsing, certification and cleartext-signature verification. Default features
+# off — the only default is bzip2 compressed-data support, which neither a
+# keyring nor a cleartext-signed message uses.
+pgp = { version = "0.20", default-features = false }
+
 # DID Web with Verifiable History
 didwebvh-rs = "0.6"
 

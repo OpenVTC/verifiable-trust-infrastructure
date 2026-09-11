@@ -28,6 +28,15 @@ vta-cli-common = { path = "../vta-cli-common", version = "0.15", features = [
   "agent-names",
 ] }
 affinidi-did-resolver-cache-sdk = { workspace = true }
+# `cnm vetting …` drives the VTC's vetting admin REST surface through the VTC
+# client rather than hand-built requests: it carries the Trust-Task headers,
+# finite HTTP timeouts and typed errors the commands turn into guidance.
+vtc-client = { path = "../vtc-client", version = "0.6" }
+# `cnm vetting bootstrap-pgp`: parse an OpenPGP keyring, verify third-party
+# certifications and cleartext-signed link statements.
+pgp = { workspace = true }
+chrono = { workspace = true }
+ratatui = { workspace = true }
 clap = { workspace = true, features = ["env"] }
 dialoguer = { workspace = true }
 dirs = { workspace = true }
@@ -40,6 +49,13 @@ toml = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+# The bootstrap tests generate a small web of trust with rPGP, whose key
+# generation takes a rand 0.8 RNG (the workspace is on 0.10). A seeded StdRng
+# keeps the keys, and so the fingerprints, the same on every run.
+rand = "0.8"
+tempfile = "3"
 
 [lints]
 workspace = true
