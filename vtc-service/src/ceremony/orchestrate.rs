@@ -153,6 +153,7 @@ async fn assemble_role_change_facts(
                 subject_member.as_ref(),
             )),
             evidence: Evidence {
+                vetting: None,
                 invitation: None,
                 presentation: None,
                 request: Some(json!({ "target_role": target_role, "step_up": step_up })),
@@ -500,6 +501,7 @@ async fn assemble_leave_facts(
             subject_did: subject_did.to_string(),
             subject_member: Some(member_state(subject_role.to_string(), subject_member)),
             evidence: Evidence {
+                vetting: None,
                 invitation: None,
                 presentation: None,
                 request,

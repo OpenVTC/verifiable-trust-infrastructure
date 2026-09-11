@@ -156,6 +156,10 @@ How to operate and integrate against a VTC.
   VTA, and wiring a VTC to it.
 - **[Personhood + relationships](03-vtc/personhood-and-graph.md)** —
   personhood assertion, VRC trust graph, custom endorsements.
+- **[Peer identity vetting](03-vtc/vetting.md)** — requiring existing
+  members to vet an applicant: vetting requirements in the join manifest,
+  what the host checks in each statement, and what the default join policy
+  decides.
 - **[Website + admin UX](03-vtc/website-and-admin.md)** — public
   community website (live + managed modes), embedded admin SPA,
   routing modes.

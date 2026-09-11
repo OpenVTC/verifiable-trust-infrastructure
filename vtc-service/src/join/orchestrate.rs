@@ -38,6 +38,7 @@ use crate::join::{
 };
 use crate::policy::{PolicyPurpose, extract::extract_vp_claims, load_active_compiled};
 use crate::server::AppState;
+use crate::vetting::VettingFacts;
 
 pub const JOIN_REQUEST_SUBMIT_DOMAIN_TAG: &[u8] = b"vtc-join-request/v1\0";
 
@@ -217,7 +218,21 @@ pub async fn submit_inner(
     // No thread: this is a synchronous REST submission, not a trust task
     // exchange. Nothing here can be `sameExchange`, which is the honest answer
     // — there is no exchange to be the same as.
-    let verdict = decide_join(state, &applicant_did, presentation, invitation, None).await?;
+    // Peer vetting: verify and count any identity-vetting statements against the
+    // criterion the applicant gathered for (OpenVTC vetting design §10). `None`
+    // when no published criterion requires vetting.
+    let vetting =
+        crate::vetting::vetting_facts(state, &applicant_did, &vp, &extensions, chrono::Utc::now())
+            .await?;
+    let verdict = decide_join(
+        state,
+        &applicant_did,
+        presentation,
+        invitation,
+        vetting,
+        None,
+    )
+    .await?;
 
     // 6. Realize the verdict (store + audit + auto-admit on allow). On an
     // invitation-driven admit the VIC is burned in the single-use ledger.
@@ -250,10 +265,20 @@ pub async fn decide_join(
     applicant_did: &str,
     presentation: Presentation,
     invitation: Option<Invitation>,
+    vetting: Option<VettingFacts>,
     thread_id: Option<&str>,
 ) -> Result<Verdict, AppError> {
-    let facts =
-        assemble_join_facts(state, applicant_did, presentation, invitation, thread_id).await?;
+    // Kept to expand a generic `vetting` need after the policy decides.
+    let vetting_for_needs = vetting.clone();
+    let facts = assemble_join_facts(
+        state,
+        applicant_did,
+        presentation,
+        invitation,
+        vetting,
+        thread_id,
+    )
+    .await?;
     let verified = VerifiedFacts::assemble(facts)?;
     let policy = load_active_compiled(
         &state.active_policies_ks,
@@ -261,7 +286,11 @@ pub async fn decide_join(
         PolicyPurpose::Join,
     )
     .await?;
-    crate::ceremony::decide(&verified, &policy)
+    let mut verdict = crate::ceremony::decide(&verified, &policy)?;
+    if let Verdict::RequestMore(more) = &mut verdict {
+        crate::vetting::expand_needs(&mut more.needs, vetting_for_needs.as_ref());
+    }
+    Ok(verdict)
 }
 
 /// Realize a join [`Verdict`]: build + persist the [`JoinRequest`], auto-admit on
@@ -467,6 +496,7 @@ async fn assemble_join_facts(
     applicant_did: &str,
     presentation: Presentation,
     invitation: Option<Invitation>,
+    vetting: Option<VettingFacts>,
     thread_id: Option<&str>,
 ) -> Result<Facts, AppError> {
     // The applicant proved holder-binding (route-layer for the VP path,
@@ -483,6 +513,7 @@ async fn assemble_join_facts(
             subject_did: applicant_did.to_string(),
             subject_member: None,
             evidence: Evidence {
+                vetting,
                 invitation,
                 presentation: Some(presentation),
                 request: None,
