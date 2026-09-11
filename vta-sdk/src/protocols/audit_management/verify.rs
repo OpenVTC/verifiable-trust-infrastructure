@@ -66,6 +66,17 @@ pub struct AuditChainReport {
     /// Where the chain broke, when it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chain_break: Option<AuditChainBreak>,
+    /// Whether verification started from the retention sweep's watermark
+    /// rather than from the opening of the chain.
+    ///
+    /// **The pruned entries were not verified by this run**, and could not be:
+    /// they are gone. What the watermark establishes is that the surviving
+    /// entries continue a chain that ran through it — which is a weaker claim
+    /// than verifying the whole log, and it rests on the watermark itself,
+    /// which lives in the same store as the log.
+    pub resumed_from_prune: bool,
+    /// Chained entries the retention sweep has removed over the log's life.
+    pub pruned_entries: usize,
 }
 
 /// Where a chain stopped verifying, in the shape a caller can act on.

@@ -143,7 +143,20 @@ pub async fn verify_audit_chain(
     let mut pairs = audit_ks.prefix_iter_raw("log:").await?;
     pairs.sort_by(|(a, _), (b, _)| a.cmp(b)); // ascending: write order
 
-    let mut verifier = ChainVerifier::new();
+    // Retention deletes the oldest entries, so the oldest survivor points back
+    // at something that is gone. Resuming from the sweep's watermark is what
+    // tells an intact-but-pruned log apart from one an entry was removed from
+    // — without it the two are the same failure.
+    let watermark = vta_audit::prune_watermark(audit_ks).await?;
+    let resumed = watermark.as_ref().and_then(|w| {
+        let raw = hex::decode(&w.head).ok()?;
+        let head: [u8; 32] = raw.try_into().ok()?;
+        Some((head, w.pruned_entries))
+    });
+    let mut verifier = match resumed {
+        Some((head, index)) => ChainVerifier::resume(head, index),
+        None => ChainVerifier::new(),
+    };
     let mut report = AuditChainReport {
         verified: true,
         rows_examined: pairs.len(),
@@ -153,8 +166,12 @@ pub async fn verify_audit_chain(
         legacy_envelopes_skipped: 0,
         head: None,
         chain_break: None,
+        resumed_from_prune: resumed.is_some(),
+        pruned_entries: watermark.as_ref().map_or(0, |w| w.pruned_entries),
     };
-    let mut chain_opened = false;
+    // A pruned log has no entry before the watermark, so the first survivor is
+    // a continuation rather than an opening.
+    let mut chain_opened = resumed.is_some();
 
     for (key, value) in &pairs {
         let env = match serde_json::from_slice::<vti_common::audit::AuditEnvelope>(value) {
@@ -417,14 +434,12 @@ pub async fn update_retention(
 }
 
 #[cfg(test)]
-mod verify_tests {
-    use super::*;
-    use vta_audit::{AuditSink, ChainedKeyspaceAuditSink};
+pub(crate) mod verify_tests_support {
     use vta_sdk::protocols::audit_management::list::AuditLogEntry;
     use vti_common::config::StoreConfig;
     use vti_common::store::{KeyspaceHandle, Store};
 
-    fn keyspaces() -> (KeyspaceHandle, KeyspaceHandle, tempfile::TempDir) {
+    pub(crate) fn keyspaces() -> (KeyspaceHandle, KeyspaceHandle, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Store::open(&StoreConfig {
             data_dir: dir.path().to_path_buf(),
@@ -437,7 +452,7 @@ mod verify_tests {
         )
     }
 
-    fn entry(action: &str) -> AuditLogEntry {
+    pub(crate) fn entry(action: &str) -> AuditLogEntry {
         AuditLogEntry {
             id: uuid::Uuid::new_v4().to_string(),
             timestamp: 1_700_000_000,
@@ -450,6 +465,13 @@ mod verify_tests {
             detail: None,
         }
     }
+}
+
+#[cfg(test)]
+mod verify_tests {
+    use super::verify_tests_support::{entry, keyspaces};
+    use super::*;
+    use vta_audit::{AuditSink, ChainedKeyspaceAuditSink};
 
     /// A pre-chain row is expected and is not a finding: the VTA audited to
     /// this keyspace before its log was chained, and nothing committed to
@@ -549,5 +571,90 @@ mod verify_tests {
         let brk = report.chain_break.expect("a break is reported");
         assert_eq!(brk.kind, "tamperedEntry");
         assert_eq!(brk.event_id, env.event_id.to_string());
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::verify_tests_support::{entry, keyspaces};
+    use super::*;
+    use vta_audit::{AuditSink, ChainedKeyspaceAuditSink};
+
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    /// Retention and tamper-evidence have to coexist. A sweep deletes the
+    /// oldest entries, so the oldest survivor points back at something that is
+    /// gone — which is what a removed entry looks like. The watermark is what
+    /// tells the two apart.
+    #[tokio::test]
+    async fn a_pruned_log_still_verifies() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks);
+        for i in 0..5 {
+            sink.record(&entry(&format!("op.{i}")))
+                .await
+                .expect("record");
+        }
+
+        // A cutoff one second ahead of everything written so far, so the
+        // sweep prunes all of it. Derived from `now`, the sweep's only
+        // reachable boundaries in a test are a whole day ago and nothing.
+        let cutoff = now_secs() + 1;
+        let removed = vta_audit::cleanup_logs_before(&audit_ks, cutoff)
+            .await
+            .expect("sweep");
+        assert!(removed > 0, "the sweep must actually have pruned something");
+
+        sink.record(&entry("op.after-the-sweep"))
+            .await
+            .expect("record after sweep");
+
+        let report = verify_audit_chain(&audit_ks).await.expect("verify");
+        assert!(
+            report.verified,
+            "a pruned log must still verify: {:?}",
+            report.chain_break
+        );
+        assert!(report.resumed_from_prune);
+        assert_eq!(report.pruned_entries, removed as usize);
+    }
+
+    /// The watermark must not become a way to hide a removal. An entry taken
+    /// out *after* the sweep still breaks the chain.
+    #[tokio::test]
+    async fn a_removal_after_the_sweep_is_still_caught() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks);
+        for i in 0..3 {
+            sink.record(&entry(&format!("op.{i}")))
+                .await
+                .expect("record");
+        }
+        vta_audit::cleanup_logs_before(&audit_ks, now_secs() + 1)
+            .await
+            .expect("sweep");
+
+        for i in 0..3 {
+            sink.record(&entry(&format!("later.{i}")))
+                .await
+                .expect("record");
+        }
+
+        // Remove one of the survivors, which is exactly what the chain is for.
+        let mut pairs = audit_ks.prefix_iter_raw("log:").await.expect("scan");
+        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let victim = pairs[1].0.clone();
+        audit_ks.remove(victim).await.expect("remove a survivor");
+
+        let report = verify_audit_chain(&audit_ks).await.expect("verify");
+        assert!(
+            !report.verified,
+            "removing an entry after the sweep must still break the chain"
+        );
     }
 }
