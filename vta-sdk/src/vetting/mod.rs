@@ -1,8 +1,9 @@
 //! Building, signing and verifying the peer-vetting artifacts (feature
 //! `vetting`).
 //!
-//! The wire shapes live in [`crate::protocols::vetting`]; this module is what
-//! gives them meaning:
+//! The wire shapes are the types generated from the published specifications,
+//! re-exported in [`crate::protocols::vetting`]; this module is the behaviour
+//! that operates on them:
 //!
 //! - [`card`] — the Vetting Card an applicant signs for one vetter, and the
 //!   verification a vetter's client runs before showing it.

@@ -11,13 +11,18 @@
 //! `ticket` and `secret`. dtgwg-trust-tasks-tf documents the form informatively
 //! in `vetting/request/0.1` ("Ticket URI").
 //!
+//! The ticket a URI decodes to is the request's own
+//! [`Ticket`](request::Ticket), so its members are checked by the published
+//! types' constructors.
+//!
 //! [`decode`] is strict: it refuses an unknown or missing `v`, a repeated
 //! member, a ticket that is both scanned and spoken, and any member that breaks
 //! the `vetting/request` schema's pattern for it. Members it does not know are
 //! ignored, so a later version can add one without breaking this reader.
 
 use super::VettingError;
-use crate::protocols::vetting::{TicketPresentation, shape};
+use crate::protocols::vetting::request::v0_1 as request;
+use crate::protocols::vetting::shape;
 
 /// The URI scheme of a ticket URI.
 pub const TICKET_URI_SCHEME: &str = "vetting-ticket";
@@ -29,40 +34,45 @@ const WHAT: &str = "ticket URI";
 
 /// A decoded ticket URI: which community, which vetter, and the ticket the
 /// applicant presents in `vetting/request/0.1`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct TicketUri {
     /// The community the vetter vets for.
     pub community: String,
     /// The vetter's DID — the addressee of the request.
     pub vetter: String,
     /// The ticket: scanned (`ticket` + `secret`) or spoken (`code`).
-    pub presentation: TicketPresentation,
+    pub presentation: request::Ticket,
 }
 
 /// Render a ticket as a URI.
 ///
 /// Every value is percent-encoded outside RFC 3986's unreserved set, so a DID's
 /// `:` travels as `%3A`.
-#[must_use]
-pub fn encode(uri: &TicketUri) -> String {
+///
+/// # Errors
+///
+/// [`VettingError::Malformed`] for a ticket form this version of the URI has
+/// no members for — a form a later `vetting/request` adds.
+pub fn encode(uri: &TicketUri) -> Result<String, VettingError> {
     let mut out = format!(
         "{TICKET_URI_SCHEME}:?v={TICKET_URI_VERSION}&community={}&vetter={}",
         pct_encode(&uri.community),
         pct_encode(&uri.vetter)
     );
     match &uri.presentation {
-        TicketPresentation::Scanned { ticket_id, secret } => {
+        request::Ticket::QrTicket(ticket) => {
             out.push_str("&ticket=");
-            out.push_str(&pct_encode(ticket_id));
+            out.push_str(&pct_encode(&ticket.ticket_id));
             out.push_str("&secret=");
-            out.push_str(&pct_encode(secret));
+            out.push_str(&pct_encode(&ticket.secret));
         }
-        TicketPresentation::Code { code } => {
+        request::Ticket::ShortCodeTicket(ticket) => {
             out.push_str("&code=");
-            out.push_str(&pct_encode(code));
+            out.push_str(&pct_encode(&ticket.code));
         }
+        _ => return Err(malformed("a ticket form the URI has no members for")),
     }
-    out
+    Ok(out)
 }
 
 /// Parse a ticket URI.
@@ -128,19 +138,24 @@ pub fn decode(input: &str) -> Result<TicketUri, VettingError> {
 
     let community = members.community.ok_or_else(|| malformed("no community"))?;
     let vetter = members.vetter.ok_or_else(|| malformed("no vetter"))?;
-    shape::did("community", &community).map_err(shape_error)?;
-    shape::did("vetter", &vetter).map_err(shape_error)?;
+    // The community is the request's `community`; the vetter, its addressee.
+    request::PayloadCommunity::try_from(community.as_str())
+        .map_err(|e| malformed(&format!("community: {e}")))?;
+    shape::did("vetter", &vetter).map_err(|e| malformed(&e.to_string()))?;
 
     let presentation = match (members.ticket, members.secret, members.code) {
-        (Some(ticket_id), Some(secret), None) => {
-            shape::ticket_id("ticket", &ticket_id).map_err(shape_error)?;
-            shape::base64url_32("secret", &secret).map_err(shape_error)?;
-            TicketPresentation::Scanned { ticket_id, secret }
-        }
-        (None, None, Some(code)) => {
-            shape::ticket_code("code", &code).map_err(shape_error)?;
-            TicketPresentation::Code { code }
-        }
+        (Some(ticket_id), Some(secret), None) => request::Ticket::QrTicket(
+            request::QrTicket::try_from(
+                request::QrTicket::builder()
+                    .ticket_id(ticket_id)
+                    .secret(secret),
+            )
+            .map_err(|e| malformed(&e.to_string()))?,
+        ),
+        (None, None, Some(code)) => request::Ticket::ShortCodeTicket(
+            request::ShortCodeTicket::try_from(request::ShortCodeTicket::builder().code(code))
+                .map_err(|e| malformed(&e.to_string()))?,
+        ),
         (None, None, None) => return Err(malformed("no ticket")),
         (Some(_), None, None) | (None, Some(_), None) => {
             return Err(malformed("a scanned ticket needs both ticket and secret"));
@@ -169,13 +184,6 @@ fn malformed(detail: &str) -> VettingError {
     VettingError::Malformed {
         what: WHAT,
         detail: detail.to_string(),
-    }
-}
-
-fn shape_error(e: crate::protocols::vetting::ShapeError) -> VettingError {
-    VettingError::Malformed {
-        what: WHAT,
-        detail: e.to_string(),
     }
 }
 
@@ -255,10 +263,10 @@ mod tests {
         TicketUri {
             community: COMMUNITY.into(),
             vetter: VETTER.into(),
-            presentation: TicketPresentation::Scanned {
-                ticket_id: "t-01:ab.c_d".into(),
-                secret: SECRET.into(),
-            },
+            presentation: serde_json::from_value(
+                serde_json::json!({ "ticketId": "t-01:ab.c_d", "secret": SECRET }),
+            )
+            .unwrap(),
         }
     }
 
@@ -266,53 +274,61 @@ mod tests {
         TicketUri {
             community: COMMUNITY.into(),
             vetter: VETTER.into(),
-            presentation: TicketPresentation::Code {
-                code: "K7QF-2M9X".into(),
-            },
+            presentation: serde_json::from_value(serde_json::json!({ "code": "K7QF-2M9X" }))
+                .unwrap(),
         }
+    }
+
+    /// The two decode the same ticket: same community, vetter and ticket JSON.
+    fn same(a: &TicketUri, b: &TicketUri) -> bool {
+        a.community == b.community
+            && a.vetter == b.vetter
+            && serde_json::to_value(&a.presentation).unwrap()
+                == serde_json::to_value(&b.presentation).unwrap()
     }
 
     #[test]
     fn a_scanned_ticket_round_trips() {
-        let uri = encode(&scanned());
+        let uri = encode(&scanned()).unwrap();
         assert_eq!(
             uri,
             "vetting-ticket:?v=1&community=did%3Awebvh%3AQmCommunity%3Avtc.example.com\
              &vetter=did%3Akey%3Az6MkVetter&ticket=t-01%3Aab.c_d&secret=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
         );
-        assert_eq!(decode(&uri).unwrap(), scanned());
+        assert!(same(&decode(&uri).unwrap(), &scanned()));
     }
 
     #[test]
     fn a_spoken_ticket_round_trips() {
-        let uri = encode(&spoken());
+        let uri = encode(&spoken()).unwrap();
         assert!(uri.ends_with("&code=K7QF-2M9X"), "{uri}");
-        assert_eq!(decode(&uri).unwrap(), spoken());
+        assert!(same(&decode(&uri).unwrap(), &spoken()));
     }
 
     #[test]
     fn member_order_the_scheme_case_and_surrounding_whitespace_do_not_matter() {
         let uri = "  VETTING-TICKET:?code=K7QF-2M9X&vetter=did%3Akey%3Az6MkVetter\
                    &community=did%3Awebvh%3AQmCommunity%3Avtc.example.com&v=1\n";
-        assert_eq!(decode(uri).unwrap(), spoken());
+        assert!(same(&decode(uri).unwrap(), &spoken()));
     }
 
     #[test]
     fn an_unknown_member_is_ignored() {
-        let uri = format!("{}&future=yes", encode(&spoken()));
-        assert_eq!(decode(&uri).unwrap(), spoken());
+        let uri = format!("{}&future=yes", encode(&spoken()).unwrap());
+        assert!(same(&decode(&uri).unwrap(), &spoken()));
     }
 
     #[test]
     fn an_unknown_or_missing_version_is_refused() {
-        let v2 = encode(&spoken()).replace("v=1", "v=2");
+        let good = encode(&spoken()).unwrap();
+        let v2 = good.replace("v=1", "v=2");
         assert!(matches!(
             decode(&v2),
             Err(VettingError::UnsupportedVersion { version, .. }) if version == "2"
         ));
-        let none = encode(&spoken()).replace("v=1&", "");
+        let none = good.replace("v=1&", "");
         assert!(matches!(decode(&none), Err(VettingError::Malformed { .. })));
-        let long = encode(&spoken()).replace("v=1", &format!("v={}", "9".repeat(4096)));
+        let long = good.replace("v=1", &format!("v={}", "9".repeat(4096)));
         match decode(&long) {
             Err(VettingError::UnsupportedVersion { version, .. }) => assert_eq!(version.len(), 16),
             other => panic!("expected an unsupported version, got {other:?}"),
@@ -321,9 +337,11 @@ mod tests {
 
     #[test]
     fn a_ticket_is_scanned_or_spoken_but_not_both_or_half() {
-        let both = format!("{}&code=K7QF-2M9X", encode(&scanned()));
+        let both = format!("{}&code=K7QF-2M9X", encode(&scanned()).unwrap());
         assert!(decode(&both).is_err());
-        let half = encode(&scanned()).replace(&format!("&secret={SECRET}"), "");
+        let half = encode(&scanned())
+            .unwrap()
+            .replace(&format!("&secret={SECRET}"), "");
         assert!(decode(&half).is_err());
         let neither = format!(
             "vetting-ticket:?v=1&community={}&vetter={}",
@@ -335,7 +353,8 @@ mod tests {
 
     #[test]
     fn hostile_and_malformed_input_is_refused_without_panicking() {
-        let good = encode(&spoken());
+        let good = encode(&spoken()).unwrap();
+        let scanned_uri = encode(&scanned()).unwrap();
         for bad in [
             String::new(),
             "vetting-ticket".into(),
@@ -359,8 +378,8 @@ mod tests {
             good.replace("K7QF-2M9X", "K7QF2M9X"),
             format!("{good}#frag"),
             format!("{good}&vetter"),
-            encode(&scanned()).replace(SECRET, "short"),
-            encode(&scanned()).replace("t-01%3Aab.c_d", &"a".repeat(129)),
+            scanned_uri.replace(SECRET, "short"),
+            scanned_uri.replace("t-01%3Aab.c_d", &"a".repeat(129)),
             "vetting-ticket:?".to_string() + &"&".repeat(10_000),
         ] {
             assert!(decode(&bad).is_err(), "accepted {bad:?}");

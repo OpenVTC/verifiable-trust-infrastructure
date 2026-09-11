@@ -5,6 +5,9 @@
 //! the join DID's key — the same key the final join presentation is signed
 //! with, which is what ties every card, every statement and the join together.
 //!
+//! The card's shape is the published one: [`VettingCard`], generated from
+//! `vetting/session/0.1`, whose `#response` carries it.
+//!
 //! A card is **bound**: to one vetter (`audience`), one session (`challenge`,
 //! `domain`) and a validity window of at most [`MAX_CARD_VALIDITY`]. It cannot
 //! be replayed to another vetter or into another session.
@@ -20,6 +23,8 @@
 //! identity without learning it — and the salt keeps a low-entropy name from
 //! being recovered by enumeration (dtgwg-cred-spec #38).
 
+use std::num::NonZeroU64;
+
 use affinidi_data_integrity::{SignOptions, crypto_suites::CryptoSuite};
 use affinidi_secrets_resolver::secrets::Secret;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -27,7 +32,10 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::{Value, json};
 
 use super::{VettingError, did_of, digest, verify_attached_proof};
-use crate::protocols::vetting::{CardClaim, VETTING_CARD_TYPES, VettingCard};
+use crate::protocols::vetting::session::v0_1::{
+    DataIntegrityProof, Response as SessionResponse, VettingCard, VettingCardClaim,
+};
+use crate::protocols::vetting::{CheckShape, VETTING_CARD_TYPES, against_definition};
 use crate::trust_task_proof::TrustTaskVmResolver;
 
 /// Longest a card may be presentable for.
@@ -40,6 +48,13 @@ pub const CLOCK_SKEW: Duration = Duration::seconds(60);
 pub const CARD_PROOF_PURPOSE: &str = "assertionMethod";
 
 const WHAT: &str = "vetting card";
+
+fn malformed(detail: impl ToString) -> VettingError {
+    VettingError::Malformed {
+        what: WHAT,
+        detail: detail.to_string(),
+    }
+}
 
 /// A fresh per-application commitment salt: 32 random bytes, base64url.
 ///
@@ -61,7 +76,7 @@ pub fn new_commitment_salt() -> Result<String, VettingError> {
 /// [`VettingError::Digest`] if canonicalisation fails.
 pub fn identity_commitment(
     salt: &str,
-    claims: &[CardClaim],
+    claims: &[VettingCardClaim],
     identity_types: &[String],
 ) -> Result<String, VettingError> {
     let mut types: Vec<&String> = identity_types.iter().collect();
@@ -71,9 +86,9 @@ pub fn identity_commitment(
     for claim_type in types {
         let claim = claims
             .iter()
-            .find(|c| &c.claim_type == claim_type)
+            .find(|c| c.type_.as_str() == claim_type.as_str())
             .ok_or_else(|| VettingError::MissingClaim(claim_type.clone()))?;
-        selected.push(json!({ "type": claim.claim_type, "value": claim.value }));
+        selected.push(json!({ "type": claim.type_, "value": claim.value }));
     }
     digest(&json!({ "salt": salt, "claims": selected }))
 }
@@ -81,7 +96,7 @@ pub fn identity_commitment(
 /// Everything needed to make a card.
 #[derive(Debug, Clone)]
 pub struct CardDraft {
-    /// `urn:uuid:…`.
+    /// `urn:uuid:` and a UUID — fresh per card.
     pub id: String,
     /// The applicant's join DID.
     pub publisher: String,
@@ -98,7 +113,7 @@ pub struct CardDraft {
     /// At most [`MAX_CARD_VALIDITY`].
     pub validity: Duration,
     /// The disclosed claims.
-    pub claims: Vec<CardClaim>,
+    pub claims: Vec<VettingCardClaim>,
     /// The claim types the commitment covers — the session's `requiredClaims`.
     pub identity_types: Vec<String>,
     /// The application's salt ([`new_commitment_salt`]).
@@ -111,7 +126,8 @@ pub struct CardDraft {
 ///
 /// [`VettingError::WrongSigner`] if `signer` is not the publisher's key,
 /// [`VettingError::Expired`] if the validity exceeds [`MAX_CARD_VALIDITY`],
-/// [`VettingError::MissingClaim`] if an identity claim is absent, or
+/// [`VettingError::MissingClaim`] if an identity claim is absent,
+/// [`VettingError::Malformed`] if the card breaks its published shape, or
 /// [`VettingError::Sign`].
 pub async fn sign_card(draft: CardDraft, signer: &Secret) -> Result<Value, VettingError> {
     if did_of(&signer.id) != draft.publisher {
@@ -125,27 +141,33 @@ pub async fn sign_card(draft: CardDraft, signer: &Secret) -> Result<Value, Vetti
     }
     let identity_commitment =
         identity_commitment(&draft.salt, &draft.claims, &draft.identity_types)?;
-    let card = VettingCard {
-        types: VETTING_CARD_TYPES.iter().map(ToString::to_string).collect(),
-        id: draft.id,
-        publisher: draft.publisher,
-        card_version: 1,
-        audience: draft.audience,
-        community: draft.community,
-        challenge: draft.challenge,
-        domain: draft.domain,
-        issued_at: draft.issued_at,
-        expires_at: draft.issued_at + draft.validity,
-        claims: draft.claims,
-        identity_commitment,
-        commitment_salt: draft.salt,
-        proof: None,
-    };
-    card.check_shape().map_err(|e| VettingError::Malformed {
-        what: WHAT,
-        detail: e.to_string(),
-    })?;
+
+    // The published card requires its proof. It is built with a well-formed
+    // stand-in, checked, and signed as it serialises without one; the signature
+    // then takes the stand-in's place.
+    let card = VettingCard::try_from(
+        VettingCard::builder()
+            .type_(VETTING_CARD_TYPES.to_vec())
+            .id(draft.id)
+            .publisher(draft.publisher.clone())
+            .card_version(NonZeroU64::MIN)
+            .audience(draft.audience)
+            .community(draft.community)
+            .challenge(draft.challenge)
+            .domain(draft.domain)
+            .issued_at(draft.issued_at)
+            .expires_at(draft.issued_at + draft.validity)
+            .claims(draft.claims)
+            .identity_commitment(identity_commitment)
+            .commitment_salt(draft.salt)
+            .proof(proof_stand_in(&draft.publisher)?),
+    )
+    .map_err(malformed)?;
+    card.check_shape().map_err(malformed)?;
+
     let mut value = serde_json::to_value(&card).map_err(|e| VettingError::Sign(e.to_string()))?;
+    let fields = value.as_object_mut().expect("a card is an object");
+    fields.remove("proof");
     let proof = affinidi_data_integrity::DataIntegrityProof::sign(
         &value,
         signer,
@@ -155,11 +177,33 @@ pub async fn sign_card(draft: CardDraft, signer: &Secret) -> Result<Value, Vetti
     )
     .await
     .map_err(|e| VettingError::Sign(e.to_string()))?;
-    value.as_object_mut().expect("card is an object").insert(
+    value.as_object_mut().expect("a card is an object").insert(
         "proof".into(),
         serde_json::to_value(proof).map_err(|e| VettingError::Sign(e.to_string()))?,
     );
+    parse_card(&value)?;
     Ok(value)
+}
+
+/// A proof member of the published shape, for a card that is not signed yet.
+fn proof_stand_in(publisher: &str) -> Result<DataIntegrityProof, VettingError> {
+    DataIntegrityProof::try_from(
+        DataIntegrityProof::builder()
+            .type_("DataIntegrityProof")
+            .cryptosuite("eddsa-jcs-2022")
+            .verification_method(publisher)
+            .proof_purpose(CARD_PROOF_PURPOSE)
+            .proof_value("z1"),
+    )
+    .map_err(malformed)
+}
+
+/// Read a card as received: the generated type, and the card definition of the
+/// schema `vetting/session/0.1#response` carries it under.
+fn parse_card(value: &Value) -> Result<VettingCard, VettingError> {
+    let card: VettingCard = serde_json::from_value(value.clone()).map_err(malformed)?;
+    against_definition::<SessionResponse>("VettingCard", value).map_err(malformed)?;
+    Ok(card)
 }
 
 /// What a vetter's client expects of the card it receives.
@@ -181,7 +225,7 @@ pub struct CardExpectations<'a> {
     pub now: DateTime<Utc>,
 }
 
-/// A card whose signature, bindings, window and commitment all check.
+/// A card whose shape, signature, bindings, window and commitment all check.
 #[derive(Debug, Clone)]
 pub struct VerifiedVettingCard {
     card: VettingCard,
@@ -204,12 +248,18 @@ impl VerifiedVettingCard {
 
     /// The claim of `claim_type`, if the card carries one.
     #[must_use]
-    pub fn claim(&self, claim_type: &str) -> Option<&CardClaim> {
-        self.card.claims.iter().find(|c| c.claim_type == claim_type)
+    pub fn claim(&self, claim_type: &str) -> Option<&VettingCardClaim> {
+        self.card
+            .claims
+            .iter()
+            .find(|c| c.type_.as_str() == claim_type)
     }
 }
 
 /// Verify a card received in a `vetting/session#response`.
+///
+/// Verification reads `value` — the JSON as received — for the proof and the
+/// digest, never the parsed card re-serialised.
 ///
 /// # Errors
 ///
@@ -222,28 +272,20 @@ pub async fn verify_card(
     expect: &CardExpectations<'_>,
     resolver: &TrustTaskVmResolver,
 ) -> Result<VerifiedVettingCard, VettingError> {
-    let card: VettingCard =
-        serde_json::from_value(value.clone()).map_err(|e| VettingError::Malformed {
-            what: WHAT,
-            detail: e.to_string(),
-        })?;
-    card.check_shape().map_err(|e| VettingError::Malformed {
-        what: WHAT,
-        detail: e.to_string(),
-    })?;
-    if card.audience != expect.audience {
+    let card = parse_card(value)?;
+    if card.audience.as_str() != expect.audience {
         return Err(VettingError::Binding("audience"));
     }
-    if card.publisher != expect.publisher {
+    if card.publisher.as_str() != expect.publisher {
         return Err(VettingError::Binding("publisher"));
     }
-    if card.community != expect.community {
+    if card.community.as_str() != expect.community {
         return Err(VettingError::Binding("community"));
     }
-    if card.challenge != expect.challenge {
+    if card.challenge.as_str() != expect.challenge {
         return Err(VettingError::Binding("challenge"));
     }
-    if card.domain != expect.domain {
+    if card.domain.as_str() != expect.domain {
         return Err(VettingError::Binding("domain"));
     }
     if card.expires_at <= card.issued_at
@@ -255,7 +297,7 @@ pub async fn verify_card(
     }
 
     let signer = verify_attached_proof(WHAT, value, CARD_PROOF_PURPOSE, resolver).await?;
-    if signer != card.publisher {
+    if signer != card.publisher.as_str() {
         return Err(VettingError::WrongSigner {
             what: WHAT,
             role: "publisher",
@@ -263,13 +305,17 @@ pub async fn verify_card(
     }
 
     for required in expect.required_claims {
-        if !card.claims.iter().any(|c| &c.claim_type == required) {
+        if !card
+            .claims
+            .iter()
+            .any(|c| c.type_.as_str() == required.as_str())
+        {
             return Err(VettingError::MissingClaim(required.clone()));
         }
     }
     let recomputed =
         identity_commitment(&card.commitment_salt, &card.claims, expect.required_claims)?;
-    if recomputed != card.identity_commitment {
+    if recomputed != card.identity_commitment.as_str() {
         return Err(VettingError::Commitment);
     }
 
@@ -290,24 +336,26 @@ pub(crate) mod tests {
     pub(crate) const CHALLENGE: &str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
     const SALT: &str = "saltsaltsaltsaltsaltsaltsaltsaltsaltsaltsal";
 
-    pub(crate) fn claims() -> Vec<CardClaim> {
+    pub(crate) fn claim(claim_type: &str, value: Value) -> VettingCardClaim {
+        VettingCardClaim::try_from(
+            VettingCardClaim::builder()
+                .type_(claim_type)
+                .value(value)
+                .provenance("selfAsserted"),
+        )
+        .unwrap()
+    }
+
+    pub(crate) fn claims() -> Vec<VettingCardClaim> {
         vec![
-            CardClaim {
-                claim_type: "name.legal".into(),
-                value: json!("Alice Example"),
-                provenance: "selfAsserted".into(),
-            },
-            CardClaim {
-                claim_type: "account.handle".into(),
-                value: json!("alice@example.org"),
-                provenance: "selfAsserted".into(),
-            },
+            claim("name.legal", json!("Alice Example")),
+            claim("account.handle", json!("alice@example.org")),
         ]
     }
 
     pub(crate) fn draft(applicant: &Secret, vetter: &Secret, now: DateTime<Utc>) -> CardDraft {
         CardDraft {
-            id: "urn:uuid:card-1".into(),
+            id: "urn:uuid:d2c4e6f8-1a3b-4c5d-8e7f-9a0b1c2d3e01".into(),
             publisher: did(applicant),
             audience: did(vetter),
             community: COMMUNITY.into(),
@@ -356,6 +404,11 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(verified.claim("name.legal").unwrap().value, "Alice Example");
         assert!(verified.digest_multibase().starts_with('z'));
+        assert_eq!(
+            verified.card().proof.proof_purpose,
+            CARD_PROOF_PURPOSE,
+            "the stand-in proof is replaced by the signature"
+        );
     }
 
     #[tokio::test]
@@ -436,6 +489,17 @@ pub(crate) mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn a_card_id_is_a_urn_uuid() {
+        let (applicant, vetter) = (secret(1), secret(2));
+        let mut d = draft(&applicant, &vetter, Utc::now());
+        d.id = "urn:uuid:card-1".into();
+        assert!(matches!(
+            sign_card(d, &applicant).await.unwrap_err(),
+            VettingError::Malformed { .. }
+        ));
+    }
+
     #[test]
     fn commitment_is_stable_across_vetters_and_blind_to_optional_claims() {
         let identity = vec!["name.legal".to_string()];
@@ -460,11 +524,10 @@ pub(crate) mod tests {
     async fn a_portrait_is_never_signed_onto_a_card() {
         let (applicant, vetter) = (secret(1), secret(2));
         let mut d = draft(&applicant, &vetter, Utc::now());
-        d.claims.push(CardClaim {
-            claim_type: crate::protocols::vetting::PORTRAIT_CLAIM_TYPE.into(),
-            value: json!("data:image/png;base64,AAAA"),
-            provenance: "selfAsserted".into(),
-        });
+        d.claims.push(claim(
+            crate::protocols::vetting::PORTRAIT_CLAIM_TYPE,
+            json!("data:image/png;base64,AAAA"),
+        ));
         assert!(matches!(
             sign_card(d, &applicant).await.unwrap_err(),
             VettingError::Malformed { .. }

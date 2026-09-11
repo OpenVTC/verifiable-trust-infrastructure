@@ -32,7 +32,6 @@ proof-verify = [
   "dep:affinidi-did-resolver-traits",
   "dep:affinidi-did-common",
   "dep:affinidi-secrets-resolver",
-  "dep:trust-tasks-rs",
 ]
 didcomm = [
   "dep:affinidi-tdk",
@@ -65,8 +64,6 @@ tsp = [
   # feature, which `affinidi-tdk/tsp` does not enable — flip it directly.
   "dep:affinidi-messaging-sdk",
   "affinidi-messaging-sdk/tsp",
-  # `TspPingSession` builds a `trust_tasks_rs::TrustTask` envelope.
-  "dep:trust-tasks-rs",
   "dep:affinidi-did-resolver-cache-sdk",
   "dep:affinidi-did-resolver-traits",
   "dep:affinidi-did-common",
@@ -104,10 +101,9 @@ client = [
   # `auth_di` — the canonical REST auth transport. The VTA requires an
   # *authenticated* sender on `/auth/*` (VTI #771), so the client signs an
   # `auth/authenticate/0.1` Trust Task with the holder key: the DI suite
-  # signs, `Secret` carries the key, `trust-tasks-rs` is the document shape.
+  # signs, `Secret` carries the key.
   "dep:affinidi-data-integrity",
   "dep:affinidi-secrets-resolver",
-  "dep:trust-tasks-rs",
   # didcomm 0.15 moved `PublicKeyAgreement` out of
   # `affinidi_messaging_didcomm::crypto` into `affinidi_crypto::jose`.
   # `didcomm_light::pack_anoncrypt` (gated on `client`) names that type,
@@ -210,14 +206,12 @@ provision-client = [
   "provision-integration",
   "session",
   "dep:tracing",
-  "dep:trust-tasks-rs",
 ]
 # Per-DID mediator ACL configuration on DIDComm connect.
-# Requires a live ATM (`session`) and the trust-tasks wire types (`trust-tasks-rs`).
+# Requires a live ATM (`session`).
 # Used by both VTA (after listener connects) and PNM (after DIDComm session opens).
 acl-setup = [
   "session",
-  "dep:trust-tasks-rs",
   "dep:sha2",
   "dep:tracing",
   "dep:tokio",
@@ -329,11 +323,12 @@ affinidi-crypto = { workspace = true, optional = true }
 affinidi-vc = { workspace = true, optional = true }
 affinidi-data-integrity = { workspace = true, optional = true }
 affinidi-secrets-resolver = { workspace = true, optional = true }
-# Trust Task document/proof types for the DI-signed REST auth path
-# (`provision_client::auth_rest`). Optional + gated on `provision-client` so the
-# published artifact stays slim for non-provisioning consumers; also present as
-# a dev-dependency for the always-on conformance tests below.
-trust-tasks-rs = { workspace = true, optional = true }
+# The Trust Task framework and the wire types generated from the published
+# specifications (`trust_tasks_rs::specs`). Required, not feature-gated: the
+# always-compiled `protocols` modules re-export the generated payload and
+# response types as this crate's wire layer, and check values against the
+# schemas those types embed (the workspace dependency enables `validate`).
+trust-tasks-rs = { workspace = true }
 # DTG credential construction for the Vetting Statement (`vetting` feature).
 dtg-credentials = { workspace = true, optional = true }
 # Bitstring status-list decoding for `vetting::status` (`vetting` feature).
@@ -390,11 +385,6 @@ required-features = ["sealed-transfer", "provision-integration"]
 tokio = { workspace = true }
 tempfile = "3"
 wiremock = "0.6"
-# Framework type-uri parser — used only by the trust-task URI
-# registry test (`every_uri_parses_as_framework_type_uri`) to pin
-# framework canonical-form conformance. Dev-only so the published
-# artifact stays slim.
-trust-tasks-rs = { workspace = true }
 # Examples need direct access to crypto primitives the SDK normally
 # encapsulates — pulled into dev-deps only so the published artifact
 # stays slim.
