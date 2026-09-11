@@ -1974,7 +1974,7 @@ async fn store_vetting_criterion(fix: &Fixture) {
                     "version": "0.1",
                     "statementType": vta_sdk::protocols::vetting::IDENTITY_VETTING_ENDORSEMENT_TYPE,
                     "minStatements": 2,
-                    "acceptedMethods": ["in-person", "video"],
+                    "acceptedMethods": ["inPerson", "video"],
                     "requiredClaims": ["name.legal"],
                     "eligibleVetters": { "role": "vetter" },
                     "independence": { "requireConsistentIdentityCommitment": true }

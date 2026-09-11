@@ -718,7 +718,7 @@ mod tests {
             "applicant_digest_matches": true,
             "statements": [],
             "distinct_counted_vetters": 2,
-            "by_method": { "in-person": 1, "video": 1 },
+            "by_method": { "inPerson": 1, "video": 1 },
             "commitments_consistent": consistent,
             "independence_ok": independent,
             "invitation_required": false,
@@ -793,7 +793,7 @@ mod tests {
                     "presentation": { "credentials": [
                         { "type": "WitnessCredential", "issuer_trusted": true, "status": "valid" }
                     ]},
-                    "vetting": vetting_facts(true, true, &["vetting:method:in-person:1"]),
+                    "vetting": vetting_facts(true, true, &["vetting:method:inPerson:1"]),
                 }
             })),
             json!({ "effect": "request_more", "with": { "needs": ["vetting"] } }),
