@@ -290,12 +290,12 @@ aws-lc-rs = "1.16"
 # members are emitted and the schema has never heard of them. Same failure
 # shape as `adminScope` above, which is why the floor moves rather than the
 # feature being guarded.
-trust-tasks-rs = { version = "0.20.3", default-features = false, features = [
+trust-tasks-rs = { version = "0.20.4", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
-trust-tasks-capability-client = "0.20"
-trust-tasks-https = { version = "0.20", default-features = false, features = ["server", "client", "jwt"] }
+trust-tasks-capability-client = "0.20.4"
+trust-tasks-https = { version = "0.20.4", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
 # and the `pack_trust_task`/`unpack_trust_task` pair that enforce it.
@@ -306,8 +306,8 @@ trust-tasks-https = { version = "0.20", default-features = false, features = ["s
 # A conformant peer rejects that, silently, because "not an envelope" is
 # indistinguishable from "not addressed to me". One constant, from the crate
 # that defines it.
-trust-tasks-didcomm = { version = "0.20", default-features = false }
-trust-tasks-proof = { version = "0.20", default-features = false, features = ["affinidi"] }
+trust-tasks-didcomm = { version = "0.20.4", default-features = false }
+trust-tasks-proof = { version = "0.20.4", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }
