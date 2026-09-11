@@ -265,6 +265,108 @@ characters. `join-requests/manifest/0.2` carries it as `branding` when any is
 set. It is presentation only — `communityDid` identifies the community. Changes
 are audited as `CommunityBrandingUpdated`.
 
+### 7. Administer vetting from the command line
+
+`cnm` drives the same admin REST routes. Every command needs a community-admin
+session (`cnm auth login`) with a REST URL — pass `cnm --url https://<vtc>/v1 …`
+when the session has none. Tables are the default; the global `--json` prints the
+response instead, and `--full-display` prints DIDs and ids unshortened.
+
+| Command | Route | Prints |
+|---|---|---|
+| `cnm vetting vetters list` | `GET /v1/vetting/vetters` | member, status (`live`, `revoked`, `expired`, `not member`), origin (`manual`/`auto`), valid until, endorsement id, profile summary |
+| `cnm vetting vetters grant <memberDid> [--validity 180d]` | `POST /v1/vetting/vetters` | whether a grant was issued or an existing live one returned, its endorsement id, credential id and validity |
+| `cnm vetting vetters revoke <endorsementId>` | `DELETE /v1/credentials/endorsements/{id}` | the revoked credential and when |
+| `cnm vetting vetters resend <memberDid>` | `POST /v1/vetting/vetters/{memberDid}/resend` | the credential handed to the transport (not a delivery receipt) |
+| `cnm vetting auto-grant show` | `GET /v1/vetting/auto-grant` | enabled, sweep interval, grant validity, last sweep |
+| `cnm vetting auto-grant set [--enabled true] [--sweep-minutes 30] [--validity 365d]` | `PUT /v1/vetting/auto-grant` | the stored configuration |
+| `cnm vetting branding show` | `GET /v1/community/branding` | display name, accent colour, logo URL |
+| `cnm vetting branding set [--display-name …] [--accent-color '#1a2b3c'] [--logo-url …] [--clear logo-url]` | `PUT /v1/community/branding` | the stored branding |
+| `cnm vetting revocations` | `GET /v1/vetting/revocations` | each withdrawal: when, vetter, statement, reason, review state, affected members |
+
+Durations are `N[s|m|h|d|w]`; a grant is valid for one day to two years. `set`
+reads the current value first and changes only the flags given, so
+`--sweep-minutes 30` does not turn the sweep off. A refusal names the fix — an
+unknown endorsement id points at `vetters list`, a resend with no live grant at
+`vetters grant`, a non-member at approving their join request first.
+
+### 8. Seed vetters from a PGP web of trust (optional)
+
+A community with an existing OpenPGP web of trust — the Linux kernel's is the
+case this was built for — can name its first vetters from it rather than one by
+one:
+
+```bash
+cnm vetting bootstrap-pgp --keyring kernel-keyring.asc \
+    --roots 'ABAF11C65A2970B130ABE3C479BE3E4300411886,647F28654894E3BD457199BE38DBBDC86092693E' \
+    --max-depth 2 --links ./links --dry-run
+```
+
+**Inputs.**
+
+- `--keyring` — every key that matters: the roots, the keys that certify, and
+  the members' keys. Binary (`gpg --export > keyring.gpg`) or ASCII-armored;
+  concatenated armored exports (`cat keys/*.asc > keyring.asc`) are fine, and a
+  key exported twice is merged.
+- `--roots` — the fingerprints trust starts from, as `gpg --fingerprint`
+  prints them (40 hex digits; spaces allowed inside quotes). Short and long key
+  ids are refused because they collide. A root must be in the keyring and not
+  revoked or expired.
+- `--max-depth` — how many certification hops from a root a member's key may
+  be. `0` is the root keys only; `1` keys a root certified; `2` keys certified
+  by those; and so on.
+- `--links` — a directory of **link statements**, one per member. A statement
+  ties a member's PGP key to their member DID, so the community never has to
+  guess which key belongs to which member.
+
+**Making a link.** The member signs one line with the key they want counted:
+
+```bash
+printf 'openvtc-link: %s\n' 'did:webvh:QmExample:kernel.example:alice' \
+  | gpg --local-user <their-fingerprint> --digest-algo SHA256 --clearsign > alice.asc
+```
+
+and sends `alice.asc` to the admin, who collects the files in one directory. A
+signing subkey is fine — the link counts for its primary key. Text around the
+line is ignored; the signed text must carry exactly one `openvtc-link:` line.
+
+**What counts.**
+
+- A key is **usable** when a valid self-signature binds at least one user ID
+  and it is neither revoked nor expired.
+- Key A **certifies** key B when usable key A made a third-party certification
+  of one of B's user IDs that verifies, is exportable, has not expired, is not
+  dated in the future, and that A has not revoked. SHA-1 and RIPEMD-160
+  certifications made after 2019-01-19 are not trusted (GnuPG's cut-off); MD5
+  never is. Everything else is ignored, and the summary counts why.
+- A key's **depth** is its fewest certification hops from any root.
+- A **link** is trusted when it is a cleartext-signed message whose signature
+  verifies with exactly one usable keyring key (the primary or a bound signing
+  subkey), using SHA-256 or better. A DID claimed by more than one key, or a key
+  linking more than one DID, is ambiguous: every link involved is refused.
+
+**The plan.** `--dry-run` prints a summary (keys, certifications counted and
+ignored, keys within reach) and one row per link:
+
+| Column | |
+|---|---|
+| Member DID | the DID the statement links |
+| Key | the key's id (`--full-display`: the fingerprint) |
+| Primary User ID | as the key states it |
+| Depth, Certification Path | hops from the nearest root, and the keys on the way |
+| Action | `grant`; `already granted`; `too far` (unreachable, or beyond `--max-depth`); `not a member` (they must join first); `invalid link` (with the reason below the table) |
+
+Check the plan, then run the same command without `--dry-run`. Every `grant`
+row is granted (with `--validity` when given, one year otherwise) and the table
+is printed again with each result. Grants are audited as any admin grant is. A
+failed grant is reported and the rest continue; the command exits non-zero.
+Running it again is safe: members already holding a live grant are skipped.
+`--json` prints the summary and rows for a script.
+
+The bootstrap names vetters once; it does not keep the web of trust in sync. A
+key revoked later does not revoke the grant — revoke it with
+`cnm vetting vetters revoke`.
+
 ## What the community checks at submit
 
 For every identity-vetting statement in the join presentation
