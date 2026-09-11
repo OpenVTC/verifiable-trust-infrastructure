@@ -57,12 +57,28 @@ export type RemovedMembersResponse = Schemas["RemovedMembersResponse"];
 export type EndorsementRow = Schemas["EndorsementRow"];
 export type EndorsementsPage = Schemas["Paginated_EndorsementRow"];
 export type VetterGrantResponse = Schemas["VetterGrantResponseBody"];
+
+// ── Vetter registry (admin) ─────────────────────────────────────────────
+export type VetterGrantList = Schemas["VetterGrantListResponse"];
+export type VetterGrantRow = Schemas["VetterGrantRow"];
+export type VetterProfileSummary = Schemas["VetterProfileSummary"];
+export type VetterGrantOrigin = Schemas["GrantOrigin"];
+export type VetterResendResponse = Schemas["VetterResendResponseBody"];
+export type AutoGrantStatus = Schemas["AutoGrantStatus"];
+export type AutoGrantConfig = Schemas["AutoGrantConfig"];
+export type AutoGrantSweep = Schemas["AutoGrantSweep"];
+export type VettingRevocationList = Schemas["VettingRevocationListResponse"];
+export type VettingRevocationRow = Schemas["VettingRevocationRow"];
+export type CommunityBranding = Schemas["CommunityBranding"];
 export type RequestVmcResponse = Schemas["RequestVmcResponse"];
 
 // ── Join requests ───────────────────────────────────────────────────────
 export type JoinRequestRow = Schemas["JoinRequest"];
 export type JoinRequestEnvelope = Schemas["JoinRequestEnvelope"];
 export type JoinRequestsPage = Schemas["Paginated_JoinRequest"];
+export type JoinRequestVettingResponse = Schemas["JoinRequestVettingResponse"];
+export type JoinRequestVetting = Schemas["JoinRequestVetting"];
+export type JoinRequestVettingStatement = Schemas["JoinRequestVettingStatement"];
 export type DecideResponse = Schemas["DecideResponse"];
 
 // ── Audit ───────────────────────────────────────────────────────────────

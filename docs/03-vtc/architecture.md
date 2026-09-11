@@ -130,7 +130,9 @@ cloned cheaply into handlers. The complete list:
 | `relationships` | VRC primary rows |
 | `relationships_by_did` | VRC secondary index (`<did>:<vrc-id>`) |
 | `endorsement_types` | Operator-uploaded type registry |
-| `endorsements` | Issued custom endorsements |
+| `endorsements` | Issued custom endorsements, including vetter role grants (with the grant credential, for resend) |
+| `vetting_revocations` | Vetting statement withdrawal notices |
+| `vetter_profiles` | Vetter profiles (`vtc/vetting/vetters/profile/0.1`), one per vetter DID |
 | `audit` | HMAC-actor-hashing audit envelopes |
 | `audit_key` | HMAC audit key + rotation history |
 

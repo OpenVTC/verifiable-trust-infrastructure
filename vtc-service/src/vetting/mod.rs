@@ -27,6 +27,8 @@
 //! Independence is established from evidence, not from statements merely being
 //! separately signed (VTI-CMP-070): distinct vetters are distinct *members*.
 
+pub mod auto_grant;
+pub mod profiles;
 pub mod revocation;
 pub mod vetters;
 

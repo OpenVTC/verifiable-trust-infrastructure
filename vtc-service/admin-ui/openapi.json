@@ -1432,6 +1432,81 @@
         ]
       }
     },
+    "/v1/community/branding": {
+      "get": {
+        "tags": [
+          "community"
+        ],
+        "summary": "The community's branding; every member absent when none is set.",
+        "operationId": "communityBrandingShow",
+        "responses": {
+          "200": {
+            "description": "The community's branding",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityBranding"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "community"
+        ],
+        "summary": "Replace the community's branding. An empty body clears it.",
+        "operationId": "communityBrandingUpdate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommunityBranding"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The stored branding",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommunityBranding"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A member breaks its bounds"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          },
+          "503": {
+            "description": "Audit writer not configured — change refused"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
     "/v1/community/profile": {
       "get": {
         "tags": [
@@ -2337,6 +2412,52 @@
           },
           "409": {
             "description": "Request is not Pending, or applicant is already a member"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/join-requests/{id}/vetting": {
+      "get": {
+        "tags": [
+          "join-requests"
+        ],
+        "summary": "The vetting facts a join request was decided on.",
+        "operationId": "joinRequestVettingShow",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Join request id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The vetting facts recorded for the request; `vetting` is absent when none were",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequestVettingResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          },
+          "404": {
+            "description": "Join request not found"
           }
         },
         "security": [
@@ -4273,7 +4394,148 @@
         }
       }
     },
+    "/v1/vetting/auto-grant": {
+      "get": {
+        "tags": [
+          "vetting"
+        ],
+        "summary": "The automatic vetter-grant configuration and the last sweep.",
+        "operationId": "vettingAutoGrantShow",
+        "responses": {
+          "200": {
+            "description": "Configuration and last sweep",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutoGrantStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "vetting"
+        ],
+        "summary": "Replace the automatic vetter-grant configuration.",
+        "operationId": "vettingAutoGrantUpdate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutoGrantConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The stored configuration and the last sweep",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutoGrantStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A value is out of bounds"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          },
+          "503": {
+            "description": "Audit writer not configured — change refused"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/vetting/revocations": {
+      "get": {
+        "tags": [
+          "vetting"
+        ],
+        "summary": "Every vetting statement withdrawal notice, with the admissions it touches.",
+        "description": "A notice is matched to the join requests whose recorded vetting facts\ncounted a statement with the notice's issuer and id. Review is not yet a\nworkflow: `needsReview` says an admin should look, and nothing records that\none did.",
+        "operationId": "vettingRevocationList",
+        "responses": {
+          "200": {
+            "description": "Every withdrawal notice, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VettingRevocationListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
     "/v1/vetting/vetters": {
+      "get": {
+        "tags": [
+          "vetting"
+        ],
+        "summary": "Every vetter grant, newest first.",
+        "operationId": "vettingVetterList",
+        "responses": {
+          "200": {
+            "description": "Every vetter grant, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VetterGrantListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not an admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      },
       "post": {
         "tags": [
           "vetting"
@@ -4318,6 +4580,55 @@
           },
           "403": {
             "description": "Caller is not a community admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
+    },
+    "/v1/vetting/vetters/{memberDid}/resend": {
+      "post": {
+        "tags": [
+          "vetting"
+        ],
+        "summary": "Deliver a vetter's live grant credential again.",
+        "operationId": "vettingVetterResend",
+        "parameters": [
+          {
+            "name": "memberDid",
+            "in": "path",
+            "description": "The vetter's member DID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The credential was handed to the transport for delivery",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VetterResendResponseBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not a community admin"
+          },
+          "404": {
+            "description": "The member holds no live vetter grant whose credential the community kept"
+          },
+          "503": {
+            "description": "The delivery could not be handed to the transport"
           }
         },
         "security": [
@@ -4713,6 +5024,111 @@
           }
         }
       },
+      "AutoGrantConfig": {
+        "type": "object",
+        "description": "`PUT /v1/vetting/auto-grant` body. An absent member takes its default.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the sweep runs. Off unless an admin turns it on."
+          },
+          "sweepMinutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Minutes between sweeps, 5–1440; 60 when absent.",
+            "minimum": 0
+          },
+          "validitySeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Validity of a grant the sweep issues, within the grant bounds (one day\nto two years); one year when absent.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "AutoGrantStatus": {
+        "type": "object",
+        "description": "`GET /v1/vetting/auto-grant` response, and the answer to a `PUT`.",
+        "required": [
+          "enabled",
+          "sweepMinutes",
+          "validitySeconds"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the sweep runs."
+          },
+          "lastSweep": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AutoGrantSweep",
+                "description": "The last sweep, when one has run."
+              }
+            ]
+          },
+          "sweepMinutes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Minutes between sweeps.",
+            "minimum": 0
+          },
+          "validitySeconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Validity of a grant the sweep issues.",
+            "minimum": 0
+          }
+        }
+      },
+      "AutoGrantSweep": {
+        "type": "object",
+        "description": "What one automatic-grant sweep did.",
+        "required": [
+          "ranAt",
+          "granted",
+          "revoked",
+          "errors"
+        ],
+        "properties": {
+          "errors": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Members the sweep could not decide or act on.",
+            "minimum": 0
+          },
+          "granted": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Grants issued.",
+            "minimum": 0
+          },
+          "ranAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the sweep finished."
+          },
+          "revoked": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Automatic grants revoked.",
+            "minimum": 0
+          }
+        }
+      },
       "BootstrapRequest": {
         "type": "object",
         "required": [
@@ -4942,6 +5358,45 @@
             "description": "Echoes the install token's `jti`. Consumer must pass this\nback to `claim/finish` so the server can index the stored\nregistration state."
           }
         }
+      },
+      "CommunityBranding": {
+        "type": "object",
+        "description": "A community's presentation — `join-requests/manifest/0.2`'s `branding`, and\nthe body of the VTC's `GET`/`PUT /v1/community/branding`. Every member is\noptional. Presentation only: a client never trusts a community because of\nhow it is branded.",
+        "properties": {
+          "accentColor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`#rrggbb`."
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name to show; 1–128 characters."
+          },
+          "ext": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Value",
+                "description": "Ecosystem-defined extension members (SPEC §4.5.1)."
+              }
+            ]
+          },
+          "logoUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An `https` URL of at most 2048 characters."
+          }
+        },
+        "additionalProperties": false
       },
       "CommunityProfile": {
         "type": "object",
@@ -5859,6 +6314,14 @@
         },
         "additionalProperties": false
       },
+      "GrantOrigin": {
+        "type": "string",
+        "description": "Who issued a vetter grant.",
+        "enum": [
+          "auto",
+          "manual"
+        ]
+      },
       "GraphEdge": {
         "type": "object",
         "description": "One edge between a pair of identifiers, carrying every VRC published between\nthem.",
@@ -6521,6 +6984,185 @@
         "properties": {
           "request": {
             "$ref": "#/components/schemas/JoinRequest"
+          }
+        }
+      },
+      "JoinRequestVetting": {
+        "type": "object",
+        "description": "The vetting facts a join request was decided on — the policy's\n`input.evidence.vetting`, in lowerCamelCase.",
+        "required": [
+          "criterionId",
+          "requirementsDigest",
+          "applicantDigestMatches",
+          "statements",
+          "distinctCountedVetters",
+          "byMethod",
+          "commitmentsConsistent",
+          "independenceOk",
+          "invitationRequired",
+          "satisfied",
+          "needs",
+          "recordedAt"
+        ],
+        "properties": {
+          "applicantDigestMatches": {
+            "type": "boolean",
+            "description": "The applicant named that digest."
+          },
+          "byMethod": {
+            "type": "object",
+            "description": "Counted statements by method.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "commitmentsConsistent": {
+            "type": "boolean",
+            "description": "All counted statements carry one identity commitment."
+          },
+          "criterionId": {
+            "type": "string",
+            "description": "The criterion whose requirements were applied."
+          },
+          "distinctCountedVetters": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Distinct eligible vetters counted.",
+            "minimum": 0
+          },
+          "independenceOk": {
+            "type": "boolean",
+            "description": "No declared-relationship cap is exceeded."
+          },
+          "invitationRequired": {
+            "type": "boolean",
+            "description": "The requirements demanded an invitation."
+          },
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What was still missing, in the `vetting:*` grammar."
+          },
+          "recordedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the facts were recorded."
+          },
+          "requirementsDigest": {
+            "type": "string",
+            "description": "That criterion's `requirementsDigest` at the decision."
+          },
+          "satisfied": {
+            "type": "boolean",
+            "description": "Count, method floors, consistency and independence all held."
+          },
+          "statements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JoinRequestVettingStatement"
+            },
+            "description": "Every identity-vetting statement the presentation carried."
+          }
+        }
+      },
+      "JoinRequestVettingResponse": {
+        "type": "object",
+        "description": "`GET /v1/join-requests/{id}/vetting` response.",
+        "required": [
+          "requestId"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The join request."
+          },
+          "vetting": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/JoinRequestVetting",
+                "description": "What the community established about its vetting evidence. Absent when\nno criterion required vetting when it was decided, or the request\npredates recording."
+              }
+            ]
+          }
+        }
+      },
+      "JoinRequestVettingStatement": {
+        "type": "object",
+        "description": "One presented statement, as the community saw it at the decision.",
+        "required": [
+          "verified",
+          "eligible",
+          "revoked",
+          "withdrawnNow",
+          "counted",
+          "failures"
+        ],
+        "properties": {
+          "counted": {
+            "type": "boolean",
+            "description": "It counted toward the requirements."
+          },
+          "declaredRelationship": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The vetter's declared relationship to the applicant."
+          },
+          "eligible": {
+            "type": "boolean",
+            "description": "The issuer was an eligible vetter."
+          },
+          "failures": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Why it did not count."
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The statement `id`."
+          },
+          "issuer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The issuer DID."
+          },
+          "method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`inPerson` / `video` / `priorAcquaintance`."
+          },
+          "revoked": {
+            "type": "boolean",
+            "description": "Withdrawn by its vetter before the decision."
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "Proof, type, window and body verified."
+          },
+          "withdrawnNow": {
+            "type": "boolean",
+            "description": "Withdrawn by its vetter now — after the decision, if `revoked` is false."
           }
         }
       },
@@ -7514,7 +8156,7 @@
       },
       "PolicyPurpose": {
         "type": "string",
-        "description": "What a policy decides. The keyspace `active_policies:<purpose>`\nhas at most one row per variant; the active pointer is a\nper-purpose singleton.\n\nWire shape is `camelCase` ASCII (`join`, `removal`,\n`crossCommunityRoles`) — operators wire purposes into REST\npayloads + the policies CLI verbs.\n\nPer spec §7.1, the workspace ships ten purposes. They split\ninto four groups:\n- **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],\n  [`Self::Personhood`].\n- **Discoverability**: [`Self::Registry`], [`Self::Directory`].\n- **Authorization**: [`Self::RoleDefinitions`],\n  [`Self::CrossCommunityRoles`],\n  [`Self::CrossCommunityRelationships`], [`Self::Relationships`].\n- **Hosting**: [`Self::Rooms`].",
+        "description": "What a policy decides. The keyspace `active_policies:<purpose>`\nhas at most one row per variant; the active pointer is a\nper-purpose singleton.\n\nWire shape is `camelCase` ASCII (`join`, `removal`,\n`crossCommunityRoles`) — operators wire purposes into REST\npayloads + the policies CLI verbs.\n\nThe workspace ships twelve purposes (spec §7.1 names the first ten). They\nsplit into five groups:\n- **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],\n  [`Self::Personhood`].\n- **Discoverability**: [`Self::Registry`], [`Self::Directory`].\n- **Authorization**: [`Self::RoleDefinitions`], [`Self::RoleChange`],\n  [`Self::CrossCommunityRoles`],\n  [`Self::CrossCommunityRelationships`], [`Self::Relationships`].\n- **Hosting**: [`Self::Rooms`].\n- **Vetting**: [`Self::VetterEligibility`].",
         "enum": [
           "join",
           "removal",
@@ -7526,7 +8168,8 @@
           "crossCommunityRelationships",
           "relationships",
           "roleChange",
-          "rooms"
+          "rooms",
+          "vetterEligibility"
         ]
       },
       "PolicyStatusFilter": {
@@ -8326,6 +8969,14 @@
           }
         }
       },
+      "RevocationReviewState": {
+        "type": "string",
+        "description": "Whether a withdrawn statement touches a standing membership.",
+        "enum": [
+          "noAdmission",
+          "needsReview"
+        ]
+      },
       "RevokeBody": {
         "type": "object",
         "properties": {
@@ -9095,6 +9746,22 @@
         },
         "additionalProperties": false
       },
+      "VetterGrantListResponse": {
+        "type": "object",
+        "description": "`GET /v1/vetting/vetters` response: every grant, newest first.",
+        "required": [
+          "vetters"
+        ],
+        "properties": {
+          "vetters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VetterGrantRow"
+            },
+            "description": "The grants."
+          }
+        }
+      },
       "VetterGrantResponseBody": {
         "type": "object",
         "description": "`vtc/vetting/vetters/grant/0.1#response` payload.\n\nGranting converges: while a grant is live and unexpired, asking again\nreturns it rather than issuing a second.",
@@ -9128,6 +9795,234 @@
           }
         },
         "additionalProperties": false
+      },
+      "VetterGrantRow": {
+        "type": "object",
+        "description": "One vetter grant, as `GET /v1/vetting/vetters` reports it.",
+        "required": [
+          "endorsementId",
+          "memberDid",
+          "credentialId",
+          "validFrom",
+          "revoked",
+          "live",
+          "origin"
+        ],
+        "properties": {
+          "credentialId": {
+            "type": "string",
+            "description": "The vetter role credential's `id`."
+          },
+          "endorsementId": {
+            "type": "string",
+            "description": "The grant's record — what `DELETE /v1/credentials/endorsements/{id}`\nrevokes."
+          },
+          "live": {
+            "type": "boolean",
+            "description": "Unrevoked, unexpired, and held by a current member."
+          },
+          "memberDid": {
+            "type": "string",
+            "description": "The member named a vetter."
+          },
+          "origin": {
+            "$ref": "#/components/schemas/GrantOrigin",
+            "description": "Issued by the automatic sweep or by an admin."
+          },
+          "profile": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/VetterProfileSummary",
+                "description": "The member's published profile, when they have one."
+              }
+            ]
+          },
+          "revoked": {
+            "type": "boolean",
+            "description": "The grant has been revoked."
+          },
+          "revokedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was revoked."
+          },
+          "validFrom": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The credential's `validFrom`."
+          },
+          "validUntil": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The credential's `validUntil`; absent on a row that did not record it."
+          }
+        }
+      },
+      "VetterProfileSummary": {
+        "type": "object",
+        "description": "What an admin sees of a vetter's published profile.",
+        "required": [
+          "listed",
+          "eventCount",
+          "updatedAt"
+        ],
+        "properties": {
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The profile's `location.country`."
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The profile's `displayName`."
+          },
+          "eventCount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many events the profile lists, ended or not.",
+            "minimum": 0
+          },
+          "languages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The profile's `languages`."
+          },
+          "listed": {
+            "type": "boolean",
+            "description": "Whether the profile appears in listings."
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VettingMethod"
+            },
+            "description": "The profile's `methods`."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the profile was last published."
+          }
+        }
+      },
+      "VetterResendResponseBody": {
+        "type": "object",
+        "description": "`vtc/vetting/vetters/resend/0.1#response` payload — also the answer to the\nadmin `POST /v1/vetting/vetters/{memberDid}/resend`.",
+        "required": [
+          "credentialId",
+          "validUntil"
+        ],
+        "properties": {
+          "credentialId": {
+            "type": "string",
+            "description": "The re-delivered credential's `id`."
+          },
+          "validUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Its `validUntil`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VettingMethod": {
+        "type": "string",
+        "description": "How a vetter established who the applicant is.",
+        "enum": [
+          "inPerson",
+          "video",
+          "priorAcquaintance"
+        ]
+      },
+      "VettingRevocationListResponse": {
+        "type": "object",
+        "description": "`GET /v1/vetting/revocations` response: every notice, newest first.",
+        "required": [
+          "revocations"
+        ],
+        "properties": {
+          "revocations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VettingRevocationRow"
+            },
+            "description": "The notices."
+          }
+        }
+      },
+      "VettingRevocationRow": {
+        "type": "object",
+        "description": "One withdrawal notice, and the admissions it touches.",
+        "required": [
+          "issuer",
+          "statementId",
+          "statementDigestMultibase",
+          "recordedAt",
+          "reviewState",
+          "affectedJoinRequests",
+          "affectedMembers"
+        ],
+        "properties": {
+          "affectedJoinRequests": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Approved join requests that counted the statement."
+          },
+          "affectedMembers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Of their applicants, those who are current members."
+          },
+          "issuer": {
+            "type": "string",
+            "description": "The vetter who withdrew the statement."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The vetter's reason, when given (`mistake`, `newInformation`,\n`keyCompromise`, `other`)."
+          },
+          "recordedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the community recorded the notice."
+          },
+          "reviewState": {
+            "$ref": "#/components/schemas/RevocationReviewState",
+            "description": "Whether a current membership rests on the statement."
+          },
+          "statementDigestMultibase": {
+            "type": "string",
+            "description": "The statement's `digestMultibase`."
+          },
+          "statementId": {
+            "type": "string",
+            "description": "The statement's `id`."
+          }
+        }
       },
       "VtcRole": {
         "type": "string",

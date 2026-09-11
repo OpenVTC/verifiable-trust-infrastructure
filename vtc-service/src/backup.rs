@@ -362,6 +362,7 @@ fn backed_up_handle<'a>(state: &'a AppState, name: &str) -> Option<&'a KeyspaceH
         x if x == SCHEMAS => &state.schemas_ks,
         x if x == ENDORSEMENTS => &state.endorsements_ks,
         x if x == VETTING_REVOCATIONS => &state.vetting_revocations_ks,
+        x if x == VETTER_PROFILES => &state.vetter_profiles_ks,
         // A room's records are backed up like any other community state. On a
         // sealed tier they are ciphertext this service cannot read, and that is
         // no reason to skip them: the host is trusted for availability

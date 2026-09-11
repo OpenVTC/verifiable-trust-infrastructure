@@ -7,7 +7,10 @@
 //! spec §5.1 it's a singleton — one row per VTC binary, stored
 //! under the stable key `community/profile`.
 
+pub mod branding;
 pub mod profile;
+
+pub use branding::{BRANDING_STORAGE_KEY, load_branding, store_branding};
 
 pub use profile::{
     CommunityProfile, CommunityProfileUpdate, MAX_EXTENSIONS_BYTES, PROFILE_STORAGE_KEY,

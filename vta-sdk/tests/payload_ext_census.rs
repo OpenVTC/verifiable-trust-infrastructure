@@ -61,6 +61,52 @@ use syn::{Fields, Item, ItemStruct, Meta};
 /// prevent.
 const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[
     (
+        "VetterLocation",
+        "The `location` member of a `vtc/vetting/vetters/profile/0.1` profile and \
+         of each of its events, not a payload root. The vetter-registry contract \
+         closes it to `country`, `region` and `city`; SPEC §4.5.1 gives the `ext` \
+         slot to the profile payload, which carries one.",
+    ),
+    (
+        "VetterEvent",
+        "An entry of a vetter profile's `events`, not a payload root. Closed to \
+         `name`, `startDate`, `endDate`, `location` and `url` by the \
+         vetter-registry contract; the enclosing profile payload carries `ext`.",
+    ),
+    (
+        "ListedVetter",
+        "A row of `vtc/vetting/vetters/list/0.1#response`, not a payload root. \
+         Closed on purpose: a listing discloses the published profile, the DID \
+         and the grant expiry and nothing else, and an open row is where a \
+         second disclosure would creep in. The enclosing response carries `ext`.",
+    ),
+    (
+        "VetterProfileResponseBody",
+        "`vtc/vetting/vetters/profile/0.1#response`. The published schema closes \
+         the response to `listed` and `updatedAt` with no `ext` slot \
+         (dtgwg-trust-tasks-tf#453), so a producer adding one would emit a \
+         document the schema rejects.",
+    ),
+    (
+        "VetterListResponseBody",
+        "`vtc/vetting/vetters/list/0.1#response`. The published schema closes the \
+         response to `vetters` and `nextCursor` with no `ext` slot \
+         (dtgwg-trust-tasks-tf#453).",
+    ),
+    (
+        "VetterResendResponseBody",
+        "`vtc/vetting/vetters/resend/0.1#response`, also the VTC admin resend \
+         answer. The published schema closes it to `credentialId` and \
+         `validUntil` with no `ext` slot (dtgwg-trust-tasks-tf#453).",
+    ),
+    (
+        "AutoGrantConfig",
+        "The body of the VTC admin REST `PUT /v1/vetting/auto-grant`, not a Trust \
+         Task payload. No Trust Task schema names it, so there is no §4.5.1 slot \
+         to honour, and an admin body that silently ignored a misspelled member \
+         would leave the sweep configured differently from what the admin sent.",
+    ),
+    (
         "IssuedCredentialSummary",
         "`vault`-style list row, not a payload root. \
      `vta/credentials/list/0.1`'s published schema closes \

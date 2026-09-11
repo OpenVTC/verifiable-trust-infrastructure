@@ -224,6 +224,7 @@ pub async fn submit_inner(
     let vetting =
         crate::vetting::vetting_facts(state, &applicant_did, &vp, &extensions, chrono::Utc::now())
             .await?;
+    let vetting_record = vetting.clone();
     let verdict = decide_join(
         state,
         &applicant_did,
@@ -236,7 +237,7 @@ pub async fn submit_inner(
 
     // 6. Realize the verdict (store + audit + auto-admit on allow). On an
     // invitation-driven admit the VIC is burned in the single-use ledger.
-    realize_join_verdict(
+    let outcome = realize_join_verdict(
         state,
         &applicant_did,
         vp,
@@ -247,7 +248,28 @@ pub async fn submit_inner(
         transport,
         consume_invitation_id,
     )
-    .await
+    .await?;
+
+    // 7. Keep the vetting facts the decision read, beside the request. After
+    // the request is durable, and best effort: the decision already stands,
+    // and a missing record costs the admin view and the vetter sweep the
+    // detail (the member reads as admitted without vetting), not the admission.
+    if let Some(facts) = vetting_record
+        && let Err(e) = super::storage::store_vetting_facts(
+            &state.join_requests_ks,
+            outcome.request.id,
+            &facts,
+            chrono::Utc::now(),
+        )
+        .await
+    {
+        warn!(
+            request = %outcome.request.id,
+            error = %e,
+            "vetting facts not recorded for a decided join request"
+        );
+    }
+    Ok(outcome)
 }
 
 /// Assemble verified join [`Facts`] from a `presentation` and run the active
