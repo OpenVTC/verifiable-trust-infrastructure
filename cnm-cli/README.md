@@ -149,8 +149,10 @@ tokens:
 
 ```sh
 # Apply a sealed admin credential bundle (e.g. a backup-restore handoff
-# or a sealed transfer from another operator)
-cnm auth login --credential-bundle <file>
+# or a sealed transfer from another operator). The digest comes from the
+# operator who sealed it, over a separate channel you trust; the credential
+# must be for the community's configured VTA DID.
+cnm auth login --credential-bundle <file> --expect-digest <sha256>
 
 # Check auth status
 cnm auth status

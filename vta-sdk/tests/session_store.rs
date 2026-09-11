@@ -295,6 +295,51 @@ async fn login_propagates_challenge_failure() {
         msg.contains("challenge request failed") || msg.contains("401"),
         "expected challenge-failure surface, got: {msg}"
     );
+    assert!(
+        !s.has_session("k"),
+        "a credential that failed to authenticate must not be stored"
+    );
+}
+
+/// A bundle naming a VTA that cannot be reached must not become the stored
+/// session. Every later command resolves the session's `vta_did`, so storing
+/// it before authenticating would bind them to whatever VTA the bundle named.
+#[tokio::test]
+async fn login_against_an_unreachable_vta_persists_no_session() {
+    let s = store();
+    let (did, pk) = did_key_from_seed(0x10);
+    let (vta_did, _) = did_key_from_seed(0x20);
+    let bundle = CredentialBundle::new(&did, &pk, &vta_did);
+
+    // Nothing listens on port 1 of loopback, so the connect fails at once.
+    let err = s
+        .login(&bundle, "http://127.0.0.1:1", "k")
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("could not connect"),
+        "expected a connection failure, got: {err}"
+    );
+    assert!(!s.has_session("k"));
+    assert!(s.loaded_session("k").is_none());
+}
+
+/// A failed login leaves an existing session under the same key as it was.
+#[tokio::test]
+async fn failed_login_keeps_the_existing_session() {
+    let s = store();
+    let (old_did, old_pk) = did_key_from_seed(0x30);
+    let (vta_did, _) = did_key_from_seed(0x20);
+    s.store_direct("k", &old_did, &old_pk, &vta_did).unwrap();
+
+    let (new_did, new_pk) = did_key_from_seed(0x10);
+    let (other_vta, _) = did_key_from_seed(0x40);
+    let bundle = CredentialBundle::new(&new_did, &new_pk, &other_vta);
+    assert!(s.login(&bundle, "http://127.0.0.1:1", "k").await.is_err());
+
+    let kept = s.loaded_session("k").expect("existing session is kept");
+    assert_eq!(kept.client_did, old_did);
+    assert_eq!(kept.vta_did.as_deref(), Some(vta_did.as_str()));
 }
 
 #[tokio::test]

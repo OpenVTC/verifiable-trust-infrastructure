@@ -16,9 +16,10 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use vta_sdk::credentials::CredentialBundle;
+use vta_sdk::sealed_transfer::verify::{VerifiedAssertion, verify_producer_assertion_with_pubkey};
 use vta_sdk::sealed_transfer::{
-    BootstrapRequest, SealedPayloadV1, armor, bundle_digest, ed25519_seed_to_x25519_secret,
-    generate_ed25519_keypair, open_bundle,
+    AssertionProof, BootstrapRequest, SealedPayloadV1, armor, bundle_digest,
+    ed25519_seed_to_x25519_secret, generate_ed25519_keypair, open_bundle,
 };
 
 const SECRETS_SUBDIR: &str = "bootstrap-secrets";
@@ -179,12 +180,33 @@ pub struct OpenedArmored {
 ///
 /// Best-effort removal of the used secret file on success — the bundle id is
 /// single-use, and keeping the secret around only widens blast radius.
+///
+/// This checks the digest when one is given, but not who produced the
+/// bundle. To install an admin credential, use [`open_admin_credential`].
 pub fn open_armored_bundle(
     bundle_path: &Path,
     config_dir: &Path,
     expect_digest: Option<&str>,
     no_verify_digest: bool,
 ) -> Result<OpenedArmored, Box<dyn std::error::Error>> {
+    let (opened, secret) = open_armored_bundle_keeping_secret(
+        bundle_path,
+        config_dir,
+        expect_digest,
+        no_verify_digest,
+    )?;
+    consume_secret(&secret);
+    Ok(opened)
+}
+
+/// [`open_armored_bundle`] without the secret cleanup. Returns the secret's
+/// path so the caller can remove it once it has accepted the bundle.
+fn open_armored_bundle_keeping_secret(
+    bundle_path: &Path,
+    config_dir: &Path,
+    expect_digest: Option<&str>,
+    no_verify_digest: bool,
+) -> Result<(OpenedArmored, PathBuf), Box<dyn std::error::Error>> {
     if expect_digest.is_none() && !no_verify_digest {
         return Err(
             "--expect-digest <hex> is required (or pass --no-verify-digest to opt out)".into(),
@@ -234,25 +256,32 @@ pub fn open_armored_bundle(
     let digest = bundle_digest(bundle);
     let opened = open_bundle(&x_secret, bundle, expect_digest)?;
 
-    // Best-effort cleanup. If the caller later fails, the secret is gone —
-    // that's fine because the bundle id is single-use anyway; a retry would
-    // need a fresh request. Overwrite-then-unlink so the old bytes aren't
-    // left sitting on disk after unlink (see `zero_overwrite_and_remove`).
-    if let Err(e) = zero_overwrite_and_remove(&sp) {
+    Ok((
+        OpenedArmored {
+            payload: opened.payload,
+            producer: opened.producer,
+            bundle_id: opened.bundle_id,
+            bundle_id_hex,
+            digest,
+            client_x25519_pub,
+        },
+        sp,
+    ))
+}
+
+/// Remove a used request secret.
+///
+/// Best-effort: if a later step fails, the secret is gone, which is fine
+/// because the bundle id is single-use anyway and a retry needs a fresh
+/// request. Overwrite-then-unlink so the old bytes aren't left sitting on
+/// disk after unlink (see `zero_overwrite_and_remove`).
+fn consume_secret(path: &Path) {
+    if let Err(e) = zero_overwrite_and_remove(path) {
         eprintln!(
             "warning: could not remove used secret {}: {e}",
-            sp.display()
+            path.display()
         );
     }
-
-    Ok(OpenedArmored {
-        payload: opened.payload,
-        producer: opened.producer,
-        bundle_id: opened.bundle_id,
-        bundle_id_hex,
-        digest,
-        client_x25519_pub,
-    })
 }
 
 /// The outcome of [`create_provision_request`]: the signed VP plus the
@@ -396,6 +425,158 @@ pub fn validate_digest_flags(
                 .into(),
         ),
     }
+}
+
+/// Parse an operator-supplied SHA-256 bundle digest.
+///
+/// Accepts exactly 64 hex characters, ignoring surrounding whitespace, and
+/// returns them lower-cased: the form [`bundle_digest`] produces and
+/// `open_bundle` compares against. Empty input is an error; there is no
+/// "skip" value.
+pub fn normalize_expected_digest(input: &str) -> Result<String, String> {
+    let digest = input.trim();
+    if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(
+            "enter the 64-character hex SHA-256 digest the producer gave you out-of-band".into(),
+        );
+    }
+    Ok(digest.to_ascii_lowercase())
+}
+
+/// Open an armored admin-credential bundle and verify where it came from
+/// before anything is installed.
+///
+/// Opens the bundle like [`open_armored_bundle`], then applies
+/// [`verify_admin_bundle`]. `expect_digest` of `None` is the
+/// `--no-verify-digest` case: only a bundle `DidSigned` by
+/// `expected_vta_did` is then accepted.
+///
+/// The single-use request secret is removed only once the bundle has been
+/// accepted, so a rejected bundle does not use up the pending request.
+pub fn open_admin_credential(
+    bundle_path: &Path,
+    config_dir: &Path,
+    expect_digest: Option<&str>,
+    expected_vta_did: Option<&str>,
+) -> Result<CredentialBundle, Box<dyn std::error::Error>> {
+    let (opened, secret) = open_armored_bundle_keeping_secret(
+        bundle_path,
+        config_dir,
+        expect_digest,
+        expect_digest.is_none(),
+    )?;
+    let credential = verify_admin_bundle(opened, expect_digest, expected_vta_did)?;
+    consume_secret(&secret);
+    Ok(credential)
+}
+
+/// Check that an opened bundle is anchored to the expected producer, then
+/// extract its admin credential.
+///
+/// HPKE sealing gives confidentiality, not authenticity: anyone who has seen
+/// the consumer's bootstrap request can seal a bundle to it. A credential is
+/// only installed when something the operator trusts vouches for the bundle:
+///
+/// - `PinnedOnly`: the out-of-band digest, `expect_digest`. The admin
+///   credentials that `pnm`, `cnm` and `vta` seal today all take this form,
+///   with a throwaway producer `did:key`.
+/// - `DidSigned`: a signature by `expected_vta_did` itself. A valid signature
+///   from any other DID proves nothing, since anyone can mint a `did:key` and
+///   sign, so the producer DID must equal `expected_vta_did`, with or without
+///   a digest. Only `did:key` producers can be verified here; other methods
+///   would need DID resolution.
+/// - `Attested`: refused. Attestation quotes are verified by
+///   `pnm bootstrap connect`, not on this path.
+///
+/// When `expected_vta_did` is given, the credential's `vta_did` must also
+/// equal it, so a bundle cannot point the session at a different VTA from the
+/// one the operator named.
+pub fn verify_admin_bundle(
+    opened: OpenedArmored,
+    expect_digest: Option<&str>,
+    expected_vta_did: Option<&str>,
+) -> Result<CredentialBundle, Box<dyn std::error::Error>> {
+    if let Some(expected) = expect_digest
+        && expected != opened.digest
+    {
+        return Err(format!(
+            "bundle digest {} does not match the expected digest {expected}",
+            opened.digest
+        )
+        .into());
+    }
+
+    let producer = &opened.producer;
+    let producer_pubkey = match &producer.proof {
+        AssertionProof::DidSigned(_) => {
+            let expected = expected_vta_did.ok_or_else(|| {
+                format!(
+                    "the bundle is signed by {}, but there is no expected VTA DID to check \
+                     that against; refusing to install it",
+                    producer.producer_did
+                )
+            })?;
+            if producer.producer_did != expected {
+                return Err(format!(
+                    "the bundle is signed by {}, not by the expected VTA {expected}; refusing \
+                     to install it",
+                    producer.producer_did
+                )
+                .into());
+            }
+            let pubkey = affinidi_crypto::did_key::did_key_to_ed25519_pub(&producer.producer_did)
+                .map_err(|e| {
+                format!(
+                    "cannot verify the producer signature: {} is not an Ed25519 did:key \
+                         ({e}); use --expect-digest instead",
+                    producer.producer_did
+                )
+            })?;
+            Some(pubkey)
+        }
+        _ => None,
+    };
+
+    let verdict = verify_producer_assertion_with_pubkey(
+        producer,
+        &opened.client_x25519_pub,
+        &opened.bundle_id,
+        producer_pubkey.as_ref(),
+    )?;
+
+    // Exhaustive, so a new assertion kind has to be decided on here rather
+    // than being accepted by default.
+    match verdict {
+        VerifiedAssertion::DidSignedVerified(_) => {}
+        VerifiedAssertion::PinnedOnlyAcknowledged(_) => {
+            if expect_digest.is_none() {
+                return Err(
+                    "the bundle carries no producer signature, so only its out-of-band \
+                     SHA-256 digest can show where it came from; pass --expect-digest <hex>"
+                        .into(),
+                );
+            }
+        }
+        VerifiedAssertion::AttestedNeedsNitroCheck(_) => {
+            return Err(
+                "the bundle carries a TEE attestation, which is not verified when installing \
+                 a credential from a file; use `pnm bootstrap connect` for attested bootstrap"
+                    .into(),
+            );
+        }
+    }
+
+    let credential = extract_admin_credential(opened.payload)?;
+    if let Some(expected) = expected_vta_did
+        && credential.vta_did != expected
+    {
+        return Err(format!(
+            "the credential is for VTA {}, not the expected {expected}; refusing to install it",
+            credential.vta_did
+        )
+        .into());
+    }
+    Ok(credential)
 }
 
 #[cfg(test)]
@@ -620,5 +801,205 @@ mod tests {
         ));
         let cred = extract_admin_credential(payload).unwrap();
         assert_eq!(cred.did, "did:key:z6Mk123");
+    }
+
+    // ── open_admin_credential ──────────────────────────────────────
+
+    use vta_sdk::sealed_transfer::{
+        AttestationQuoteAssertion, DidSignedAssertion, ProducerAssertion,
+    };
+
+    const VTA_DID: &str = "did:key:z6MkVTA";
+
+    fn tmp_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("vta-test-{}", rand::random::<u32>()))
+    }
+
+    fn admin_payload(vta_did: &str) -> SealedPayloadV1 {
+        SealedPayloadV1::AdminCredential(Box::new(vta_sdk::credentials::CredentialBundle::new(
+            "did:key:z6Mk123",
+            "z1234567890",
+            vta_did,
+        )))
+    }
+
+    /// Seal `payload` to `created`'s request under the given producer
+    /// assertion and write the armor into `dir`. Returns the path and digest.
+    async fn seal_to_request(
+        dir: &Path,
+        created: &CreatedRequest,
+        producer: ProducerAssertion,
+        payload: &SealedPayloadV1,
+    ) -> (PathBuf, String) {
+        let client_x = created.request.decode_client_x25519_pub().unwrap();
+        let bundle_id = created.request.decode_nonce().unwrap();
+        let store = vta_sdk::sealed_transfer::InMemoryNonceStore::new();
+        let bundle =
+            vta_sdk::sealed_transfer::seal_payload(&client_x, bundle_id, producer, payload, &store)
+                .await
+                .unwrap();
+        let path = dir.join("bundle.armor");
+        fs::write(&path, armor::encode(&bundle)).unwrap();
+        (path, bundle_digest(&bundle))
+    }
+
+    /// A correctly signed `DidSigned` assertion over `created`'s key and
+    /// nonce, made with a freshly generated key. It names `producer_did`,
+    /// which defaults to that key's own did:key. Returns the assertion and
+    /// the key's did:key.
+    fn did_signed(
+        created: &CreatedRequest,
+        producer_did: Option<&str>,
+    ) -> (ProducerAssertion, String) {
+        use base64::Engine;
+        use ed25519_dalek::Signer;
+
+        let (seed, public) = generate_ed25519_keypair();
+        let key_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&public);
+        let did = producer_did.unwrap_or(&key_did).to_string();
+
+        let mut msg = vta_sdk::sealed_transfer::verify::DID_SIGNED_DOMAIN_TAG.to_vec();
+        msg.extend_from_slice(&created.request.decode_client_x25519_pub().unwrap());
+        msg.extend_from_slice(&created.request.decode_nonce().unwrap());
+        let sig = ed25519_dalek::SigningKey::from_bytes(&seed).sign(&msg);
+
+        let assertion = ProducerAssertion {
+            producer_did: did.clone(),
+            proof: AssertionProof::DidSigned(DidSignedAssertion {
+                did: did.clone(),
+                signature_b64: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(sig.to_bytes()),
+                verification_method: format!("{did}#key-0"),
+            }),
+        };
+        (assertion, key_did)
+    }
+
+    #[tokio::test]
+    async fn admin_credential_signed_by_an_unexpected_did_key_is_rejected() {
+        let tmp = tmp_dir();
+        let created = create_bootstrap_request(&tmp, None).unwrap();
+        // Anyone who has seen the request can mint a did:key, sign a valid
+        // assertion with it, and point the credential at a VTA of their own.
+        let (assertion, attacker_did) = did_signed(&created, None);
+        let (path, digest) =
+            seal_to_request(&tmp, &created, assertion, &admin_payload(&attacker_did)).await;
+
+        let err = open_admin_credential(&path, &tmp, None, Some("did:webvh:victim")).unwrap_err();
+        assert!(err.to_string().contains("not by the expected VTA"), "{err}");
+        // Still refused alongside a digest (which would come from the same
+        // sender), and when there is no expected VTA DID at all.
+        assert!(
+            open_admin_credential(&path, &tmp, Some(&digest), Some("did:webvh:victim")).is_err()
+        );
+        assert!(open_admin_credential(&path, &tmp, None, None).is_err());
+
+        // A rejected bundle does not use up the pending request.
+        assert!(created.secret_path.exists());
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn admin_credential_signed_by_the_expected_vta_is_accepted() {
+        let tmp = tmp_dir();
+        let created = create_bootstrap_request(&tmp, None).unwrap();
+        let (assertion, vta_did) = did_signed(&created, None);
+        let (path, _) = seal_to_request(&tmp, &created, assertion, &admin_payload(&vta_did)).await;
+
+        let cred = open_admin_credential(&path, &tmp, None, Some(&vta_did)).unwrap();
+        assert_eq!(cred.vta_did, vta_did);
+        assert!(
+            !created.secret_path.exists(),
+            "an accepted bundle consumes the request secret"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn did_signed_by_another_key_in_the_vta_name_is_rejected() {
+        let tmp = tmp_dir();
+        let created = create_bootstrap_request(&tmp, None).unwrap();
+        // Names the expected VTA as the producer, but signs with another key.
+        let (_, vta_did) = did_signed(&created, None);
+        let (forged, _) = did_signed(&created, Some(&vta_did));
+        let (path, _) = seal_to_request(&tmp, &created, forged, &admin_payload(&vta_did)).await;
+
+        assert!(open_admin_credential(&path, &tmp, None, Some(&vta_did)).is_err());
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn pinned_only_admin_credential_needs_the_digest() {
+        let tmp = tmp_dir();
+        let created = create_bootstrap_request(&tmp, None).unwrap();
+        let recipient =
+            SealedRecipient::from_json_str(&serde_json::to_string(&created.request).unwrap())
+                .unwrap();
+        let sealed = seal_for_recipient(&recipient, &admin_payload(VTA_DID))
+            .await
+            .unwrap();
+        let path = tmp.join("bundle.armor");
+        fs::write(&path, sealed.armored.as_bytes()).unwrap();
+
+        assert!(open_admin_credential(&path, &tmp, None, Some(VTA_DID)).is_err());
+        assert!(created.secret_path.exists());
+
+        // The digest as an operator might type it: upper-case, with whitespace.
+        let typed =
+            normalize_expected_digest(&format!(" {}\n", sealed.digest.to_uppercase())).unwrap();
+        let cred = open_admin_credential(&path, &tmp, Some(&typed), Some(VTA_DID)).unwrap();
+        assert_eq!(cred.vta_did, VTA_DID);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn admin_credential_for_a_different_vta_is_rejected() {
+        let tmp = tmp_dir();
+        let created = create_bootstrap_request(&tmp, None).unwrap();
+        let recipient =
+            SealedRecipient::from_json_str(&serde_json::to_string(&created.request).unwrap())
+                .unwrap();
+        let sealed = seal_for_recipient(&recipient, &admin_payload("did:key:z6MkOtherVTA"))
+            .await
+            .unwrap();
+        let path = tmp.join("bundle.armor");
+        fs::write(&path, sealed.armored.as_bytes()).unwrap();
+
+        let err =
+            open_admin_credential(&path, &tmp, Some(&sealed.digest), Some(VTA_DID)).unwrap_err();
+        assert!(err.to_string().contains("did:key:z6MkOtherVTA"), "{err}");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn attested_admin_credential_is_rejected() {
+        let tmp = tmp_dir();
+        let created = create_bootstrap_request(&tmp, None).unwrap();
+        let producer = ProducerAssertion {
+            producer_did: "did:key:z6MkTee".into(),
+            proof: AssertionProof::Attested(AttestationQuoteAssertion {
+                format: "aws-nitro-v1".into(),
+                quote_b64: "AAAA".into(),
+            }),
+        };
+        let (path, digest) =
+            seal_to_request(&tmp, &created, producer, &admin_payload(VTA_DID)).await;
+
+        let err = open_admin_credential(&path, &tmp, Some(&digest), Some(VTA_DID)).unwrap_err();
+        assert!(err.to_string().contains("attestation"), "{err}");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn expected_digest_must_be_64_hex_characters() {
+        assert!(normalize_expected_digest("").is_err());
+        assert!(normalize_expected_digest("   ").is_err());
+        assert!(normalize_expected_digest(&"a".repeat(63)).is_err());
+        assert!(normalize_expected_digest(&"a".repeat(65)).is_err());
+        assert!(normalize_expected_digest(&"g".repeat(64)).is_err());
+        assert_eq!(
+            normalize_expected_digest(&"AB".repeat(32)).unwrap(),
+            "ab".repeat(32)
+        );
     }
 }
