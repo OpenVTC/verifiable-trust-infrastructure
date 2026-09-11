@@ -679,9 +679,33 @@ async fn a_superseded_signing_key_is_recovered_from_the_seed() {
 /// The assertions here are deliberately thin. The response-conformance layer
 /// validates every response these provoke against its published schema, so a
 /// drift shows up as a `500` and fails the call, not as a weak assertion here.
+///
+/// Run on a thread with a real stack rather than libtest's 2 MiB, for the
+/// reason recorded on `services_write_paths_against_a_hosted_vta_did`: this
+/// body boots an in-process VTA and drives a whole family through it, so the
+/// future is enormous in a debug build and grows every time the dispatch table
+/// does. It overflowed when an `audit/verify` arm was added, which is not a
+/// fact about that arm — it is this test sitting just under a limit nobody had
+/// written down, exactly as the other one was.
 #[cfg(feature = "webvh")]
-#[tokio::test]
-async fn webvh_family_response_shapes() {
+#[test]
+fn webvh_family_response_shapes() {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build a runtime")
+                .block_on(webvh_family_response_shapes_inner());
+        })
+        .expect("spawn the test thread")
+        .join()
+        .expect("the test thread panicked");
+}
+
+#[cfg(feature = "webvh")]
+async fn webvh_family_response_shapes_inner() {
     use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
 
