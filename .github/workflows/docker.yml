@@ -95,14 +95,19 @@ jobs:
       # --entrypoint is required for the Nitro image, whose ENTRYPOINT is the
       # vsock-proxy setup script rather than the binary.
       - name: Smoke-test the runtime image
+        env:
+          BINARY: ${{ matrix.binary }}
+          IMAGE: ${{ matrix.tag }}
         run: |
-          docker run --rm --entrypoint ${{ matrix.binary }} ${{ matrix.tag }} --help > /dev/null
+          docker run --rm --entrypoint "$BINARY" "$IMAGE" --help > /dev/null
           echo "binary starts and links cleanly"
 
       - name: Assert the image does not run as root
         if: matrix.expect_non_root
+        env:
+          IMAGE: ${{ matrix.tag }}
         run: |
-          uid="$(docker run --rm --entrypoint id ${{ matrix.tag }} -u)"
+          uid="$(docker run --rm --entrypoint id "$IMAGE" -u)"
           if [ "$uid" = "0" ]; then
             echo "::error::image runs as root (uid 0); expected the unprivileged 'vta' user"
             exit 1
