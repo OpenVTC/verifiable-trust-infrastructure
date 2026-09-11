@@ -24,6 +24,7 @@ pub(crate) mod rooms;
 mod schemas;
 pub(crate) mod status_lists;
 pub mod trust_tasks;
+mod vetting;
 #[cfg(feature = "website")]
 pub(crate) mod website;
 
@@ -759,6 +760,12 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         .routes(tt(
             routes!(endorsements::revoke),
             "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1",
+        ))
+        // Naming vetters: an admin issues a revocable vetter role credential
+        // (OpenVTC vetting design §10), withdrawn through endorsements/revoke.
+        .routes(tt(
+            routes!(vetting::grant_vetter),
+            "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1",
         ))
         // GET / PATCH / DELETE on `/members/{did}` each carry their own
         // canonical task. They shared `members/show/1.0` while the

@@ -449,11 +449,13 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     ),
     // `vtc/vetting/revoke-statement/0.1` — a vetter withdrawing a statement
     // from the community that relies on it (design §9.6).
+    // `vtc/vetting/vetters/grant/0.1` — an admin naming a vetter by issuing a
+    // revocable vetter role credential.
     (
         "https://trusttasks.org/spec/vtc/vetting/",
-        1,
-        "vetting statement revocation notice — proposed in dtgwg-trust-tasks-tf \
-         (spec/vetting-revoke-and-ceremony)",
+        2,
+        "vetting statement revocation notice and vetter grant — proposed in \
+         dtgwg-trust-tasks-tf (spec/vetting-revoke-and-ceremony)",
     ),
     // `vtc/join-requests/manifest/0.2` — 0.1 plus the per-criterion `vetting`
     // requirements object and `requirementsDigest`.

@@ -10,6 +10,14 @@
 //! | `spec/vetting/session/0.1` | vetter → applicant | [`VettingSessionBody`] → [`VettingSessionResponseBody`] |
 //! | `spec/vetting/decline/0.1` | vetter → applicant | [`VettingDeclineBody`] |
 //! | `spec/vtc/vetting/revoke-statement/0.1` | vetter → community | [`RevokeStatementBody`] → [`RevokeStatementResponseBody`] |
+//! | `spec/vtc/vetting/vetters/grant/0.1` | community admin → community | [`VetterGrantBody`] → [`VetterGrantResponseBody`] |
+//!
+//! A vetter is named by a **vetter role credential**: a DTG
+//! `EndorsementCredential` the community issues to the member, with endorsement
+//! `{ type: "CommunityRole", role: "vetter", communityDid }` and a
+//! `credentialStatus` so it can be revoked. The community counts a statement
+//! only from a vetter whose grant it recorded; the vetter presents the same
+//! credential to an applicant (`crate::vetting::eligibility`).
 //!
 //! The Vetting Statement itself travels over the existing
 //! `credential-exchange/issue/0.1`. It is a DTG `EndorsementCredential` whose
@@ -63,6 +71,33 @@ pub const VETTING_REVOKE_STATEMENT_TYPE: &str =
 /// `#response` variant of [`VETTING_REVOKE_STATEMENT_TYPE`].
 pub const VETTING_REVOKE_STATEMENT_RESPONSE_TYPE: &str =
     "https://trusttasks.org/spec/vtc/vetting/revoke-statement/0.1#response";
+/// Community admin → community: name a member as a vetter by issuing them a
+/// revocable vetter role credential.
+pub const VETTING_VETTER_GRANT_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
+/// `#response` variant of [`VETTING_VETTER_GRANT_TYPE`].
+pub const VETTING_VETTER_GRANT_RESPONSE_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1#response";
+
+/// `credentialSubject.endorsement.type` of a community role credential — the
+/// role VEC a community issues to a member.
+pub const COMMUNITY_ROLE_ENDORSEMENT_TYPE: &str = "CommunityRole";
+/// The role a vetter role credential names, and the conventional
+/// `eligibleVetters.role`.
+pub const VETTER_ROLE: &str = "vetter";
+
+/// Does a held role name satisfy a required one?
+///
+/// `vetter` and `custom:vetter` are the same role in either direction: the
+/// requirements name it bare, while a VTC's ACL spells a custom role with the
+/// prefix. Every other role must match exactly.
+#[must_use]
+pub fn role_matches(held: &str, required: &str) -> bool {
+    fn bare(role: &str) -> &str {
+        role.strip_prefix("custom:").unwrap_or(role)
+    }
+    held == required || (bare(held) == VETTER_ROLE && bare(required) == VETTER_ROLE)
+}
 
 /// `endorsement.type` of a Vetting Statement.
 pub const IDENTITY_VETTING_ENDORSEMENT_TYPE: &str =
@@ -754,6 +789,54 @@ pub struct RevokeStatementResponseBody {
 }
 
 // ---------------------------------------------------------------------------
+// vtc/vetting/vetters/grant/0.1
+// ---------------------------------------------------------------------------
+
+/// Shortest vetter grant a community may issue: one day.
+pub const MIN_VETTER_GRANT_VALIDITY_SECONDS: u64 = 86_400;
+/// Longest vetter grant a community may issue: two years.
+pub const MAX_VETTER_GRANT_VALIDITY_SECONDS: u64 = 2 * 365 * 86_400;
+/// A grant's validity when the request names none: one year.
+pub const DEFAULT_VETTER_GRANT_VALIDITY_SECONDS: u64 = 365 * 86_400;
+
+/// `vtc/vetting/vetters/grant/0.1` payload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VetterGrantBody {
+    /// The member to name as a vetter.
+    pub member_did: String,
+    /// How long the grant is valid, from one day to two years; one year when
+    /// absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validity_seconds: Option<u64>,
+    /// Ecosystem-defined extension members (SPEC §4.5.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
+}
+
+/// `vtc/vetting/vetters/grant/0.1#response` payload.
+///
+/// Granting converges: while a grant is live and unexpired, asking again
+/// returns it rather than issuing a second.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VetterGrantResponseBody {
+    /// The community's record of the grant — the id its revocation names.
+    pub endorsement_id: String,
+    /// The vetter role credential's `id`.
+    pub credential_id: String,
+    /// The credential's `validFrom`.
+    pub valid_from: DateTime<Utc>,
+    /// The credential's `validUntil`.
+    pub valid_until: DateTime<Utc>,
+    /// Ecosystem-defined extension members (SPEC §4.5.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
+}
+
+// ---------------------------------------------------------------------------
 // Shape checks for the remaining payloads
 // ---------------------------------------------------------------------------
 
@@ -871,6 +954,29 @@ impl RevokeStatementBody {
     /// [`ShapeError`] for the first rule broken.
     pub fn check_shape(&self) -> Result<(), ShapeError> {
         shape::statement_id("statementId", &self.statement_id)
+    }
+}
+
+impl VetterGrantBody {
+    /// Check the schema's bounds and patterns.
+    ///
+    /// # Errors
+    ///
+    /// [`ShapeError`] for the first rule broken.
+    pub fn check_shape(&self) -> Result<(), ShapeError> {
+        shape::did("memberDid", &self.member_did)?;
+        match self.validity_seconds {
+            Some(s)
+                if !(MIN_VETTER_GRANT_VALIDITY_SECONDS..=MAX_VETTER_GRANT_VALIDITY_SECONDS)
+                    .contains(&s) =>
+            {
+                Err(ShapeError::Field {
+                    field: "validitySeconds",
+                    rule: "must be between one day and two years",
+                })
+            }
+            _ => Ok(()),
+        }
     }
 }
 
@@ -1049,6 +1155,78 @@ mod shape {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_vetter_role_matches_in_both_spellings_and_nothing_else_does() {
+        assert!(role_matches("vetter", "vetter"));
+        assert!(role_matches("custom:vetter", "vetter"));
+        assert!(role_matches("vetter", "custom:vetter"));
+        assert!(role_matches("custom:vetter", "custom:vetter"));
+        assert!(role_matches("moderator", "moderator"));
+        assert!(!role_matches("custom:moderator", "moderator"));
+        assert!(!role_matches("member", "vetter"));
+        assert!(!role_matches("vetters", "vetter"));
+    }
+
+    #[test]
+    fn a_vetter_grant_is_camel_case_and_closed() {
+        let body: VetterGrantBody = serde_json::from_value(json!({
+            "memberDid": "did:key:zCarol",
+            "validitySeconds": 86_400
+        }))
+        .unwrap();
+        body.check_shape().unwrap();
+        assert!(
+            serde_json::from_value::<VetterGrantBody>(json!({
+                "memberDid": "did:key:zCarol",
+                "role": "admin"
+            }))
+            .is_err(),
+            "the grant names no role: it only ever names a vetter"
+        );
+
+        let response = VetterGrantResponseBody {
+            endorsement_id: "e".into(),
+            credential_id: "urn:uuid:e".into(),
+            valid_from: Utc::now(),
+            valid_until: Utc::now(),
+            ext: None,
+        };
+        let v = serde_json::to_value(&response).unwrap();
+        assert!(v["endorsementId"].is_string() && v["validUntil"].is_string());
+    }
+
+    #[test]
+    fn a_vetter_grant_is_bounded() {
+        let grant = |did: &str, validity: Option<u64>| VetterGrantBody {
+            member_did: did.into(),
+            validity_seconds: validity,
+            ext: None,
+        };
+        assert!(grant("did:key:zCarol", None).check_shape().is_ok());
+        assert!(grant("carol", None).check_shape().is_err());
+        assert!(
+            grant(
+                "did:key:zCarol",
+                Some(MIN_VETTER_GRANT_VALIDITY_SECONDS - 1)
+            )
+            .check_shape()
+            .is_err()
+        );
+        assert!(
+            grant("did:key:zCarol", Some(MAX_VETTER_GRANT_VALIDITY_SECONDS))
+                .check_shape()
+                .is_ok()
+        );
+        assert!(
+            grant(
+                "did:key:zCarol",
+                Some(MAX_VETTER_GRANT_VALIDITY_SECONDS + 1)
+            )
+            .check_shape()
+            .is_err()
+        );
+    }
 
     fn requirements() -> VettingRequirements {
         serde_json::from_value(json!({

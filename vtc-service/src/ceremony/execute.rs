@@ -114,6 +114,10 @@ pub struct DepartOutcome {
     /// the best-effort flip failed (the ACL/Member removal still
     /// committed — a failed flip is logged, not unwound).
     pub revoked_slot: Option<u32>,
+    /// Community role grants (vetter grants) the member held, now revoked:
+    /// slot flipped and row marked. The caller audits each. Best effort, like
+    /// the flip above — a grant that could not be revoked is logged.
+    pub revoked_grants: Vec<crate::endorsements::Endorsement>,
 }
 
 /// Apply an effect plan.
@@ -523,9 +527,14 @@ async fn depart(
         None => None,
     };
 
+    // A departed member is no vetter. Eligibility already requires a current
+    // member, but a grant left live would count again if this DID rejoined.
+    let revoked_grants = crate::vetting::vetters::revoke_on_departure(state, subject_did).await;
+
     Ok(DepartOutcome {
         disposition,
         revoked_slot,
+        revoked_grants,
     })
 }
 

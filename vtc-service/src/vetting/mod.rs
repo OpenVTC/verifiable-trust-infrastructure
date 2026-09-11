@@ -14,8 +14,9 @@
 //!    the issuer, type, bounded window, strict endorsement body);
 //! 2. binds it to the applicant (`credentialSubject.id` = the proven holder);
 //! 3. asks whether the issuer is an **eligible vetter** of this community —
-//!    a current member, holding the role the requirements name, who had
-//!    already joined when they issued the statement;
+//!    a current member, who had already joined when they issued the statement,
+//!    holding a vetter role grant ([`vetters`]) in the role the requirements
+//!    name that was recorded by then, unexpired then, and is not revoked now;
 //! 4. counts the survivors with `vta_sdk::vetting::requirements::evaluate`, the
 //!    same rule the applicant's client uses for its checklist.
 //!
@@ -27,6 +28,7 @@
 //! separately signed (VTI-CMP-070): distinct vetters are distinct *members*.
 
 pub mod revocation;
+pub mod vetters;
 
 use std::collections::BTreeMap;
 
@@ -37,13 +39,14 @@ use tracing::warn;
 
 use vta_sdk::protocols::join_requests::ManifestCriterion;
 use vta_sdk::protocols::vetting::{
-    IDENTITY_VETTING_ENDORSEMENT_TYPE, InvitationRequirement, VettingRequirements,
+    COMMUNITY_ROLE_ENDORSEMENT_TYPE, IDENTITY_VETTING_ENDORSEMENT_TYPE, InvitationRequirement,
+    VettingRequirements,
 };
 use vta_sdk::vetting::requirements::{REQUIREMENTS_DIGEST_MEMBER, StatementFacts, evaluate};
 use vta_sdk::vetting::statement::verify_statement;
 use vti_common::error::AppError;
 
-use crate::acl::{VtcRole, get_acl_entry};
+use crate::endorsements::endorsements_for_subject;
 use crate::members::storage::get_member;
 use crate::routes::join_requests::manifest::{ManifestVersion, manifest_criterion};
 use crate::schemas::accepts::list_accepts;
@@ -191,7 +194,6 @@ pub async fn vetting_facts(
             verified.issuer(),
             &requirements.eligible_vetters.role,
             verified.valid_from(),
-            now,
         )
         .await?;
         // A withdrawal notice counts only against a statement with the notice's
@@ -346,18 +348,20 @@ fn issuer_of(vc: &JsonValue) -> Option<String> {
     }
 }
 
-/// Is `issuer` an eligible vetter: a current member holding `role`, whose
-/// membership predates the statement, and whose ACL entry has not lapsed.
+/// Is `issuer` an eligible vetter: a current member, whose membership predates
+/// the statement, holding a role grant the community recorded for `role` —
+/// issued during this membership and by the statement's `validFrom`, unexpired
+/// then, and not revoked since ([`vetters::grant_covers`]).
 ///
-/// "Held the role when they issued it" is approximated by "holds it now and had
-/// joined by then": the ACL keeps no role history. A vetter demoted after
-/// issuing therefore stops counting, which errs toward not admitting.
+/// Revocation is read as it stands now, not as it stood at issuance: a grant
+/// withdrawn after a statement was signed stops that statement counting. That
+/// errs toward not admitting, and it is what an operator withdrawing a vetter
+/// they no longer trust means.
 async fn vetter_eligible(
     state: &AppState,
     issuer: &str,
     role: &str,
     issued_at: DateTime<Utc>,
-    now: DateTime<Utc>,
 ) -> Result<bool, AppError> {
     let Some(member) = get_member(&state.members_ks, issuer).await? else {
         return Ok(false);
@@ -365,22 +369,15 @@ async fn vetter_eligible(
     if member.removed_at.is_some() || member.joined_at > issued_at {
         return Ok(false);
     }
-    let Some(acl) = get_acl_entry(&state.acl_ks, issuer).await? else {
-        return Ok(false);
-    };
-    if acl
-        .expires_at
-        .is_some_and(|exp| i64::try_from(exp).unwrap_or(i64::MAX) <= now.timestamp())
-    {
-        return Ok(false);
-    }
-    Ok(role_matches(&acl.role, role))
-}
-
-/// A requirements `role` of `vetter` names the custom role `custom:vetter`; the
-/// wire form itself is accepted too, as are the standard role names.
-fn role_matches(held: &VtcRole, required: &str) -> bool {
-    held.to_string() == required || matches!(held, VtcRole::Custom(name) if name == required)
+    let grants = endorsements_for_subject(
+        &state.endorsements_ks,
+        issuer,
+        COMMUNITY_ROLE_ENDORSEMENT_TYPE,
+    )
+    .await?;
+    Ok(grants
+        .iter()
+        .any(|g| g.created_at >= member.joined_at && vetters::grant_covers(g, role, issued_at)))
 }
 
 #[cfg(test)]
@@ -421,15 +418,6 @@ mod tests {
         assert_eq!(s.criterion_id, "a");
         assert!(!s.applicant_digest_matches);
         assert!(select_criterion(vec![], Some("za")).is_none());
-    }
-
-    #[test]
-    fn role_names_match_in_both_spellings() {
-        let vetter = VtcRole::Custom("vetter".into());
-        assert!(role_matches(&vetter, "vetter"));
-        assert!(role_matches(&vetter, "custom:vetter"));
-        assert!(role_matches(&VtcRole::Moderator, "moderator"));
-        assert!(!role_matches(&VtcRole::Member, "vetter"));
     }
 
     fn facts_with_needs(needs: &[&str]) -> VettingFacts {
