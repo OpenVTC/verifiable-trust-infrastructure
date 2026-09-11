@@ -21,6 +21,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::info;
+use vta_sdk::protocols::vetting::VettingRequirements;
 use vti_common::audit::{AuditEvent, SchemaChangeData};
 use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
@@ -200,6 +201,11 @@ pub struct RegisterAcceptsBody {
     pub query: JsonValue,
     #[serde(default)]
     pub description: Option<String>,
+    /// Peer identity vetting this criterion requires, advertised in the join
+    /// manifest (0.2). Its `statementType` must be a registered endorsement type.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub vetting: Option<VettingRequirements>,
 }
 
 /// `POST /v1/schemas/accepts` — register (or update) an Accepts criterion. The
@@ -226,10 +232,27 @@ pub async fn register_accepts(
             "accepts criterion id cannot be empty".into(),
         ));
     }
+    // A criterion that counts statements of a type the community does not
+    // recognise could never be satisfied — refuse it here, where the operator
+    // can act on the error, rather than at an applicant's submit.
+    if let Some(vetting) = &body.vetting
+        && !crate::endorsement_types::storage::type_exists(
+            &state.endorsement_types_ks,
+            &vetting.statement_type,
+        )
+        .await?
+    {
+        return Err(AppError::Validation(format!(
+            "vetting.statementType `{}` is not a registered endorsement type — register it \
+             with vtc/endorsement-types/register first",
+            vetting.statement_type
+        )));
+    }
     let criterion = AcceptsCriterion {
         id: id.to_string(),
         query: body.query,
         description: body.description,
+        vetting: body.vetting,
         created_at: Utc::now(),
         created_by_did: auth.0.did.clone(),
     };

@@ -1630,6 +1630,14 @@ export interface components {
              *     [`validate_accepts_query`]).
              */
             query: unknown;
+            /**
+             * @description Peer identity vetting this criterion requires, advertised to applicants
+             *     in the join manifest (0.2). Every number in it is this community's
+             *     policy. Checked by [`VettingRequirements::validate`] when stored; the
+             *     admin route additionally requires its `statementType` to be a registered
+             *     endorsement type.
+             */
+            vetting?: Record<string, never> | null;
         };
         /**
          * @description `{ entry: … }` — the shape `acl/{grant,show,change-role}/0.1` publish.
@@ -3850,6 +3858,11 @@ export interface components {
             description?: string | null;
             id: string;
             query: components["schemas"]["Value"];
+            /**
+             * @description Peer identity vetting this criterion requires, advertised in the join
+             *     manifest (0.2). Its `statementType` must be a registered endorsement type.
+             */
+            vetting?: Record<string, never> | null;
         };
         RegisterBody: {
             claimSchema?: null | components["schemas"]["Value"];

@@ -172,6 +172,7 @@ async fn seed_join_ceremony(mock: &MockVtcDidcomm) -> String {
                 }]
             }),
             description: Some("Join evidence".into()),
+            vetting: None,
             created_at: chrono::Utc::now(),
             created_by_did: ADMIN_DID.into(),
         },
