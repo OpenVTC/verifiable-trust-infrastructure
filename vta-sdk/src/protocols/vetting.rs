@@ -523,7 +523,6 @@ checked_by_schema!(
     vetters::grant::v0_1::Payload,
     vetters::grant::v0_1::Response,
     vetters::profile::v0_1::Response,
-    vetters::list::v0_1::Response,
     vetters::resend::v0_1::Payload,
     vetters::resend::v0_1::Response,
 );
@@ -559,8 +558,12 @@ impl CheckShape for vetters::profile::v0_1::Payload {
         against_own_schema(self)?;
         // `VetterEvent`: "`endDate` is on or after `startDate` and no more than
         // 31 days after it; JSON Schema cannot compare two members, so the
-        // community checks both".
+        // community checks both". Its `url` is a `format: uri` the validator
+        // does not assert.
         for event in &self.events {
+            if let Some(url) = &event.url {
+                shape::https_uri("events.url", url)?;
+            }
             let (start, end) = (event.start_date.0, event.end_date.0);
             if end < start {
                 return Err(ShapeError::Field {
@@ -596,12 +599,29 @@ impl CheckShape for vetters::list::v0_1::Payload {
     }
 }
 
+impl CheckShape for vetters::list::v0_1::Response {
+    /// The schema, and each listed event's `url` as an absolute https URI,
+    /// which the validator does not assert.
+    fn check_shape(&self) -> Result<(), ShapeError> {
+        against_own_schema(self)?;
+        for event in self.vetters.iter().flat_map(|vetter| &vetter.events) {
+            if let Some(url) = &event.url {
+                shape::https_uri("vetters.events.url", url)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl CheckShape for VettingRequirements {
     /// A community refuses to publish requirements that fail this, and a client
     /// treats a criterion that fails it as unsatisfiable rather than guess
     /// (`vtc/join-requests/manifest/0.2`, Conformance 3).
     fn check_shape(&self) -> Result<(), ShapeError> {
         against_own_definition::<manifest::Response>("VettingRequirements", self)?;
+        if let Some(url) = &self.governance_framework_url {
+            shape::https_uri("governanceFrameworkUrl", url)?;
+        }
         if self
             .min_by_method
             .keys()
@@ -617,8 +637,14 @@ impl CheckShape for VettingRequirements {
 }
 
 impl CheckShape for manifest::CommunityBranding {
+    /// The manifest's definition, and `logoUrl` as an absolute https URI, which
+    /// the validator does not assert. A client fetches the logo from it.
     fn check_shape(&self) -> Result<(), ShapeError> {
-        against_own_definition::<manifest::Response>("CommunityBranding", self)
+        against_own_definition::<manifest::Response>("CommunityBranding", self)?;
+        if let Some(url) = &self.logo_url {
+            shape::https_uri("logoUrl", url)?;
+        }
+        Ok(())
     }
 }
 
@@ -895,6 +921,46 @@ pub(crate) mod shape {
             .any(|(i, v)| values[..i].contains(v))
     }
 
+    /// Longest value a vetting schema gives `format: uri`.
+    const MAX_URI_CHARS: usize = 2048;
+
+    /// A member the vetting schemas give `format: uri`, `pattern: ^https://`
+    /// and `maxLength: 2048` — an event's `url`, branding's `logoUrl`, the
+    /// requirements' `governanceFrameworkUrl` — is an absolute https URI
+    /// (RFC 3986) with a host. The schema validator treats `format` as an
+    /// annotation and does not assert it, and the pattern alone lets
+    /// `https://a b` through, so the URI rule is checked here.
+    pub(crate) fn https_uri(field: &'static str, value: &str) -> Result<(), ShapeError> {
+        let fail = |rule: &'static str| -> Result<(), ShapeError> {
+            Err(ShapeError::Field { field, rule })
+        };
+        if value.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return fail("must not contain whitespace or control characters");
+        }
+        if value.chars().count() > MAX_URI_CHARS {
+            return fail("must be at most 2048 characters");
+        }
+        let Some(rest) = value.strip_prefix("https://") else {
+            return fail("must be an absolute https URI");
+        };
+        let uri_character =
+            |b: u8| b.is_ascii_alphanumeric() || b"-._~:/?#[]@!$&'()*+,;=%".contains(&b);
+        let escapes_are_well_formed = value.bytes().enumerate().all(|(i, b)| {
+            b != b'%'
+                || value
+                    .as_bytes()
+                    .get(i + 1..i + 3)
+                    .is_some_and(|hex| hex.iter().all(u8::is_ascii_hexdigit))
+        });
+        let has_authority = !rest.is_empty() && !rest.starts_with(['/', '?', '#']);
+        let parses = url::Url::parse(value)
+            .is_ok_and(|u| u.scheme() == "https" && u.host_str().is_some_and(|h| !h.is_empty()));
+        if value.bytes().all(uri_character) && escapes_are_well_formed && has_authority && parses {
+            return Ok(());
+        }
+        fail("must be an absolute https URI")
+    }
+
     /// Portraits are not carried (D17).
     pub(crate) fn no_portrait<'a>(
         field: &'static str,
@@ -1025,6 +1091,12 @@ mod tests {
         assert!(broken(&|p| p["events"][0]["name"] = json!("x".repeat(201))));
         assert!(broken(
             &|p| p["events"][0]["url"] = json!("http://events.example.org")
+        ));
+        assert!(broken(
+            &|p| p["events"][0]["url"] = json!("https://events.example.org/kernel meetup")
+        ));
+        assert!(broken(
+            &|p| p["events"][0]["url"] = json!("https://events.example.org/\u{7}")
         ));
         assert!(broken(&|p| p["events"][0]["endDate"] = json!("2026-10-04")));
         assert!(broken(&|p| p["events"][0]["endDate"] = json!("2026-11-06")));
@@ -1278,6 +1350,14 @@ mod tests {
             with("governanceFrameworkUrl", json!("http://gov.example")),
             "governance text is served over https"
         );
+        assert!(with(
+            "governanceFrameworkUrl",
+            json!("https://gov.example/frame work")
+        ));
+        assert!(with(
+            "governanceFrameworkUrl",
+            json!("https://gov.example/\u{1b}")
+        ));
         assert!(
             with("decisionSla", json!(format!("PT{}S", "1".repeat(30)))),
             "durations are at most 32 characters"
@@ -1460,11 +1540,85 @@ mod tests {
             json!({ "accentColor": "red" }),
             json!({ "accentColor": "#12345g" }),
             json!({ "logoUrl": "http://kernel.example.org/logo.svg" }),
+            json!({ "logoUrl": "https://kernel.example.org/my logo.svg" }),
+            json!({ "logoUrl": "https://kernel.example.org/logo\u{0}.svg" }),
             json!({ "displayName": "x".repeat(129) }),
             json!({ "displayName": "" }),
             json!({ "tagline": "x" }),
         ] {
             assert!(read_branding(&bad).is_err(), "{bad}");
+        }
+        // A branding built in code, as the community stores it, is held to the
+        // same rule.
+        let spaced: manifest::CommunityBranding =
+            serde_json::from_value(json!({ "logoUrl": "https://kernel.example.org/my logo.svg" }))
+                .unwrap();
+        assert!(spaced.check_shape().is_err());
+    }
+
+    #[test]
+    fn a_format_uri_member_is_an_absolute_https_uri() {
+        // The schema validator does not assert `format: uri`, and the
+        // `^https://` pattern alone admits every one of these refusals.
+        for good in [
+            "https://events.example.org",
+            "https://events.example.org/kms?day=1#hall-b",
+            "https://example.org/caf%C3%A9",
+            "https://[2001:db8::1]:8443/logo.svg",
+        ] {
+            assert_eq!(shape::https_uri("url", good), Ok(()), "{good}");
+        }
+        let whitespace = "must not contain whitespace or control characters";
+        let not_a_uri = "must be an absolute https URI";
+        let too_long = format!("https://example.org/{}", "a".repeat(2048));
+        for (bad, rule) in [
+            ("https://events.example.org/kernel meetup", whitespace),
+            ("https://events.example.org/\u{7}", whitespace),
+            ("https://events.example.org/\tx", whitespace),
+            ("https://events.example.org/\u{85}", whitespace),
+            ("http://events.example.org", not_a_uri),
+            ("events.example.org", not_a_uri),
+            ("https://", not_a_uri),
+            ("https:///path", not_a_uri),
+            ("https://?q=1", not_a_uri),
+            ("https://example.org/%zz", not_a_uri),
+            ("https://example.org/%4", not_a_uri),
+            ("https://example.org/café", not_a_uri),
+            ("https://example.org/<logo>", not_a_uri),
+            (too_long.as_str(), "must be at most 2048 characters"),
+        ] {
+            assert_eq!(
+                shape::https_uri("url", bad),
+                Err(ShapeError::Field { field: "url", rule }),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_listed_event_url_is_an_absolute_https_uri() {
+        // A listing is the stored profiles as the community lists them: without
+        // `listed`, with the vetter's DID and the grant and update times.
+        let listing = |url: &str| {
+            let mut vetter = profile_json();
+            vetter["events"][0]["url"] = json!(url);
+            let members = vetter.as_object_mut().unwrap();
+            members.remove("listed");
+            members.insert("vetterDid".into(), json!("did:key:zVetter"));
+            members.insert("grantValidUntil".into(), json!("2027-01-01T00:00:00Z"));
+            members.insert("updatedAt".into(), json!("2026-09-01T00:00:00Z"));
+            json!({ "vetters": [vetter] })
+        };
+        type Listing = vetters::list::v0_1::Response;
+        assert!(!refused::<Listing>(listing(
+            "https://events.example.org/kms"
+        )));
+        for bad in [
+            "https://events.example.org/kernel meetup",
+            "https://events.example.org/\u{7}",
+            "http://events.example.org",
+        ] {
+            assert!(refused::<Listing>(listing(bad)), "{bad:?}");
         }
     }
 

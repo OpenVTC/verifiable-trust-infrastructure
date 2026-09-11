@@ -2806,6 +2806,26 @@ async fn only_a_member_holding_a_live_grant_may_publish_a_profile() {
 }
 
 #[tokio::test]
+async fn a_profile_whose_event_url_is_not_an_absolute_https_uri_is_malformed() {
+    // An event `url` is `format: uri`, which the schema validator does not
+    // assert: the community refuses one by hand.
+    let fix = build_fixture().await;
+    let (carol, _) = did_key_secret([0x11; 32]);
+    seed_vetter(&fix, &carol).await;
+    for url in [
+        "https://kernel.example/maintainers meetup",
+        "https://kernel.example/meetup\u{7}",
+        "http://kernel.example/meetup",
+    ] {
+        let mut profile = carols_profile(true);
+        profile["events"][1]["url"] = json!(url);
+        let (status, body) = publish_profile(&fix, [0x11; 32], profile).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{url:?}: {body}");
+        assert_eq!(tt_error_code(&body), "malformedRequest", "{url:?}");
+    }
+}
+
+#[tokio::test]
 async fn unlisting_hides_a_profile_and_revoking_the_grant_deletes_it() {
     use vtc_service::vetting::profiles::get_profile;
     let fix = build_fixture().await;
@@ -2952,14 +2972,22 @@ async fn branding_is_published_on_manifest_0_2_only() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["accentColor"], "#1a2b3c", "stored in lower case");
 
-    let (status, body) = admin_rest(
-        &fix,
-        "PUT",
-        "/v1/community/branding",
-        Some(json!({ "logoUrl": "http://kernel.example/logo.svg" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    // `logoUrl` is `format: uri`: an absolute https URI, which the schema
+    // validator does not assert and the community checks by hand.
+    for logo in [
+        "http://kernel.example/logo.svg",
+        "https://kernel.example/my logo.svg",
+        "https://kernel.example/logo\u{7}.svg",
+    ] {
+        let (status, body) = admin_rest(
+            &fix,
+            "PUT",
+            "/v1/community/branding",
+            Some(json!({ "logoUrl": logo })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{logo:?}: {body}");
+    }
 
     let (_did, doc) = signed_trust_task(JOIN_REQUEST_MANIFEST_0_2_TYPE, json!({})).await;
     let (status, body) = post_tt(&fix.router, doc).await;

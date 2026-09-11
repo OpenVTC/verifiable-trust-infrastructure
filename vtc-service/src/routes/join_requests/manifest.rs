@@ -31,6 +31,7 @@ use serde_json::{Map, Value};
 
 use vta_sdk::openapi::{JoinManifest01Response, JoinManifest02Response};
 use vta_sdk::protocols::join_requests::manifest::{v0_1, v0_2};
+use vta_sdk::protocols::vetting::CheckShape;
 use vta_sdk::vetting::requirements::requirements_digest;
 use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
@@ -137,12 +138,24 @@ pub fn response_v0_1(
     .map_err(|e| AppError::Internal(format!("manifest 0.1: {e}")))
 }
 
-/// The 0.2 answer over `stored` criteria.
+/// The 0.2 answer over `stored` criteria and `branding`.
+///
+/// Branding the manifest cannot carry — a `logoUrl` that is not an absolute
+/// https URI among it — is not emitted. Storing branding refuses it first
+/// ([`crate::community::branding::store_branding`]), so only a row written
+/// before that check can reach here, and it is the community's fault.
 pub fn response_v0_2(
     community_did: String,
     stored: Vec<AcceptsCriterion>,
     branding: Option<v0_2::CommunityBranding>,
 ) -> Result<v0_2::Response, AppError> {
+    if let Some(branding) = &branding {
+        branding.check_shape().map_err(|e| {
+            AppError::Internal(format!(
+                "the stored branding does not project onto the manifest: {e}"
+            ))
+        })?;
+    }
     let criteria = stored
         .into_iter()
         .map(manifest_criterion)
@@ -331,5 +344,27 @@ mod tests {
             manifest_criterion(long_description),
             Err(AppError::Validation(_))
         ));
+    }
+
+    #[test]
+    fn branding_the_manifest_cannot_carry_is_not_emitted() {
+        let answer = |logo: &str| {
+            let branding: v0_2::CommunityBranding =
+                serde_json::from_value(json!({ "displayName": "Kernel", "logoUrl": logo }))
+                    .unwrap();
+            response_v0_2(
+                "did:web:vtc.example".into(),
+                vec![stored(None)],
+                Some(branding),
+            )
+        };
+        assert!(answer("https://kernel.example/logo.svg").is_ok());
+        for bad in [
+            "https://kernel.example/my logo.svg",
+            "https://kernel.example/logo\u{7}.svg",
+            "http://kernel.example/logo.svg",
+        ] {
+            assert!(matches!(answer(bad), Err(AppError::Internal(_))), "{bad:?}");
+        }
     }
 }
