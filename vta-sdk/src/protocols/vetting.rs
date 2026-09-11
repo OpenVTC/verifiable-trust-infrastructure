@@ -95,7 +95,7 @@ pub const VETTING_REQUEST_ERR_METHOD_UNAVAILABLE: &str = "vetting/request:method
 
 /// How a vetter established who the applicant is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub enum VettingMethod {
     /// Both people in the same place.
@@ -112,9 +112,9 @@ impl VettingMethod {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::InPerson => "in-person",
+            Self::InPerson => "inPerson",
             Self::Video => "video",
-            Self::PriorAcquaintance => "prior-acquaintance",
+            Self::PriorAcquaintance => "priorAcquaintance",
         }
     }
 
@@ -122,9 +122,9 @@ impl VettingMethod {
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "in-person" => Some(Self::InPerson),
+            "inPerson" => Some(Self::InPerson),
             "video" => Some(Self::Video),
-            "prior-acquaintance" => Some(Self::PriorAcquaintance),
+            "priorAcquaintance" => Some(Self::PriorAcquaintance),
             _ => None,
         }
     }
@@ -133,7 +133,7 @@ impl VettingMethod {
 /// The vetter's declared relationship to the applicant. Independence rules in
 /// [`Independence`] cap how many counted statements may carry each value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub enum DeclaredRelationship {
     /// No prior relationship.
@@ -155,10 +155,10 @@ pub mod documentation {
     /// A passport.
     pub const PASSPORT: &str = "passport";
     /// A national identity card.
-    pub const NATIONAL_ID: &str = "national-id";
+    pub const NATIONAL_ID: &str = "nationalId";
     /// A driver licence.
-    pub const DRIVER_LICENCE: &str = "driver-licence";
-    /// No document: the vetter knows the person (`prior-acquaintance`).
+    pub const DRIVER_LICENCE: &str = "driverLicence";
+    /// No document: the vetter knows the person (`priorAcquaintance`).
     pub const NONE: &str = "none";
 }
 
@@ -181,7 +181,7 @@ pub struct VettingRequirements {
     pub statement_type: String,
     /// Distinct eligible vetters required, counted by member, not by DID.
     pub min_statements: u32,
-    /// Per-method floors, e.g. at least one `in-person`.
+    /// Per-method floors, e.g. at least one `inPerson`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub min_by_method: BTreeMap<VettingMethod, u32>,
     /// Methods that count at all.
@@ -246,7 +246,7 @@ pub struct Independence {
 
 /// Whether a VIC must accompany the vetting statements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub enum InvitationRequirement {
     /// A VIC is required.
@@ -271,8 +271,23 @@ impl VettingRequirements {
     ///
     /// [`InvalidRequirements`] naming the first problem found.
     pub fn validate(&self) -> Result<(), InvalidRequirements> {
-        if self.statement_type.is_empty() {
-            return Err(InvalidRequirements("statementType is empty".into()));
+        let (major, minor) = self.version.split_once('.').unwrap_or_default();
+        if major.is_empty()
+            || minor.is_empty()
+            || !major
+                .bytes()
+                .chain(minor.bytes())
+                .all(|b| b.is_ascii_digit())
+        {
+            return Err(InvalidRequirements(format!(
+                "version `{}` is not MAJOR.MINOR",
+                self.version
+            )));
+        }
+        if self.statement_type.is_empty() || self.statement_type.chars().count() > 512 {
+            return Err(InvalidRequirements(
+                "statementType is empty or longer than 512 characters".into(),
+            ));
         }
         if self.min_statements == 0 {
             return Err(InvalidRequirements(
@@ -290,8 +305,18 @@ impl VettingRequirements {
                 )));
             }
         }
-        if self.eligible_vetters.role.is_empty() {
-            return Err(InvalidRequirements("eligibleVetters.role is empty".into()));
+        shape::role("eligibleVetters.role", &self.eligible_vetters.role)
+            .map_err(|e| InvalidRequirements(e.to_string()))?;
+        if let Some(classes) = &self.accepted_document_classes {
+            shape::tokens("acceptedDocumentClasses", classes)
+                .map_err(|e| InvalidRequirements(e.to_string()))?;
+        }
+        if let Some(url) = &self.governance_framework_url
+            && (!url.starts_with("https://") || url.chars().count() > 2048)
+        {
+            return Err(InvalidRequirements(
+                "governanceFrameworkUrl must be an https URL of at most 2048 characters".into(),
+            ));
         }
         for (name, value) in [
             ("maxStatementAge", &self.max_statement_age),
@@ -299,7 +324,7 @@ impl VettingRequirements {
             ("requirementsGrace", &self.requirements_grace),
         ] {
             if let Some(v) = value
-                && parse_iso8601_duration(v).is_none()
+                && (v.len() > 32 || parse_iso8601_duration(v).is_none())
             {
                 return Err(InvalidRequirements(format!(
                     "{name} `{v}` is not a supported ISO 8601 duration (weeks, days, hours, minutes, seconds)"
@@ -326,19 +351,24 @@ impl VettingRequirements {
 /// not a limit.
 #[must_use]
 pub fn parse_iso8601_duration(s: &str) -> Option<Duration> {
+    /// Units in the order ISO 8601 writes them. Each may appear at most once,
+    /// and only after the ones before it — `P1D2W` is not a duration.
     fn accumulate(part: &str, units: &[(char, i64)]) -> Option<(i64, bool)> {
         let mut seconds: i64 = 0;
         let mut digits = String::new();
+        let mut next_unit = 0;
         let mut any = false;
         for c in part.chars() {
             if c.is_ascii_digit() {
                 digits.push(c);
                 continue;
             }
-            let (_, multiplier) = units.iter().find(|(unit, _)| *unit == c)?;
+            let offset = units[next_unit..].iter().position(|(unit, _)| *unit == c)?;
+            let (_, multiplier) = units[next_unit + offset];
+            next_unit += offset + 1;
             let n: i64 = digits.parse().ok()?;
             digits.clear();
-            seconds = seconds.checked_add(n.checked_mul(*multiplier)?)?;
+            seconds = seconds.checked_add(n.checked_mul(multiplier)?)?;
             any = true;
         }
         if !digits.is_empty() {
@@ -428,32 +458,58 @@ pub struct VettingRequestBody {
     pub ext: Option<Value>,
 }
 
-/// Why a [`VettingRequestBody`] is not well formed.
+/// Why a payload breaks a rule its Trust Task schema states.
+///
+/// Serde checks member names and types. The bounds and patterns the schemas
+/// also set — lengths, the ticket-code alphabet, BCP 47 tags — are checked by
+/// each type's `check_shape`, which a receiver runs before acting on the
+/// payload and a sender before signing it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
-pub enum RequestShapeError {
+pub enum ShapeError {
     /// Both a ticket and an introduction were supplied.
     #[error("a request carries a ticket or an introduction, not both")]
     TicketAndIntroduction,
     /// `joinDid` differs from the document issuer.
     #[error("joinDid must be the document issuer")]
     JoinDidNotIssuer,
+    /// A member breaks its schema bound or pattern.
+    #[error("`{field}` {rule}")]
+    Field {
+        /// The member, spelled as on the wire.
+        field: &'static str,
+        /// What it has to be.
+        rule: &'static str,
+    },
 }
 
 impl VettingRequestBody {
-    /// Check the rules the schema cannot express.
+    /// Check the rules serde cannot: the schema's bounds and patterns, a ticket
+    /// or an introduction but not both, and `joinDid` = the document issuer.
     ///
     /// # Errors
     ///
-    /// [`RequestShapeError`] for the first rule broken.
-    pub fn check_shape(&self, document_issuer: &str) -> Result<(), RequestShapeError> {
+    /// [`ShapeError`] for the first rule broken.
+    pub fn check_shape(&self, document_issuer: &str) -> Result<(), ShapeError> {
         if self.ticket.is_some() && self.introduction.is_some() {
-            return Err(RequestShapeError::TicketAndIntroduction);
+            return Err(ShapeError::TicketAndIntroduction);
         }
         if self.join_did != document_issuer {
-            return Err(RequestShapeError::JoinDidNotIssuer);
+            return Err(ShapeError::JoinDidNotIssuer);
         }
-        Ok(())
+        shape::did("community", &self.community)?;
+        shape::did("joinDid", &self.join_did)?;
+        match &self.ticket {
+            Some(TicketPresentation::Scanned { ticket_id, secret }) => {
+                shape::ticket_id("ticket.ticketId", ticket_id)?;
+                shape::base64url_32("ticket.secret", secret)?;
+            }
+            Some(TicketPresentation::Code { code }) => shape::ticket_code("ticket.code", code)?,
+            None => {}
+        }
+        shape::languages("languages", &self.languages)?;
+        shape::optional_length("message", self.message.as_deref(), 1000)?;
+        shape::optional_length("availability", self.availability.as_deref(), 256)
     }
 }
 
@@ -463,9 +519,10 @@ impl VettingRequestBody {
 pub struct VettingRequestAcceptedBody {
     /// The vetter's handle for this request; every later task names it.
     pub request_id: String,
-    /// A VP of the vetter's community-issued VMC and `vetter` role VEC, with
-    /// `requestId` as its challenge, so the applicant can confirm eligibility
-    /// before investing in a session.
+    /// A VP of the vetter's community-issued VMC and `vetter` role VEC, with the
+    /// `vetting/request` document's `id` as its challenge — a value the
+    /// applicant chose, so the proof is fresh — letting the applicant confirm
+    /// eligibility before investing in a session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eligibility_vp: Option<Value>,
     /// The documentation this vetter accepts (their own choice, D16).
@@ -592,7 +649,7 @@ pub struct IdentityVettingEndorsement {
     /// How the vetter established identity.
     pub method: VettingMethod,
     /// What the vetter relied on, from their own accepted list; empty with
-    /// `prior-acquaintance`.
+    /// `priorAcquaintance`.
     #[serde(default)]
     pub document_classes: Vec<String>,
     /// Claim types the vetter verified.
@@ -616,7 +673,7 @@ pub struct IdentityVettingEndorsement {
 
 /// Why a vetter declined. Optional — a vetter never has to say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub enum DeclineCode {
     /// The vetter could not establish identity.
@@ -654,7 +711,7 @@ pub struct VettingDeclineBody {
 
 /// Why a vetter withdrew a statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub enum RevocationReason {
     /// The vetter made a mistake.
@@ -696,6 +753,298 @@ pub struct RevokeStatementResponseBody {
     pub ext: Option<Value>,
 }
 
+// ---------------------------------------------------------------------------
+// Shape checks for the remaining payloads
+// ---------------------------------------------------------------------------
+
+/// The claim type a card, session or statement must never name: portraits are
+/// not carried (design D17).
+pub const PORTRAIT_CLAIM_TYPE: &str = "person.portrait";
+
+impl VettingRequestAcceptedBody {
+    /// Check the schema's bounds and patterns.
+    ///
+    /// # Errors
+    ///
+    /// [`ShapeError`] for the first rule broken.
+    pub fn check_shape(&self) -> Result<(), ShapeError> {
+        shape::length("requestId", &self.request_id, 128)?;
+        shape::tokens("acceptsDocumentation", &self.accepts_documentation)?;
+        shape::optional_length("sessionHint", self.session_hint.as_deref(), 500)
+    }
+}
+
+impl VettingSessionBody {
+    /// Check the schema's bounds and patterns.
+    ///
+    /// # Errors
+    ///
+    /// [`ShapeError`] for the first rule broken.
+    pub fn check_shape(&self) -> Result<(), ShapeError> {
+        shape::length("requestId", &self.request_id, 128)?;
+        shape::base64url_32("challenge", &self.challenge)?;
+        shape::did("domain", &self.domain)?;
+        shape::no_portrait(
+            "requiredClaims",
+            self.required_claims.iter().map(String::as_str),
+        )?;
+        shape::no_portrait(
+            "optionalClaims",
+            self.optional_claims.iter().map(String::as_str),
+        )
+    }
+}
+
+impl VettingCard {
+    /// Check the schema's bounds and patterns. The proof is not checked here:
+    /// a card is shaped before it is signed, and verification checks the proof.
+    ///
+    /// # Errors
+    ///
+    /// [`ShapeError`] for the first rule broken.
+    pub fn check_shape(&self) -> Result<(), ShapeError> {
+        if self.types.len() != VETTING_CARD_TYPES.len()
+            || !VETTING_CARD_TYPES
+                .iter()
+                .all(|t| self.types.iter().any(|s| s == t))
+        {
+            return Err(ShapeError::Field {
+                field: "type",
+                rule: "must be exactly VerifiableDataStructure, RelationshipCard and VettingCard",
+            });
+        }
+        shape::did("publisher", &self.publisher)?;
+        shape::did("audience", &self.audience)?;
+        shape::did("community", &self.community)?;
+        shape::did("domain", &self.domain)?;
+        shape::base64url_32("challenge", &self.challenge)?;
+        shape::base64url_32("commitmentSalt", &self.commitment_salt)?;
+        if self.claims.is_empty() {
+            return Err(ShapeError::Field {
+                field: "claims",
+                rule: "must carry at least one claim",
+            });
+        }
+        for claim in &self.claims {
+            shape::token("claims.provenance", &claim.provenance)?;
+        }
+        shape::no_portrait(
+            "claims.type",
+            self.claims.iter().map(|c| c.claim_type.as_str()),
+        )
+    }
+}
+
+impl IdentityVettingEndorsement {
+    /// Check the schema's bounds and patterns.
+    ///
+    /// # Errors
+    ///
+    /// [`ShapeError`] for the first rule broken.
+    pub fn check_shape(&self) -> Result<(), ShapeError> {
+        shape::did("community", &self.community)?;
+        shape::tokens("documentClasses", &self.document_classes)?;
+        shape::no_portrait(
+            "claimsVerified",
+            self.claims_verified.iter().map(String::as_str),
+        )
+    }
+}
+
+impl VettingDeclineBody {
+    /// Check the schema's bounds and patterns.
+    ///
+    /// # Errors
+    ///
+    /// [`ShapeError`] for the first rule broken.
+    pub fn check_shape(&self) -> Result<(), ShapeError> {
+        shape::length("requestId", &self.request_id, 128)?;
+        shape::optional_length("message", self.message.as_deref(), 500)
+    }
+}
+
+impl RevokeStatementBody {
+    /// Check the schema's bounds and patterns.
+    ///
+    /// # Errors
+    ///
+    /// [`ShapeError`] for the first rule broken.
+    pub fn check_shape(&self) -> Result<(), ShapeError> {
+        shape::statement_id("statementId", &self.statement_id)
+    }
+}
+
+/// The bounds and patterns the vetting schemas set, written out rather than
+/// compiled from regular expressions so the crate takes no regex dependency.
+/// Each function names the schema pattern it implements.
+mod shape {
+    use super::{PORTRAIT_CLAIM_TYPE, ShapeError};
+
+    /// Crockford base32: no `I`, `L`, `O` or `U` (`[0-9A-HJKMNP-TV-Z]`).
+    const CROCKFORD: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+    fn fail(field: &'static str, rule: &'static str) -> Result<(), ShapeError> {
+        Err(ShapeError::Field { field, rule })
+    }
+
+    /// `minLength: 1`, `maxLength: max`, counted in characters as JSON Schema
+    /// counts them.
+    pub(super) fn length(field: &'static str, value: &str, max: usize) -> Result<(), ShapeError> {
+        let n = value.chars().count();
+        if n == 0 || n > max {
+            return fail(field, "is empty or longer than its schema allows");
+        }
+        Ok(())
+    }
+
+    pub(super) fn optional_length(
+        field: &'static str,
+        value: Option<&str>,
+        max: usize,
+    ) -> Result<(), ShapeError> {
+        value.map_or(Ok(()), |v| length(field, v, max))
+    }
+
+    /// `^did:`.
+    pub(super) fn did(field: &'static str, value: &str) -> Result<(), ShapeError> {
+        if value.len() > "did:".len() && value.starts_with("did:") {
+            return Ok(());
+        }
+        fail(field, "must be a DID")
+    }
+
+    /// `^[A-Za-z0-9_-]{43}$` — 32 bytes, base64url without padding.
+    pub(super) fn base64url_32(field: &'static str, value: &str) -> Result<(), ShapeError> {
+        if value.len() == 43
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Ok(());
+        }
+        fail(field, "must be 32 bytes, base64url without padding")
+    }
+
+    /// `^[a-z][a-zA-Z0-9]*$`, at most 64 characters — documentation classes
+    /// and provenance values.
+    pub(super) fn token(field: &'static str, value: &str) -> Result<(), ShapeError> {
+        let mut chars = value.chars();
+        if value.len() <= 64
+            && chars.next().is_some_and(|c| c.is_ascii_lowercase())
+            && chars.all(|c| c.is_ascii_alphanumeric())
+        {
+            return Ok(());
+        }
+        fail(
+            field,
+            "must be a lowerCamelCase token of at most 64 characters",
+        )
+    }
+
+    pub(super) fn tokens(field: &'static str, values: &[String]) -> Result<(), ShapeError> {
+        values.iter().try_for_each(|v| token(field, v))
+    }
+
+    /// `maxItems: 16`, `uniqueItems`, each item at most 35 characters of
+    /// `^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$`.
+    pub(super) fn languages(field: &'static str, tags: &[String]) -> Result<(), ShapeError> {
+        if tags.len() > 16 {
+            return fail(field, "lists more than 16 languages");
+        }
+        for (i, tag) in tags.iter().enumerate() {
+            if !language_tag(tag) {
+                return fail(field, "must hold BCP 47 language tags");
+            }
+            if tags[..i].contains(tag) {
+                return fail(field, "repeats a language");
+            }
+        }
+        Ok(())
+    }
+
+    fn language_tag(tag: &str) -> bool {
+        let mut parts = tag.split('-');
+        tag.len() <= 35
+            && parts.next().is_some_and(|primary| {
+                (2..=3).contains(&primary.len()) && primary.bytes().all(|b| b.is_ascii_alphabetic())
+            })
+            && parts.all(|sub| {
+                (1..=8).contains(&sub.len()) && sub.bytes().all(|b| b.is_ascii_alphanumeric())
+            })
+    }
+
+    /// `^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$`.
+    pub(super) fn ticket_code(field: &'static str, code: &str) -> Result<(), ShapeError> {
+        if code.len() == 9
+            && code.bytes().enumerate().all(|(i, b)| {
+                if i == 4 {
+                    b == b'-'
+                } else {
+                    CROCKFORD.contains(&b)
+                }
+            })
+        {
+            return Ok(());
+        }
+        fail(field, "must be XXXX-XXXX in Crockford base32")
+    }
+
+    /// `^[A-Za-z0-9._:-]+$`, at most 128 characters.
+    pub(super) fn ticket_id(field: &'static str, id: &str) -> Result<(), ShapeError> {
+        if (1..=128).contains(&id.len())
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
+        {
+            return Ok(());
+        }
+        fail(
+            field,
+            "must be 1–128 characters of A–Z, a–z, 0–9, `.`, `_`, `:`, `-`",
+        )
+    }
+
+    /// `^[a-zA-Z][a-zA-Z0-9+.-]*:\S+$`, at most 512 characters — a URI with a
+    /// scheme, such as `urn:uuid:…`. The scheme cannot contain `:`, so the
+    /// first `:` is where it ends.
+    pub(super) fn statement_id(field: &'static str, id: &str) -> Result<(), ShapeError> {
+        let well_formed = id.split_once(':').is_some_and(|(scheme, rest)| {
+            let mut scheme = scheme.chars();
+            scheme.next().is_some_and(|c| c.is_ascii_alphabetic())
+                && scheme.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+                && !rest.is_empty()
+                && !rest.chars().any(char::is_whitespace)
+        });
+        if well_formed && id.chars().count() <= 512 {
+            return Ok(());
+        }
+        fail(field, "must be a URI of at most 512 characters")
+    }
+
+    /// `^[a-zA-Z][a-zA-Z0-9_-]*$`, at most 128 characters.
+    pub(super) fn role(field: &'static str, role: &str) -> Result<(), ShapeError> {
+        let mut chars = role.chars();
+        if role.len() <= 128
+            && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Ok(());
+        }
+        fail(field, "must be a role name of at most 128 characters")
+    }
+
+    /// Portraits are not carried (D17).
+    pub(super) fn no_portrait<'a>(
+        field: &'static str,
+        mut claim_types: impl Iterator<Item = &'a str>,
+    ) -> Result<(), ShapeError> {
+        if claim_types.any(|t| t == PORTRAIT_CLAIM_TYPE) {
+            return fail(field, "must not name person.portrait");
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -706,8 +1055,8 @@ mod tests {
             "version": "0.1",
             "statementType": IDENTITY_VETTING_ENDORSEMENT_TYPE,
             "minStatements": 2,
-            "minByMethod": { "in-person": 1 },
-            "acceptedMethods": ["in-person", "video", "prior-acquaintance"],
+            "minByMethod": { "inPerson": 1 },
+            "acceptedMethods": ["inPerson", "video", "priorAcquaintance"],
             "requiredClaims": ["name.legal"],
             "maxStatementAge": "P120D",
             "eligibleVetters": { "role": "vetter" },
@@ -717,7 +1066,7 @@ mod tests {
     }
 
     #[test]
-    fn requirements_round_trip_in_camel_and_kebab_case() {
+    fn requirements_round_trip_with_camel_case_members_and_values() {
         let req = requirements();
         assert_eq!(req.min_by_method.get(&VettingMethod::InPerson), Some(&1));
         assert_eq!(
@@ -727,8 +1076,8 @@ mod tests {
             Some(&0)
         );
         let back = serde_json::to_value(&req).unwrap();
-        assert_eq!(back["minByMethod"]["in-person"], 1);
-        assert_eq!(back["acceptedMethods"][2], "prior-acquaintance");
+        assert_eq!(back["minByMethod"]["inPerson"], 1);
+        assert_eq!(back["acceptedMethods"][2], "priorAcquaintance");
         // Documentation is the vetter's choice unless a community sets a floor.
         assert!(back.get("acceptedDocumentClasses").is_none());
         req.validate().unwrap();
@@ -751,7 +1100,7 @@ mod tests {
         let mut req = requirements();
         req.accepted_methods = vec![VettingMethod::Video];
         assert!(
-            req.validate().unwrap_err().0.contains("in-person"),
+            req.validate().unwrap_err().0.contains("inPerson"),
             "a floor on a method that never counts is unsatisfiable"
         );
 
@@ -766,7 +1115,9 @@ mod tests {
         assert_eq!(parse_iso8601_duration("P2W"), Duration::try_days(14));
         assert_eq!(parse_iso8601_duration("P1DT12H"), Duration::try_hours(36));
         assert_eq!(parse_iso8601_duration("PT15M"), Duration::try_minutes(15));
-        for bad in ["", "P", "PT", "120D", "P1Y", "P3M", "P1D2", "PTX", "P-1D"] {
+        for bad in [
+            "", "P", "PT", "120D", "P1Y", "P3M", "P1D2", "PTX", "P-1D", "P1D2W", "PT1M1H", "P1D1D",
+        ] {
             assert_eq!(parse_iso8601_duration(bad), None, "{bad:?}");
         }
     }
@@ -783,12 +1134,170 @@ mod tests {
         body.check_shape("did:key:zApplicant").unwrap();
         assert_eq!(
             body.check_shape("did:key:zSomeoneElse"),
-            Err(RequestShapeError::JoinDidNotIssuer)
+            Err(ShapeError::JoinDidNotIssuer)
         );
         body.introduction = Some(json!({}));
         assert_eq!(
             body.check_shape("did:key:zApplicant"),
-            Err(RequestShapeError::TicketAndIntroduction)
+            Err(ShapeError::TicketAndIntroduction)
+        );
+    }
+
+    fn field_of(result: Result<(), ShapeError>) -> &'static str {
+        match result {
+            Err(ShapeError::Field { field, .. }) => field,
+            other => panic!("expected a field error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_bounds_follow_the_schema() {
+        let base = || -> VettingRequestBody {
+            serde_json::from_value(json!({
+                "community": "did:web:vtc.example",
+                "joinDid": "did:key:zApplicant",
+                "ticket": { "code": "K7QF-2M9X" },
+                "languages": ["en", "pt-BR", "zh-Hant-TW"],
+                "message": "Hello"
+            }))
+            .unwrap()
+        };
+        let issuer = "did:key:zApplicant";
+        base().check_shape(issuer).unwrap();
+
+        // I, L, O and U are not Crockford characters.
+        let mut b = base();
+        b.ticket = Some(TicketPresentation::Code {
+            code: "K7QF-2M9O".into(),
+        });
+        assert_eq!(field_of(b.check_shape(issuer)), "ticket.code");
+
+        let mut b = base();
+        b.ticket = Some(TicketPresentation::Scanned {
+            ticket_id: "t-1".into(),
+            secret: "too-short".into(),
+        });
+        assert_eq!(field_of(b.check_shape(issuer)), "ticket.secret");
+
+        let mut b = base();
+        b.ticket = Some(TicketPresentation::Scanned {
+            ticket_id: "t 1".into(),
+            secret: "A".repeat(43),
+        });
+        assert_eq!(field_of(b.check_shape(issuer)), "ticket.ticketId");
+
+        let mut b = base();
+        b.languages = vec!["en".into(), "en".into()];
+        assert_eq!(field_of(b.check_shape(issuer)), "languages");
+        b.languages = vec!["english".into()];
+        assert_eq!(field_of(b.check_shape(issuer)), "languages");
+        b.languages = (0..17).map(|i| format!("en-x{i}")).collect();
+        assert_eq!(field_of(b.check_shape(issuer)), "languages");
+
+        let mut b = base();
+        b.message = Some("x".repeat(1001));
+        assert_eq!(field_of(b.check_shape(issuer)), "message");
+        b.message = Some(String::new());
+        assert_eq!(field_of(b.check_shape(issuer)), "message");
+
+        let mut b = base();
+        b.availability = Some("x".repeat(257));
+        assert_eq!(field_of(b.check_shape(issuer)), "availability");
+
+        let mut b = base();
+        b.community = "vtc.example".into();
+        assert_eq!(field_of(b.check_shape(issuer)), "community");
+    }
+
+    #[test]
+    fn reply_and_notice_bounds_follow_the_schema() {
+        let accepted = VettingRequestAcceptedBody {
+            request_id: "r1".into(),
+            eligibility_vp: None,
+            accepts_documentation: vec!["passport".into(), "nationalId".into()],
+            session_hint: Some("Hallway, 3pm".into()),
+            ext: None,
+        };
+        accepted.check_shape().unwrap();
+        let mut a = accepted.clone();
+        a.accepts_documentation = vec!["national-id".into()];
+        assert_eq!(field_of(a.check_shape()), "acceptsDocumentation");
+        let mut a = accepted;
+        a.request_id = "r".repeat(129);
+        assert_eq!(field_of(a.check_shape()), "requestId");
+
+        let session = VettingSessionBody {
+            request_id: "r1".into(),
+            challenge: "A".repeat(43),
+            domain: "did:web:vtc.example".into(),
+            method: VettingMethod::Video,
+            required_claims: vec!["name.legal".into()],
+            optional_claims: vec![],
+            expires_at: Utc::now(),
+            ext: None,
+        };
+        session.check_shape().unwrap();
+        let mut s = session.clone();
+        s.optional_claims = vec![PORTRAIT_CLAIM_TYPE.into()];
+        assert_eq!(field_of(s.check_shape()), "optionalClaims");
+        let mut s = session;
+        s.challenge = "A".repeat(44);
+        assert_eq!(field_of(s.check_shape()), "challenge");
+
+        let decline = VettingDeclineBody {
+            request_id: "r1".into(),
+            code: Some(DeclineCode::NotComfortable),
+            message: Some("x".repeat(501)),
+            ext: None,
+        };
+        assert_eq!(field_of(decline.check_shape()), "message");
+
+        for (id, ok) in [
+            ("urn:uuid:5b0e1c2a-7d4f-4a51-9c6e-2f1b8d3a9e70", true),
+            ("https://vetter.example/statements/1", true),
+            ("statement-1", false),
+            ("urn:uuid:has space", false),
+            ("1urn:x", false),
+            ("urn:", false),
+        ] {
+            let notice = RevokeStatementBody {
+                statement_id: id.into(),
+                statement_digest_multibase: "zDigest".into(),
+                reason: None,
+                ext: None,
+            };
+            assert_eq!(notice.check_shape().is_ok(), ok, "{id}");
+        }
+    }
+
+    #[test]
+    fn requirements_bounds_follow_the_schema() {
+        let mut req = requirements();
+        req.version = "1".into();
+        assert!(req.validate().is_err(), "version is MAJOR.MINOR");
+
+        let mut req = requirements();
+        req.eligible_vetters.role = "vet ter".into();
+        assert!(req.validate().is_err());
+
+        let mut req = requirements();
+        req.accepted_document_classes = Some(vec!["national-id".into()]);
+        assert!(req.validate().is_err(), "documentation is lowerCamelCase");
+        req.accepted_document_classes = Some(vec![documentation::NATIONAL_ID.into()]);
+        req.validate().unwrap();
+
+        let mut req = requirements();
+        req.governance_framework_url = Some("http://gov.example".into());
+        assert!(
+            req.validate().is_err(),
+            "governance text is served over https"
+        );
+
+        let mut req = requirements();
+        req.decision_sla = Some(format!("PT{}S", "1".repeat(30)));
+        assert!(
+            req.validate().is_err(),
+            "durations are at most 32 characters"
         );
     }
 

@@ -277,7 +277,7 @@ mod tests {
             "version": "0.1",
             "statementType": "https://firstperson.network/endorsements/identity-vetting/0.1",
             "minStatements": min,
-            "acceptedMethods": ["in-person"],
+            "acceptedMethods": ["inPerson"],
             "eligibleVetters": { "role": "vetter" }
         }))
         .unwrap()

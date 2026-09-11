@@ -1878,8 +1878,8 @@ async fn manifest_0_2_advertises_vetting_requirements_and_their_digest() {
                 "version": "0.1",
                 "statementType": "https://firstperson.network/endorsements/identity-vetting/0.1",
                 "minStatements": 2,
-                "minByMethod": { "in-person": 1 },
-                "acceptedMethods": ["in-person", "video"],
+                "minByMethod": { "inPerson": 1 },
+                "acceptedMethods": ["inPerson", "video"],
                 "eligibleVetters": { "role": "vetter" }
             }))
             .unwrap(),
@@ -1897,7 +1897,7 @@ async fn manifest_0_2_advertises_vetting_requirements_and_their_digest() {
     assert_eq!(status, StatusCode::OK, "got {body}");
     let c = &tt_payload(&body)["criteria"][0];
     assert_eq!(c["vetting"]["minStatements"], 2);
-    assert_eq!(c["vetting"]["minByMethod"]["in-person"], 1);
+    assert_eq!(c["vetting"]["minByMethod"]["inPerson"], 1);
     assert_eq!(
         c["requirementsDigest"]
             .as_str()
@@ -1974,7 +1974,7 @@ async fn store_vetting_criterion(fix: &Fixture) {
                     "version": "0.1",
                     "statementType": vta_sdk::protocols::vetting::IDENTITY_VETTING_ENDORSEMENT_TYPE,
                     "minStatements": 2,
-                    "acceptedMethods": ["in-person", "video"],
+                    "acceptedMethods": ["inPerson", "video"],
                     "requiredClaims": ["name.legal"],
                     "eligibleVetters": { "role": "vetter" },
                     "independence": { "requireConsistentIdentityCommitment": true }

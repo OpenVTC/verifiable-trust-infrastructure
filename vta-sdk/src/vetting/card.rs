@@ -141,6 +141,10 @@ pub async fn sign_card(draft: CardDraft, signer: &Secret) -> Result<Value, Vetti
         commitment_salt: draft.salt,
         proof: None,
     };
+    card.check_shape().map_err(|e| VettingError::Malformed {
+        what: WHAT,
+        detail: e.to_string(),
+    })?;
     let mut value = serde_json::to_value(&card).map_err(|e| VettingError::Sign(e.to_string()))?;
     let proof = affinidi_data_integrity::DataIntegrityProof::sign(
         &value,
@@ -223,12 +227,10 @@ pub async fn verify_card(
             what: WHAT,
             detail: e.to_string(),
         })?;
-    if !card.types.iter().any(|t| t == VETTING_CARD_TYPES[2]) {
-        return Err(VettingError::Malformed {
-            what: WHAT,
-            detail: "type does not include VettingCard".into(),
-        });
-    }
+    card.check_shape().map_err(|e| VettingError::Malformed {
+        what: WHAT,
+        detail: e.to_string(),
+    })?;
     if card.audience != expect.audience {
         return Err(VettingError::Binding("audience"));
     }
@@ -284,6 +286,9 @@ pub(crate) mod tests {
     use crate::vetting::test_support::{did, secret};
 
     pub(crate) const COMMUNITY: &str = "did:web:vtc.example";
+    /// 43 base64url characters, the shape of 32 bytes.
+    pub(crate) const CHALLENGE: &str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
+    const SALT: &str = "saltsaltsaltsaltsaltsaltsaltsaltsaltsaltsal";
 
     pub(crate) fn claims() -> Vec<CardClaim> {
         vec![
@@ -306,13 +311,13 @@ pub(crate) mod tests {
             publisher: did(applicant),
             audience: did(vetter),
             community: COMMUNITY.into(),
-            challenge: "challenge-1".into(),
+            challenge: CHALLENGE.into(),
             domain: COMMUNITY.into(),
             issued_at: now,
             validity: Duration::minutes(15),
             claims: claims(),
             identity_types: vec!["name.legal".into()],
-            salt: "salt-of-this-application".into(),
+            salt: SALT.into(),
         }
     }
 
@@ -326,7 +331,7 @@ pub(crate) mod tests {
             audience: vetter,
             publisher: applicant,
             community: COMMUNITY,
-            challenge: "challenge-1",
+            challenge: CHALLENGE,
             domain: COMMUNITY,
             required_claims: required,
             now,
@@ -449,6 +454,41 @@ pub(crate) mod tests {
             identity_commitment("salt", &claims(), &["person.birthDate".to_string()]),
             Err(VettingError::MissingClaim(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn a_portrait_is_never_signed_onto_a_card() {
+        let (applicant, vetter) = (secret(1), secret(2));
+        let mut d = draft(&applicant, &vetter, Utc::now());
+        d.claims.push(CardClaim {
+            claim_type: crate::protocols::vetting::PORTRAIT_CLAIM_TYPE.into(),
+            value: json!("data:image/png;base64,AAAA"),
+            provenance: "selfAsserted".into(),
+        });
+        assert!(matches!(
+            sign_card(d, &applicant).await.unwrap_err(),
+            VettingError::Malformed { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_card_must_carry_exactly_the_card_types() {
+        let (applicant, vetter) = (secret(1), secret(2));
+        let now = Utc::now();
+        let mut signed = sign_card(draft(&applicant, &vetter, now), &applicant)
+            .await
+            .unwrap();
+        signed["type"] = json!(["VettingCard"]);
+        let required = vec!["name.legal".to_string()];
+        let (a, v) = (did(&applicant), did(&vetter));
+        let err = verify_card(
+            &signed,
+            &expectations(&a, &v, &required, now),
+            &TrustTaskVmResolver::did_key_only(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, VettingError::Malformed { .. }), "{err:?}");
     }
 
     #[test]
