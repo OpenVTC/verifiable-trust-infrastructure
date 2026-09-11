@@ -230,6 +230,16 @@ pub async fn cmd_verify_chain(client: &VtaClient) -> Result<(), Box<dyn std::err
         println!("  Head:             \x1b[36m{head}\x1b[0m");
     }
 
+    if r.resumed_from_prune {
+        println!(
+            "  Resumed from the retention watermark: \x1b[36m{}\x1b[0m entries pruned",
+            r.pruned_entries
+        );
+        println!("    Those entries were not verified by this run and cannot be — they are");
+        println!("    gone. What holds is that the survivors continue a chain that ran");
+        println!("    through the watermark, which lives in the same store as the log.");
+    }
+
     // Printed whatever their value, because zero is the interesting answer
     // and an operator who has to remember to ask has not been told.
     println!("  Rows before the chain opened: {}", r.pre_chain_rows);

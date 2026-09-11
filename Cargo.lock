@@ -10228,6 +10228,9 @@ name = "vta-audit"
 version = "0.3.6"
 dependencies = [
  "async-trait",
+ "chrono",
+ "hex",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
