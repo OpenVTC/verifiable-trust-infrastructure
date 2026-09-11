@@ -239,10 +239,29 @@ async fn depart_revokes_the_members_role_grants() {
             created_at: now,
             revoked_at: None,
             valid_until: Some(now + chrono::Duration::days(365)),
+            auto_granted: false,
+            credential: None,
         },
     )
     .await
     .unwrap();
+
+    // The vetter had published a profile.
+    let profile = vtc_service::vetting::profiles::StoredProfile {
+        vetter_did: subject.into(),
+        profile: serde_json::from_value(serde_json::json!({
+            "listed": true, "languages": ["en"], "methods": ["video"],
+            "acceptsDocumentation": [], "events": []
+        }))
+        .unwrap(),
+        updated_at: now,
+        issued_at: None,
+    };
+    state
+        .vetter_profiles_ks
+        .insert(format!("profile:{subject}"), &profile)
+        .await
+        .unwrap();
 
     let plan = EffectPlan::Depart {
         subject: subject.into(),
@@ -255,6 +274,13 @@ async fn depart_revokes_the_members_role_grants() {
         panic!("expected Departed");
     };
     assert_eq!(outcome.revoked_grants.len(), 1, "{outcome:?}");
+    assert!(
+        vtc_service::vetting::profiles::get_profile(&state.vetter_profiles_ks, subject)
+            .await
+            .unwrap()
+            .is_none(),
+        "a departed vetter's profile is deleted with their grant"
+    );
     assert_eq!(outcome.revoked_grants[0].id, id);
     assert_eq!(outcome.revoked_grants[0].status_list_index, slot);
     let row = get_endorsement(&state.endorsements_ks, id)

@@ -1000,6 +1000,8 @@ fn table() -> Vec<Conformance> {
                     vetting: None,
                     requirements_digest: None,
                 }],
+                // 0.1 defines no branding; the dispatcher never sets it there.
+                branding: None,
             })
         ),
         checked!(

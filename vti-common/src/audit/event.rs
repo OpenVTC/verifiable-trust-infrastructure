@@ -381,6 +381,36 @@ pub enum AuditEvent {
     /// the member's departure.
     VetterGranted(VetterGrantedData),
 
+    /// The automatic-grant sweep named a member a vetter because the community's
+    /// `vetter_eligibility` policy allowed it. Same payload and pairing as
+    /// [`Self::VetterGranted`]; a distinct event so an auditor can tell a grant
+    /// no human made from one an admin made. The actor is the community DID.
+    VetterAutoGranted(VetterGrantedData),
+
+    /// A vetter published or replaced their profile
+    /// (`vtc/vetting/vetters/profile/0.1`). The actor is the vetter.
+    VetterProfileUpdated(VetterProfileUpdatedData),
+
+    /// A vetter's profile was deleted because they no longer hold a live grant —
+    /// the grant was revoked, or they departed.
+    VetterProfileDeleted(VetterProfileDeletedData),
+
+    /// A vetter grant credential was delivered again
+    /// (`vtc/vetting/vetters/resend/0.1`, or the admin resend route).
+    VetterGrantResent(VetterGrantResentData),
+
+    /// An admin changed the automatic vetter-grant configuration
+    /// (`PUT /v1/vetting/auto-grant`).
+    VetterAutoGrantConfigured(VetterAutoGrantConfiguredData),
+
+    /// An automatic vetter-grant sweep finished. Each grant and revocation it
+    /// made is audited on its own; this records the pass.
+    VetterAutoGrantSwept(VetterAutoGrantSweptData),
+
+    /// An admin changed the community's branding (`PUT /v1/community/branding`),
+    /// which `join-requests/manifest/0.2` publishes.
+    CommunityBrandingUpdated(CommunityBrandingUpdatedData),
+
     /// An operator registered a new custom endorsement type
     /// via `POST /v1/endorsement-types`. Phase 4 M4.8.1 (D4
     /// review). The actor is the admin; the `type_uri` field
@@ -549,6 +579,13 @@ impl AuditEvent {
             Self::CustomEndorsementRevoked(..) => "CustomEndorsementRevoked",
             Self::VettingStatementRevoked(..) => "VettingStatementRevoked",
             Self::VetterGranted(..) => "VetterGranted",
+            Self::VetterAutoGranted(..) => "VetterAutoGranted",
+            Self::VetterProfileUpdated(..) => "VetterProfileUpdated",
+            Self::VetterProfileDeleted(..) => "VetterProfileDeleted",
+            Self::VetterGrantResent(..) => "VetterGrantResent",
+            Self::VetterAutoGrantConfigured(..) => "VetterAutoGrantConfigured",
+            Self::VetterAutoGrantSwept(..) => "VetterAutoGrantSwept",
+            Self::CommunityBrandingUpdated(..) => "CommunityBrandingUpdated",
             Self::EndorsementTypeRegistered(..) => "EndorsementTypeRegistered",
             Self::EndorsementTypeDeleted(..) => "EndorsementTypeDeleted",
             Self::WebsiteFileWritten(..) => "WebsiteFileWritten",
@@ -1374,6 +1411,65 @@ pub struct VetterGrantedData {
     pub endorsement_id: String,
     /// The grant's slot on the `Revocation` status list.
     pub status_list_index: u32,
+}
+
+/// Payload for [`AuditEvent::VetterProfileUpdated`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VetterProfileUpdatedData {
+    /// Whether the stored profile appears in listings.
+    pub listed: bool,
+}
+
+/// Payload for [`AuditEvent::VetterProfileDeleted`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VetterProfileDeletedData {
+    /// Why: `grantRevoked` or `departed`.
+    pub reason: String,
+}
+
+/// Payload for [`AuditEvent::VetterGrantResent`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VetterGrantResentData {
+    /// The grant's endorsement row.
+    pub endorsement_id: String,
+    /// The credential delivered again.
+    pub credential_id: String,
+}
+
+/// Payload for [`AuditEvent::VetterAutoGrantConfigured`] — the configuration
+/// as stored, defaults applied.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VetterAutoGrantConfiguredData {
+    /// Whether the sweep runs.
+    pub enabled: bool,
+    /// Minutes between sweeps.
+    pub sweep_minutes: u32,
+    /// Validity of a grant the sweep issues, in seconds.
+    pub validity_seconds: u64,
+}
+
+/// Payload for [`AuditEvent::VetterAutoGrantSwept`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VetterAutoGrantSweptData {
+    /// Grants issued.
+    pub granted: u32,
+    /// Automatic grants revoked.
+    pub revoked: u32,
+    /// Members the sweep could not decide or act on.
+    pub errors: u32,
+}
+
+/// Payload for [`AuditEvent::CommunityBrandingUpdated`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityBrandingUpdatedData {
+    /// The branding members that changed, by wire name.
+    pub fields_changed: Vec<String>,
 }
 
 /// Payload for [`AuditEvent::EndorsementTypeRegistered`].
@@ -2247,6 +2343,46 @@ mod tests {
     }
 
     #[test]
+    fn vetter_registry_events_round_trip() {
+        let events = [
+            AuditEvent::VetterAutoGranted(VetterGrantedData {
+                endorsement_id: "end-2".into(),
+                status_list_index: 3,
+            }),
+            AuditEvent::VetterProfileUpdated(VetterProfileUpdatedData { listed: true }),
+            AuditEvent::VetterProfileDeleted(VetterProfileDeletedData {
+                reason: "grantRevoked".into(),
+            }),
+            AuditEvent::VetterGrantResent(VetterGrantResentData {
+                endorsement_id: "end-2".into(),
+                credential_id: "urn:uuid:g".into(),
+            }),
+            AuditEvent::VetterAutoGrantConfigured(VetterAutoGrantConfiguredData {
+                enabled: true,
+                sweep_minutes: 60,
+                validity_seconds: 86_400,
+            }),
+            AuditEvent::VetterAutoGrantSwept(VetterAutoGrantSweptData {
+                granted: 2,
+                revoked: 1,
+                errors: 0,
+            }),
+            AuditEvent::CommunityBrandingUpdated(CommunityBrandingUpdatedData {
+                fields_changed: vec!["accentColor".into()],
+            }),
+        ];
+        for e in &events {
+            round_trip(e);
+        }
+        let v = wire_value(&events[4]);
+        assert_eq!(v["type"], "VetterAutoGrantConfigured");
+        assert_eq!(v["data"]["sweepMinutes"], 60);
+        assert_eq!(v["data"]["validitySeconds"], 86_400);
+        let v = wire_value(&events[6]);
+        assert_eq!(v["data"]["fieldsChanged"][0], "accentColor");
+    }
+
+    #[test]
     fn custom_endorsement_issued_round_trip() {
         let e = AuditEvent::CustomEndorsementIssued(CustomEndorsementIssuedData {
             endorsement_id: "end-1".into(),
@@ -2582,6 +2718,52 @@ mod tests {
                     status_list_index: 7,
                 }),
                 "VetterGranted",
+            ),
+            (
+                AuditEvent::VetterAutoGranted(VetterGrantedData {
+                    endorsement_id: "end".into(),
+                    status_list_index: 7,
+                }),
+                "VetterAutoGranted",
+            ),
+            (
+                AuditEvent::VetterProfileUpdated(VetterProfileUpdatedData { listed: false }),
+                "VetterProfileUpdated",
+            ),
+            (
+                AuditEvent::VetterProfileDeleted(VetterProfileDeletedData {
+                    reason: "departed".into(),
+                }),
+                "VetterProfileDeleted",
+            ),
+            (
+                AuditEvent::VetterGrantResent(VetterGrantResentData {
+                    endorsement_id: "end".into(),
+                    credential_id: "urn:uuid:c".into(),
+                }),
+                "VetterGrantResent",
+            ),
+            (
+                AuditEvent::VetterAutoGrantConfigured(VetterAutoGrantConfiguredData {
+                    enabled: false,
+                    sweep_minutes: 5,
+                    validity_seconds: 86_400,
+                }),
+                "VetterAutoGrantConfigured",
+            ),
+            (
+                AuditEvent::VetterAutoGrantSwept(VetterAutoGrantSweptData {
+                    granted: 0,
+                    revoked: 0,
+                    errors: 1,
+                }),
+                "VetterAutoGrantSwept",
+            ),
+            (
+                AuditEvent::CommunityBrandingUpdated(CommunityBrandingUpdatedData {
+                    fields_changed: vec![],
+                }),
+                "CommunityBrandingUpdated",
             ),
             (
                 AuditEvent::EndorsementTypeRegistered(EndorsementTypeRegisteredData {

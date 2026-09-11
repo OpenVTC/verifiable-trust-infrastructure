@@ -451,11 +451,15 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // from the community that relies on it (design §9.6).
     // `vtc/vetting/vetters/grant/0.1` — an admin naming a vetter by issuing a
     // revocable vetter role credential.
+    // `vtc/vetting/vetters/{profile,list,resend}/0.1` — the vetter registry: a
+    // vetter publishing a profile, anyone finding vetters, and a vetter asking
+    // for their grant credential again.
     (
         "https://trusttasks.org/spec/vtc/vetting/",
-        2,
-        "vetting statement revocation notice and vetter grant — proposed in \
-         dtgwg-trust-tasks-tf (spec/vetting-revoke-and-ceremony)",
+        5,
+        "vetting statement revocation notice, vetter grant, and the vetter \
+         registry (profile, list, resend) — proposed in dtgwg-trust-tasks-tf \
+         (spec/vetting-revoke-and-ceremony, spec/vetting-vetters-grant)",
     ),
     // `vtc/join-requests/manifest/0.2` — 0.1 plus the per-criterion `vetting`
     // requirements object and `requirementsDigest`.

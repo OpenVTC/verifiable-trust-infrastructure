@@ -120,6 +120,24 @@ pub async fn record(
     Ok((notice, true))
 }
 
+/// Every recorded notice, newest first. A row that does not decode is skipped
+/// and logged.
+pub async fn list_notices(ks: &KeyspaceHandle) -> Result<Vec<RevocationNotice>, AppError> {
+    let rows = ks.prefix_iter_raw(Vec::new()).await?;
+    let mut notices: Vec<RevocationNotice> = rows
+        .into_iter()
+        .filter_map(|(_k, v)| match serde_json::from_slice(&v) {
+            Ok(n) => Some(n),
+            Err(e) => {
+                tracing::warn!(error = %e, "skipping an undecodable withdrawal notice");
+                None
+            }
+        })
+        .collect();
+    notices.sort_by_key(|n| std::cmp::Reverse(n.recorded_at));
+    Ok(notices)
+}
+
 /// Handle a withdrawal from `vetter_did`, the authenticated sender: refuse a
 /// non-member, record the notice, and audit it the first time.
 pub async fn withdraw(

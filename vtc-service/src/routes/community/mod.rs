@@ -4,4 +4,5 @@
 //! consume the [`crate::community`] storage layer; the routing
 //! wiring lives in [`crate::routes::router`].
 
+pub mod branding;
 pub mod profile;
