@@ -2471,6 +2471,44 @@ async fn naming_a_vetter_twice_returns_the_same_grant() {
     assert_eq!(grants_of(&fix, &carol).await.len(), 1, "one slot, one row");
 }
 
+/// A member named a vetter in the same second they joined holds a live grant,
+/// so naming them again returns it rather than issuing a duplicate.
+///
+/// The grant's recorded time is its credential's second-precision `validFrom`;
+/// `joined_at` keeps sub-seconds. Compared as they were, a grant from the second
+/// the member joined sorted before the membership and never read as live.
+#[tokio::test]
+async fn a_vetter_named_in_the_second_they_joined_is_not_granted_twice() {
+    use chrono::{SubsecRound, Timelike};
+    let fix = build_fixture().await;
+    let (carol, _) = did_key_secret([0x11; 32]);
+    seed_member(&fix, &carol).await;
+    // Joined late in the current second: the grant that follows is stamped
+    // with this second, and so sorts before a sub-second `joined_at`.
+    let mut member = vtc_service::members::storage::get_member(&fix.members_ks, &carol)
+        .await
+        .unwrap()
+        .expect("seeded member");
+    member.joined_at = chrono::Utc::now()
+        .trunc_subsecs(0)
+        .with_nanosecond(999_999_999)
+        .unwrap();
+    vtc_service::members::storage::store_member(&fix.members_ks, &member)
+        .await
+        .unwrap();
+
+    let (status, first) = grant_vetter(&fix, &carol).await;
+    assert_eq!(status, StatusCode::CREATED, "got {first}");
+    let (status, second) = grant_vetter(&fix, &carol).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the grant from the joining second is live and is returned: {second}"
+    );
+    assert_eq!(first["endorsementId"], second["endorsementId"]);
+    assert_eq!(grants_of(&fix, &carol).await.len(), 1, "no duplicate grant");
+}
+
 /// A `vtc/vetting/revoke-statement/0.1` document for `statement`, signed by `seed`.
 async fn withdrawal_doc(seed: [u8; 32], statement: &Value) -> Value {
     let digest = dtg_credentials::digest_multibase_json(statement).expect("statement digest");
