@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Field } from "@/components/Field";
 import { getJson, putJson } from "@/lib/api";
+import { CommunityBrandingCard } from "@/plugins/vetting/BrandingCard";
 
 const TRUST_TASK =
   "https://trusttasks.org/spec/vtc/community/profile/show/0.1";
@@ -241,6 +242,8 @@ export function Profile() {
           </button>
         </div>
       </form>
+
+      <CommunityBrandingCard />
     </section>
   );
 }

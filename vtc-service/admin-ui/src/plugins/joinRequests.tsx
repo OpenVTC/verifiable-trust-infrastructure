@@ -19,6 +19,11 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
 import { NamedDid } from "@/components/NamedDid";
+import { factsHeadline } from "@/lib/vetting";
+import {
+  JoinRequestVettingCard,
+  useJoinRequestVetting,
+} from "@/plugins/vetting/JoinRequestVetting";
 
 const TRUST_TASK_SUBMIT =
   "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
@@ -236,6 +241,15 @@ function JoinRequestDetail() {
     },
   });
 
+  // Read here as well as in the card (react-query shares the one request) so
+  // the approval prompt can say when vetting is not met.
+  const vetting = useJoinRequestVetting(id);
+  const vettingFacts = vetting.data?.vetting;
+  const vettingNote =
+    vettingFacts && !vettingFacts.satisfied
+      ? ` Vetting is not met: ${factsHeadline(vettingFacts).title.toLowerCase()}.`
+      : "";
+
   const rejectMutation = useMutation({
     mutationFn: reject,
     onSuccess: () => {
@@ -281,6 +295,8 @@ function JoinRequestDetail() {
             </dl>
           </section>
 
+          <JoinRequestVettingCard id={id} />
+
           {query.data.status === "pending" && (
             <section className="card">
               <h3>Decide</h3>
@@ -314,7 +330,7 @@ function JoinRequestDetail() {
                   onClick={async () => {
                     const ok = await confirm({
                       title: "Approve join request?",
-                      message: `${query.data.applicantDid} gets an ACL + member row, and credentials (VMC + role VEC) are issued.`,
+                      message: `${query.data.applicantDid} gets an ACL + member row, and credentials (VMC + role VEC) are issued.${vettingNote}`,
                       confirmLabel: "Approve",
                     });
                     if (ok) approveMutation.mutate(id);

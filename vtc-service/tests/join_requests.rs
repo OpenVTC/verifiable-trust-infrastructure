@@ -2683,6 +2683,45 @@ async fn a_vetter_publishes_a_profile_that_applicants_find_by_filter() {
     assert_eq!(row["profile"]["eventCount"], 2);
 }
 
+const VETTER_LIST_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1";
+
+/// The listing through `POST /v1/vetting/vetters/list`, as the admin console
+/// reads it.
+async fn admin_listing(fix: &Fixture, filters: Value) -> (StatusCode, Value) {
+    send(
+        &fix.router,
+        "POST",
+        "/v1/vetting/vetters/list",
+        VETTER_LIST_TASK,
+        Some(&fix.admin_token),
+        Some(filters),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn an_admin_session_previews_exactly_the_listing_applicants_see() {
+    let fix = build_fixture().await;
+    let (carol, _) = did_key_secret([0x12; 32]);
+    seed_vetter(&fix, &carol).await;
+    let (status, body) = publish_profile(&fix, [0x12; 32], carols_profile(true)).await;
+    assert_eq!(status, StatusCode::OK, "publish: {body}");
+
+    let filters = json!({ "language": "de", "method": "video" });
+    let (status, preview) = admin_listing(&fix, filters.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    assert_eq!(listed_dids(&preview), vec![carol]);
+    assert_eq!(
+        preview,
+        list_vetters(&fix, filters).await,
+        "the console must show what an applicant is sent"
+    );
+
+    // The listing's own bounds apply: a lower-case country is refused.
+    let (status, body) = admin_listing(&fix, json!({ "country": "at" })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
 #[tokio::test]
 async fn listings_page_in_order_with_cursors_bound_to_their_filters() {
     let fix = build_fixture().await;
@@ -2930,6 +2969,21 @@ async fn branding_is_published_on_manifest_0_2_only() {
         tt_payload(&body)["branding"],
         json!({ "displayName": "Kernel", "accentColor": "#1a2b3c" })
     );
+
+    // The admin console reads the same manifest 0.2 over its own route, under
+    // the same task: what it shows is what an applicant is sent.
+    let (status, admin_view) = send(
+        &fix.router,
+        "GET",
+        "/v1/join-requests/manifest",
+        JOIN_REQUEST_MANIFEST_0_2_TYPE,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admin_view}");
+    assert_eq!(admin_view, tt_payload(&body));
+
     let (_did, doc) = signed_trust_task(MANIFEST_TASK, json!({})).await;
     let (_status, body) = post_tt(&fix.router, doc).await;
     assert!(tt_payload(&body).get("branding").is_none(), "{body}");
