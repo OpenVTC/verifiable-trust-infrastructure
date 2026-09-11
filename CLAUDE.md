@@ -276,6 +276,36 @@ VP. Custom JSON-LD contexts for our shapes live under
 `https://openvtc.org/contexts/` — baked into crates at compile time via
 `include_str!` so verification works offline.
 
+## Trust Task wire types come from `trust_tasks_rs::specs`
+
+The Trust Task specifications in dtgwg-trust-tasks-tf are normative, and
+`trust-tasks-codegen` generates a Rust type for every payload and response in
+the registry, published by `trust-tasks-rs` under `trust_tasks_rs::specs`.
+
+- **Never hand-write a payload or response type for a task that has a generated
+  module** (`trust_tasks_rs::schema_index::schema_for` says whether it does).
+  Use the generated type. A crate wanting a shorter path re-exports it, as
+  `vta_sdk::protocols::vetting` does, and takes type URI constants from
+  `<Payload as trust_tasks_rs::Payload>::TYPE_URI`, not a literal.
+- **Behaviour stays hand-written and operates on the generated types**: signing,
+  verification, counting, and the rules JSON Schema cannot state (an event's
+  `endDate` against its `startDate`) as a check over the generated type — never
+  a parallel struct or a field-by-field mirror.
+- **Read received JSON against the schema before parsing it**
+  (`vta_sdk::protocols::vetting::read_checked`). Some generated constructors
+  normalise what they parse, so only the JSON shows what was sent.
+- **A specification change lands in dtgwg-trust-tasks-tf first** and reaches
+  this workspace through a `trust-tasks-rs` bump — never as a local edit to a
+  copied type.
+- A generated type is foreign, so `utoipa::ToSchema` cannot be derived on it.
+  Document a REST body with a wrapper in `vta_sdk::openapi`, whose schema is
+  rendered from the specification's own.
+
+`vta-sdk/tests/generated_wire_types_census.rs` enforces the first rule: it fails
+on a serde type whose doc summary names a generated task as its payload,
+request, response or body. So name the task in a wire type's summary. Its
+baseline lists the types that predate their generated modules, and only shrinks.
+
 ## Typestate discipline for verified wire forms
 
 Wire forms that require cryptographic verification (VPs, VCs, signed
