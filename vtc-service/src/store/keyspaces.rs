@@ -73,6 +73,10 @@ pub const INVITATIONS: &str = "invitations";
 /// `Guaranteed` sends so delivery-critical work survives a restart.
 /// Ephemeral, re-driven from live state — excluded from backup.
 pub const OUTBOX: &str = "outbox";
+/// Vetting statement withdrawal notices (`vtc/vetting/revoke-statement/0.1`):
+/// one row per (issuer, statement id, statement digest), written when a vetter
+/// withdraws a statement and read whenever presented statements are counted.
+pub const VETTING_REVOCATIONS: &str = "vetting_revocations";
 
 /// Every keyspace the daemon opens, in `AppState` field order. The
 /// setup wizard pre-creates exactly this set; `server::run` opens
@@ -106,6 +110,7 @@ pub const ALL: &[&str] = &[
     CONSUMED_INVITATIONS,
     INVITATIONS,
     OUTBOX,
+    VETTING_REVOCATIONS,
 ];
 
 /// Keyspaces captured by `POST /v1/backup/export` (P3.9). These hold
@@ -146,6 +151,9 @@ pub const BACKED_UP: &[&str] = &[
     // Issued-invitation registry — durable so revocation + listing
     // survive a restore.
     INVITATIONS,
+    // A withdrawn vetting statement must stay withdrawn across a restore, or a
+    // restored community would count a statement its vetter took back.
+    VETTING_REVOCATIONS,
 ];
 
 /// Keyspaces deliberately omitted from backup (P3.9): ephemeral auth,
@@ -175,7 +183,7 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        assert_eq!(ALL.len(), 28, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 29, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or
