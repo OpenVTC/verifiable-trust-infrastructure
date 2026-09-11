@@ -633,6 +633,17 @@ jobs:
       - uses: actions/checkout@v7
       - name: Authorization-context type uniqueness guard
         run: bash scripts/check-authz-context-types.sh
+      # Unrelated to authz, but just as cheap: nothing at the repo root should be
+      # a .txt/.bak/.log. `.gitignore` covers these, but it does not stop a
+      # `git add -f`. `:(glob)*` does not cross `/`, so only the root is checked.
+      - name: No scratch or log files tracked at the repo root
+        run: |
+          bad=$(git ls-files -- ':(glob)*.txt' ':(glob)*.bak' ':(glob)*.log')
+          if [ -n "$bad" ]; then
+            printf '%s\n' "$bad"
+            echo "::error::scratch or log files are tracked at the repo root"
+            exit 1
+          fi
 
   lockfile-resolves:
     # The sibling of the job above, and the same misattribution failure it
