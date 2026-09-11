@@ -7,6 +7,7 @@ target/
 !deploy/**/config.toml
 **.jsonl
 **.vtabak
+**.vtcbak
 
 # Sealed-bootstrap test artifacts left in repo roots by local wizard runs
 request.json
@@ -33,3 +34,10 @@ Thumbs.db
 # Downloaded CI job logs. One of these was committed by accident in #888 —
 # a `curl -o` in the repo root plus a `git add -A` is all it takes.
 *.log
+
+# Captured command output and scratch copies. `*.log` above does not catch
+# output saved as `.txt`, and eleven such files plus a `.bak` of a source file
+# were committed at the root. `/*.txt` is root-anchored so `.txt` files deeper
+# in the tree are unaffected; ci.yml fails if one is tracked at the root anyway.
+/*.txt
+*.bak
