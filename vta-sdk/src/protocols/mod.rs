@@ -39,6 +39,10 @@ pub mod protocol_management;
 pub mod provision_integration_management;
 pub mod seed_management;
 pub mod vault_management;
+/// Peer identity vetting before joining a community (`spec/vetting/*`,
+/// `spec/vtc/vetting/*`) — serde shapes only; signing and verification are in
+/// `crate::vetting`.
+pub mod vetting;
 pub mod vta_management;
 
 // Standard DIDComm protocol types used across VTA/VTC services

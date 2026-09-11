@@ -234,6 +234,19 @@ acl-setup = [
 # suite + the `Secret` signing type. The natural client-side counterpart to the
 # `join-requests` / `credential-exchange` protocol types.
 vp = ["dep:affinidi-data-integrity", "dep:affinidi-secrets-resolver"]
+# Peer identity vetting (`vetting` module): sign and verify the Vetting Card (an
+# r-card VDS) and the Vetting Statement (a DTG `EndorsementCredential`), and
+# count statements against a community's requirements. Verification resolves the
+# signer's DID, so it builds on `proof-verify`; the statement is built with the
+# DTG credentials SDK rather than by hand; the match code hashes with SHA-256;
+# the commitment salt needs a CSPRNG.
+vetting = [
+  "vp",
+  "proof-verify",
+  "dep:dtg-credentials",
+  "dep:sha2",
+  "dep:getrandom",
+]
 # Expose in-memory test fixtures for downstream integration tests.
 # Currently gates: `SessionBackend` mocks (always); `provision_client::test_helpers`
 # (when `provision-client` is also on). Additive, zero-cost when off.
@@ -318,6 +331,8 @@ affinidi-secrets-resolver = { workspace = true, optional = true }
 # published artifact stays slim for non-provisioning consumers; also present as
 # a dev-dependency for the always-on conformance tests below.
 trust-tasks-rs = { workspace = true, optional = true }
+# DTG credential construction for the Vetting Statement (`vetting` feature).
+dtg-credentials = { workspace = true, optional = true }
 ciborium = { version = "0.2", optional = true }
 # Direct OS-CSPRNG access for seed/nonce/bundle-id generation. (hpke 0.14
 # sources its own randomness internally, so this is no longer the bridge
