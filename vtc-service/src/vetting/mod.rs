@@ -26,6 +26,8 @@
 //! Independence is established from evidence, not from statements merely being
 //! separately signed (VTI-CMP-070): distinct vetters are distinct *members*.
 
+pub mod revocation;
+
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
@@ -192,9 +194,16 @@ pub async fn vetting_facts(
             now,
         )
         .await?;
-        // Withdrawal notices are recorded by `vtc/vetting/revoke-statement`;
-        // until that store exists every verified statement reads as standing.
-        let revoked = false;
+        // A withdrawal notice counts only against a statement with the notice's
+        // own issuer, id and digest, so nobody can withdraw a statement they did
+        // not sign.
+        let revoked = revocation::is_revoked(
+            &state.vetting_revocations_ks,
+            verified.issuer(),
+            verified.id(),
+            verified.digest_multibase(),
+        )
+        .await?;
 
         let fact = VettingStatementFact {
             id: Some(verified.id().to_string()),

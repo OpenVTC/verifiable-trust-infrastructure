@@ -51,9 +51,9 @@ pub use event::{
     PolicyUploadedData, REDACTED_MARKER, RegistryRecordPolicyOverrideData,
     RegistryStatusChangedData, RegistrySyncOutcomeData, RestartRequestedData, RoleChangedData,
     RoomOperationData, SchemaChangeData, SessionRevokedData, SignedOutData, StatusListFlippedData,
-    VpcAnnotationData, VrcLifecycleData, VrcPublishedData, VrcRevokedData, VrcSupersededData,
-    WebsiteBundleDeployedData, WebsiteFileDeletedData, WebsiteFileWrittenData,
-    WebsiteGenerationRolledBackData,
+    VettingStatementRevokedData, VpcAnnotationData, VrcLifecycleData, VrcPublishedData,
+    VrcRevokedData, VrcSupersededData, WebsiteBundleDeployedData, WebsiteFileDeletedData,
+    WebsiteFileWrittenData, WebsiteGenerationRolledBackData,
 };
 pub use key_store::{AuditKey, AuditKeyStore, KeyId, RotationReason};
 pub use writer::AuditWriter;
