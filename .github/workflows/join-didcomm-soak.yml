@@ -40,11 +40,13 @@ on:
       runs:
         description: "Iterations per stream (stops at the first failure)"
         required: false
-        default: "40"
+        type: number
+        default: 40
       parallel:
         description: "Concurrent streams — this is what recreates CI contention"
         required: false
-        default: "4"
+        type: number
+        default: 4
       log:
         description: "RUST_LOG filter for the run"
         required: false
@@ -80,10 +82,19 @@ jobs:
         env:
           RUST_LOG: ${{ inputs.log }}
           VTC_SKIP_ADMIN_UI_BUILD: "1"
+          # Dispatch inputs reach the script as environment variables, never
+          # as text spliced into it, and are checked before anything uses them.
+          # The bounds keep `streams * runs` and the stream fan-out sane.
+          RUNS: ${{ inputs.runs }}
+          STREAMS: ${{ inputs.parallel }}
         run: |
           set -uo pipefail
-          runs="${{ inputs.runs }}"
-          streams="${{ inputs.parallel }}"
+          [[ "$RUNS" =~ ^[1-9][0-9]{0,3}$ ]] \
+            || { echo "::error::runs must be an integer from 1 to 9999"; exit 1; }
+          [[ "$STREAMS" =~ ^[1-9][0-9]?$ ]] \
+            || { echo "::error::parallel must be an integer from 1 to 99"; exit 1; }
+          runs="$RUNS"
+          streams="$STREAMS"
           bin=$(cargo test -p vtc-service --features didcomm-harness --test join_didcomm \
                   --no-run --message-format=json 2>/dev/null \
                 | jq -r 'select(.executable != null and (.target.name == "join_didcomm")) | .executable' \
