@@ -4307,6 +4307,13 @@
           },
           "query": {
             "description": "The DCQL query, stored as JSON. Structurally validated and every\nreferenced type checked against the registry when stored (see\n[`validate_accepts_query`])."
+          },
+          "vetting": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Peer identity vetting this criterion requires, advertised to applicants\nin the join manifest (0.2). Every number in it is this community's\npolicy. Checked by [`VettingRequirements::validate`] when stored; the\nadmin route additionally requires its `statementType` to be a registered\nendorsement type."
           }
         }
       },
@@ -7732,6 +7739,13 @@
           },
           "query": {
             "$ref": "#/components/schemas/Value"
+          },
+          "vetting": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Peer identity vetting this criterion requires, advertised in the join\nmanifest (0.2). Its `statementType` must be a registered endorsement type."
           }
         }
       },

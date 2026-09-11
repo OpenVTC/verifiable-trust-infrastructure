@@ -66,6 +66,7 @@ use vta_sdk::protocols::members::{self as mem, MemberVmcBody, MemberVmcReceiptBo
 use vti_rooms::wire as rooms_wire;
 
 use crate::join::{JoinSubmitOutcome, JoinTransport};
+use crate::routes::join_requests::manifest::ManifestVersion;
 use crate::server::AppState;
 
 pub(crate) use helpers::TrustTaskOutcome;
@@ -219,7 +220,10 @@ async fn dispatch_typed(
 ) -> TrustTaskOutcome {
     match type_uri {
         jr::JOIN_REQUEST_SUBMIT_TYPE => handle_submit(state, ctx, doc).await,
-        jr::JOIN_REQUEST_MANIFEST_TYPE => handle_manifest(state, doc).await,
+        jr::JOIN_REQUEST_MANIFEST_TYPE => handle_manifest(state, doc, ManifestVersion::V0_1).await,
+        jr::JOIN_REQUEST_MANIFEST_0_2_TYPE => {
+            handle_manifest(state, doc, ManifestVersion::V0_2).await
+        }
         jr::JOIN_REQUEST_STATUS_TYPE => handle_status(state, ctx, doc).await,
         jr::MEMBER_SELF_REMOVE_TYPE => handle_self_remove(state, ctx, doc).await,
         mem::MEMBER_VMC_TYPE => handle_member_vmc(state, ctx, doc).await,
@@ -356,6 +360,8 @@ fn unsupported_type_or_version(doc: &TrustTask<Value>, type_uri: &str) -> TrustT
 pub(crate) const DISPATCHED_URIS: &[&str] = &[
     jr::JOIN_REQUEST_SUBMIT_TYPE,
     jr::JOIN_REQUEST_MANIFEST_TYPE,
+    // 0.2 adds the per-criterion vetting requirements and `requirementsDigest`.
+    jr::JOIN_REQUEST_MANIFEST_0_2_TYPE,
     jr::JOIN_REQUEST_STATUS_TYPE,
     jr::MEMBER_SELF_REMOVE_TYPE,
     mem::MEMBER_VMC_TYPE,
@@ -523,8 +529,14 @@ fn outcome_to_verdict(outcome: &JoinSubmitOutcome) -> Result<VerdictResponse, Ap
 
 // ─── manifest (public) ─────────────────────────────────────────────────────
 
-async fn handle_manifest(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
-    match crate::routes::join_requests::manifest::manifest_inner(state).await {
+/// Both manifest versions share one read; the version the document names
+/// decides the shape of the answer.
+async fn handle_manifest(
+    state: &AppState,
+    doc: TrustTask<Value>,
+    version: ManifestVersion,
+) -> TrustTaskOutcome {
+    match crate::routes::join_requests::manifest::manifest_inner(state, version).await {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -921,6 +933,7 @@ mod tests {
         let declared = [
             jr::JOIN_REQUEST_SUBMIT_TYPE,
             jr::JOIN_REQUEST_MANIFEST_TYPE,
+            jr::JOIN_REQUEST_MANIFEST_0_2_TYPE,
             jr::JOIN_REQUEST_STATUS_TYPE,
             jr::MEMBER_SELF_REMOVE_TYPE,
             mem::MEMBER_VMC_TYPE,

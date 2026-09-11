@@ -1514,6 +1514,7 @@ async fn admin_query_send_prepares_a_dcql_query_and_issues_a_challenge() {
             }]
         }),
         description: Some("present a MembershipCredential to join".into()),
+        vetting: None,
         created_at: chrono::Utc::now(),
         created_by_did: ADMIN_DID.into(),
     };
@@ -1815,6 +1816,7 @@ async fn store_join_criterion(fix: &Fixture) {
             }]
         }),
         description: Some("present a MembershipCredential to join".into()),
+        vetting: None,
         created_at: chrono::Utc::now(),
         created_by_did: ADMIN_DID.into(),
     };
@@ -1850,6 +1852,68 @@ async fn manifest_is_empty_when_no_criteria_registered() {
     let payload = tt_payload(&body);
     assert_eq!(payload["communityDid"], VTC_DID);
     assert_eq!(payload["criteria"].as_array().unwrap().len(), 0);
+}
+
+/// Manifest 0.2 advertises a criterion's vetting requirements with a digest the
+/// applicant can recompute from what it received; 0.1 keeps its own shape.
+#[tokio::test]
+async fn manifest_0_2_advertises_vetting_requirements_and_their_digest() {
+    use vta_sdk::protocols::join_requests::JOIN_REQUEST_MANIFEST_0_2_TYPE;
+    use vta_sdk::vetting::requirements::requirements_digest;
+    use vtc_service::schemas::accepts::{AcceptsCriterion, store_accepts};
+
+    let fix = build_fixture().await;
+    let criterion = AcceptsCriterion {
+        id: "kernel-developer".into(),
+        query: json!({
+            "credentials": [{
+                "id": "vetting",
+                "format": "ldp_vc",
+                "meta": { "type_values": ["EndorsementCredential"] }
+            }]
+        }),
+        description: Some("Two vetters, one in person".into()),
+        vetting: Some(
+            serde_json::from_value(json!({
+                "version": "0.1",
+                "statementType": "https://firstperson.network/endorsements/identity-vetting/0.1",
+                "minStatements": 2,
+                "minByMethod": { "in-person": 1 },
+                "acceptedMethods": ["in-person", "video"],
+                "eligibleVetters": { "role": "vetter" }
+            }))
+            .unwrap(),
+        ),
+        created_at: chrono::Utc::now(),
+        created_by_did: ADMIN_DID.into(),
+    };
+    store_accepts(&fix.state.schemas_ks, &criterion)
+        .await
+        .expect("store vetting criterion");
+
+    let mut doc = manifest_doc();
+    doc["type"] = json!(JOIN_REQUEST_MANIFEST_0_2_TYPE);
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    let c = &tt_payload(&body)["criteria"][0];
+    assert_eq!(c["vetting"]["minStatements"], 2);
+    assert_eq!(c["vetting"]["minByMethod"]["in-person"], 1);
+    assert_eq!(
+        c["requirementsDigest"]
+            .as_str()
+            .expect("0.2 carries a digest"),
+        requirements_digest(c).unwrap(),
+        "the applicant must be able to recompute the digest from the criterion it received"
+    );
+
+    let (status, body) = post_tt(&fix.router, manifest_doc()).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    let c = &tt_payload(&body)["criteria"][0];
+    assert!(c.get("vetting").is_none(), "0.1 keeps its shape: {c}");
+    assert!(
+        c.get("requirementsDigest").is_none(),
+        "0.1 keeps its shape: {c}"
+    );
 }
 
 // ---------------------------------------------------------------------------
