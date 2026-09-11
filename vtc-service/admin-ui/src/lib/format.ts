@@ -41,8 +41,8 @@ export function shorten(value: string, head = 8, tail = 4): string {
  * differently, every DID has to be re-identified on the way across.
  *
  * The vectors below are asserted in `shorten_did_matches_shared_vectors`
- * (`vta-sdk/src/display_name/mod.rs`), which is the authority — this console
- * has no test runner. Change either implementation and check both:
+ * (`vta-sdk/src/display_name/mod.rs`), which is the authority. Change either
+ * implementation and check both:
  *
  *   "alice"                                        -> "alice"
  *   "did:webvh:QmXkAbCdEfGhIjKlMnOp:webvh.storm.ws:glenn-vta"

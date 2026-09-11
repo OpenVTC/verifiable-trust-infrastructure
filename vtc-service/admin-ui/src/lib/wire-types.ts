@@ -69,6 +69,13 @@ export type AutoGrantConfig = Schemas["AutoGrantConfig"];
 export type AutoGrantSweep = Schemas["AutoGrantSweep"];
 export type VettingRevocationList = Schemas["VettingRevocationListResponse"];
 export type VettingRevocationRow = Schemas["VettingRevocationRow"];
+export type RevocationReviewState = Schemas["RevocationReviewState"];
+export type VettingMethod = Schemas["VettingMethod"];
+export type VetterListBody = Schemas["VetterListBody"];
+export type VetterListResponse = Schemas["VetterListResponseBody"];
+export type ListedVetter = Schemas["ListedVetter"];
+export type VetterEvent = Schemas["VetterEvent"];
+export type VetterLocation = Schemas["VetterLocation"];
 export type CommunityBranding = Schemas["CommunityBranding"];
 export type RequestVmcResponse = Schemas["RequestVmcResponse"];
 
@@ -79,6 +86,8 @@ export type JoinRequestsPage = Schemas["Paginated_JoinRequest"];
 export type JoinRequestVettingResponse = Schemas["JoinRequestVettingResponse"];
 export type JoinRequestVetting = Schemas["JoinRequestVetting"];
 export type JoinRequestVettingStatement = Schemas["JoinRequestVettingStatement"];
+export type JoinManifest = Schemas["JoinRequestManifestResponseBody"];
+export type ManifestCriterion = Schemas["ManifestCriterion"];
 export type DecideResponse = Schemas["DecideResponse"];
 
 // ── Audit ───────────────────────────────────────────────────────────────

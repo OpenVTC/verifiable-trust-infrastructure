@@ -14,9 +14,13 @@
 //!   configuration and the last sweep.
 //! - `GET /v1/vetting/revocations` — vetting statement withdrawal notices, with
 //!   the admissions each one touches.
+//! - `POST /v1/vetting/vetters/list` — the public vetter listing
+//!   (`vtc/vetting/vetters/list/0.1`) for an admin session, so the console can
+//!   show what applicants see. Over `POST /v1/trust-tasks` the listing names its
+//!   caller by the document proof, which a browser session cannot sign.
 //!
-//! The listing, auto-grant and revocations routes are admin REST with no Trust
-//! Task of their own, so they are mounted without a binding.
+//! The grant listing, auto-grant and revocations routes are admin REST with no
+//! Trust Task of their own, so they are mounted without a binding.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -28,7 +32,7 @@ use serde::Serialize;
 use uuid::Uuid;
 use vta_sdk::protocols::vetting::{
     AutoGrantConfig, AutoGrantStatus, VetterGrantBody, VetterGrantListResponse,
-    VetterGrantResponseBody, VetterResendResponseBody,
+    VetterGrantResponseBody, VetterListBody, VetterListResponseBody, VetterResendResponseBody,
 };
 use vti_common::auth::{AdminAuth, AuthClaims};
 use vti_common::error::AppError;
@@ -107,6 +111,31 @@ pub async fn resend_vetter(
     Ok(Json(
         vetters::resend_as_admin(&state, &auth.did, &member_did).await?,
     ))
+}
+
+/// The public vetter listing, as applicants see it.
+///
+/// The body and the answer are `vtc/vetting/vetters/list/0.1`'s, and both go
+/// through [`crate::vetting::profiles::list`], so the console previews exactly
+/// what `POST /v1/trust-tasks` returns to an applicant with the same filters.
+#[utoipa::path(
+    post, path = "/vetting/vetters/list",
+    operation_id = "vettingVetterListing", tag = "vetting",
+    security(("bearer_jwt" = [])),
+    request_body = VetterListBody,
+    responses(
+        (status = 200, description = "A page of listed vetters", body = VetterListResponseBody),
+        (status = 400, description = "A filter breaks its bounds, or the cursor was issued for other filters"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
+pub async fn list_listed_vetters(
+    _admin: AdminAuth,
+    State(state): State<AppState>,
+    Json(body): Json<VetterListBody>,
+) -> Result<Json<VetterListResponseBody>, AppError> {
+    Ok(Json(crate::vetting::profiles::list(&state, &body).await?))
 }
 
 /// The automatic vetter-grant configuration and the last sweep.

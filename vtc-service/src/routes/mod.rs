@@ -782,6 +782,12 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(vetting::resend_vetter),
             "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1",
         ))
+        // The public listing, as an admin session reads it: the same task and
+        // payload an applicant sends, so the console previews what they see.
+        .routes(tt(
+            routes!(vetting::list_listed_vetters),
+            "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1",
+        ))
         .routes(routes!(vetting::list_vetters))
         .routes(routes!(vetting::get_auto_grant, vetting::put_auto_grant))
         .routes(routes!(vetting::list_revocations))
@@ -821,6 +827,13 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // The vetting facts a request was decided on — admin REST with no Trust
         // Task of its own.
         .routes(routes!(join_requests::read::show_join_request_vetting))
+        // The join manifest (0.2) for an admin session: the answer applicants get
+        // from `POST /v1/trust-tasks`, under the same task, for the console's
+        // view of the published vetting requirements and their digests.
+        .routes(tt(
+            routes!(join_requests::manifest::admin_manifest),
+            "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2",
+        ))
         // One decision endpoint, one task: `decide/0.1` carries
         // `{ decision: approved | rejected, reason? }`, superseding the
         // retired `approve/0.1` + `reject/0.1` pair (clean cutover — the

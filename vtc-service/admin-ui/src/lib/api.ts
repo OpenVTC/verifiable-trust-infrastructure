@@ -281,6 +281,18 @@ export const deleteJson = <T>(
 export const getJsonExempt = <T>(path: string): Promise<T> =>
   request<T>(path, { method: "GET" });
 
+// The daemon also mounts a handful of admin REST routes with no Trust Task
+// binding at all, because no published task describes them: the vetter grant
+// listing, automatic vetter grants, vetting withdrawal notices, a join
+// request's vetting facts, and community branding. Sending them a task URI
+// would claim a contract that does not exist, so they use these helpers too —
+// and the smell is intended: each call site names why its route has no task.
+export const putJsonExempt = <T>(path: string, body: unknown): Promise<T> =>
+  request<T>(path, {
+    method: "PUT",
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
 // `/health` and `GET /v1/rooms` are the daemon's two Trust-Task-exempt
 // endpoints, for unrelated reasons: `/health` predates the router, and the
 // rooms listing is the host's own view of what it stores — every `rooms/*`

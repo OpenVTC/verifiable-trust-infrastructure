@@ -873,6 +873,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/join-requests/manifest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /join-requests/manifest — the join manifest (0.2) as applicants receive
+         *     it, for an admin session.
+         * @description Applicants read the manifest as a Trust Task document over
+         *     `POST /v1/trust-tasks`. The admin console reads the same answer here, under
+         *     the same `vtc/join-requests/manifest/0.2` task, to show each criterion's
+         *     vetting requirements and `requirementsDigest` — criteria are registered
+         *     through `/v1/schemas/accepts`, which carries no digest.
+         */
+        get: operations["joinRequestManifestShow"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/join-requests/query": {
         parameters: {
             query?: never;
@@ -1693,6 +1718,28 @@ export interface paths {
         get: operations["vettingVetterList"];
         put?: never;
         post: operations["vettingVetterGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/vetting/vetters/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The public vetter listing, as applicants see it.
+         * @description The body and the answer are `vtc/vetting/vetters/list/0.1`'s, and both go
+         *     through [`crate::vetting::profiles::list`], so the console previews exactly
+         *     what `POST /v1/trust-tasks` returns to an applicant with the same filters.
+         */
+        post: operations["vettingVetterListing"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3128,6 +3175,12 @@ export interface components {
         JoinRequestEnvelope: {
             request: components["schemas"]["JoinRequest"];
         };
+        /** @description Manifest response: the community's join evidence requirements. */
+        JoinRequestManifestResponseBody: {
+            branding?: null | components["schemas"]["CommunityBranding"];
+            communityDid: string;
+            criteria: components["schemas"]["ManifestCriterion"][];
+        };
         /**
          * @description The vetting facts a join request was decided on — the policy's
          *     `input.evidence.vetting`, in lowerCamelCase.
@@ -3288,6 +3341,59 @@ export interface components {
              *     not define, so no conforming client could find it.
              */
             credentials: components["schemas"]["RegisteredCredential"][];
+        };
+        /**
+         * @description One vetter in a listing: the published profile, the DID and the grant's
+         *     expiry — nothing else about the member.
+         */
+        ListedVetter: {
+            /** @description See [`VetterProfileBody::accepts_documentation`]. */
+            acceptsDocumentation: string[];
+            /** @description See [`VetterProfileBody::availability`]. */
+            availability?: string | null;
+            /** @description See [`VetterProfileBody::contact_hint`]. */
+            contactHint?: string | null;
+            /** @description See [`VetterProfileBody::display_name`]. */
+            displayName?: string | null;
+            /** @description The profile's events that have not ended (`endDate` ≥ today, UTC). */
+            events: components["schemas"]["VetterEvent"][];
+            /**
+             * Format: date-time
+             * @description When the vetter's grant expires.
+             */
+            grantValidUntil: string;
+            /** @description See [`VetterProfileBody::languages`]. */
+            languages: string[];
+            location?: null | components["schemas"]["VetterLocation"];
+            /** @description See [`VetterProfileBody::methods`]. */
+            methods: components["schemas"]["VettingMethod"][];
+            /**
+             * Format: date-time
+             * @description When the profile was last published.
+             */
+            updatedAt: string;
+            /** @description The vetter's DID — where a `vetting/request` goes. */
+            vetterDid: string;
+        };
+        /**
+         * @description One community evidence requirement — a named DCQL Presentation
+         *     Definition the applicant may present against.
+         */
+        ManifestCriterion: {
+            description?: string | null;
+            id: string;
+            presentationDefinition: components["schemas"]["Value"];
+            /**
+             * @description `digestMultibase` over this criterion without this member (manifest
+             *     0.2). An applicant records it when it starts gathering, so a change to
+             *     the requirements mid-application is detectable.
+             */
+            requirementsDigest?: string | null;
+            /**
+             * @description Peer identity vetting this criterion requires (manifest 0.2). Absent on
+             *     a criterion that needs none.
+             */
+            vetting?: Record<string, never> | null;
         };
         /**
          * @description `{ member: … }` — the shape `vtc/members/show/0.1` publishes. The row was
@@ -4874,6 +4980,24 @@ export interface components {
             /** @description Whether every chainable envelope verified. */
             verified: boolean;
         };
+        /** @description An event a vetter will attend and vet at — a conference, a summit. */
+        VetterEvent: {
+            /**
+             * Format: date
+             * @description Last day, `YYYY-MM-DD`; not before `startDate`, at most 31 days after it.
+             */
+            endDate: string;
+            location?: null | components["schemas"]["VetterLocation"];
+            /** @description The event's name; 1–200 characters. */
+            name: string;
+            /**
+             * Format: date
+             * @description First day, `YYYY-MM-DD`.
+             */
+            startDate: string;
+            /** @description The event's page; `https`, at most 2048 characters. */
+            url?: string | null;
+        };
         /** @description `vtc/vetting/vetters/grant/0.1` payload. */
         VetterGrantBody: {
             /** @description Ecosystem-defined extension members (SPEC §4.5.1). */
@@ -4949,6 +5073,68 @@ export interface components {
              * @description The credential's `validUntil`; absent on a row that did not record it.
              */
             validUntil?: string | null;
+        };
+        /**
+         * @description `vtc/vetting/vetters/list/0.1` payload. Every filter is optional; filters
+         *     combine with AND.
+         */
+        VetterListBody: {
+            /** @description Case-insensitive exact match on `location.city`. */
+            city?: string | null;
+            /** @description ISO 3166-1 alpha-2, uppercase. */
+            country?: string | null;
+            /** @description The `nextCursor` of the previous page; at most 512 characters. */
+            cursor?: string | null;
+            /**
+             * Format: date
+             * @description With `eventTo`, a date range a listed event must overlap; an open end is
+             *     unbounded.
+             */
+            eventFrom?: string | null;
+            /**
+             * @description Case-insensitive substring of a listed event's name; at most 200
+             *     characters.
+             */
+            eventName?: string | null;
+            /**
+             * Format: date
+             * @description See [`Self::event_from`].
+             */
+            eventTo?: string | null;
+            /** @description Ecosystem-defined extension members (SPEC §4.5.1). */
+            ext?: unknown;
+            /**
+             * @description A BCP 47 tag. Matches a listed tag equal to it, or one it is a prefix of
+             *     at a subtag boundary (`de` matches `de-AT`). Compared case-insensitively.
+             */
+            language?: string | null;
+            /**
+             * Format: int32
+             * @description Page size, 1–100; 50 when absent.
+             */
+            limit?: number | null;
+            method?: null | components["schemas"]["VettingMethod"];
+            /** @description Case-insensitive exact match on `location.region`. */
+            region?: string | null;
+        };
+        /** @description `vtc/vetting/vetters/list/0.1#response` payload. */
+        VetterListResponseBody: {
+            /**
+             * @description Pass as `cursor`, with the same filters, for the next page; absent on
+             *     the last.
+             */
+            nextCursor?: string | null;
+            /** @description This page, in the listing's order. */
+            vetters: components["schemas"]["ListedVetter"][];
+        };
+        /** @description Where a vetter is, or where an event is held. */
+        VetterLocation: {
+            /** @description City; 1–128 characters. */
+            city?: string | null;
+            /** @description ISO 3166-1 alpha-2, uppercase. */
+            country: string;
+            /** @description Region, state or province; 1–128 characters. */
+            region?: string | null;
         };
         /** @description What an admin sees of a vetter's published profile. */
         VetterProfileSummary: {
@@ -7154,6 +7340,40 @@ export interface operations {
             };
         };
     };
+    joinRequestManifestShow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The join manifest (0.2): each criterion with its vetting requirements and requirementsDigest, and the branding */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JoinRequestManifestResponseBody"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     send_query: {
         parameters: {
             query?: never;
@@ -9236,6 +9456,51 @@ export interface operations {
                 content?: never;
             };
             /** @description Caller is not a community admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vettingVetterListing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VetterListBody"];
+            };
+        };
+        responses: {
+            /** @description A page of listed vetters */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VetterListResponseBody"];
+                };
+            };
+            /** @description A filter breaks its bounds, or the cursor was issued for other filters */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
             403: {
                 headers: {
                     [name: string]: unknown;
