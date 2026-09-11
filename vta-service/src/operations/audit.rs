@@ -133,8 +133,26 @@ fn authorize(auth: &AuthClaims, params: &ListAuditLogsBody) -> Result<(), AppErr
 /// Reads ascending by key, which is write order, because the chain is a strict
 /// left fold and verifying it in any other order reports breaks that are not
 /// there.
-pub use vta_sdk::protocols::audit_management::verify::{AuditChainBreak, AuditChainReport};
+pub use vta_sdk::protocols::audit_management::verify::{
+    AuditChainBreak, AuditChainReport, VTA_EXT_KEY, VtaVerifyExt,
+};
 
+/// A sha2-256 digest as the canonical shape requires it: a multibase-encoded
+/// multihash, not hex.
+///
+/// The algorithm travels in the value, so a verifier never has to infer it —
+/// which is why the schema refuses a bare hex string.
+fn digest_multibase(digest: &[u8; 32]) -> String {
+    let mut mh = vec![0x12, 0x20];
+    mh.extend_from_slice(digest);
+    multibase::encode(multibase::Base::Base58Btc, mh)
+}
+
+/// Verify the audit log's chain, in storage order.
+///
+/// Reads ascending by key, which is write order, because the chain is a strict
+/// left fold and verifying it in any other order reports breaks that are not
+/// there.
 pub async fn verify_audit_chain(
     audit_ks: &vti_common::store::KeyspaceHandle,
 ) -> Result<AuditChainReport, AppError> {
@@ -157,18 +175,13 @@ pub async fn verify_audit_chain(
         Some((head, index)) => ChainVerifier::resume(head, index),
         None => ChainVerifier::new(),
     };
-    let mut report = AuditChainReport {
-        verified: true,
-        rows_examined: pairs.len(),
-        entries_verified: 0,
-        pre_chain_rows: 0,
-        unchained_after_open: 0,
-        legacy_envelopes_skipped: 0,
-        head: None,
-        chain_break: None,
+
+    let mut extra = VtaVerifyExt {
         resumed_from_prune: resumed.is_some(),
         pruned_entries: watermark.as_ref().map_or(0, |w| w.pruned_entries),
+        ..Default::default()
     };
+    let mut chain_break = None;
     // A pruned log has no entry before the watermark, so the first survivor is
     // a continuation rather than an opening.
     let mut chain_opened = resumed.is_some();
@@ -181,13 +194,13 @@ pub async fn verify_audit_chain(
                 // chain existed. After it, nothing this sink writes looks like
                 // this, so something else put it there.
                 if chain_opened {
-                    report.unchained_after_open += 1;
+                    extra.unchained_after_open += 1;
                     tracing::warn!(
                         key = %String::from_utf8_lossy(key),
                         "audit row after the chain opened is not an envelope",
                     );
                 } else {
-                    report.pre_chain_rows += 1;
+                    extra.pre_chain_rows += 1;
                 }
                 continue;
             }
@@ -199,20 +212,27 @@ pub async fn verify_audit_chain(
                 ChainBreak::TamperedEntry { index, event_id } => ("tamperedEntry", index, event_id),
                 ChainBreak::BrokenLink { index, event_id } => ("brokenLink", index, event_id),
             };
-            report.verified = false;
-            report.chain_break = Some(AuditChainBreak {
+            chain_break = Some(AuditChainBreak {
                 kind: kind.to_string(),
                 index,
-                event_id: event_id.to_string(),
+                event_id: Some(event_id.to_string()),
             });
             break;
         }
     }
 
-    report.entries_verified = verifier.verified();
-    report.legacy_envelopes_skipped = verifier.skipped_legacy();
-    report.head = verifier.head().map(hex::encode);
-    Ok(report)
+    Ok(AuditChainReport {
+        verified: chain_break.is_none(),
+        entries_examined: pairs.len(),
+        entries_verified: verifier.verified(),
+        legacy_skipped: verifier.skipped_legacy(),
+        // The canonical shape has one bucket for what would not parse; the two
+        // kinds a VTA distinguishes are broken out in `ext`.
+        unparseable_skipped: extra.pre_chain_rows + extra.unchained_after_open,
+        head: verifier.head().as_ref().map(digest_multibase),
+        chain_break,
+        ext: Some(serde_json::json!({ VTA_EXT_KEY: extra })),
+    })
 }
 
 /// Read one stored row, in either shape the audit keyspace holds.
@@ -497,9 +517,11 @@ mod verify_tests {
         let report = verify_audit_chain(&audit_ks).await.expect("verify");
 
         assert!(report.verified, "the chain itself is intact");
-        assert_eq!(report.pre_chain_rows, 1);
+        let ext: vta_sdk::protocols::audit_management::verify::VtaVerifyExt =
+            serde_json::from_value(report.ext.clone().unwrap()[VTA_EXT_KEY].clone()).unwrap();
+        assert_eq!(ext.pre_chain_rows, 1);
         assert_eq!(
-            report.unchained_after_open, 0,
+            ext.unchained_after_open, 0,
             "a row before the chain opened is not an insertion"
         );
         assert_eq!(
@@ -532,11 +554,13 @@ mod verify_tests {
 
         let report = verify_audit_chain(&audit_ks).await.expect("verify");
 
+        let ext: vta_sdk::protocols::audit_management::verify::VtaVerifyExt =
+            serde_json::from_value(report.ext.clone().unwrap()[VTA_EXT_KEY].clone()).unwrap();
         assert_eq!(
-            report.unchained_after_open, 1,
+            ext.unchained_after_open, 1,
             "a non-envelope row after the chain opened is reported as a finding"
         );
-        assert_eq!(report.pre_chain_rows, 0);
+        assert_eq!(ext.pre_chain_rows, 0);
     }
 
     #[tokio::test]
@@ -570,7 +594,7 @@ mod verify_tests {
         assert!(!report.verified);
         let brk = report.chain_break.expect("a break is reported");
         assert_eq!(brk.kind, "tamperedEntry");
-        assert_eq!(brk.event_id, env.event_id.to_string());
+        assert_eq!(brk.event_id, Some(env.event_id.to_string()));
     }
 }
 
@@ -620,8 +644,10 @@ mod retention_tests {
             "a pruned log must still verify: {:?}",
             report.chain_break
         );
-        assert!(report.resumed_from_prune);
-        assert_eq!(report.pruned_entries, removed as usize);
+        let ext: vta_sdk::protocols::audit_management::verify::VtaVerifyExt =
+            serde_json::from_value(report.ext.clone().unwrap()[VTA_EXT_KEY].clone()).unwrap();
+        assert!(ext.resumed_from_prune);
+        assert_eq!(ext.pruned_entries, removed as usize);
     }
 
     /// The watermark must not become a way to hide a removal. An entry taken
