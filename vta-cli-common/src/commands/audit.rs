@@ -214,6 +214,90 @@ pub async fn cmd_get_retention(client: &VtaClient) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+/// Verify the audit log's hash chain.
+pub async fn cmd_verify_chain(client: &VtaClient) -> Result<(), Box<dyn std::error::Error>> {
+    use vta_sdk::protocols::audit_management::verify::{VTA_EXT_KEY, VtaVerifyExt};
+
+    let r = client.verify_audit_chain().await?;
+    let ext: VtaVerifyExt = r
+        .ext
+        .as_ref()
+        .and_then(|e| e.get(VTA_EXT_KEY).cloned())
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+
+    println!("\n  \x1b[1mAudit Chain\x1b[0m");
+    if r.verified {
+        println!("  Status: \x1b[32m\u{2713} verified\x1b[0m");
+    } else {
+        println!("  Status: \x1b[31m\u{2717} BROKEN\x1b[0m");
+    }
+    println!("  Entries examined: {}", r.entries_examined);
+    println!("  Entries verified: {}", r.entries_verified);
+    if let Some(head) = &r.head {
+        println!("  Head:             \x1b[36m{head}\x1b[0m");
+    }
+
+    if ext.resumed_from_prune {
+        println!(
+            "  Resumed from the retention watermark: \x1b[36m{}\x1b[0m entries pruned",
+            ext.pruned_entries
+        );
+        println!("    Those entries were not verified by this run and cannot be — they are");
+        println!("    gone. What holds is that the survivors continue a chain that ran");
+        println!("    through the watermark, which lives in the same store as the log.");
+    }
+
+    // Printed whatever their value, because zero is the interesting answer
+    // and an operator who has to remember to ask has not been told.
+    println!("  Rows before the chain opened: {}", ext.pre_chain_rows);
+    if ext.unchained_after_open > 0 {
+        println!(
+            "  \x1b[31mRows after the chain opened that are not chained: {}\x1b[0m",
+            ext.unchained_after_open
+        );
+        println!("    Everything written since the chain opened is chained, so these arrived");
+        println!("    by another route. Treat them as an insertion until shown otherwise.");
+    }
+    if r.legacy_skipped > 0 {
+        println!(
+            "  \x1b[31mEnvelopes skipped by schema version: {}\x1b[0m",
+            r.legacy_skipped
+        );
+        println!("    These were passed over rather than checked, so a forged one would pass");
+        println!("    here untouched.");
+    }
+
+    if let Some(b) = &r.chain_break {
+        println!(
+            "\n  \x1b[31mBroke at entry {}{}: {}\x1b[0m",
+            b.index,
+            b.event_id
+                .as_deref()
+                .map(|id| format!(" ({id})"))
+                .unwrap_or_default(),
+            b.kind
+        );
+        match b.kind.as_str() {
+            "tamperedEntry" => {
+                println!("  The entry's content was altered after it was written.")
+            }
+            "brokenLink" => {
+                println!("  An entry was reordered, dropped, or inserted at this point.")
+            }
+            _ => {}
+        }
+    }
+    println!();
+
+    if r.verified && ext.unchained_after_open == 0 && r.legacy_skipped == 0 {
+        Ok(())
+    } else {
+        // A findings-and-exit-zero report is one nobody wires an alert to.
+        Err("audit chain verification reported findings".into())
+    }
+}
+
 /// Update the audit retention period.
 pub async fn cmd_update_retention(
     client: &VtaClient,

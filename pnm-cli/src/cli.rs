@@ -2676,6 +2676,8 @@ pub(crate) enum AuthCredentialCommands {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum AuditCommands {
+    /// Verify the audit log's hash chain
+    Verify,
     /// List audit log entries with optional filtering
     List {
         /// Start time, RFC 3339 (e.g. 2026-07-01T00:00:00Z). Inclusive.

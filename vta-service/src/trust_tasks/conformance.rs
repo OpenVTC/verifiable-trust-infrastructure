@@ -121,6 +121,9 @@ use vta_sdk::protocols::app_state::{
 use vta_sdk::protocols::audit_management::list::{
     AuditEnvelope, ListAuditLogsBody, ListAuditLogsResultBody,
 };
+use vta_sdk::protocols::audit_management::verify::{
+    AuditChainBreak, AuditChainReport, VTA_EXT_KEY, VtaVerifyExt,
+};
 use vta_sdk::protocols::auth::{RevokeSessionRequest, RevokeSessionResponse};
 use vta_sdk::protocols::consent_management::{
     ConsentApproverListBody, ConsentApproverSetBody, ConsentDecisionBody, ConsentListBody,
@@ -1287,6 +1290,43 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     }],
                     truncated: true,
                     cursor: Some("cur-2".into()),
+                })
+            ),
+        ),
+        (
+            uris::TASK_AUDIT_VERIFY_0_1,
+            checked!(
+                specs::audit::verify::v0_1::Payload,
+                specs::audit::verify::v0_1::Response,
+                json!({}),
+                to_v(AuditChainReport {
+                    verified: false,
+                    entries_examined: 12,
+                    entries_verified: 9,
+                    legacy_skipped: 1,
+                    unparseable_skipped: 2,
+                    // A multibase-encoded multihash, which is what the schema
+                    // requires: a bare hex digest is non-conforming here.
+                    head: Some(
+                        "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR".into()
+                    ),
+                    chain_break: Some(AuditChainBreak {
+                        kind: "tamperedEntry".into(),
+                        index: 9,
+                        event_id: Some("evt-9".into()),
+                    }),
+                    // The witness carries the extension slot populated, because
+                    // this maintainer populates it on every response and a
+                    // witness that omitted it would not exercise the shape it
+                    // actually sends.
+                    ext: Some(serde_json::json!({
+                        VTA_EXT_KEY: VtaVerifyExt {
+                            pre_chain_rows: 1,
+                            unchained_after_open: 1,
+                            resumed_from_prune: true,
+                            pruned_entries: 4,
+                        }
+                    })),
                 })
             ),
         ),

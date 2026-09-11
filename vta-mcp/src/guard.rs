@@ -231,6 +231,10 @@ const READ_VERBS: &[&str] = &[
     "explain",
     "get-retention",
     "approver-list",
+    // Checks the audit log's hash chain and reports what it found. A read of
+    // the whole log and nothing else — it writes nothing, and the answer being
+    // "broken" is a fact about what is already there.
+    "verify",
     // Reads the record of what was disclosed to whom. Only ever a read — the
     // disclosure itself is written by `present`, not by looking at it later.
     "history",

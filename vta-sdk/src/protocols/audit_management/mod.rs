@@ -1,5 +1,6 @@
 pub mod list;
 pub mod retention;
+pub mod verify;
 
 pub const PROTOCOL_BASE: &str = "https://firstperson.network/protocols/audit-management/1.0";
 

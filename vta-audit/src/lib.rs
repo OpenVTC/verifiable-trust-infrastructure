@@ -259,7 +259,59 @@ pub async fn record_consent(
     }
 }
 
+/// Where the retention sweep has pruned to, so that verification can resume.
+///
+/// Deleting the oldest entries of a hash chain leaves the rest unverifiable:
+/// the first surviving entry's `prev_hash` points at something that is gone,
+/// which is **indistinguishable from an entry having been removed by an
+/// attacker** — the case the chain exists to detect. Retention would therefore
+/// break verification permanently, and the first person to run `verify` after
+/// a sweep would get a failure that means nothing.
+///
+/// The watermark is what the sweep leaves behind: the hash it pruned through
+/// and how many chained entries it removed, so a verifier resumes from that
+/// point instead of expecting a chain back to genesis.
+///
+/// # What it is worth
+///
+/// It is stored in the same keyspace as the log, so it is exactly as
+/// trustworthy as that store: an adversary who can delete entries can also
+/// rewrite the watermark to match. It restores verification across an
+/// *honest* sweep, and that is all it claims. Making a pruned prefix
+/// verifiable against an adversary with store access needs the watermark
+/// signed and published outside the store, which is what the VTC's signed
+/// checkpoints do.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PruneWatermark {
+    /// `entry_hash` of the newest chained entry the sweep removed — the
+    /// `prev_hash` the oldest surviving entry points at.
+    pub head: String,
+    /// Chained entries removed by every sweep so far, so a break is still
+    /// reported at its position in the whole log rather than in the remainder.
+    pub pruned_entries: usize,
+    /// When the most recent sweep ran.
+    pub pruned_at: String,
+}
+
+/// Storage key of the watermark.
+///
+/// Outside the `log:` prefix on purpose: the sweep deletes by that prefix, so
+/// a watermark stored under it would be pruned by the sweep that wrote it.
+pub const PRUNE_WATERMARK_KEY: &str = "prune:watermark";
+
+/// Read the retention sweep's watermark, if it has ever run.
+pub async fn prune_watermark(
+    audit_ks: &KeyspaceHandle,
+) -> Result<Option<PruneWatermark>, AppError> {
+    audit_ks.get(PRUNE_WATERMARK_KEY.to_string()).await
+}
+
 /// Remove audit log entries older than `retention_days`.
+///
+/// Records a [`PruneWatermark`] when it removes chained entries, so the
+/// remainder still verifies. Without that, retention and tamper-evidence are
+/// mutually exclusive.
 pub async fn cleanup_expired_logs(
     audit_ks: &KeyspaceHandle,
     retention_days: u32,
@@ -269,20 +321,53 @@ pub async fn cleanup_expired_logs(
         .unwrap_or_default()
         .as_secs()
         .saturating_sub(retention_days as u64 * 86400);
+    cleanup_logs_before(audit_ks, cutoff).await
+}
 
-    let cutoff_key = format!("log:{:020}:", cutoff);
+/// [`cleanup_expired_logs`] with the cutoff supplied rather than derived from
+/// the clock.
+///
+/// Separate so the sweep can be exercised against a known boundary: derived
+/// from `now`, the only reachable boundaries in a test are "everything
+/// written a whole day ago", which nothing in a test was, and "nothing".
+pub async fn cleanup_logs_before(audit_ks: &KeyspaceHandle, cutoff: u64) -> Result<u64, AppError> {
+    let cutoff_key = format!("log:{cutoff:020}:");
     let keys = audit_ks.prefix_keys("log:").await?;
 
     let mut removed = 0u64;
+    let mut pruned_chained = 0usize;
+    let mut last_chained_hash: Option<String> = None;
+
     for key in keys {
-        let key_str = String::from_utf8_lossy(&key);
-        if key_str.as_ref() < cutoff_key.as_str() {
+        let key_str = String::from_utf8_lossy(&key).into_owned();
+        if key_str.as_str() < cutoff_key.as_str() {
+            // Read before deleting: a chained entry carries the hash the
+            // survivors will point back at, and once it is gone so is the
+            // only copy of it.
+            if let Ok(Some(raw)) = audit_ks.get_raw(key.clone()).await
+                && let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&raw)
+            {
+                last_chained_hash = Some(hex::encode(env.entry_hash));
+                pruned_chained += 1;
+            }
             audit_ks.remove(key).await?;
             removed += 1;
         } else {
             // Keys are sorted — once we pass the cutoff, stop
             break;
         }
+    }
+
+    if let Some(head) = last_chained_hash {
+        let previous = prune_watermark(audit_ks).await?;
+        let watermark = PruneWatermark {
+            head,
+            pruned_entries: previous.map_or(0, |w| w.pruned_entries) + pruned_chained,
+            pruned_at: chrono::Utc::now().to_rfc3339(),
+        };
+        audit_ks
+            .insert(PRUNE_WATERMARK_KEY.to_string(), &watermark)
+            .await?;
     }
 
     Ok(removed)

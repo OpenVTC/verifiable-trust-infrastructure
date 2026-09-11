@@ -561,3 +561,100 @@ mod chained_sink_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod verify_support_tests {
+    //! The sink's half of what verification depends on. The verifier itself
+    //! lives in `vta-service`, where the keyspace read path is.
+    use super::*;
+    use vti_common::audit::{AuditEnvelope, verify_chain};
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    fn keyspaces() -> (KeyspaceHandle, KeyspaceHandle, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("store");
+        (
+            store.keyspace("audit").expect("audit"),
+            store.keyspace("audit_key").expect("audit_key"),
+            dir,
+        )
+    }
+
+    fn entry(action: &str) -> AuditLogEntry {
+        AuditLogEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            timestamp: 1_700_000_000,
+            action: action.to_string(),
+            actor: "did:key:z6MkA".to_string(),
+            resource: None,
+            outcome: "success".to_string(),
+            channel: None,
+            context_id: None,
+            detail: None,
+        }
+    }
+
+    /// Entries written inside one second must still verify. Whole-second keys
+    /// order same-second writes by uuid, so a verifier reading in key order
+    /// sees them out of chain order and reports a break in an intact chain —
+    /// which is why the storage key carries nanoseconds.
+    #[tokio::test]
+    async fn writes_within_one_second_verify_in_key_order() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks);
+
+        for i in 0..25 {
+            sink.record(&entry(&format!("op.{i}")))
+                .await
+                .expect("record");
+        }
+
+        let mut pairs = audit_ks.prefix_iter_raw("log:").await.expect("scan");
+        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let envelopes: Vec<AuditEnvelope> = pairs
+            .iter()
+            .filter_map(|(_, v)| serde_json::from_slice(v).ok())
+            .collect();
+
+        assert_eq!(envelopes.len(), 26, "25 events plus the opening entry");
+        verify_chain(&envelopes)
+            .expect("key order is write order, so the chain verifies as written");
+    }
+
+    /// Tampering is what the chain exists to detect, so assert it is detected
+    /// rather than assuming.
+    #[tokio::test]
+    async fn an_altered_entry_breaks_verification() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks.clone(), key_ks);
+
+        for i in 0..3 {
+            sink.record(&entry(&format!("op.{i}")))
+                .await
+                .expect("record");
+        }
+
+        let mut pairs = audit_ks.prefix_iter_raw("log:").await.expect("scan");
+        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let mut envelopes: Vec<AuditEnvelope> = pairs
+            .iter()
+            .filter_map(|(_, v)| serde_json::from_slice(v).ok())
+            .collect();
+
+        verify_chain(&envelopes).expect("intact before tampering");
+
+        // Rewrite what an entry says happened, leaving its hashes alone —
+        // the edit an operator covering their tracks would make.
+        if let vti_common::audit::event::AuditEvent::VtaOperation(op) = &mut envelopes[2].event {
+            op.outcome = "failure".to_string();
+        }
+        assert!(
+            verify_chain(&envelopes).is_err(),
+            "an altered entry must not verify"
+        );
+    }
+}
