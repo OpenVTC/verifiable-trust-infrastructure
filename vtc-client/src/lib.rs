@@ -63,7 +63,9 @@
 //! ## Scope
 //!
 //! Authentication, the member roster, the admin join queue, removal, policy,
-//! and the applicant side of the join ceremony
+//! the vetting admin surface (vetter grants, automatic grants, branding and
+//! statement withdrawals — what `cnm vetting` drives), and the applicant side
+//! of the join ceremony
 //! ([`VtcClient::submit_join`] / [`VtcClient::submit_join_as`], which sign
 //! their own document and need no token).
 
@@ -106,11 +108,21 @@ pub mod task {
     pub const POLICY_GET: &str = "https://trusttasks.org/spec/policy/get/0.1";
     pub const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
     pub const POLICY_ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
+    pub const VETTING_VETTERS_GRANT: &str =
+        "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
+    pub const VETTING_VETTERS_RESEND: &str =
+        "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1";
+    pub const ENDORSEMENTS_REVOKE: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
 }
 
 /// Re-export of the published join-request protocol wire types, so a consumer
 /// driving the join ceremony depends on one crate.
 pub use vta_sdk::protocols::join_requests;
+
+/// Re-export of the peer identity vetting wire types — the vetter grant, the
+/// grant listing and the automatic-grant configuration this client's vetting
+/// admin verbs send and return.
+pub use vta_sdk::protocols::vetting;
 
 /// Errors surfaced by the VTC client.
 #[derive(Debug, thiserror::Error)]
@@ -240,6 +252,80 @@ pub struct RemoveResult {
     /// Wire disposition: `"tombstone"`, `"purge"`, `"historical"`.
     pub disposition: String,
     pub removed: bool,
+}
+
+/// Outcome of naming a member a vetter (`POST /vetting/vetters`).
+///
+/// Granting converges: while the member holds a live grant, asking again
+/// returns that grant rather than issuing a second. `created` says which
+/// happened, so an operator is not told "granted" about a grant that already
+/// stood.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct VetterGrant {
+    /// `true` when this call issued the grant (HTTP 201), `false` when the
+    /// member already held a live one (HTTP 200).
+    pub created: bool,
+    /// The grant.
+    pub grant: vetting::VetterGrantResponseBody,
+}
+
+/// Outcome of revoking an endorsement (`DELETE /credentials/endorsements/{id}`)
+/// — which is how a vetter grant is withdrawn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct EndorsementRevocation {
+    /// The revoked endorsement's id.
+    pub endorsement_id: String,
+    /// The credential the revocation applies to, and when.
+    pub revocation: RevocationDetail,
+    /// The credential's index on the community's revocation status list.
+    pub status_list_index: u32,
+}
+
+/// The credential a revocation applies to, and when it took effect.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct RevocationDetail {
+    /// The revoked credential's `id`.
+    pub credential_id: String,
+    /// When the revocation took effect (RFC 3339).
+    pub revoked_at: String,
+}
+
+/// One vetting statement withdrawal notice, as `GET /vetting/revocations`
+/// reports it, with the admissions it touches.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct VettingRevocation {
+    /// The vetter who withdrew the statement.
+    pub issuer: String,
+    /// The statement's `id`.
+    pub statement_id: String,
+    /// The statement's `digestMultibase`.
+    pub statement_digest_multibase: String,
+    /// The vetter's reason, when given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// When the community recorded the notice.
+    pub recorded_at: DateTime<Utc>,
+    /// `needsReview` when a current member was admitted on the statement, else
+    /// `noAdmission`.
+    pub review_state: String,
+    /// Approved join requests that counted the statement.
+    #[serde(default)]
+    pub affected_join_requests: Vec<String>,
+    /// Of their applicants, those who are current members.
+    #[serde(default)]
+    pub affected_members: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct VettingRevocationList {
+    revocations: Vec<VettingRevocation>,
 }
 
 /// A client bound to one VTC's API base, holding a bearer token once
@@ -857,6 +943,181 @@ impl VtcClient {
         .await
     }
 
+    // -----------------------------------------------------------------------
+    // Peer identity vetting — the community-admin surface
+    // -----------------------------------------------------------------------
+
+    /// Every vetter grant, newest first (`GET /vetting/vetters`). Admin token.
+    ///
+    /// Each row carries the member, validity, revocation, whether it is live,
+    /// whether an admin or the automatic sweep issued it, and the vetter's
+    /// profile summary.
+    pub async fn list_vetter_grants(&self) -> Result<vetting::VetterGrantListResponse, VtcError> {
+        let url = self.api_url(&["vetting", "vetters"])?;
+        let resp = self.untasked(reqwest::Method::GET, url)?.send().await?;
+        Ok(expect_success(resp).await?.json().await?)
+    }
+
+    /// Name a current member a vetter (`vtc/vetting/vetters/grant/0.1`, over
+    /// `POST /vetting/vetters`). Admin token.
+    ///
+    /// `validity_seconds` is one day to two years; `None` takes the community's
+    /// default of one year. A member already holding a live grant gets that
+    /// grant back with [`VetterGrant::created`] `false`.
+    pub async fn grant_vetter(
+        &self,
+        member_did: &str,
+        validity_seconds: Option<u64>,
+    ) -> Result<VetterGrant, VtcError> {
+        let url = self.api_url(&["vetting", "vetters"])?;
+        let body = vetting::VetterGrantBody {
+            member_did: member_did.to_string(),
+            validity_seconds,
+            ext: None,
+        };
+        let resp = self
+            .tt(reqwest::Method::POST, url, task::VETTING_VETTERS_GRANT)?
+            .json(&body)
+            .send()
+            .await?;
+        let resp = expect_success(resp).await?;
+        let created = resp.status() == reqwest::StatusCode::CREATED;
+        Ok(VetterGrant {
+            created,
+            grant: resp.json().await?,
+        })
+    }
+
+    /// Revoke an endorsement by id (`vtc/endorsements/revoke/0.1`, over
+    /// `DELETE /credentials/endorsements/{id}`) — how a vetter grant is
+    /// withdrawn. Admin token. Revoking a grant also deletes the vetter's
+    /// profile.
+    pub async fn revoke_endorsement(
+        &self,
+        endorsement_id: &str,
+    ) -> Result<EndorsementRevocation, VtcError> {
+        let url = self.api_url(&["credentials", "endorsements", endorsement_id])?;
+        let resp = self
+            .tt(reqwest::Method::DELETE, url, task::ENDORSEMENTS_REVOKE)?
+            .send()
+            .await?;
+        Ok(expect_success(resp).await?.json().await?)
+    }
+
+    /// Deliver a vetter's live grant credential again
+    /// (`vtc/vetting/vetters/resend/0.1`, over
+    /// `POST /vetting/vetters/{memberDid}/resend`). Admin token.
+    ///
+    /// Success means the community handed the credential to its messaging
+    /// transport — not that the member's wallet has it. A member with no live
+    /// grant is a 404; a transport that would not take the delivery is a 503.
+    pub async fn resend_vetter_grant(
+        &self,
+        member_did: &str,
+    ) -> Result<vetting::VetterResendResponseBody, VtcError> {
+        let url = self.api_url(&["vetting", "vetters", member_did, "resend"])?;
+        let resp = self
+            .tt(reqwest::Method::POST, url, task::VETTING_VETTERS_RESEND)?
+            .send()
+            .await?;
+        Ok(expect_success(resp).await?.json().await?)
+    }
+
+    /// The automatic vetter-grant configuration and the last sweep
+    /// (`GET /vetting/auto-grant`). Admin token.
+    pub async fn auto_grant(&self) -> Result<vetting::AutoGrantStatus, VtcError> {
+        let url = self.api_url(&["vetting", "auto-grant"])?;
+        let resp = self.untasked(reqwest::Method::GET, url)?.send().await?;
+        Ok(expect_success(resp).await?.json().await?)
+    }
+
+    /// Replace the automatic vetter-grant configuration
+    /// (`PUT /vetting/auto-grant`). Admin token. An absent member takes its
+    /// default, so read the current configuration first to change one value.
+    pub async fn configure_auto_grant(
+        &self,
+        config: &vetting::AutoGrantConfig,
+    ) -> Result<vetting::AutoGrantStatus, VtcError> {
+        let url = self.api_url(&["vetting", "auto-grant"])?;
+        let resp = self
+            .untasked(reqwest::Method::PUT, url)?
+            .json(config)
+            .send()
+            .await?;
+        Ok(expect_success(resp).await?.json().await?)
+    }
+
+    /// How the community presents itself to an applicant's client
+    /// (`GET /community/branding`). Admin token.
+    pub async fn branding(&self) -> Result<join_requests::CommunityBranding, VtcError> {
+        let url = self.api_url(&["community", "branding"])?;
+        let resp = self.untasked(reqwest::Method::GET, url)?.send().await?;
+        Ok(expect_success(resp).await?.json().await?)
+    }
+
+    /// Replace the community's branding (`PUT /community/branding`) and return
+    /// what was stored. Admin token. Every member is optional; an absent member
+    /// is cleared.
+    pub async fn set_branding(
+        &self,
+        branding: &join_requests::CommunityBranding,
+    ) -> Result<join_requests::CommunityBranding, VtcError> {
+        let url = self.api_url(&["community", "branding"])?;
+        let resp = self
+            .untasked(reqwest::Method::PUT, url)?
+            .json(branding)
+            .send()
+            .await?;
+        Ok(expect_success(resp).await?.json().await?)
+    }
+
+    /// Every vetting statement withdrawal notice, newest first, with the
+    /// admissions each touches (`GET /vetting/revocations`). Admin token.
+    pub async fn vetting_revocations(&self) -> Result<Vec<VettingRevocation>, VtcError> {
+        let url = self.api_url(&["vetting", "revocations"])?;
+        let resp = self.untasked(reqwest::Method::GET, url)?.send().await?;
+        let list: VettingRevocationList = expect_success(resp).await?.json().await?;
+        Ok(list.revocations)
+    }
+
+    /// `{base}/<segments…>`, each segment percent-encoded.
+    ///
+    /// A DID or an id interpolated into a path with `format!` is a path the
+    /// caller controls: a `/` or `?` in it would address a different route.
+    /// Pushing segments encodes them, so what is sent is what was meant.
+    fn api_url(&self, segments: &[&str]) -> Result<reqwest::Url, VtcError> {
+        if self.base_url.is_empty() {
+            return Err(VtcError::NoRestTransport("this verb"));
+        }
+        let mut url =
+            reqwest::Url::parse(&self.base_url).map_err(|e| VtcError::Url(e.to_string()))?;
+        url.path_segments_mut()
+            .map_err(|()| VtcError::Url(format!("{} cannot be a base URL", self.base_url)))?
+            .pop_if_empty()
+            .extend(segments);
+        Ok(url)
+    }
+
+    /// Start a bearer-authenticated request to an admin route that has **no**
+    /// Trust Task of its own.
+    ///
+    /// The VTC mounts a few admin REST routes without a `Trust-Task` binding
+    /// (the vetter listing, automatic grants, withdrawals, branding) rather
+    /// than borrow a URI that describes something else. Those are the only
+    /// callers of this; every route that does carry a task goes through
+    /// [`tt`](Self::tt).
+    fn untasked(
+        &self,
+        method: reqwest::Method,
+        url: reqwest::Url,
+    ) -> Result<reqwest::RequestBuilder, VtcError> {
+        if self.base_url.is_empty() {
+            return Err(VtcError::NoRestTransport("this verb"));
+        }
+        let token = self.token()?;
+        Ok(self.http.request(method, url).bearer_auth(token))
+    }
+
     /// Authenticated GET returning JSON, carrying `task` as the Trust-Task URL.
     async fn get_json(&self, path: &str, task: &str) -> Result<serde_json::Value, VtcError> {
         let resp = self
@@ -906,9 +1167,91 @@ impl VtcClient {
     }
 }
 
+/// The response when its status is a success, else [`VtcError::Http`] carrying
+/// the status and the body — the body is where the VTC says what was wrong, so
+/// a caller that turns this into operator guidance needs both.
+async fn expect_success(resp: reqwest::Response) -> Result<reqwest::Response, VtcError> {
+    if resp.status().is_success() {
+        return Ok(resp);
+    }
+    let status = resp.status().as_u16();
+    let body = resp.text().await.unwrap_or_default();
+    Err(VtcError::Http { status, body })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A DID or id placed in a path is one segment, whatever it contains.
+    #[test]
+    fn path_segments_are_encoded_not_interpolated() {
+        let client = VtcClient::with_token("https://vtc.example.com/v1/", "did:web:vtc", "t");
+        let url = client
+            .api_url(&[
+                "vetting",
+                "vetters",
+                "did:webvh:Qm:x.example/../admin?x",
+                "resend",
+            ])
+            .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://vtc.example.com/v1/vetting/vetters/did:webvh:Qm:x.example%2F..%2Fadmin%3Fx/resend"
+        );
+    }
+
+    #[tokio::test]
+    async fn vetting_admin_methods_without_token_are_not_authenticated() {
+        let client = VtcClient::anonymous("https://vtc.example.com/v1", "did:web:vtc");
+        assert!(matches!(
+            client.list_vetter_grants().await,
+            Err(VtcError::NotAuthenticated)
+        ));
+        assert!(matches!(
+            client.grant_vetter("did:key:z", None).await,
+            Err(VtcError::NotAuthenticated)
+        ));
+        assert!(matches!(
+            client.revoke_endorsement("e1").await,
+            Err(VtcError::NotAuthenticated)
+        ));
+        assert!(matches!(
+            client.resend_vetter_grant("did:key:z").await,
+            Err(VtcError::NotAuthenticated)
+        ));
+        assert!(matches!(
+            client.auto_grant().await,
+            Err(VtcError::NotAuthenticated)
+        ));
+        assert!(matches!(
+            client.branding().await,
+            Err(VtcError::NotAuthenticated)
+        ));
+        assert!(matches!(
+            client.vetting_revocations().await,
+            Err(VtcError::NotAuthenticated)
+        ));
+    }
+
+    #[test]
+    fn a_withdrawal_row_deserializes_from_the_vtc_shape() {
+        let rows: VettingRevocationList = serde_json::from_value(serde_json::json!({
+            "revocations": [{
+                "issuer": "did:key:zCarol",
+                "statementId": "urn:uuid:s1",
+                "statementDigestMultibase": "zDigest",
+                "reason": "mistake",
+                "recordedAt": "2026-09-01T00:00:00Z",
+                "reviewState": "needsReview",
+                "affectedJoinRequests": ["3f1c9a52-8c1e-4f2b-9d7a-0b6e5c4d3a21"],
+                "affectedMembers": ["did:key:zAlice"]
+            }]
+        }))
+        .unwrap();
+        assert_eq!(rows.revocations[0].review_state, "needsReview");
+        assert_eq!(rows.revocations[0].affected_members, vec!["did:key:zAlice"]);
+    }
 
     /// A holder on any DID method can name its verification method, which is
     /// the whole point of the general submit path.
