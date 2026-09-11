@@ -2121,6 +2121,92 @@ async fn a_statement_from_a_member_who_is_not_a_vetter_does_not_count() {
     );
 }
 
+#[tokio::test]
+async fn a_withdrawn_statement_stops_counting() {
+    let fix = build_fixture().await;
+    store_vetting_criterion(&fix).await;
+    let (applicant, _) = did_key_secret(MEMBER_SEED);
+    let (carol, carol_key) = did_key_secret([0x11; 32]);
+    let (dave, dave_key) = did_key_secret([0x22; 32]);
+    seed_member(&fix, &carol, VtcRole::Custom("vetter".into())).await;
+    seed_member(&fix, &dave, VtcRole::Custom("vetter".into())).await;
+    let from_carol = vetting_statement(&carol_key, &applicant, 1).await;
+    let from_dave = vetting_statement(&dave_key, &applicant, 2).await;
+
+    let (status, body) = post_tt(&fix.router, withdrawal_doc([0x11; 32], &from_carol).await).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert!(tt_payload(&body)["recordedAt"].is_string(), "{body}");
+
+    let (_did, doc) = submit_doc(&vetting_vp(&applicant, vec![from_carol, from_dave])).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(verdict_effect(&body), "requestMore", "got {body}");
+    assert_eq!(
+        body.pointer("/payload/verdict/with/needs"),
+        Some(&json!(["vetting:statements:1"])),
+        "the withdrawn statement no longer counts: {body}"
+    );
+}
+
+#[tokio::test]
+async fn nobody_can_withdraw_a_statement_someone_else_signed() {
+    let fix = build_fixture().await;
+    store_vetting_criterion(&fix).await;
+    let (applicant, _) = did_key_secret(MEMBER_SEED);
+    let (carol, carol_key) = did_key_secret([0x11; 32]);
+    let (dave, dave_key) = did_key_secret([0x22; 32]);
+    let (erin, _) = did_key_secret([0x33; 32]);
+    seed_member(&fix, &carol, VtcRole::Custom("vetter".into())).await;
+    seed_member(&fix, &dave, VtcRole::Custom("vetter".into())).await;
+    seed_member(&fix, &erin, VtcRole::Member).await;
+    let from_carol = vetting_statement(&carol_key, &applicant, 1).await;
+    let from_dave = vetting_statement(&dave_key, &applicant, 2).await;
+
+    // Erin is a member, so the notice is accepted — and recorded under Erin,
+    // where it matches no statement Erin signed.
+    let (status, body) = post_tt(&fix.router, withdrawal_doc([0x33; 32], &from_carol).await).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+
+    let (_did, doc) = submit_doc(&vetting_vp(&applicant, vec![from_carol, from_dave])).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(
+        verdict_effect(&body),
+        "allow",
+        "Carol's statement still counts: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_non_member_cannot_send_a_withdrawal() {
+    let fix = build_fixture().await;
+    let (applicant, _) = did_key_secret(MEMBER_SEED);
+    let (_carol, carol_key) = did_key_secret([0x11; 32]);
+    let statement = vetting_statement(&carol_key, &applicant, 1).await;
+    let (status, body) = post_tt(&fix.router, withdrawal_doc([0x44; 32], &statement).await).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a stranger's notice must be refused: {body}"
+    );
+}
+
+/// A `vtc/vetting/revoke-statement/0.1` document for `statement`, signed by `seed`.
+async fn withdrawal_doc(seed: [u8; 32], statement: &Value) -> Value {
+    let digest = dtg_credentials::digest_multibase_json(statement).expect("statement digest");
+    let (_did, doc) = signed_trust_task_seed(
+        &seed,
+        vta_sdk::protocols::vetting::VETTING_REVOKE_STATEMENT_TYPE,
+        json!({
+            "statementId": statement["id"],
+            "statementDigestMultibase": digest,
+            "reason": "mistake",
+        }),
+    )
+    .await;
+    doc
+}
+
 // ---------------------------------------------------------------------------
 // Status — applicant poll (join-requests/status/1.0)
 // ---------------------------------------------------------------------------

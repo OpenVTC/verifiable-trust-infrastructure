@@ -98,6 +98,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         relationships_ks: relationships_ks.clone(),
         relationships_by_did_ks: relationships_by_did_ks.clone(),
         endorsement_types_ks: endorsement_types_ks.clone(),
+        vetting_revocations_ks: store.keyspace("vetting_revocations").unwrap(),
         schemas_ks: store.keyspace("schemas").unwrap(),
         endorsements_ks: endorsements_ks.clone(),
         rooms_ks: rooms_ks.clone(),

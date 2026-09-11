@@ -135,6 +135,23 @@ under the same names.
 
 Without vetting facts the default behaves exactly as before.
 
+## Withdrawing a statement
+
+A vetter withdraws a statement they issued with
+`vtc/vetting/revoke-statement/0.1`:
+
+```json
+{ "statementId": "urn:uuid:…", "statementDigestMultibase": "z…", "reason": "mistake" }
+```
+
+The sender must be a member. The notice is keyed by the **authenticated sender**,
+the statement id and the statement digest (compared on its decoded bytes), and
+counts only against a presented statement with all three — so a notice can
+only ever withdraw a statement its sender signed. A withdrawn statement reads as
+`revoked` and fails with `revoked` in `input.evidence.vetting.statements`.
+Repeating a notice returns the original `recordedAt`. The first notice is
+audited as `VettingStatementRevoked`, and notices are part of a backup.
+
 ## Current limits
 
 - Statements are counted on the VP-submit path. The credential-exchange
@@ -144,8 +161,9 @@ Without vetting facts the default behaves exactly as before.
   statements stop counting.
 - Distinct vetters are distinct member DIDs; one person holding two member DIDs
   would count twice.
-- Statement withdrawal (`vtc/vetting/revoke-statement/0.1`) is recorded by the
-  next change in this series; until then `revoked` is always `false`.
+- Withdrawal notices are kept indefinitely — there is no retention sweep yet.
+- A withdrawal after admission is recorded and audited but does not yet open a
+  review of the membership it helped grant.
 - `requirementsGrace` is not yet applied: an application gathered against
   superseded requirements is evaluated under the current ones, with
   `applicant_digest_matches: false` for a policy to act on.

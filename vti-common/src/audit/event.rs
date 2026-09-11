@@ -369,6 +369,11 @@ pub enum AuditEvent {
     /// status-list audit surface stays uniform.
     CustomEndorsementRevoked(CustomEndorsementRevokedData),
 
+    /// A vetter withdrew a vetting statement they had issued
+    /// (`vtc/vetting/revoke-statement/0.1`). The actor is the vetter; the
+    /// statement stops counting toward any join decided after this.
+    VettingStatementRevoked(VettingStatementRevokedData),
+
     /// An operator registered a new custom endorsement type
     /// via `POST /v1/endorsement-types`. Phase 4 M4.8.1 (D4
     /// review). The actor is the admin; the `type_uri` field
@@ -535,6 +540,7 @@ impl AuditEvent {
             Self::PersonhoodRevoked(..) => "PersonhoodRevoked",
             Self::CustomEndorsementIssued(..) => "CustomEndorsementIssued",
             Self::CustomEndorsementRevoked(..) => "CustomEndorsementRevoked",
+            Self::VettingStatementRevoked(..) => "VettingStatementRevoked",
             Self::EndorsementTypeRegistered(..) => "EndorsementTypeRegistered",
             Self::EndorsementTypeDeleted(..) => "EndorsementTypeDeleted",
             Self::WebsiteFileWritten(..) => "WebsiteFileWritten",
@@ -1335,6 +1341,21 @@ pub struct CustomEndorsementIssuedData {
 pub struct CustomEndorsementRevokedData {
     pub endorsement_id: String,
     pub endorsement_type: String,
+}
+
+/// Payload for [`AuditEvent::VettingStatementRevoked`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VettingStatementRevokedData {
+    /// The withdrawn statement's `id`.
+    pub statement_id: String,
+    /// Its `digestMultibase`, so the record names one credential, not an id
+    /// another credential could reuse.
+    pub statement_digest_multibase: String,
+    /// The vetter's stated reason (`mistake`, `new-information`,
+    /// `key-compromise`, `other`), when given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Payload for [`AuditEvent::EndorsementTypeRegistered`].
@@ -2515,6 +2536,14 @@ mod tests {
                     endorsement_type: "https://x/v1/t".into(),
                 }),
                 "CustomEndorsementRevoked",
+            ),
+            (
+                AuditEvent::VettingStatementRevoked(VettingStatementRevokedData {
+                    statement_id: "urn:uuid:statement".into(),
+                    statement_digest_multibase: "zQmStatement".into(),
+                    reason: Some("mistake".into()),
+                }),
+                "VettingStatementRevoked",
             ),
             (
                 AuditEvent::EndorsementTypeRegistered(EndorsementTypeRegisteredData {

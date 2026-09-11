@@ -107,6 +107,9 @@ pub struct AppState {
     /// Operator-uploaded endorsement type registry (Phase 4
     /// M4.8.0). Only registered types are issuable.
     pub endorsement_types_ks: KeyspaceHandle,
+    /// Vetting statement withdrawal notices, keyed by issuer + statement id +
+    /// digest (`crate::vetting::revocation`).
+    pub vetting_revocations_ks: KeyspaceHandle,
     /// Credential-type schema store (Phase 2 task 2.2): the Issues / Accepts
     /// registry binding each type to a DTG catalog type + JSON Schema.
     pub schemas_ks: KeyspaceHandle,
@@ -456,6 +459,7 @@ pub async fn run(
     let relationships_ks = store.keyspace(keyspaces::RELATIONSHIPS)?;
     let relationships_by_did_ks = store.keyspace(keyspaces::RELATIONSHIPS_BY_DID)?;
     let endorsement_types_ks = store.keyspace(keyspaces::ENDORSEMENT_TYPES)?;
+    let vetting_revocations_ks = store.keyspace(keyspaces::VETTING_REVOCATIONS)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
     // Seed the schema store with the built-in catalog Issues types (idempotent;
     // never overwrites operator edits) so the registry reflects what the VTC
@@ -729,6 +733,7 @@ pub async fn run(
         relationships_ks,
         relationships_by_did_ks,
         endorsement_types_ks,
+        vetting_revocations_ks,
         schemas_ks,
         endorsements_ks,
         rooms_ks,

@@ -62,6 +62,9 @@ use vta_sdk::protocols::join_requests::{
     self as jr, JoinRequestStatusBody, JoinRequestSubmitBody, VerdictResponse,
 };
 use vta_sdk::protocols::members::{self as mem, MemberVmcBody, MemberVmcReceiptBody};
+use vta_sdk::protocols::vetting::{
+    self as vetting_wire, RevokeStatementBody, RevokeStatementResponseBody,
+};
 
 use vti_rooms::wire as rooms_wire;
 
@@ -227,6 +230,9 @@ async fn dispatch_typed(
         jr::JOIN_REQUEST_STATUS_TYPE => handle_status(state, ctx, doc).await,
         jr::MEMBER_SELF_REMOVE_TYPE => handle_self_remove(state, ctx, doc).await,
         mem::MEMBER_VMC_TYPE => handle_member_vmc(state, ctx, doc).await,
+        vetting_wire::VETTING_REVOKE_STATEMENT_TYPE => {
+            handle_revoke_statement(state, ctx, doc).await
+        }
         // The rooms family. Note what these do not take: no `ctx`, and no auth claims.
         // A room operation is authorized by the authority chain the room itself issued,
         // never by this service's ACL, roster, or the caller's session — invariant I5 of
@@ -365,6 +371,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     jr::JOIN_REQUEST_STATUS_TYPE,
     jr::MEMBER_SELF_REMOVE_TYPE,
     mem::MEMBER_VMC_TYPE,
+    // A vetter withdrawing a statement (OpenVTC vetting design §9.6).
+    vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
@@ -525,6 +533,38 @@ fn outcome_to_verdict(outcome: &JoinSubmitOutcome) -> Result<VerdictResponse, Ap
         ),
     };
     Ok(verdict)
+}
+
+// ─── vetting statement withdrawal ──────────────────────────────────────────
+
+/// `vtc/vetting/revoke-statement/0.1` — a vetter withdraws a statement.
+///
+/// The sender is the proven signer (REST document proof or DIDComm authcrypt).
+/// What a notice may do, and who may send one, is decided in
+/// [`crate::vetting::revocation::withdraw`].
+async fn handle_revoke_statement(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let vetter_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    let body: RevokeStatementBody = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::revocation::withdraw(state, &vetter_did, &body).await {
+        Ok(notice) => success_response(
+            &doc,
+            RevokeStatementResponseBody {
+                recorded_at: notice.recorded_at,
+                ext: None,
+            },
+        ),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
 }
 
 // ─── manifest (public) ─────────────────────────────────────────────────────
@@ -937,6 +977,7 @@ mod tests {
             jr::JOIN_REQUEST_STATUS_TYPE,
             jr::MEMBER_SELF_REMOVE_TYPE,
             mem::MEMBER_VMC_TYPE,
+            vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,
             <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ];
