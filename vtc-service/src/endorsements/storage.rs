@@ -79,6 +79,25 @@ pub async fn count_live_by_type(
     Ok(count)
 }
 
+/// Every endorsement of `endorsement_type` naming `subject_did`, revoked ones
+/// included, oldest first. A full scan: the keyspace has no subject index, and
+/// the callers — granting a role, departing, counting a vetting statement —
+/// are rare next to the size of a community's endorsement set.
+pub async fn endorsements_for_subject(
+    ks: &KeyspaceHandle,
+    subject_did: &str,
+    endorsement_type: &str,
+) -> Result<Vec<Endorsement>, AppError> {
+    let pairs = ks.prefix_iter_raw(ENDORSEMENTS_PREFIX.to_vec()).await?;
+    let mut rows: Vec<Endorsement> = pairs
+        .into_iter()
+        .filter_map(|(_k, v)| decode(&v).ok())
+        .filter(|row| row.subject_did == subject_did && row.endorsement_type == endorsement_type)
+        .collect();
+    rows.sort_by_key(|row| row.created_at);
+    Ok(rows)
+}
+
 pub async fn list_endorsements(
     ks: &KeyspaceHandle,
     audit_key: &AuditKey,
@@ -129,7 +148,36 @@ mod tests {
             vec_id: format!("urn:uuid:{id}"),
             created_at: Utc::now(),
             revoked_at: None,
+            valid_until: None,
         }
+    }
+
+    #[tokio::test]
+    async fn endorsements_for_subject_filters_by_subject_and_type() {
+        let (ks, _audit, _dir) = temp_ks().await;
+        let mine = fresh("CommunityRole", "did:webvh:vtc", "did:key:zA");
+        let other_type = fresh("https://example.com/v1/x", "did:webvh:vtc", "did:key:zA");
+        let other_subject = fresh("CommunityRole", "did:webvh:vtc", "did:key:zB");
+        for row in [&mine, &other_type, &other_subject] {
+            store_endorsement(&ks, row).await.unwrap();
+        }
+        mark_revoked(&ks, mine.id).await.unwrap();
+        let rows = endorsements_for_subject(&ks, "did:key:zA", "CommunityRole")
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "revoked rows are returned too");
+        assert_eq!(rows[0].id, mine.id);
+        assert!(rows[0].is_revoked());
+    }
+
+    #[test]
+    fn a_row_written_before_valid_until_still_decodes() {
+        let row = fresh("https://example.com/v1/x", "did:webvh:vtc", "did:key:zS");
+        let mut v = serde_json::to_value(&row).unwrap();
+        assert!(v.get("validUntil").is_none());
+        v.as_object_mut().unwrap().remove("revokedAt");
+        let back: Endorsement = serde_json::from_value(v).unwrap();
+        assert_eq!(back.valid_until, None);
     }
 
     #[tokio::test]

@@ -199,6 +199,71 @@ async fn no_state_change_is_a_noop() {
     );
 }
 
+/// A departing member's vetter grant is revoked with them — slot flipped and
+/// row marked — and reported back for the caller to audit. Left live, it would
+/// count again were the DID ever readmitted.
+#[tokio::test]
+async fn depart_revokes_the_members_role_grants() {
+    use vtc_service::endorsements::{Endorsement, get_endorsement, store_endorsement};
+
+    let (state, _dir) = build_state().await;
+    let subject = "did:key:zVetter";
+    let admit = EffectPlan::Admit {
+        subject: subject.into(),
+        role: "member".into(),
+        obligations: vec![],
+    };
+    execute::apply(&state, admit, ACTOR_DID)
+        .await
+        .expect("admit");
+
+    let slot = vtc_service::status_list::with_locked(
+        &state.status_lists_ks,
+        StatusPurpose::Revocation,
+        |row| Ok(vtc_service::status_list::allocate(row).expect("a free slot")),
+    )
+    .await
+    .unwrap();
+    let id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now();
+    store_endorsement(
+        &state.endorsements_ks,
+        &Endorsement {
+            id,
+            endorsement_type: "CommunityRole".into(),
+            issuer_did: "did:webvh:vtc.example.com:abc".into(),
+            subject_did: subject.into(),
+            claim: serde_json::json!({ "role": "vetter" }),
+            status_list_index: slot,
+            vec_id: format!("urn:uuid:{id}"),
+            created_at: now,
+            revoked_at: None,
+            valid_until: Some(now + chrono::Duration::days(365)),
+        },
+    )
+    .await
+    .unwrap();
+
+    let plan = EffectPlan::Depart {
+        subject: subject.into(),
+        disposition: Some("tombstone".into()),
+    };
+    let EffectOutcome::Departed(outcome) = execute::apply(&state, plan, ACTOR_DID)
+        .await
+        .expect("depart")
+    else {
+        panic!("expected Departed");
+    };
+    assert_eq!(outcome.revoked_grants.len(), 1, "{outcome:?}");
+    assert_eq!(outcome.revoked_grants[0].id, id);
+    assert_eq!(outcome.revoked_grants[0].status_list_index, slot);
+    let row = get_endorsement(&state.endorsements_ks, id)
+        .await
+        .unwrap()
+        .expect("the row is kept for audit");
+    assert!(row.is_revoked());
+}
+
 /// Depart removes a member: deletes the ACL row, applies the
 /// disposition (tombstone keeps the row but clears credentials), and
 /// revokes by flipping the member's revocation slot.

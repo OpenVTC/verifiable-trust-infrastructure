@@ -54,6 +54,9 @@ export type MemberEnvelope = Schemas["MemberEnvelope"];
 export type MembersPage = Schemas["Paginated_MemberResponse"];
 export type RemovedMemberRow = Schemas["RemovedMember"];
 export type RemovedMembersResponse = Schemas["RemovedMembersResponse"];
+export type EndorsementRow = Schemas["EndorsementRow"];
+export type EndorsementsPage = Schemas["Paginated_EndorsementRow"];
+export type VetterGrantResponse = Schemas["VetterGrantResponseBody"];
 export type RequestVmcResponse = Schemas["RequestVmcResponse"];
 
 // ── Join requests ───────────────────────────────────────────────────────

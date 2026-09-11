@@ -127,8 +127,8 @@ impl From<Endorsement> for EndorsementRow {
             issued: CredentialReference {
                 credential_id: e.vec_id,
                 issued_at: Some(e.created_at),
-                // Not on the stored row; `issue` reports it directly.
-                expires_at: None,
+                // Recorded since rows gained `validUntil`; absent on older rows.
+                expires_at: e.valid_until,
             },
             status_list_index: e.status_list_index,
             claim: e.claim,
@@ -278,6 +278,7 @@ pub async fn issue(
         vec_id: vec_id.clone(),
         created_at: now,
         revoked_at: None,
+        valid_until: Some(valid_until),
     };
     store_endorsement(&state.endorsements_ks, &end).await?;
 

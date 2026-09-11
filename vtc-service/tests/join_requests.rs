@@ -1929,8 +1929,47 @@ fn did_key_secret(seed: [u8; 32]) -> (String, Secret) {
     (did, secret)
 }
 
-/// A community member holding `role`, admitted a month ago.
-async fn seed_member(fix: &Fixture, did: &str, role: VtcRole) {
+const VETTER_GRANT_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
+const ENDORSEMENT_REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
+
+/// Name `did` a vetter through `POST /v1/vetting/vetters`, as the admin.
+async fn grant_vetter(fix: &Fixture, did: &str) -> (StatusCode, Value) {
+    send(
+        &fix.router,
+        "POST",
+        "/v1/vetting/vetters",
+        VETTER_GRANT_TASK,
+        Some(&fix.admin_token),
+        Some(json!({ "memberDid": did })),
+    )
+    .await
+}
+
+/// A community member the admin has named a vetter through a real grant.
+/// Returns the grant's endorsement id.
+async fn seed_vetter(fix: &Fixture, did: &str) -> String {
+    seed_member(fix, did).await;
+    let (status, body) = grant_vetter(fix, did).await;
+    assert_eq!(status, StatusCode::CREATED, "grant vetter: {body}");
+    body["endorsementId"]
+        .as_str()
+        .expect("endorsementId")
+        .to_string()
+}
+
+/// The community's grant rows for `did`.
+async fn grants_of(fix: &Fixture, did: &str) -> Vec<vtc_service::endorsements::Endorsement> {
+    vtc_service::endorsements::endorsements_for_subject(
+        &fix.state.endorsements_ks,
+        did,
+        vta_sdk::protocols::vetting::COMMUNITY_ROLE_ENDORSEMENT_TYPE,
+    )
+    .await
+    .expect("read grants")
+}
+
+/// A community member, admitted a month ago. Holding no vetter grant.
+async fn seed_member(fix: &Fixture, did: &str) {
     let mut member = vtc_service::members::Member::fresh(did);
     member.joined_at = chrono::Utc::now() - chrono::Duration::days(30);
     vtc_service::members::storage::store_member(&fix.members_ks, &member)
@@ -1940,7 +1979,7 @@ async fn seed_member(fix: &Fixture, did: &str, role: VtcRole) {
         &fix.acl_ks,
         &VtcAclEntry {
             did: did.into(),
-            role,
+            role: VtcRole::Member,
             label: None,
             allowed_contexts: vec![],
             created_at: vtc_service::auth::session::now_epoch(),
@@ -1989,14 +2028,25 @@ async fn store_vetting_criterion(fix: &Fixture) {
     .expect("store vetting criterion");
 }
 
-/// A Vetting Statement signed by `vetter` about `applicant`.
+/// A Vetting Statement signed by `vetter` about `applicant`, valid from now —
+/// after any grant the test made first.
 async fn vetting_statement(vetter: &Secret, applicant: &str, n: u8) -> Value {
+    vetting_statement_from(vetter, applicant, n, chrono::Utc::now()).await
+}
+
+/// As [`vetting_statement`], valid from `valid_from`.
+async fn vetting_statement_from(
+    vetter: &Secret,
+    applicant: &str,
+    n: u8,
+    valid_from: chrono::DateTime<chrono::Utc>,
+) -> Value {
     use vta_sdk::protocols::vetting::{
         DeclaredRelationship, IDENTITY_VETTING_ENDORSEMENT_TYPE, IdentityVettingEndorsement,
         VettingMethod,
     };
     use vta_sdk::vetting::statement::{StatementDraft, sign_statement};
-    let now = chrono::Utc::now();
+    let now = valid_from;
     sign_statement(
         StatementDraft {
             id: format!("urn:uuid:statement-{n}"),
@@ -2014,7 +2064,7 @@ async fn vetting_statement(vetter: &Secret, applicant: &str, n: u8) -> Value {
                 declared_relationship: DeclaredRelationship::None,
                 attestation_text_digest: None,
             },
-            valid_from: now - chrono::Duration::minutes(5),
+            valid_from: now,
             valid_until: now + chrono::Duration::days(90),
             task_context: format!("urn:uuid:session-{n}"),
         },
@@ -2039,8 +2089,8 @@ async fn vetted_applicant_with_two_eligible_vetters_is_admitted() {
     let (applicant, _) = did_key_secret(MEMBER_SEED);
     let (carol, carol_key) = did_key_secret([0x11; 32]);
     let (dave, dave_key) = did_key_secret([0x22; 32]);
-    seed_member(&fix, &carol, VtcRole::Custom("vetter".into())).await;
-    seed_member(&fix, &dave, VtcRole::Custom("vetter".into())).await;
+    seed_vetter(&fix, &carol).await;
+    seed_vetter(&fix, &dave).await;
 
     let vp = vetting_vp(
         &applicant,
@@ -2068,7 +2118,7 @@ async fn one_statement_short_asks_for_exactly_what_is_missing() {
     store_vetting_criterion(&fix).await;
     let (applicant, _) = did_key_secret(MEMBER_SEED);
     let (carol, carol_key) = did_key_secret([0x11; 32]);
-    seed_member(&fix, &carol, VtcRole::Custom("vetter".into())).await;
+    seed_vetter(&fix, &carol).await;
 
     let vp = vetting_vp(
         &applicant,
@@ -2099,8 +2149,8 @@ async fn a_statement_from_a_member_who_is_not_a_vetter_does_not_count() {
     let (applicant, _) = did_key_secret(MEMBER_SEED);
     let (carol, carol_key) = did_key_secret([0x11; 32]);
     let (erin, erin_key) = did_key_secret([0x33; 32]);
-    seed_member(&fix, &carol, VtcRole::Custom("vetter".into())).await;
-    seed_member(&fix, &erin, VtcRole::Member).await;
+    seed_vetter(&fix, &carol).await;
+    seed_member(&fix, &erin).await;
 
     let vp = vetting_vp(
         &applicant,
@@ -2128,8 +2178,8 @@ async fn a_withdrawn_statement_stops_counting() {
     let (applicant, _) = did_key_secret(MEMBER_SEED);
     let (carol, carol_key) = did_key_secret([0x11; 32]);
     let (dave, dave_key) = did_key_secret([0x22; 32]);
-    seed_member(&fix, &carol, VtcRole::Custom("vetter".into())).await;
-    seed_member(&fix, &dave, VtcRole::Custom("vetter".into())).await;
+    seed_vetter(&fix, &carol).await;
+    seed_vetter(&fix, &dave).await;
     let from_carol = vetting_statement(&carol_key, &applicant, 1).await;
     let from_dave = vetting_statement(&dave_key, &applicant, 2).await;
 
@@ -2156,9 +2206,9 @@ async fn nobody_can_withdraw_a_statement_someone_else_signed() {
     let (carol, carol_key) = did_key_secret([0x11; 32]);
     let (dave, dave_key) = did_key_secret([0x22; 32]);
     let (erin, _) = did_key_secret([0x33; 32]);
-    seed_member(&fix, &carol, VtcRole::Custom("vetter".into())).await;
-    seed_member(&fix, &dave, VtcRole::Custom("vetter".into())).await;
-    seed_member(&fix, &erin, VtcRole::Member).await;
+    seed_vetter(&fix, &carol).await;
+    seed_vetter(&fix, &dave).await;
+    seed_member(&fix, &erin).await;
     let from_carol = vetting_statement(&carol_key, &applicant, 1).await;
     let from_dave = vetting_statement(&dave_key, &applicant, 2).await;
 
@@ -2189,6 +2239,236 @@ async fn a_non_member_cannot_send_a_withdrawal() {
         StatusCode::OK,
         "a stranger's notice must be refused: {body}"
     );
+}
+
+#[tokio::test]
+async fn a_revoked_vetter_grant_stops_a_statement_counting() {
+    let fix = build_fixture().await;
+    store_vetting_criterion(&fix).await;
+    let (applicant, _) = did_key_secret(MEMBER_SEED);
+    let (carol, carol_key) = did_key_secret([0x11; 32]);
+    let (dave, dave_key) = did_key_secret([0x22; 32]);
+    seed_vetter(&fix, &carol).await;
+    let daves_grant = seed_vetter(&fix, &dave).await;
+    let from_carol = vetting_statement(&carol_key, &applicant, 1).await;
+    let from_dave = vetting_statement(&dave_key, &applicant, 2).await;
+
+    // Withdrawn after Dave signed: revocation is read as it stands at submit.
+    let (status, body) = send(
+        &fix.router,
+        "DELETE",
+        &format!("/v1/credentials/endorsements/{daves_grant}"),
+        ENDORSEMENT_REVOKE_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "revoke grant: {body}");
+
+    let (_did, doc) = submit_doc(&vetting_vp(&applicant, vec![from_carol, from_dave])).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(verdict_effect(&body), "requestMore", "got {body}");
+    assert_eq!(
+        body.pointer("/payload/verdict/with/needs"),
+        Some(&json!(["vetting:statements:1"])),
+        "a statement from a vetter whose grant was revoked no longer counts: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_grant_made_after_a_statement_was_signed_does_not_count_it() {
+    let fix = build_fixture().await;
+    store_vetting_criterion(&fix).await;
+    let (applicant, _) = did_key_secret(MEMBER_SEED);
+    let (carol, carol_key) = did_key_secret([0x11; 32]);
+    let (dave, dave_key) = did_key_secret([0x22; 32]);
+    seed_vetter(&fix, &carol).await;
+    seed_member(&fix, &dave).await;
+    let from_carol = vetting_statement(&carol_key, &applicant, 1).await;
+    // Signed an hour before Dave was named a vetter.
+    let from_dave = vetting_statement_from(
+        &dave_key,
+        &applicant,
+        2,
+        chrono::Utc::now() - chrono::Duration::hours(1),
+    )
+    .await;
+    let (status, body) = grant_vetter(&fix, &dave).await;
+    assert_eq!(status, StatusCode::CREATED, "got {body}");
+
+    let (_did, doc) = submit_doc(&vetting_vp(&applicant, vec![from_carol, from_dave])).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(verdict_effect(&body), "requestMore", "got {body}");
+    assert_eq!(
+        body.pointer("/payload/verdict/with/needs"),
+        Some(&json!(["vetting:statements:1"])),
+        "a grant does not reach back to a statement signed before it: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_non_member_cannot_be_named_a_vetter() {
+    let fix = build_fixture().await;
+    let (stranger, _) = did_key_secret([0x44; 32]);
+    let (status, body) = grant_vetter(&fix, &stranger).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "got {body}");
+    assert!(grants_of(&fix, &stranger).await.is_empty());
+}
+
+/// The grant is also a Trust Task document. A member who is not an admin sends
+/// one and is refused; nothing is issued.
+#[tokio::test]
+async fn only_an_admin_can_name_a_vetter() {
+    let fix = build_fixture().await;
+    let (carol, _) = did_key_secret([0x11; 32]);
+    let (erin, _) = did_key_secret([0x33; 32]);
+    seed_member(&fix, &carol).await;
+    seed_member(&fix, &erin).await;
+    let (_did, doc) = signed_trust_task_seed(
+        &[0x33; 32],
+        VETTER_GRANT_TASK,
+        json!({ "memberDid": carol }),
+    )
+    .await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a member's grant must be refused: {body}"
+    );
+    assert!(grants_of(&fix, &carol).await.is_empty());
+}
+
+/// What the member receives: a vetter role credential with a revocation entry,
+/// which they can present to an applicant who checks it offline with
+/// `vta_sdk::vetting::eligibility`.
+#[tokio::test]
+async fn the_vetter_role_credential_is_revocable_and_verifies_for_an_applicant() {
+    use vta_sdk::protocols::vetting::VetterGrantBody;
+    use vta_sdk::trust_task_proof::TrustTaskVmResolver;
+    use vta_sdk::vetting::eligibility::{
+        EligibilityExpectations, build_eligibility_vp, verify_eligibility_vp,
+    };
+
+    // A did:key community, so the applicant's check resolves without a network.
+    let (community, community_key) = did_key_secret([0xC0; 32]);
+    let signer = Arc::new(vtc_service::credentials::LocalSigner::new(
+        community.clone(),
+        community_key,
+    ));
+    let vtc = TestVtc::builder()
+        .with_audit(true)
+        .with_public_url(RP_ORIGIN)
+        .with_credential_signer(signer)
+        .build()
+        .await;
+    let purpose = affinidi_status_list::StatusPurpose::Revocation;
+    vtc_service::status_list::ensure_initial(
+        &vtc.state.status_lists_ks,
+        purpose,
+        format!("{RP_ORIGIN}/v1/status-lists/{purpose}"),
+    )
+    .await
+    .expect("ensure_initial status list");
+    store_acl_entry(
+        &vtc.state.acl_ks,
+        &VtcAclEntry {
+            did: ADMIN_DID.into(),
+            role: VtcRole::Admin,
+            label: None,
+            allowed_contexts: vec![],
+            created_at: vtc_service::auth::session::now_epoch(),
+            created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    let (vetter, vetter_key) = did_key_secret([0x11; 32]);
+    vtc_service::members::storage::store_member(
+        &vtc.state.members_ks,
+        &vtc_service::members::Member::fresh(&vetter),
+    )
+    .await
+    .unwrap();
+
+    let grant = vtc_service::vetting::vetters::grant(
+        &vtc.state,
+        ADMIN_DID,
+        &VetterGrantBody {
+            member_did: vetter.clone(),
+            validity_seconds: Some(30 * 86_400),
+            ext: None,
+        },
+    )
+    .await
+    .expect("grant");
+    let credential = grant
+        .credential
+        .expect("a new grant carries its credential");
+    assert_eq!(credential["id"], json!(grant.response.credential_id));
+    assert_eq!(
+        credential["credentialStatus"]["statusPurpose"],
+        "revocation"
+    );
+    assert!(
+        credential["credentialStatus"]["statusListIndex"].is_string(),
+        "{credential}"
+    );
+    assert_eq!(
+        credential["credentialSubject"]["endorsement"],
+        json!({ "type": "CommunityRole", "role": "vetter", "communityDid": community })
+    );
+    assert_eq!(
+        grant.response.valid_until - grant.response.valid_from,
+        chrono::Duration::days(30)
+    );
+
+    // The vetter answers an applicant's `vetting/request`: `nonce` is that
+    // request document's `id`, `domain` its `joinDid`.
+    let (join_did, _) = did_key_secret(MEMBER_SEED);
+    let request_id = "urn:uuid:3f1c9a52-8c1e-4f2b-9d7a-0b6e5c4d3a21";
+    let vp = build_eligibility_vp(&vetter_key, vec![credential], request_id, &join_did)
+        .await
+        .expect("present");
+    let verified = verify_eligibility_vp(
+        &vp,
+        &EligibilityExpectations {
+            vetter: &vetter,
+            community: &community,
+            role: "vetter",
+            challenge: request_id,
+            domain: &join_did,
+            now: chrono::Utc::now(),
+        },
+        &TrustTaskVmResolver::did_key_only(),
+    )
+    .await
+    .expect("the applicant's check accepts the community's credential");
+    assert_eq!(
+        verified.credential_id(),
+        Some(grant.response.credential_id.as_str())
+    );
+    assert!(verified.credential_status().is_some());
+}
+
+#[tokio::test]
+async fn naming_a_vetter_twice_returns_the_same_grant() {
+    let fix = build_fixture().await;
+    let (carol, _) = did_key_secret([0x11; 32]);
+    seed_member(&fix, &carol).await;
+    let (status, first) = grant_vetter(&fix, &carol).await;
+    assert_eq!(status, StatusCode::CREATED, "got {first}");
+    let (status, second) = grant_vetter(&fix, &carol).await;
+    assert_eq!(status, StatusCode::OK, "a live grant is returned: {second}");
+    assert_eq!(first["endorsementId"], second["endorsementId"]);
+    assert_eq!(first["credentialId"], second["credentialId"]);
+    assert_eq!(first["validUntil"], second["validUntil"]);
+    assert_eq!(grants_of(&fix, &carol).await.len(), 1, "one slot, one row");
 }
 
 /// A `vtc/vetting/revoke-statement/0.1` document for `statement`, signed by `seed`.

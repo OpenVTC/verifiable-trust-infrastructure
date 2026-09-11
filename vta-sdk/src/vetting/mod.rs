@@ -14,6 +14,8 @@
 //!   build the facts its policy decides on.
 //! - [`match_code`] — the code two people read to each other to confirm they
 //!   are in the same session.
+//! - [`eligibility`] — a vetter presenting the vetter role credential the
+//!   community issued them, and the applicant's check of it.
 //!
 //! Every verification returns a distinct `Verified*` type (workspace typestate
 //! rule): code that needs a verified card or statement cannot be handed an
@@ -22,6 +24,7 @@
 //! [`VettingRequirements`]: crate::protocols::vetting::VettingRequirements
 
 pub mod card;
+pub mod eligibility;
 pub mod match_code;
 pub mod requirements;
 pub mod statement;
@@ -75,6 +78,10 @@ pub enum VettingError {
     /// A required claim is absent.
     #[error("required claim `{0}` is missing")]
     MissingClaim(String),
+    /// An eligibility presentation carries no role credential naming its
+    /// holder, in the required role, for the expected community.
+    #[error("no role credential names this vetter in that role for this community")]
+    NoRoleCredential,
     /// Signing failed.
     #[error("signing failed")]
     Sign(String),

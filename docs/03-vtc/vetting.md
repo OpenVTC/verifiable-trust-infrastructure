@@ -69,10 +69,45 @@ unchanged.
 
 ### 3. Name your vetters
 
-A vetter is a **member holding the role `eligibleVetters.role` names**. For
-`"vetter"`, grant the custom role `custom:vetter` through the usual ACL role
-change. `"custom:vetter"` in the requirements is accepted too, as are the
-standard role names.
+A vetter is a **member the community has named a vetter**. An admin does it
+from the member's page in the admin console ("Grant vetter role"), or with
+`vtc/vetting/vetters/grant/0.1` — `POST /v1/vetting/vetters` over REST, or the
+same Trust Task document over DIDComm or TSP:
+
+```json
+{ "memberDid": "did:…", "validitySeconds": 31536000 }
+```
+
+The community issues the member a **vetter role credential**: an
+`EndorsementCredential` with endorsement
+`{ "type": "CommunityRole", "role": "vetter", "communityDid": "did:…" }`, a
+`credentialStatus` on the community's revocation list, and a validity of one
+year unless `validitySeconds` (one day to two years) says otherwise. It records
+the grant, delivers the credential to the member, and answers with the grant:
+
+```json
+{ "endorsementId": "…", "credentialId": "urn:uuid:…",
+  "validFrom": "…", "validUntil": "…" }
+```
+
+Only an admin may grant, and only to a current member. Granting again while the
+member holds a live grant returns that grant. A grant is audited as
+`VetterGranted`, with a `VecIssued` for the credential.
+
+The vetter shows the credential to applicants: it answers a
+`vetting/request/0.1` with an `eligibilityVp`, a presentation whose `nonce` is
+the request's `id` and whose `domain` is the request's `joinDid`. The
+applicant's client checks it with
+`vta_sdk::vetting::eligibility::verify_eligibility_vp` — the presentation
+answers its own request and holds a role credential this community signed for
+that vetter — so the applicant knows before any session that the vetter's
+statement will count.
+
+`eligibleVetters.role` names the grant: `"vetter"`, or `"custom:vetter"`.
+
+To withdraw a vetter, revoke the grant like any endorsement: "Revoke vetter
+role" in the console, or `DELETE /v1/credentials/endorsements/{endorsementId}`
+(`vtc/endorsements/revoke/0.1`). A member's grants are revoked when they leave.
 
 ## What the community checks at submit
 
@@ -84,7 +119,7 @@ For every identity-vetting statement in the join presentation
 | Proof by the issuer, type, bounded validity, strict endorsement body | `unverified` |
 | Subject is the proven holder of the presentation | `subject-not-applicant` |
 | Endorsement type is the criterion's `statementType` | `wrong-statement-type` |
-| Issuer is a current member with the vetter role, who had joined before issuing, with an unexpired ACL entry | `issuer-not-vetter` |
+| Issuer is a current member, admitted before issuing, holding a vetter grant recorded by the statement's `validFrom`, unexpired then, and not revoked | `issuer-not-vetter` |
 | Statement is for this community | `wrong-community` |
 | Method accepted; required claims verified; within `maxStatementAge`; documentation within any floor | `method-not-accepted`, `claim-not-verified`, `too-old`, `documentation-not-accepted` |
 | One statement per vetter (the most recent) | `same-vetter` |
@@ -156,9 +191,16 @@ audited as `VettingStatementRevoked`, and notices are part of a backup.
 
 - Statements are counted on the VP-submit path. The credential-exchange
   `present` path does not count them yet.
-- "Held the vetter role when issuing" is approximated by "holds it now and had
-  joined by then" — the ACL keeps no role history, so a demoted vetter's
-  statements stop counting.
+- A grant's revocation is read as it stands at submit, not as it stood when a
+  statement was signed: withdrawing a vetter stops every statement they signed
+  counting, including those signed while the grant stood. That errs toward not
+  admitting.
+- The applicant-side eligibility check verifies the vetter role credential but
+  leaves its status list to the caller; a revoked grant is always caught at the
+  community.
+- Delivering the credential to the member is best effort. The community's
+  record is what counts statements, so a vetter whose wallet missed it is still
+  counted; revoke and grant again to re-issue it.
 - Distinct vetters are distinct member DIDs; one person holding two member DIDs
   would count twice.
 - Withdrawal notices are kept indefinitely — there is no retention sweep yet.

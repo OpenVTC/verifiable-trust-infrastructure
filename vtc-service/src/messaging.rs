@@ -34,7 +34,7 @@ use vta_sdk::protocols::join_requests::{
 use vta_sdk::protocols::members::{
     MEMBER_VMC_RESPONSE_TYPE, MEMBER_VMC_TYPE, MemberVmcBody, MemberVmcReceiptBody,
 };
-use vta_sdk::protocols::vetting::VETTING_REVOKE_STATEMENT_TYPE;
+use vta_sdk::protocols::vetting::{VETTING_REVOKE_STATEMENT_TYPE, VETTING_VETTER_GRANT_TYPE};
 use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, problem_report_codes as codes};
 
 use crate::ceremony::remove_inner;
@@ -722,8 +722,8 @@ async fn route(msg: &Message, auth_sender: Option<String>, state: &AppState) -> 
         JOIN_REQUEST_STATUS_TYPE => join_request_status_handler(msg, auth_sender, state).await,
         MEMBER_SELF_REMOVE_TYPE => member_self_remove_handler(msg, auth_sender, state).await,
         MEMBER_VMC_TYPE => member_vmc_handler(msg, auth_sender, state).await,
-        VETTING_REVOKE_STATEMENT_TYPE => {
-            vetting_revoke_statement_handler(msg, auth_sender, state).await
+        VETTING_REVOKE_STATEMENT_TYPE | VETTING_VETTER_GRANT_TYPE => {
+            vetting_task_handler(msg, auth_sender, state).await
         }
         CREDENTIAL_REQUEST_TYPE => credential_request_handler(msg, state).await,
         CREDENTIAL_PRESENT_TYPE => credential_present_handler(msg, state).await,
@@ -1128,9 +1128,10 @@ async fn member_self_remove_handler(
 /// VMC. [`receive_member_vmc_inner`](crate::members::inbound_vmc::receive_member_vmc_inner)
 /// verifies the issuer / subject binding + the DI proof and stores it on the
 /// member row. Replies with a receipt, or a threaded problem-report on failure.
-/// `vtc/vetting/revoke-statement/0.1` over DIDComm. The authcrypt sender is the
-/// proven vetter; the document dispatcher does the rest, exactly as over REST.
-async fn vetting_revoke_statement_handler(
+/// `vtc/vetting/revoke-statement/0.1` and `vtc/vetting/vetters/grant/0.1` over
+/// DIDComm. The authcrypt sender is the proven vetter or admin; the document
+/// dispatcher does the rest, exactly as over REST.
+async fn vetting_task_handler(
     msg: &Message,
     auth_sender: Option<String>,
     state: &AppState,

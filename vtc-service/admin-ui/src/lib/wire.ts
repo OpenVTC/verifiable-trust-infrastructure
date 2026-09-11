@@ -1606,6 +1606,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/vetting/vetters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["vettingVetterGrant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4612,6 +4628,43 @@ export interface components {
             unparseableSkipped: number;
             /** @description Whether every chainable envelope verified. */
             verified: boolean;
+        };
+        /** @description `vtc/vetting/vetters/grant/0.1` payload. */
+        VetterGrantBody: {
+            /** @description Ecosystem-defined extension members (SPEC §4.5.1). */
+            ext?: unknown;
+            /** @description The member to name as a vetter. */
+            memberDid: string;
+            /**
+             * Format: int64
+             * @description How long the grant is valid, from one day to two years; one year when
+             *     absent.
+             */
+            validitySeconds?: number | null;
+        };
+        /**
+         * @description `vtc/vetting/vetters/grant/0.1#response` payload.
+         *
+         *     Granting converges: while a grant is live and unexpired, asking again
+         *     returns it rather than issuing a second.
+         */
+        VetterGrantResponseBody: {
+            /** @description The vetter role credential's `id`. */
+            credentialId: string;
+            /** @description The community's record of the grant — the id its revocation names. */
+            endorsementId: string;
+            /** @description Ecosystem-defined extension members (SPEC §4.5.1). */
+            ext?: unknown;
+            /**
+             * Format: date-time
+             * @description The credential's `validFrom`.
+             */
+            validFrom: string;
+            /**
+             * Format: date-time
+             * @description The credential's `validUntil`.
+             */
+            validUntil: string;
         };
         /**
          * @description One of `admin`, `moderator`, `issuer`, `member`, or                  `custom:<name>` where `<name>` is 1..=64 lowercase                  alphanumerics, `-`, or `_`.
@@ -8498,6 +8551,60 @@ export interface operations {
             };
             /** @description Task failed, e.g. duplicate request (trust-task-error) */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    vettingVetterGrant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VetterGrantBody"];
+            };
+        };
+        responses: {
+            /** @description The member already holds a live vetter grant, which is returned */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VetterGrantResponseBody"];
+                };
+            };
+            /** @description Vetter role granted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VetterGrantResponseBody"];
+                };
+            };
+            /** @description Malformed body, or the member is not a current member */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not a community admin */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
