@@ -4272,6 +4272,60 @@
           }
         }
       }
+    },
+    "/v1/vetting/vetters": {
+      "post": {
+        "tags": [
+          "vetting"
+        ],
+        "operationId": "vettingVetterGrant",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VetterGrantBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The member already holds a live vetter grant, which is returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VetterGrantResponseBody"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Vetter role granted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VetterGrantResponseBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body, or the member is not a current member"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token"
+          },
+          "403": {
+            "description": "Caller is not a community admin"
+          }
+        },
+        "security": [
+          {
+            "bearer_jwt": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -9014,6 +9068,66 @@
             "description": "Whether every chainable envelope verified."
           }
         }
+      },
+      "VetterGrantBody": {
+        "type": "object",
+        "description": "`vtc/vetting/vetters/grant/0.1` payload.",
+        "required": [
+          "memberDid"
+        ],
+        "properties": {
+          "ext": {
+            "description": "Ecosystem-defined extension members (SPEC §4.5.1)."
+          },
+          "memberDid": {
+            "type": "string",
+            "description": "The member to name as a vetter."
+          },
+          "validitySeconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How long the grant is valid, from one day to two years; one year when\nabsent.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "VetterGrantResponseBody": {
+        "type": "object",
+        "description": "`vtc/vetting/vetters/grant/0.1#response` payload.\n\nGranting converges: while a grant is live and unexpired, asking again\nreturns it rather than issuing a second.",
+        "required": [
+          "endorsementId",
+          "credentialId",
+          "validFrom",
+          "validUntil"
+        ],
+        "properties": {
+          "credentialId": {
+            "type": "string",
+            "description": "The vetter role credential's `id`."
+          },
+          "endorsementId": {
+            "type": "string",
+            "description": "The community's record of the grant — the id its revocation names."
+          },
+          "ext": {
+            "description": "Ecosystem-defined extension members (SPEC §4.5.1)."
+          },
+          "validFrom": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The credential's `validFrom`."
+          },
+          "validUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The credential's `validUntil`."
+          }
+        },
+        "additionalProperties": false
       },
       "VtcRole": {
         "type": "string",

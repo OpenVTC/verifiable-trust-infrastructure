@@ -26,8 +26,8 @@ use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
 pub use storage::{
-    ENDORSEMENTS_PREFIX, count_live_by_type, delete_endorsement, get_endorsement,
-    list_endorsements, mark_revoked, store_endorsement,
+    ENDORSEMENTS_PREFIX, count_live_by_type, delete_endorsement, endorsements_for_subject,
+    get_endorsement, list_endorsements, mark_revoked, store_endorsement,
 };
 
 /// A stored custom endorsement. The accompanying VEC body
@@ -68,6 +68,10 @@ pub struct Endorsement {
     /// pattern.)
     #[serde(default)]
     pub revoked_at: Option<DateTime<Utc>>,
+    /// The credential's `validUntil`. Absent on rows written before it was
+    /// recorded; those rows' lifetime is unknown here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_until: Option<DateTime<Utc>>,
 }
 
 impl Endorsement {

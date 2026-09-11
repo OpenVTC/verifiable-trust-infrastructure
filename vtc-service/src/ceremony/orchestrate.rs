@@ -251,6 +251,11 @@ pub async fn purge_member(
             .await?;
     }
 
+    for grant in &outcome.revoked_grants {
+        crate::vetting::vetters::audit_revoked_grant(audit_writer, actor_did, target_did, grant)
+            .await?;
+    }
+
     info!(actor = actor_did, target = target_did, "member purged");
 
     // Tell them. Best-effort and after the fact: the purge is done and durable,
@@ -403,6 +408,11 @@ pub async fn remove_inner(
             }),
         )
         .await?;
+
+    for grant in &outcome.revoked_grants {
+        crate::vetting::vetters::audit_revoked_grant(audit_writer, actor_did, target_did, grant)
+            .await?;
+    }
 
     // M2.14: the executor flipped the revocation bit (best-effort). Emit the
     // audit event for the slot it reported.

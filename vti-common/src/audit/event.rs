@@ -374,6 +374,13 @@ pub enum AuditEvent {
     /// statement stops counting toward any join decided after this.
     VettingStatementRevoked(VettingStatementRevokedData),
 
+    /// A community admin named a member a vetter by issuing them a vetter
+    /// role credential (`vtc/vetting/vetters/grant/0.1`). Paired with a
+    /// `VecIssued` envelope for the same slot. The grant is withdrawn like any
+    /// endorsement — `CustomEndorsementRevoked` + `StatusListFlipped` — and on
+    /// the member's departure.
+    VetterGranted(VetterGrantedData),
+
     /// An operator registered a new custom endorsement type
     /// via `POST /v1/endorsement-types`. Phase 4 M4.8.1 (D4
     /// review). The actor is the admin; the `type_uri` field
@@ -541,6 +548,7 @@ impl AuditEvent {
             Self::CustomEndorsementIssued(..) => "CustomEndorsementIssued",
             Self::CustomEndorsementRevoked(..) => "CustomEndorsementRevoked",
             Self::VettingStatementRevoked(..) => "VettingStatementRevoked",
+            Self::VetterGranted(..) => "VetterGranted",
             Self::EndorsementTypeRegistered(..) => "EndorsementTypeRegistered",
             Self::EndorsementTypeDeleted(..) => "EndorsementTypeDeleted",
             Self::WebsiteFileWritten(..) => "WebsiteFileWritten",
@@ -1356,6 +1364,16 @@ pub struct VettingStatementRevokedData {
     /// `key-compromise`, `other`), when given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// Payload for [`AuditEvent::VetterGranted`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VetterGrantedData {
+    /// The endorsement row recording the grant — what a revocation names.
+    pub endorsement_id: String,
+    /// The grant's slot on the `Revocation` status list.
+    pub status_list_index: u32,
 }
 
 /// Payload for [`AuditEvent::EndorsementTypeRegistered`].
@@ -2216,6 +2234,19 @@ mod tests {
     }
 
     #[test]
+    fn vetter_granted_round_trip() {
+        let e = AuditEvent::VetterGranted(VetterGrantedData {
+            endorsement_id: "end-1".into(),
+            status_list_index: 9,
+        });
+        let v = wire_value(&e);
+        assert_eq!(v["type"], "VetterGranted");
+        assert_eq!(v["data"]["endorsementId"], "end-1");
+        assert_eq!(v["data"]["statusListIndex"], 9);
+        round_trip(&e);
+    }
+
+    #[test]
     fn custom_endorsement_issued_round_trip() {
         let e = AuditEvent::CustomEndorsementIssued(CustomEndorsementIssuedData {
             endorsement_id: "end-1".into(),
@@ -2544,6 +2575,13 @@ mod tests {
                     reason: Some("mistake".into()),
                 }),
                 "VettingStatementRevoked",
+            ),
+            (
+                AuditEvent::VetterGranted(VetterGrantedData {
+                    endorsement_id: "end".into(),
+                    status_list_index: 7,
+                }),
+                "VetterGranted",
             ),
             (
                 AuditEvent::EndorsementTypeRegistered(EndorsementTypeRegisteredData {

@@ -85,15 +85,78 @@ const TRUST_TASK_PURGE =
   "https://trusttasks.org/spec/vtc/members/purge/0.1";
 const TRUST_TASK_REQUEST_VMC =
   "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1";
+// Naming a vetter issues a revocable vetter role credential; it is withdrawn
+// like any endorsement, so listing and revoking reuse those tasks.
+const TRUST_TASK_VETTER_GRANT =
+  "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
+const TRUST_TASK_ENDORSEMENT_LIST =
+  "https://trusttasks.org/spec/vtc/endorsements/list/0.1";
+const TRUST_TASK_ENDORSEMENT_REVOKE =
+  "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
+const COMMUNITY_ROLE = "CommunityRole";
+const VETTER_ROLE = "vetter";
+// The endorsement list has no subject filter; walking it stops here.
+const MAX_ENDORSEMENT_PAGES = 50;
 
 import type {
+  EndorsementRow,
+  EndorsementsPage,
   MemberEnvelope,
   MemberRow,
   MembersPage,
   RemovedMemberRow,
   RemovedMembersResponse,
   RequestVmcResponse,
+  VetterGrantResponse,
 } from "@/lib/wire-types";
+
+/** This member's vetter grants, revoked ones included — picked out of the
+ * endorsement list, which cannot filter by subject. */
+async function fetchVetterGrants(did: string): Promise<EndorsementRow[]> {
+  const grants: EndorsementRow[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < MAX_ENDORSEMENT_PAGES; page++) {
+    const q = new URLSearchParams({ limit: "200" });
+    if (cursor) q.set("cursor", cursor);
+    const body: EndorsementsPage = await getJson<EndorsementsPage>(
+      `/v1/credentials/endorsements?${q.toString()}`,
+      { trustTask: TRUST_TASK_ENDORSEMENT_LIST },
+    );
+    grants.push(
+      ...body.items.filter(
+        (e) =>
+          e.typeUri === COMMUNITY_ROLE &&
+          e.subjectDid === did &&
+          (e.claim as { role?: unknown } | null)?.role === VETTER_ROLE,
+      ),
+    );
+    cursor = body.nextCursor ?? null;
+    if (!cursor) break;
+  }
+  return grants;
+}
+
+/** A grant still in force: not revoked and not past its `validUntil`. */
+function isLiveGrant(grant: EndorsementRow): boolean {
+  if (grant.revokedAt) return false;
+  const expires = grant.issued.expiresAt;
+  return !expires || new Date(expires).getTime() > Date.now();
+}
+
+async function grantVetterRole(did: string): Promise<VetterGrantResponse> {
+  return postJson<VetterGrantResponse>(
+    "/v1/vetting/vetters",
+    { memberDid: did },
+    { trustTask: TRUST_TASK_VETTER_GRANT },
+  );
+}
+
+async function revokeVetterRole(endorsementId: string): Promise<void> {
+  await deleteJson<unknown>(
+    `/v1/credentials/endorsements/${encodeURIComponent(endorsementId)}`,
+    { trustTask: TRUST_TASK_ENDORSEMENT_REVOKE },
+  );
+}
 async function fetchMembers(params: {
   cursor: string | null;
   role: string | null;
@@ -519,6 +582,27 @@ function MemberDetail() {
     mutationFn: requestMemberVmc,
   });
 
+  const vetterGrants = useQuery({
+    queryKey: ["member-vetter-grants", decoded],
+    queryFn: () => fetchVetterGrants(decoded),
+    enabled: decoded.length > 0,
+  });
+  const liveGrant = vetterGrants.data?.find(isLiveGrant);
+
+  const invalidateVetterGrants = () => {
+    void queryClient.invalidateQueries({
+      queryKey: ["member-vetter-grants", decoded],
+    });
+  };
+  const grantVetterMutation = useMutation({
+    mutationFn: grantVetterRole,
+    onSuccess: invalidateVetterGrants,
+  });
+  const revokeVetterMutation = useMutation({
+    mutationFn: revokeVetterRole,
+    onSuccess: invalidateVetterGrants,
+  });
+
   return (
     <section className="page">
       <button type="button" className="link" onClick={() => navigate("..")}>
@@ -698,6 +782,100 @@ function MemberDetail() {
                 <code>{query.data.departurePreference}</code>
               </dd>
             </dl>
+          </section>
+
+          <section className="card">
+            <h3>Vetter role</h3>
+            <p className="muted">
+              A vetter's identity-vetting statements count toward an
+              applicant's admission. Granting issues this member a revocable
+              vetter role credential, which they show to applicants.
+            </p>
+            {vetterGrants.isPending && <p className="muted">Loading…</p>}
+            {vetterGrants.isError && (
+              <p className="muted">Could not load this member's grants.</p>
+            )}
+            {vetterGrants.data &&
+              (liveGrant ? (
+                <dl>
+                  <dt>Credential</dt>
+                  <dd>
+                    <code>{liveGrant.issued.credentialId}</code>
+                  </dd>
+                  <dt>Granted</dt>
+                  <dd>
+                    {liveGrant.issued.issuedAt
+                      ? formatDate(liveGrant.issued.issuedAt)
+                      : "—"}
+                  </dd>
+                  <dt>Valid until</dt>
+                  <dd>
+                    {liveGrant.issued.expiresAt
+                      ? formatDate(liveGrant.issued.expiresAt)
+                      : "—"}
+                  </dd>
+                  <dt>Revocation slot</dt>
+                  <dd>{liveGrant.statusListIndex}</dd>
+                </dl>
+              ) : (
+                <p className="muted">Not a vetter.</p>
+              ))}
+
+            {grantVetterMutation.error && (
+              <section className="card error">
+                <h3>Grant failed</h3>
+                <p>{(grantVetterMutation.error as Error).message}</p>
+              </section>
+            )}
+            {revokeVetterMutation.error && (
+              <section className="card error">
+                <h3>Revoke failed</h3>
+                <p>{(revokeVetterMutation.error as Error).message}</p>
+              </section>
+            )}
+
+            <div className="form-actions">
+              {liveGrant ? (
+                <button
+                  type="button"
+                  className="secondary destructive"
+                  disabled={revokeVetterMutation.isPending}
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: "Revoke vetter role?",
+                      message: `${query.data.did} stops being a vetter. Statements they have already signed stop counting toward joins decided from now on.`,
+                      confirmLabel: "Revoke vetter role",
+                      destructive: true,
+                    });
+                    if (ok) revokeVetterMutation.mutate(liveGrant.endorsementId);
+                  }}
+                >
+                  {revokeVetterMutation.isPending
+                    ? "Revoking…"
+                    : "Revoke vetter role"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={
+                    !vetterGrants.data || grantVetterMutation.isPending
+                  }
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: "Grant vetter role?",
+                      message: `${query.data.did} will be issued a vetter role credential, valid for a year. Their vetting statements will count toward admissions.`,
+                      confirmLabel: "Grant vetter role",
+                    });
+                    if (ok) grantVetterMutation.mutate(decoded);
+                  }}
+                >
+                  {grantVetterMutation.isPending
+                    ? "Granting…"
+                    : "Grant vetter role"}
+                </button>
+              )}
+            </div>
           </section>
 
           <section className="card">

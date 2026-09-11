@@ -233,6 +233,7 @@ async fn dispatch_typed(
         vetting_wire::VETTING_REVOKE_STATEMENT_TYPE => {
             handle_revoke_statement(state, ctx, doc).await
         }
+        vetting_wire::VETTING_VETTER_GRANT_TYPE => handle_vetter_grant(state, ctx, doc).await,
         // The rooms family. Note what these do not take: no `ctx`, and no auth claims.
         // A room operation is authorized by the authority chain the room itself issued,
         // never by this service's ACL, roster, or the caller's session — invariant I5 of
@@ -373,6 +374,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     mem::MEMBER_VMC_TYPE,
     // A vetter withdrawing a statement (OpenVTC vetting design §9.6).
     vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,
+    // An admin naming a vetter — also mounted on REST as `POST /v1/vetting/vetters`.
+    vetting_wire::VETTING_VETTER_GRANT_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
@@ -563,6 +566,31 @@ async fn handle_revoke_statement(
                 ext: None,
             },
         ),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/vetters/grant/0.1` — an admin names a member a vetter.
+///
+/// The sender is the proven signer; whether they may grant (community Admin,
+/// read from the ACL row) and whom (a current member) is decided in
+/// [`crate::vetting::vetters::grant`], the same path `POST /v1/vetting/vetters`
+/// takes.
+async fn handle_vetter_grant(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let admin_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    let body: vetting_wire::VetterGrantBody = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::vetters::grant(state, &admin_did, &body).await {
+        Ok(grant) => success_response(&doc, grant.response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
 }
@@ -978,6 +1006,7 @@ mod tests {
             jr::MEMBER_SELF_REMOVE_TYPE,
             mem::MEMBER_VMC_TYPE,
             vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,
+            vetting_wire::VETTING_VETTER_GRANT_TYPE,
             <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ];
