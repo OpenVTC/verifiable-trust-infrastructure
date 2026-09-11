@@ -68,6 +68,13 @@ pub async fn sign_statement(draft: StatementDraft, signer: &Secret) -> Result<Va
             ),
         });
     }
+    draft
+        .endorsement
+        .check_shape()
+        .map_err(|e| VettingError::Malformed {
+            what: WHAT,
+            detail: e.to_string(),
+        })?;
     if draft.valid_until <= draft.valid_from {
         return Err(VettingError::Expired(WHAT));
     }
@@ -245,6 +252,9 @@ pub async fn verify_statement(
     if endorsement.endorsement_type != IDENTITY_VETTING_ENDORSEMENT_TYPE {
         return Err(malformed("endorsement is not identity-vetting".into()));
     }
+    endorsement
+        .check_shape()
+        .map_err(|e| malformed(format!("endorsement: {e}")))?;
     let id = wire
         .id
         .ok_or_else(|| malformed("no id — a statement must be revocable by name".into()))?;
@@ -288,7 +298,7 @@ pub(crate) mod tests {
     use crate::protocols::vetting::{DeclaredRelationship, VettingMethod};
     use crate::vetting::card::{
         CardExpectations, sign_card,
-        tests::{COMMUNITY, draft},
+        tests::{CHALLENGE, COMMUNITY, draft},
         verify_card,
     };
     use crate::vetting::test_support::{did, secret};
@@ -323,7 +333,7 @@ pub(crate) mod tests {
                 audience: &v,
                 publisher: &a,
                 community: COMMUNITY,
-                challenge: "challenge-1",
+                challenge: CHALLENGE,
                 domain: COMMUNITY,
                 required_claims: &required,
                 now,
@@ -377,7 +387,7 @@ pub(crate) mod tests {
         let mut signed = sign_statement(statement_draft(&vetter, &did(&applicant), e), &vetter)
             .await
             .unwrap();
-        signed["credentialSubject"]["endorsement"]["method"] = json!("in-person");
+        signed["credentialSubject"]["endorsement"]["method"] = json!("inPerson");
         let err = verify_statement(&signed, Utc::now(), &TrustTaskVmResolver::did_key_only())
             .await
             .unwrap_err();
