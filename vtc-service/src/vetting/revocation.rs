@@ -101,9 +101,8 @@ pub async fn record(
     body: &RevokeStatementBody,
     now: DateTime<Utc>,
 ) -> Result<(RevocationNotice, bool), AppError> {
-    if body.statement_id.trim().is_empty() {
-        return Err(AppError::Validation("statementId is empty".into()));
-    }
+    body.check_shape()
+        .map_err(|e| AppError::Validation(e.to_string()))?;
     let key = notice_key(issuer, &body.statement_id, &body.statement_digest_multibase)?;
     if let Some(bytes) = ks.get_raw(key.as_bytes()).await? {
         let existing = serde_json::from_slice(&bytes)
