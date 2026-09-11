@@ -71,7 +71,7 @@ pub struct VettingFacts {
     pub statements: Vec<VettingStatementFact>,
     /// Distinct eligible vetters counted.
     pub distinct_counted_vetters: u32,
-    /// Counted statements by method (`in-person`, `video`, …).
+    /// Counted statements by method (`inPerson`, `video`, …).
     pub by_method: BTreeMap<String, u32>,
     /// All counted-eligible statements carry one identity commitment.
     pub commitments_consistent: bool,
@@ -98,7 +98,7 @@ pub struct VettingStatementFact {
     pub eligible: bool,
     /// The issuer has withdrawn the statement.
     pub revoked: bool,
-    /// `in-person` / `video` / `prior-acquaintance`.
+    /// `inPerson` / `video` / `priorAcquaintance`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
     /// The vetter's declared relationship to the applicant.
@@ -389,7 +389,7 @@ mod tests {
                     "version": "0.1",
                     "statementType": IDENTITY_VETTING_ENDORSEMENT_TYPE,
                     "minStatements": min,
-                    "acceptedMethods": ["in-person"],
+                    "acceptedMethods": ["inPerson"],
                     "eligibleVetters": { "role": "vetter" }
                 }))
                 .unwrap(),
@@ -442,14 +442,14 @@ mod tests {
     #[test]
     fn a_generic_vetting_need_becomes_the_precise_shortfall() {
         let mut needs = vec!["agreed:code-of-conduct".into(), NEED_VETTING.into()];
-        let f = facts_with_needs(&["vetting:statements:1", "vetting:method:in-person:1"]);
+        let f = facts_with_needs(&["vetting:statements:1", "vetting:method:inPerson:1"]);
         expand_needs(&mut needs, Some(&f));
         assert_eq!(
             needs,
             vec![
                 "agreed:code-of-conduct",
                 "vetting:statements:1",
-                "vetting:method:in-person:1"
+                "vetting:method:inPerson:1"
             ]
         );
     }

@@ -42,13 +42,13 @@ Every number is **your** policy — there are no defaults:
     "version": "0.1",
     "statementType": "https://firstperson.network/endorsements/identity-vetting/0.1",
     "minStatements": 2,
-    "minByMethod": { "in-person": 1 },
-    "acceptedMethods": ["in-person", "video", "prior-acquaintance"],
+    "minByMethod": { "inPerson": 1 },
+    "acceptedMethods": ["inPerson", "video", "priorAcquaintance"],
     "requiredClaims": ["name.legal"],
     "maxStatementAge": "P120D",
     "eligibleVetters": { "role": "vetter" },
     "independence": {
-      "maxByDeclaredRelationship": { "family": 0, "same-employer": 1 },
+      "maxByDeclaredRelationship": { "family": 0, "sameEmployer": 1 },
       "requireConsistentIdentityCommitment": true
     }
   }
@@ -61,7 +61,7 @@ a method floor on a method you do not accept, a month-based duration) and a
 
 What documentation a vetter accepts is **the vetter's decision**. Set
 `acceptedDocumentClasses` only if the community needs a floor; a
-`prior-acquaintance` statement with no documentation is exempt from it.
+`priorAcquaintance` statement with no documentation is exempt from it.
 
 Applicants read the requirements from `vtc/join-requests/manifest/0.2`, which
 adds `vetting` and a `requirementsDigest` to each criterion. `manifest/0.1` is
@@ -104,7 +104,7 @@ The count becomes `input.evidence.vetting` for the join policy:
                     "eligible": true, "revoked": false, "method": "video",
                     "declared_relationship": "none", "counted": true, "failures": [] } ],
   "distinct_counted_vetters": 2,
-  "by_method": { "in-person": 1, "video": 1 },
+  "by_method": { "inPerson": 1, "video": 1 },
   "commitments_consistent": true,
   "independence_ok": true,
   "invitation_required": false,
