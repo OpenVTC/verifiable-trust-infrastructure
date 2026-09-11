@@ -1329,6 +1329,15 @@ pub(super) mod tests {
         );
     }
 
+    /// A fingerprint covers the key's creation time: the same seed made in a
+    /// later second must still be the same key, or duplicate exports stop merging.
+    #[test]
+    fn a_seed_is_the_same_key_in_a_later_second() {
+        let first = Person::new(2, "Alice").fingerprint();
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        assert_eq!(Person::new(2, "Alice").fingerprint(), first);
+    }
+
     #[test]
     fn binary_and_armored_keyrings_read_alike_and_duplicates_merge() {
         let web = Web::new();
