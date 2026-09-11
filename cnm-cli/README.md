@@ -302,6 +302,23 @@ has unrestricted access across all contexts.
 | --------------------------------------------------------------------------- | -------------------------------------------- |
 | `auth-credential create --role ROLE [--label LABEL] [--contexts ctx1,ctx2]` | Generate a did:key credential with ACL entry |
 
+### Vetting
+
+Peer identity vetting on the community (VTC admin REST; needs a community-admin
+session). Guide: [Peer identity vetting](../docs/03-vtc/vetting.md) §7–8.
+
+| Command | Description |
+| ------- | ----------- |
+| `vetting vetters list` | Every vetter grant: status, origin, validity, endorsement id, profile |
+| `vetting vetters grant <memberDid> [--validity 180d]` | Name a current member a vetter |
+| `vetting vetters revoke <endorsementId>` | Withdraw a vetter grant |
+| `vetting vetters resend <memberDid>` | Deliver a live grant credential again |
+| `vetting auto-grant show` | Automatic-grant configuration and last sweep |
+| `vetting auto-grant set [--enabled BOOL] [--sweep-minutes N] [--validity D]` | Change it (unset flags keep their value) |
+| `vetting branding show` / `set [--display-name] [--accent-color] [--logo-url] [--clear FIELD]` | Community branding on the join manifest |
+| `vetting revocations` | Statement withdrawals and the memberships they touch |
+| `vetting bootstrap-pgp --keyring FILE --roots FPR,… --max-depth N --links DIR [--dry-run] [--validity D]` | Name vetters from an OpenPGP web of trust (run `--dry-run` first) |
+
 ## Additional Resources
 
 - [VTA Service & Architecture](../README.md)

@@ -32,6 +32,21 @@ all-features = true
 version = 2
 ignore = [
 
+  { id = "RUSTSEC-2023-0071", reason = """
+  rsa 0.9 "Marvin Attack": decrypting or signing with an RSA *private* key
+  leaks timing that can recover it. No patched 0.9 release exists.
+
+  The only path is `pgp` (rPGP) -> rsa, used by `cnm vetting bootstrap-pgp`
+  to read an OpenPGP web of trust. That command only *verifies* RSA
+  signatures — certifications and clearsigned link statements — with
+  public keys from a keyring file. It never loads, generates or uses an RSA
+  private key, so there is no secret for the side channel to leak. The
+  workspace's own RSA need (KMS CMS unwrap) stays on aws-lc-rs.
+
+  Drop when rPGP moves to an rsa release with the constant-time rewrite
+  (0.10), or if `cnm` stops reading PGP keyrings.
+  """ },
+
   { id = "RUSTSEC-2026-0258", reason = """
   h2 accepts and queues empty DATA frames without limit, so a stream
   that is not actively drained can grow memory without bound (or panic

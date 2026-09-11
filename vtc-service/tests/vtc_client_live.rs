@@ -58,6 +58,123 @@ fn did_key_from_seed(seed_byte: u8) -> (String, String) {
     (did, multibase::encode(multibase::Base::Base58Btc, &buf))
 }
 
+/// The vetting admin verbs `cnm vetting` is built on, against the real router:
+/// the Trust-Task-bound routes (grant, resend, revoke) and the unbound ones
+/// (listing, automatic grants, branding, withdrawals) each reach their handler,
+/// and the statuses the CLI turns into guidance arrive intact.
+#[tokio::test]
+async fn vetting_admin_verbs_round_trip() {
+    let mock = MockVtc::start().await;
+    let base = format!("{}/v1", mock.base_url());
+    let state = &mock.vtc.state;
+    let purpose = affinidi_status_list::StatusPurpose::Revocation;
+    vtc_service::status_list::ensure_initial(
+        &state.status_lists_ks,
+        purpose,
+        format!("http://vtc.test/v1/status-lists/{purpose}"),
+    )
+    .await
+    .expect("status list");
+
+    let (admin, private_key_multibase) = did_key_from_seed(0x93);
+    store_acl_entry(&state.acl_ks, &admin_entry(&admin))
+        .await
+        .expect("seed admin acl row");
+    let (vetter, _) = did_key_from_seed(0x94);
+    // Admitted yesterday: a grant counts only when it post-dates the member's
+    // admission, so a member and a grant made in the same instant would not
+    // exercise the "already granted" path this test is about.
+    let mut member = vtc_service::members::Member::fresh(&vetter);
+    member.joined_at = chrono::Utc::now() - chrono::Duration::days(1);
+    vtc_service::members::storage::store_member(&state.members_ks, &member)
+        .await
+        .expect("seed member");
+    store_acl_entry(
+        &state.acl_ks,
+        &VtcAclEntry {
+            role: VtcRole::Member,
+            ..admin_entry(&vetter)
+        },
+    )
+    .await
+    .expect("seed member acl row");
+
+    let client = VtcClient::connect(
+        &base,
+        "did:key:z6MkVtcUnderTest",
+        &admin,
+        &private_key_multibase,
+    )
+    .await
+    .expect("connect");
+
+    // Grant converges: the second call returns the first grant.
+    let first = client
+        .grant_vetter(&vetter, Some(30 * 86_400))
+        .await
+        .unwrap();
+    assert!(first.created);
+    let second = client.grant_vetter(&vetter, None).await.unwrap();
+    assert!(!second.created);
+    assert_eq!(second.grant.endorsement_id, first.grant.endorsement_id);
+
+    let grants = client.list_vetter_grants().await.unwrap();
+    assert_eq!(grants.vetters.len(), 1);
+    assert!(grants.vetters[0].live);
+
+    // No messaging in this community: the resend cannot be handed over.
+    assert!(matches!(
+        client.resend_vetter_grant(&vetter).await,
+        Err(vtc_client::VtcError::Http { status: 503, .. })
+    ));
+
+    let status = client.auto_grant().await.unwrap();
+    assert!(!status.enabled);
+    let stored = client
+        .configure_auto_grant(&vtc_client::vetting::AutoGrantConfig {
+            enabled: true,
+            sweep_minutes: Some(30),
+            validity_seconds: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!((stored.enabled, stored.sweep_minutes), (true, 30));
+    assert!(matches!(
+        client
+            .configure_auto_grant(&vtc_client::vetting::AutoGrantConfig {
+                enabled: true,
+                sweep_minutes: Some(1),
+                validity_seconds: None,
+            })
+            .await,
+        Err(vtc_client::VtcError::Http { status: 400, .. })
+    ));
+
+    assert_eq!(client.branding().await.unwrap(), Default::default());
+    let branding = client
+        .set_branding(&vtc_client::join_requests::CommunityBranding {
+            display_name: Some("Kernel".into()),
+            accent_color: Some("#1A2B3C".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(branding.accent_color.as_deref(), Some("#1a2b3c"));
+
+    assert!(client.vetting_revocations().await.unwrap().is_empty());
+
+    let revoked = client
+        .revoke_endorsement(&first.grant.endorsement_id)
+        .await
+        .unwrap();
+    assert_eq!(revoked.endorsement_id, first.grant.endorsement_id);
+    assert_eq!(revoked.revocation.credential_id, first.grant.credential_id);
+    assert!(matches!(
+        client.resend_vetter_grant(&vetter).await,
+        Err(vtc_client::VtcError::Http { status: 404, .. })
+    ));
+}
+
 /// `VtcClient::connect` authenticates against a real VTC, and the token it
 /// returns drives an authenticated call.
 ///
