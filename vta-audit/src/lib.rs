@@ -344,11 +344,11 @@ pub async fn cleanup_logs_before(audit_ks: &KeyspaceHandle, cutoff: u64) -> Resu
             // Read before deleting: a chained entry carries the hash the
             // survivors will point back at, and once it is gone so is the
             // only copy of it.
-            if let Ok(Some(raw)) = audit_ks.get_raw(key.clone()).await {
-                if let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&raw) {
-                    last_chained_hash = Some(hex::encode(env.entry_hash));
-                    pruned_chained += 1;
-                }
+            if let Ok(Some(raw)) = audit_ks.get_raw(key.clone()).await
+                && let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&raw)
+            {
+                last_chained_hash = Some(hex::encode(env.entry_hash));
+                pruned_chained += 1;
             }
             audit_ks.remove(key).await?;
             removed += 1;
