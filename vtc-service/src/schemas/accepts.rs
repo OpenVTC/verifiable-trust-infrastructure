@@ -24,6 +24,7 @@ use affinidi_openid4vp::DcqlQuery;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use vta_sdk::protocols::vetting::VettingRequirements;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -55,6 +56,14 @@ pub struct AcceptsCriterion {
     /// Free-form description shown in admin UIs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Peer identity vetting this criterion requires, advertised to applicants
+    /// in the join manifest (0.2). Every number in it is this community's
+    /// policy. Checked by [`VettingRequirements::validate`] when stored; the
+    /// admin route additionally requires its `statementType` to be a registered
+    /// endorsement type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub vetting: Option<VettingRequirements>,
     pub created_at: DateTime<Utc>,
     /// Admin DID that registered the criterion (audit correlation).
     pub created_by_did: String,
@@ -99,13 +108,19 @@ pub async fn validate_accepts_query(
 }
 
 /// Validate + store an Accepts criterion. The query is validated against the
-/// registry first; a criterion with a malformed query or a dangling type
-/// reference is **not** stored.
+/// registry first, and any vetting requirements must be evaluable; a criterion
+/// with a malformed query, a dangling type reference or requirements no
+/// applicant could satisfy is **not** stored.
 pub async fn store_accepts(
     schemas_ks: &KeyspaceHandle,
     criterion: &AcceptsCriterion,
 ) -> Result<(), AppError> {
     validate_accepts_query(schemas_ks, &criterion.query).await?;
+    if let Some(vetting) = &criterion.vetting {
+        vetting
+            .validate()
+            .map_err(|e| AppError::Validation(e.to_string()))?;
+    }
     schemas_ks
         .insert(
             String::from_utf8(key(&criterion.id)).expect("ascii key"),
@@ -196,6 +211,7 @@ mod tests {
                 }]
             }),
             description: Some("join evidence".into()),
+            vetting: None,
             created_at: Utc::now(),
             created_by_did: "did:key:zAdmin".into(),
         }
@@ -246,6 +262,7 @@ mod tests {
             // Empty `credentials` is invalid DCQL.
             query: json!({ "credentials": [] }),
             description: None,
+            vetting: None,
             created_at: Utc::now(),
             created_by_did: "did:key:zAdmin".into(),
         };
@@ -253,5 +270,42 @@ mod tests {
             .await
             .expect_err("invalid DCQL must be rejected");
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+    }
+
+    fn vetting(min: u32) -> VettingRequirements {
+        serde_json::from_value(json!({
+            "version": "0.1",
+            "statementType": "https://firstperson.network/endorsements/identity-vetting/0.1",
+            "minStatements": min,
+            "acceptedMethods": ["inPerson"],
+            "eligibleVetters": { "role": "vetter" }
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn stores_and_returns_a_criterion_with_vetting_requirements() {
+        let (_d, _s, ks) = ks().await;
+        register_membership(&ks).await;
+        let mut c = criterion("kernel", MEMBERSHIP_VCT);
+        c.vetting = Some(vetting(2));
+        store_accepts(&ks, &c)
+            .await
+            .expect("evaluable requirements store");
+        let got = get_accepts(&ks, "kernel").await.unwrap().unwrap();
+        assert_eq!(got.vetting, Some(vetting(2)));
+    }
+
+    #[tokio::test]
+    async fn refuses_vetting_requirements_no_applicant_could_satisfy() {
+        let (_d, _s, ks) = ks().await;
+        register_membership(&ks).await;
+        let mut c = criterion("kernel", MEMBERSHIP_VCT);
+        c.vetting = Some(vetting(0));
+        let err = store_accepts(&ks, &c)
+            .await
+            .expect_err("minStatements 0 is refused");
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+        assert!(get_accepts(&ks, "kernel").await.unwrap().is_none());
     }
 }

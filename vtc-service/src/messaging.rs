@@ -26,9 +26,10 @@ use vta_sdk::protocols::credential_exchange::{
     ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody, PresentBody, RequestBody,
 };
 use vta_sdk::protocols::join_requests::{
-    JOIN_REQUEST_MANIFEST_TYPE, JOIN_REQUEST_STATUS_TYPE, JOIN_REQUEST_SUBMIT_RECEIPT_TYPE,
-    JOIN_REQUEST_SUBMIT_TYPE, JoinRequestSubmitReceiptBody, MEMBER_SELF_REMOVE_RECEIPT_TYPE,
-    MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody, SelfRemoveReceiptBody,
+    JOIN_REQUEST_MANIFEST_0_2_TYPE, JOIN_REQUEST_MANIFEST_TYPE, JOIN_REQUEST_STATUS_TYPE,
+    JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, JOIN_REQUEST_SUBMIT_TYPE, JoinRequestSubmitReceiptBody,
+    MEMBER_SELF_REMOVE_RECEIPT_TYPE, MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody,
+    SelfRemoveReceiptBody,
 };
 use vta_sdk::protocols::members::{
     MEMBER_VMC_RESPONSE_TYPE, MEMBER_VMC_TYPE, MemberVmcBody, MemberVmcReceiptBody,
@@ -712,7 +713,11 @@ async fn route(msg: &Message, auth_sender: Option<String>, state: &AppState) -> 
     match msg.typ.as_str() {
         TRUST_PING_TYPE => trust_ping_reply(msg, auth_sender.as_deref()),
         JOIN_REQUEST_SUBMIT_TYPE => join_request_submit_handler(msg, auth_sender, state).await,
-        JOIN_REQUEST_MANIFEST_TYPE => join_request_manifest_handler(msg, state).await,
+        // Both versions go through the document dispatcher, which answers in
+        // the shape the document's own `type` names.
+        JOIN_REQUEST_MANIFEST_TYPE | JOIN_REQUEST_MANIFEST_0_2_TYPE => {
+            join_request_manifest_handler(msg, state).await
+        }
         JOIN_REQUEST_STATUS_TYPE => join_request_status_handler(msg, auth_sender, state).await,
         MEMBER_SELF_REMOVE_TYPE => member_self_remove_handler(msg, auth_sender, state).await,
         MEMBER_VMC_TYPE => member_vmc_handler(msg, auth_sender, state).await,
