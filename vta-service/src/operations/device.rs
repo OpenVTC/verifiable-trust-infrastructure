@@ -121,7 +121,7 @@ pub async fn register_device(
     store_acl_entry(acl_ks, &entry).await?;
 
     info!(channel, did = %did, "device registered");
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "device.register",
         &did,
@@ -352,7 +352,7 @@ pub async fn disable_device(
     store_acl_entry(acl_ks, &entry).await?;
 
     info!(did = %did, device_id, "device disabled");
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "device.disable",
         &auth.did,
@@ -403,7 +403,7 @@ pub async fn wipe_device(
     store_acl_entry(acl_ks, &entry).await?;
 
     info!(did = %did, device_id, reason, scope, "device wiped");
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "device.wipe",
         &auth.did,
@@ -461,7 +461,7 @@ pub async fn set_wake_device(
         // Clear: the device is no longer wakeable.
         entry.device.as_mut().unwrap().wake = None;
         store_acl_entry(acl_ks, &entry).await?;
-        let _ = audit::record(
+        audit::record_best_effort(
             audit,
             "device.set_wake.clear",
             &did,
@@ -496,7 +496,7 @@ pub async fn set_wake_device(
     store_acl_entry(acl_ks, &entry).await?;
 
     info!(did = %did, triggers = allowed.len(), "device wake channel set");
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "device.set_wake",
         &did,

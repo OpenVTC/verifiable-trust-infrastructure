@@ -117,7 +117,7 @@ async fn create_internal_key(
     };
     keys_ks.insert(keys::store_key(&key_id), &record).await?;
 
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "key.create.internal",
         &auth.did,
@@ -273,7 +273,7 @@ pub async fn create_key(
         resource = &key_id,
         outcome = "success"
     );
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "key.create",
         &auth.did,
@@ -449,7 +449,7 @@ pub async fn import_key(
         resource = &key_id,
         outcome = "success"
     );
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "key.import",
         &auth.did,
@@ -631,7 +631,7 @@ pub async fn rename_key(
         resource = new_key_id,
         outcome = "success"
     );
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "key.rename",
         &auth.did,
@@ -694,7 +694,7 @@ pub async fn revoke_key(
         resource = key_id,
         outcome = "success"
     );
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "key.revoke",
         &auth.did,
@@ -835,7 +835,7 @@ pub async fn get_key_secret(
         resource = key_id,
         outcome = "success"
     );
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "key.secret_export",
         &auth.did,
@@ -944,7 +944,7 @@ pub async fn set_key_exportability(
         resource = key_id,
         outcome = "success"
     );
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "key.set_exportability",
         &auth.did,
@@ -1061,7 +1061,7 @@ pub async fn get_key_secret_internal(
         resource = key_id,
         outcome = "success"
     );
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "key.secret_export",
         &actor,
@@ -1127,6 +1127,10 @@ async fn require_key_in_caller_scope(
 /// For derived keys, re-derives from BIP-32 seed. For imported keys,
 /// decrypts from the imported_secrets keyspace. Key material is zeroized
 /// after signing.
+///
+/// `audit` is required rather than optional: this is the one chokepoint every
+/// transport reaches the signing oracle through, so a caller who could opt out
+/// of the trail could sign unrecorded. See the audit call at the tail.
 #[allow(clippy::too_many_arguments)]
 pub async fn sign_payload(
     keys_ks: &KeyspaceHandle,
@@ -1135,6 +1139,7 @@ pub async fn sign_payload(
     contexts_ks: &KeyspaceHandle,
     acl_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     key_id: &str,
     payload: &[u8],
@@ -1302,6 +1307,42 @@ pub async fn sign_payload(
     let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&signature_bytes);
 
     info!(channel, key_id = %key_id, "payload signed");
+
+    // A signature is the most consequential thing this agent does with a key,
+    // and it was the one key operation absent from the queryable trail.
+    // `keys/create`, `keys/revoke`, `keys/secret` and `keys/derive-and-sign`
+    // all record; the oracle that actually signs did not. An incident review
+    // could establish that a key existed and that nobody exported it, and not
+    // that it had signed four thousand times — which is the question asked
+    // first when a key is suspected.
+    //
+    // Recorded here rather than in each transport's handler because this is the
+    // chokepoint all four callers reach the oracle through (the Trust Task,
+    // REST, DIDComm, and the rooms signer). A handler-level row would have to
+    // be remembered four times and again for the fifth caller; here a new
+    // caller is audited by construction.
+    //
+    // Success only, deliberately: a refusal returns from one of the gates
+    // above, and for Trust Tasks the dispatch spine already records those as
+    // `task.refused` with the URI. The REST and DIDComm refusal rows are a
+    // separate gap, and belong wherever those two transports grow a spine of
+    // their own rather than in eight early returns here.
+    //
+    // The payload is deliberately not recorded: it is the caller's bytes, may
+    // carry anything, and the trail answers "which key signed, for whom, over
+    // what transport", not "what did it say". The action name matches
+    // `keys.derive-and-sign`, the sibling oracle, rather than this module's
+    // older `key.*` rows.
+    audit::record_best_effort(
+        audit,
+        "keys.sign",
+        &auth.did,
+        Some(key_id),
+        "success",
+        Some(channel),
+        record.context_id.as_deref(),
+    )
+    .await;
 
     Ok(SignResultBody {
         key_id: key_id.to_string(),
@@ -1954,6 +1995,7 @@ mod tests {
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
+            &h.audit,
             &auth,
             &key.key_id,
             payload,
@@ -2201,6 +2243,7 @@ mod tests {
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
+            &h.audit,
             &scoped,
             &key.key_id,
             b"payload",
@@ -2223,6 +2266,7 @@ mod tests {
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
+            &h.audit,
             &admin,
             &key.key_id,
             b"payload",
@@ -2264,6 +2308,7 @@ mod tests {
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
+            &h.audit,
             &scoped,
             &allowed.key_id,
             b"payload",
@@ -2331,6 +2376,7 @@ mod tests {
                     &h.contexts_ks,
                     &h.acl_ks,
                     &h.seed_store,
+                    &h.audit,
                     &claims,
                     key_id,
                     b"payload",
@@ -2468,6 +2514,7 @@ mod tests {
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
+            &h.audit,
             &claims,
             &foreign.key_id,
             b"payload",
@@ -2517,6 +2564,7 @@ mod tests {
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
+            &h.audit,
             &admin,
             &unscoped.key_id,
             b"payload",
@@ -2619,6 +2667,7 @@ mod tests {
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
+            &h.audit,
             &other_tenant,
             &key.key_id,
             b"payload",
@@ -2661,6 +2710,7 @@ mod tests {
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
+            &h.audit,
             &other_tenant,
             &own.key_id,
             b"payload",
@@ -2728,6 +2778,7 @@ mod tests {
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
+            &h.audit,
             &scoped,
             &key.key_id,
             b"payload",
@@ -2748,6 +2799,7 @@ mod tests {
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
+            &h.audit,
             &admin,
             &key.key_id,
             b"payload",
@@ -3220,6 +3272,7 @@ mod tests {
             &h.contexts_ks,
             &h.acl_ks,
             &h.seed_store,
+            &h.audit,
             &h.super_admin_auth(),
             "k-sign",
             b"payload",

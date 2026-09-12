@@ -66,6 +66,9 @@ pub struct SigningContext<'a> {
     pub contexts_ks: &'a KeyspaceHandle,
     pub acl_ks: &'a KeyspaceHandle,
     pub seed_store: &'a Arc<dyn SeedStore>,
+    /// Where the oracle's `keys.sign` row goes. Travels with the rest for the
+    /// same reason: a signer assembled without it would sign unrecorded.
+    pub audit: &'a vta_audit::SharedAuditSink,
     pub auth: &'a AuthClaims,
 }
 
@@ -120,6 +123,7 @@ impl Signer for RoomKeySigner<'_> {
             self.ctx.contexts_ks,
             self.ctx.acl_ks,
             self.ctx.seed_store,
+            self.ctx.audit,
             self.ctx.auth,
             &self.key_id,
             data,
@@ -254,6 +258,7 @@ mod tests {
             contexts_ks: &ts.contexts_ks,
             acl_ks: &ts.acl_ks,
             seed_store: &seed,
+            audit: &ts.audit,
             auth: &auth,
         };
 
@@ -336,6 +341,7 @@ mod tests {
             contexts_ks: &ts.contexts_ks,
             acl_ks: &ts.acl_ks,
             seed_store: &seed,
+            audit: &ts.audit,
             auth: &auth,
         };
 

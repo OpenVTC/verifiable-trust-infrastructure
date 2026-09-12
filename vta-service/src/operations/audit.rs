@@ -440,7 +440,7 @@ pub async fn update_retention(
         resource = retention_days,
         outcome = "success"
     );
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "audit.retention_update",
         &auth.did,

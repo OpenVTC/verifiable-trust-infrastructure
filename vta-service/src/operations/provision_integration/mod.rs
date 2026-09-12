@@ -883,7 +883,7 @@ async fn retire_ephemeral_after_rollover(
         resource = admin_did,
         outcome = "success"
     );
-    let _ = audit::record(
+    audit::record_best_effort(
         &state.audit,
         "acl.swap",
         client_did,

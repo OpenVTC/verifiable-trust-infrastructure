@@ -9,6 +9,12 @@
 //! [`record`] / [`record_with_detail`], which should be called alongside the
 //! macro in route/handler code.
 //!
+//! A call site that cannot propagate the error — most of them, since a failed
+//! audit write must not fail the operation it records — should use
+//! [`record_best_effort`] / [`record_with_detail_best_effort`] rather than
+//! `let _ = record(..)`. They keep the same "never fails the caller" contract
+//! and report the lost row instead of discarding it.
+//!
 //! The sink is an extension point, not a policy: see [`sink`] for why the write
 //! path is pluggable while retention is not.
 
@@ -108,6 +114,103 @@ pub async fn record(
         sink, action, actor, resource, outcome, channel, context_id, None,
     )
     .await
+}
+
+/// Tracing target for an audit write that did **not** land.
+///
+/// Deliberately not `audit`. That target carries the events themselves, and an
+/// operator shipping it to a log sink is reading a stream of things that
+/// happened; this carries the news that one of them is missing from the
+/// queryable trail, which is a different kind of fact and worth routing (and
+/// alerting) separately. Filtering still works from either end: EnvFilter
+/// matches target prefixes, so `RUST_LOG=audit=error` picks this up too.
+pub const AUDIT_WRITE_FAILURE_TARGET: &str = "audit.write_failure";
+
+/// Counter incremented once per audit entry the sink refused, labelled by
+/// `action`.
+///
+/// A log line is evidence for whoever is reading logs; a counter is what an
+/// alert can be built on — and "the audit log stopped accepting writes" is
+/// precisely the condition nobody notices by reading.
+pub const AUDIT_WRITE_FAILURES: &str = "audit_sink_write_failures_total";
+
+/// [`record`], with a failed write **reported** rather than discarded.
+///
+/// # Why this exists
+///
+/// Twenty-seven call sites in `vta-service` wrote `let _ = audit::record(..)`.
+/// The intent was right and remains right: a failed audit write must not fail
+/// the operation it records, because refusing to revoke a key on the grounds
+/// that the log was full protects nobody. But `let _ =` implements "must not
+/// fail the operation" as "must not be mentioned", and those are not the same
+/// thing. The row was gone, the process knew, and it said nothing — so the
+/// first symptom was an absence, which is the one thing nobody greps for.
+///
+/// That got worse when the VTA's log became a **hash chain** (#1420). A failed
+/// append is then not one missing line: it is the point beyond which the chain
+/// cannot be extended, and the person who finds out is whoever runs `verify`
+/// weeks later, with no way to tell "the sink was unavailable on Tuesday" from
+/// "somebody removed an entry" — the exact case the chain exists to detect.
+/// A dropped error turns the tamper-evidence into a false positive generator.
+///
+/// So the write stays best-effort and the caller still cannot fail because of
+/// it. What changes is that the failure leaves a trace: an `ERROR` on
+/// [`AUDIT_WRITE_FAILURE_TARGET`] carrying enough of the row to reconstruct it
+/// by hand, and [`AUDIT_WRITE_FAILURES`] for something to alert on.
+///
+/// Prefer this to `let _ = record(..)` at every call site that cannot
+/// propagate. A site that *can* propagate should still use [`record`].
+pub async fn record_best_effort(
+    sink: &SharedAuditSink,
+    action: &str,
+    actor: &str,
+    resource: Option<&str>,
+    outcome: &str,
+    channel: Option<&str>,
+    context_id: Option<&str>,
+) {
+    record_with_detail_best_effort(
+        sink, action, actor, resource, outcome, channel, context_id, None,
+    )
+    .await
+}
+
+/// [`record_with_detail`], with a failed write reported rather than discarded.
+/// See [`record_best_effort`] for why.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_with_detail_best_effort(
+    sink: &SharedAuditSink,
+    action: &str,
+    actor: &str,
+    resource: Option<&str>,
+    outcome: &str,
+    channel: Option<&str>,
+    context_id: Option<&str>,
+    detail: Option<&str>,
+) {
+    if let Err(e) = record_with_detail(
+        sink, action, actor, resource, outcome, channel, context_id, detail,
+    )
+    .await
+    {
+        // The whole row, because reconstructing it by hand is what an operator
+        // is left to do: the entry is not in the log and nothing retries it.
+        // `detail` is omitted on purpose — it is operator free text, up to
+        // `DETAIL_MAX_CHARS`, and this line goes to the ordinary log stream.
+        tracing::error!(
+            target: AUDIT_WRITE_FAILURE_TARGET,
+            action,
+            actor,
+            resource = ?resource,
+            outcome,
+            channel = ?channel,
+            context_id = ?context_id,
+            error = %e,
+            "audit sink rejected an entry; the operation it records still \
+             succeeded, and this row is lost"
+        );
+        metrics::counter!(AUDIT_WRITE_FAILURES, "action" => action.to_string()).increment(1);
+    }
 }
 
 /// How much operator-supplied `detail` an audit row keeps.
@@ -410,5 +513,178 @@ mod detail_bound {
         let out = bound_detail(&"𝄞".repeat(DETAIL_MAX_CHARS * 2));
         assert!(out.chars().count() <= DETAIL_MAX_CHARS);
         assert!(out.starts_with('𝄞'));
+    }
+}
+
+/// The property [`record_best_effort`] exists for: a refused write is still
+/// best-effort for the caller, and no longer silent.
+#[cfg(test)]
+mod best_effort {
+    use std::future::Future;
+    use std::sync::{Arc, Mutex};
+
+    use async_trait::async_trait;
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::registry::Registry;
+
+    use super::*;
+
+    /// Refuses everything — the case the `let _ = record(..)` sites made
+    /// invisible.
+    struct Failing;
+
+    #[async_trait]
+    impl AuditSink for Failing {
+        async fn record(&self, _entry: &AuditLogEntry) -> Result<(), AppError> {
+            Err(AppError::Internal("sink is down".into()))
+        }
+    }
+
+    struct Healthy;
+
+    #[async_trait]
+    impl AuditSink for Healthy {
+        async fn record(&self, _entry: &AuditLogEntry) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
+
+    type Events = Arc<Mutex<Vec<(String, tracing::Level, String)>>>;
+
+    /// Collects `(target, level, rendered fields)` for every event emitted
+    /// while it is installed.
+    struct Capture(Events);
+
+    impl<S: tracing::Subscriber> Layer<S> for Capture {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            struct Render<'a>(&'a mut String);
+            impl Visit for Render<'_> {
+                // Every other `record_*` defaults to this one, so Display- and
+                // Debug-formatted fields alike land here.
+                fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                    use std::fmt::Write as _;
+                    let _ = write!(self.0, "{}={value:?} ", field.name());
+                }
+            }
+            let mut rendered = String::new();
+            event.record(&mut Render(&mut rendered));
+            self.0.lock().unwrap().push((
+                event.metadata().target().to_string(),
+                *event.metadata().level(),
+                rendered,
+            ));
+        }
+    }
+
+    /// Drive `f` to completion with the capturing subscriber installed.
+    ///
+    /// The runtime is built *inside* `with_default` deliberately:
+    /// `with_default` is synchronous and sets the subscriber for the current
+    /// thread, so holding its guard across an `.await` that might resume
+    /// elsewhere would emit the event where nothing is listening — a test that
+    /// passes for the wrong reason, in the one place where a false pass means
+    /// the reporting silently is not there.
+    fn captured<F: Future<Output = ()>>(f: F) -> Vec<(String, tracing::Level, String)> {
+        let events: Events = Arc::default();
+        let subscriber = Registry::default().with(Capture(Arc::clone(&events)));
+        tracing::subscriber::with_default(subscriber, || {
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("a current-thread runtime")
+                .block_on(f);
+        });
+        events.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn a_refused_write_is_reported_at_error_with_the_row_it_lost() {
+        let events = captured(async {
+            record_best_effort(
+                &(Arc::new(Failing) as SharedAuditSink),
+                "key.create.internal",
+                "did:key:zActor",
+                Some("key-1"),
+                "success",
+                Some("rest"),
+                Some("acme/eng"),
+            )
+            .await;
+        });
+
+        let (_, level, fields) = events
+            .iter()
+            .find(|(target, ..)| target == AUDIT_WRITE_FAILURE_TARGET)
+            .expect(
+                "a refused audit write must be reported — that report is the \
+                 entire difference from `let _ = record(..)`",
+            );
+
+        assert_eq!(
+            *level,
+            tracing::Level::ERROR,
+            "a lost audit row in a hash-chained log is not a warning"
+        );
+        for expected in [
+            "key.create.internal",
+            "did:key:zActor",
+            "key-1",
+            "acme/eng",
+            "sink is down",
+        ] {
+            assert!(
+                fields.contains(expected),
+                "the report has to carry enough to reconstruct the row by hand, \
+                 because nothing retries it; {expected:?} is missing from \
+                 {fields:?}"
+            );
+        }
+    }
+
+    /// The caller is not failed by a refused write. Asserted because the fix
+    /// would be worthless if it had turned audit failures into operation
+    /// failures — refusing to revoke a key because the log is full protects
+    /// nobody.
+    #[test]
+    fn a_refused_write_still_returns_to_the_caller() {
+        // `record_best_effort` returns `()`, so reaching the assertion below is
+        // the assertion: it did not panic and there is no error to propagate.
+        let events = captured(async {
+            record_best_effort(
+                &(Arc::new(Failing) as SharedAuditSink),
+                "key.revoke",
+                "did:key:zActor",
+                None,
+                "success",
+                None,
+                None,
+            )
+            .await;
+        });
+        assert!(!events.is_empty(), "the failure should have been reported");
+    }
+
+    #[test]
+    fn a_healthy_write_reports_nothing() {
+        let events = captured(async {
+            record_best_effort(
+                &(Arc::new(Healthy) as SharedAuditSink),
+                "key.revoke",
+                "did:key:zActor",
+                None,
+                "success",
+                None,
+                None,
+            )
+            .await;
+        });
+
+        assert!(
+            !events
+                .iter()
+                .any(|(target, ..)| target == AUDIT_WRITE_FAILURE_TARGET),
+            "nothing failed, so nothing should be reported: {events:?}"
+        );
     }
 }

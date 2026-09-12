@@ -413,7 +413,7 @@ pub async fn create_acl(
         resource = did,
         outcome = "success"
     );
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "acl.create",
         &auth.did,
@@ -664,7 +664,7 @@ async fn update_acl(
         resource = did,
         outcome = "success"
     );
-    let _ = audit::record_with_detail(
+    audit::record_with_detail_best_effort(
         audit,
         "acl.update",
         &auth.did,
@@ -766,7 +766,7 @@ async fn change_role(
         resource = subject,
         outcome = "success"
     );
-    let _ = audit::record_with_detail(
+    audit::record_with_detail_best_effort(
         audit,
         "acl.change_role",
         &auth.did,
@@ -821,7 +821,7 @@ pub async fn delete_acl(
         resource = did,
         outcome = "success"
     );
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "acl.delete",
         &auth.did,
@@ -929,7 +929,7 @@ pub async fn swap_acl(
         resource = &new_did,
         outcome = "success"
     );
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "acl.swap",
         &auth.did,

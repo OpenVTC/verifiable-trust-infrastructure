@@ -43,6 +43,7 @@ fn signing_context<'a>(state: &'a AppState, auth: &'a AuthClaims) -> SigningCont
         contexts_ks: &state.contexts_ks,
         acl_ks: &state.acl_ks,
         seed_store: &state.seed_store,
+        audit: &state.audit_sink,
         auth,
     }
 }

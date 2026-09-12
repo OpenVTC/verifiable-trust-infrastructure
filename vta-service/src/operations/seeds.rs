@@ -128,7 +128,7 @@ pub async fn rotate_seed(
         resource = "seed",
         outcome = "success"
     );
-    let _ = audit::record(
+    audit::record_best_effort(
         audit,
         "seed.rotate",
         actor,
