@@ -61,14 +61,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7
+      # Nothing in this workflow pushes, so the checkout keeps no credentials.
+      # By default actions/checkout leaves the job's token in
+      # `.git/config`, where every later step — including a build script and
+      # every third-party action in the job — can read it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 
-      - uses: dtolnay/rust-toolchain@stable
+      # rustup from the runner image, not dtolnay/rust-toolchain: that action
+      # offers only branch refs, so there is nothing immutable to pin. See the
+      # longer note in ci.yml.
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Built once, then executed in a loop: `cargo test` would re-check the
       # workspace on every iteration and most of the wall-clock would be cargo,

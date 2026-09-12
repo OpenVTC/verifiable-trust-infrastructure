@@ -17,6 +17,13 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    # A release is at its most dangerous in the days before anyone has looked
+    # at it: a hijacked maintainer account or a retagged release is noticed by
+    # the ecosystem within about a week, and this makes Dependabot wait that
+    # week before proposing it. SECURITY updates are NOT subject to the
+    # cooldown, so an advisory still arrives the day it lands.
+    cooldown:
+      default-days: 7
     # Enough headroom for a normal week without burying the queue. A security
     # advisory is not subject to this cap.
     open-pull-requests-limit: 5
@@ -51,13 +58,33 @@ updates:
       - dependency-name: "vtc-*"
 
   # ── GitHub Actions ────────────────────────────────────────────────────
-  # `dtolnay/rust-toolchain@master` and `taiki-e/install-action@cargo-semver-checks`
-  # are branch/tag refs Dependabot cannot version, and it leaves them alone.
-  # The rest are pinned majors it can move.
+  # Every `uses:` in this repo is a full 40-hex commit SHA with the version in
+  # a trailing `# vX.Y.Z` comment. That is the form Dependabot understands: it
+  # moves the SHA and rewrites the comment, so pinning costs nothing in
+  # freshness.
+  #
+  # The two refs this comment used to excuse are gone. `dtolnay/rust-toolchain`
+  # published no tags at all — `@stable` and `@master` are branches — so it was
+  # replaced with the `rustup` lines it was running for us, and
+  # `taiki-e/install-action@cargo-semver-checks` (a tool-named tag, re-pointed
+  # on every release of that tool) is now the pinned `v2` action with
+  # `with: tool:`. Nothing here is unversionable any more.
+  #
+  # Weekly, not monthly: a pinned action only moves when something here moves
+  # it, and a month of latency on a fixed action bug is a month of running the
+  # bug. The grouping below still makes it one pull request.
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: monthly
+      interval: weekly
+      day: monday
+    # A release is at its most dangerous in the days before anyone has looked
+    # at it: a hijacked maintainer account or a retagged release is noticed by
+    # the ecosystem within about a week, and this makes Dependabot wait that
+    # week before proposing it. SECURITY updates are NOT subject to the
+    # cooldown, so an advisory still arrives the day it lands.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "ci(deps)"
     groups:
@@ -73,5 +100,46 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    # A release is at its most dangerous in the days before anyone has looked
+    # at it: a hijacked maintainer account or a retagged release is noticed by
+    # the ecosystem within about a week, and this makes Dependabot wait that
+    # week before proposing it. SECURITY updates are NOT subject to the
+    # cooldown, so an advisory still arrives the day it lands.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore(docker)"
+
+  # ── Rust: the Nitro parent-instance proxy ─────────────────────────────
+  # `deploy/nitro/enclave-proxy` is its OWN workspace with its own
+  # `Cargo.lock`, and the root `Cargo.toml` lists it under `exclude` because
+  # tokio-vsock is Linux-only and it therefore cannot build on a macOS
+  # developer machine. The `/` entry above reads the root manifest and so has
+  # never seen it: until this entry, nothing proposed a bump for the process
+  # that terminates TLS in front of the enclave, and its lockfile was updated
+  # only when someone remembered.
+  #
+  # Its manifest asks for versions to be kept aligned with the workspace by
+  # hand. That is still true — this only makes the drift visible as a pull
+  # request instead of leaving it to be discovered.
+  - package-ecosystem: cargo
+    directory: /deploy/nitro/enclave-proxy
+    schedule:
+      interval: weekly
+      day: monday
+    # A release is at its most dangerous in the days before anyone has looked
+    # at it: a hijacked maintainer account or a retagged release is noticed by
+    # the ecosystem within about a week, and this makes Dependabot wait that
+    # week before proposing it. SECURITY updates are NOT subject to the
+    # cooldown, so an advisory still arrives the day it lands.
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
