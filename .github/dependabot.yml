@@ -56,6 +56,23 @@ updates:
       - dependency-name: "vta-*"
       - dependency-name: "vti-*"
       - dependency-name: "vtc-*"
+      # `rand` is held at 0.8 *for one crate*: cnm-cli's PGP test helpers.
+      # `pgp` 0.20 takes `rand_core` 0.6 RNGs in `SecretKeyParams::generate`,
+      # and a 0.9+ `StdRng` does not implement those traits, so the bump cannot
+      # compile — see the comment on `rand` in cnm-cli/Cargo.toml. Dependabot
+      # proposed 0.8.8 -> 0.10.2 regardless (#1445, closed).
+      #
+      # The cost of this entry is that it is repo-wide: the workspace root is
+      # already on rand 0.10, and this freezes that too, because both manifests
+      # live under the same update config and Dependabot cannot scope an ignore
+      # to one of them. Patch updates are deliberately left flowing, so a
+      # 0.8.x or 0.10.x advisory still arrives.
+      #
+      # Remove this entry once `pgp` supports rand 0.9+.
+      - dependency-name: "rand"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
 
   # ── GitHub Actions ────────────────────────────────────────────────────
   # Every `uses:` in this repo is a full 40-hex commit SHA with the version in
