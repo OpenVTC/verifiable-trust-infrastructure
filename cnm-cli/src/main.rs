@@ -336,6 +336,9 @@ enum BackupCommands {
         /// Output file path (default: `vtc-backup-<slug>-<ts>.vtcbak`).
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
+        /// Replace the output file if it already exists.
+        #[arg(long)]
+        force: bool,
     },
     /// Import the community's state from an encrypted backup file.
     Import {
@@ -1305,7 +1308,8 @@ async fn main() {
             BackupCommands::Export {
                 include_audit,
                 output,
-            } => backup::cmd_export(&client, &keyring_key, include_audit, output).await,
+                force,
+            } => backup::cmd_export(&client, &keyring_key, include_audit, output, force).await,
             BackupCommands::Import { file, preview } => {
                 backup::cmd_import(&client, &keyring_key, file, preview).await
             }

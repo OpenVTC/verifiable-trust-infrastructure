@@ -75,6 +75,54 @@ pub fn restrict_dir_to_owner(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Write `bytes` to a new file at `path` that only the owner can read.
+///
+/// For exports that carry secret material, such as backup envelopes.
+///
+/// - The file is opened with `create_new`, so an existing path (including a
+///   symlink, dangling or not) is never truncated or followed. The call fails
+///   with [`std::io::ErrorKind::AlreadyExists`] and the caller decides whether
+///   to remove the old file first.
+/// - On Unix the file is created with mode `0600`, so it is not readable by
+///   anyone else at any point, including between create and write.
+/// - The data is flushed with `sync_all` before returning.
+/// - On Windows the owner-only DACL from [`restrict_file_to_owner`] is applied
+///   after the write.
+///
+/// Unlike the other helpers in this module, a hardening failure is an error.
+/// If any step after the file is created fails, the file is removed, so no
+/// secret is left behind with the wrong permissions and a retry is not
+/// blocked by `AlreadyExists`.
+pub fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let file = opts.open(path)?;
+
+    if let Err(e) = write_and_harden(file, path, bytes) {
+        let _ = std::fs::remove_file(path);
+        return Err(e);
+    }
+    Ok(())
+}
+
+fn write_and_harden(mut file: std::fs::File, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    #[cfg(windows)]
+    restrict_file_to_owner(path)?;
+    #[cfg(not(windows))]
+    let _ = path;
+    Ok(())
+}
+
 #[cfg(windows)]
 fn apply_windows_user_only_dacl(path: &Path) -> std::io::Result<()> {
     use std::process::Command;
@@ -166,6 +214,56 @@ mod tests {
 
         let mode = std::fs::metadata(&tmp).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A plain `std::fs::write` lands at `0644` under the common `022` umask.
+    /// The secret-file helper must not.
+    #[test]
+    fn write_secret_file_is_0600_under_a_022_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = std::env::temp_dir().join(format!("vta-test-secure-{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let f = tmp.join("export.vtcbak");
+
+        // SAFETY: `umask` has no memory-safety preconditions; it only swaps the
+        // process file-creation mask, which is restored straight after.
+        let previous = unsafe { libc::umask(0o022) };
+        let result = write_secret_file(&f, b"sensitive");
+        unsafe { libc::umask(previous) };
+        result.expect("write_secret_file succeeds");
+
+        let mode = std::fs::metadata(&f).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "got {:o}", mode & 0o777);
+        assert_eq!(std::fs::read(&f).unwrap(), b"sensitive");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_secret_file_refuses_an_existing_path() {
+        let tmp = std::env::temp_dir().join(format!("vta-test-secure-{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let f = tmp.join("export.vtcbak");
+        std::fs::write(&f, b"original").unwrap();
+
+        let err = write_secret_file(&f, b"replacement").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        // The existing file is neither truncated nor removed.
+        assert_eq!(std::fs::read(&f).unwrap(), b"original");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_secret_file_does_not_follow_a_symlink() {
+        let tmp = std::env::temp_dir().join(format!("vta-test-secure-{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let target = tmp.join("elsewhere");
+        let link = tmp.join("export.vtcbak");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = write_secret_file(&link, b"sensitive").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(!target.exists(), "the symlink target must not be created");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
