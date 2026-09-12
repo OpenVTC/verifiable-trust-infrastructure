@@ -54,7 +54,7 @@ tracing-subscriber = { workspace = true }
 # The bootstrap tests generate a small web of trust with rPGP, whose key
 # generation takes a rand 0.8 RNG (the workspace is on 0.10). A seeded StdRng
 # keeps the keys, and so the fingerprints, the same on every run.
-rand = "0.8"
+rand = "0.10"
 tempfile = "3"
 
 [lints]

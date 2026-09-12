@@ -2639,7 +2639,7 @@ dependencies = [
  "dialoguer",
  "dirs",
  "pgp",
- "rand 0.8.8",
+ "rand 0.10.2",
  "ratatui",
  "reqwest",
  "serde",
