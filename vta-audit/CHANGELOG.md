@@ -2,6 +2,71 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.7](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.3.6...vta-audit-v0.3.7) — 2026-09-10
+
+
+### Added
+
+- **audit**: Write the VTA's audit log as a hash chain ([#1420](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1420))
+
+* feat(audit): write the VTA's audit log as a hash chain
+
+  The sink writes envelopes through the shared writer rather than flat
+  rows: each entry commits to its predecessor, and the actor and any
+  DID-shaped target are committed under a keyed hash with the plaintext
+  beside them, so an erasure can null the plaintext while the row stays
+  correlatable and the chain still verifies.
+
+  The chain opens with the creation of the key that chains it. The key is
+  established on the first write — there is nothing to audit before a
+  node can act, and a node cannot act before it has somewhere to record
+  what it did — so the first entry is the record of that key coming into
+  existence, committing to its id. A verifier reading from the start
+  learns which key the entries after it are hashed under, from an entry
+  hashed under that same key.
+
+  The keyspace and the storage-key format are unchanged except for one
+  addition. The seconds stay the leading field, because the retention
+  sweep compares keys against a cutoff in that shape and a different
+  leading field would make every chained row sort past every cutoff and
+  never expire. The nanoseconds are new and are not optional: whole
+  seconds put two entries written in the same second in uuid order, so a
+  verifier reading in key order sees them out of chain order and reports
+  a break in a chain that is intact — a false alarm indistinguishable
+  from the thing it exists to detect. The tests found this rather than
+  review.
+
+  The read path now accepts both shapes. A reader that knows only one
+  does not fail loudly; it skips what it cannot parse, so a reader that
+  knew only the older shape would have reported a log that stops at the
+  moment chaining began.
+
+
+
+### Changed
+
+- **audit**: One construction point for the audit sink, and the prerequisites for chaining it ([#1412](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1412))
+
+* refactor(audit): build the keyspace audit sink in one place
+
+  The workspace built the same sink over the same keyspace in
+  thirty-one places, including three times inside one function
+  (run_create_did_webvh, which already had one in scope two hundred
+  lines above the other two). Each was somewhere a later change to what
+  a VTA's audit writes would have to be found and repeated.
+
+  There is now one constructor, vta_audit::shared_keyspace_sink, and
+  every caller goes through it. A server still takes its sink from
+  AppState — that path was already correct, and its comment already said
+  why. The factory is for the callers with no AppState to take one from:
+  offline CLI commands, setup, sweepers and tests.
+
+  No behaviour change. The next change to this subsystem — writing
+  chained envelopes rather than flat rows — is now one edit instead of a
+  search.
+
+
+
 ## [0.3.5](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.3.4...vta-audit-v0.3.5) — 2026-09-09
 
 

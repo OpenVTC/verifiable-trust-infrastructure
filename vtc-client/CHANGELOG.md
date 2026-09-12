@@ -2,6 +2,9 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.6.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.6.0...vtc-client-v0.6.1) — 2026-09-10
+
+
 ## [0.5.6](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.5.5...vtc-client-v0.5.6) — 2026-09-09
 
 

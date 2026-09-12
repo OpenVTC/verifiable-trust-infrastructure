@@ -63,7 +63,7 @@ affinidi-messaging-core = { workspace = true, optional = true }
 vti-secrets = { path = "../vti-secrets", version = "0.3", optional = true }
 # The session store behind `onboarding` — which backend is an operator's choice,
 # exactly as `[secrets]` is.
-vta-sdk = { path = "../vta-sdk", version = "0.36", optional = true }
+vta-sdk = { path = "../vta-sdk", version = "0.37", optional = true }
 # Reading the `[secrets]` table out of a config file.
 toml = { workspace = true, optional = true }
 affinidi-secrets-resolver = { workspace = true, optional = true }
