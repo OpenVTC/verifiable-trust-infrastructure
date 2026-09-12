@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+# Read-only, and every job below inherits it: nothing in CI writes to the
+# repository. Without this block a workflow gets the repository's DEFAULT
+# token, which is write-all — the captured log in #1239 shows an ordinary
+# same-repo PR run holding `Contents: write, Actions: write, Checks: write,
+# Deployments: write, …`. A fork PR was always read-only; push, `merge_group`
+# and same-repo PR runs were not.
+permissions:
+  contents: read
+
 # One live run per ref. Pushing a fixup to an open PR used to leave the
 # superseded run executing and racing the new one for the same runner pool;
 # a superseded PR run tells you nothing worth waiting for.
@@ -55,7 +64,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # Nothing in this workflow pushes, so the checkout keeps no credentials.
+      # By default actions/checkout leaves the job's token in
+      # `.git/config`, where every later step — including a build script and
+      # every third-party action in the job — can read it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
@@ -150,6 +165,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # `cargo test --workspace` builds a test binary for every crate with
       # full debuginfo, and the total (target/ plus the linker's scratch)
@@ -212,6 +229,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # `cargo test --workspace` builds a test binary for every crate with
       # full debuginfo, and the total (target/ plus the linker's scratch)
@@ -311,6 +330,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
@@ -387,6 +408,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install the Rust toolchain
         run: |
@@ -406,6 +429,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Same reclaim as the Test job, and for the same reason: this job
       # also links the whole workspace. It ran out of disk mid-`cargo
@@ -510,6 +535,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check advisories bans sources licenses
@@ -548,6 +575,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install system dependencies
         run: bash scripts/install-build-deps.sh
@@ -598,6 +626,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # Same system packages as the report job, from the same script. Omitting
       # this is what broke the guard's first real run: rustdoc could not build
       # `vta-cli-common` (libdbus-sys -> pkg_config), and a failed baseline build
@@ -636,6 +666,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Lockfile self-pin guard
         run: bash scripts/check-lockfile-self-pins.sh
       # Same shape of invariant, same reason to check it early: a whole-tree property
@@ -668,6 +700,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Authorization-context type uniqueness guard
         run: bash scripts/check-authz-context-types.sh
       # Unrelated to authz, but just as cheap: nothing at the repo root should be
@@ -720,6 +754,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install the Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
@@ -758,6 +794,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
@@ -1016,6 +1054,7 @@ jobs:
         with:
           # The diff is the whole input; a shallow clone has no base to diff from.
           fetch-depth: 0
+          persist-credentials: false
       - name: Install the Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
@@ -1043,6 +1082,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
@@ -1128,6 +1169,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install the Rust toolchain
         run: |

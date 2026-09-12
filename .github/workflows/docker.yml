@@ -35,6 +35,12 @@ on:
       - "Cargo.lock"
       - ".github/workflows/docker.yml"
 
+# Read-only: both images are built with `push: false` and this workflow logs
+# in to no registry, so reading the tree is all it needs. Without a block it
+# inherits the repository default, which is write-all.
+permissions:
+  contents: read
+
 jobs:
   image:
     name: Docker image (${{ matrix.name }})
@@ -65,7 +71,13 @@ jobs:
             # a user boundary. Asserting non-root here would be wrong.
             expect_non_root: false
     steps:
+      # Nothing in this workflow pushes, so the checkout keeps no credentials.
+      # By default actions/checkout leaves the job's token in
+      # `.git/config`, where every later step — including a build script and
+      # every third-party action in the job — can read it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
