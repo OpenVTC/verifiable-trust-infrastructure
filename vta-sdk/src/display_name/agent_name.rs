@@ -155,7 +155,8 @@ pub async fn lookup(client: &DIDCacheClient, did: &str) -> Option<DisplayName> {
 /// here too. Per-DID failures are skipped, not propagated: an unreachable name
 /// server must degrade a row to its DID, never fail the operator's command.
 pub async fn fill_book<'a>(book: &mut super::NameBook, dids: impl IntoIterator<Item = &'a str>) {
-    let mut builder = DIDCacheConfigBuilder::default();
+    let mut builder =
+        DIDCacheConfigBuilder::default().with_host_policy(crate::resolver::webvh_host_policy());
     if let Ok(url) = std::env::var("PNM_RESOLVER_URL")
         && !url.is_empty()
     {

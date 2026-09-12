@@ -266,7 +266,11 @@ futures-util = "0.3"
 # entry adds no new code when `tsp` is off (optional + default-features off).
 affinidi-messaging-sdk = { version = "0.24", optional = true, default-features = false }
 async-trait = "0.1"
-affinidi-tdk-common = "0.6"
+# 0.6.11 moves in lockstep with `affinidi-did-resolver-cache-sdk` 0.8.37: it is
+# the release built against that resolver, so a floor below it can resolve a
+# second, pre-host-policy resolver-cache copy into the graph through
+# `TDKSharedState`.
+affinidi-tdk-common = "0.6.11"
 affinidi-did-resolver-cache-sdk = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }
 base64 = { workspace = true }

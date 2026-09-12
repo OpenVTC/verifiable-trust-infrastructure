@@ -2013,6 +2013,7 @@ impl VtaClient {
             .get_or_init(|| async {
                 affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
                     affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default()
+                        .with_host_policy(crate::resolver::webvh_host_policy())
                         .build(),
                 )
                 .await

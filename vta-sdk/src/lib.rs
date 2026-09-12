@@ -154,9 +154,20 @@ pub mod prelude;
 // classifies `trust_tasks`' URI catalog), so a retry layer can consult it
 // without pulling in the client machinery.
 pub mod retry_safety;
-// `resolver` wraps `affinidi-did-resolver-cache-sdk`, which is only a
-// dependency under the `didcomm` feature.
-#[cfg(feature = "didcomm")]
+// `resolver` wraps `affinidi-did-resolver-cache-sdk`. The cfg lists every
+// feature that adds that dependency, not just `didcomm`: this module now also
+// owns the loopback-host decision (`webvh_host_policy`), and each of these
+// features has a resolver-construction site that has to ask for it —
+// `didcomm_light` under `client` (which implies `proof-verify`),
+// `display_name::agent_name` under `agent-names`. Gating on `didcomm` alone
+// made those builds fail to find it.
+#[cfg(any(
+    feature = "proof-verify",
+    feature = "didcomm",
+    feature = "tsp",
+    feature = "agent-names",
+    feature = "session"
+))]
 pub mod resolver;
 // `protocol` itself is always-on (its `services` submodule holds pure
 // wire types + the shared `validate_service_url` validator that

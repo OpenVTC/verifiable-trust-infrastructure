@@ -1610,7 +1610,13 @@ async fn cmd_health(
     println!("  {CYAN}{:<13}{RESET} {}", "URL", client.endpoint_label());
 
     // Create a shared DID resolver for both sections
-    let resolver = match DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await {
+    let resolver = match DIDCacheClient::new(
+        DIDCacheConfigBuilder::default()
+            .with_host_policy(vta_sdk::resolver::webvh_host_policy())
+            .build(),
+    )
+    .await
+    {
         Ok(r) => Some(r),
         Err(e) => {
             println!("  {DIM}DID resolution skipped (resolver unavailable: {e}){RESET}");
