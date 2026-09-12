@@ -11002,7 +11002,7 @@ dependencies = [
 
 [[package]]
 name = "vta-persona"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "chrono",
  "hmac 0.13.0",
@@ -11519,7 +11519,7 @@ dependencies = [
 
 [[package]]
 name = "vti-rooms"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
