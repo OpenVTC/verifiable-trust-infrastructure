@@ -7,7 +7,19 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
-<script src="https://d3js.org/d3.v7.min.js"></script>
+<!-- d3, pinned to an exact version and checked on arrival. The previous src
+     was https://d3js.org/d3.v7.min.js: a FLOATING major-version URL, whose
+     bytes change with every 7.x release, so it cannot carry an `integrity`
+     digest at all — any digest would be a lie the next time d3 shipped. This
+     URL is immutable (jsDelivr serves npm `d3@7.9.0` by version), so the
+     digest below is checkable, and the browser refuses to execute the script
+     if the CDN ever returns bytes that do not match it. `crossorigin` is
+     required for the check on a cross-origin script and sends no credentials.
+     The digest is sha384 over npm d3 7.9.0, which is byte-identical to what
+     d3js.org was serving for v7. -->
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"
+        integrity="sha384-CjloA8y00+1SDAUkjs099PVfnY2KmDC2BZnws9kh8D/lX1s46w6EPhpXdqMfjK6i"
+        crossorigin="anonymous"></script>
 <style>
   :root{
     --bg:#090c12; --bg-2:#0c1018; --panel:#10141d; --panel-2:#141a24;
