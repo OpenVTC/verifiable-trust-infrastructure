@@ -1,7 +1,7 @@
 [package]
 name = "vti-rooms"
 description = "Data-room storage, wire types, and authorization — the parts of a room that are not a service"
-version = "0.2.2"
+version = "0.2.3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
