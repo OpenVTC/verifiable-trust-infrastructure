@@ -13,55 +13,56 @@ use vta_sdk::prelude::*;
 /// Interactively prompt for an armored sealed bundle path + expected digest,
 /// then open it via the shared consumer helper and extract the admin
 /// credential. Used by every "gimme a credential" seam in the wizard.
+///
+/// `expected_vta_did` is the DID the operator typed for this VTA; the
+/// credential must be for that VTA.
 async fn prompt_for_sealed_credential(
     label: &str,
+    expected_vta_did: &str,
 ) -> Result<CredentialBundle, Box<dyn std::error::Error>> {
     eprintln!();
     eprintln!("Before continuing, generate a bootstrap request for the {label} admin:");
     eprintln!("  cnm bootstrap request --out request.json");
     eprintln!("Hand that file to the admin, then return here with the armored sealed");
-    eprintln!("bundle they produce (and its SHA-256 digest for verification).");
+    eprintln!("bundle they produce and its SHA-256 digest. Get the digest over a channel");
+    eprintln!("you trust, separately from the bundle: it is what shows the bundle is theirs.");
     eprintln!();
     let path: String = Input::new()
         .with_prompt(format!("Path to the {label} armored sealed bundle"))
         .interact_text()?;
     let digest: String = Input::new()
         .with_prompt(format!(
-            "Expected SHA-256 digest for {label} bundle (empty = skip verification)"
+            "Expected SHA-256 digest for the {label} bundle (64 hex characters)"
         ))
-        .allow_empty(true)
+        .validate_with(|input: &String| digest_prompt_validator(input))
         .interact_text()?;
-    let (expect_digest, no_verify) = if digest.trim().is_empty() {
-        (None, true)
-    } else {
-        (Some(digest.trim().to_string()), false)
-    };
-    open_sealed_credential(Path::new(path.trim()), expect_digest.as_deref(), no_verify)
+    let digest = vta_cli_common::sealed_consumer::normalize_expected_digest(&digest)?;
+    open_sealed_credential(Path::new(path.trim()), &digest, expected_vta_did)
 }
 
-/// Open a sealed bundle file from `bundle_path` and extract a
-/// [`CredentialBundle`]. Shared by the CLI-flag path and the interactive
-/// path.
+/// Validator for the digest prompt. Empty input is rejected: without the
+/// digest, nothing shows that the bundle came from the VTA admin rather than
+/// someone else who saw the bootstrap request.
+fn digest_prompt_validator(input: &str) -> Result<(), String> {
+    vta_cli_common::sealed_consumer::normalize_expected_digest(input).map(|_| ())
+}
+
+/// Open a sealed bundle file from `bundle_path`, verify it against the
+/// digest and the expected VTA DID, and extract the [`CredentialBundle`].
 fn open_sealed_credential(
     bundle_path: &Path,
-    expect_digest: Option<&str>,
-    no_verify_digest: bool,
+    expect_digest: &str,
+    expected_vta_did: &str,
 ) -> Result<CredentialBundle, Box<dyn std::error::Error>> {
     let config_dir = config_dir()?;
-    if no_verify_digest {
-        vta_cli_common::sealed_consumer::warn_no_verify_digest();
-    }
-    let opened = vta_cli_common::sealed_consumer::open_armored_bundle(
+    let credential = vta_cli_common::sealed_consumer::open_admin_credential(
         bundle_path,
         &config_dir,
-        expect_digest,
-        no_verify_digest,
+        Some(expect_digest),
+        Some(expected_vta_did),
     )?;
-    eprintln!(
-        "Sealed bundle opened ({} — digest {}).",
-        opened.bundle_id_hex, opened.digest
-    );
-    vta_cli_common::sealed_consumer::extract_admin_credential(opened.payload)
+    eprintln!("Sealed bundle opened and verified.");
+    Ok(credential)
 }
 
 /// Derive a URL-safe slug from a community name.
@@ -118,7 +119,7 @@ pub async fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
     // ── Personal VTA ────────────────────────────────────────────────
     let (personal_did, personal_url) = prompt_vta_did("Personal").await?;
 
-    let personal_bundle = prompt_for_sealed_credential("personal VTA").await?;
+    let personal_bundle = prompt_for_sealed_credential("personal VTA", &personal_did).await?;
 
     // Authenticate against personal VTA
     eprintln!();
@@ -151,7 +152,7 @@ pub async fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
     let context_id = match join_choice {
         // Import existing credential
         0 => {
-            let bundle = prompt_for_sealed_credential("community VTA").await?;
+            let bundle = prompt_for_sealed_credential("community VTA", &community_did).await?;
 
             let keyring_key = community_keyring_key(&community_slug);
             eprintln!();
@@ -274,7 +275,7 @@ pub async fn add_community() -> Result<(), Box<dyn std::error::Error>> {
 
     let (community_did, community_url) = prompt_vta_did("Community").await?;
 
-    let bundle = prompt_for_sealed_credential("community VTA").await?;
+    let bundle = prompt_for_sealed_credential("community VTA", &community_did).await?;
 
     let keyring_key = community_keyring_key(&community_slug);
     eprintln!();
@@ -392,5 +393,18 @@ mod tests {
     #[test]
     fn test_slugify_numbers() {
         assert_eq!(slugify("Community 42"), "community-42");
+    }
+
+    #[test]
+    fn digest_prompt_rejects_empty_input() {
+        assert!(digest_prompt_validator("").is_err());
+        assert!(digest_prompt_validator("  ").is_err());
+    }
+
+    #[test]
+    fn digest_prompt_accepts_only_a_sha256_hex_digest() {
+        assert!(digest_prompt_validator(&"0f".repeat(32)).is_ok());
+        assert!(digest_prompt_validator(&"0f".repeat(31)).is_err());
+        assert!(digest_prompt_validator(&"zz".repeat(32)).is_err());
     }
 }

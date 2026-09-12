@@ -416,7 +416,10 @@ enum AuthCommands {
         /// Expected SHA-256 digest, communicated out-of-band by the producer.
         #[arg(long)]
         expect_digest: Option<String>,
-        /// Skip out-of-band digest verification (testing only — prints a warning).
+        /// Skip out-of-band digest verification. The bundle is then accepted
+        /// only if it is signed by the community's configured VTA DID; the
+        /// admin credentials pnm and cnm seal carry no such signature and
+        /// need --expect-digest.
         #[arg(long)]
         no_verify_digest: bool,
     },
@@ -761,31 +764,27 @@ fn print_banner() {
 /// Implementation of `cnm auth login --credential-bundle <file>`.
 ///
 /// Opens an armored sealed bundle (matching a secret persisted earlier by
-/// `cnm bootstrap request`), extracts the admin credential from the payload,
-/// and installs it via `auth::login`.
+/// `cnm bootstrap request`), verifies its producer and VTA DID against
+/// `expected_vta_did` (the community's configured DID, when there is one),
+/// and installs the admin credential via `auth::login`.
 async fn auth_login_sealed(
     client: &VtaClient,
     keyring_key: &str,
     credential_bundle: &std::path::Path,
     expect_digest: Option<&str>,
     no_verify_digest: bool,
+    expected_vta_did: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config_dir =
         config::config_dir().map_err(|e| format!("could not resolve config dir: {e}"))?;
-    if no_verify_digest {
-        vta_cli_common::sealed_consumer::warn_no_verify_digest();
-    }
-    let opened = vta_cli_common::sealed_consumer::open_armored_bundle(
+    vta_cli_common::sealed_consumer::validate_digest_flags(expect_digest, no_verify_digest)?;
+    let bundle = vta_cli_common::sealed_consumer::open_admin_credential(
         credential_bundle,
         &config_dir,
         expect_digest,
-        no_verify_digest,
+        expected_vta_did,
     )?;
-    eprintln!(
-        "Sealed bundle opened ({} — digest {}).",
-        opened.bundle_id_hex, opened.digest
-    );
-    let bundle = vta_cli_common::sealed_consumer::extract_admin_credential(opened.payload)?;
+    eprintln!("Sealed bundle opened and verified.");
     let base = client
         .rest_url()
         .ok_or("login requires a REST connection to the VTC")?;
@@ -1079,7 +1078,7 @@ async fn main() {
                 "Error: could not bootstrap session from personal VTA: {e}\n\n\
                          To fix this, either:\n  \
                          1. Import a sealed credential bundle from your VTA admin:\n     \
-                            cnm auth login --credential-bundle <bundle.armored> [--expect-digest <sha256>]\n  \
+                            cnm auth login --credential-bundle <bundle.armored> --expect-digest <sha256>\n  \
                          2. Re-run setup: cnm setup"
             );
             std::process::exit(1);
@@ -1106,12 +1105,16 @@ async fn main() {
                 expect_digest,
                 no_verify_digest,
             } => {
+                let expected_vta_did = resolve_community(cli.community.as_deref(), &cnm_config)
+                    .ok()
+                    .and_then(|(_, community)| community.vta_did.clone());
                 auth_login_sealed(
                     &client,
                     &keyring_key,
                     &credential_bundle,
                     expect_digest.as_deref(),
                     no_verify_digest,
+                    expected_vta_did.as_deref(),
                 )
                 .await
             }

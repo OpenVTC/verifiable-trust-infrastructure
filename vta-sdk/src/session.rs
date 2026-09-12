@@ -229,7 +229,12 @@ impl SessionStore {
         self.load_session(key).is_some()
     }
 
-    /// Store a credential bundle and authenticate.
+    /// Authenticate with a credential bundle, then store it as the session.
+    ///
+    /// The session is written only after challenge-response succeeds. A
+    /// bundle that does not authenticate (unreachable endpoint, unknown DID,
+    /// wrong VTA) leaves whatever is stored under `key` untouched, instead of
+    /// becoming the credential later commands use.
     ///
     /// Returns `LoginResult` on success (no printing).
     pub async fn login(
@@ -244,19 +249,6 @@ impl SessionStore {
             "login with credential bundle"
         );
 
-        let mut session = Session {
-            client_did: bundle.did.clone(),
-            private_key: bundle.private_key_multibase.clone(),
-            vta_did: Some(bundle.vta_did.clone()),
-            access_token: None,
-            access_expires_at: None,
-            token_origin: None,
-            needs_rotation: false,
-        };
-        self.save_session(key, &session)?;
-        debug!(keyring_key = key, "session saved");
-
-        // Perform authentication
         let token = challenge_response(
             base_url,
             &bundle.did,
@@ -265,10 +257,17 @@ impl SessionStore {
         )
         .await?;
 
-        session.access_token = Some(token.access_token);
-        session.access_expires_at = Some(token.access_expires_at);
-        session.token_origin = url_origin(base_url);
+        let session = Session {
+            client_did: bundle.did.clone(),
+            private_key: bundle.private_key_multibase.clone(),
+            vta_did: Some(bundle.vta_did.clone()),
+            access_token: Some(token.access_token),
+            access_expires_at: Some(token.access_expires_at),
+            token_origin: url_origin(base_url),
+            needs_rotation: false,
+        };
         self.save_session(key, &session)?;
+        debug!(keyring_key = key, "session saved");
 
         Ok(LoginResult {
             client_did: bundle.did.clone(),

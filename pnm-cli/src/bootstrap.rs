@@ -269,11 +269,18 @@ pub async fn run_open(
     }
 
     if let Some(path) = out {
-        // Rejects any payload variant that isn't an admin identity, with a
-        // per-variant message. The bundle is already spent by this point, so
-        // failing here still costs the operator a fresh request cycle — hence
-        // the up-front warning in the `--out` help text.
-        let bundle = vta_cli_common::sealed_consumer::extract_admin_credential(opened.payload)?;
+        // Writing the credential out installs it for a file-based consumer, so
+        // the bundle must be anchored first: the out-of-band digest, or a
+        // signature by `--expect-vta-did` (see `verify_admin_bundle`). This
+        // also rejects any payload variant that isn't an admin identity, with
+        // a per-variant message. The bundle is already spent by this point,
+        // so failing here still costs the operator a fresh request cycle —
+        // hence the up-front warning in the `--out` help text.
+        let bundle = vta_cli_common::sealed_consumer::verify_admin_bundle(
+            opened,
+            expect_digest.as_deref(),
+            expect_vta_did.as_deref(),
+        )?;
         write_credential_bundle(&path, &bundle)?;
         println!();
         println!("Credential written to {} (0600).", path.display());

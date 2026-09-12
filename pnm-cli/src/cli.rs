@@ -594,7 +594,10 @@ pub(crate) enum BootstrapCommands {
         bundle: std::path::PathBuf,
         /// Write the extracted admin credential to this path as JSON
         /// (created 0600). Only valid for `AdminCredential` and
-        /// `ContextProvision` payloads.
+        /// `ContextProvision` payloads. The bundle must be anchored: by
+        /// `--expect-digest`, or by a signature from `--expect-vta-did`.
+        /// When `--expect-vta-did` is given, the credential must be for
+        /// that VTA.
         #[arg(long)]
         out: Option<std::path::PathBuf>,
         /// Expected SHA-256 digest, communicated out-of-band by the producer.
