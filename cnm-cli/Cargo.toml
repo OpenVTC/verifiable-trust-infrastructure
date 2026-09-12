@@ -54,6 +54,11 @@ tracing-subscriber = { workspace = true }
 # The bootstrap tests generate a small web of trust with rPGP, whose key
 # generation takes a rand 0.8 RNG (the workspace is on 0.10). A seeded StdRng
 # keeps the keys, and so the fingerprints, the same on every run.
+#
+# Dependabot proposed 0.10 (#1445); it does not build, because `pgp` wants the
+# rand 0.8 trait set (`StdRng: rand_core::CryptoRng is not satisfied`). `rand`
+# is in Dependabot's ignore list for that reason; lift both together when the
+# OpenPGP stack releases on a newer rand.
 rand = "0.8"
 tempfile = "3"
 
