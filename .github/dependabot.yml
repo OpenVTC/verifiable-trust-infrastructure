@@ -56,6 +56,14 @@ updates:
       - dependency-name: "vta-*"
       - dependency-name: "vti-*"
       - dependency-name: "vtc-*"
+      # `cnm-cli`'s dev-dependency, held at 0.8 by rPGP. `pgp` 0.20 — the
+      # latest release — takes an `R: CryptoRng + Rng` from the rand 0.8 trait
+      # set for key generation, and the bootstrap tests hand it a seeded
+      # `StdRng` so the generated web of trust has stable fingerprints. A 0.10
+      # bump was proposed (#1445) and cannot build: `StdRng: rand_core::
+      # CryptoRng is not satisfied`. The workspace itself is already on 0.10,
+      # and that copy is unaffected. Lift this when the OpenPGP stack moves.
+      - dependency-name: "rand"
 
   # ── GitHub Actions ────────────────────────────────────────────────────
   # Every `uses:` in this repo is a full 40-hex commit SHA with the version in
