@@ -61,6 +61,22 @@ export interface PluginManifest {
    * plugins. Built-in React plugins should prefer `iconComponent`,
    * which renders a proper lucide-react icon and inherits the shell's
    * 16px stroke-1.75 styling. Set at most one.
+   *
+   * **How the shell renders this.** A string starting with `<svg` is
+   * rendered as `<img src="data:image/svg+xml,…">` — a picture, not
+   * markup. Nothing inside it executes: scripts and `on*` handlers
+   * never run in an `<img>`, which is what lets the shell accept SVG
+   * from a plugin it does not control.
+   *
+   * The consequence for authors is that an `<img>` is a separate
+   * document, so it inherits nothing from the shell: `currentColor`
+   * and the 1.75 stroke width do **not** apply. Give the SVG its own
+   * explicit colours and a `viewBox` sized against a 16px box, or
+   * ship an `iconComponent` instead when the icon needs to follow the
+   * theme.
+   *
+   * Any other string is rendered as text, so markup that is not an
+   * SVG appears as its own characters rather than as elements.
    */
   readonly icon?: string;
   /**
