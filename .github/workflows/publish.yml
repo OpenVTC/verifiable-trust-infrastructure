@@ -177,10 +177,13 @@ jobs:
 
   release-plz-pr:
     name: Release-plz PR
-    # Only on push. The Release PR tracks what has landed on main, so a
-    # recovery dispatch has nothing to tell it — regenerating it there would
-    # burn a run to produce the same PR.
-    if: github.event_name == 'push'
+    # Push, plus the recovery hatch. The Release PR tracks what has landed on
+    # main, so a dispatch usually regenerates the same PR for nothing — but
+    # "usually" is not "always": if this job is dropped (see the concurrency
+    # note below) the PR is left describing an older main, and a dispatch is
+    # then the cheapest way to bring it back in line without re-running a
+    # specific job by id.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -188,9 +191,25 @@ jobs:
       pull-requests: write
     concurrency:
       # Deliberately only on this job. Serialising the release job could skip a
-      # release; serialising PR updates just coalesces them.
+      # release; serialising PR updates is safe because the Release PR is a pure
+      # function of main's HEAD — regenerate it from the newest commit and the
+      # result is correct regardless of how many pushes were coalesced.
+      #
+      # `cancel-in-progress: true` precisely because of that. It used to be
+      # `false`, on the reasoning that serialising "just coalesces" the updates.
+      # It does not: GitHub keeps at most one *pending* run per group and drops
+      # the rest, so a burst of merges can discard the run for the newest commit
+      # and leave the older one to finish. That happened — four PRs merged
+      # within a few minutes and the surviving run produced a Release PR that
+      # was missing the last of them, with an empty changelog section for the
+      # crate that commit had changed. The PR still looked mergeable.
+      #
+      # With `true`, the newest push wins: an older in-flight regeneration is
+      # cancelled and loses nothing, because its output was already stale. The
+      # worst case is a cancelled force-push leaving the release branch
+      # half-updated, which the next push regenerates.
       group: release-plz-${{ github.ref }}
-      cancel-in-progress: false
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
