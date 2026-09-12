@@ -8,6 +8,25 @@
 # Then start the service:
 #   cargo run -p vta-service --features webvh -- --config /tmp/vta-dev-path/config.toml
 #
+# Loopback DIDs need an explicit opt-in:
+#   export VTA_ALLOW_PRIVATE_ENDPOINTS=1
+#
+# This setup mints `did:webvh:{SCID}:localhost%3A3000:tenant:vta`. Since
+# `didwebvh-rs` 0.7 (`affinidi-did-resolver-cache-sdk` 0.8.37), resolving a
+# did:webvh or did:web DID whose host is loopback, private, link-local or a
+# single-label name is refused before any request is made — that is what stops a
+# DID naming an internal host from making a VTA fetch from inside its own
+# network. The readiness gate, `vta status`, `vta create-did-webvh` and the
+# `vta webvh` commands all resolve this DID, so export the variable for every
+# command in this local stack, `setup` included.
+#
+# Without it those commands fail with `BlockedHost: localhost is not a public
+# host (HostPolicy::PublicOnly)` and mediator readiness never goes green.
+#
+# It is the same switch as `--allow-private-endpoints` on `pnm`/`cnm`. Do NOT
+# set it in a deployment: it also lets did:web reach private hosts, and a
+# `localhost` DID is then fetched over plain `http://`.
+#
 # Verify:
 #   curl http://localhost:3000/tenant/vta/did.jsonl    → 200 with log
 #   curl http://localhost:3000/.well-known/did.jsonl   → 404 (pathful DID does not use well-known)

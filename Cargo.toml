@@ -213,7 +213,23 @@ rand = "0.10"
 pgp = { version = "0.20", default-features = false }
 
 # DID Web with Verifiable History
-didwebvh-rs = "0.6"
+#
+# 0.7 is a security floor, not a preference. Through 0.6.1 `resolve()` rejected
+# IP-literal hosts and nothing else: `did:webvh:{SCID}:localhost%3A<port>` was
+# fetched over plain `http://`, and any other name was fetched from whatever
+# address it resolved to — so a did:webvh DID naming an internal host, or a
+# public name whose A record points at 169.254.169.254, was a resolver-side SSRF
+# for every crate in this workspace that resolves a DID. 0.7 refuses non-public
+# hosts by default (`HostPolicy::PublicOnly`), vets DNS answers before
+# connecting, refuses redirects and ignores `HTTP(S)_PROXY`.
+#
+# A caret on "0.6" would let a resolve land back on 0.6.1 and reintroduce that,
+# which is why this is not a bare major.minor onto the old series.
+#
+# Local webvh stacks (`local-dev/vta-*-webvh-setup.toml`, which publish
+# `http://localhost:3000`) and tests that resolve a listener on 127.0.0.1 must
+# now opt in explicitly with `HostPolicy::AllowPrivate`.
+didwebvh-rs = "0.7"
 
 # URL parsing
 url = "2"
@@ -398,7 +414,16 @@ k8s-openapi = { version = "0.28", features = ["latest"] }
 # Hoist DID-resolver-cache feature drift: every crate uses 0.8 but a few
 # omit the `network` feature. The default here turns it on; dependents
 # that want the offline-only cache can opt out via `default-features = false`.
-affinidi-did-resolver-cache-sdk = { version = "0.8", features = ["network"] }
+#
+# Pinned to a minimum patch (not a bare "0.8") because 0.8.37 is the release
+# that moves did:webvh resolution onto `didwebvh-rs` 0.7 and its
+# `HostPolicy::PublicOnly` default — see the note on `didwebvh-rs` above. This
+# is the crate every DID resolution in the workspace goes through
+# (`DIDCacheClient`), so a resolve that landed on 0.8.36 would leave did:webvh
+# resolution reaching localhost and private addresses while the tree looked
+# current. 0.8.35 did the same for did:web; 0.8.37 makes one
+# `DIDCacheConfigBuilder::with_host_policy` setting govern both.
+affinidi-did-resolver-cache-sdk = { version = "0.8.37", features = ["network"] }
 # The local-only resolvers, for methods that carry their keys in the identifier. Not a
 # second resolver: the cache SDK already depends on this and uses the same types, but does
 # not re-export them, and a verifier promising "no I/O" needs to reach them directly.

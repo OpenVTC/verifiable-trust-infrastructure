@@ -213,9 +213,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-resolver-cache-sdk"
-version = "0.8.36"
+version = "0.8.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15d261ce9e5886c890492a1ed7ae6f0b286f8c8c2c711af96eb1bdf1eee9efa6"
+checksum = "be0b2e768c75df1d0bca72f51ecb6bbb37fccc13e16bf9c093f8fc04e429e952"
 dependencies = [
  "affinidi-did-common",
  "affinidi-did-resolver-traits",
@@ -257,16 +257,16 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-web"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d8fc4d44f666b034f50cd753afc1bdfef6d7801cccc35672518ab2e2fda007c"
+checksum = "08ba8e331d31ff1c6bf9f5684d71471779e5f9fbf7167d93a4a34f2daece202b"
 dependencies = [
  "affinidi-did-common",
+ "affinidi-net-guard",
  "percent-encoding",
  "reqwest",
  "serde_json",
  "thiserror 2.0.20",
- "tokio",
  "tracing",
 ]
 
@@ -381,9 +381,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator"
-version = "0.24.0"
+version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28f6e935295f1c9eec0fa7ee609f3f6e88f855b788712dbfac334c50279dbdf0"
+checksum = "3b6e6bc49148927068b3bb42e32e7ec3a26c8a1a118cd682acd6b876f0071e55"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-common",
@@ -554,6 +554,19 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "affinidi-net-guard"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43736e64c051b4689d39c08e781dae750a79fee9bbf44e4eb7ed93e081485184"
+dependencies = [
+ "reqwest",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -735,14 +748,15 @@ dependencies = [
 
 [[package]]
 name = "affinidi-tdk-common"
-version = "0.6.10"
+version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "864083bc98bc29e8ed049b8c477532f9f435a6befe75edb9cac2d9cf257842ec"
+checksum = "d6235d6d0506aed283966e11bbe4bf1e6cda94e0188aa09db15d9be95d3aa61f"
 dependencies = [
  "affinidi-data-integrity",
  "affinidi-did-authentication",
  "affinidi-did-common",
  "affinidi-did-resolver-cache-sdk",
+ "affinidi-net-guard",
  "affinidi-secrets-resolver",
  "ahash",
  "apple-native-keyring-store",
@@ -3230,7 +3244,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.5",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -3483,9 +3497,9 @@ dependencies = [
 
 [[package]]
 name = "did-scid"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73c7754d192a630118d5fa3353f1cce5c291187762b0e493f397d3e0328b407d"
+checksum = "32bb54e6769f547fc641bbe63bb06f253fe41ad552e47e24cbd6c62a7b6436d8"
 dependencies = [
  "affinidi-did-common",
  "didwebvh-rs",
@@ -3515,9 +3529,9 @@ dependencies = [
 
 [[package]]
 name = "didwebvh-rs"
-version = "0.6.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87a6d8803724264019c1b1dda174b4f666b833e9ac05acd45e87e9fecef2c67b"
+checksum = "1aa08dc5af02f6bc159c10271195f467a894b3b4fe67da9796009ee2da785043"
 dependencies = [
  "affinidi-data-integrity",
  "affinidi-did-common",
@@ -7225,7 +7239,7 @@ dependencies = [
  "aes-gcm 0.10.3",
  "aes-kw",
  "argon2 0.5.3",
- "base64 0.22.1",
+ "base64 0.21.7",
  "bitfields",
  "block-padding 0.3.3",
  "blowfish",
@@ -8742,7 +8756,7 @@ checksum = "7bd22781911de0ca6debda95f073c8f18bec65d1a94f1fa9573f3102e514cea4"
 dependencies = [
  "ahash",
  "annotate-snippets",
- "base64 0.22.1",
+ "base64 0.21.7",
  "encoding_rs_io",
  "getrandom 0.3.4",
  "granit-parser",

@@ -168,11 +168,30 @@ async fn resolve_webvh_keyagreement(
 ) -> Result<(String, [u8; 32]), Box<dyn std::error::Error>> {
     use didwebvh_rs::DIDWebVHState;
     use didwebvh_rs::log_entry::LogEntryMethods;
-    use didwebvh_rs::resolve::ResolveOptions;
+    use didwebvh_rs::resolve::{HostPolicy, ResolveOptions};
+
+    // `ResolveOptions::default()` is `HostPolicy::PublicOnly`, which is what
+    // production wants: this fetches a log from a host named by the DID we were
+    // handed, so a DID naming an internal host must not make us dial it. Local
+    // development against `did:webvh:{SCID}:localhost%3A3000` opts in through
+    // the same switch as the rest of the workspace — see
+    // `crate::resolver::allow_private_did_hosts`.
+    //
+    // The bool is mapped here rather than reusing `resolver::webvh_host_policy`
+    // because that returns the resolver-cache's `HostPolicy` re-export, which is
+    // a different type from `didwebvh_rs`' own.
+    let host_policy = if crate::resolver::allow_private_did_hosts() {
+        HostPolicy::AllowPrivate
+    } else {
+        HostPolicy::PublicOnly
+    };
 
     let mut state = DIDWebVHState::default();
     let (log_entry, _meta) = state
-        .resolve(vta_did, ResolveOptions::default())
+        .resolve(
+            vta_did,
+            ResolveOptions::default().with_host_policy(host_policy),
+        )
         .await
         .map_err(|e| format!("resolve did:webvh {vta_did}: {e}"))?;
     let did_doc = log_entry

@@ -1728,7 +1728,8 @@ async fn init_auth(
 
     // 1. DID resolver (network mode if resolver_url is set, local mode otherwise)
     let resolver_config = {
-        let mut builder = DIDCacheConfigBuilder::default();
+        let mut builder = DIDCacheConfigBuilder::default()
+            .with_host_policy(vta_sdk::resolver::webvh_host_policy());
         if let Some(ref url) = config.resolver_url {
             info!(url = %url, "DID resolver using network mode (remote resolver)");
             builder = builder.with_network_mode(url);

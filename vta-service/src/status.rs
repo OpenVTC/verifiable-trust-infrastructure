@@ -84,9 +84,13 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
     );
 
     // 2. DID resolver for resolution checks (created early, reused for contexts)
-    let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
-        .await
-        .ok();
+    let did_resolver = DIDCacheClient::new(
+        DIDCacheConfigBuilder::default()
+            .with_host_policy(vta_sdk::resolver::webvh_host_policy())
+            .build(),
+    )
+    .await
+    .ok();
 
     // 3. VTA DID + resolution check → extract mediator DID from DIDCommMessaging
     let mut discovered_mediator: Option<String> = None;

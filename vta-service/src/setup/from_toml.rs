@@ -1764,7 +1764,12 @@ async fn create_simple_webvh_did(
         .to_string();
 
     let auth = cli_super_admin();
-    let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
+    let did_resolver = DIDCacheClient::new(
+        DIDCacheConfigBuilder::default()
+            .with_host_policy(vta_sdk::resolver::webvh_host_policy())
+            .build(),
+    )
+    .await?;
     let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
         Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
 

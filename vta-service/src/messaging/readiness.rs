@@ -236,7 +236,12 @@ fn apply_timeout_policy(
 /// entry (see `server::preload_self_did_document`) or a stale entry in the
 /// long-lived resolver can't mask the real state.
 async fn self_did_resolves(vta_did: &str, resolver_url: Option<&str>) -> bool {
-    let mut builder = DIDCacheConfigBuilder::default();
+    // Loopback/private hosts only when the operator opted in: the VTA's own DID
+    // is `did:webvh:{SCID}:localhost%3A3000` under `local-dev/*.toml`, and this
+    // probe deliberately bypasses the preloaded self-DID cache entry, so it is
+    // the first thing a local stack notices if the policy is wrong.
+    let mut builder =
+        DIDCacheConfigBuilder::default().with_host_policy(vta_sdk::resolver::webvh_host_policy());
     if let Some(url) = resolver_url {
         builder = builder.with_network_mode(url);
     }
