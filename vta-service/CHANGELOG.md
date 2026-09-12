@@ -2,6 +2,14 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.26.0...vta-service-v0.27.0) — 2026-09-12
+
+
+### Security
+
+- **resolver**: Refuse did:webvh resolution to non-public hosts by default ([#1448](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1448))
+
+
 ## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.25.1...vta-service-v0.26.0) — 2026-09-10
 
 

@@ -2,7 +2,7 @@
 name = "vti-secrets"
 description = "Pluggable secret-store backends + integration onboarding flow for Verifiable Trust Infrastructure"
 readme = "README.md"
-version = "0.3.6"
+version = "0.3.7"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -56,7 +56,7 @@ tokio = { workspace = true }
 zeroize = { version = "1" }
 
 # Onboarding feature: the SDK session/auth state machine + local did:key mint.
-vta-sdk = { path = "../vta-sdk", version = "0.37", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.38", features = [
   "session",
 ], optional = true }
 ed25519-dalek = { workspace = true, optional = true }

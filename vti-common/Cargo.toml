@@ -2,7 +2,7 @@
 name = "vti-common"
 description = "Shared server-side infrastructure for VTA and VTC services"
 readme = "README.md"
-version = "0.18.4"
+version = "0.18.5"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -48,7 +48,7 @@ openapi = ["dep:utoipa", "dep:utoipa-axum"]
 # `default-features = false` skips the optional client transports
 # (didcomm, sealed-transfer, etc.); we only consume the type
 # definitions in the default feature set.
-vta-sdk = { path = "../vta-sdk", version = "0.37", default-features = false, features = [
+vta-sdk = { path = "../vta-sdk", version = "0.38", default-features = false, features = [
   # The Trust-Task proof verifier lives there now; this crate re-exports it.
   "proof-verify",
 ] }
