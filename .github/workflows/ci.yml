@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -95,9 +95,23 @@ jobs:
           echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
           exit 1
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The toolchain comes from the runner image's rustup rather than from
+      # dtolnay/rust-toolchain. That action publishes no release tags: every ref
+      # it offers (`@stable`, `@master`) is a BRANCH, so there is no immutable
+      # ref to pin and nothing for Dependabot to bump afterwards — and the tip
+      # does move under us. The CI log captured in #1239 shows `@stable`
+      # resolving to 4360b525 on 2026-09-02; by 2026-09-11 it was 6bed0761.
+      # Every Check, Test, Clippy and *publish* job in between ran whatever that
+      # branch happened to point at, unreviewed.
+      #
+      # rustup ships on every hosted runner, so the lines below are the whole of
+      # what the action was doing here.
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # `target/` is deliberately NOT cached. Every crate in this
           # workspace is a **path** dependency, so a source-only change does not
@@ -135,7 +149,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # `cargo test --workspace` builds a test binary for every crate with
       # full debuginfo, and the total (target/ plus the linker's scratch)
@@ -157,9 +171,12 @@ jobs:
       - name: Install system dependencies
         run: bash scripts/install-build-deps.sh
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # `target/` is deliberately NOT cached. Every crate in this
           # workspace is a **path** dependency, so a source-only change does not
@@ -194,7 +211,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # `cargo test --workspace` builds a test binary for every crate with
       # full debuginfo, and the total (target/ plus the linker's scratch)
@@ -216,9 +233,12 @@ jobs:
       - name: Install system dependencies
         run: bash scripts/install-build-deps.sh
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # `target/` is deliberately NOT cached. Every crate in this
           # workspace is a **path** dependency, so a source-only change does not
@@ -290,7 +310,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -330,11 +350,13 @@ jobs:
           echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
           exit 1
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update \
+            --component clippy
+          rustup default stable
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # `target/` is deliberately NOT cached. Every crate in this
           # workspace is a **path** dependency, so a source-only change does not
@@ -364,11 +386,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update \
+            --component rustfmt
+          rustup default stable
 
       - run: cargo fmt --all -- --check
 
@@ -381,7 +405,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Same reclaim as the Test job, and for the same reason: this job
       # also links the whole workspace. It ran out of disk mid-`cargo
@@ -437,11 +461,14 @@ jobs:
           echo "msrv=$msrv" >> "$GITHUB_OUTPUT"
           echo "Workspace MSRV: $msrv"
 
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ steps.msrv.outputs.msrv }}
+      - name: Install the MSRV toolchain
+        env:
+          MSRV: ${{ steps.msrv.outputs.msrv }}
+        run: |
+          rustup toolchain install "$MSRV" --profile minimal --no-self-update
+          rustup default "$MSRV"
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # `target/` is deliberately NOT cached here any more.
           #
@@ -482,8 +509,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check advisories bans sources licenses
 
@@ -518,14 +545,19 @@ jobs:
     timeout-minutes: 45
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Install system dependencies
         run: bash scripts/install-build-deps.sh
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@cargo-semver-checks
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af # v2.87.11
+        with:
+          tool: cargo-semver-checks
 
       # Everything this job knows about its own failure modes now lives in
       # scripts/semver-report.sh, including the exclusion list and the reasons
@@ -565,7 +597,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Same system packages as the report job, from the same script. Omitting
       # this is what broke the guard's first real run: rustdoc could not build
       # `vta-cli-common` (libdbus-sys -> pkg_config), and a failed baseline build
@@ -573,8 +605,13 @@ jobs:
       # rather than a missing build dependency on the runner.
       - name: Install system dependencies
         run: bash scripts/install-build-deps.sh
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@cargo-semver-checks
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af # v2.87.11
+        with:
+          tool: cargo-semver-checks
       - name: Check the proposed versions cover their API changes
         env:
           SEMVER_MODE: enforce
@@ -598,7 +635,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Lockfile self-pin guard
         run: bash scripts/check-lockfile-self-pins.sh
       # Same shape of invariant, same reason to check it early: a whole-tree property
@@ -630,7 +667,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Authorization-context type uniqueness guard
         run: bash scripts/check-authz-context-types.sh
       # Unrelated to authz, but just as cheap: nothing at the repo root should be
@@ -682,8 +719,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
       - name: Cargo.lock satisfies every workspace manifest
         run: |
           if cargo metadata --locked --format-version 1 > /dev/null; then
@@ -717,7 +757,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -757,9 +797,12 @@ jobs:
           echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
           exit 1
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # `target/` is deliberately NOT cached. Every crate in this
           # workspace is a **path** dependency, so a source-only change does not
@@ -969,11 +1012,14 @@ jobs:
       vta_tests: ${{ steps.vta_tests.outputs.run }}
       vtc_tests: ${{ steps.vtc_tests.outputs.run }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The diff is the whole input; a shallow clone has no base to diff from.
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
       - id: mobile
         run: bash scripts/ci-affects.sh vta-mobile-core
       - id: enclave
@@ -996,7 +1042,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install system dependencies
         run: |
@@ -1036,9 +1082,12 @@ jobs:
           echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
           exit 1
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # `target/` is deliberately NOT cached. Every crate in this
           # workspace is a **path** dependency, so a source-only change does not
@@ -1078,17 +1127,19 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update \
+            --target aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          rustup default stable
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af # v2.87.11
         with:
           tool: cargo-ndk
 
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           # `target/` is deliberately NOT cached. Every crate in this
           # workspace is a **path** dependency, so a source-only change does not
